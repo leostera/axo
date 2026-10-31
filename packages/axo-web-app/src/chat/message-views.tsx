@@ -1,5 +1,5 @@
-import { memo, useState } from "react";
-import { inlineSpans, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
+import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
 import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
 import type { PendingPrompt } from "./workbench.ts";
 import { Icon, type IconName } from "./icons.tsx";
@@ -9,12 +9,16 @@ function Inline({ text }: { text: string }) {
   return <Spans spans={inlineSpans(text)} />;
 }
 
+/** Whether words fade in as they arrive: only in a reply still being written. */
+const FadeWords = createContext(false);
+
 function Spans({ spans }: { spans: InlineSpan[] }) {
+  const fade = useContext(FadeWords);
   return (
     <>
       {spans.map((span, index) => {
         switch (span.kind) {
-          case "text": return <span key={index}>{span.text}</span>;
+          case "text": return <span key={index}>{fade ? <Words text={span.text} /> : span.text}</span>;
           case "code": return <code key={index}>{span.text}</code>;
           case "strong": return <strong key={index}><Spans spans={span.children} /></strong>;
           case "emphasis": return <em key={index}><Spans spans={span.children} /></em>;
@@ -23,6 +27,65 @@ function Spans({ spans }: { spans: InlineSpan[] }) {
       })}
     </>
   );
+}
+
+/**
+ * Text as words that each fade in once. Words keep their place as more arrive after them, so only
+ * the new ones are mounted, and only they fade.
+ */
+function Words({ text }: { text: string }) {
+  return <>{text.split(/(\s+)/).map((word, index) => word.trim() ? <span key={index} className="word-in">{word}</span> : word)}</>;
+}
+
+/** The fewest characters a second the reply comes in at; a backlog is caught up within about this long. */
+const REVEAL_CHARS_PER_SECOND = 90;
+const REVEAL_CATCH_UP_SECONDS = 0.6;
+/** How often the shown text moves on: smooth enough, without parsing a long reply every frame. */
+const REVEAL_FRAME_MS = 32;
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * The reply being written, let out at an even pace, a word at a time. The Mac sends it in uneven
+ * bursts; the pace speeds up with the backlog so the shown text never falls far behind.
+ */
+function useRevealedText(text: string): string {
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    if (reducedMotion()) {
+      setShown(text.length);
+      return;
+    }
+    let frame = 0;
+    let last = performance.now();
+    let at = Math.min(shown, text.length);
+    const step = (now: number) => {
+      const elapsed = now - last;
+      if (elapsed >= REVEAL_FRAME_MS) {
+        last = now;
+        const backlog = text.length - at;
+        const rate = Math.max(REVEAL_CHARS_PER_SECOND, backlog / REVEAL_CATCH_UP_SECONDS);
+        at = wordEnd(text, Math.min(text.length, at + Math.max(1, Math.round(rate * elapsed / 1000))));
+        setShown(at);
+      }
+      if (at < text.length) frame = requestAnimationFrame(step);
+    };
+    if (at < text.length) frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [text]);
+  return text.slice(0, shown);
+}
+
+/** The end of the word `at` falls in, so a word never shows half written. */
+function wordEnd(text: string, at: number): number {
+  const space = text.slice(at).search(/\s/);
+  return space < 0 ? text.length : at + space;
+}
+
+/** A reply or its thinking while it is being written: let out evenly, its new words fading in. */
+function LiveMarkdown({ text, thinking = false }: { text: string; thinking?: boolean }) {
+  const shown = useRevealedText(text);
+  const blocks = useMemo(() => parseMarkdown(shown), [shown]);
+  return <FadeWords.Provider value={true}><Markdown blocks={blocks} thinking={thinking} /></FadeWords.Provider>;
 }
 
 /** A reply, drawn where its look changes: prose, headings, lists, quotes, tables, rules and code. */
@@ -110,11 +173,16 @@ function ShareButton({ text }: { text: string }) {
   );
 }
 
-export const MessageView = memo(function MessageView({ message, working, live = false }: { message: ChatMessage; working: boolean; live?: boolean }) {
+/**
+ * One message. `live` is the reply still being written; `enter` is a message that arrived while the
+ * chat was on screen, which comes in with a short rise rather than appearing at once.
+ */
+export const MessageView = memo(function MessageView({ message, working, live = false, enter = false }: { message: ChatMessage; working: boolean; live?: boolean; enter?: boolean }) {
+  const entering = enter ? " message-enter" : "";
   switch (message.role) {
     case "user":
       return (
-        <div className="message user-message">
+        <div className={`message user-message${entering}`}>
           {message.images.length ? <div className="message-images">{message.images.map((image, index) => <img key={index} src={image.src} alt="" />)}</div> : null}
           {message.text ? <div className="user-bubble">{message.text}</div> : null}
           {message.timestamp ? <Timestamp milliseconds={message.timestamp} /> : null}
@@ -122,9 +190,9 @@ export const MessageView = memo(function MessageView({ message, working, live = 
       );
     case "assistant":
       return (
-        <div className="message assistant-message">
+        <div className={`message assistant-message${entering}`}>
           {message.images.length ? <div className="message-images">{message.images.map((image, index) => <img key={index} src={image.src} alt="" />)}</div> : null}
-          <Markdown blocks={message.blocks} />
+          {live ? <LiveMarkdown text={message.text} /> : <Markdown blocks={message.blocks} />}
           {live ? null : (
             <div className="message-actions">
               <CopyButton text={message.text} />
@@ -135,9 +203,13 @@ export const MessageView = memo(function MessageView({ message, working, live = 
         </div>
       );
     case "thinking":
-      return <div className="message thinking-message"><Markdown blocks={message.blocks} thinking /></div>;
+      return (
+        <div className={`message thinking-message${entering}`}>
+          {live ? <LiveMarkdown text={message.text} thinking /> : <Markdown blocks={message.blocks} thinking />}
+        </div>
+      );
     case "tool":
-      return message.tool ? <ToolCard tool={message.tool} working={working} /> : null;
+      return message.tool ? <ToolCard tool={message.tool} working={working} enter={enter} /> : null;
   }
 });
 
@@ -146,13 +218,13 @@ const toolIcons: Record<ToolActivity["kind"], IconName> = {
 };
 
 /** A tool Pi used: a tinted card with what it ran; what came back stays folded until asked for. */
-function ToolCard({ tool, working }: { tool: ToolActivity; working: boolean }) {
+function ToolCard({ tool, working, enter }: { tool: ToolActivity; working: boolean; enter: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const running = tool.status === "running" && working;
   const lines = tool.output.split("\n");
   const lineCount = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
   return (
-    <div className={`tool-card tool-${tool.status} tool-kind-${tool.kind}`} data-testid="tool-card">
+    <div className={`tool-card tool-${tool.status} tool-kind-${tool.kind}${enter ? " message-enter" : ""}`} data-testid="tool-card">
       <div className="tool-heading">
         <Icon name={toolIcons[tool.kind]} size={18} />
         <span className="tool-name">{tool.name}</span>

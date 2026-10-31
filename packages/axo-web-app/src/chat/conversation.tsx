@@ -4,6 +4,7 @@ import { Icon } from "./icons.tsx";
 import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { Alert } from "./alert.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
+import type { ChatTranscript } from "./transcript.ts";
 import { chatTitle, type ChatWorkbench } from "./workbench.ts";
 
 /** How close to the bottom still counts as following the conversation. */
@@ -32,6 +33,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
   const online = host?.status === "online" && workbench.link === "connected";
   const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
 
+  const entering = useEntering(session?.sessionId ?? null, transcript);
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -68,6 +70,24 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
     }
     anchor.current = findAnchor(element);
   }, [workbench.version, firstId]);
+
+  // The bars float over the transcript, as in the phone app: the transcript leaves room under its
+  // last message for however tall the message box has grown, and stays at the end if it was there.
+  const section = useRef<HTMLElement>(null);
+  const footer = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const bar = footer.current;
+    if (!bar) return;
+    const fit = () => {
+      section.current?.style.setProperty("--footer-height", `${bar.offsetHeight}px`);
+      const element = scroller.current;
+      if (element && following.current) element.scrollTop = element.scrollHeight;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
 
   const onScroll = () => {
     const element = scroller.current;
@@ -107,7 +127,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
       : transcript?.messages.some(message => message.tool?.status === "running") ? "Using tools…" : "Thinking…";
 
   return (
-    <section className="conversation" aria-label="Conversation">
+    <section className="conversation" aria-label="Conversation" ref={section}>
       <header className="layer-bar top conversation-header">
         <h1 className="visually-hidden">{chatTitle(session)}</h1>
         {wide ? <span className="circle-placeholder" /> : (
@@ -141,7 +161,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
             </div>
           ) : null}
 
-          {transcript?.messages.map(message => <MessageView key={message.id} message={message} working={transcript.working} />)}
+          {transcript?.messages.map(message => <MessageView key={message.id} message={message} working={transcript.working} enter={entering.has(message.id)} />)}
           {transcript?.live.map(message => <MessageView key={message.id} message={message} working live />)}
           {session && chat?.pending.map(prompt => (
             <PendingView
@@ -176,7 +196,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
         </div>
       </div>
 
-      <footer className="layer-bar bottom conversation-footer">
+      <footer className="layer-bar bottom conversation-footer" ref={footer}>
         {workbench.failure ? (
           <div className="chat-failure" role="alert">
             <span>{workbench.failure}</span>
@@ -335,6 +355,39 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
 }
 
 const noSubscribe = () => () => {};
+
+/**
+ * The messages that arrived while the chat was on screen, which come in with a short rise. What the
+ * chat opened with, and older pages read in above, are there already and just appear. A finished
+ * reply that takes the place of the one being written, or a message that takes the place of the
+ * pending one sent, also just appears: it was on screen already.
+ */
+function useEntering(sessionId: string | null, transcript: ChatTranscript | null): ReadonlySet<string> {
+  const known = useRef<{ sessionId: string | null; ids: Set<string>; last: number; entering: Set<string>; wasLive: boolean }>(
+    { sessionId: null, ids: new Set(), last: -1, entering: new Set(), wasLive: false });
+  const state = known.current;
+  const messages = transcript?.messages ?? [];
+  if (state.sessionId !== sessionId || (state.ids.size === 0 && messages.length > 0)) {
+    // A chat just opened (or just loaded): all of it is history.
+    state.sessionId = sessionId;
+    state.ids = new Set(messages.map(message => message.id));
+    state.last = messages.length - 1;
+    state.entering = new Set();
+  } else {
+    let last = -1;
+    messages.forEach((message, index) => { if (state.ids.has(message.id)) last = index; });
+    messages.forEach((message, index) => {
+      if (state.ids.has(message.id)) return;
+      state.ids.add(message.id);
+      const appended = index > last;
+      const replacesLive = state.wasLive && (message.role === "assistant" || message.role === "thinking");
+      // A sent message was on screen already, as the pending one.
+      if (appended && !replacesLive && message.role !== "user") state.entering.add(message.id);
+    });
+  }
+  state.wasLive = Boolean(transcript?.live.length);
+  return state.entering;
+}
 
 type ScrollAnchor = { element: Element; offset: number };
 

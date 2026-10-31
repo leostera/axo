@@ -241,6 +241,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", content: [{ type: "text", text: "Wor" }] } } });
         }, 30);
         setTimeout(() => {
+          notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", content: [{ type: "text", text: "Working on it now" }] } } });
+        }, 200);
+        setTimeout(() => {
           write(sessionId, { role: "assistant", content: [{ type: "text", text: `Done with: ${params.text}` }] });
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: null });
           status(sessionId, "ready");
@@ -428,6 +431,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // While Axo works it says so under the last message, with a way to stop it that asks first.
     const activity = page.getByTestId("agent-activity");
     await expect(activity.getByText("Thinking…"));
+    // The reply being written comes in a word at a time, its words fading in; history just appears.
+    await expect(page.locator(".word-in", { hasText: "now" }));
+    assert.equal(await page.locator(".message:not(.message-enter) .markdown .word-in").count(), 4, "only the live reply's words fade in");
     await shot("working");
     await activity.getByRole("button", { name: "Stop the reply" }).click();
     const confirmStop = page.getByRole("alertdialog", { name: "Stop the reply?" });
