@@ -226,6 +226,7 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       TEST_CLIENT_DO: { className: "AxoClientDO", useSQLite: true },
     },
     r2Buckets: ["PUBLIC_SESSIONS"],
+    workerLoaders: { LOADER: {} },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,
   });

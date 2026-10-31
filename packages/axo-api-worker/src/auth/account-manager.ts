@@ -3,6 +3,7 @@ import { LIMITS, type ClientHost } from "@axo/protocol";
 import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
+import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
 
 import type { AccountProfile } from "./account-access";
 type PairingRow = {
@@ -28,7 +29,11 @@ type AccountHostRow = {
 };
 const MAX_SESSIONS = 20;
 const MAX_PENDING_LOGIN_CODES = 10;
-type HostStub = { disconnect(): Promise<void>; presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }> };
+type HostStub = {
+  disconnect(): Promise<void>;
+  presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }>;
+  callHost(request: { method: string; params: unknown; deadlineMs: number }): Promise<CallOutcome>;
+};
 
 export type PairingCreationStatus = "created" | "collision" | "limited";
 export type PairingRedemption =
@@ -308,6 +313,33 @@ export class AxoAccountManager extends DurableObject<Env> {
     return { acknowledged: true, lastSeenAt: new Date(now).toISOString() };
   }
 
+  /**
+   * An `axo.connections.*` call from one of the account's Macs, forwarded by its HostDO
+   * (RFD0016). Connections state stays here; the HostDO only carries calls.
+   */
+  async connectionsCall(call: ConnectionsCall): Promise<CallOutcome> {
+    const connections = this.connections();
+    if (!connections) return { error: { code: -32002, message: "Stale host" } };
+    return connections.call(call);
+  }
+
+  private connections(): AccountConnections | null {
+    const accountId = this.accountId();
+    const secret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
+    if (!accountId || !secret) return null;
+    return new AccountConnections({
+      sql: this.ctx.storage.sql,
+      secret,
+      accountId,
+      loader: this.env.LOADER,
+      hosts: () => this.ctx.storage.sql.exec<AccountHostRow>(
+        "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY linked_at, host_id LIMIT ?", LIMITS.machines,
+      ).toArray().map((row) => ({ hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, linkedAt: row.linked_at })),
+      presence: async (hostId) => plain(await this.hostDO(hostId)!.presenceOf()),
+      callHost: async (hostId, request) => plain(await this.hostDO(hostId)!.callHost(request)),
+    });
+  }
+
   private activeHost(hostId: string): AccountHostRow | undefined {
     return this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", hostId).toArray()[0];
   }
@@ -342,4 +374,11 @@ export class AxoAccountManager extends DurableObject<Env> {
   private accountId(): string | null {
     return this.ctx.storage.sql.exec<{ account_id: string }>("SELECT account_id FROM account WHERE singleton = 1").toArray()[0]?.account_id ?? null;
   }
+}
+
+/** RPC results arrive as proxies that hold resources; this keeps the plain value and lets them go. */
+function plain<T>(value: T): T {
+  const copy = JSON.parse(JSON.stringify(value)) as T;
+  (value as Partial<Disposable>)[Symbol.dispose]?.();
+  return copy;
 }

@@ -45,14 +45,17 @@ export async function seal(secret: string, purpose: string, value: unknown): Pro
   return `v1.${base64Url(iv)}.${base64Url(new Uint8Array(ciphertext))}`;
 }
 
-/** The value `seal` made, or null if it is not exactly that: wrong key, purpose or any change. */
-export async function unseal(secret: string, purpose: string, sealed: string): Promise<unknown | null> {
+/**
+ * The value `seal` made, or null if it is not exactly that: wrong key, purpose or any change.
+ * Ciphertexts over `maxBytes` are refused unread; cookies and tokens keep the 4 KiB default.
+ */
+export async function unseal(secret: string, purpose: string, sealed: string, maxBytes = 4096): Promise<unknown | null> {
   try {
     const parts = sealed.split(".");
     if (parts.length !== 3 || parts[0] !== "v1") return null;
     const iv = fromBase64Url(parts[1]!);
     const ciphertext = fromBase64Url(parts[2]!);
-    if (iv.byteLength !== 12 || ciphertext.byteLength > 4096) return null;
+    if (iv.byteLength !== 12 || ciphertext.byteLength > maxBytes) return null;
     const plaintext = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: toBuffer(iv) },
       await sealingKey(secret, purpose),

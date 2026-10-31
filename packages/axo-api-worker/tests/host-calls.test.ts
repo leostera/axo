@@ -80,14 +80,17 @@ test("callHost fails as may-have-run when the deadline passes or the socket goes
   assert.deepEqual(await fresh, { result: { fresh: true } });
 });
 
-test("a daemon's axo.connections call goes to the account, and an outcome it cannot learn is may-have-run", async (t) => {
+test("a daemon's axo.connections call goes to the account and its answer comes back on the socket", async (t) => {
   const { h, session, host } = await fixture(t);
   const daemon = await connectHost(h, session, host);
   t.after(() => daemon.close());
-  // The account does not answer connections calls yet, so the call fails as unknown, not dropped.
-  const reply = await daemon.call("axo.connections.execute", { connectionId: "c1", code: "1" });
-  assert.ok("error" in reply);
-  assert.deepEqual(reply.error, { code: -32004, message: "Outcome unknown; the call may have run" });
+  const reply = await daemon.call("axo.connections.list", { sessionId: crypto.randomUUID() });
+  assert.ok("result" in reply, JSON.stringify(reply));
+  assert.deepEqual(reply.result, { connections: [{ kind: "host", name: "test_mac", hostId: host.hostId, state: "online" }] });
+  // A call the account refuses comes back as its error, not dropped.
+  const refused = await daemon.call("axo.connections.execute", { connectionId: "c1", code: "1" });
+  assert.ok("error" in refused);
+  assert.equal(refused.error.code, -32602);
   // The socket still serves everything else.
   const beat = await daemon.call("axo.host.heartbeat", { hostId: host.hostId, hostGeneration: host.hostGeneration });
   assert.ok("result" in beat, JSON.stringify(beat));

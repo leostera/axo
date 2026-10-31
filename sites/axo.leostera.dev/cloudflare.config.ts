@@ -27,6 +27,8 @@ export default defineConfig(({ isPreview }) => ({
       OAUTH_CLIENT_ID: bindings.secret(),
       OAUTH_CLIENT_SECRET: bindings.secret(),
       SESSION_SECRET: bindings.secret(),
+      // Runs connections scripts in Dynamic Workers with no network of their own (RFD0016).
+      LOADER: bindings.workerLoader(),
     },
     exports: {
       AxoHostDirectory: exports.durableObject({ storage: "sqlite" }),

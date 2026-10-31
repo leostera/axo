@@ -16,6 +16,8 @@ type ApiEvent =
   | { event: "client_follow_failed" }
   | { event: "host_connections_call"; outcome: "result" | "error" | "unknown" | "refused" }
   | { event: "host_call"; outcome: "result" | "error" | "offline" | "disconnected" | "timeout" }
+  /** One `axo.connections.*` call the account answered; `outcome` is "result" or the error code. */
+  | { event: "connections_call"; method: string; outcome: string; durationMs: number }
   | {
       event: "relay_reply";
       method: RemoteMethod;
