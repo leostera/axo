@@ -769,6 +769,10 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
             data,
             ..
         } => {
+            // Streaming updates only show progress; anything else may have written a line.
+            if !matches!(name.as_str(), "message.update" | "tool.update") {
+                context.waker.wake();
+            }
             if let Some((slot, snapshot)) = progress_snapshot(&name, data) {
                 let _ = context.channel.notify(
                     "axo.host.session.progress",
@@ -780,8 +784,6 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
                     }),
                     Priority::Ephemeral,
                 );
-            } else {
-                context.waker.wake();
             }
         }
         Event::SessionSnapshot { .. }
@@ -798,10 +800,15 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
 }
 
 /// The progress slot and snapshot of a Pi event, if it is progress: `"message"` for the reply
-/// being written, or the tool call's id for a running tool.
+/// being written, the tool call's id for a running tool, and `"question"` while Pi asks the
+/// person something. A null snapshot clears the slot: the end of a turn clears the reply even
+/// when no line recorded it (an aborted reply), and the end of a question clears the question.
 fn progress_snapshot(name: &str, data: Value) -> Option<(String, Value)> {
     match name {
         "message.update" => Some(("message".to_owned(), data)),
+        "agent.end" | "agent.settled" => Some(("message".to_owned(), Value::Null)),
+        "ui.prompt.start" => Some(("question".to_owned(), data)),
+        "ui.prompt.end" => Some(("question".to_owned(), Value::Null)),
         "tool.update" => {
             let slot = data
                 .get("toolCallId")
@@ -1494,5 +1501,17 @@ mod tests {
         );
         assert_eq!(progress_snapshot("tool.update", json!({})), None);
         assert_eq!(progress_snapshot("message.end", json!({})), None);
+        assert_eq!(
+            progress_snapshot("ui.prompt.start", json!({"kind": "confirm"})),
+            Some(("question".to_owned(), json!({"kind": "confirm"})))
+        );
+        assert_eq!(
+            progress_snapshot("ui.prompt.end", json!({})),
+            Some(("question".to_owned(), Value::Null))
+        );
+        assert_eq!(
+            progress_snapshot("agent.end", json!({})),
+            Some(("message".to_owned(), Value::Null))
+        );
     }
 }
