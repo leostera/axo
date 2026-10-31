@@ -262,7 +262,7 @@ The client shows the prompt as pending until a durable user record with the same
 | Component | Instances | Owns | Never holds |
 |---|---|---|---|
 | Axod relay | one per Mac | the socket to the cloud, the per-Session upload cursors in `axo.db`, the uploader and progress threads | client state |
-| HostDO | one per host, named by `hostId` | the host socket and its epoch, presence, the host's Session index, the sync handshake, routing to SessionDOs, command forwarding, the subscriber lease table | transcript records, client sockets, connections state (RFD0016) |
+| HostDO | one per (account, host), named `${accountId}:${hostId}` so one Mac can pair with two accounts | the host socket and its epoch, presence, the host's Session index, the sync handshake, routing to SessionDOs, command forwarding, the subscriber lease table | transcript records, client sockets, connections state (RFD0016) |
 | SessionDO | one per Session, named by `(account, host, sessionUuid)` | the durable records, hashes, chain, epoch and the current progress snapshots | sockets, subscribers |
 | ClientDO | one per connected client, named by `(account, clientId)` | the client socket, its open Sessions and their cursors, the delivery pacing | records, host state |
 | AxoAccountManager | one per account | the account, its hosts and pairing, connections (RFD0016) | sockets |
@@ -436,6 +436,7 @@ sequenceDiagram
 - pi-axo already produces these: `message.update` for the `"message"` slot and `tool.update` per `toolCallId`, throttled to one per slot every 200 ms, with the newest value winning (`ProgressThrottle`). Axod forwards them unchanged. `snapshot: null` clears a slot.
 - The HostDO keeps the latest snapshot per `(sessionId, slot)` in memory and forwards it to subscribed ClientDOs with the newest value winning (see [Notices](#notices-hostdo--clientdo)). Snapshots are never written to storage.
 - When a durable record lands, it clears the slot it completes: an assistant `message` record clears `"message"`, and a `toolResult` record clears its `toolCallId`.
+- Axod also sets and clears two slots itself: `ui.prompt.start` sets `"question"` (Pi asking the person something) and `ui.prompt.end` clears it, and `agent.end` / `agent.settled` clear `"message"`, so a reply that never became a record does not linger.
 - If a snapshot is lost, the next one replaces it, so nothing ever retries progress. A HostDO that is evicted loses snapshots in flight. That's acceptable: the next update or the durable record follows.
 
 ### Subscribers: the HostDO lease table
@@ -482,6 +483,7 @@ An `epoch` notice says only that the Session was cut back, **not where**. Notice
 | Method | Direction | Purpose |
 |---|---|---|
 | `axo.client.hello { protocolVersion, clientId }` | request | starts the session. The ClientDO lists the account's hosts from `AxoAccountManager`, subscribes to each HostDO, and replies with hosts and their Session indexes |
+| `axo.client.refresh` | request | lists the account's hosts again now and follows any new one, with the same reply as hello. The pairing screen uses it so a Mac paired a moment ago shows at once, not at the next lease renewal |
 | `axo.client.hosts` | notification | the host list or presence changed |
 | `axo.client.sessions { hostId, sessions }` | notification | Session index changes (head, metadata, status), batched |
 | `axo.client.session.open { sessionId, have?: { epoch, cursor }, window?: { last } }` | request | opens a Session. It returns records after `have.cursor` (or the last `window.last`, by default 20), the current `cursor`, the `older` cursor for paging, and the current progress snapshots |
@@ -627,7 +629,9 @@ This is a cutover. It isn't a compatibility layer: Axo's clients ship with Axod,
 3. **HostDO:** the socket route moves from `AxoAccountManager` to `HostDO(hostId)`. Handshake, appends, metadata, status, progress, leases, notices, commands. The client fan-out and `axo.host.subscribe` are removed from the relay.
 4. **Axod:** the sync handshake replaces the snapshot-only registration. The session-file uploader replaces the `host_notification` firehose. Progress and status go through RFD0016's `RelayChannel` (`Priority::Ephemeral`). Upload cursors are stored in `axo.db`.
 5. **ClientDO and the web app:** the client socket and protocol. `RemoteAxoApi` keeps one socket per tab, the workbench opens and closes Sessions by window, and the HTTPS history route and per-host sockets are removed.
-6. **Swift:** `HostConnection` is replaced by one client connection.
+6. **Swift:** one `AccountConnection` per app, through which `HostConnection` sends commands. The phone keeps one `ClientID` per install.
+
+All six steps are built. The e2e tests (`phone-path`, `axod-relay`, and the phone's `EndToEndTests`) run a real axod whose stand-in Pi writes a session file and answers the bridge's `send` command.
 
 The protocol version goes to 2, together with RFD0017 if their timing allows. A version mismatch is refused clearly at negotiation.
 
@@ -707,7 +711,7 @@ Prompts keep failing under load, history keeps having holes, and every client ke
 ### Before acceptance
 
 - Does the protocol v2 bump land with RFD0017, or does this need v3?
-- Is the progress `slot` rule (an assistant `message` record clears `"message"`, a `toolResult` record clears its `toolCallId`) enough for every Pi entry that streams?
+- Is the progress `slot` rule (an assistant `message` record clears `"message"`, a `toolResult` record clears its `toolCallId`, plus Axod's own `"question"` and end-of-run clears) enough for every Pi entry that streams?
 - Should pairing ask before uploading archived Sessions, or upload everything as decided?
 
 ### During implementation
