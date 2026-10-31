@@ -715,4 +715,7 @@ button.grouped-row:hover { background: var(--fill); }
 .app-tile.logo img { width: 72%; height: 72%; object-fit: contain; }
 .app-tile.logo.site img { width: 60%; height: 60%; }
 .app-tile.logo.full { overflow: hidden; }
+.device-code-row code { font: 600 22px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; user-select: all; }
+.device-code-row { padding-block: 12px; gap: 16px; }
+.device-code-actions { justify-content: space-between; }
 .app-tile.logo.full img { width: 100%; height: 100%; }

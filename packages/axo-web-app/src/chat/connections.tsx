@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { connectionsResults, type CallRecord, type Connection } from "@axo/protocol";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { appDeviceSignInSchema, connectionsResults, type AppDeviceSignIn, type CallRecord, type Connection } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
 import calendarLogo from "./logos/calendar.svg";
+import chatgptLogo from "./logos/chatgpt.svg";
 import cloudLogo from "./logos/cloud.svg";
 import contactsLogo from "./logos/contacts.svg";
 import docsLogo from "./logos/docs.svg";
@@ -257,9 +258,18 @@ type Shared = {
 function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared & { app: App; version: number }) {
   // A token app's Add account is a form on this page; an OAuth app's opens the provider's sign-in.
   const [adding, setAdding] = useState<{ account: string } | null>(null);
+  const [device, setDevice] = useState<{ flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }> } | null>(null);
   const add = (account = "") => {
     if (app.signIn.kind === "token") {
       setAdding({ account });
+      return;
+    }
+    if (app.signIn.kind === "device") {
+      void act(async () => {
+        const { flow, ...answer } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/device`, "POST")) as { flow: string };
+        const shown = appDeviceSignInSchema.parse(answer);
+        if (shown.state === "pending") setDevice({ flow, shown });
+      });
       return;
     }
     void act(async () => {
@@ -269,6 +279,7 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
   };
   const revoked = app.signIn.kind === "token"
     ? `Axo forgets its token. To stop it working, delete it at ${app.provider || "the service"} too.`
+    : app.signIn.kind === "device" ? `Axo signs out of ${app.provider || "the provider"}.`
     : `Axo's access is revoked at ${app.provider || "the provider"}.`;
   const signOut = (account: string) => {
     if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it. ${revoked}`)) return;
@@ -289,8 +300,8 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
       </aside>
 
       <section className="app-main">
-        {app.accounts.length || adding === null ? <h2 className="settings-section">Accounts</h2> : null}
-        <div className="grouped" hidden={!app.accounts.length && adding !== null}>
+        {app.accounts.length || (adding === null && device === null) ? <h2 className="settings-section">Accounts</h2> : null}
+        <div className="grouped" hidden={!app.accounts.length && (adding !== null || device !== null)}>
           {app.accounts.map((account) => (
             <div key={account.account} className="grouped-row connection-row">
               <Icon name="person" size={18} />
@@ -299,15 +310,21 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
                 {account.state === "needsSignIn" ? <small>{app.signIn.kind === "token" ? account.lastError ?? "Needs a new token" : "Needs sign-in"}</small> : null}
               </span>
               {account.state === "needsSignIn"
-                ? <button className="bordered-button" disabled={busy} onClick={() => add(account.account)}>{app.signIn.kind === "token" ? "Add token" : "Sign in"}</button>
+                ? <button className="bordered-button" disabled={busy || device !== null} onClick={() => add(account.account)}>{app.signIn.kind === "token" ? "Add token" : "Sign in"}</button>
                 : <span className="mac-dot online" aria-label="Connected" title="Connected" />}
               <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
                 <Icon name="close" size={16} />
               </button>
             </div>
           ))}
-          {adding === null ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
+          {adding === null && device === null ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
         </div>
+        {device ? <DeviceCode app={app} flow={device.flow} shown={device.shown} connectionsUrl={connectionsUrl}
+          onDone={(result) => {
+            setDevice(null);
+            setNotice(result.state === "done" ? { kind: "ok", text: `Added ${result.account}.` } : { kind: "error", text: result.error });
+            void act(async () => undefined);
+          }} onCancel={() => setDevice(null)} /> : null}
         {adding !== null && app.signIn.kind === "token"
           ? <TokenForm app={app} signIn={app.signIn} account={adding.account} busy={busy} act={act} connectionsUrl={connectionsUrl}
             onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); }} onCancel={() => setAdding(null)} />
@@ -327,6 +344,58 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
         <Calls connectionsUrl={connectionsUrl} service={app.name} version={version} />
       </aside>
     </div>
+  );
+}
+
+/**
+ * A device sign-in (ChatGPT): the code to enter at the provider, while the page asks Axo every
+ * few seconds whether the person has.
+ */
+function DeviceCode({ app, flow, shown, connectionsUrl, onDone, onCancel }: {
+  app: App; flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }>; connectionsUrl: string;
+  onDone: (result: Exclude<AppDeviceSignIn, { state: "pending" }>) => void; onCancel: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  // The page re-renders while it waits; the poll keeps its own pace.
+  const done = useRef(onDone);
+  done.current = onDone;
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const answer = appDeviceSignInSchema.parse(await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/device/poll`, "POST", { flow }));
+        if (!live) return;
+        if (answer.state !== "pending") return done.current(answer);
+      } catch {
+        // A poll that failed is asked again; the code stays valid until it expires.
+      }
+      if (live) timer = setTimeout(() => void poll(), shown.intervalSeconds * 1000);
+    };
+    timer = setTimeout(() => void poll(), shown.intervalSeconds * 1000);
+    return () => { live = false; clearTimeout(timer); };
+  }, [app.name, connectionsUrl, flow, shown.intervalSeconds]);
+  const copy = () => {
+    void navigator.clipboard?.writeText(shown.userCode).then(() => setCopied(true), () => undefined);
+  };
+  return (
+    <>
+      <h2 className="settings-section">Sign in to {app.title}</h2>
+      <div className="grouped device-code">
+        <div className="grouped-row device-code-row">
+          <span className="connection-copy">
+            <strong>Enter this code at {app.provider || app.title}</strong>
+            <small>It works for 15 minutes. This page finishes by itself once you have.</small>
+          </span>
+          <code aria-label="Sign-in code">{shown.userCode}</code>
+        </div>
+        <div className="grouped-row device-code-actions">
+          <button className="link" type="button" onClick={copy}>{copied ? "Copied" : "Copy code"}</button>
+          <a className="link" href={shown.verificationUrl} target="_blank" rel="noreferrer">Open {app.provider || app.title}</a>
+        </div>
+      </div>
+      <p className="sheet-note">Only enter it if you started this sign-in here. <button className="link" type="button" onClick={onCancel}>Cancel</button></p>
+    </>
   );
 }
 
@@ -516,6 +585,7 @@ const APP_LOGOS: Record<string, string> = {
   "apps.meet": meetLogo,
   "apps.cloud": cloudLogo,
   "apps.hetzner": hetznerLogo,
+  "apps.chatgpt": chatgptLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
 const FULL_LOGOS = new Set(["apps.hetzner"]);
@@ -552,7 +622,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */

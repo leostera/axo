@@ -113,6 +113,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let authenticated = false;
   let pairingRequestCount = 0;
   const tokenRequests = [];
+  /** A ChatGPT device sign-in: polls so far, and whether the person has entered the code. */
+  const device = { polls: 0, entered: false };
   // The account's connections (RFD0016), as the Worker lists them.
   const connections = [
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
@@ -124,6 +126,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "app", name: "apps.hetzner", title: "Hetzner", provider: "Hetzner", category: "developer", description: "Your Hetzner Cloud projects: servers, DNS, firewalls, volumes and storage boxes.", permissions: ["See the project's servers and their usage, and start, stop or restart them"],
       signIn: { kind: "token", helpUrl: "https://console.hetzner.com/projects", named: true, fields: [{ name: "token", label: "API token", help: "In Hetzner Console, open the project, then Security, API tokens, Generate API token.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["list_servers", "request"], lastError: null },
+    { kind: "app", name: "apps.chatgpt", title: "ChatGPT", provider: "OpenAI", category: "productivity", description: "Ask ChatGPT's models with your ChatGPT plan, signed in the way Codex is.", permissions: ["Ask ChatGPT's models, using your plan's limits"],
+      signIn: { kind: "device" }, state: "needsSignIn", accounts: [], tools: ["respond", "request"], lastError: null },
   ];
   const callLog = [
     { callId: "c-3", at: now, sessionId: sid(1), hostId, service: "apps.gmail", tool: "search_messages", targetHostId: null, durationMs: 210, outcome: "ok", error: null, input: { account: "ada@example.com", query: "is:unread" } },
@@ -162,6 +166,22 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log") {
       const service = url.searchParams.get("service");
       json(response, { records: service ? callLog.filter((record) => record.service === service) : callLog }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.chatgpt/device") {
+      json(response, { flow: "flow-1", state: "pending", userCode: "ABCD-1234", verificationUrl: "https://auth.openai.com/codex/device", intervalSeconds: 1, expiresAt: new Date(Date.now() + 900_000).toISOString() }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.chatgpt/device/poll") {
+      device.polls++;
+      if (!device.entered) {
+        json(response, { state: "pending", userCode: "ABCD-1234", verificationUrl: "https://auth.openai.com/codex/device", intervalSeconds: 1, expiresAt: new Date(Date.now() + 900_000).toISOString() }, origin);
+        return;
+      }
+      const chatgpt = connections.find((c) => c.name === "apps.chatgpt");
+      chatgpt.accounts = [{ account: "ada@example.com", state: "ready", lastError: null }];
+      chatgpt.state = "ready";
+      json(response, { state: "done", account: "ada@example.com" }, origin);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.hetzner/token") {
@@ -590,11 +610,11 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "linear", "notion", "docs", "Add MCP server"]);
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "linear", "notion", "docs", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 5, "Gmail, Calendar, Drive and Hetzner have their logos, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 6, "Gmail, Calendar, Drive, Hetzner and ChatGPT have their logos, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
     assert.deepEqual(await cards(), ["Gmail", "linear", "docs"], "only what is connected");
@@ -664,6 +684,20 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(tokenRequests.map((r) => r.account), ["personal", "personal"]);
     assert.equal((await page.content()).includes("hz-good-token"), false);
     await shot("apps-hetzner");
+
+    // A device sign-in: the code to enter at OpenAI, until the person has.
+    await page.goto(`${appUrl}/app/settings/apps/chatgpt`, { waitUntil: "networkidle" });
+    const chatgpt = page.getByRole("region", { name: "ChatGPT" });
+    await chatgpt.getByRole("button", { name: "Add account" }).click();
+    await expect(chatgpt.getByLabel("Sign-in code").getByText("ABCD-1234"));
+    assert.equal(await chatgpt.getByRole("link", { name: "Open OpenAI" }).getAttribute("href"), "https://auth.openai.com/codex/device");
+    await shot("apps-chatgpt-code");
+    await page.waitForFunction(() => true, null, { timeout: 100 });
+    device.entered = true;
+    await expect(chatgpt.getByText("Added ada@example.com."));
+    assert.deepEqual(await chatgpt.locator(".connection-row strong").allTextContents(), ["ada@example.com"]);
+    assert.equal(await chatgpt.getByLabel("Sign-in code").count(), 0);
+    await shot("apps-chatgpt");
 
     // Where sign-ins used to come back still works: on the app's page.
     await page.goto(`${appUrl}/app/connections?signedIn=apps.gmail`, { waitUntil: "networkidle" });
