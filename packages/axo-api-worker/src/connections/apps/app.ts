@@ -33,19 +33,35 @@ export type ProviderApi = {
   requestRaw(method: Method, path: string, options?: ProviderRequest): Promise<ProviderResponse>;
 };
 
-export type AppTool<Input = any> = {
+/** What a Mac app's tool gets instead of an API: commands run on the Mac the call names (its account). */
+export type MacShell = {
+  /** The Mac's name as a connection, such as "studio". */
+  readonly mac: string;
+  /**
+   * Runs one program with these arguments, each quoted for the shell, with `stdin` fed from a
+   * shell builtin, so it never shows in the Mac's process list.
+   */
+  run(args: readonly string[], options?: { stdin?: string; timeoutMs?: number }): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
+};
+
+export type AppTool<Input = any, Api = ProviderApi> = {
   name: string;
   description: string;
   /** The tool's own fields; every app tool also takes the `account` it acts as. */
   input: z.ZodObject;
   /** Whether running it twice is harmless. A call that got no answer is reported as may-have-run only when it is not. */
   idempotent: boolean;
-  run(api: ProviderApi, input: Input): Promise<unknown>;
+  run(api: Api, input: Input): Promise<unknown>;
 };
 
 /** A tool whose `run` gets its input as its schema parses it. */
 export function tool<S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>>, "input"> & { input: S }): AppTool {
   return definition as AppTool;
+}
+
+/** A Mac app's tool, whose `run` gets the Mac's shell and its input as its schema parses it. */
+export function macTool<S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>, MacShell>, "input"> & { input: S }): AppTool<any, MacShell> {
+  return definition as AppTool<any, MacShell>;
 }
 
 type AppBase = {
@@ -59,6 +75,10 @@ type AppBase = {
   providerTitle: string;
   /** What kind of app it is, for filtering. */
   category: "communication" | "productivity" | "files" | "developer" | "finance" | "home" | "media" | "security";
+};
+
+/** An app whose tools call its service's HTTP API with the account's credential. */
+export type HttpApp = AppBase & {
   apiOrigin: string;
   /**
    * The hosts a call may reach with the app's credential, `apiOrigin`'s first; `*.googleapis.com`
@@ -72,7 +92,7 @@ type AppBase = {
 };
 
 /** An app the person signs in to with Axo's own OAuth client for its provider. */
-export type OAuthApp = AppBase & {
+export type OAuthApp = HttpApp & {
   signIn: "oauth";
   provider: "google";
   /** Asked for at sign-in. */
@@ -99,15 +119,30 @@ export type TokenSignIn = {
 };
 
 /** An app the person adds an account to by pasting a token the service issued them. */
-export type TokenApp = AppBase & { signIn: "token"; provider: string; token: TokenSignIn };
+export type TokenApp = HttpApp & { signIn: "token"; provider: string; token: TokenSignIn };
 
 /**
  * An app the person signs in to with a code they enter at the provider (a device sign-in):
  * ChatGPT, whose client (Codex's) only lets a server sign in that way.
  */
-export type DeviceApp = AppBase & { signIn: "device"; provider: "openai" };
+export type DeviceApp = HttpApp & { signIn: "device"; provider: "openai" };
 
-export type AppDefinition = OAuthApp | TokenApp | DeviceApp;
+/**
+ * An app that runs a program on one of the account's Macs (1Password's `op`), signed in there
+ * already. Its accounts are the Macs; nothing is stored in the cloud. Its tools run with the
+ * Mac's shell, and it has no `request`: its own catch-all tool runs any of the program's commands.
+ */
+export type MacApp = AppBase & {
+  signIn: "mac";
+  provider: string;
+  /** What the person sets up on a Mac first, in plain words, shown on the app's page. */
+  setup: string;
+  /** The program's documentation. */
+  reference: string;
+  tools: readonly AppTool<any, MacShell>[];
+};
+
+export type AppDefinition = OAuthApp | TokenApp | DeviceApp | MacApp;
 
 /** The provider refused the call: it did not run. */
 export class ProviderError extends Error {
@@ -120,7 +155,7 @@ export class ProviderError extends Error {
 export class ProviderOutcomeUnknown extends Error {}
 
 /** Whether a grant may be sent to `url`: https, on one of the app's hosts. */
-export function allowedUrl(definition: Pick<AppDefinition, "hosts">, url: URL): boolean {
+export function allowedUrl(definition: Pick<HttpApp, "hosts">, url: URL): boolean {
   if (url.protocol !== "https:" || url.username || url.password || url.port) return false;
   return definition.hosts.some((host) =>
     host.startsWith("*.") ? url.hostname.endsWith(host.slice(1)) && url.hostname.length > host.length - 1 : url.hostname === host);

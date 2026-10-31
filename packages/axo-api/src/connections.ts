@@ -61,7 +61,7 @@ export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,6
  * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
  */
 export const APPS_NAMESPACE = "apps";
-export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt"] as const;
+export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
@@ -90,11 +90,13 @@ export type AppTokenField = z.infer<typeof appTokenFieldSchema>;
  * `token`: the person pastes what the service issued them (an API token, a key), which Axo seals
  * and never shows again; `named` says the person names the account, since the service does not.
  * `device`: Add account shows a code the person enters at the provider (ChatGPT), while the page
- * asks Axo whether they have.
+ * asks Axo whether they have. `mac`: the app runs a program on the account's Macs (1Password's
+ * CLI), which are its accounts; `setup` says what to set up on a Mac first.
  */
 export const appSignInSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("oauth") }).strict(),
   z.object({ kind: z.literal("device") }).strict(),
+  z.object({ kind: z.literal("mac"), setup: z.string().max(1024), helpUrl: z.url({ protocol: /^https$/ }).max(2048) }).strict(),
   z.object({
     kind: z.literal("token"),
     /** The service's page where the person creates the token. */

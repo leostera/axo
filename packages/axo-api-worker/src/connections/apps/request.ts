@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "./app";
+import { tool, type AppTool, type HttpApp } from "./app";
 
 /**
  * Every app's `request` tool: any endpoint of the app's API, as the account, so a script can do
@@ -14,7 +14,7 @@ const FORBIDDEN_HEADERS = new Set(["authorization", "cookie", "host", "content-l
 
 const headerValue = z.string().max(1024).regex(/^[^\r\n]*$/, "may not contain line breaks");
 
-export function requestTool(definition: Pick<AppDefinition, "title" | "apiOrigin" | "hosts" | "reference">): AppTool {
+export function requestTool(definition: Pick<HttpApp, "title" | "apiOrigin" | "hosts" | "reference">): AppTool {
   const hosts = definition.hosts.join(", ");
   return tool({
     name: "request",

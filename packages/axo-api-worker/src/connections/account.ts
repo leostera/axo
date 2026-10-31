@@ -22,7 +22,7 @@ import { ThirdPartyConnections } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
 import { AppConnections } from "./apps";
-import { ProviderOutcomeUnknown } from "./apps/app";
+import { ProviderError, ProviderOutcomeUnknown } from "./apps/app";
 import type { GoogleClient } from "./apps/google";
 
 /**
@@ -79,6 +79,9 @@ export class AccountConnections {
     });
     this.apps = new AppConnections({
       sql: deps.sql, secret: deps.secret, accountId: deps.accountId, google: deps.google, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
+      // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
+      macs: () => this.named().map((entry) => entry.name),
+      runOnMac: (mac, command, timeoutMs) => this.runOnMac(mac, command, timeoutMs),
     });
   }
 
@@ -264,16 +267,7 @@ export class AccountConnections {
         targetHostId: target.host.hostId,
         input: { command: parsed.data.command, cwd: parsed.data.cwd ?? null, timeoutMs },
       });
-      let outcome: CallOutcome;
-      try {
-        outcome = await this.deps.callHost(target.host.hostId, {
-          method: BASH_METHOD,
-          params: { accountId: this.deps.accountId, callId, command: parsed.data.command, ...(parsed.data.cwd ? { cwd: parsed.data.cwd } : {}), timeoutMs },
-          deadlineMs: timeoutMs + BASH_GRACE_MS,
-        });
-      } catch {
-        outcome = failure(CONNECTIONS_ERRORS.outcomeUnknown, `${service} did not answer; the command may have run`);
-      }
+      const outcome = await this.sendBash(target.host, service, callId, parsed.data.command, parsed.data.cwd, timeoutMs);
       if ("error" in outcome) {
         const unknown = outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown;
         await this.log.finish(callId, unknown ? "unknown" : "error", outcome.error.message);
@@ -287,6 +281,36 @@ export class AccountConnections {
       await this.log.finish(callId, "ok", null);
       return result.data satisfies BashResult;
     };
+  }
+
+  /** Sends one command down a Mac's socket and waits for its answer. Never retried: it may have run. */
+  private async sendBash(host: HostLink, service: string, callId: string, command: string, cwd: string | undefined, timeoutMs: number): Promise<CallOutcome> {
+    try {
+      return await this.deps.callHost(host.hostId, {
+        method: BASH_METHOD,
+        params: { accountId: this.deps.accountId, callId, command, ...(cwd ? { cwd } : {}), timeoutMs },
+        deadlineMs: timeoutMs + BASH_GRACE_MS,
+      });
+    } catch {
+      return failure(CONNECTIONS_ERRORS.outcomeUnknown, `${service} did not answer; the command may have run`);
+    }
+  }
+
+  /**
+   * A Mac app's command, logged as the app's call (callApp), not as `bash`. The Mac is looked up
+   * again, so one unpaired mid-script runs nothing.
+   */
+  private async runOnMac(mac: string, command: string, timeoutMs: number): Promise<BashResult> {
+    const target = this.named().find((entry) => entry.name === mac);
+    if (!target) throw new ProviderError(0, `no Mac named ${mac}`);
+    const outcome = await this.sendBash(target.host, mac, crypto.randomUUID(), command, undefined, timeoutMs);
+    if ("error" in outcome) {
+      if (outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown) throw new ProviderOutcomeUnknown(`${mac}: ${outcome.error.message}`);
+      throw new ProviderError(0, `${mac}: ${outcome.error.message}`);
+    }
+    const result = bashResultSchema.safeParse(outcome.result);
+    if (!result.success) throw new ProviderOutcomeUnknown(`${mac}: the Mac's reply was not a command's result; it may have run`);
+    return result.data;
   }
 
   /** Calls an app's tool from here, with the account's grant; logged before it is sent. */

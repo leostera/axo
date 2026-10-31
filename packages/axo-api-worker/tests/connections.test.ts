@@ -147,3 +147,26 @@ test("a script error longer than a reply may carry reaches the Session cut short
   assert.equal(failed.message.length, 256);
   assert.match(failed.message, /^Error: x+$/);
 });
+
+test("1Password runs op on the Mac a call names, through that Mac's socket, logged once as the app's call", async (t) => {
+  const { h, session, studio, laptop, sessionId, call } = await fixture(t);
+  const studioDaemon = await connectHost(h, session, studio);
+  t.after(() => studioDaemon.close());
+  const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
+  const onepassword = listed.connections.find((c) => c.name === "apps.onepassword");
+  assert.ok(onepassword?.kind === "app");
+  assert.deepEqual(onepassword.accounts.map((a) => a.account), ["leo_s_laptop", "studio"]);
+
+  const running = call("axo.connections.execute", { code: `async () => codemode.apps.onepassword.list_vaults({ account: "studio" })` });
+  const sent = (await studioDaemon.next()) as Sent;
+  assert.equal(sent.method, BASH_METHOD);
+  assert.equal(sent.params.command, `'op' 'vault' 'list' '--format' 'json'`);
+  studioDaemon.send({
+    jsonrpc: "2.0",
+    id: sent.id,
+    result: { exitCode: 0, signal: null, stdout: `[{"id":"v1","name":"Private"}]`, stderr: "", stdoutTruncated: false, stderrTruncated: false, timedOut: false, durationMs: 40 },
+  });
+  assert.deepEqual(result(await running), { result: [{ id: "v1", name: "Private" }], logs: [] });
+  const log = connectionsResults["axo.connections.log"].parse(result(await call("axo.connections.log")));
+  assert.deepEqual(log.records.map((r) => [r.service, r.tool, r.outcome, r.sessionId, r.hostId]), [["apps.onepassword", "list_vaults", "ok", sessionId, laptop.hostId]]);
+});

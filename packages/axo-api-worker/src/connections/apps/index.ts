@@ -3,7 +3,7 @@ import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type AppSignIn, 
 import { seal, unseal } from "../../auth/crypto";
 import { GrantRefused } from "../oauth";
 import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
-import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type DeviceApp, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
+import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type DeviceApp, type MacApp, type MacShell, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
 import { calendar } from "./calendar";
 import { chatgpt } from "./chatgpt";
 import { cloud } from "./cloud";
@@ -13,6 +13,7 @@ import { drive } from "./drive";
 import { gmail } from "./gmail";
 import { hetzner } from "./hetzner";
 import { meet } from "./meet";
+import { onepassword } from "./onepassword";
 import {
   DEVICE_CODE_LIFETIME_MS,
   DEVICE_VERIFICATION_URL,
@@ -48,7 +49,7 @@ import {
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword };
 
 /** Where a person adds an account to an app, or signs in to one again. */
 export function appPage(app: AppName): string {
@@ -69,16 +70,27 @@ export type DeviceSignIn =
 /** Adding an account was refused: the token was not accepted, or the input was wrong. Nothing was stored. */
 export class AppAccountRefused extends Error {}
 
-/** An app's tools: its named ones, then `request`, for any endpoint of its API. */
-const TOOLS = new Map<AppName, readonly AppTool[]>();
-export function toolsOf(app: AppName): readonly AppTool[] {
+/** An app's tools: its named ones, then, for an app with an HTTP API, `request`, for any endpoint of it. */
+const TOOLS = new Map<AppName, readonly AppTool<any, any>[]>();
+export function toolsOf(app: AppName): readonly AppTool<any, any>[] {
   let tools = TOOLS.get(app);
   if (!tools) {
     const definition = APP_DEFINITIONS[app];
-    tools = [...definition.tools, requestTool(definition)];
+    tools = definition.signIn === "mac" ? [...definition.tools] : [...definition.tools, requestTool(definition)];
     TOOLS.set(app, tools);
   }
   return tools;
+}
+
+/** A command a Mac app runs: its arguments quoted for the shell, and its input fed from a builtin, never on the command line. */
+export function macCommand(args: readonly string[], stdin?: string): string {
+  const quote = (arg: string) => `'${arg.replace(/'/g, "'\\''")}'`;
+  const command = args.map(quote).join(" ");
+  if (stdin === undefined) return command;
+  const bytes = new TextEncoder().encode(stdin);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `printf '%s' '${btoa(binary)}' | base64 -d | ${command}`;
 }
 
 /** An access token this close to expiring is renewed before use. */
@@ -105,6 +117,14 @@ export type AppsDeps = {
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
   now?: () => number;
+  /** The account's Macs, by their names as connections: the accounts of a Mac app (1Password). */
+  macs?: () => string[];
+  /**
+   * Runs a command on one of them, for a Mac app's tool; the call is logged as the app's.
+   * Throws ProviderError when nothing was sent (the Mac is offline) and ProviderOutcomeUnknown
+   * when it may have run.
+   */
+  runOnMac?: (mac: string, command: string, timeoutMs: number) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
 };
 
 /** The provider said the access token is no good: nothing ran, so the call may be sent again. */
@@ -174,8 +194,9 @@ export class AppConnections {
     });
   }
 
-  /** The signed-in accounts of one app, oldest first. */
+  /** The signed-in accounts of one app, oldest first. A Mac app's are the account's Macs. */
   accounts(app: AppName): AppAccount[] {
+    if (APP_DEFINITIONS[app].signIn === "mac") return this.macs().map((mac) => ({ account: mac, state: "ready", lastError: null }));
     return this.rows(app).map((row) => ({ account: row.account, state: row.grant_sealed ? "ready" : "needsSignIn", lastError: row.last_error }));
   }
 
@@ -183,8 +204,10 @@ export class AppConnections {
   tools(): ToolDefinition[] {
     return this.available().flatMap((app) => {
       const definition = APP_DEFINITIONS[app];
-      const accounts = this.rows(app).filter((r) => r.grant_sealed).map((r) => r.account);
-      const signedIn = accounts.length
+      const accounts = definition.signIn === "mac" ? this.macs() : this.rows(app).filter((r) => r.grant_sealed).map((r) => r.account);
+      const signedIn = definition.signIn === "mac"
+        ? ` The account is the Mac to run it on: ${accounts.join(", ") || "none is paired yet"}.`
+        : accounts.length
         ? ` Signed-in accounts: ${accounts.join(", ")}.`
         : definition.signIn === "oauth"
           ? " No account is signed in yet: a call returns a sign-in link to give the person."
@@ -264,6 +287,8 @@ export class AppConnections {
 
   /** Signs one provider account out of an app: its grant is deleted here and revoked at the provider. */
   async disconnect(app: AppName, account: string): Promise<boolean> {
+    // A Mac app's accounts are the Macs: unpairing one removes it.
+    if (APP_DEFINITIONS[app].signIn === "mac") return false;
     const row = this.row(app, account.toLowerCase());
     if (!row) return false;
     this.deps.sql.exec("DELETE FROM app_accounts WHERE app = ? AND account = ?", app, row.account);
@@ -383,6 +408,7 @@ export class AppConnections {
     const parsed = inputOf(tool).safeParse(input ?? {});
     if (!parsed.success) throw new Error(`invalid input: ${z.prettifyError(parsed.error)}`.slice(0, 1024));
     const { account: named, ...rest } = parsed.data as { account: string } & Record<string, unknown>;
+    if (definition.signIn === "mac") return this.callOnMac(definition, tool as AppTool<any, MacShell>, named, rest);
     const account = named.toLowerCase();
     // Errors reach the Session in at most 256 characters, so a sign-in link comes first.
     if (!this.row(app, account)) {
@@ -408,6 +434,22 @@ export class AppConnections {
     }
   }
 
+  /** A Mac app's call: the tool's commands run on the Mac its account names, and nowhere else. */
+  private async callOnMac(definition: MacApp, tool: AppTool<any, MacShell>, mac: string, input: Record<string, unknown>): Promise<unknown> {
+    const macs = this.macs();
+    if (!macs.includes(mac)) throw new Error(`no Mac named ${mac.slice(0, 64)}; the account's Macs: ${macs.join(", ") || "none is paired"}`);
+    const run = this.deps.runOnMac!;
+    const shell: MacShell = {
+      mac,
+      run: (args, options = {}) => run(mac, macCommand(args, options.stdin), Math.min(options.timeoutMs ?? 60_000, MAX_REQUEST_TIMEOUT_MS)).catch((error: unknown) => {
+        // A command that is safe to repeat and may have run is only a failed call.
+        if (error instanceof ProviderOutcomeUnknown && tool.idempotent) throw new ProviderError(0, error.message);
+        throw error;
+      }),
+    };
+    return tool.run(shell, input);
+  }
+
   /** A token app's call: a refused token is dropped, since only the person can issue a new one. */
   private async callWithToken(definition: TokenApp, tool: AppTool, account: string, input: Record<string, unknown>): Promise<unknown> {
     const row = this.row(definition.name, account);
@@ -423,7 +465,7 @@ export class AppConnections {
   }
 
   /** The provider's API with `auth`, the headers that carry the credential, on every request. */
-  private api(definition: AppDefinition, tool: AppTool, auth: Record<string, string>): ProviderApi {
+  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, auth: Record<string, string>): ProviderApi {
     const fetcher = this.deps.fetcher;
     const authNames = new Set(Object.keys(auth).map((name) => name.toLowerCase()));
     const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
@@ -564,9 +606,14 @@ export class AppConnections {
     return APPS.filter((app) => this.isAvailable(APP_DEFINITIONS[app]));
   }
 
-  /** An OAuth app needs Axo's client for its provider on this deployment; a token app needs nothing. */
+  /** An OAuth app needs Axo's client for its provider on this deployment, a Mac app a way to reach the Macs; the others need nothing. */
   private isAvailable(definition: AppDefinition): boolean {
+    if (definition.signIn === "mac") return Boolean(this.deps.runOnMac && this.deps.macs);
     return definition.signIn !== "oauth" || this.client(definition) !== null;
+  }
+
+  private macs(): string[] {
+    return this.deps.macs?.() ?? [];
   }
 
   private client(definition: OAuthApp): GoogleClient | null {
@@ -626,6 +673,7 @@ function authorization(grant: Grant): Record<string, string> {
 function signInOf(definition: AppDefinition): AppSignIn {
   if (definition.signIn === "oauth") return { kind: "oauth" };
   if (definition.signIn === "device") return { kind: "device" };
+  if (definition.signIn === "mac") return { kind: "mac", setup: definition.setup, helpUrl: definition.reference };
   const { helpUrl, named, fields } = definition.token;
   return { kind: "token", helpUrl, named, fields: fields.map((f) => ({ ...f })) };
 }
