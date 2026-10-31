@@ -118,6 +118,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, syncedAt: now, lastError: null },
     { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
     { kind: "app", name: "apps.gmail", title: "Gmail", state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
+    { kind: "app", name: "apps.calendar", title: "Google Calendar", state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
+    { kind: "app", name: "apps.drive", title: "Google Drive", state: "needsSignIn", accounts: [], tools: ["search_files"], lastError: null },
   ];
   const callLog = [
     { callId: "c-2", at: now, sessionId: sid(1), hostId, service: "linear", tool: "list_issues", targetHostId: null, durationMs: 320, outcome: "ok", error: null, input: { team: "AXO" } },
@@ -552,7 +554,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // Back on Apps: Gmail, MCP servers and Activity, each a page of its own.
     await servers.getByRole("button", { name: "Back" }).click();
     const apps = page.getByRole("dialog", { name: "Apps" });
-    assert.deepEqual(await apps.locator(".nav-row strong").allTextContents(), ["Gmail", "MCP servers", "Activity"]);
+    assert.deepEqual(await apps.locator(".nav-row strong").allTextContents(), ["Gmail", "Google Calendar", "Google Drive", "MCP servers", "Activity"]);
     await expect(apps.getByText("2 accounts"));
     await shot("apps");
     await apps.getByRole("button", { name: /Gmail/ }).click();

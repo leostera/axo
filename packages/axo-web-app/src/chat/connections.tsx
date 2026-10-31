@@ -270,8 +270,17 @@ function Loading({ loaded }: { loaded: Loaded | null }) {
   return <p className="grouped-row muted">{loaded ? "This app is not available." : "Loading…"}</p>;
 }
 
+const APP_ICONS: Record<string, IconName> = {
+  "apps.gmail": "mail",
+  "apps.calendar": "calendar",
+  "apps.drive": "folder",
+  "apps.docs": "doc",
+  "apps.sheets": "table",
+  "apps.contacts": "contacts",
+};
+
 function iconOf(app: string): IconName {
-  return app === "apps.gmail" ? "mail" : "plug";
+  return APP_ICONS[app] ?? "plug";
 }
 
 function count(n: number, noun: string): string {
