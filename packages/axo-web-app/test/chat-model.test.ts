@@ -4,7 +4,7 @@ import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@a
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript } from "../src/chat/transcript.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
-import { parseRoute, routePath } from "../src/chat/route.ts";
+import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
 import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -220,6 +220,26 @@ test("the URL names the open chat on its Mac, and anything else is a new chat", 
   assert.equal(routePath("/app", hostId, { kind: "chat", sessionId: sid(12) }), `/app/${hostId}/${sid(12)}`);
   assert.equal(routePath("/app", hostId, { kind: "new", workspaceId: null }), "/app");
   assert.equal(routePath("/app", null, null), "/app");
+});
+
+test("settings pages have their own URLs: Apps, each app, MCP servers and activity", () => {
+  const pages: Array<[string, SettingsRoute]> = [
+    ["/app/settings/apps", { kind: "apps" }],
+    ["/app/settings/apps/gmail", { kind: "app", app: "gmail" }],
+    ["/app/settings/apps/mcp", { kind: "servers" }],
+    ["/app/settings/apps/activity", { kind: "activity" }],
+  ];
+  for (const [path, route] of pages) {
+    assert.deepEqual(parseSettingsRoute("/app", path), route, path);
+    assert.deepEqual(parseSettingsRoute("/app", `${path}/`), route, `${path}/`);
+    assert.equal(settingsPath("/app", route), path);
+    assert.deepEqual(parseRoute("/app", path), { kind: "new" }, "a settings page is not a chat");
+  }
+  assert.deepEqual(parseSettingsRoute("/app", "/app/connections"), { kind: "apps" }, "where sign-ins used to come back");
+  assert.deepEqual(parseSettingsRoute("/app", "/app/settings"), { kind: "apps" });
+  for (const path of ["/app", `/app/${hostId}/${sid(1)}`, "/app/settings/apps/Gmail", "/app/settings/apps/gmail/more", "/elsewhere/settings/apps"]) {
+    assert.equal(parseSettingsRoute("/app", path), null, path);
+  }
 });
 
 /** A stand-in for the microphone and recogniser, driven by the test. */

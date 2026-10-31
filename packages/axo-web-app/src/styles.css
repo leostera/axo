@@ -615,3 +615,34 @@ button.grouped-row:hover { background: var(--fill); }
 
 .connection-copy .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .connection-row .bordered-button { min-height: 32px; flex: none; padding: 0 12px; border-radius: 9px; font-size: 14px; }
+
+/* Settings pages (Settings › Apps), over the chats, each at its own URL. */
+.settings-page { position: fixed; z-index: 15; inset: 0; overflow-y: auto; background: var(--bg); animation: fade .15s; }
+.settings-bar {
+  position: sticky; z-index: 1; top: 0; display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(20px) saturate(1.6);
+  border-bottom: 0.5px solid var(--separator);
+}
+.settings-crumbs { display: flex; min-width: 0; flex: 1; align-items: center; gap: 6px; color: var(--secondary); font-size: 14px; }
+.settings-crumbs > svg { flex: none; color: var(--tertiary); }
+.settings-crumbs [aria-current="page"] { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.settings-crumbs .link { color: var(--secondary); }
+.settings-crumbs .link:hover { color: var(--text); }
+.settings-body { width: min(680px, 100%); margin: 0 auto; padding: 24px 20px max(48px, env(safe-area-inset-bottom)); }
+.settings-hero { margin: 4px 0 20px; }
+.settings-hero h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
+.settings-hero p { margin: 6px 0 0; color: var(--secondary); font-size: 15px; line-height: 1.4; }
+.app-hero { display: flex; align-items: center; gap: 16px; }
+.settings-section { margin: 24px 0 6px; padding-left: 4px; color: var(--secondary); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.settings-muted { color: var(--secondary); }
+.settings-body .connections .grouped + .grouped { margin-top: 0; }
+.app-tile { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border-radius: 8px; color: #fff; }
+.app-tile.neutral { color: var(--text); background: var(--fill-strong); }
+.app-tile.large { width: 64px; height: 64px; border-radius: 16px; box-shadow: 0 6px 20px color-mix(in srgb, var(--text) 12%, transparent); }
+.permissions { margin: 0; padding: 0; list-style: none; }
+.permissions .grouped-row { gap: 10px; padding-block: 10px; font-size: 14px; line-height: 1.35; }
+.permissions .grouped-row > svg { flex: none; color: var(--green); }
+.settings-body .nav-row .connection-copy small { white-space: normal; }
+@media (pointer: fine) and (min-width: 900px) {
+  .settings-hero h1 { font-size: 26px; }
+}

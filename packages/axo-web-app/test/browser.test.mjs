@@ -117,11 +117,12 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
     { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, syncedAt: now, lastError: null },
     { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
-    { kind: "app", name: "apps.gmail", title: "Gmail", state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
-    { kind: "app", name: "apps.calendar", title: "Google Calendar", state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
-    { kind: "app", name: "apps.drive", title: "Google Drive", state: "needsSignIn", accounts: [], tools: ["search_files"], lastError: null },
+    { kind: "app", name: "apps.gmail", title: "Gmail", description: "Read, search, send and organize your mail, and manage Gmail's settings.", permissions: ["Read, search and download every message and attachment", "Send mail and replies, and write drafts", "Label, archive, trash and permanently delete mail"], state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
+    { kind: "app", name: "apps.calendar", title: "Google Calendar", description: "See and manage your calendars and events.", permissions: ["See every calendar you can reach, and its events"], state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
+    { kind: "app", name: "apps.drive", title: "Google Drive", description: "Find, read, upload, organize and share your files.", permissions: ["See and download every file in My Drive and shared drives"], state: "needsSignIn", accounts: [], tools: ["search_files"], lastError: null },
   ];
   const callLog = [
+    { callId: "c-3", at: now, sessionId: sid(1), hostId, service: "apps.gmail", tool: "search_messages", targetHostId: null, durationMs: 210, outcome: "ok", error: null, input: { account: "ada@example.com", query: "is:unread" } },
     { callId: "c-2", at: now, sessionId: sid(1), hostId, service: "linear", tool: "list_issues", targetHostId: null, durationMs: 320, outcome: "ok", error: null, input: { team: "AXO" } },
     { callId: "c-1", at: now, sessionId: sid(1), hostId, service: "browser_fixture_mac", tool: "bash", targetHostId: hostId, durationMs: 41, outcome: "ok", error: null, input: { command: "git status", cwd: null, timeoutMs: 60000 } },
   ];
@@ -151,7 +152,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log") {
-      json(response, { records: callLog }, origin);
+      const service = url.searchParams.get("service");
+      json(response, { records: service ? callLog.filter((record) => record.service === service) : callLog }, origin);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/connections") {
@@ -534,12 +536,12 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
 
-    // A server's sign-in comes back to /app/connections: Apps opens on MCP servers and says how
-    // it went, and the URL goes back to the app's.
-    await page.goto(`${appUrl}/app/connections?signedIn=linear`, { waitUntil: "networkidle" });
-    const servers = page.getByRole("dialog", { name: "MCP servers" });
+    // A server's sign-in comes back to Settings › Apps › MCP servers, which says how it went
+    // and drops the query from the URL.
+    await page.goto(`${appUrl}/app/settings/apps/mcp?signedIn=linear`, { waitUntil: "networkidle" });
+    const servers = page.getByRole("region", { name: "MCP servers" });
     await expect(servers.getByText("Signed in to linear."));
-    assert.equal(new URL(page.url()).pathname, "/app");
+    assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, "/app/settings/apps/mcp");
     await expect(servers.locator(".connection-row strong", { hasText: "notion" }));
     assert.deepEqual(await servers.locator(".connection-row strong").allTextContents(), ["linear", "notion"]);
     assert.equal(await servers.getByRole("button", { name: "Sign in" }).count(), 1, "only the server that needs it offers sign-in");
@@ -551,24 +553,49 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(servers.locator(".connection-row strong", { hasText: "docs" }));
     await shot("apps-servers");
 
-    // Back on Apps: Gmail, MCP servers and Activity, each a page of its own.
-    await servers.getByRole("button", { name: "Back" }).click();
-    const apps = page.getByRole("dialog", { name: "Apps" });
-    assert.deepEqual(await apps.locator(".nav-row strong").allTextContents(), ["Gmail", "Google Calendar", "Google Drive", "MCP servers", "Activity"]);
+    // Apps: each Google app, then MCP servers and Activity, each a page with its own URL.
+    await servers.getByRole("navigation", { name: "Breadcrumb" }).getByRole("button", { name: "Apps" }).click();
+    const apps = page.getByRole("region", { name: "Apps" });
+    assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
+    assert.deepEqual(await apps.locator(".nav-row strong").allTextContents(), ["Gmail", "Google Calendar", "Google Drive", "MCP servers", "Activity"]);
     await shot("apps");
     await apps.getByRole("button", { name: /Gmail/ }).click();
-    const gmail = page.getByRole("dialog", { name: "Gmail" });
+    const gmail = page.getByRole("region", { name: "Gmail" });
+    assert.equal(new URL(page.url()).pathname, "/app/settings/apps/gmail");
+    await expect(gmail.getByRole("heading", { name: "Gmail" }));
     assert.deepEqual(await gmail.locator(".connection-row strong").allTextContents(), ["ada@example.com", "grace@example.com"]);
     assert.equal(await gmail.getByRole("button", { name: "Sign in" }).count(), 1, "the account whose grant was refused offers sign-in");
     assert.equal(await gmail.getByRole("button", { name: "Add account" }).count(), 1);
     assert.equal(await gmail.getByRole("button", { name: "Remove ada@example.com" }).count(), 1);
+    assert.equal(await gmail.locator(".permissions li").count(), 3, "the page says what Gmail lets Axo do");
+    await expect(gmail.locator(".call-row strong", { hasText: "Search messages" }));
+    assert.deepEqual(await gmail.locator(".call-row strong").allTextContents(), ["Search messages"], "only Gmail's activity");
+    assert.deepEqual(await gmail.locator(".call-row small").first().textContent(), "ada@example.com · is:unread");
     await shot("apps-gmail");
-    await gmail.getByRole("button", { name: "Back" }).click();
-    await apps.getByRole("button", { name: /Activity/ }).click();
-    const activitySheet = page.getByRole("dialog", { name: "Activity" });
-    assert.deepEqual(await activitySheet.locator(".call-row strong").allTextContents(), ["linear.list_issues", "browser_fixture_mac.bash"]);
-    await activitySheet.getByRole("button", { name: "Close Activity" }).click();
+    await page.emulateMedia({ colorScheme: "dark" });
+    await shot("apps-gmail-dark");
+    await page.emulateMedia({ colorScheme: "light" });
+
+    // The browser's Back goes back a page; a reload stays on it.
+    await page.goBack();
+    await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
+    await page.getByRole("region", { name: "Apps" }).getByRole("button", { name: /Activity/ }).click();
+    const activityPage = page.getByRole("region", { name: "Activity" });
+    await expect(activityPage.locator(".call-row strong", { hasText: "linear · List issues" }));
+    assert.deepEqual(await activityPage.locator(".call-row strong").allTextContents(), ["Gmail · Search messages", "linear · List issues", "browser_fixture_mac · Bash"]);
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.getByRole("region", { name: "Activity" }).locator(".call-row strong", { hasText: "linear · List issues" }));
+    await page.getByRole("button", { name: "Close settings" }).click();
+    await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
+    assert.equal(await page.getByRole("region", { name: "Activity" }).count(), 0);
+    assert.ok(!new URL(page.url()).pathname.startsWith("/app/settings"), page.url());
+
+    // Where sign-ins used to come back still works: on the app's page.
+    await page.goto(`${appUrl}/app/connections?signedIn=apps.gmail`, { waitUntil: "networkidle" });
+    await expect(page.getByRole("region", { name: "Gmail" }).getByText("Account added."));
+    assert.equal(new URL(page.url()).pathname, "/app/settings/apps/gmail");
+    await page.getByRole("button", { name: "Close settings" }).click();
 
     await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Settings" }).click();
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Sign out" }).click();

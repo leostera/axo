@@ -2,7 +2,7 @@
 export type IconName =
   | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "laptop" | "copy" | "check"
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
-  | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts";
+  | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -37,6 +37,10 @@ const paths: Record<IconName, string> = {
   folder: "M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6Z",
   table: "M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm-1 6h18M3 15h18M9 10v10",
   contacts: "M9 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-5 7c.8-2.4 2.7-4 5-4s4.2 1.6 5 4M16 7h5m-5 4h5m-3 4h3",
+  presentation: "M3 4h18M4 4v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V4M12 16v4m-4 0h8M8 12l3-3 2 2 3-3",
+  checklist: "M4 6l1.5 1.5L8 5m-4 7l1.5 1.5L8 11m-4 7l1.5 1.5L8 17M11 6h9m-9 6h9m-9 6h9",
+  video: "M4 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7Zm12 3.5 4-2.5v8l-4-2.5",
+  cloud: "M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7Z",
   chevronLeft: "m15 5-7 7 7 7",
   chevronRight: "m9 5 7 7-7 7",
   mail: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm0 1 8 7 8-7",

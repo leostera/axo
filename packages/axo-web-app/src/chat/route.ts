@@ -20,3 +20,32 @@ export function parseRoute(base: string, pathname: string): ChatRoute {
 export function routePath(base: string, hostId: string | null, selection: Selection | null): string {
   return hostId && selection?.kind === "chat" ? `${base}/${encodeURIComponent(hostId)}/${selection.sessionId}` : base;
 }
+
+/**
+ * Settings pages, over the chats: `<base>/settings/apps` lists the apps, `<base>/settings/apps/<app>`
+ * is one app (`gmail` for `apps.gmail`), `<base>/settings/apps/mcp` the MCP servers and
+ * `<base>/settings/apps/activity` everything Sessions used. `<base>/connections`, where sign-ins
+ * used to come back, is Apps.
+ */
+export type SettingsRoute = { kind: "apps" } | { kind: "app"; app: string } | { kind: "servers" } | { kind: "activity" };
+
+export function parseSettingsRoute(base: string, pathname: string): SettingsRoute | null {
+  if (!pathname.startsWith(`${base}/`)) return null;
+  const rest = pathname.slice(base.length).replace(/\/+$/, "");
+  if (rest === "/settings" || rest === "/settings/apps" || rest === "/connections") return { kind: "apps" };
+  const page = /^\/settings\/apps\/([a-z][a-z0-9_]{0,31})$/.exec(rest)?.[1];
+  if (!page) return null;
+  if (page === "mcp") return { kind: "servers" };
+  if (page === "activity") return { kind: "activity" };
+  return { kind: "app", app: page };
+}
+
+export function settingsPath(base: string, route: SettingsRoute): string {
+  const apps = `${base}/settings/apps`;
+  switch (route.kind) {
+    case "apps": return apps;
+    case "app": return `${apps}/${encodeURIComponent(route.app)}`;
+    case "servers": return `${apps}/mcp`;
+    case "activity": return `${apps}/activity`;
+  }
+}

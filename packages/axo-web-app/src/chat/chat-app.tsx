@@ -3,10 +3,10 @@ import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
-import { AppsSheet, signInNotice } from "./connections.tsx";
+import { AppsSettings, signInNotice, signInPage } from "./connections.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
-import { parseRoute, routePath, type ChatRoute } from "./route.ts";
+import { parseRoute, parseSettingsRoute, routePath, settingsPath, type ChatRoute, type SettingsRoute } from "./route.ts";
 import {
   chatKey, chatTitle, ChatWorkbench, isChat, lastActivity, recentChatList, shortAge,
   type ChatBackend, type ChatMenuEntry, type Host,
@@ -60,7 +60,8 @@ function useAppearance(): [Appearance, (value: Appearance) => void] {
  * Keeps the open chat in the URL: a reload or a link opens it again once the Macs are listed, and
  * Back and Forward move between the chats opened.
  */
-function useChatRoute(workbench: ChatWorkbench, basePath: string, onRoute: () => void): void {
+/** While a settings page is open, the URL is its own: the chats leave it alone. */
+function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: boolean, onRoute: () => void): void {
   const initial = useRef<ChatRoute | null>(parseRoute(basePath, window.location.pathname));
 
   const follow = (route: ChatRoute) => {
@@ -73,7 +74,7 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, onRoute: () =>
   // it is still there; until then the URL waits to be read.
   const path = routePath(basePath, workbench.openHostId, workbench.selection);
   useEffect(() => {
-    if (workbench.hostsPhase !== "loaded") return;
+    if (workbench.hostsPhase !== "loaded" || settingsOpen) return;
     const route = initial.current;
     initial.current = null;
     if (route?.kind === "chat" && workbench.hosts.some(host =>
@@ -84,10 +85,11 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, onRoute: () =>
     if (window.location.pathname === path) return;
     if (route) window.history.replaceState(null, "", path);
     else window.history.pushState(null, "", path);
-  }, [path, workbench.hostsPhase]);
+  }, [path, workbench.hostsPhase, settingsOpen]);
 
   useEffect(() => {
     const onPopState = () => {
+      if (parseSettingsRoute(basePath, window.location.pathname)) return;
       follow(parseRoute(basePath, window.location.pathname));
       onRoute();
     };
@@ -114,16 +116,31 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
   const wide = useWide();
   const [layer, setLayer] = useState<Layer>("conversation");
   const [infoOpen, setInfoOpen] = useState(false);
-  const [sheet, setSheet] = useState<"settings" | "pair" | "search" | "connections" | null>(null);
-  // A sign-in comes back to `<base>/connections`: open Apps on the page it was for, with how it went.
-  const [connectionsNotice] = useState(() =>
-    window.location.pathname === `${basePath}/connections` ? signInNotice(window.location.search) : null);
+  const [sheet, setSheet] = useState<"settings" | "pair" | "search" | null>(null);
+  // Settings › Apps is a page with its own URL. A sign-in comes back to an app's page (or, from
+  // before, to `<base>/connections`) with how it went in the query, which is then dropped.
+  const [settings, setSettings] = useState<SettingsRoute | null>(() => {
+    if (!connectionsUrl) return null;
+    const route = parseSettingsRoute(basePath, window.location.pathname);
+    return route && window.location.pathname.replace(/\/+$/, "") === `${basePath}/connections` ? signInPage(window.location.search) : route;
+  });
+  const [settingsNotice] = useState(() => (settings ? signInNotice(window.location.search) : null));
   useEffect(() => {
-    if (window.location.pathname !== `${basePath}/connections`) return;
-    window.history.replaceState(null, "", basePath);
-    if (connectionsUrl) setSheet("connections");
+    if (settings) window.history.replaceState(null, "", settingsPath(basePath, settings));
+    else if (parseSettingsRoute(basePath, window.location.pathname)) window.history.replaceState(null, "", basePath);
   }, []);
-  useChatRoute(workbench, basePath, () => setLayer("conversation"));
+  useEffect(() => {
+    const onPopState = () => setSettings(connectionsUrl ? parseSettingsRoute(basePath, window.location.pathname) : null);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [basePath, connectionsUrl]);
+  const openSettings = (route: SettingsRoute) => {
+    window.history.pushState(null, "", settingsPath(basePath, route));
+    setSettings(route);
+  };
+  // Closing settings goes back to the chat that was open: the chats put it in the URL.
+  const closeSettings = () => setSettings(null);
+  useChatRoute(workbench, basePath, settings !== null, () => setLayer("conversation"));
 
   useEffect(() => {
     workbench.start();
@@ -174,7 +191,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
 
   return (
     <main className="chat-app">
-      <div className={stackClass} onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerCancel={() => { swipe.current = null; }}>
+      <div className={stackClass} inert={settings !== null} onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerCancel={() => { swipe.current = null; }}>
         <div className="layer layer-account" inert={wide ? sidebar !== "account" : layer !== "account"}>
           <AccountPanel
             workbench={workbench}
@@ -185,7 +202,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
             }}
             onShowChats={() => show("chats")}
             onPair={pairingUrl ? () => setSheet("pair") : undefined}
-            onConnections={connectionsUrl ? () => setSheet("connections") : undefined}
+            onConnections={connectionsUrl ? () => openSettings({ kind: "apps" }) : undefined}
             onSettings={() => setSheet("settings")}
           />
         </div>
@@ -227,10 +244,11 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
           show("conversation");
         }} />
       ) : null}
-      {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut} /> : null}
+      {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut}
+        onApps={connectionsUrl ? () => { setSheet(null); openSettings({ kind: "apps" }); } : undefined} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
-      {sheet === "connections" && connectionsUrl ? (
-        <AppsSheet connectionsUrl={connectionsUrl} initial={connectionsNotice} onClose={() => setSheet(null)} Sheet={Sheet} />
+      {settings && connectionsUrl ? (
+        <AppsSettings connectionsUrl={connectionsUrl} route={settings} initialNotice={settingsNotice} onNavigate={openSettings} onClose={closeSettings} />
       ) : null}
     </main>
   );
@@ -462,10 +480,19 @@ function Sheet({ title, onClose, onBack, children }: { title: string; onClose: (
 }
 
 /** Settings, in the phone's inset groups: the theme, then signing out. */
-function SettingsSheet({ onClose, onSignOut }: { onClose: () => void; onSignOut?: () => void }) {
+function SettingsSheet({ onClose, onSignOut, onApps }: { onClose: () => void; onSignOut?: () => void; onApps?: () => void }) {
   const [appearance, setAppearance] = useAppearance();
   return (
     <Sheet title="Settings" onClose={onClose}>
+      {onApps ? (
+        <div className="grouped">
+          <button className="grouped-row nav-row" onClick={onApps}>
+            <Icon name="plug" size={18} />
+            <span className="grouped-label">Apps</span>
+            <Icon name="chevronRight" size={16} />
+          </button>
+        </div>
+      ) : null}
       <h3 className="sheet-section">Theme</h3>
       <div className="grouped">
         <label className="grouped-row">

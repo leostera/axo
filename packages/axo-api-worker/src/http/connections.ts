@@ -111,10 +111,14 @@ export async function startConnectionSignIn(request: Request, env: AuthEnvironme
 /** The provider sends the browser back here with a code. */
 export async function completeConnectionSignIn(request: Request, env: AuthEnvironment, exports: AuthExports, ctx: ExecutionContext): Promise<Response> {
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
-  const done = (query: Record<string, string>) => new Response(null, {
-    status: 302,
-    headers: { ...privateHeaders, Location: `${APP}/app/connections?${new URLSearchParams(query)}`, "Set-Cookie": clearCookie(FLOW_COOKIE) },
-  });
+  // Back to Settings › Apps, on the page of what was signed in to: an app's own, or MCP servers.
+  const done = (query: { signedIn: string } | { error: string }) => {
+    const page = "signedIn" in query ? (query.signedIn.startsWith("apps.") ? query.signedIn.slice("apps.".length) : "mcp") : null;
+    return new Response(null, {
+      status: 302,
+      headers: { ...privateHeaders, Location: `${APP}/app/settings/apps${page ? `/${page}` : ""}?${new URLSearchParams(query)}`, "Set-Cookie": clearCookie(FLOW_COOKIE) },
+    });
+  };
   const configuration = parseAuthConfiguration(env);
   const caller = await requireAccount(request, env, exports, "read");
   if (!configuration || caller instanceof Response) return done({ error: "Sign in to Axo in this browser, then try again." });

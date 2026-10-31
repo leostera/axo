@@ -2,53 +2,56 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { connectionsResults, type CallRecord, type Connection } from "@axo/protocol";
 import { Icon, type IconName } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
+import type { SettingsRoute } from "./route.ts";
 
 /**
- * The Apps sheet (RFD0016): what the account's Sessions can use. The first page lists the apps
- * Axo provides (Gmail) and MCP servers, then recent activity; each opens a page of its own,
- * where accounts are added and servers signed in to. A client secret is typed only here, never
- * in a chat, and no grant ever reaches the browser.
+ * Settings › Apps (RFD0016): what the account's Sessions can use, as pages over the chats, each
+ * with its own URL. Apps lists the apps Axo provides, then MCP servers and activity. An app's
+ * page says what it is for and what it may do, lists its accounts with Add account, and shows
+ * what Sessions did with it. A client secret is typed only here, never in a chat, and no grant
+ * ever reaches the browser.
  */
 
 type App = Extract<Connection, { kind: "app" }>;
 type Server = Extract<Connection, { kind: "thirdParty" }>;
-type Loaded = { connections: Connection[]; records: CallRecord[] };
 type Notice = { kind: "ok" | "error"; text: string } | null;
-export type AppsPage = { kind: "home" } | { kind: "app"; name: string } | { kind: "servers" } | { kind: "activity" };
 
-/** What the sign-in callback left in the URL: `?signedIn=<name>` or `?error=<message>`, and which page it belongs on. */
-export function signInNotice(search: string): { notice: Notice; page: AppsPage } | null {
+/** What the sign-in callback left in the URL, `?signedIn=<name>` or `?error=<message>`, as a notice. */
+export function signInNotice(search: string): Notice {
   const query = new URLSearchParams(search);
   const signedIn = query.get("signedIn");
-  if (signedIn?.startsWith("apps.")) return { notice: { kind: "ok", text: "Account added." }, page: { kind: "app", name: signedIn } };
-  if (signedIn) return { notice: { kind: "ok", text: `Signed in to ${signedIn}.` }, page: { kind: "servers" } };
+  if (signedIn?.startsWith("apps.")) return { kind: "ok", text: "Account added." };
+  if (signedIn) return { kind: "ok", text: `Signed in to ${signedIn}.` };
   const error = query.get("error");
-  return error ? { notice: { kind: "error", text: error.slice(0, 300) }, page: { kind: "home" } } : null;
+  return error ? { kind: "error", text: error.slice(0, 300) } : null;
 }
 
-export function AppsSheet({ connectionsUrl, initial, onClose, Sheet }: {
+/** The page a sign-in that came back to `<base>/connections` belongs on. */
+export function signInPage(search: string): SettingsRoute {
+  const signedIn = new URLSearchParams(search).get("signedIn");
+  if (signedIn?.startsWith("apps.")) return { kind: "app", app: signedIn.slice("apps.".length) };
+  return signedIn ? { kind: "servers" } : { kind: "apps" };
+}
+
+export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate, onClose }: {
   connectionsUrl: string;
-  initial: { notice: Notice; page: AppsPage } | null;
+  route: SettingsRoute;
+  initialNotice: Notice;
+  onNavigate: (route: SettingsRoute) => void;
   onClose: () => void;
-  Sheet: (props: { title: string; onClose: () => void; onBack?: () => void; children: ReactNode }) => ReactNode;
 }) {
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [page, setPage] = useState<AppsPage>(initial?.page ?? { kind: "home" });
-  const [notice, setNotice] = useState<Notice>(initial?.notice ?? null);
+  const [connections, setConnections] = useState<Connection[] | null>(null);
+  const [notice, setNotice] = useState<Notice>(initialNotice);
   const [busy, setBusy] = useState(false);
+  const [version, setVersion] = useState(0);
 
   const load = useCallback(async () => {
     try {
-      const [list, log] = await Promise.all([request(connectionsUrl, "GET"), request(`${connectionsUrl}/log?limit=30`, "GET")]);
-      setLoaded({
-        connections: connectionsResults["axo.connections.list"].parse(list).connections,
-        records: connectionsResults["axo.connections.log"].parse(log).records,
-      });
+      setConnections(connectionsResults["axo.connections.list"].parse(await request(connectionsUrl, "GET")).connections);
     } catch (error) {
       setNotice({ kind: "error", text: message(error) });
     }
   }, [connectionsUrl]);
-
   useEffect(() => { void load(); }, [load]);
 
   const act = async (work: () => Promise<void>) => {
@@ -59,54 +62,84 @@ export function AppsSheet({ connectionsUrl, initial, onClose, Sheet }: {
       setNotice({ kind: "error", text: message(error) });
     } finally {
       setBusy(false);
+      setVersion((v) => v + 1);
       void load();
     }
   };
 
-  const go = (next: AppsPage) => {
+  const go = (next: SettingsRoute) => {
     setNotice(null);
-    setPage(next);
+    onNavigate(next);
   };
+  const back = () => (route.kind === "apps" ? onClose() : go({ kind: "apps" }));
 
-  const apps = (loaded?.connections ?? []).filter((c): c is App => c.kind === "app");
-  const servers = (loaded?.connections ?? []).filter((c): c is Server => c.kind === "thirdParty");
-  const shared = { connectionsUrl, busy, act, setNotice };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !(event.target instanceof HTMLInputElement)) back();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  const apps = (connections ?? []).filter((c): c is App => c.kind === "app");
+  const servers = (connections ?? []).filter((c): c is Server => c.kind === "thirdParty");
+  const shared: Shared = { connectionsUrl, busy, act, setNotice };
 
   let title = "Apps";
   let body: ReactNode;
-  if (page.kind === "app") {
-    const app = apps.find((a) => a.name === page.name);
+  if (route.kind === "app") {
+    const app = apps.find((a) => a.name === `apps.${route.app}`);
     title = app?.title ?? "App";
-    body = app ? <AppPage app={app} {...shared} /> : <Loading loaded={loaded} />;
-  } else if (page.kind === "servers") {
+    body = app ? <AppPage key={app.name} app={app} version={version} {...shared} /> : <p className="settings-muted">{connections ? "This app is not available." : "Loading…"}</p>;
+  } else if (route.kind === "servers") {
     title = "MCP servers";
-    body = <ServersPage servers={servers} loaded={loaded !== null} {...shared} />;
-  } else if (page.kind === "activity") {
+    body = <ServersPage servers={servers} loaded={connections !== null} {...shared} />;
+  } else if (route.kind === "activity") {
     title = "Activity";
-    body = <ActivityPage records={loaded?.records ?? null} />;
+    body = <ActivityPage connectionsUrl={connectionsUrl} />;
   } else {
     body = (
       <>
+        <header className="settings-hero">
+          <h1>Apps</h1>
+          <p>Choose what your Sessions can use.</p>
+        </header>
+        <h2 className="settings-section">Google</h2>
         <div className="grouped">
+          {connections === null ? <p className="grouped-row muted">Loading…</p> : null}
           {apps.map((app) => (
-            <Row key={app.name} icon={iconOf(app.name)} title={app.title} detail={count(app.accounts.length, "account")} onClick={() => go({ kind: "app", name: app.name })} />
+            <NavRow key={app.name} tile={<AppTile app={app.name} />} title={app.title} subtitle={app.description}
+              detail={count(app.accounts.length, "account")} onClick={() => go({ kind: "app", app: app.name.slice("apps.".length) })} />
           ))}
-          <Row icon="plug" title="MCP servers" detail={loaded ? count(servers.length, "server") : ""} onClick={() => go({ kind: "servers" })} />
         </div>
+        <h2 className="settings-section">More</h2>
         <div className="grouped">
-          <Row icon="doc" title="Activity" detail="What your Sessions used" onClick={() => go({ kind: "activity" })} />
+          <NavRow tile={<span className="app-tile neutral"><Icon name="plug" size={18} /></span>} title="MCP servers" subtitle="Linear, Notion and any other server you add"
+            detail={connections ? count(servers.length, "server") : ""} onClick={() => go({ kind: "servers" })} />
+          <NavRow tile={<span className="app-tile neutral"><Icon name="doc" size={18} /></span>} title="Activity" subtitle="Everything your Sessions used"
+            detail="" onClick={() => go({ kind: "activity" })} />
         </div>
       </>
     );
   }
 
   return (
-    <Sheet title={title} onClose={onClose} onBack={page.kind === "home" ? undefined : () => go({ kind: "home" })}>
-      <div className="connections">
+    <div className="settings-page" role="region" aria-label={title}>
+      <header className="settings-bar">
+        <button className="circle-button" onClick={back} aria-label="Back"><Icon name="chevronLeft" size={16} /></button>
+        <nav className="settings-crumbs" aria-label="Breadcrumb">
+          <span>Settings</span>
+          <Icon name="chevronRight" size={12} />
+          {route.kind === "apps" ? <span aria-current="page">Apps</span> : <button className="link" onClick={() => go({ kind: "apps" })}>Apps</button>}
+          {route.kind !== "apps" ? <><Icon name="chevronRight" size={12} /><span aria-current="page">{title}</span></> : null}
+        </nav>
+        <button className="circle-button" onClick={onClose} aria-label="Close settings"><Icon name="close" size={16} /></button>
+      </header>
+      <div className="settings-body">
         {notice ? <p className={notice.kind === "ok" ? "connections-notice" : "connections-notice error"} role="status">{notice.text}</p> : null}
-        {body}
+        <div className="connections">{body}</div>
       </div>
-    </Sheet>
+    </div>
   );
 }
 
@@ -117,13 +150,13 @@ type Shared = {
   setNotice: (notice: Notice) => void;
 };
 
-function AppPage({ app, connectionsUrl, busy, act, setNotice }: Shared & { app: App }) {
+function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared & { app: App; version: number }) {
   const add = () => act(async () => {
     const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/sign-in`, "POST")) as { signInUrl: string };
     window.location.assign(signInUrl);
   });
   const signOut = (account: string) => {
-    if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it.`)) return;
+    if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it, and Axo's access is revoked at Google.`)) return;
     void act(async () => {
       await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/remove`, "POST", { account });
       setNotice({ kind: "ok", text: `Removed ${account}.` });
@@ -131,7 +164,15 @@ function AppPage({ app, connectionsUrl, busy, act, setNotice }: Shared & { app: 
   };
   return (
     <>
-      <h3 className="sheet-section">Accounts</h3>
+      <header className="settings-hero app-hero">
+        <AppTile app={app.name} large />
+        <div>
+          <h1>{app.title}</h1>
+          <p>{app.description}</p>
+        </div>
+      </header>
+
+      <h2 className="settings-section">Accounts</h2>
       <div className="grouped">
         {app.accounts.map((account) => (
           <div key={account.account} className="grouped-row connection-row">
@@ -150,6 +191,17 @@ function AppPage({ app, connectionsUrl, busy, act, setNotice }: Shared & { app: 
         ))}
         <button className="grouped-row add-row" disabled={busy} onClick={() => void add()}>Add account</button>
       </div>
+
+      <h2 className="settings-section">What Axo can do</h2>
+      <ul className="grouped permissions">
+        {app.permissions.map((permission) => (
+          <li key={permission} className="grouped-row"><Icon name="check" size={16} /><span>{permission}</span></li>
+        ))}
+      </ul>
+      <p className="sheet-note">Only with the accounts above, and only when one of your Sessions asks.</p>
+
+      <h2 className="settings-section">Recent activity</h2>
+      <Calls connectionsUrl={connectionsUrl} service={app.name} version={version} />
     </>
   );
 }
@@ -188,6 +240,10 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
 
   return (
     <>
+      <header className="settings-hero">
+        <h1>MCP servers</h1>
+        <p>Add any MCP server, and your Sessions can use its tools.</p>
+      </header>
       <div className="grouped">
         {!loaded ? <p className="grouped-row muted">Loading…</p> : null}
         {servers.map((server) => (
@@ -208,7 +264,7 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
 
       {adding !== null ? (
         <>
-          <h3 className="sheet-section">Add server</h3>
+          <h2 className="settings-section">Add server</h2>
           <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void add(adding); }}>
             <input className="grouped-row" required pattern="[A-Za-z_][A-Za-z0-9_]{0,63}" placeholder="Name, e.g. linear" value={adding.name} autoFocus
               onChange={(event) => setAdding({ ...adding, name: event.target.value })} aria-label="Name" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
@@ -221,7 +277,7 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
 
       {clientFor ? (
         <>
-          <h3 className="sheet-section">Sign in to {clientFor}</h3>
+          <h2 className="settings-section">Sign in to {clientFor}</h2>
           <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void saveClient(clientFor); }}>
             <input className="grouped-row" required placeholder="Client ID" value={client.clientId} autoComplete="off"
               onChange={(event) => setClient({ ...client, clientId: event.target.value })} aria-label="Client ID" />
@@ -236,16 +292,39 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
   );
 }
 
-function ActivityPage({ records }: { records: CallRecord[] | null }) {
+function ActivityPage({ connectionsUrl }: { connectionsUrl: string }) {
+  return (
+    <>
+      <header className="settings-hero">
+        <h1>Activity</h1>
+        <p>What your Sessions used in the last 30 days.</p>
+      </header>
+      <Calls connectionsUrl={connectionsUrl} />
+    </>
+  );
+}
+
+/** Recent calls, of every app and server or of one. */
+function Calls({ connectionsUrl, service, version = 0 }: { connectionsUrl: string; service?: string; version?: number }) {
+  const [records, setRecords] = useState<CallRecord[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const query = new URLSearchParams({ limit: service ? "20" : "50", ...(service ? { service } : {}) });
+    request(`${connectionsUrl}/log?${query}`, "GET")
+      .then((log) => { if (live) setRecords(connectionsResults["axo.connections.log"].parse(log).records); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [connectionsUrl, service, version]);
   return (
     <div className="grouped">
-      {records === null ? <p className="grouped-row muted">Loading…</p> : null}
+      {records === null ? <p className="grouped-row muted">{failed ? "Activity is unavailable." : "Loading…"}</p> : null}
       {records?.map((record) => (
         <div key={record.callId} className="grouped-row call-row" title={JSON.stringify(record.input)}>
           <span className={`call-outcome ${record.outcome}`}>{record.outcome === "ok" ? "✓" : record.outcome === "error" ? "✕" : "?"}</span>
           <span className="connection-copy">
-            <strong className="mono">{record.service}.{record.tool}</strong>
-            <small className="mono">{summary(record)}</small>
+            <strong>{callTitle(record, service !== undefined)}</strong>
+            <small>{summary(record)}</small>
           </span>
           <small className="call-age">{relativeTime(Date.parse(record.at))}</small>
         </div>
@@ -255,32 +334,37 @@ function ActivityPage({ records }: { records: CallRecord[] | null }) {
   );
 }
 
-function Row({ icon, title, detail, onClick }: { icon: IconName; title: string; detail: string; onClick: () => void }) {
+function NavRow({ tile, title, subtitle, detail, onClick }: { tile: ReactNode; title: string; subtitle: string; detail: string; onClick: () => void }) {
   return (
     <button className="grouped-row connection-row nav-row" onClick={onClick}>
-      <Icon name={icon} size={18} />
-      <span className="connection-copy"><strong>{title}</strong></span>
+      {tile}
+      <span className="connection-copy"><strong>{title}</strong><small>{subtitle}</small></span>
       <small className="nav-detail">{detail}</small>
       <Icon name="chevronRight" size={16} />
     </button>
   );
 }
 
-function Loading({ loaded }: { loaded: Loaded | null }) {
-  return <p className="grouped-row muted">{loaded ? "This app is not available." : "Loading…"}</p>;
-}
-
-const APP_ICONS: Record<string, IconName> = {
-  "apps.gmail": "mail",
-  "apps.calendar": "calendar",
-  "apps.drive": "folder",
-  "apps.docs": "doc",
-  "apps.sheets": "table",
-  "apps.contacts": "contacts",
+const APP_LOOKS: Record<string, { icon: IconName; color: string }> = {
+  "apps.gmail": { icon: "mail", color: "#ea4335" },
+  "apps.calendar": { icon: "calendar", color: "#4285f4" },
+  "apps.drive": { icon: "folder", color: "#1fa463" },
+  "apps.docs": { icon: "doc", color: "#2684fc" },
+  "apps.sheets": { icon: "table", color: "#0f9d58" },
+  "apps.slides": { icon: "presentation", color: "#f4b400" },
+  "apps.contacts": { icon: "contacts", color: "#1a73e8" },
+  "apps.tasks": { icon: "checklist", color: "#2563eb" },
+  "apps.meet": { icon: "video", color: "#00897b" },
+  "apps.cloud": { icon: "cloud", color: "#4285f4" },
 };
 
-function iconOf(app: string): IconName {
-  return APP_ICONS[app] ?? "plug";
+function AppTile({ app, large = false }: { app: string; large?: boolean }) {
+  const look = APP_LOOKS[app] ?? { icon: "plug" as IconName, color: "var(--gray)" };
+  return (
+    <span className={`app-tile${large ? " large" : ""}`} style={{ background: look.color }} aria-hidden="true">
+      <Icon name={look.icon} size={large ? 30 : 18} />
+    </span>
+  );
 }
 
 function count(n: number, noun: string): string {
@@ -295,10 +379,34 @@ function host(url: string): string {
   }
 }
 
-function summary(record: CallRecord): string {
-  const input = record.input as { command?: string } | null;
-  const what = typeof input?.command === "string" ? input.command : JSON.stringify(record.input);
-  return `${what.slice(0, 80)}${record.error ? ` · ${record.error.slice(0, 80)}` : ""}`;
+const SERVICE_TITLES: Record<string, string> = {
+  "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud",
+};
+
+/** "Search messages", or with its app or server first: "Gmail · Search messages". */
+export function callTitle(record: Pick<CallRecord, "service" | "tool">, ofOne: boolean): string {
+  const words = record.tool.replace(/_/g, " ");
+  const tool = words.charAt(0).toUpperCase() + words.slice(1);
+  return ofOne ? tool : `${SERVICE_TITLES[record.service] ?? record.service} · ${tool}`;
+}
+
+/** What a call was about, in a line: the command a Mac ran, or an app call's account and values. */
+export function summary(record: Pick<CallRecord, "input" | "error">): string {
+  const input = record.input;
+  let what: string;
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const { command, account, ...rest } = input as Record<string, unknown>;
+    if (typeof command === "string") what = command;
+    else {
+      const values = Object.values(rest)
+        .filter((v) => v !== null && v !== undefined && v !== "")
+        .map((v) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : JSON.stringify(v)));
+      what = [typeof account === "string" ? account : null, ...values].filter(Boolean).join(" · ");
+    }
+  } else what = input === null || input === undefined ? "" : JSON.stringify(input);
+  const line = what.replace(/\s+/g, " ").slice(0, 100);
+  return record.error ? `${line}${line ? " · " : ""}${record.error.slice(0, 80)}` : line;
 }
 
 async function request(url: string, method: "GET" | "POST", body?: unknown): Promise<unknown> {

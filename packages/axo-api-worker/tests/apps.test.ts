@@ -84,7 +84,7 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
   assert.ok(link, early);
 
   const landed = await signInThroughBrowser(h, google, session, link);
-  assert.equal(landed.pathname, "/app/connections");
+  assert.equal(landed.pathname, "/app/settings/apps/gmail");
   assert.equal(landed.searchParams.get("signedIn"), "apps.gmail");
   const ready = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections.find((c) => c.kind === "app");
   assert.deepEqual([ready?.state, ready?.kind === "app" && ready.accounts], ["ready", [{ account: "ada@example.com", state: "ready", lastError: null }]]);
