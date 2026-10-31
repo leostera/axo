@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { RemoteAxoApi, type HostEvent, type WebSocketLike } from "@axo/app";
+import { RemoteAxoApi, type AccountConnection, type AccountEvents, type ClientHost, type ClientRecord, type ClientSession, type WebSocketLike } from "@axo/app";
 import WebSocket from "ws";
 import { createConnection } from "node:net";
 
@@ -65,15 +65,59 @@ export async function localCall(socketPath: string, method: string, params?: unk
 }
 
 export function accountApi(url: string, account: { headers: Record<string, string> }): RemoteAxoApi {
-  return new RemoteAxoApi(
-    url,
-    async (input, init) => {
-      const headers = new Headers(init?.headers);
-      for (const [name, value] of Object.entries(account.headers)) headers.set(name, value);
-      return fetch(input, { ...init, headers });
-    },
-    browserWebSocketFactory(account.headers),
-  );
+  return new RemoteAxoApi(url, browserWebSocketFactory(account.headers));
+}
+
+type ListedHost = { hostId: string; hostGeneration: string; status: string; stale: boolean };
+
+/** The account's hosts over HTTP, as the pairing screen reads them. */
+export async function listHosts(url: string, account: { headers: Record<string, string> }): Promise<ListedHost[]> {
+  const response = await fetch(new URL("api/v1/account/hosts", url), { headers: account.headers });
+  if (!response.ok) throw new Error(`listing hosts failed (${response.status})`);
+  return ((await response.json()) as { hosts: ListedHost[] }).hosts;
+}
+
+/**
+ * The account's socket, with every notice it receives kept for a test to wait on, and each open
+ * Session's records gathered in order.
+ */
+export class TestAccountClient {
+  readonly records = new Map<string, ClientRecord[]>();
+  readonly sessions = new Map<string, ClientSession>();
+  hosts: ClientHost[] = [];
+  readonly progress: Array<{ sessionId: string; slot: string; snapshot: unknown }> = [];
+  closedBecause: string | undefined;
+  connection!: AccountConnection;
+
+  static async connect(url: string, account: { headers: Record<string, string> }, clientId = `test-${crypto.randomUUID().slice(0, 8)}`) {
+    const client = new TestAccountClient();
+    const events: AccountEvents = {
+      hosts: (hosts) => { client.hosts = hosts; },
+      sessions: (_hostId, sessions) => { for (const session of sessions) client.sessions.set(session.sessionId, session); },
+      records: (sessionId, _epoch, records) => client.records.set(sessionId, [...(client.records.get(sessionId) ?? []), ...records]),
+      progress: (sessionId, slot, snapshot) => client.progress.push({ sessionId, slot, snapshot }),
+      reset: (sessionId, _epoch, keep) => client.records.set(sessionId, (client.records.get(sessionId) ?? []).filter((record) => record.cursor <= keep)),
+      closed: (error) => { client.closedBecause = error.message; },
+    };
+    client.connection = await accountApi(url, account).connect(clientId, events);
+    client.hosts = client.connection.hello.hosts;
+    for (const session of client.connection.hello.sessions) client.sessions.set(session.sessionId, session);
+    return client;
+  }
+
+  /** Opens a Session with its last records and gathers what follows. */
+  async open(hostId: string, sessionId: string) {
+    const opened = await this.connection.open({ hostId, sessionId, window: { last: 64 } });
+    this.records.set(sessionId, opened.records);
+    return opened;
+  }
+
+  /** The Pi entries of a Session gathered so far, parsed. */
+  entries(sessionId: string): Array<{ type: string; message?: { role: string; content: unknown } }> {
+    return (this.records.get(sessionId) ?? []).map((record) => JSON.parse(record.line));
+  }
+
+  close() { this.connection?.close(); }
 }
 
 export function browserWebSocketFactory(headers: Record<string, string>) {
@@ -105,18 +149,5 @@ export function browserWebSocketFactory(headers: Record<string, string>) {
       set onclose(handler) { onclose = handler; },
     } satisfies WebSocketLike;
   };
-}
-
-export async function waitForHostEvent(
-  events: HostEvent[],
-  predicate: (event: HostEvent) => boolean,
-  description: string,
-  child?: ChildProcess,
-) {
-  return waitFor(description, 18_000, async () => {
-    const index = events.findIndex(predicate);
-    if (index < 0) return undefined;
-    return events.splice(index, 1)[0];
-  }, child);
 }
 

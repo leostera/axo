@@ -1,6 +1,6 @@
 // A whole Axo stack on this machine for end-to-end tests of the clients: a real Worker (the
 // harness's miniflare, with a simulated Cloudflare sign-in), a real axod linked to an account, a
-// Workspace on it, and a stand-in Pi that records what is typed into it.
+// Workspace on it, and a stand-in Pi that records what it is sent.
 //
 // Prints one JSON line when ready, `{ url, token, piLog, hostId }`, and runs until stdin closes.
 //   AXOD_BINARY=../../target/release/axod npx tsx scripts/e2e-stack.ts
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { harness, signInNative } from "../tests/harness";
-import { accountApi, localCall, terminate, waitFor } from "../tests/axod-support";
+import { listHosts, localCall, terminate, waitFor } from "../tests/axod-support";
 
 const binary = process.env.AXOD_BINARY;
 assert.ok(binary, "set AXOD_BINARY to the axod binary");
@@ -31,7 +31,10 @@ await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
 const daemon = spawn(axodBinary, [
   "--server-dir", serverDirectory, "--socket", socketPath,
   "--relay-url", api.url, "--host-credentials", "files",
-], { stdio: "ignore", env: { ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi, AXO_FAKE_PI_LOG: piLog } });
+], { stdio: "ignore", env: {
+  ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi, AXO_FAKE_PI_LOG: piLog,
+  AXO_PI_EXTENSION_PATH: fileURLToPath(new URL("../../../crates/axo-server/testdata/pi-extension.js", import.meta.url)),
+} });
 
 async function shutdown() {
   await terminate(daemon);
@@ -46,7 +49,7 @@ try {
   const { code } = (await pairing.json()) as { code: string };
   await localCall(socketPath, "axo.relay.link", { code });
   const host = await waitFor("the Mac online", 20_000, async () =>
-    (await accountApi(api.url, phone).listHosts()).find((candidate) => candidate.status === "online"), daemon);
+    (await listHosts(api.url, phone)).find((candidate) => candidate.status === "online"), daemon);
 
   const project = join(root, "project");
   await mkdir(project);

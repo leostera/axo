@@ -359,7 +359,8 @@ export class AxoHostDO extends AxoHostRelay {
     const command = typeof reply.id === "string" ? this.commands.get(reply.id) : undefined;
     if (!command) return super.receiveReply(socket, reply);
     this.commands.delete(reply.id as string);
-    if ("error" in reply) return command.resolve({ error: { code: reply.error.code, message: "Host rejected operation" } });
+    // The host is the account's own Mac: its reason reaches the client, bounded.
+    if ("error" in reply) return command.resolve({ error: { code: reply.error.code, message: reply.error.message.slice(0, 256) || "Host rejected operation" } });
     const result = hostV1Results[command.method as HostMethod].safeParse(reply.result);
     const generation = (result.data as { hostGeneration?: unknown } | undefined)?.hostGeneration;
     if (!result.success || (generation !== undefined && generation !== command.generation))
