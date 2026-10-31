@@ -714,3 +714,5 @@ button.grouped-row:hover { background: var(--fill); }
 .app-tile.logo { background: #fff; box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12); }
 .app-tile.logo img { width: 72%; height: 72%; object-fit: contain; }
 .app-tile.logo.site img { width: 60%; height: 60%; }
+.app-tile.logo.full { overflow: hidden; }
+.app-tile.logo.full img { width: 100%; height: 100%; }

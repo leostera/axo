@@ -112,6 +112,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let sessionCreateCount = 0;
   let authenticated = false;
   let pairingRequestCount = 0;
+  const tokenRequests = [];
   // The account's connections (RFD0016), as the Worker lists them.
   const connections = [
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
@@ -120,6 +121,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "app", name: "apps.gmail", title: "Gmail", provider: "Google", category: "communication", description: "Read, search, send and organize your mail, and manage Gmail's settings.", permissions: ["Read, search and download every message and attachment", "Send mail and replies, and write drafts", "Label, archive, trash and permanently delete mail"], state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
     { kind: "app", name: "apps.calendar", title: "Google Calendar", provider: "Google", category: "productivity", description: "See and manage your calendars and events.", permissions: ["See every calendar you can reach, and its events"], state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
     { kind: "app", name: "apps.drive", title: "Google Drive", provider: "Google", category: "files", description: "Find, read, upload, organize and share your files.", permissions: ["See and download every file in My Drive and shared drives"], state: "needsSignIn", accounts: [], tools: ["search_files"], lastError: null },
+    { kind: "app", name: "apps.hetzner", title: "Hetzner", provider: "Hetzner", category: "developer", description: "Your Hetzner Cloud projects: servers, DNS, firewalls, volumes and storage boxes.", permissions: ["See the project's servers and their usage, and start, stop or restart them"],
+      signIn: { kind: "token", helpUrl: "https://console.hetzner.com/projects", named: true, fields: [{ name: "token", label: "API token", help: "In Hetzner Console, open the project, then Security, API tokens, Generate API token.", secret: true }] },
+      state: "needsSignIn", accounts: [], tools: ["list_servers", "request"], lastError: null },
   ];
   const callLog = [
     { callId: "c-3", at: now, sessionId: sid(1), hostId, service: "apps.gmail", tool: "search_messages", targetHostId: null, durationMs: 210, outcome: "ok", error: null, input: { account: "ada@example.com", query: "is:unread" } },
@@ -158,6 +162,24 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log") {
       const service = url.searchParams.get("service");
       json(response, { records: service ? callLog.filter((record) => record.service === service) : callLog }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.hetzner/token") {
+      // Adding a token app's account: Hetzner accepts only its own tokens, and the token is never sent back.
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const { account, fields } = JSON.parse(body);
+        tokenRequests.push({ account, fields });
+        if (fields.token !== "hz-good-token") {
+          json(response, { error: "Hetzner did not accept this token" }, origin, 400);
+          return;
+        }
+        const hetzner = connections.find((c) => c.name === "apps.hetzner");
+        hetzner.accounts.push({ account, state: "ready", lastError: null });
+        hetzner.state = "ready";
+        json(response, { name: "apps.hetzner", account }, origin);
+      });
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/connections") {
@@ -568,11 +590,11 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "linear", "notion", "docs", "Add MCP server"]);
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "linear", "notion", "docs", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 4, "Gmail, Calendar and Drive have their logos, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 5, "Gmail, Calendar, Drive and Hetzner have their logos, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
     assert.deepEqual(await cards(), ["Gmail", "linear", "docs"], "only what is connected");
@@ -622,6 +644,26 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
     assert.equal(await page.getByRole("region", { name: "Activity" }).count(), 0);
     assert.ok(!new URL(page.url()).pathname.startsWith("/app/settings"), page.url());
+
+    // A token app: Add account asks for a name and the token, and the token is never shown again.
+    await page.goto(`${appUrl}/app/settings/apps/hetzner`, { waitUntil: "networkidle" });
+    const hetzner = page.getByRole("region", { name: "Hetzner" });
+    await hetzner.getByRole("button", { name: "Add account" }).click();
+    await expect(hetzner.getByRole("link", { name: "Open Hetzner" }));
+    await hetzner.getByLabel("Account name").fill("Personal");
+    await hetzner.getByLabel("API token").fill("hz-bad-token");
+    assert.equal(await hetzner.getByLabel("API token").getAttribute("type"), "password");
+    await shot("apps-hetzner-add");
+    await hetzner.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(hetzner.getByText("Hetzner did not accept this token"));
+    await hetzner.getByLabel("API token").fill("hz-good-token");
+    await hetzner.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(hetzner.getByText("Added personal."));
+    assert.deepEqual(await hetzner.locator(".connection-row strong").allTextContents(), ["personal"]);
+    assert.equal(await hetzner.getByLabel("API token").count(), 0, "the form is gone, and the token with it");
+    assert.deepEqual(tokenRequests.map((r) => r.account), ["personal", "personal"]);
+    assert.equal((await page.content()).includes("hz-good-token"), false);
+    await shot("apps-hetzner");
 
     // Where sign-ins used to come back still works: on the app's page.
     await page.goto(`${appUrl}/app/connections?signedIn=apps.gmail`, { waitUntil: "networkidle" });

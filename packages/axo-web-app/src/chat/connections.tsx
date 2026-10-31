@@ -9,6 +9,7 @@ import contactsLogo from "./logos/contacts.svg";
 import docsLogo from "./logos/docs.svg";
 import driveLogo from "./logos/drive.svg";
 import gmailLogo from "./logos/gmail.svg";
+import hetznerLogo from "./logos/hetzner.svg";
 import meetLogo from "./logos/meet.svg";
 import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
@@ -18,8 +19,8 @@ import tasksLogo from "./logos/tasks.svg";
  * Settings › Apps (RFD0016): what the account's Sessions can use, as pages over the chats, each
  * with its own URL. Apps lists the apps Axo provides, then MCP servers and activity. An app's
  * page says what it is for and what it may do, lists its accounts with Add account, and shows
- * what Sessions did with it. A client secret is typed only here, never in a chat, and no grant
- * ever reaches the browser.
+ * what Sessions did with it. A client secret or an app's token is typed only here, never in a
+ * chat, and no grant or token ever reaches the browser again.
  */
 
 type App = Extract<Connection, { kind: "app" }>;
@@ -132,7 +133,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
 }
 
 const CATEGORY_TITLES: Record<string, string> = {
-  communication: "Communication", productivity: "Productivity", files: "Files", developer: "Developer",
+  communication: "Communication", productivity: "Productivity", files: "Files", developer: "Developer", media: "Media", security: "Security",
   other: "Other", finance: "Finance", social: "Social", travel: "Travel", shopping: "Shopping", entertainment: "Entertainment", health: "Health", home: "Home",
 };
 type Status = "all" | "connected" | "notConnected";
@@ -254,12 +255,23 @@ type Shared = {
 };
 
 function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared & { app: App; version: number }) {
-  const add = () => act(async () => {
-    const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/sign-in`, "POST")) as { signInUrl: string };
-    window.location.assign(signInUrl);
-  });
+  // A token app's Add account is a form on this page; an OAuth app's opens the provider's sign-in.
+  const [adding, setAdding] = useState<{ account: string } | null>(null);
+  const add = (account = "") => {
+    if (app.signIn.kind === "token") {
+      setAdding({ account });
+      return;
+    }
+    void act(async () => {
+      const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/sign-in`, "POST")) as { signInUrl: string };
+      window.location.assign(signInUrl);
+    });
+  };
+  const revoked = app.signIn.kind === "token"
+    ? `Axo forgets its token. To stop it working, delete it at ${app.provider || "the service"} too.`
+    : `Axo's access is revoked at ${app.provider || "the provider"}.`;
   const signOut = (account: string) => {
-    if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it, and Axo's access is revoked at Google.`)) return;
+    if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it. ${revoked}`)) return;
     void act(async () => {
       await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/remove`, "POST", { account });
       setNotice({ kind: "ok", text: `Removed ${account}.` });
@@ -277,25 +289,29 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
       </aside>
 
       <section className="app-main">
-        <h2 className="settings-section">Accounts</h2>
-        <div className="grouped">
+        {app.accounts.length || adding === null ? <h2 className="settings-section">Accounts</h2> : null}
+        <div className="grouped" hidden={!app.accounts.length && adding !== null}>
           {app.accounts.map((account) => (
             <div key={account.account} className="grouped-row connection-row">
               <Icon name="person" size={18} />
               <span className="connection-copy">
                 <strong>{account.account}</strong>
-                {account.state === "needsSignIn" ? <small>Needs sign-in</small> : null}
+                {account.state === "needsSignIn" ? <small>{app.signIn.kind === "token" ? account.lastError ?? "Needs a new token" : "Needs sign-in"}</small> : null}
               </span>
               {account.state === "needsSignIn"
-                ? <button className="bordered-button" disabled={busy} onClick={() => void add()}>Sign in</button>
+                ? <button className="bordered-button" disabled={busy} onClick={() => add(account.account)}>{app.signIn.kind === "token" ? "Add token" : "Sign in"}</button>
                 : <span className="mac-dot online" aria-label="Connected" title="Connected" />}
               <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
                 <Icon name="close" size={16} />
               </button>
             </div>
           ))}
-          <button className="grouped-row add-row" disabled={busy} onClick={() => void add()}>Add account</button>
+          {adding === null ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
         </div>
+        {adding !== null && app.signIn.kind === "token"
+          ? <TokenForm app={app} signIn={app.signIn} account={adding.account} busy={busy} act={act} connectionsUrl={connectionsUrl}
+            onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); }} onCancel={() => setAdding(null)} />
+          : null}
 
         {app.permissions.length ? <h2 className="settings-section">What Axo can do</h2> : null}
         <ul className="grouped permissions" hidden={!app.permissions.length}>
@@ -311,6 +327,50 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
         <Calls connectionsUrl={connectionsUrl} service={app.name} version={version} />
       </aside>
     </div>
+  );
+}
+
+type TokenSignIn = Extract<App["signIn"], { kind: "token" }>;
+
+/**
+ * Adds an account to a token app: what the service issued, pasted once. It is sent to Axo, which
+ * checks it with the service and seals it; this page never sees it again.
+ */
+function TokenForm({ app, signIn, account, busy, act, connectionsUrl, onDone, onCancel }: {
+  app: App; signIn: TokenSignIn; account: string; busy: boolean; connectionsUrl: string;
+  act: Shared["act"]; onDone: (account: string) => void; onCancel: () => void;
+}) {
+  const [name, setName] = useState(account);
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const submit = () => act(async () => {
+    const body = { ...(signIn.named ? { account: name.trim().toLowerCase() } : {}), fields };
+    const added = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/token`, "POST", body)) as { account: string };
+    setFields({});
+    onDone(added.account);
+  });
+  return (
+    <>
+      <h2 className="settings-section">{account ? `New token for ${account}` : `Add a ${app.title} account`}</h2>
+      <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        {signIn.named ? (
+          <input className="grouped-row" required minLength={3} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._@\-]*" placeholder="Name, e.g. personal" value={name}
+            readOnly={Boolean(account)} autoFocus={!account} onChange={(event) => setName(event.target.value)} aria-label="Account name"
+            autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+        ) : null}
+        {signIn.fields.map((field, i) => (
+          <input key={field.name} className="grouped-row" required type={field.secret ? "password" : "text"} placeholder={field.label} value={fields[field.name] ?? ""}
+            autoFocus={Boolean(account) && i === 0} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+            onChange={(event) => setFields({ ...fields, [field.name]: event.target.value })} aria-label={field.label} />
+        ))}
+        <button className="grouped-row" disabled={busy} type="submit">Add</button>
+      </form>
+      <p className="sheet-note">
+        {signIn.fields.map((f) => f.help).join(" ")}{" "}
+        <a href={signIn.helpUrl} target="_blank" rel="noreferrer">Open {app.provider || app.title}</a>.
+        {" "}Axo checks it with {app.provider || app.title}, keeps it encrypted, and never shows it again.
+        {" "}<button className="link" type="button" onClick={onCancel}>Cancel</button>
+      </p>
+    </>
   );
 }
 
@@ -455,12 +515,15 @@ const APP_LOGOS: Record<string, string> = {
   "apps.tasks": tasksLogo,
   "apps.meet": meetLogo,
   "apps.cloud": cloudLogo,
+  "apps.hetzner": hetznerLogo,
 };
+/** Logos drawn as a full tile of their own, not a mark on white. */
+const FULL_LOGOS = new Set(["apps.hetzner"]);
 
 function AppTile({ app, large = false }: { app: string; large?: boolean }) {
   const logo = APP_LOGOS[app];
   if (!logo) return <span className={`app-tile neutral${large ? " large" : ""}`} aria-hidden="true"><Icon name="plug" size={large ? 28 : 18} /></span>;
-  return <span className={`app-tile logo${large ? " large" : ""}`} aria-hidden="true"><img src={logo} alt="" draggable={false} /></span>;
+  return <span className={`app-tile logo${FULL_LOGOS.has(app) ? " full" : ""}${large ? " large" : ""}`} aria-hidden="true"><img src={logo} alt="" draggable={false} /></span>;
 }
 
 /** An MCP server's tile: the icon the Worker found for it, or a plug when it has none or it does not load. */
@@ -489,7 +552,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */
