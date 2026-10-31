@@ -93,34 +93,12 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
     body = app ? <AppPage key={app.name} app={app} version={version} {...shared} /> : <p className="settings-muted">{connections ? "This app is not available." : "Loading…"}</p>;
   } else if (route.kind === "servers") {
     title = "MCP servers";
-    body = <ServersPage servers={servers} loaded={connections !== null} {...shared} />;
+    body = <div className="settings-narrow"><ServersPage servers={servers} loaded={connections !== null} {...shared} /></div>;
   } else if (route.kind === "activity") {
     title = "Activity";
-    body = <ActivityPage connectionsUrl={connectionsUrl} />;
+    body = <div className="settings-narrow"><ActivityPage connectionsUrl={connectionsUrl} /></div>;
   } else {
-    body = (
-      <>
-        <header className="settings-hero">
-          <h1>Apps</h1>
-          <p>Choose what your Sessions can use.</p>
-        </header>
-        <h2 className="settings-section">Google</h2>
-        <div className="grouped">
-          {connections === null ? <p className="grouped-row muted">Loading…</p> : null}
-          {apps.map((app) => (
-            <NavRow key={app.name} tile={<AppTile app={app.name} />} title={app.title} subtitle={app.description}
-              detail={count(app.accounts.length, "account")} onClick={() => go({ kind: "app", app: app.name.slice("apps.".length) })} />
-          ))}
-        </div>
-        <h2 className="settings-section">More</h2>
-        <div className="grouped">
-          <NavRow tile={<span className="app-tile neutral"><Icon name="plug" size={18} /></span>} title="MCP servers" subtitle="Linear, Notion and any other server you add"
-            detail={connections ? count(servers.length, "server") : ""} onClick={() => go({ kind: "servers" })} />
-          <NavRow tile={<span className="app-tile neutral"><Icon name="doc" size={18} /></span>} title="Activity" subtitle="Everything your Sessions used"
-            detail="" onClick={() => go({ kind: "activity" })} />
-        </div>
-      </>
-    );
+    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} go={go} />;
   }
 
   return (
@@ -140,6 +118,121 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
         <div className="connections">{body}</div>
       </div>
     </div>
+  );
+}
+
+const CATEGORY_TITLES: Record<string, string> = {
+  communication: "Communication", productivity: "Productivity", files: "Files", developer: "Developer",
+  finance: "Finance", social: "Social", travel: "Travel", shopping: "Shopping", entertainment: "Entertainment", health: "Health", home: "Home",
+};
+type Status = "all" | "connected" | "notConnected";
+
+/** Apps: filters, a grid of every app and MCP server, and what Sessions used lately. */
+function AppsHome({ apps, servers, loaded, connectionsUrl, go }: {
+  apps: App[]; servers: Server[]; loaded: boolean; connectionsUrl: string; go: (route: SettingsRoute) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<Status>("all");
+  const [category, setCategory] = useState<string>("all");
+
+  type Tile = { key: string; title: string; subtitle: string; connected: boolean; category: string; provider: string; look: ReactNode; open: () => void; detail: string };
+  const tiles: Tile[] = [
+    ...apps.map((app): Tile => ({
+      key: app.name, title: app.title, subtitle: app.description, category: app.category, provider: app.provider,
+      connected: app.accounts.some((a) => a.state === "ready"), look: <AppTile app={app.name} large />,
+      detail: count(app.accounts.length, "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
+    })),
+    ...servers.map((server): Tile => ({
+      key: server.name, title: server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
+      connected: server.state === "ready", look: <span className="app-tile large neutral"><Icon name="plug" size={28} /></span>,
+      detail: server.state === "ready" ? count(server.tools, "tool") : server.state === "needsSignIn" ? "Needs sign-in" : "Unreachable",
+      open: () => go({ kind: "servers" }),
+    })),
+  ];
+  const categories = [...new Set(tiles.map((t) => t.category))];
+  const needle = query.trim().toLowerCase();
+  const shown = tiles.filter((t) =>
+    (status === "all" || (status === "connected") === t.connected)
+    && (category === "all" || t.category === category)
+    && (!needle || `${t.title} ${t.subtitle} ${t.provider}`.toLowerCase().includes(needle)));
+  const countOf = (filter: (t: Tile) => boolean) => tiles.filter(filter).length;
+
+  return (
+    <div className="apps-layout">
+      <aside className="apps-filters" aria-label="Filters">
+        <input className="apps-search" type="search" placeholder="Search apps" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search apps" />
+        <h2 className="settings-section">Status</h2>
+        <div className="filter-list" role="radiogroup" aria-label="Status">
+          {([["all", "All"], ["connected", "Connected"], ["notConnected", "Not connected"]] as const).map(([value, label]) => (
+            <FilterChip key={value} label={label} count={countOf((t) => value === "all" || (value === "connected") === t.connected)} selected={status === value} onClick={() => setStatus(value)} />
+          ))}
+        </div>
+        <h2 className="settings-section">Category</h2>
+        <div className="filter-list" role="radiogroup" aria-label="Category">
+          <FilterChip label="All" count={tiles.length} selected={category === "all"} onClick={() => setCategory("all")} />
+          {categories.map((c) => (
+            <FilterChip key={c} label={c === "mcp" ? "MCP servers" : CATEGORY_TITLES[c] ?? c} count={countOf((t) => t.category === c)} selected={category === c} onClick={() => setCategory(c)} />
+          ))}
+        </div>
+      </aside>
+
+      <section className="apps-grid-column" aria-label="All apps">
+        <div className="apps-grid">
+          {!loaded ? <p className="settings-muted">Loading…</p> : null}
+          {shown.map((tile) => (
+            <button key={tile.key} className="app-card" onClick={tile.open}>
+              {tile.look}
+              <strong>{tile.title}</strong>
+              <small className={tile.connected ? "connected" : ""}>{tile.connected ? <span className="mac-dot online" aria-hidden="true" /> : null}{tile.detail}</small>
+            </button>
+          ))}
+          {loaded && status === "all" && (category === "all" || category === "mcp") && !needle ? (
+            <button className="app-card add-card" onClick={() => go({ kind: "servers" })}>
+              <span className="app-tile large neutral"><Icon name="plug" size={28} /></span>
+              <strong>Add MCP server</strong>
+              <small>Any server with a URL</small>
+            </button>
+          ) : null}
+          {loaded && shown.length === 0 && needle ? <p className="settings-muted">No app matches “{query}”.</p> : null}
+        </div>
+      </section>
+
+      <aside className="apps-activity" aria-label="Recent activity">
+        <div className="apps-activity-head">
+          <h2 className="settings-section">Recent activity</h2>
+          <button className="link" onClick={() => go({ kind: "activity" })}>See all</button>
+        </div>
+        <Integrity connectionsUrl={connectionsUrl} />
+        <Calls connectionsUrl={connectionsUrl} limit={12} compact />
+      </aside>
+    </div>
+  );
+}
+
+function FilterChip({ label, count, selected, onClick }: { label: string; count: number; selected: boolean; onClick: () => void }) {
+  return (
+    <button className={`filter-chip${selected ? " selected" : ""}`} role="radio" aria-checked={selected} onClick={onClick}>
+      <span>{label}</span><small>{count}</small>
+    </button>
+  );
+}
+
+/** Whether the call log is as it was written: its hash chain, replayed in the cloud. */
+function Integrity({ connectionsUrl }: { connectionsUrl: string }) {
+  const [check, setCheck] = useState<{ verified: boolean; events: number; head: string | null; reason: string | null } | null | "failed">(null);
+  useEffect(() => {
+    let live = true;
+    request(`${connectionsUrl}/log/integrity`, "GET")
+      .then((answer) => { if (live) setCheck(answer as { verified: boolean; events: number; head: string | null; reason: string | null }); })
+      .catch(() => { if (live) setCheck("failed"); });
+    return () => { live = false; };
+  }, [connectionsUrl]);
+  if (check === null || check === "failed") return null;
+  return (
+    <p className={`integrity${check.verified ? "" : " broken"}`} title={check.head ? `Chain head ${check.head}` : undefined}>
+      <Icon name={check.verified ? "check" : "warning"} size={14} />
+      {check.verified ? `Log intact · ${count(check.events, "entry", "entries")}` : `Log was changed: ${check.reason ?? "unknown"}`}
+    </p>
   );
 }
 
@@ -163,46 +256,49 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
     });
   };
   return (
-    <>
-      <header className="settings-hero app-hero">
+    <div className="app-layout">
+      <aside className="app-info">
         <AppTile app={app.name} large />
-        <div>
-          <h1>{app.title}</h1>
-          <p>{app.description}</p>
+        <h1>{app.title}</h1>
+        <p className="app-meta">{app.provider} · {CATEGORY_TITLES[app.category] ?? app.category}</p>
+        <p>{app.description}</p>
+      </aside>
+
+      <section className="app-main">
+        <h2 className="settings-section">Accounts</h2>
+        <div className="grouped">
+          {app.accounts.map((account) => (
+            <div key={account.account} className="grouped-row connection-row">
+              <Icon name="person" size={18} />
+              <span className="connection-copy">
+                <strong>{account.account}</strong>
+                {account.state === "needsSignIn" ? <small>Needs sign-in</small> : null}
+              </span>
+              {account.state === "needsSignIn"
+                ? <button className="bordered-button" disabled={busy} onClick={() => void add()}>Sign in</button>
+                : <span className="mac-dot online" aria-label="Connected" title="Connected" />}
+              <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
+                <Icon name="close" size={16} />
+              </button>
+            </div>
+          ))}
+          <button className="grouped-row add-row" disabled={busy} onClick={() => void add()}>Add account</button>
         </div>
-      </header>
 
-      <h2 className="settings-section">Accounts</h2>
-      <div className="grouped">
-        {app.accounts.map((account) => (
-          <div key={account.account} className="grouped-row connection-row">
-            <Icon name="person" size={18} />
-            <span className="connection-copy">
-              <strong>{account.account}</strong>
-              {account.state === "needsSignIn" ? <small>Needs sign-in</small> : null}
-            </span>
-            {account.state === "needsSignIn"
-              ? <button className="bordered-button" disabled={busy} onClick={() => void add()}>Sign in</button>
-              : <span className="mac-dot online" aria-label="Connected" title="Connected" />}
-            <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
-              <Icon name="close" size={16} />
-            </button>
-          </div>
-        ))}
-        <button className="grouped-row add-row" disabled={busy} onClick={() => void add()}>Add account</button>
-      </div>
+        <h2 className="settings-section">What Axo can do</h2>
+        <ul className="grouped permissions">
+          {app.permissions.map((permission) => (
+            <li key={permission} className="grouped-row"><Icon name="check" size={16} /><span>{permission}</span></li>
+          ))}
+        </ul>
+        <p className="sheet-note">Only with the accounts above, and only when one of your Sessions asks.</p>
+      </section>
 
-      <h2 className="settings-section">What Axo can do</h2>
-      <ul className="grouped permissions">
-        {app.permissions.map((permission) => (
-          <li key={permission} className="grouped-row"><Icon name="check" size={16} /><span>{permission}</span></li>
-        ))}
-      </ul>
-      <p className="sheet-note">Only with the accounts above, and only when one of your Sessions asks.</p>
-
-      <h2 className="settings-section">Recent activity</h2>
-      <Calls connectionsUrl={connectionsUrl} service={app.name} version={version} />
-    </>
+      <aside className="app-activity">
+        <h2 className="settings-section">Recent activity</h2>
+        <Calls connectionsUrl={connectionsUrl} service={app.name} version={version} />
+      </aside>
+    </div>
   );
 }
 
@@ -299,25 +395,26 @@ function ActivityPage({ connectionsUrl }: { connectionsUrl: string }) {
         <h1>Activity</h1>
         <p>What your Sessions used in the last 30 days.</p>
       </header>
+      <Integrity connectionsUrl={connectionsUrl} />
       <Calls connectionsUrl={connectionsUrl} />
     </>
   );
 }
 
 /** Recent calls, of every app and server or of one. */
-function Calls({ connectionsUrl, service, version = 0 }: { connectionsUrl: string; service?: string; version?: number }) {
+function Calls({ connectionsUrl, service, version = 0, limit, compact = false }: { connectionsUrl: string; service?: string; version?: number; limit?: number; compact?: boolean }) {
   const [records, setRecords] = useState<CallRecord[] | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
-    const query = new URLSearchParams({ limit: service ? "20" : "50", ...(service ? { service } : {}) });
+    const query = new URLSearchParams({ limit: String(limit ?? (service ? 20 : 50)), ...(service ? { service } : {}) });
     request(`${connectionsUrl}/log?${query}`, "GET")
       .then((log) => { if (live) setRecords(connectionsResults["axo.connections.log"].parse(log).records); })
       .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
-  }, [connectionsUrl, service, version]);
+  }, [connectionsUrl, service, version, limit]);
   return (
-    <div className="grouped">
+    <div className={`grouped${compact ? " compact-calls" : ""}`}>
       {records === null ? <p className="grouped-row muted">{failed ? "Activity is unavailable." : "Loading…"}</p> : null}
       {records?.map((record) => (
         <div key={record.callId} className="grouped-row call-row" title={JSON.stringify(record.input)}>
@@ -331,17 +428,6 @@ function Calls({ connectionsUrl, service, version = 0 }: { connectionsUrl: strin
       ))}
       {records && records.length === 0 ? <p className="grouped-row muted">Nothing yet.</p> : null}
     </div>
-  );
-}
-
-function NavRow({ tile, title, subtitle, detail, onClick }: { tile: ReactNode; title: string; subtitle: string; detail: string; onClick: () => void }) {
-  return (
-    <button className="grouped-row connection-row nav-row" onClick={onClick}>
-      {tile}
-      <span className="connection-copy"><strong>{title}</strong><small>{subtitle}</small></span>
-      <small className="nav-detail">{detail}</small>
-      <Icon name="chevronRight" size={16} />
-    </button>
   );
 }
 
@@ -367,8 +453,8 @@ function AppTile({ app, large = false }: { app: string; large?: boolean }) {
   );
 }
 
-function count(n: number, noun: string): string {
-  return n === 0 ? `No ${noun}s` : n === 1 ? `1 ${noun}` : `${n} ${noun}s`;
+function count(n: number, noun: string, nouns = `${noun}s`): string {
+  return n === 0 ? `No ${nouns}` : n === 1 ? `1 ${noun}` : `${n} ${nouns}`;
 }
 
 function host(url: string): string {

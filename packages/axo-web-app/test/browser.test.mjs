@@ -117,9 +117,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
     { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, syncedAt: now, lastError: null },
     { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
-    { kind: "app", name: "apps.gmail", title: "Gmail", description: "Read, search, send and organize your mail, and manage Gmail's settings.", permissions: ["Read, search and download every message and attachment", "Send mail and replies, and write drafts", "Label, archive, trash and permanently delete mail"], state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
-    { kind: "app", name: "apps.calendar", title: "Google Calendar", description: "See and manage your calendars and events.", permissions: ["See every calendar you can reach, and its events"], state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
-    { kind: "app", name: "apps.drive", title: "Google Drive", description: "Find, read, upload, organize and share your files.", permissions: ["See and download every file in My Drive and shared drives"], state: "needsSignIn", accounts: [], tools: ["search_files"], lastError: null },
+    { kind: "app", name: "apps.gmail", title: "Gmail", provider: "Google", category: "communication", description: "Read, search, send and organize your mail, and manage Gmail's settings.", permissions: ["Read, search and download every message and attachment", "Send mail and replies, and write drafts", "Label, archive, trash and permanently delete mail"], state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
+    { kind: "app", name: "apps.calendar", title: "Google Calendar", provider: "Google", category: "productivity", description: "See and manage your calendars and events.", permissions: ["See every calendar you can reach, and its events"], state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
+    { kind: "app", name: "apps.drive", title: "Google Drive", provider: "Google", category: "files", description: "Find, read, upload, organize and share your files.", permissions: ["See and download every file in My Drive and shared drives"], state: "needsSignIn", accounts: [], tools: ["search_files"], lastError: null },
   ];
   const callLog = [
     { callId: "c-3", at: now, sessionId: sid(1), hostId, service: "apps.gmail", tool: "search_messages", targetHostId: null, durationMs: 210, outcome: "ok", error: null, input: { account: "ada@example.com", query: "is:unread" } },
@@ -149,6 +149,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     }
     if (request.method === "GET" && url.pathname === "/api/v1/account/connections") {
       json(response, { connections }, origin);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log/integrity") {
+      json(response, { verified: true, events: callLog.length * 2, head: "ab".repeat(32), brokenAt: null, reason: null }, origin);
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log") {
@@ -553,13 +557,25 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(servers.locator(".connection-row strong", { hasText: "docs" }));
     await shot("apps-servers");
 
-    // Apps: each Google app, then MCP servers and Activity, each a page with its own URL.
+    // Apps: a grid of every app and server, with filters and what Sessions used lately.
     await servers.getByRole("navigation", { name: "Breadcrumb" }).getByRole("button", { name: "Apps" }).click();
     const apps = page.getByRole("region", { name: "Apps" });
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
-    assert.deepEqual(await apps.locator(".nav-row strong").allTextContents(), ["Gmail", "Google Calendar", "Google Drive", "MCP servers", "Activity"]);
+    const cards = () => apps.locator(".app-card strong").allTextContents();
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "linear", "notion", "docs", "Add MCP server"]);
+    await expect(apps.getByText("Log intact · 6 entries"));
+    await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await shot("apps");
+    await apps.getByRole("radio", { name: /^Connected/ }).click();
+    assert.deepEqual(await cards(), ["Gmail", "linear", "docs"], "only what is connected");
+    await apps.getByRole("radio", { name: /^All/ }).first().click();
+    await apps.getByRole("radio", { name: /^Files/ }).click();
+    assert.deepEqual(await cards(), ["Google Drive"]);
+    await apps.getByRole("radio", { name: /^All/ }).last().click();
+    await apps.getByLabel("Search apps").fill("cal");
+    assert.deepEqual(await cards(), ["Google Calendar"]);
+    await apps.getByLabel("Search apps").fill("");
     await apps.getByRole("button", { name: /Gmail/ }).click();
     const gmail = page.getByRole("region", { name: "Gmail" });
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps/gmail");
@@ -577,10 +593,19 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("apps-gmail-dark");
     await page.emulateMedia({ colorScheme: "light" });
 
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shot("apps-gmail-phone");
+    await page.goBack();
+    await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
+    await shot("apps-phone");
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.goForward();
+    await expect(page.getByRole("region", { name: "Gmail" }).getByRole("heading", { name: "Gmail" }));
+
     // The browser's Back goes back a page; a reload stays on it.
     await page.goBack();
     await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
-    await page.getByRole("region", { name: "Apps" }).getByRole("button", { name: /Activity/ }).click();
+    await page.getByRole("region", { name: "Apps" }).getByRole("button", { name: "See all" }).click();
     const activityPage = page.getByRole("region", { name: "Activity" });
     await expect(activityPage.locator(".call-row strong", { hasText: "linear · List issues" }));
     assert.deepEqual(await activityPage.locator(".call-row strong").allTextContents(), ["Gmail · Search messages", "linear · List issues", "browser_fixture_mac · Bash"]);
