@@ -16,6 +16,8 @@ export type ProviderRequest = {
   accept?: string;
   /** Extra request headers, such as Google Cloud's `x-goog-user-project`. Never `Authorization`. */
   headers?: Record<string, string>;
+  /** How long the whole call may take, answer included; 30 seconds when left out. */
+  timeoutMs?: number;
 };
 
 /** A provider's answer as it came: for the `request` tool, which passes any endpoint's answer back. */
@@ -99,7 +101,13 @@ export type TokenSignIn = {
 /** An app the person adds an account to by pasting a token the service issued them. */
 export type TokenApp = AppBase & { signIn: "token"; provider: string; token: TokenSignIn };
 
-export type AppDefinition = OAuthApp | TokenApp;
+/**
+ * An app the person signs in to with a code they enter at the provider (a device sign-in):
+ * ChatGPT, whose client (Codex's) only lets a server sign in that way.
+ */
+export type DeviceApp = AppBase & { signIn: "device"; provider: "openai" };
+
+export type AppDefinition = OAuthApp | TokenApp | DeviceApp;
 
 /** The provider refused the call: it did not run. */
 export class ProviderError extends Error {

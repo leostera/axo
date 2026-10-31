@@ -61,7 +61,7 @@ export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,6
  * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
  */
 export const APPS_NAMESPACE = "apps";
-export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner"] as const;
+export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
@@ -89,9 +89,12 @@ export type AppTokenField = z.infer<typeof appTokenFieldSchema>;
  * How a person adds an account to an app. `oauth`: Add account opens the provider's sign-in.
  * `token`: the person pastes what the service issued them (an API token, a key), which Axo seals
  * and never shows again; `named` says the person names the account, since the service does not.
+ * `device`: Add account shows a code the person enters at the provider (ChatGPT), while the page
+ * asks Axo whether they have.
  */
 export const appSignInSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("oauth") }).strict(),
+  z.object({ kind: z.literal("device") }).strict(),
   z.object({
     kind: z.literal("token"),
     /** The service's page where the person creates the token. */
@@ -107,6 +110,19 @@ export const appTokenRequestSchema = z.object({
   fields: z.record(connectionNameSchema, z.string().min(1).max(8192)),
 }).strict();
 export type AppTokenRequest = z.infer<typeof appTokenRequestSchema>;
+/** A device sign-in as the web app polls it: the code to enter and where, until it is done or failed. */
+export const appDeviceSignInSchema = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("pending"),
+    userCode: z.string().min(1).max(64),
+    verificationUrl: z.url({ protocol: /^https$/ }).max(2048),
+    intervalSeconds: z.number().int().min(1).max(60),
+    expiresAt: z.iso.datetime(),
+  }).strict(),
+  z.object({ state: z.literal("done"), account: z.string().min(3).max(320) }).strict(),
+  z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
+]);
+export type AppDeviceSignIn = z.infer<typeof appDeviceSignInSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
 export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
 

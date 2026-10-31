@@ -311,6 +311,19 @@
                         "properties": {
                           "kind": {
                             "type": "string",
+                            "const": "device"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
                             "const": "token"
                           },
                           "helpUrl": {
@@ -364,7 +377,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "How Add account works: `oauth` opens the provider's sign-in; `token` asks for what the service issued (sealed, never shown again), and `named` says the person names the account."
+                    "description": "How Add account works: `oauth` opens the provider's sign-in; `device` shows a code to enter at the provider; `token` asks for what the service issued (sealed, never shown again), and `named` says the person names the account."
                   },
                   "state": {
                     "type": "string",
@@ -810,6 +823,19 @@
                       "properties": {
                         "kind": {
                           "type": "string",
+                          "const": "device"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
                           "const": "token"
                         },
                         "helpUrl": {
@@ -863,7 +889,7 @@
                       "additionalProperties": false
                     }
                   ],
-                  "description": "How Add account works: `oauth` opens the provider's sign-in; `token` asks for what the service issued (sealed, never shown again), and `named` says the person names the account."
+                  "description": "How Add account works: `oauth` opens the provider's sign-in; `device` shows a code to enter at the provider; `token` asks for what the service issued (sealed, never shown again), and `named` says the person names the account."
                 },
                 "state": {
                   "type": "string",

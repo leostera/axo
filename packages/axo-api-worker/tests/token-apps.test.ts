@@ -35,8 +35,9 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 
 test("Hetzner is listed without any client of Axo's, asking for a token the person names, and its tools all need an account", () => {
   const { apps } = fixture();
-  const [listed, ...rest] = apps.list();
-  assert.equal(rest.length, 0, "only token apps are listed without a Google client");
+  const all = apps.list();
+  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt"], "without a Google client, only apps that need no client of Axo's are listed");
+  const listed = all[0];
   const parsed = connectionSchema.parse(listed);
   assert.ok(parsed.kind === "app");
   assert.deepEqual([parsed.name, parsed.provider, parsed.state, parsed.accounts], ["apps.hetzner", "Hetzner", "needsSignIn", []]);
@@ -48,7 +49,7 @@ test("Hetzner is listed without any client of Axo's, asking for a token the pers
   });
   assert.deepEqual(parsed.tools, ["list_servers", "get_server", "server_action", "server_metrics", "get_action", "list_zones", "list_records", "set_records", "delete_records",
     "list_firewalls", "list_volumes", "list_storage_boxes", "request"]);
-  const tools = apps.tools();
+  const tools = apps.tools().filter((t) => t.service === "apps.hetzner");
   assert.ok(tools.every((t) => (t.inputSchema.required as string[])[0] === "account"));
   assert.match(tools[0]!.description, /the person adds one at https:\/\/axo\.leostera\.dev\/app\/settings\/apps\/hetzner/);
 });
