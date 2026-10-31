@@ -244,15 +244,26 @@
                   },
                   "description": {
                     "type": "string",
-                    "maxLength": 512
+                    "maxLength": 512,
+                    "default": ""
                   },
                   "provider": {
                     "type": "string",
-                    "maxLength": 64
+                    "maxLength": 64,
+                    "default": ""
                   },
                   "category": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z-]{0,31}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z-]{0,31}$"
+                      },
+                      {
+                        "type": "string",
+                        "const": ""
+                      }
+                    ],
+                    "default": ""
                   },
                   "permissions": {
                     "maxItems": 32,
@@ -260,7 +271,8 @@
                     "items": {
                       "type": "string",
                       "maxLength": 256
-                    }
+                    },
+                    "default": []
                   },
                   "state": {
                     "type": "string",
@@ -331,10 +343,6 @@
                   "kind",
                   "name",
                   "title",
-                  "description",
-                  "provider",
-                  "category",
-                  "permissions",
                   "state",
                   "accounts",
                   "tools",
@@ -643,15 +651,26 @@
                 },
                 "description": {
                   "type": "string",
-                  "maxLength": 512
+                  "maxLength": 512,
+                  "default": ""
                 },
                 "provider": {
                   "type": "string",
-                  "maxLength": 64
+                  "maxLength": 64,
+                  "default": ""
                 },
                 "category": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z-]{0,31}$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z-]{0,31}$"
+                    },
+                    {
+                      "type": "string",
+                      "const": ""
+                    }
+                  ],
+                  "default": ""
                 },
                 "permissions": {
                   "maxItems": 32,
@@ -659,7 +678,8 @@
                   "items": {
                     "type": "string",
                     "maxLength": 256
-                  }
+                  },
+                  "default": []
                 },
                 "state": {
                   "type": "string",
@@ -730,10 +750,6 @@
                 "kind",
                 "name",
                 "title",
-                "description",
-                "provider",
-                "category",
-                "permissions",
                 "state",
                 "accounts",
                 "tools",

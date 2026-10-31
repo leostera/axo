@@ -100,14 +100,16 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("app"),
     name: appServiceSchema,
     title: z.string().max(64),
+    // What an app's page shows. A reader takes a listing without them, from a Worker one release
+    // older than it (as while a deploy reaches the account's Durable Object), as empty.
     /** One sentence on what the app is for. */
-    description: z.string().max(512),
+    description: z.string().max(512).default(""),
     /** Who makes the service, as shown: "Google". */
-    provider: z.string().max(64),
+    provider: z.string().max(64).default(""),
     /** What kind of app it is, for filtering: "communication", "productivity", "files", "developer", ... */
-    category: z.string().regex(/^[a-z][a-z-]{0,31}$/),
+    category: z.string().regex(/^[a-z][a-z-]{0,31}$/).or(z.literal("")).default(""),
     /** What a signed-in account lets Axo do, in plain words, one per line. */
-    permissions: z.array(z.string().max(256)).max(32),
+    permissions: z.array(z.string().max(256)).max(32).default([]),
     /** Listed only when this Axo deployment has a client for the app's provider. `ready` once any account is. */
     state: z.enum(["ready", "needsSignIn"]),
     /** The provider accounts signed in, each named by its email; every call names one. */

@@ -123,7 +123,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
 
 const CATEGORY_TITLES: Record<string, string> = {
   communication: "Communication", productivity: "Productivity", files: "Files", developer: "Developer",
-  finance: "Finance", social: "Social", travel: "Travel", shopping: "Shopping", entertainment: "Entertainment", health: "Health", home: "Home",
+  other: "Other", finance: "Finance", social: "Social", travel: "Travel", shopping: "Shopping", entertainment: "Entertainment", health: "Health", home: "Home",
 };
 type Status = "all" | "connected" | "notConnected";
 
@@ -138,7 +138,7 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go }: {
   type Tile = { key: string; title: string; subtitle: string; connected: boolean; category: string; provider: string; look: ReactNode; open: () => void; detail: string };
   const tiles: Tile[] = [
     ...apps.map((app): Tile => ({
-      key: app.name, title: app.title, subtitle: app.description, category: app.category, provider: app.provider,
+      key: app.name, title: app.title, subtitle: app.description, category: app.category || "other", provider: app.provider,
       connected: app.accounts.some((a) => a.state === "ready"), look: <AppTile app={app.name} large />,
       detail: count(app.accounts.length, "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
     })),
@@ -260,8 +260,10 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
       <aside className="app-info">
         <AppTile app={app.name} large />
         <h1>{app.title}</h1>
-        <p className="app-meta">{app.provider} · {CATEGORY_TITLES[app.category] ?? app.category}</p>
-        <p>{app.description}</p>
+        {app.provider || app.category
+          ? <p className="app-meta">{[app.provider, app.category ? CATEGORY_TITLES[app.category] ?? app.category : ""].filter(Boolean).join(" · ")}</p>
+          : null}
+        {app.description ? <p>{app.description}</p> : null}
       </aside>
 
       <section className="app-main">
@@ -285,13 +287,13 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
           <button className="grouped-row add-row" disabled={busy} onClick={() => void add()}>Add account</button>
         </div>
 
-        <h2 className="settings-section">What Axo can do</h2>
-        <ul className="grouped permissions">
+        {app.permissions.length ? <h2 className="settings-section">What Axo can do</h2> : null}
+        <ul className="grouped permissions" hidden={!app.permissions.length}>
           {app.permissions.map((permission) => (
             <li key={permission} className="grouped-row"><Icon name="check" size={16} /><span>{permission}</span></li>
           ))}
         </ul>
-        <p className="sheet-note">Only with the accounts above, and only when one of your Sessions asks.</p>
+        {app.permissions.length ? <p className="sheet-note">Only with the accounts above, and only when one of your Sessions asks.</p> : null}
       </section>
 
       <aside className="app-activity">
@@ -508,6 +510,11 @@ async function request(url: string, method: "GET" | "POST", body?: unknown): Pro
   return payload;
 }
 
-function message(error: unknown): string {
+/** An error as one line for a person: a reply that did not parse is not shown as the parser's report. */
+export function message(error: unknown): string {
+  if (error instanceof Error && error.name === "ZodError") {
+    console.error(error);
+    return "Axo answered in a way this page does not understand. Reload the page; if it keeps happening, it is a bug.";
+  }
   return error instanceof Error ? error.message : "Something went wrong";
 }

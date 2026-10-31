@@ -4,6 +4,7 @@ import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@a
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript } from "../src/chat/transcript.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
+import { connectionsResults } from "@axo/protocol";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
 import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
@@ -240,6 +241,12 @@ test("settings pages have their own URLs: Apps, each app, MCP servers and activi
   for (const path of ["/app", `/app/${hostId}/${sid(1)}`, "/app/settings/apps/Gmail", "/app/settings/apps/gmail/more", "/elsewhere/settings/apps"]) {
     assert.equal(parseSettingsRoute("/app", path), null, path);
   }
+});
+
+test("Apps reads a listing from a Worker one release older, without the newest display fields", () => {
+  const older = { connections: [{ kind: "app", name: "apps.gmail", title: "Gmail", state: "ready", accounts: [], tools: ["request"], lastError: null }] };
+  const [app] = connectionsResults["axo.connections.list"].parse(older).connections;
+  assert.deepEqual(app?.kind === "app" && [app.description, app.provider, app.category, app.permissions], ["", "", "", []]);
 });
 
 /** A stand-in for the microphone and recogniser, driven by the test. */
