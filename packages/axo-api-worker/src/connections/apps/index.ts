@@ -4,7 +4,12 @@ import { seal, unseal } from "../../auth/crypto";
 import { GrantRefused } from "../oauth";
 import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
 import { ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type ProviderApi, type ProviderRequest } from "./app";
+import { calendar } from "./calendar";
+import { contacts } from "./contacts";
+import { docs } from "./docs";
+import { drive } from "./drive";
 import { gmail } from "./gmail";
+import { sheets } from "./sheets";
 import {
   googleAuthorizationUrl,
   redeemGoogleCode,
@@ -26,7 +31,7 @@ import {
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, contacts };
 
 /** An access token this close to expiring is renewed before use. */
 const EXPIRY_MARGIN_MS = 60_000;

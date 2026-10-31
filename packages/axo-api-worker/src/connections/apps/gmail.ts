@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AppDefinition, AppTool, ProviderApi } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
 
 /**
  * Gmail as an app: `codemode.apps.gmail.<tool>({ account, ... })` over the Gmail REST API, as
@@ -43,14 +43,14 @@ type Part = {
 type Message = { id: string; threadId: string; labelIds?: string[]; snippet?: string; internalDate?: string; sizeEstimate?: number; payload?: Part };
 
 const tools: AppTool[] = [
-  {
+  tool({
     name: "get_profile",
     description: "Returns the signed-in Gmail account: { emailAddress, messagesTotal, threadsTotal, historyId }.",
     input: z.object({}).strict(),
     idempotent: true,
     run: (api) => api.request("GET", `${BASE}/profile`),
-  },
-  {
+  }),
+  tool({
     name: "search_messages",
     description:
       "Searches messages with Gmail's search syntax (e.g. \"from:ada is:unread newer_than:7d\") and returns " +
@@ -79,8 +79,8 @@ const tools: AppTool[] = [
       })) as Message)));
       return { messages, nextPageToken: list.nextPageToken ?? null, resultSizeEstimate: list.resultSizeEstimate ?? messages.length };
     },
-  },
-  {
+  }),
+  tool({
     name: "get_message",
     description:
       "Reads one message: { id, threadId, labelIds, from, to, cc, subject, date, messageId, snippet, text, html?, textTruncated, attachments: [{ filename, mimeType, size }] }. " +
@@ -90,8 +90,8 @@ const tools: AppTool[] = [
     async run(api, input) {
       return full((await api.request("GET", `${BASE}/messages/${input.id}`, { query: { format: "full" } })) as Message, input.maxBodyChars, input.includeHtml);
     },
-  },
-  {
+  }),
+  tool({
     name: "get_thread",
     description: "Reads a whole thread: { id, messages: [...] }, each message as get_message returns it, oldest first.",
     input: z.object({ id, maxBodyChars }).strict(),
@@ -100,8 +100,8 @@ const tools: AppTool[] = [
       const thread = (await api.request("GET", `${BASE}/threads/${input.id}`, { query: { format: "full" } })) as { id: string; messages?: Message[] };
       return { id: thread.id, messages: (thread.messages ?? []).map((message) => full(message, input.maxBodyChars ?? 10_000, false)) };
     },
-  },
-  {
+  }),
+  tool({
     name: "list_labels",
     description: "Lists labels: { labels: [{ id, name, type }] }. System labels include INBOX, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, SPAM and TRASH.",
     input: z.object({}).strict(),
@@ -110,8 +110,8 @@ const tools: AppTool[] = [
       const answer = (await api.request("GET", `${BASE}/labels`)) as { labels?: Array<{ id: string; name: string; type?: string }> };
       return { labels: (answer.labels ?? []).map(({ id, name, type }) => ({ id, name, type: type ?? null })) };
     },
-  },
-  {
+  }),
+  tool({
     name: "send_message",
     description: "Sends an email from the signed-in account and returns { id, threadId, labelIds }. Give replyToMessageId to reply in a thread. A call that may have run is not safe to repeat: check the Sent label first.",
     input: composeSchema,
@@ -120,8 +120,8 @@ const tools: AppTool[] = [
       const { raw, threadId } = await compose(api, input);
       return api.request("POST", `${BASE}/messages/send`, { body: { raw, ...(threadId ? { threadId } : {}) } });
     },
-  },
-  {
+  }),
+  tool({
     name: "create_draft",
     description: "Saves a draft instead of sending it, and returns { id, message: { id, threadId } }. Takes the same input as send_message.",
     input: composeSchema,
@@ -130,8 +130,8 @@ const tools: AppTool[] = [
       const { raw, threadId } = await compose(api, input);
       return api.request("POST", `${BASE}/drafts`, { body: { message: { raw, ...(threadId ? { threadId } : {}) } } });
     },
-  },
-  {
+  }),
+  tool({
     name: "modify_message",
     description:
       "Adds and removes labels on a message and returns { id, threadId, labelIds }. Archive: remove INBOX. Mark read: remove UNREAD. Star: add STARRED.",
@@ -143,8 +143,8 @@ const tools: AppTool[] = [
       })) as Message;
       return { id: answer.id, threadId: answer.threadId, labelIds: answer.labelIds ?? [] };
     },
-  },
-  {
+  }),
+  tool({
     name: "trash_message",
     description: "Moves a message to the trash (Gmail deletes it after 30 days) and returns { id, threadId, labelIds }.",
     input: z.object({ id }).strict(),
@@ -153,8 +153,8 @@ const tools: AppTool[] = [
       const answer = (await api.request("POST", `${BASE}/messages/${input.id}/trash`)) as Message;
       return { id: answer.id, threadId: answer.threadId, labelIds: answer.labelIds ?? [] };
     },
-  },
-  {
+  }),
+  tool({
     name: "delete_message",
     description: "Deletes a message for good, skipping the trash; it cannot be recovered. Prefer trash_message unless asked to delete permanently. Returns { deleted: true }.",
     input: z.object({ id }).strict(),
@@ -163,7 +163,7 @@ const tools: AppTool[] = [
       await api.request("DELETE", `${BASE}/messages/${input.id}`);
       return { deleted: true };
     },
-  },
+  }),
 ];
 
 export const gmail: AppDefinition = {

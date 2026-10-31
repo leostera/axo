@@ -35,6 +35,11 @@ export type AppTool<Input = any> = {
   run(api: ProviderApi, input: Input): Promise<unknown>;
 };
 
+/** A tool whose `run` gets its input as its schema parses it. */
+export function tool<S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>>, "input"> & { input: S }): AppTool {
+  return definition as AppTool;
+}
+
 export type AppDefinition = {
   name: AppName;
   title: string;

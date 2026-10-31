@@ -41,8 +41,8 @@ function failure(reply: Reply): string {
 }
 
 /** The Connections page's Sign in button for Gmail: a sign-in link from the account's API. */
-async function signInLink(h: Harness, session: AccountSession): Promise<string> {
-  const response = await fetch(new URL("api/v1/account/connections/apps.gmail/sign-in", h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
+async function signInLink(h: Harness, session: AccountSession, app = "apps.gmail"): Promise<string> {
+  const response = await fetch(new URL(`api/v1/account/connections/${app}/sign-in`, h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
   assert.equal(response.status, 200, await response.clone().text());
   return ((await response.json()) as { signInUrl: string }).signInUrl;
 }
@@ -256,4 +256,158 @@ test("a grant stored when Gmail held one account carries over as that account", 
   const after = await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers });
   const app = ((await after.json()) as { connections: Array<{ kind: string; accounts: Array<{ account: string; state: string }> }> }).connections.find((c) => c.kind === "app");
   assert.deepEqual(app?.accounts.map((a) => [a.account, a.state]), [["ada@example.com", "ready"]]);
+});
+
+/** Signs ada@example.com in to one Workspace app, through the browser. */
+async function workspace(t: { after(fn: () => unknown): void }, app: string) {
+  const f = await fixture(t);
+  const start = await fetch(new URL((await signInLink(f.h, f.session, app)).replace("https://axo.leostera.dev/", ""), f.h.url), { headers: { Cookie: f.session.headers.Cookie! }, redirect: "manual" });
+  const asked = new URL(start.headers.get("location")!).searchParams.get("scope");
+  const landed = await signInThroughBrowser(f.h, f.google, f.session, await signInLink(f.h, f.session, app));
+  assert.equal(landed.searchParams.get("signedIn"), app, landed.toString());
+  const run = async (code: string) => result(await f.execute(code)).result;
+  return { ...f, asked, run, calls: () => f.google.workspaceCalls.map((c) => c.call) };
+}
+
+test("every Workspace app is listed, signs in with full access to its own service only, and keeps its own accounts", async (t) => {
+  const { google, h, session, call } = await signedIn(t);
+  const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "app");
+  assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
+    ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.contacts", 0],
+  ]);
+  const scopes: Record<string, string> = {};
+  for (const app of ["apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.contacts"]) {
+    const start = await fetch(new URL((await signInLink(h, session, app)).replace("https://axo.leostera.dev/", ""), h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
+    scopes[app] = new URL(start.headers.get("location")!).searchParams.get("scope")!;
+  }
+  assert.deepEqual(scopes, {
+    "apps.calendar": "openid email https://www.googleapis.com/auth/calendar",
+    "apps.drive": "openid email https://www.googleapis.com/auth/drive",
+    "apps.docs": "openid email https://www.googleapis.com/auth/documents",
+    "apps.sheets": "openid email https://www.googleapis.com/auth/spreadsheets",
+    "apps.contacts": "openid email https://www.googleapis.com/auth/contacts",
+  });
+  void google;
+});
+
+test("Calendar lists calendars and events, creates one with a Meet link, changes and deletes it, and reads free/busy", async (t) => {
+  const { run, google } = await workspace(t, "apps.calendar");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    const calendars = await codemode.apps.calendar.list_calendars(a);
+    const events = await codemode.apps.calendar.list_events({ ...a, timeMin: "2026-11-02T00:00:00Z", timeMax: "2026-11-03T00:00:00Z" });
+    const created = await codemode.apps.calendar.create_event({ ...a, summary: "Review", start: "2026-11-03T10:00:00+00:00", end: "2026-11-03", attendees: ["grace@example.com"], addMeet: true });
+    const moved = await codemode.apps.calendar.update_event({ ...a, eventId: "e2", start: "2026-11-04T10:00:00Z", timeZone: "Europe/London" });
+    const deleted = await codemode.apps.calendar.delete_event({ ...a, eventId: "e2", sendUpdates: "all" });
+    const busy = await codemode.apps.calendar.free_busy({ ...a, timeMin: "2026-11-02T00:00:00Z", timeMax: "2026-11-03T00:00:00Z", calendars: ["grace@example.com"] });
+    return { calendars, events, created, moved, deleted, busy };
+  }`);
+  assert.deepEqual(out.calendars.calendars[1], { id: "team@group.calendar.google.com", summary: "Team (mine)", primary: false, accessRole: "reader", timeZone: null });
+  assert.deepEqual(out.events.events[0], { id: "e1", summary: "Standup", start: "2026-11-02T09:00:00Z", end: "2026-11-02T09:15:00Z", allDay: false, location: null, attendees: [{ email: "grace@example.com", responseStatus: "accepted" }], organizer: null, status: "confirmed", htmlLink: null, meetLink: "https://meet.google.com/x", recurringEventId: null });
+  assert.equal(out.created.summary, "Review");
+  assert.equal(out.deleted.deleted, true);
+  assert.deepEqual(out.busy, { calendars: { "grace@example.com": [{ start: "2026-11-02T09:00:00Z", end: "2026-11-02T10:00:00Z" }] } });
+  const [listCalendars, listEvents, create, patch, del] = google.workspaceCalls;
+  assert.equal(listCalendars!.call, "GET www/calendar/v3/users/me/calendarList");
+  assert.equal(listEvents!.call, "GET www/calendar/v3/calendars/primary/events");
+  assert.equal(listEvents!.query.get("singleEvents"), "true");
+  assert.deepEqual(JSON.parse(create!.body).start, { dateTime: "2026-11-03T10:00:00+00:00" });
+  assert.deepEqual(JSON.parse(create!.body).end, { date: "2026-11-03" }, "a date is an all-day time");
+  assert.equal(JSON.parse(create!.body).conferenceData.createRequest.conferenceSolutionKey.type, "hangoutsMeet");
+  assert.equal(create!.query.get("conferenceDataVersion"), "1");
+  assert.equal(create!.query.get("sendUpdates"), "none", "guests are not emailed unless asked");
+  assert.deepEqual(JSON.parse(patch!.body), { start: { dateTime: "2026-11-04T10:00:00Z", timeZone: "Europe/London" } }, "an update sends only what changes");
+  assert.equal(del!.query.get("sendUpdates"), "all");
+});
+
+test("Drive searches, reads Docs as text, refuses binary reads, uploads, moves, shares, trashes and deletes", async (t) => {
+  const { run, google, execute } = await workspace(t, "apps.drive");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    const found = await codemode.apps.drive.search_files({ ...a, text: "plan's", folderId: "root" });
+    const doc = await codemode.apps.drive.read_file({ ...a, id: "doc1" });
+    const pdf = await codemode.apps.drive.download_file({ ...a, id: "pdf1" });
+    const up = await codemode.apps.drive.upload_file({ ...a, name: "rows.csv", text: "a,b\\n1,2", mimeType: "text/csv", convertTo: "spreadsheet", folderId: "f1" });
+    const folder = await codemode.apps.drive.update_file({ ...a, id: up.id, name: "Rows", folderId: "f2" });
+    const shared = await codemode.apps.drive.share_file({ ...a, id: up.id, email: "grace@example.com", role: "writer", notify: false });
+    const trashed = await codemode.apps.drive.trash_file({ ...a, id: "doc1" });
+    const deleted = await codemode.apps.drive.delete_file({ ...a, id: "pdf1" });
+    return { found, doc, pdf, up, folder, shared, trashed, deleted };
+  }`);
+  const search = google.workspaceCalls[0]!;
+  assert.equal(search.query.get("q"), "fullText contains 'plan\\'s' and 'root' in parents and trashed = false");
+  assert.equal(search.query.get("orderBy"), null, "Drive cannot order a full-text search");
+  assert.deepEqual(out.found.files.map((f: { id: string }) => f.id), ["doc1", "pdf1"]);
+  assert.deepEqual([out.doc.text, out.doc.truncated], ["The plan.", false]);
+  assert.ok(google.workspaceCalls.some((c) => c.call === "GET www/drive/v3/files/doc1/export" && c.query.get("mimeType") === "text/plain"));
+  assert.equal(Buffer.from(out.pdf.dataBase64, "base64").toString(), "%PDF-1.4");
+  assert.equal(google.files.get(out.up.id)!.mimeType, "application/vnd.google-apps.spreadsheet");
+  assert.equal(google.files.get(out.up.id)!.content, "a,b\n1,2");
+  assert.deepEqual([out.folder.name, out.folder.parents], ["Rows", ["f2"]], "moved out of f1 into f2");
+  assert.deepEqual(out.shared, { permissionId: "perm1", role: "writer" });
+  assert.equal(out.trashed.trashed, true);
+  assert.equal(google.files.has("pdf1"), false);
+  google.files.set("bin1", { name: "photo.png", mimeType: "image/png", content: "png", parents: [], trashed: false });
+  assert.match(failure(await execute(`async () => codemode.apps.drive.read_file({ account: "ada@example.com", id: "bin1" })`)), /not text; use download_file/);
+});
+
+test("Docs reads a document as text, tables tab-separated, and creates, appends to and replaces text in documents", async (t) => {
+  const { run, google } = await workspace(t, "apps.docs");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      doc: await codemode.apps.docs.get_document({ ...a, id: "doc1" }),
+      created: await codemode.apps.docs.create_document({ ...a, title: "Notes", text: "Hello" }),
+      appended: await codemode.apps.docs.append_text({ ...a, id: "doc2", text: "\\nMore" }),
+      replaced: await codemode.apps.docs.replace_text({ ...a, id: "doc2", find: "Hello", replace: "Hi" }),
+    };
+  }`);
+  assert.deepEqual([out.doc.title, out.doc.text], ["Plan", "Goals\na\tb\n"]);
+  assert.deepEqual(out.created, { id: "doc2", title: "Notes", url: "https://docs.google.com/document/d/doc2/edit" });
+  assert.equal(out.replaced.replaced, 3);
+  const updates = google.workspaceCalls.filter((c) => c.call.endsWith(":batchUpdate")).map((c) => JSON.parse(c.body).requests[0]);
+  assert.deepEqual(updates, [
+    { insertText: { location: { index: 1 }, text: "Hello" } },
+    { insertText: { endOfSegmentLocation: {}, text: "\nMore" } },
+    { replaceAllText: { containsText: { text: "Hello", matchCase: true }, replaceText: "Hi" } },
+  ]);
+});
+
+test("Sheets reads, writes as if typed, appends rows, and creates spreadsheets", async (t) => {
+  const { run, google } = await workspace(t, "apps.sheets");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      read: await codemode.apps.sheets.read_range({ ...a, id: "s1", range: "Sheet1!A1:B2" }),
+      written: await codemode.apps.sheets.write_range({ ...a, id: "s1", range: "Sheet1!A2", values: [["grace", "=1+1"]] }),
+      appended: await codemode.apps.sheets.append_rows({ ...a, id: "s1", range: "Sheet1", values: [["alan", 3]], raw: true }),
+      created: await codemode.apps.sheets.create_spreadsheet({ ...a, title: "Budget", sheets: ["2026"] }),
+    };
+  }`);
+  assert.deepEqual(out.read.values, [["name", "n"], ["ada", "1"]]);
+  assert.deepEqual(out.written, { updatedRange: "Sheet1!A2", updatedCells: 2 });
+  assert.deepEqual(out.appended, { updatedRange: "Sheet1!A3:B3", updatedRows: 1 });
+  assert.deepEqual(out.created, { id: "s2", title: "Budget", url: "https://docs.google.com/spreadsheets/d/s2", sheets: ["2026"] });
+  const write = google.workspaceCalls.find((c) => c.call.startsWith("PUT"))!;
+  assert.equal(write.call, "PUT sheets/v4/spreadsheets/s1/values/Sheet1!A2");
+  assert.equal(write.query.get("valueInputOption"), "USER_ENTERED");
+  assert.equal(google.workspaceCalls.find((c) => c.call.endsWith(":append"))!.query.get("valueInputOption"), "RAW");
+});
+
+test("Contacts searches after warming Google's cache, creates contacts, and updates one with its etag", async (t) => {
+  const { run, google } = await workspace(t, "apps.contacts");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      found: await codemode.apps.contacts.search_contacts({ ...a, query: "grace" }),
+      created: await codemode.apps.contacts.create_contact({ ...a, name: "Alan Turing", emails: ["alan@example.com"] }),
+      updated: await codemode.apps.contacts.update_contact({ ...a, resourceName: "people/c1", phones: ["+44 20 0000 0000"] }),
+    };
+  }`);
+  assert.deepEqual(out.found.contacts, [{ resourceName: "people/c1", name: "Grace Hopper", emails: ["grace@example.com"], phones: [], organization: "Navy", title: "Rear Admiral" }]);
+  assert.deepEqual(google.workspaceCalls.slice(0, 2).map((c) => c.query.get("query")), ["", "grace"]);
+  assert.deepEqual([out.created.resourceName, out.created.name, out.created.emails], ["people/c2", "Alan Turing", ["alan@example.com"]]);
+  const patch = google.workspaceCalls.find((c) => c.call.startsWith("PATCH"))!;
+  assert.equal(patch.query.get("updatePersonFields"), "phoneNumbers");
+  assert.deepEqual(JSON.parse(patch.body), { phoneNumbers: [{ value: "+44 20 0000 0000" }], etag: "etag-1" });
 });
