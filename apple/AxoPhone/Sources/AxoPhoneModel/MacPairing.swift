@@ -21,22 +21,26 @@ public final class MacPairing {
 
   public private(set) var state: State = .creating
 
-  /// How often the Macs are listed again while waiting.
+  /// How often the Macs are listed again while waiting (the socket lists a new Mac within its
+  /// lease renewal on its own; this is sooner).
   public static let pollInterval: Duration = .seconds(3)
 
   private let issuer: any HostPairingIssuing
   private let hosts: HostsModel
+  private let refresh: @MainActor () async -> Void
   private let now: @Sendable () -> Date
   private let sleep: @Sendable (Duration) async throws -> Void
 
   public init(
     issuer: any HostPairingIssuing,
     hosts: HostsModel,
+    refresh: @escaping @MainActor () async -> Void,
     now: @escaping @Sendable () -> Date = { Date() },
     sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   ) {
     self.issuer = issuer
     self.hosts = hosts
+    self.refresh = refresh
     self.now = now
     self.sleep = sleep
   }
@@ -59,7 +63,7 @@ public final class MacPairing {
     state = .waiting(pairing)
     while now() < pairing.expiresAt {
       do { try await sleep(Self.pollInterval) } catch { return }
-      await hosts.refresh()
+      await refresh()
       if let linked = hosts.hosts.first(where: { !known.contains($0.hostId) }) {
         state = .linked(label: linked.label)
         return

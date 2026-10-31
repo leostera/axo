@@ -24,28 +24,33 @@ final class MacPairingTests: XCTestCase {
   }
 
   private let clock = FakeClock()
-  private let studio = host("Studio")
+  private let studio = Mac("Studio", online: true)
 
   private func pairing(lasting seconds: TimeInterval = 600) -> HostPairing {
     HostPairing(code: HostPairingCode(parsing: "7KQ2-M4XD")!, expiresAt: clock.now + seconds)
   }
 
-  private func make(_ issuer: Issuer, listing: SwitchableListing) async -> MacPairing {
-    let hosts = HostsModel(listing: listing, account: AccountSession(store: MemoryTokenStore(SessionToken.fixture())))
-    await hosts.refresh()
+  private func make(_ issuer: Issuer, macs: [Mac]) async throws -> (MacPairing, PhoneWorld) {
+    let world = PhoneWorld(macs)
+    try await world.start()
     let clock = clock
-    return MacPairing(issuer: issuer, hosts: hosts, now: { clock.now }, sleep: { clock.sleep($0) })
+    let workbench = world.workbench!
+    let pairing = MacPairing(
+      issuer: issuer, hosts: workbench.hosts, refresh: { await workbench.refresh() }, now: { clock.now },
+      sleep: { clock.sleep($0) })
+    return (pairing, world)
   }
 
-  func testTheCodeShowsUntilAMacThatWasNotListedBeforeRedeemsIt() async {
-    let listing = SwitchableListing([studio])
+  func testTheCodeShowsUntilAMacThatWasNotListedBeforeRedeemsIt() async throws {
     let pairing = pairing()
-    let model = await make(Issuer(result: .success(pairing)), listing: listing)
+    let (model, world) = try await make(Issuer(result: .success(pairing)), macs: [studio])
     var polls = 0
+    let transport = world.transport
+    let studio = studio
     clock.onSleep = {
       polls += 1
       // The Macs already linked keep showing up; the new one arrives on the third look.
-      if polls == 3 { listing.set([self.studio, host("Laptop")]) }
+      if polls == 3 { transport.listing = Mac.listing([studio, Mac("Laptop", online: true)]) }
     }
     let states = Task { @MainActor in
       var seen: [MacPairing.State] = []
@@ -62,25 +67,16 @@ final class MacPairingTests: XCTestCase {
     XCTAssertTrue(seen.contains(.waiting(pairing)), "the code was shown while waiting: \(seen)")
   }
 
-  func testACodeNobodyRedeemsExpires() async {
-    let model = await make(Issuer(result: .success(pairing(lasting: 10))), listing: SwitchableListing([studio]))
+  func testACodeNobodyRedeemsExpires() async throws {
+    let (model, _) = try await make(Issuer(result: .success(pairing(lasting: 10))), macs: [studio])
     await model.run()
     XCTAssertEqual(model.state, .expired)
   }
 
-  func testTooManyCodesSaysToWait() async {
-    let model = await make(Issuer(result: .failure(.httpStatus(429))), listing: SwitchableListing([studio]))
+  func testTooManyCodesSaysToWait() async throws {
+    let (model, _) = try await make(Issuer(result: .failure(.httpStatus(429))), macs: [studio])
     await model.run()
     guard case .failed(let message) = model.state else { return XCTFail("\(model.state)") }
     XCTAssertTrue(message.contains("Try again in a minute"), message)
   }
-}
-
-private func host(_ label: String) -> RemoteHost {
-  try! JSONDecoder().decode(
-    RemoteHost.self,
-    from: Data("""
-      {"hostId":"\(UUID().uuidString)","hostGeneration":"\(UUID().uuidString)","label":"\(label)","hostKind":"macos",
-      "status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[]}
-      """.utf8))
 }

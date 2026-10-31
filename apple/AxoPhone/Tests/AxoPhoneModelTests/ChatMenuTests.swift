@@ -21,11 +21,7 @@ final class ChatMenuTests: XCTestCase {
   }
 
   private func host(_ label: String, _ sessions: [RemoteSession], id: UUID) -> RemoteHost {
-    let list = sessions.map { "{\"hostId\":\"\(id.uuidString)\",\"sessionId\":\"\($0.sessionId)\",\"shells\":[],\"updatedAt\":\"\($0.updatedAt)\"}" }
-    return try! JSONDecoder().decode(RemoteHost.self, from: Data("""
-      {"hostId":"\(id.uuidString)","hostGeneration":"\(UUID().uuidString)","label":"\(label)","hostKind":"macos",
-      "status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[\(list.joined(separator: ","))]}
-      """.utf8))
+    RemoteHost(ClientHost(hostId: id, hostGeneration: UUID(), label: label, online: true), sessions: sessions)
   }
 
   func testWorkspacesStayInAlphabeticalOrderAndTheirChatsAreMostRecentlyActiveFirst() {

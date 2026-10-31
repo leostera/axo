@@ -6,106 +6,126 @@ import XCTest
 
 @MainActor
 final class HostWorkbenchModelTests: XCTestCase {
-  private func make(sessions: [(Int, String, [Int])] = [(1, "One", [10])], history: any PiHistoryLoading = NoHistory()) throws
-    -> (HostWorkbenchModel, ScriptedTransport, RemoteHost, AccountSession)
-  {
-    let id = UUID()
-    let json = sessions.map { sessionJSON(host: id, id: $0.0, name: $0.1, shells: $0.2) }
-    let remote = try JSONDecoder().decode(
-      RemoteHost.self,
-      from: Data(
-        """
-        {"hostId":"\(id.uuidString)","hostGeneration":"\(UUID().uuidString)","label":"Studio",
-        "hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z",
-        "sessions":[\(json.joined(separator: ","))]}
-        """.utf8))
-    let transport = ScriptedTransport()
-    let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
-    let model = HostWorkbenchModel(
-      host: remote, connection: HostConnection(transport: transport, host: remote.reference),
-      history: history, account: account)
-    // A chat is open, as the person's tap on one would have made it.
-    model.selectedSessionID = model.sessions.first?.sessionId
-    return (model, transport, remote, account)
+  // MARK: - Reading a chat
+
+  func testOpeningAChatReadsItsNewestWindowAndItsNewRecordsFollow() async throws {
+    let world = HostWorld()
+    let request = try await world.open(1, answering: Wire.opened([said(2, "q"), said(3, "a", role: "assistant")], older: 2))
+    XCTAssertEqual(request.method, "axo.client.session.open")
+    XCTAssertEqual(request.params["sessionId"] as? String, SessionID.fixture(1).rawValue)
+    XCTAssertEqual(request.params["hostId"] as? String, world.host.hostId.uuidString.lowercased())
+    XCTAssertEqual((request.params["window"] as? [String: Any])?["last"] as? Int, HostWorkbenchModel.historyPageSize)
+    XCTAssertNil(request.params["have"] as? [String: Any], "nothing is held yet")
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q", "a"])
+    XCTAssertEqual(world.model.historyStates[1], .loaded(records: 2, hasOlder: true))
+
+    world.model.receive(records: [said(4, "live", role: "assistant")], epoch: 1, cursor: 4, in: 1)
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q", "a", "live"])
+    let channel = try await world.channel()
+    try await eventually { channel.acks(of: 1) == [4] }
   }
 
-  private func stored(_ id: Int64, _ sequence: UInt64, role: String, _ text: String, stream: UUID) -> StoredPiEvent {
-    try! JSONDecoder().decode(StoredPiEvent.self, from: Data("""
-      {"id":\(id),"streamId":"\(stream.uuidString)","sequence":\(sequence),"name":"message.end",
-      "data":{"message":{"role":"\(role)","content":"\(text)"}},"receivedAt":1}
-      """.utf8))
+  func testRecordsOfAChatThatIsNotOpenAreAcknowledgedButNotShown() async throws {
+    let world = HostWorld(sessions: [(1, "One"), (2, "Two")])
+    _ = try await world.open(1, answering: Wire.opened([said(1, "q")]))
+    world.model.receive(records: [said(1, "elsewhere")], epoch: 1, cursor: 1, in: 2)
+    XCTAssertNil(world.model.chats[2])
+    let channel = try await world.channel()
+    try await eventually { channel.acks(of: 2) == [1] }
   }
 
-  func testOpeningAConversationReadsOnlyTheNewestPageAndPutsLiveMessagesAfterIt() async throws {
-    let stream = UUID()
-    // The relay answers newest first.
-    let pages = Pages([
-      PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2),
-      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: nil),
-    ])
-    let (model, _, host, _) = try make(history: pages)
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: PiEventRecord(
-      streamId: stream, sequence: 4, name: "message.end",
-      data: try JSONDecoder().decode(JSONValue.self, from: Data(#"{"message":{"role":"assistant","content":"live"}}"#.utf8)))))
-    await model.loadHistory(of: 1)
-    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["a", "q2", "live"], "only the newest page, oldest first")
-    XCTAssertEqual(model.historyStates[1], .loaded(events: 2, hasOlder: true))
-    XCTAssertEqual(pages.cursors, [0], "nothing older is read until it is asked for")
+  func testOpeningAnotherChatLetsGoOfTheOneBefore() async throws {
+    let world = HostWorld(sessions: [(1, "One"), (2, "Two")])
+    _ = try await world.open(1, answering: Wire.opened([said(1, "q")]))
+    _ = try await world.open(2, answering: Wire.opened([said(1, "other")]))
+    let channel = try await world.channel()
+    try await eventually { channel.closes(of: 1) == 1 }
+    world.model.receive(records: [said(2, "late")], epoch: 1, cursor: 2, in: 1)
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q"], "a closed chat takes no more records")
   }
 
   func testOlderPagesAreReadOnDemandAndGoBeforeWhatIsShown() async throws {
-    let stream = UUID()
-    let pages = Pages([
-      PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2),
-      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: nil),
-    ])
-    let (model, _, _, _) = try make(history: pages)
-    await model.loadHistory(of: 1)
-    await model.loadOlderHistory(of: 1)
-    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2"])
-    XCTAssertEqual(model.historyStates[1], .loaded(events: 3, hasOlder: false))
-    XCTAssertEqual(pages.cursors, [0, 2], "the next page starts before the oldest event shown")
-    await model.loadOlderHistory(of: 1)
-    XCTAssertEqual(pages.cursors, [0, 2], "the beginning has nothing older")
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([said(3, "q2")], older: 3))
+    let loading = Task { await world.model.loadOlderHistory(of: 1) }
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest()
+    XCTAssertEqual(request.method, "axo.client.session.older")
+    XCTAssertEqual(request.params["before"] as? Int, 3)
+    channel.reply(to: request.id, result: Wire.olderPage([said(1, "q"), said(2, "a", role: "assistant")]))
+    await loading.value
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q", "a", "q2"])
+    XCTAssertEqual(world.model.historyStates[1], .loaded(records: 3, hasOlder: false))
+    await world.model.loadOlderHistory(of: 1)
+    XCTAssertFalse(channel.hasRequest, "the beginning has nothing older")
   }
 
-  func testReadingTheNewestPageAgainKeepsOlderPagesInOrder() async throws {
-    // After a reconnection the open chat reads its newest page again, while the person may be
-    // reading an older one.
-    let stream = UUID()
-    let newest = PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2)
-    let pages = Pages([
-      newest,
-      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: nil),
-      PiEventPage(events: [stored(4, 4, role: "assistant", "a2", stream: stream)] + newest.events, next: 2),
-    ])
-    let (model, _, _, _) = try make(history: pages)
-    await model.loadHistory(of: 1)
-    await model.loadOlderHistory(of: 1)
-    await model.loadHistory(of: 1)
-    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2", "a2"], "older pages stay before the newest")
-    XCTAssertEqual(model.historyStates[1], .loaded(events: 4, hasOlder: false), "and what is older is still known")
+  func testOpeningAgainReadsOnFromWhatIsHeld() async throws {
+    // After a reconnection the open chat opens again, while the person may be reading older pages.
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened(epoch: 7, [said(5, "q")], older: 5))
+    let request = try await world.open(1, answering: Wire.opened(epoch: 7, [said(6, "a", role: "assistant")]))
+    let have = try XCTUnwrap(request.params["have"] as? [String: Any])
+    XCTAssertEqual(have["epoch"] as? Int, 7)
+    XCTAssertEqual(have["cursor"] as? Int, 5)
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q", "a"])
+    XCTAssertEqual(world.model.historyStates[1], .loaded(records: 2, hasOlder: true), "what is older is still known")
+  }
+
+  func testABatchThatSkipsAheadOpensAgainFromWhatIsHeld() async throws {
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([said(1, "q")]))
+    world.model.receive(records: [said(5, "far")], epoch: 1, cursor: 5, in: 1)
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest()
+    XCTAssertEqual(request.method, "axo.client.session.open")
+    XCTAssertEqual((request.params["have"] as? [String: Any])?["cursor"] as? Int, 1)
+    channel.reply(to: request.id, result: Wire.opened([said(2, "two"), said(3, "three")]))
+    try await eventually { world.model.chats[1]?.messages.count == 3 }
+  }
+
+  func testACutBackDropsWhatCameAfter() async throws {
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([said(1, "q"), said(2, "gone")]))
+    world.model.receive(resetTo: 1, epoch: 2, in: 1)
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q"])
+    world.model.receive(records: [said(2, "new")], epoch: 2, cursor: 2, in: 1)
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q", "new"], "the new epoch's records follow")
+  }
+
+  func testWhatIsInProgressWhenOpenedShows() async throws {
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened(
+      [said(1, "q")], progress: #"[{"slot":"question","snapshot":{"kind":"confirm","title":"Go?"}}]"#))
+    XCTAssertEqual(world.model.chat(1).transcript?.question, ChatQuestion(kind: .confirm, title: "Go?"))
   }
 
   func testAFailedOlderPageKeepsWhatIsShownAndCanBeRetried() async throws {
-    let stream = UUID()
-    let history = FlakyOlder(first: PiEventPage(events: [stored(2, 2, role: "user", "q2", stream: stream)], next: 2))
-    let (model, _, _, _) = try make(history: history)
-    await model.loadHistory(of: 1)
-    await model.loadOlderHistory(of: 1)
-    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q2"])
-    XCTAssertEqual(model.historyStates[1], .loaded(events: 1, hasOlder: true))
-    XCTAssertNotNil(model.failure)
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([said(2, "q2")], older: 2))
+    let loading = Task { await world.model.loadOlderHistory(of: 1) }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest().id, error: -32603, message: "Internal error")
+    await loading.value
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["q2"])
+    XCTAssertEqual(world.model.historyStates[1], .loaded(records: 1, hasOlder: true))
+    XCTAssertNotNil(world.model.failure)
   }
 
-  func testAFailedHistoryReadIsReportedAndSignsOutOnlyForARefusedSession() async throws {
-    let (model, _, _, account) = try make(history: FailingHistory(error: RelayError.httpStatus(503)))
-    await model.loadHistory(of: 1)
-    XCTAssertEqual(model.historyStates[1], .failed("The Axo relay answered HTTP 503."))
-    XCTAssertEqual(account.state, .signedIn)
-    let (refused, _, _, refusedAccount) = try make(history: FailingHistory(error: RelayError.signInRequired))
-    await refused.loadHistory(of: 1)
-    XCTAssertEqual(refusedAccount.state, .signedOut)
+  func testAFailedOpenIsReportedAndSignsOutOnlyForARefusedSession() async throws {
+    let world = HostWorld()
+    let opening = Task { await world.model.loadHistory(of: 1) }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest().id, error: -32004, message: "Resource not found")
+    await opening.value
+    guard case .failed = world.model.historyStates[1] else { return XCTFail("\(String(describing: world.model.historyStates[1]))") }
+    XCTAssertEqual(world.account.state, .signedIn)
+
+    let refusing = ScriptedTransport()
+    refusing.refuse(RelayError.signInRequired)
+    let refused = HostWorld(transport: refusing)
+    await refused.model.loadHistory(of: 1)
+    XCTAssertEqual(refused.account.state, .signedOut)
   }
 
   /// Whether reading `read` is invalidated by `change`, as a SwiftUI view reading it would be.
@@ -117,350 +137,208 @@ final class HostWorkbenchModelTests: XCTestCase {
     return flag.raised
   }
 
-  func testAnEventInOneChatDoesNotRedrawAnother() throws {
-    let (model, _, host, _) = try make(sessions: [(1, "One", [10]), (2, "Two", [20])])
-    let open = model.chat(2)
-    func reply(_ sequence: UInt64, in id: SessionID) {
-      model.apply(.piEvent(host: host.reference, sessionID: id, event: PiEventRecord(
-        streamId: UUID(), sequence: sequence, name: "agent.start", data: .null)))
+  func testProgressInOneChatDoesNotRedrawAnother() async throws {
+    let world = HostWorld(sessions: [(1, "One"), (2, "Two")])
+    _ = try await world.open(1, answering: Wire.opened([said(1, "q")]))
+    _ = try await world.open(2, answering: Wire.opened([said(1, "q")]))
+    let open = world.model.chat(2)
+    func reply(in id: SessionID) {
+      world.model.receive(progress: "message", snapshot: jsonValue(#"{"message":{"role":"assistant","content":"hm"}}"#), in: id)
     }
     // Everything a conversation reads, as it reads it.
     let readOpenChat = { _ = (open.transcript, open.history, open.pending, open.isStopping) }
-    XCTAssertFalse(invalidates(readOpenChat, by: { reply(1, in: 1) }), "another chat's reply is not this chat's news")
-    XCTAssertTrue(invalidates(readOpenChat, by: { reply(2, in: 2) }), "its own is")
-    XCTAssertEqual(model.chats[2]?.activity, .working)
+    XCTAssertFalse(invalidates(readOpenChat, by: { reply(in: 1) }), "another chat's reply is not this chat's news")
+    XCTAssertTrue(invalidates(readOpenChat, by: { reply(in: 2) }), "its own is")
+    XCTAssertEqual(world.model.chat(2).transcript?.live.map(\.text), ["hm"])
   }
 
-  func testLivePiEventsReachTheConversationAndARemovedSessionForgetsIt() throws {
-    let (model, _, host, _) = try make()
-    let record = PiEventRecord(streamId: UUID(), sequence: 1, name: "agent.start", data: .null)
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: record))
-    XCTAssertEqual(model.chats[1]?.activity, .working)
-    model.apply(.sessionRemoved(host: host.reference, sessionID: 1))
-    XCTAssertNil(model.chats[1])
+  // MARK: - The listing
+
+  func testStartsWithTheHostsSessionsInOrderAndSelectsNoneOnItsOwn() {
+    let world = HostWorld(sessions: [(1, "One"), (2, "Two")])
+    XCTAssertEqual(world.model.sessions.map(\.sessionId), [1, 2])
+    world.model.selectedSessionID = nil
+    world.model.update([RemoteSession(ClientSession(
+      hostId: world.host.hostId, sessionId: 3, metadata: SessionMetadata(name: "Three", createdAt: 3)))])
+    XCTAssertNil(world.model.selectedSessionID, "a new Session must not pull the screen off a blank chat")
+    XCTAssertEqual(world.model.sessions.map(\.sessionId), [1, 2, 3])
   }
 
-  func testStartsWithTheHostsSessionsInOrderAndSelectsNoneOnItsOwn() throws {
-    let (model, _, host, _) = try make(sessions: [(2, "Two", [20]), (1, "One", [10])])
-    XCTAssertEqual(model.sessions.map(\.sessionId), [1, 2])
-    model.selectedSessionID = nil
-    let added = try JSONDecoder().decode(
-      RemoteSession.self, from: Data(sessionJSON(host: host.hostId, id: 3, name: "Three", shells: [30]).utf8))
-    model.apply(.sessionSnapshot(host: host.reference, session: added))
-    XCTAssertNil(model.selectedSessionID, "a new snapshot must not pull the screen off a blank chat")
+  func testAListingReplacesTheSessionsAndAChatNoLongerListedIsNotOpen() {
+    let world = HostWorld()
+    let renamed = RemoteSession(ClientSession(hostId: world.host.hostId, sessionId: 1, metadata: SessionMetadata(name: "Renamed")))
+    world.model.update([renamed])
+    XCTAssertEqual(world.model.sessions.map(\.displayName), ["Renamed"])
+
+    let two = RemoteSession(ClientSession(hostId: world.host.hostId, sessionId: 2, metadata: SessionMetadata(name: "Two")))
+    world.model.adopt(listing: RemoteHost(
+      ClientHost(hostId: world.host.hostId, hostGeneration: world.host.hostGeneration, label: "Studio", online: false), sessions: [two]))
+    XCTAssertEqual(world.model.sessions.map(\.sessionId), [2])
+    XCTAssertEqual(world.model.status, .offline)
+    XCTAssertNil(world.model.selectedSessionID, "a Session no longer listed is not open, and nothing else opens in its place")
   }
 
-  func testSnapshotsUpdateAddAndRemoveSessionsAndMoveTheSelection() throws {
-    let (model, _, host, _) = try make()
-    let renamed = try JSONDecoder().decode(
-      RemoteSession.self,
-      from: Data(sessionJSON(host: host.hostId, id: 1, name: "Renamed", shells: [10]).utf8))
-    model.apply(.sessionSnapshot(host: host.reference, session: renamed))
-    XCTAssertEqual(model.sessions.map(\.displayName), ["Renamed"])
-
-    let added = try JSONDecoder().decode(
-      RemoteSession.self,
-      from: Data(sessionJSON(host: host.hostId, id: 2, name: "Two", shells: [20]).utf8))
-    model.apply(.sessionSnapshot(host: host.reference, session: added))
-    model.apply(.sessionRemoved(host: host.reference, sessionID: 1))
-    XCTAssertEqual(model.sessions.map(\.sessionId), [2])
-    XCTAssertNil(model.selectedSessionID, "a removed Session is no longer open, and nothing else opens in its place")
+  func testAnotherHostsListingAndSessionsAreIgnored() {
+    let world = HostWorld()
+    world.model.adopt(listing: RemoteHost(ClientHost(hostId: UUID(), hostGeneration: UUID(), label: "Other", online: false), sessions: []))
+    world.model.update([RemoteSession(ClientSession(hostId: UUID(), sessionId: 9, metadata: SessionMetadata()))])
+    XCTAssertEqual(world.model.status, .online)
+    XCTAssertEqual(world.model.sessions.map(\.sessionId), [1])
   }
 
-  func testPresenceUpdatesTheStatusAndAnotherHostsEventsAreIgnored() throws {
-    let (model, _, host, _) = try make()
-    model.apply(.presence(host: host.reference, status: .offline))
-    XCTAssertEqual(model.status, .offline)
-    let stranger = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
-    model.apply(.presence(host: stranger, status: .online))
-    model.apply(.piEvent(host: stranger, sessionID: 1, event: PiEventRecord(streamId: UUID(), sequence: 1, name: "agent.start", data: .null)))
-    XCTAssertEqual(model.status, .offline)
-    XCTAssertNil(model.chats[1], "another host's events are not ours")
+  func testWorkingIsWhatTheListingSays() async throws {
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([said(1, "q")]))
+    func listed(_ status: RemoteSessionStatus) {
+      world.model.update([RemoteSession(ClientSession(
+        hostId: world.host.hostId, sessionId: 1, metadata: SessionMetadata(name: "One", createdAt: 1), status: status))])
+    }
+    listed(.working)
+    XCTAssertEqual(world.model.chats[1]?.activity, .working)
+    listed(.ready)
+    XCTAssertEqual(world.model.chats[1]?.activity, .idle)
   }
 
-  func testStartNegotiatesAndSubscribesThenAppliesPushedEvents() async throws {
-    let (model, transport, host, _) = try make()
-    let started = Task { await model.start() }
-    let channel = try await transport.channel()
-    try await channel.answerNext(result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
-    await started.value
-    XCTAssertNil(model.failure)
-    channel.push(
-      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"pi.event","sessionId":"00000001-0000-4000-8000-000000000001","piSessionId":"pi-1","streamId":"\#(UUID().uuidString)","sequence":1,"name":"agent.start","data":null}}}}"#
-    )
-    try await eventually { model.chats[1]?.activity == .working }
-    model.stop()
-  }
+  // MARK: - Actions
 
-  func testAPromptGoesToTheSelectedSessionsPiAndIsAcceptedOnlyWhenTheHostSaysSo() async throws {
-    let (model, transport, _, _) = try make(sessions: [(4, "Four", [40])])
-    let sending = Task { await model.sendPrompt("  run the tests \n") }
-    let channel = try await transport.channel()
+  func testAPromptGoesToTheSelectedSessionsAgentAndIsAcceptedOnlyWhenTheHostSaysSo() async throws {
+    let world = HostWorld(sessions: [(4, "Four")])
+    let sending = Task { await world.model.sendPrompt("  run the tests \n") }
+    let channel = try await world.channel()
     let sent = try await channel.nextRequest()
+    XCTAssertEqual(sent.rpcMethod, "axo.client.command")
+    XCTAssertEqual(sent.hostID, world.host.hostId.uuidString.lowercased())
     XCTAssertEqual(sent.method, "axo.remote.session.prompt")
     XCTAssertEqual(sent.params["sessionId"] as? String, SessionID.fixture(4).rawValue)
     XCTAssertEqual(sent.params["text"] as? String, "run the tests", "trimmed, nothing else changed")
     channel.reply(to: sent.id, result: #"{"accepted":true}"#)
     let accepted = await sending.value
     XCTAssertEqual(accepted, .accepted)
-    XCTAssertNil(model.failure)
-    XCTAssertNil(model.chats[4], "Pi's own message brings the prompt back; nothing is invented here")
-  }
-
-  private func said(_ text: String, sequence: UInt64, stream: UUID = UUID(), role: String = "user") -> PiEventRecord {
-    let json = #"{"message":{"role":"\#(role)","content":[{"type":"text","text":"\#(text)"}]}}"#
-    return PiEventRecord(
-      streamId: stream, sequence: sequence, name: "message.end",
-      data: try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))
+    XCTAssertNil(world.model.failure)
+    XCTAssertNil(world.model.chats[4], "the agent's own record brings the prompt back; nothing is invented here")
   }
 
   /// Sends `text` and has the host accept it.
-  private func sendAccepted(_ text: String, model: HostWorkbenchModel, transport: ScriptedTransport) async throws {
-    let sending = Task { await model.sendPrompt(text) }
-    let channel = try await transport.channel()
+  private func sendAccepted(_ text: String, in world: HostWorld) async throws {
+    let sending = Task { await world.model.sendPrompt(text) }
+    let channel = try await world.channel()
     let request = try await channel.nextRequest()
     channel.reply(to: request.id, result: #"{"accepted":true}"#)
     _ = await sending.value
   }
 
   func testASentMessageShowsAsPendingUntilTheAgentRecordsItThenOnlyTheRecordRemains() async throws {
-    let (model, transport, host, _) = try make()
-    let sending = Task { await model.sendPrompt("  run the tests ") }
-    let channel = try await transport.channel()
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([]))
+    let sending = Task { await world.model.sendPrompt("  run the tests ") }
+    let channel = try await world.channel()
     let request = try await channel.nextRequest()
-    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.sending], "shown at once, before the Mac answers")
+    XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.state), [.sending], "shown at once, before the Mac answers")
     channel.reply(to: request.id, result: #"{"accepted":true}"#)
     _ = await sending.value
-    XCTAssertEqual(model.pendingPrompts[1]?.map(\.text), ["run the tests"])
-    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.sent])
+    XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.text), ["run the tests"])
+    XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.state), [.sent])
 
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("someone else", sequence: 1, role: "assistant")))
-    XCTAssertEqual(model.pendingPrompts[1]?.count, 1, "a reply is not the message")
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("run the tests", sequence: 2)))
-    XCTAssertNil(model.pendingPrompts[1])
-    XCTAssertEqual(model.chats[1]?.messages.filter { $0.role == .user }.map(\.text), ["run the tests"], "shown once")
+    world.model.receive(records: [said(1, "someone else", role: "assistant")], epoch: 1, cursor: 1, in: 1)
+    XCTAssertEqual(world.model.pendingPrompts[1]?.count, 1, "a reply is not the message")
+    world.model.receive(records: [said(2, "run the tests")], epoch: 1, cursor: 2, in: 1)
+    XCTAssertNil(world.model.pendingPrompts[1])
+    XCTAssertEqual(world.model.chats[1]?.messages.filter { $0.role == .user }.map(\.text), ["run the tests"], "shown once")
   }
 
   func testAMessageSentWhileTheAgentWorksIsQueuedAndRecordsRetireTheirOwnWordsFirst() async throws {
-    let (model, transport, host, _) = try make()
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: PiEventRecord(streamId: UUID(), sequence: 1, name: "agent.start", data: .null)))
-    try await sendAccepted("first", model: model, transport: transport)
-    try await sendAccepted("second", model: model, transport: transport)
-    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.queued, .queued])
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("second", sequence: 2)))
-    XCTAssertEqual(model.pendingPrompts[1]?.map(\.text), ["first"], "matched by its words, not by order")
+    let world = HostWorld()
+    _ = try await world.open(1, answering: Wire.opened([]))
+    world.model.update([RemoteSession(ClientSession(
+      hostId: world.host.hostId, sessionId: 1, metadata: SessionMetadata(name: "One", createdAt: 1), status: .working))])
+    try await sendAccepted("first", in: world)
+    try await sendAccepted("second", in: world)
+    XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.state), [.queued, .queued])
+    world.model.receive(records: [said(1, "second")], epoch: 1, cursor: 1, in: 1)
+    XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.text), ["first"], "matched by its words, not by order")
     // The agent wrote it down differently: the oldest one the Mac took is the one it means.
-    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("First!", sequence: 3)))
-    XCTAssertNil(model.pendingPrompts[1])
+    world.model.receive(records: [said(2, "First!")], epoch: 1, cursor: 2, in: 1)
+    XCTAssertNil(world.model.pendingPrompts[1])
   }
 
   func testOlderHistoryArrivingDoesNotRetireAPendingMessage() async throws {
-    let stream = UUID()
-    let pages = Pages([
-      PiEventPage(events: [stored(2, 2, role: "user", "ask", stream: stream)], next: 2),
-      PiEventPage(events: [stored(1, 1, role: "user", "ask", stream: stream)], next: nil),
-    ])
-    let (model, transport, _, _) = try make(history: pages)
-    try await sendAccepted("ask", model: model, transport: transport)
-    await model.loadHistory(of: 1)
-    XCTAssertNil(model.pendingPrompts[1], "the newest page is news: it has the message")
-    try await sendAccepted("ask", model: model, transport: transport)
-    await model.loadOlderHistory(of: 1)
-    XCTAssertEqual(model.pendingPrompts[1]?.count, 1, "an older page saying the same words is not the new message")
+    let world = HostWorld()
+    try await sendAccepted("ask", in: world)
+    _ = try await world.open(1, answering: Wire.opened([said(2, "ask")], older: 2))
+    XCTAssertNil(world.model.pendingPrompts[1], "the newest window is news: it has the message")
+    try await sendAccepted("ask", in: world)
+    let loading = Task { await world.model.loadOlderHistory(of: 1) }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest().id, result: Wire.olderPage([said(1, "ask")]))
+    await loading.value
+    XCTAssertEqual(world.model.pendingPrompts[1]?.count, 1, "an older page saying the same words is not the new message")
   }
 
   func testARefusedPromptIsNotAccepted() async throws {
-    let (model, transport, _, _) = try make()
-    let sending = Task { await model.sendPrompt("hello") }
-    let channel = try await transport.channel()
-    let sent = try await channel.nextRequest()
-    channel.reply(to: sent.id, error: -32004, message: "Resource not found")
+    let world = HostWorld()
+    let sending = Task { await world.model.sendPrompt("hello") }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest().id, error: -32004, message: "Resource not found")
     let accepted = await sending.value
     XCTAssertEqual(accepted, .notSent)
-    XCTAssertEqual(model.failure, "Not sent: Resource not found")
-    XCTAssertNil(model.pendingPrompts[1])
+    XCTAssertEqual(world.model.failure, "Not sent: Resource not found")
+    XCTAssertNil(world.model.pendingPrompts[1])
+  }
+
+  func testAPromptForAnOfflineMacIsNotSentAndNotQueued() async throws {
+    let world = HostWorld()
+    let sending = Task { await world.model.sendPrompt("hello") }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest().id, error: -32005, message: "Host offline")
+    let outcome = await sending.value
+    XCTAssertEqual(outcome, .notSent)
+    XCTAssertEqual(world.model.failure, "Not sent: Studio is offline. Your message is still in the box.")
   }
 
   func testAStaleHostIsReportedButIsNotAnAccessProblem() async throws {
-    let (model, transport, _, account) = try make()
-    let typing = Task { await model.sendPrompt("x") }
-    let channel = try await transport.channel()
-    let sent = try await channel.nextRequest()
-    channel.reply(to: sent.id, error: -32002, message: "Stale host")
+    let world = HostWorld()
+    let typing = Task { await world.model.sendPrompt("x") }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest().id, error: -32002, message: "Stale host")
     _ = await typing.value
-    XCTAssertEqual(model.failure, "Not sent: Stale host")
-    XCTAssertEqual(account.state, .signedIn, "a stale host is not a sign-in problem")
+    XCTAssertEqual(world.model.failure, "Not sent: Stale host")
+    XCTAssertEqual(world.account.state, .signedIn, "a stale host is not a sign-in problem")
   }
 
   func testARefusedConnectionSignsThePhoneOut() async throws {
-    let id = UUID()
-    let remote = try host("Studio", .online, sessions: [sessionJSON(host: id, id: 1, name: "One", shells: [10])])
-    let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
-    let model = HostWorkbenchModel(
-      host: remote,
-      connection: HostConnection(transport: RefusingTransport(), host: remote.reference),
-      history: NoHistory(), account: account)
-    model.selectedSessionID = 1
-    _ = await model.sendPrompt("x")
-    XCTAssertEqual(account.state, .signedOut)
-    XCTAssertEqual(model.failure, "Not sent: Sign in to continue.")
+    let refusing = ScriptedTransport()
+    refusing.refuse(RelayError.signInRequired)
+    let world = HostWorld(transport: refusing)
+    _ = await world.model.sendPrompt("x")
+    XCTAssertEqual(world.account.state, .signedOut)
+    XCTAssertEqual(world.model.failure, "Not sent: Sign in to continue.")
   }
 
   func testNothingIsSentWithoutTextOrASession() async throws {
-    let (model, transport, _, _) = try make()
-    let blank = await model.sendPrompt("  \n ")
+    let world = HostWorld()
+    let blank = await world.model.sendPrompt("  \n ")
     XCTAssertEqual(blank, .notSent)
-    let (empty, _, _, _) = try make(sessions: [])
-    let nowhere = await empty.sendPrompt("hello")
+    let empty = HostWorld(sessions: [])
+    let nowhere = await empty.model.sendPrompt("hello")
     XCTAssertEqual(nowhere, .notSent)
-    XCTAssertEqual(transport.connects, 0)
+    XCTAssertEqual(world.transport.connects + empty.transport.connects, 0)
   }
 
-  private func eventually(_ condition: @MainActor () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(15)
-    while !condition() {
-      guard ContinuousClock.now < deadline else { return XCTFail("condition never held") }
-      try await Task.sleep(for: .milliseconds(5))
-    }
-  }
-}
-
-/// Plays the relay: hands out one channel and lets the test answer its requests.
-final class ScriptedTransport: AxoTransport, @unchecked Sendable {
-  private let lock = NSLock()
-  private var made: ScriptedChannel?
-  private var count = 0
-
-  var connects: Int { lock.withLock { count } }
-
-  func connect() async throws -> any AxoMessageChannel {
-    lock.withLock {
-      count += 1
-      let channel = ScriptedChannel()
-      made = channel
-      return channel
-    }
-  }
-
-  /// The `number`th connection (1 is the first), once it is made.
-  func channel(number: Int) async throws -> ScriptedChannel {
-    let deadline = ContinuousClock.now + .seconds(15)
-    while ContinuousClock.now < deadline {
-      if let channel = lock.withLock({ count >= number ? made : nil }) { return channel }
-      try await Task.sleep(for: .milliseconds(2))
-    }
-    throw AxoClientError.connectionFailed("connection \(number) was never made")
-  }
-
-  func channel() async throws -> ScriptedChannel {
-    let deadline = ContinuousClock.now + .seconds(15)
-    while ContinuousClock.now < deadline {
-      if let channel = lock.withLock({ made }) { return channel }
-      try await Task.sleep(for: .milliseconds(2))
-    }
-    throw AxoClientError.connectionFailed("never connected")
-  }
-}
-
-struct ScriptedRequest {
-  let id: Int
-  let method: String
-  let params: [String: Any]
-}
-
-final class ScriptedChannel: AxoMessageChannel, @unchecked Sendable {
-  let messages: AsyncStream<Data>
-  private let continuation: AsyncStream<Data>.Continuation
-  private let lock = NSLock()
-  private var sent: [Data] = []
-  private var consumed = 0
-
-  init() { (messages, continuation) = AsyncStream<Data>.makeStream() }
-
-  /// Like the relay, agrees to a protocol version on its own; the connection does so on every new socket.
-  func send(_ message: Data) async throws {
-    let negotiation = lock.withLock { () -> Int? in
-      if let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
-        object["method"] as? String == "axo.protocol.negotiate"
-      {
-        return object["id"] as? Int
-      }
-      sent.append(message)
-      return nil
-    }
-    if let negotiation { reply(to: negotiation, result: #"{"protocolVersion":2,"methods":[]}"#) }
-  }
-  func close() { continuation.finish() }
-
-  func push(_ raw: String) { continuation.yield(Data(raw.utf8)) }
-
-  func reply(to id: Int, result: String) {
-    push(#"{"jsonrpc":"2.0","id":\#(id),"result":\#(result)}"#)
-  }
-
-  func reply(to id: Int, error code: Int, message: String) {
-    push(#"{"jsonrpc":"2.0","id":\#(id),"error":{"code":\#(code),"message":"\#(message)"}}"#)
-  }
-
-  func nextRequest() async throws -> ScriptedRequest {
-    let deadline = ContinuousClock.now + .seconds(15)
-    while ContinuousClock.now < deadline {
-      let raw = lock.withLock { () -> Data? in
-        guard consumed < sent.count else { return nil }
-        defer { consumed += 1 }
-        return sent[consumed]
-      }
-      if let raw {
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
-        return ScriptedRequest(
-          id: try XCTUnwrap(object["id"] as? Int), method: try XCTUnwrap(object["method"] as? String),
-          params: object["params"] as? [String: Any] ?? [:])
-      }
-      try await Task.sleep(for: .milliseconds(2))
-    }
-    throw AxoClientError.requestTimedOut
-  }
-
-  func answerNext(result: String) async throws {
-    reply(to: try await nextRequest().id, result: result)
-  }
-}
-
-private struct RefusingTransport: AxoTransport {
-  func connect() async throws -> any AxoMessageChannel { throw RelayError.signInRequired }
-}
-
-struct NoHistory: PiHistoryLoading {
-  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
-    PiEventPage(events: [], next: nil)
-  }
-}
-
-struct FailingHistory: PiHistoryLoading {
-  let error: Error
-  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
-    throw error
-  }
-}
-
-final class Pages: PiHistoryLoading, @unchecked Sendable {
-  private let lock = NSLock()
-  private var pages: [PiEventPage]
-  private(set) var cursors: [Int64] = []
-  init(_ pages: [PiEventPage]) { self.pages = pages }
-  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
-    lock.withLock {
-      cursors.append(cursor)
-      return pages.isEmpty ? PiEventPage(events: [], next: nil) : pages.removeFirst()
-    }
-  }
-}
-
-final class FlakyOlder: PiHistoryLoading, @unchecked Sendable {
-  let first: PiEventPage
-  init(first: PiEventPage) { self.first = first }
-  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
-    if cursor == 0 { return first }
-    throw RelayError.httpStatus(503)
+  func testANewChatIsListedAtOnceAndOpened() async throws {
+    let world = HostWorld()
+    world.model.selectedSessionID = nil
+    let creating = Task { await world.model.createChat(in: .home) }
+    let channel = try await world.channel()
+    let create = try await channel.nextRequest()
+    XCTAssertEqual(create.method, "axo.remote.session.create")
+    channel.reply(to: create.id, result: #"{"session":\#(sessionJSON(host: world.host.hostId, id: 5, name: "New", shells: []))}"#)
+    _ = await creating.value
+    XCTAssertEqual(world.model.selectedSessionID, 5)
+    let open = try await channel.nextRequest()
+    XCTAssertEqual(open.method, "axo.client.session.open")
+    channel.reply(to: open.id, result: Wire.opened(epoch: nil, []))
+    // A listing that does not have it yet keeps it.
+    world.model.adopt(listing: world.host)
+    XCTAssertTrue(world.model.sessions.contains { $0.sessionId == 5 })
   }
 }

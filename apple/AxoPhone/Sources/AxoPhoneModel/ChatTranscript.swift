@@ -77,7 +77,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     case tool
   }
 
-  /// Stable across reloads: the event that made it.
+  /// Stable across reloads: the record that made it.
   public let id: String
   public let role: Role
   public let text: String
@@ -89,11 +89,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
   public var images: [ChatImage] = []
 }
 
-/// A conversation as Pi's events tell it. Whole messages (`message.end`) make the conversation;
-/// the reply being written (`message.update`) and a running tool's output (`tool.update`) show
-/// as they grow; the rest of the stream says whether Pi is working or asking something.
-/// Replaying an event, or reading history that overlaps what already arrived live, never repeats
-/// a message. A tool's result is not a message of its own: it fills in the tool that asked.
+/// A conversation as the host's records tell it (RFD0018). The records are the lines of the
+/// agent's transcript, read by `entry(of:)`, the one place that knows the format. Whole messages
+/// make the conversation; progress slots show the reply being written, a running tool's output and
+/// a question, until a record says what came of them. A record already held is never applied
+/// twice. A tool's result is not a message of its own: it fills in the tool that asked.
 public struct ChatTranscript: Equatable, Sendable {
   public enum Activity: Equatable, Sendable {
     case idle
@@ -101,41 +101,73 @@ public struct ChatTranscript: Equatable, Sendable {
   }
 
   public private(set) var messages: [ChatMessage] = []
+  /// Whether the agent is working, as the host last said.
   public private(set) var activity: Activity = .idle
-  /// The reply Pi is writing, as far as it has got; gone once the reply is whole.
+  /// The reply the agent is writing, as far as it has got; gone once the reply is whole.
   public private(set) var live: [ChatMessage] = []
-  /// What Pi is waiting for the person to answer.
+  /// What the agent is waiting for the person to answer.
   public private(set) var question: ChatQuestion?
-  private var known: Set<String> = []
+  /// The records held, oldest first, without gaps.
+  public private(set) var records: [ClientRecord] = []
   private var results: [String: ToolResult] = [:]
-  /// The first this many messages came from stored history; the rest arrived live.
-  private var historical = 0
+  /// Running tools' output so far, by call id.
+  private var toolOutput: [String: String] = [:]
 
   public init() {}
 
-  /// A conversation read from stored events, oldest first. Parsing is the expensive part of
-  /// reading history (every message's Markdown), so this is made away from the main actor and
-  /// then joined to what is shown with `merge(newest:keepingOlder:)` or `prepend(older:)`.
-  public init(history records: [PiEventRecord]) {
-    for record in records { apply(record) }
-    historical = messages.count
+  /// A conversation read from records, oldest first. Parsing is the expensive part (every
+  /// message's Markdown), so a page is made away from the main actor and then joined to what is
+  /// shown with `prepend(older:)`.
+  public init(records: [ClientRecord]) {
+    append(records)
   }
 
-  public mutating func apply(_ record: PiEventRecord) {
-    switch record.name {
-    case "agent.start": activity = .working
-    case "agent.end", "agent.settled":
-      activity = .idle
-      live = []
-    case "activity.snapshot":
-      if let working = record.data["working"]?.boolValue { activity = working ? .working : .idle }
-    case "ui.prompt.start":
-      let kind = record.data["kind"]?.stringValue.flatMap(ChatQuestion.Kind.init(rawValue:)) ?? .custom
-      question = ChatQuestion(kind: kind, title: record.data["title"]?.stringValue)
-    case "ui.prompt.end":
-      question = nil
-    case "message.update":
-      guard let message = record.data["message"], message["role"]?.stringValue == "assistant" else { return }
+  /// The first cursor held, or nil when none is.
+  public var firstCursor: Int64? { records.first?.cursor }
+  /// The last cursor held: what the next record follows.
+  public var lastCursor: Int64 { records.last?.cursor ?? 0 }
+
+  /// Records after the last held; any already held are skipped.
+  public mutating func append(_ new: [ClientRecord]) {
+    for record in new where record.cursor > lastCursor {
+      records.append(record)
+      apply(record)
+    }
+  }
+
+  /// Puts an older page, parsed apart, before everything shown. Only the page's own messages are
+  /// touched (its tools may be answered by results already shown), not the whole conversation.
+  public mutating func prepend(older page: ChatTranscript) {
+    let first = firstCursor ?? .max
+    guard page.lastCursor < first, !page.records.isEmpty else { return }
+    var older = page.messages
+    for index in older.indices {
+      if let callID = older[index].tool?.callID, let result = results[callID] { older[index].tool?.fill(result) }
+    }
+    messages.insert(contentsOf: older, at: 0)
+    records.insert(contentsOf: page.records, at: 0)
+    results.merge(page.results) { newer, _ in newer }
+  }
+
+  /// The host's copy was cut back: everything after `keep` goes.
+  public mutating func cut(keep: Int64) {
+    guard lastCursor > keep else { return }
+    let kept = records.filter { $0.cursor <= keep }
+    messages = []
+    records = []
+    results = [:]
+    append(kept)
+  }
+
+  /// A progress slot's newest snapshot, or null to clear it: `"message"` is the reply being
+  /// written, `"question"` what the agent asks, any other slot a running tool's call id.
+  public mutating func progress(slot: String, snapshot: JSONValue) {
+    switch slot {
+    case "message":
+      guard let message = snapshot["message"], message["role"]?.stringValue == "assistant" else {
+        live = []
+        return
+      }
       live = Self.pieces(of: message, role: "assistant").enumerated().map { index, piece in
         ChatMessage(
           id: "live#\(index)", role: piece.role, text: piece.text,
@@ -143,86 +175,71 @@ public struct ChatTranscript: Equatable, Sendable {
           blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
           timestamp: nil, tool: piece.tool, images: piece.images)
       }
-    case "tool.update":
-      guard let callID = record.data["toolCallId"]?.stringValue,
-        let index = messages.firstIndex(where: { $0.tool?.callID == callID }),
-        messages[index].tool?.status == .running
-      else { return }
-      messages[index].tool?.output = Self.visibleText(record.data["partialResult"]?["content"])
-    case "message.end":
-      let id = Self.id(of: record)
-      guard !known.contains(id) else { return }
-      guard let message = record.data["message"], let role = message["role"]?.stringValue else { return }
-      if role == "toolResult" {
-        recordResult(of: message)
+    case "question":
+      guard snapshot != .null else {
+        question = nil
         return
       }
-      if role == "assistant" { live = [] }
-      let timestamp = message["timestamp"]?.numberValue.map { Int64($0) }
-      for (index, piece) in Self.pieces(of: message, role: role).enumerated() {
-        known.insert(id)
-        var tool = piece.tool
-        if let callID = tool?.callID, let result = results[callID] { tool?.fill(result) }
-        messages.append(
-          ChatMessage(
-            id: index == 0 ? id : "\(id)#\(index)", role: piece.role, text: piece.text,
-            blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
-            timestamp: timestamp, tool: tool, images: piece.images))
+      let kind = snapshot["kind"]?.stringValue.flatMap(ChatQuestion.Kind.init(rawValue:)) ?? .custom
+      question = ChatQuestion(kind: kind, title: snapshot["title"]?.stringValue)
+    default:
+      guard snapshot != .null else {
+        toolOutput[slot] = nil
+        return
       }
-    default: break
+      let output = Self.visibleText(snapshot["partialResult"]?["content"])
+      toolOutput[slot] = output
+      if let index = messages.firstIndex(where: { $0.tool?.callID == slot }), messages[index].tool?.status == .running {
+        messages[index].tool?.output = output
+      }
     }
   }
 
-  /// Puts stored history first, keeping anything that arrived live and is not in it.
-  public mutating func merge(history: [PiEventRecord]) {
-    merge(newest: ChatTranscript(history: history), keepingOlder: true)
-  }
-
-  /// Joins the newest page of stored history: it goes after the older history already shown
-  /// (when `keepingOlder`: the page reaches back into it) and before what arrived live and is
-  /// not in it. A page that does not reach back replaces the older history, which is read again
-  /// as the conversation is scrolled back. History says nothing about whether Pi is working now.
-  public mutating func merge(newest page: ChatTranscript, keepingOlder: Bool) {
-    let inPage = Set(page.messages.map(\.id))
-    let older = keepingOlder ? messages[..<historical].filter { !inPage.contains($0.id) } : []
-    let live = messages[historical...].filter { !inPage.contains($0.id) }
-    messages = older + page.messages + live
-    historical = older.count + page.messages.count
-    // Older history left out is forgotten, so scrolling back reads it in again.
-    if !keepingOlder { known = Set(messages.map { Self.baseID($0.id) }) }
-    joined(page)
-  }
-
-  /// Puts an older page of stored history before everything shown. Only the page's own messages
-  /// are touched (its tools may be answered by results already shown), not the whole conversation.
-  public mutating func prepend(older page: ChatTranscript) {
-    let new = page.messages.filter { !known.contains(Self.baseID($0.id)) }
-    messages.insert(contentsOf: new, at: 0)
-    historical += new.count
-    joined(page, filling: new.count)
-  }
-
-  /// Takes in `page`'s tool results and known events, and fills in tools answered by results
-  /// that arrived on the other side of the join: among the first `filling` messages, or all.
-  private mutating func joined(_ page: ChatTranscript, filling: Int? = nil) {
-    // A result that arrived live belongs to a tool the history may have recorded as unanswered.
-    results.merge(page.results) { live, _ in live }
-    for index in messages.indices.prefix(filling ?? messages.count) {
-      if let callID = messages[index].tool?.callID, let result = results[callID] { messages[index].tool?.fill(result) }
-    }
-    known.formUnion(page.known)
-  }
-
-  private static func baseID(_ id: String) -> String { String(id.split(separator: "#")[0]) }
-
-  /// What the Mac last said about whether Pi is working, for when the live events were missed
-  /// (the phone was asleep or offline). Going idle also ends a reply and a question left open.
+  /// Whether the agent is working, as the host says. Going idle also ends a reply and a question
+  /// left open.
   public mutating func settle(working: Bool) {
     activity = working ? .working : .idle
     if !working {
       live = []
       question = nil
     }
+  }
+
+  private mutating func apply(_ record: ClientRecord) {
+    guard case .message(let id, let message) = Self.entry(of: record), let role = message["role"]?.stringValue else {
+      return
+    }
+    if role == "toolResult" {
+      recordResult(of: message)
+      return
+    }
+    if role == "assistant" { live = [] }
+    let timestamp = message["timestamp"]?.numberValue.map { Int64($0) }
+    for (index, piece) in Self.pieces(of: message, role: role).enumerated() {
+      var tool = piece.tool
+      if let callID = tool?.callID {
+        if let result = results[callID] { tool?.fill(result) } else if let output = toolOutput[callID] { tool?.output = output }
+      }
+      messages.append(
+        ChatMessage(
+          id: index == 0 ? id : "\(id)#\(index)", role: piece.role, text: piece.text,
+          blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
+          timestamp: timestamp, tool: tool, images: piece.images))
+    }
+  }
+
+  /// A record as the conversation sees it: a message, or nothing to show.
+  private enum Entry {
+    case message(id: String, JSONValue)
+    case other
+  }
+
+  /// The format adapter for `pi/3`: Pi's session file entries.
+  private static func entry(of record: ClientRecord) -> Entry {
+    guard record.format == "pi/3", let value = try? JSONDecoder().decode(JSONValue.self, from: Data(record.line.utf8)),
+      value["type"]?.stringValue == "message", let message = value["message"], case .object = message
+    else { return .other }
+    return .message(id: value["id"]?.stringValue ?? "#\(record.cursor)", message)
   }
 
   private mutating func recordResult(of message: JSONValue) {
@@ -232,12 +249,11 @@ public struct ChatTranscript: Equatable, Sendable {
       status: status, output: Self.visibleText(message["content"]),
       truncated: message["truncated"]?.boolValue == true)
     results[callID] = result
+    toolOutput[callID] = nil
     if let index = messages.firstIndex(where: { $0.tool?.callID == callID }) {
       messages[index].tool?.fill(result)
     }
   }
-
-  private static func id(of record: PiEventRecord) -> String { "\(record.streamId.uuidString.lowercased()):\(record.sequence)" }
 
   private struct Piece {
     let role: ChatMessage.Role

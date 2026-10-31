@@ -3,12 +3,17 @@ import AxoProtocol
 import Foundation
 import Observation
 
-/// Where a Session's stored conversation comes from: the relay, over HTTPS.
-public protocol PiHistoryLoading: Sendable {
-  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage
+/// Where a Session's records come from: the account's socket (RFD0018). The one chat on screen
+/// is open, so its new records arrive as they are written; each batch is acknowledged once taken,
+/// which lets the next one come.
+public protocol ChatFeed: Sendable {
+  func open(_ session: SessionID, on host: UUID, have: (epoch: Int64, cursor: Int64)?, window: Int) async throws -> ClientOpenResult
+  func older(_ session: SessionID, before: Int64, limit: Int) async throws -> ClientOlderPage
+  func acknowledge(_ session: SessionID, cursor: Int64) async
+  func close(_ session: SessionID) async
 }
 
-extension AccountClient: PiHistoryLoading {}
+extension AccountConnection: ChatFeed {}
 
 /// One chat's state on the phone. Each chat is observed on its own: an event in one chat redraws
 /// that chat, and not the one on screen.
@@ -23,12 +28,17 @@ public final class Chat {
   public fileprivate(set) var pending: [HostWorkbenchModel.PendingPrompt] = []
   /// The person asked to stop the reply, and Pi has not stopped yet.
   public fileprivate(set) var isStopping = false
+  /// The epoch the records held belong to.
+  fileprivate var epoch: Int64?
+  /// The `before` of the next older page; nil when the start is held.
+  fileprivate var older: Int64?
 
   nonisolated init() {}
 }
 
-/// One host opened on the phone: its Sessions, whether it is online, and what Pi says in each.
-/// Everything comes from the relay's snapshots and events; nothing is stored here.
+/// One host opened on the phone: its Sessions, whether it is online, and what the agent says in
+/// each. Everything comes from the account's socket, which `PhoneWorkbench` follows and hands on;
+/// nothing is stored here.
 @MainActor
 @Observable
 public final class HostWorkbenchModel {
@@ -57,26 +67,14 @@ public final class HostWorkbenchModel {
 
   public enum HistoryState: Equatable, Sendable {
     case loading
-    /// Read this many stored events (messages are only some of them); `hasOlder` says more are stored.
-    case loaded(events: Int, hasOlder: Bool)
-    case loadingOlder(events: Int)
+    /// Holds this many records (messages are only some of them); `hasOlder` says more are stored.
+    case loaded(records: Int, hasOlder: Bool)
+    case loadingOlder(records: Int)
     case failed(String)
   }
 
-  /// Events per page; pages are read newest first and only as a conversation is scrolled back.
+  /// Records per page; pages are read newest first and only as a conversation is scrolled back.
   static let historyPageSize = 50
-
-  /// How far back a chat's stored history has been read. The events themselves are not kept:
-  /// once parsed into the transcript they are not needed again.
-  private struct StoredHistory {
-    /// Stored events read, of every kind.
-    var events: Int
-    /// The newest stored event read, to tell whether a fresh newest page reaches back to it.
-    var newestID: Int64
-    /// Where the next older page starts; nil when this is the beginning.
-    var olderCursor: Int64?
-  }
-  private var storedHistory: [SessionID: StoredHistory] = [:]
 
   /// A message the phone sent that the agent has not recorded yet, shown at the end of its chat
   /// until the agent's own record of it arrives.
@@ -98,7 +96,7 @@ public final class HostWorkbenchModel {
     public fileprivate(set) var state: State
   }
 
-  /// Whether the live connection to this Mac is up.
+  /// Whether the account's socket is up.
   public enum Link: Equatable, Sendable {
     /// Not started yet.
     case idle
@@ -108,7 +106,8 @@ public final class HostWorkbenchModel {
     /// The app is in the background: no connection on purpose.
     case suspended
   }
-  public private(set) var link: Link = .idle
+  /// The account socket's state, as `PhoneWorkbench` sees it.
+  public internal(set) var link: Link = .idle
   /// The Mac's Workspaces as last read, so the menu can show the ones with no chats yet.
   public private(set) var workspaceList: [RemoteWorkspace] = []
 
@@ -118,26 +117,20 @@ public final class HostWorkbenchModel {
   public private(set) var failure: String?
 
   private let connection: HostConnection
-  private let history: any PiHistoryLoading
+  private let feed: any ChatFeed
   private let account: AccountSession
-  private var eventTask: Task<Void, Never>?
-  private var lossTask: Task<Void, Never>?
-  private var reconnectTask: Task<Void, Never>?
-  /// Pauses between reconnection attempts; tests make them short.
-  let reconnectDelays: [Duration]
+  /// The chat open on the socket: its new records arrive as they are written.
+  private var opened: SessionID?
+  /// Chats started here that the host has not listed yet: kept until it does.
+  private var created: [SessionID: RemoteSession] = [:]
 
-  public init(
-    host: RemoteHost, connection: HostConnection, history: any PiHistoryLoading, account: AccountSession,
-    reconnectDelays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2), .seconds(5), .seconds(15)]
-  ) {
-    self.reconnectDelays = reconnectDelays
+  public init(host: RemoteHost, connection: HostConnection, feed: any ChatFeed, account: AccountSession) {
     hostLabel = host.label
     reference = host.reference
     status = host.status
-    let ordered = host.sessions.sorted(by: RemoteSession.isCreatedBefore)
-    sessions = ordered
+    sessions = host.sessions.sorted(by: RemoteSession.isCreatedBefore)
     self.connection = connection
-    self.history = history
+    self.feed = feed
     self.account = account
   }
 
@@ -145,238 +138,194 @@ public final class HostWorkbenchModel {
     sessions.first { $0.sessionId == selectedSessionID }
   }
 
-  /// Whether the model is connected and following the host's events.
-  public var isFollowing: Bool { eventTask != nil }
-
-  /// Connects, subscribes, and keeps applying the host's events until `stop()`.
-  public func start() async {
-    guard eventTask == nil else { return }
-    do {
-      try await connection.subscribe()
-    } catch {
-      fail(error)
-      return
-    }
-    failure = nil
-    link = .connected
-    let events = connection.events
-    eventTask = Task { [weak self] in
-      for await event in events {
-        guard let self else { return }
-        self.apply(event)
-      }
-    }
-    let losses = connection.connectionLost
-    lossTask = Task { [weak self] in
-      for await _ in losses {
-        guard let self else { return }
-        self.connectionLost()
-      }
-    }
-    Task { await refreshWorkspaces() }
-  }
-
   /// Reads the Mac's Workspaces for the menu; a failure leaves the last list and says nothing.
   public func refreshWorkspaces() async {
     if let found = try? await connection.workspaces() { workspaceList = found }
   }
 
-  public func stop() {
-    eventTask?.cancel()
-    eventTask = nil
-    lossTask?.cancel()
-    lossTask = nil
-    reconnectTask?.cancel()
-    reconnectTask = nil
-    link = .idle
-    Task { [connection] in await connection.disconnect() }
-  }
-
-  /// The app went to the background: let the connection go rather than have it die unnoticed.
-  public func suspend() {
-    guard isFollowing, link != .suspended else { return }
-    reconnectTask?.cancel()
-    reconnectTask = nil
-    link = .suspended
-    Task { [connection] in await connection.disconnect() }
-  }
-
-  /// The app is back: connect again and catch up on what was missed.
-  public func resume() {
-    guard isFollowing, link == .suspended || link == .reconnecting else { return }
-    reconnect()
-  }
-
-  private func connectionLost() {
-    guard link == .connected else { return }
-    reconnect()
-  }
-
-  /// Subscribes again until it works, then reads what was said meanwhile. Events that arrived
-  /// while the connection was down are gone; the stored history has them.
-  private func reconnect() {
-    link = .reconnecting
-    reconnectTask?.cancel()
-    reconnectTask = Task { [weak self, connection, reconnectDelays] in
-      var attempt = 0
-      while !Task.isCancelled {
-        do {
-          try await connection.reconnect()
-          guard let self, !Task.isCancelled else { return }
-          self.link = .connected
-          self.failure = nil
-          await self.catchUp()
-          return
-        } catch is CancellationError {
-          return
-        } catch {
-          if let self, self.account.noteFailure(error) { return }
-          let delay = reconnectDelays[min(attempt, reconnectDelays.count - 1)]
-          attempt += 1
-          try? await Task.sleep(for: delay)
-        }
-      }
-    }
-  }
-
-  /// After a gap: the open chat reads its newest history again (merging never repeats a
-  /// message), the others will when opened, and whether Pi is working comes from the Mac's
-  /// last report of each Session.
-  private func catchUp() async {
-    for (id, chat) in chatStore where id != selectedSessionID { chat.history = nil }
-    for session in sessions {
-      if let working = session.status.map({ $0 == .working }), let chat = chatStore[session.sessionId],
-        chat.transcript != nil
-      {
-        chat.transcript?.settle(working: working)
-        if !working { chat.isStopping = false }
-      }
-    }
+  /// The account's socket connected again: the open chat reads on from what it holds, the others
+  /// will when opened, and the Workspaces are read again.
+  func reconnected() async {
     Task { await refreshWorkspaces() }
-    if let id = selectedSessionID { await loadHistory(of: id) }
+    let reopen = opened
+    opened = nil
+    if let reopen { await loadHistory(of: reopen) }
   }
 
-  /// The account's listing of this Mac was read again: its Sessions as listed replace what the
-  /// events said, which may have missed changes while the connection was down.
+  /// Lets go of the open chat on the socket.
+  func stop() {
+    if let opened { Task { [feed] in await feed.close(opened) } }
+    opened = nil
+  }
+
+  /// The account's listing of this Mac: its Sessions as listed replace what was known.
   public func adopt(listing host: RemoteHost) {
     guard host.reference == reference else { return }
     status = host.status
-    sessions = host.sessions.sorted(by: RemoteSession.isCreatedBefore)
-    if let selected = selectedSessionID, !sessions.contains(where: { $0.sessionId == selected }) {
+    for listed in host.sessions { created[listed.sessionId] = nil }
+    sessions = (host.sessions + created.values).sorted(by: RemoteSession.isCreatedBefore)
+    settleChats()
+    if let selected = selectedSessionID, !sessions.contains(where: { $0.sessionId == selected }),
+      chatStore[selected]?.pending.isEmpty ?? true
+    {
       selectedSessionID = nil
     }
   }
 
-  // MARK: - Events
-
-  /// Whether the Mac said it is running again as a new run (axod restarted): this model's
-  /// connection names the old one, so the phone opens the Mac afresh.
-  public private(set) var newRunOnline = false
-
-  func apply(_ event: RemoteHostEvent) {
-    if case .presence(let host, .online) = event, host.hostId == reference.hostId,
-      host.hostGeneration != reference.hostGeneration
-    {
-      newRunOnline = true
-      return
-    }
-    guard event.host == reference else { return }
-    switch event {
-    case .presence(_, let newStatus):
-      status = newStatus
-    case .sessionSnapshot(_, let session):
+  /// Sessions of this Mac that changed (listed, renamed, moved on, archived).
+  func update(_ changed: [RemoteSession]) {
+    for session in changed where session.hostId == reference.hostId {
       if let index = sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
         sessions[index] = session
       } else {
         sessions.append(session)
         sessions.sort(by: RemoteSession.isCreatedBefore)
       }
-    case .sessionRemoved(_, let id):
-      sessions.removeAll { $0.sessionId == id }
-      chatStore[id] = nil
-      if selectedSessionID == id { selectedSessionID = nil }
-    case .shellActivity, .terminalOutput:
-      // The phone follows Pi, not terminals.
-      break
-    case .piEvent(_, let id, let record):
-      changeChat(id) { $0.apply(record) }
+    }
+    settleChats()
+  }
+
+  /// Whether the agent is working comes from the host's listing of each Session.
+  private func settleChats() {
+    for session in sessions {
+      guard let status = session.status, let chat = chatStore[session.sessionId], chat.transcript != nil else { continue }
+      let working = status == .working
+      if (chat.transcript?.activity == .working) != working { chat.transcript?.settle(working: working) }
+      if !working, chat.isStopping { chat.isStopping = false }
     }
   }
 
+  // MARK: - Records
+
+  /// Whether this Mac holds `id`.
+  func holds(_ id: SessionID) -> Bool { sessions.contains { $0.sessionId == id } || chatStore[id] != nil }
+
+  /// The next records of the open chat; the batch is acknowledged once taken.
+  func receive(records: [ClientRecord], epoch: Int64, cursor: Int64, in id: SessionID) {
+    defer { Task { [feed] in await feed.acknowledge(id, cursor: cursor) } }
+    guard opened == id, let chat = chatStore[id], let transcript = chat.transcript else { return }
+    if let held = chat.epoch, held != epoch { return }
+    chat.epoch = epoch
+    if let first = records.first, first.cursor > transcript.lastCursor + 1 {
+      // A batch that does not follow what is held: open again from what is held.
+      Task { await loadHistory(of: id) }
+      return
+    }
+    changeChat(id) { $0.append(records) }
+    showHistoryState(of: id)
+  }
+
+  func receive(progress slot: String, snapshot: JSONValue, in id: SessionID) {
+    guard chatStore[id]?.transcript != nil else { return }
+    changeChat(id) { $0.progress(slot: slot, snapshot: snapshot) }
+  }
+
+  /// The cloud copy was cut back: what came after `keep` goes.
+  func receive(resetTo keep: Int64, epoch: Int64, in id: SessionID) {
+    guard let chat = chatStore[id], chat.transcript != nil else { return }
+    chat.epoch = epoch
+    let first = chat.transcript?.firstCursor
+    chat.transcript?.cut(keep: keep)
+    // A cut below everything held leaves the records before it to be read as older history.
+    if chat.transcript?.firstCursor == nil, first != nil { chat.older = keep > 0 ? keep + 1 : nil }
+    showHistoryState(of: id)
+  }
+
   #if DEBUG
-    /// For the simulator preview only: plays events as if the Mac had sent them.
-    public func playForPreview(_ records: [PiEventRecord], in id: SessionID) {
-      for record in records { apply(.piEvent(host: reference, sessionID: id, event: record)) }
+    /// For the simulator preview only: records, progress and status as if the Mac had sent them.
+    public func playForPreview(_ steps: [PreviewStep], in id: SessionID) {
+      for step in steps {
+        switch step {
+        case .record(let message):
+          let cursor = (chat(id).transcript?.lastCursor ?? 0) + 1
+          let line = #"{"type":"message","id":"preview-\#(cursor)","message":\#(message)}"#
+          changeChat(id) { $0.append([ClientRecord(cursor: cursor, id: "preview-\(cursor)", line: line)]) }
+        case .progress(let slot, let json):
+          let snapshot = (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .null
+          changeChat(id) { $0.progress(slot: slot, snapshot: snapshot) }
+        case .working(let working):
+          changeChat(id) { $0.settle(working: working) }
+        }
+      }
     }
 
     /// For the simulator preview only: as if a stop had been asked for.
     public func markStoppingForPreview(_ id: SessionID) { chat(id).isStopping = true }
   #endif
 
-  /// Reads the newest page of a Session's stored conversation and puts it in front of what arrived
-  /// live. Older pages are read only when asked for, by `loadOlderHistory`.
+  /// Opens a chat on the socket: from what is held when something is, or else its newest page.
+  /// Its new records then arrive as they are written. The chat open before is let go.
   public func loadHistory(of id: SessionID) async {
     let chat = chat(id)
     if case .loading = chat.history { return }
     if case .loadingOlder = chat.history { return }
-    chat.history = .loading
+    if let previous = opened, previous != id { Task { [feed] in await feed.close(previous) } }
+    opened = id
+    let held = chat.transcript.flatMap { transcript in chat.epoch.map { (epoch: $0, cursor: transcript.lastCursor) } }
+    if held == nil { chat.history = .loading }
     do {
-      let page = try await history.piEvents(of: reference, session: id, before: 0, limit: Self.historyPageSize)
-      let parsed = await Self.parse(page)
-      let newest = page.events.first?.id ?? 0
-      // A page reaching back to what was read before goes on from it; one that does not (a long
-      // gap) starts again from itself.
-      let reachesBack = storedHistory[id].map { stored in (page.events.last?.id ?? .max) <= stored.newestID } ?? false
-      if let stored = storedHistory[id], reachesBack {
-        storedHistory[id] = StoredHistory(
-          events: stored.events + page.events.filter { $0.id > stored.newestID }.count,
-          newestID: max(newest, stored.newestID), olderCursor: stored.olderCursor)
+      let result = try await feed.open(id, on: reference.hostId, have: held, window: Self.historyPageSize)
+      guard opened == id else { return }
+      if held == nil {
+        // Parsed away from the main actor: Markdown and pictures take milliseconds a page.
+        let parsed = await Self.parse(result.records)
+        chat.older = result.older
+        changeChat(id) { $0 = parsed }
       } else {
-        storedHistory[id] = StoredHistory(events: page.events.count, newestID: newest, olderCursor: page.next)
+        changeChat(id) { $0.append(result.records) }
       }
-      changeChat(id) { $0.merge(newest: parsed, keepingOlder: reachesBack) }
+      chat.epoch = result.epoch
+      changeChat(id) { transcript in
+        for progress in result.progress { transcript.progress(slot: progress.slot, snapshot: progress.snapshot) }
+      }
+      settleChats()
       showHistoryState(of: id)
     } catch is CancellationError {
-      chat.history = nil
+      if held == nil { chat.history = nil }
     } catch {
       account.noteFailure(error)
+      if opened == id { opened = nil }
       chat.history = .failed(error.localizedDescription)
     }
+  }
+
+  /// Opens `id` on the socket unless it is open already.
+  func follow(_ id: SessionID) async {
+    guard opened != id else { return }
+    await loadHistory(of: id)
   }
 
   /// Reads the page before the oldest one already shown. Does nothing when there is none.
   public func loadOlderHistory(of id: SessionID) async {
     let chat = chat(id)
-    guard case .loaded(let events, true) = chat.history,
-      let stored = storedHistory[id], let cursor = stored.olderCursor
-    else { return }
-    chat.history = .loadingOlder(events: events)
+    guard case .loaded(let records, true) = chat.history, let before = chat.older else { return }
+    chat.history = .loadingOlder(records: records)
     do {
-      let page = try await history.piEvents(of: reference, session: id, before: cursor, limit: Self.historyPageSize)
-      let parsed = await Self.parse(page)
-      storedHistory[id] = StoredHistory(
-        events: stored.events + page.events.count, newestID: stored.newestID, olderCursor: page.next)
-      changeChat(id) { $0.prepend(older: parsed) }
+      let page = try await feed.older(id, before: before, limit: Self.historyPageSize)
+      if page.epoch == chat.epoch {
+        let parsed = await Self.parse(page.records)
+        chat.older = page.older
+        changeChat(id) { $0.prepend(older: parsed) }
+      }
       showHistoryState(of: id)
     } catch is CancellationError {
-      chat.history = .loaded(events: events, hasOlder: true)
+      chat.history = .loaded(records: records, hasOlder: true)
     } catch {
       account.noteFailure(error)
-      chat.history = .loaded(events: events, hasOlder: true)
+      chat.history = .loaded(records: records, hasOlder: true)
       failure = error.localizedDescription
     }
   }
 
   private func showHistoryState(of id: SessionID) {
-    guard let stored = storedHistory[id] else { return }
-    chat(id).history = .loaded(events: stored.events, hasOlder: stored.olderCursor != nil)
+    guard let chat = chatStore[id], chat.transcript != nil || chat.history != nil else { return }
+    if case .loading = chat.history, chat.transcript == nil { return }
+    chat.history = .loaded(records: chat.transcript?.records.count ?? 0, hasOlder: chat.older != nil)
   }
 
-  /// Parses a page (newest first, as the relay sends it) away from the main actor: Markdown and
-  /// pictures take milliseconds a page, which a scrolling screen cannot spare.
-  nonisolated private static func parse(_ page: PiEventPage) async -> ChatTranscript {
-    let records = page.events.reversed().map(\.record)
-    return await Task.detached(priority: .userInitiated) { ChatTranscript(history: records) }.value
+  /// Parses records away from the main actor.
+  nonisolated private static func parse(_ records: [ClientRecord]) async -> ChatTranscript {
+    await Task.detached(priority: .userInitiated) { ChatTranscript(records: records) }.value
   }
 
   // MARK: - Actions
@@ -391,16 +340,23 @@ public final class HostWorkbenchModel {
         case .home: try await connection.createSession()
         case .workspace(let workspace): try await connection.createSession(inWorkspace: workspace)
         }
-      apply(.sessionSnapshot(host: reference, session: session))
+      created[session.sessionId] = session
+      update([session])
       selectedSessionID = session.sessionId
+      // A new chat holds nothing yet: open it, so what the agent writes arrives.
+      chat(session.sessionId).history = .loaded(records: 0, hasOlder: false)
+      Task { await loadHistory(of: session.sessionId) }
     }
   }
 
   public func closeSession(_ id: SessionID) async {
     await attempt {
       let replacement = try await connection.closeSession(id)
-      apply(.sessionRemoved(host: reference, sessionID: id))
-      if let replacement { apply(.sessionSnapshot(host: reference, session: replacement)) }
+      sessions.removeAll { $0.sessionId == id }
+      chatStore[id] = nil
+      if selectedSessionID == id { selectedSessionID = nil }
+      if opened == id { stop() }
+      if let replacement { update([replacement]) }
     }
   }
 
@@ -418,7 +374,7 @@ public final class HostWorkbenchModel {
   }
 
   /// Sends a message to the selected chat. It shows as pending until the agent's own record of it
-  /// (`message.end`) arrives; one that was not sent disappears.
+  /// arrives; one that was not sent disappears.
   public func sendPrompt(_ text: String) async -> PromptOutcome {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let session = selectedSession, !prompt.isEmpty else { return .notSent }
@@ -472,10 +428,15 @@ public final class HostWorkbenchModel {
     }
   }
 
+  /// The relay's "the Mac is offline; nothing was queued" (RFD0018).
+  static let hostOffline = -32005
+
   static func notSentReason(_ error: Error, host: String) -> String {
     switch error as? AxoClientError {
     case .connectionFailed:
       "Not sent: no connection to \(host). Your message is still in the box."
+    case .serverRejected(HostWorkbenchModel.hostOffline, _):
+      "Not sent: \(host) is offline. Your message is still in the box."
     case .serverRejected(_, let message):
       "Not sent: \(message)"
     default:
@@ -503,8 +464,8 @@ public final class HostWorkbenchModel {
     case text(String)
   }
 
-  /// Answers Pi's question in `id`: yes is Enter, no is Escape, and words are typed and submitted
-  /// as a prompt is. The question stays on screen until Pi says it is answered.
+  /// Answers Pi's question in `id`: yes is Enter, no is Escape, and words are sent as a prompt is.
+  /// The question stays on screen until its progress slot is cleared.
   public func answer(_ answer: Answer, in id: SessionID) async {
     guard chatStore[id]?.transcript?.question != nil else { return }
     await attempt {
@@ -568,3 +529,14 @@ extension RemoteSession {
     return a.sessionId.rawValue < b.sessionId.rawValue
   }
 }
+
+#if DEBUG
+  /// One thing the simulator preview plays into a chat.
+  public enum PreviewStep: Sendable {
+    /// A message entry's `message`, as JSON.
+    case record(String)
+    /// A progress slot's snapshot, as JSON (`null` clears it).
+    case progress(String, String)
+    case working(Bool)
+  }
+#endif

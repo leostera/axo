@@ -68,52 +68,45 @@ final class AccountSessionTests: XCTestCase {
 
 @MainActor
 final class HostsModelTests: XCTestCase {
-  private struct Listing: HostListing {
-    let result: Result<[RemoteHost], Error>
-    func hosts() async throws -> [RemoteHost] { try result.get() }
+  private struct Profile: SignedInAccountLoading {
+    func signedInAccount() async -> SignedInAccount? { nil }
   }
 
-  func testOnlineHostsComeFirstThenByName() async throws {
-    let hosts = try [host("Zed", .online), host("Alpha", .offline), host("Beta", .online)]
-    let model = HostsModel(
-      listing: Listing(result: .success(hosts)),
-      account: AccountSession(store: MemoryTokenStore(SessionToken.fixture())))
-    await model.refresh()
+  private func listing(_ macs: [Mac]) throws -> ClientHello {
+    try JSONDecoder().decode(ClientHello.self, from: Data(Mac.listing(macs).utf8))
+  }
+
+  func testOnlineHostsComeFirstThenByName() throws {
+    let model = HostsModel(profile: Profile())
+    model.adopt(try listing([Mac("Zed", online: true), Mac("Alpha", online: false), Mac("Beta", online: true)]))
     XCTAssertEqual(model.hosts.map(\.label), ["Beta", "Zed", "Alpha"])
     XCTAssertEqual(model.phase, .loaded)
   }
 
-  func testAnAccessRefusalSignsOutAndClearsHosts() async throws {
-    let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
-    let model = HostsModel(
-      listing: Listing(result: .success([try host("A", .online)])), account: account)
-    await model.refresh()
-    XCTAssertEqual(model.hosts.count, 1)
-    let refusing = HostsModel(
-      listing: Listing(result: .failure(RelayError.signInRequired)), account: account)
-    await refusing.refresh()
-    XCTAssertEqual(account.state, .signedOut)
-    XCTAssertTrue(refusing.hosts.isEmpty)
-    guard case .failed = refusing.phase else { return XCTFail("\(refusing.phase)") }
+  func testAHostsSessionsAreItsOwnAndChangesReplaceThem() throws {
+    let a = Mac("A", online: true, sessions: [1, 2])
+    let b = Mac("B", online: true, sessions: [3])
+    let model = HostsModel(profile: Profile())
+    model.adopt(try listing([a, b]))
+    XCTAssertEqual(model.hosts.first { $0.hostId == a.id }?.sessions.count, 2)
+    model.update(sessions: [ClientSession(hostId: a.id, sessionId: 1, metadata: SessionMetadata(name: "Renamed"))], of: a.id)
+    XCTAssertEqual(model.hosts.first { $0.hostId == a.id }?.sessions.first { $0.sessionId == 1 }?.displayName, "Renamed")
+    model.update(hosts: [ClientHost(hostId: b.id, hostGeneration: b.generation, label: "B", online: false)])
+    XCTAssertEqual(model.hosts.map(\.label), ["B"], "a host no longer listed goes, with its Sessions")
+    XCTAssertEqual(model.hosts.first?.sessions.map(\.sessionId), [3])
+    XCTAssertEqual(model.hosts.first?.status, .offline)
   }
 
-  func testAnOtherwiseFailedRefreshKeepsWhatWasShown() async throws {
-    let model = HostsModel(
-      listing: Listing(result: .failure(RelayError.httpStatus(503))),
-      account: AccountSession(store: MemoryTokenStore(SessionToken.fixture())))
-    await model.refresh()
-    XCTAssertEqual(model.phase, .failed("The Axo relay answered HTTP 503."))
+  func testAFailureBeforeTheFirstListingIsShownButNotAfter() throws {
+    let model = HostsModel(profile: Profile())
+    model.loading()
+    XCTAssertEqual(model.phase, .loading)
+    model.failed("no connection")
+    XCTAssertEqual(model.phase, .failed("no connection"))
+    model.adopt(try listing([Mac("A", online: true)]))
+    model.failed("again")
+    XCTAssertEqual(model.phase, .loaded, "what was shown stays")
   }
-}
-
-func host(_ label: String, _ status: RemoteHostStatus, sessions: [String] = []) throws -> RemoteHost {
-  let id = UUID().uuidString
-  let json = """
-    {"hostId":"\(id)","hostGeneration":"\(UUID().uuidString)","label":"\(label)","hostKind":"macos",
-    "status":"\(status.rawValue)","stale":\(status == .offline),"lastSeenAt":"2026-10-16T00:00:00Z",
-    "sessions":[\(sessions.joined(separator: ","))]}
-    """
-  return try JSONDecoder().decode(RemoteHost.self, from: Data(json.utf8))
 }
 
 func sessionJSON(host: UUID, id: Int, name: String, shells: [Int]) -> String {

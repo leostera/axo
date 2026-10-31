@@ -25,62 +25,47 @@ enum PreviewFixture {
       accountId: UUID(uuidString: "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11")!,
       profile: .init(email: "leandro@example.com", name: "Leandro"))
 
-    static func liveEvents(_ kind: String) -> [PiEventRecord] {
-      let stream = UUID(uuidString: "51c77dd7-f2dc-4e91-b481-1507b62ec118")!
-      func record(_ sequence: UInt64, _ name: String, _ json: String) -> PiEventRecord {
-        PiEventRecord(streamId: stream, sequence: sequence, name: name,
-          data: (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .null)
-      }
-      var events = [
-        record(1, "agent.start", "{}"),
-        record(2, "message.end", #"{"message":{"role":"user","content":"Run the tests and tell me what fails."}}"#),
-        record(3, "message.end", #"{"message":{"role":"assistant","content":[{"type":"text","text":"Running them now."},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"swift test"}}]}}"#),
-        record(4, "tool.update", #"{"toolCallId":"t1","partialResult":{"content":[{"type":"text","text":"Building for debugging...\nCompiling AxoPhoneModel\nTest Suite 'All tests' started\nTest Case ChatTranscriptTests passed\nTest Case ScrollFollowTests passed\nTest Case HostWorkbenchLiveTests passed\nTest Case PhoneWorkbenchTests running"}]}}"#),
+    static func liveEvents(_ kind: String) -> [PreviewStep] {
+      var steps: [PreviewStep] = [
+        .working(true),
+        .record(#"{"role":"user","content":"Run the tests and tell me what fails."}"#),
+        .record(#"{"role":"assistant","content":[{"type":"text","text":"Running them now."},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"swift test"}}]}"#),
+        .progress("t1", #"{"toolCallId":"t1","partialResult":{"content":[{"type":"text","text":"Building for debugging...\nCompiling AxoPhoneModel\nTest Suite 'All tests' started\nTest Case ChatTranscriptTests passed\nTest Case ScrollFollowTests passed\nTest Case HostWorkbenchLiveTests passed\nTest Case PhoneWorkbenchTests running"}]}}"#),
       ]
       switch kind {
       case "question":
-        events.append(record(5, "ui.prompt.start", #"{"kind":"confirm","title":"Delete the build folder first?"}"#))
+        steps.append(.progress("question", #"{"kind":"confirm","title":"Delete the build folder first?"}"#))
       default:
-        events.append(record(5, "message.update", #"{"message":{"role":"assistant","content":[{"type":"text","text":"So far **83 tests** pass. Still waiting on the"}]}}"#))
+        steps.append(.progress("message", #"{"message":{"role":"assistant","content":[{"type":"text","text":"So far **83 tests** pass. Still waiting on the"}]}}"#))
       }
-      return events
+      return steps
     }
 
-    /// A reply written a little at a time, as Pi streams one (`AXO_PHONE_PREVIEW_LIVE=stream`):
+    /// A reply written a little at a time, as the agent streams one (`AXO_PHONE_PREVIEW_LIVE=stream`):
     /// `steps` updates, each a few words longer, then the whole message.
-    static func streamEvents(steps: Int) -> [PiEventRecord] {
-      let stream = UUID(uuidString: "61c77dd7-f2dc-4e91-b481-1507b62ec118")!
+    static func streamEvents(steps: Int) -> [PreviewStep] {
       let words = (1...steps).map { "word\($0)" }
-      func text(_ count: Int) -> JSONValue {
-        .object(["message": .object(["role": .string("assistant"), "content": .array([
-          .object(["type": .string("text"), "text": .string("Streaming **now**: " + words.prefix(count).joined(separator: " "))])
-        ])])])
+      func text(_ count: Int) -> String {
+        #"{"role":"assistant","content":[{"type":"text","text":"Streaming **now**: \#(words.prefix(count).joined(separator: " "))"}]}"#
       }
-      var events = [PiEventRecord(streamId: stream, sequence: 1, name: "agent.start", data: .object([:]))]
-      for step in 1...steps {
-        events.append(PiEventRecord(streamId: stream, sequence: UInt64(step + 1), name: "message.update", data: text(step)))
-      }
-      events.append(PiEventRecord(streamId: stream, sequence: UInt64(steps + 2), name: "message.end", data: text(steps)))
-      events.append(PiEventRecord(streamId: stream, sequence: UInt64(steps + 3), name: "agent.end", data: .object([:])))
+      var events: [PreviewStep] = [.working(true)]
+      for step in 1...steps { events.append(.progress("message", #"{"message":\#(text(step))}"#)) }
+      events.append(.record(text(steps)))
+      events.append(.working(false))
       return events
     }
 
     /// Many whole replies landing quickly, each long and with a wide code block
     /// (`AXO_PHONE_PREVIEW_LIVE=flood`): what a busy agent sends while the phone is following.
-    static func floodEvents(replies: Int) -> [PiEventRecord] {
-      let stream = UUID(uuidString: "71c77dd7-f2dc-4e91-b481-1507b62ec118")!
-      func reply(_ number: Int) -> JSONValue {
+    static func floodEvents(replies: Int) -> [PreviewStep] {
+      func reply(_ number: Int) -> String {
         let words = Array(repeating: "and then the next step of the plan", count: 6).joined(separator: ", ")
-        let code = "```swift\nlet reply\(number) = Array(repeating: \"a line far wider than any phone screen could ever show at once\", count: \(number))\n```"
-        return .object(["message": .object(["role": .string("assistant"), "content": .array([
-          .object(["type": .string("text"), "text": .string("Flood reply \(number): \(words).\n\n\(code)")])
-        ])])])
+        let code = "```swift\\nlet reply\(number) = Array(repeating: \\\"a line far wider than any phone screen could ever show at once\\\", count: \(number))\\n```"
+        return #"{"role":"assistant","content":[{"type":"text","text":"Flood reply \#(number): \#(words).\\n\\n\#(code)"}]}"#
       }
-      var events = [PiEventRecord(streamId: stream, sequence: 1, name: "agent.start", data: .object([:]))]
-      for number in 1...replies {
-        events.append(PiEventRecord(streamId: stream, sequence: UInt64(number + 1), name: "message.end", data: reply(number)))
-      }
-      events.append(PiEventRecord(streamId: stream, sequence: UInt64(replies + 2), name: "agent.end", data: .object([:])))
+      var events: [PreviewStep] = [.working(true)]
+      for number in 1...replies { events.append(.record(reply(number))) }
+      events.append(.working(false))
       return events
     }
 
@@ -92,50 +77,58 @@ enum PreviewFixture {
       SessionID(rawValue: String(format: "%08x-0000-4000-8000-%012x", number, number))!
     }
 
-    static var hosts: [RemoteHost] {
+    /// The sample Macs and chats, as the account's socket lists them.
+    static var listing: String {
       // The menu lists the most recently active first: in the order they are written here. Times
       // are relative to now, so the last 8 hours (what the menu lists before "older") stay put.
-      // As a Mac sends them: every snapshot says when it was sent; a chat's activity is its last message.
       func ago(_ seconds: TimeInterval) -> Int64 { Int64(Date.now.addingTimeInterval(-seconds).timeIntervalSince1970) }
-      let sent = Date.now.ISO8601Format()
       func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> String {
-        #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(sent)","lastMessageAt":\#(active)}"#
+        let host = host.uuidString.lowercased()
+        return #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","workspaceId":null,"workspaceName":"\#(workspace)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false}}"#
       }
-      let json = """
+      return """
         {"hosts":[
-        {"hostId":"\(studio)","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[\
+        {"hostId":"\(studio.uuidString.lowercased())","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"},
+        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","online":false,"lastSeenAt":"2026-10-15T00:00:00Z"}],
+        "sessions":[\
         \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: ago(20 * 60))),\
         \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: ago(2 * 3600))),\
         \(session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600))),\
         \(session(studio, 6, "Plan the week", "🗓️", "Home", active: ago(10 * 60))),\
-        \(session(studio, 7, "Draft the release notes", "📝", "Home", active: ago(5 * 3600)))]},
-        {"hostId":"\(imac)","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","status":"offline","stale":true,"lastSeenAt":"2026-10-15T00:00:00Z","sessions":[\
-        \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)))]}]}
+        \(session(studio, 7, "Draft the release notes", "📝", "Home", active: ago(5 * 3600))),\
+        \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)))]}
         """
-      return (try? JSONDecoder().decode(RemoteHostList.self, from: Data(json.utf8)).hosts) ?? []
     }
 
-    static func events(for session: SessionID) -> [StoredPiEvent] {
-      func raw(_ id: Int, _ message: String) -> StoredPiEvent {
-        let json = #"{"id":\#(id),"streamId":"41c77dd7-f2dc-4e91-b481-1507b62ec118","sequence":\#(id),"name":"message.end","data":{"message":\#(message)},"receivedAt":1}"#
-        return try! JSONDecoder().decode(StoredPiEvent.self, from: Data(json.utf8))
+    /// The answer to opening a sample chat: all of its records.
+    static func opened(_ session: SessionID) -> String {
+      let lines = records(for: session)
+      let records = lines.enumerated().map { index, message in
+        let line = #"{"type":"message","id":"e\#(index + 1)","message":\#(message)}"#
+        let escaped = line.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return #"{"cursor":\#(index + 1),"id":"e\#(index + 1)","format":"pi/3","line":"\#(escaped)","hash":"sha256:\#(String(repeating: "0", count: 64))"}"#
       }
-      func message(_ id: Int, _ role: String, _ text: String) -> StoredPiEvent {
+      return #"{"epoch":1,"records":[\#(records.joined(separator: ","))],"cursor":\#(lines.count),"older":null,"progress":[]}"#
+    }
+
+    /// A sample chat's Pi message entries, oldest first, as JSON.
+    static func records(for session: SessionID) -> [String] {
+      func message(_ role: String, _ text: String) -> String {
         let escaped = text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
-        let json = #"{"id":\#(id),"streamId":"41c77dd7-f2dc-4e91-b481-1507b62ec118","sequence":\#(id),"name":"message.end","data":{"message":{"role":"\#(role)","content":"\#(escaped)"}},"receivedAt":1}"#
-        return try! JSONDecoder().decode(StoredPiEvent.self, from: Data(json.utf8))
+        return #"{"role":"\#(role)","content":"\#(escaped)"}"#
       }
-      if session == sessionID(2) { return [message(1, "user", "What's the plan?"), message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu.")] }
-      guard session == sessionID(1) else { return [message(1, "user", "Hello"), message(2, "assistant", "Hi! What are we working on?")] }
+      let plan = "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."
+      if session == sessionID(2) { return [message("user", "What's the plan?"), message("assistant", plan)] }
+      guard session == sessionID(1) else { return [message("user", "Hello"), message("assistant", "Hi! What are we working on?")] }
       return [
-        message(1, "user", "Can you make the phone app feel like the old one again?"),
-        message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."),
-        message(3, "user", "Great, go ahead."),
-        raw(7, #"{"role":"assistant","timestamp":1792810292069,"content":[{"type":"thinking","thinking":"I should check the repository first."},{"type":"text","text":"Let me look at the project."},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"git status --short --branch"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"apple/AxoPhone/README.md"}},{"type":"toolCall","id":"c3","name":"bash","arguments":{"command":"false"}}]}"#),
-        raw(8, #"{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"On branch main\n M apple/AxoPhone/Sources/AxoPhone/ChatMessageView.swift\n M apple/AxoPhone/Sources/AxoPhone/ConversationView.swift\n?? apple/AxoPhone/Sources/AxoPhone/ToolTranscriptView.swift\n M one\n M two\n M three"}],"isError":false}"#),
-        raw(9, #"{"role":"toolResult","toolCallId":"c2","content":"Axo Phone, the iPhone client.","isError":false}"#),
-        raw(10, #"{"role":"toolResult","toolCallId":"c3","content":"exit code 1","isError":true}"#),
-        message(4, "assistant", "Done. Open the menu with the button at the top left, or swipe from the left edge."),
+        message("user", "Can you make the phone app feel like the old one again?"),
+        message("assistant", plan),
+        message("user", "Great, go ahead."),
+        #"{"role":"assistant","timestamp":1792810292069,"content":[{"type":"thinking","thinking":"I should check the repository first."},{"type":"text","text":"Let me look at the project."},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"git status --short --branch"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"apple/AxoPhone/README.md"}},{"type":"toolCall","id":"c3","name":"bash","arguments":{"command":"false"}}]}"#,
+        #"{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"On branch main\n M apple/AxoPhone/Sources/AxoPhone/ChatMessageView.swift\n M apple/AxoPhone/Sources/AxoPhone/ConversationView.swift\n?? apple/AxoPhone/Sources/AxoPhone/ToolTranscriptView.swift\n M one\n M two\n M three"}],"isError":false}"#,
+        #"{"role":"toolResult","toolCallId":"c2","content":"Axo Phone, the iPhone client.","isError":false}"#,
+        #"{"role":"toolResult","toolCallId":"c3","content":"exit code 1","isError":true}"#,
+        message("assistant", "Done. Open the menu with the button at the top left, or swipe from the left edge."),
       ]
     }
   #else

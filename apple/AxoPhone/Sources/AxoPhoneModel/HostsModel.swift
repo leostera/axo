@@ -3,21 +3,18 @@ import AxoProtocol
 import Foundation
 import Observation
 
-public protocol HostListing: Sendable {
-  func hosts() async throws -> [RemoteHost]
-  /// Who is signed in, for the account screen; nil when it cannot be read.
+/// Who is signed in, for the account screen.
+public protocol SignedInAccountLoading: Sendable {
+  /// Nil when it cannot be read.
   func signedInAccount() async -> SignedInAccount?
 }
 
-extension HostListing {
-  public func signedInAccount() async -> SignedInAccount? { nil }
-}
-
-extension AccountClient: HostListing {
+extension AccountClient: SignedInAccountLoading {
   public func signedInAccount() async -> SignedInAccount? { try? await account() }
 }
 
-/// The account's hosts, as the relay last reported them.
+/// The account's hosts and their Sessions, as the account's socket last listed them (RFD0018):
+/// the whole listing on every hello, then each change as it happens.
 @MainActor
 @Observable
 public final class HostsModel {
@@ -33,26 +30,56 @@ public final class HostsModel {
   /// Who is signed in, once read.
   public private(set) var signedIn: SignedInAccount?
 
-  private let listing: any HostListing
-  private let account: AccountSession
+  private let profile: any SignedInAccountLoading
+  private var listed: [ClientHost] = []
+  private var sessions: [UUID: [SessionID: RemoteSession]] = [:]
 
-  public init(listing: any HostListing, account: AccountSession) {
-    self.listing = listing
-    self.account = account
+  public init(profile: any SignedInAccountLoading) {
+    self.profile = profile
   }
 
-  public func refresh() async {
-    phase = .loading
-    defer { if signedIn == nil { Task { signedIn = await listing.signedInAccount() } } }
-    do {
-      let found = try await listing.hosts()
-      hosts = found.sorted { ($0.status == .online ? 0 : 1, $0.label) < ($1.status == .online ? 0 : 1, $1.label) }
-      phase = .loaded
-    } catch is CancellationError {
-      phase = hosts.isEmpty ? .idle : .loaded
-    } catch {
-      if account.noteFailure(error) { hosts = [] }
-      phase = .failed(error.localizedDescription)
+  /// Waiting for the first listing.
+  func loading() {
+    if phase != .loaded { phase = .loading }
+    if signedIn == nil { Task { signedIn = await profile.signedInAccount() } }
+  }
+
+  /// The first listing could not be read.
+  func failed(_ message: String) {
+    if phase != .loaded { phase = .failed(message) }
+  }
+
+  /// A whole listing: every host and Session, replacing what was known.
+  func adopt(_ listing: ClientHello) {
+    listed = listing.hosts
+    sessions = [:]
+    for session in listing.sessions where !session.metadata.archived {
+      sessions[session.hostId, default: [:]][session.sessionId] = RemoteSession(session)
     }
+    rebuild()
+    phase = .loaded
+  }
+
+  /// The host list changed (a presence moved, a host was paired or revoked).
+  func update(hosts: [ClientHost]) {
+    listed = hosts
+    for host in sessions.keys where !hosts.contains(where: { $0.hostId == host }) { sessions[host] = nil }
+    rebuild()
+  }
+
+  /// Some of one host's Sessions changed.
+  func update(sessions changed: [ClientSession], of host: UUID) {
+    // An archived chat leaves the list; the cloud keeps it.
+    for session in changed where session.hostId == host {
+      sessions[host, default: [:]][session.sessionId] = session.metadata.archived ? nil : RemoteSession(session)
+    }
+    rebuild()
+  }
+
+  private func rebuild() {
+    let built = listed.map { host in
+      RemoteHost(host, sessions: (sessions[host.hostId]?.values).map { Array($0) } ?? [])
+    }
+    hosts = built.sorted { ($0.status == .online ? 0 : 1, $0.label) < ($1.status == .online ? 0 : 1, $1.label) }
   }
 }

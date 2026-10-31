@@ -69,25 +69,25 @@ struct WorkbenchView: View {
     let client = AccountClient(endpoint: endpoint, tokens: account.tokens)
     #if DEBUG && targetEnvironment(simulator)
       if PreviewFixture.requested {
-        pairingIssuer = PreviewListing()
+        pairingIssuer = PreviewPairing()
+        let feed = AccountConnection(transport: PreviewTransport(), clientID: .random())
         _workbench = State(initialValue: PhoneWorkbench(
-          hosts: HostsModel(listing: PreviewListing(), account: account),
+          hosts: HostsModel(profile: PreviewPairing()), feed: feed, account: account,
           makeWorkbench: { host in
             HostWorkbenchModel(
-              host: host, connection: HostConnection(transport: PreviewTransport(), host: host.reference),
-              history: PreviewListing(), account: account)
+              host: host, connection: HostConnection(account: feed, host: host.reference), feed: feed, account: account)
           }))
         return
       }
     #endif
     pairingIssuer = client
+    // One socket for the whole account, as this install's client (RFD0018).
+    let feed = AccountConnection(endpoint: endpoint, clientID: .installed(), tokens: account.tokens)
     _workbench = State(initialValue: PhoneWorkbench(
-      hosts: HostsModel(listing: client, account: account),
+      hosts: HostsModel(profile: client), feed: feed, account: account,
       makeWorkbench: { host in
         HostWorkbenchModel(
-          host: host,
-          connection: HostConnection(endpoint: endpoint, host: host.reference, tokens: account.tokens),
-          history: client, account: account)
+          host: host, connection: HostConnection(account: feed, host: host.reference), feed: feed, account: account)
       }))
   }
 
@@ -140,7 +140,7 @@ struct WorkbenchView: View {
             guard let current = workbench.current else { return }
             Task {
               for event in PreviewFixture.streamEvents(steps: 20) {
-                current.playForPreview([event], in: 1)
+                current.playForPreview([event], in: PreviewFixture.sessionID(1))
                 try? await Task.sleep(for: .milliseconds(200))
               }
             }
@@ -175,7 +175,7 @@ struct WorkbenchView: View {
       }
     }
     .sheet(isPresented: $showingPairing) {
-      PairMacSheet(issuer: pairingIssuer, hosts: workbench.hosts)
+      PairMacSheet(issuer: pairingIssuer, hosts: workbench.hosts, refresh: { await workbench.refresh() })
     }
     .sheet(isPresented: $showingSettings) {
       SettingsView(account: environment.account) {
@@ -199,10 +199,6 @@ struct WorkbenchView: View {
           }
         #endif
       }
-    }
-    // The open Mac came back as a new run: list it again, which opens the new run.
-    .onChange(of: workbench.current?.newRunOnline) { _, restarted in
-      if restarted == true { Task { await workbench.refresh() } }
     }
     .onChange(of: scenePhase) { _, phase in
       // A socket left open in the background dies unnoticed; let it go, and come back fresh.
@@ -711,20 +707,29 @@ private struct HostRow: View {
   }
 }
 
+extension ClientID {
+  /// This install's client id: made once and kept, so a reconnect replaces this phone's socket
+  /// instead of adding one.
+  static func installed(_ defaults: UserDefaults = .standard) -> ClientID {
+    let key = "axo.clientId"
+    if let stored = defaults.string(forKey: key).flatMap(ClientID.init(rawValue:)) { return stored }
+    let made = ClientID.random()
+    defaults.set(made.rawValue, forKey: key)
+    return made
+  }
+}
+
 #if DEBUG && targetEnvironment(simulator)
-  private struct PreviewListing: HostListing, PiHistoryLoading, HostPairingIssuing {
-    func hosts() async throws -> [RemoteHost] { PreviewFixture.hosts }
+  private struct PreviewPairing: SignedInAccountLoading, HostPairingIssuing {
     func createHostPairing() async throws -> HostPairing {
       HostPairing(code: HostPairingCode(parsing: "7KQ2-M4XD")!, expiresAt: Date() + 600)
     }
     func signedInAccount() async -> SignedInAccount? { PreviewFixture.account }
-    func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
-      cursor == 0 ? PiEventPage(events: PreviewFixture.events(for: session).reversed(), next: nil) : PiEventPage(events: [], next: nil)
-    }
   }
 
-  /// Answers just enough of the relay for a Mac to open: it agrees, subscribes, lists one
-  /// Workspace, takes key presses, and refuses prompts (there is no Pi behind it).
+  /// Answers just enough of the account's socket for the app to run: it lists the sample Macs,
+  /// opens their chats, lists one Mac's Workspaces, takes key presses, and refuses prompts (there
+  /// is no agent behind it).
   private struct PreviewTransport: AxoTransport {
     func connect() async throws -> any AxoMessageChannel { PreviewChannel() }
   }
@@ -739,13 +744,19 @@ private struct HostRow: View {
       guard let request = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
         let id = request["id"] as? Int, let method = request["method"] as? String
       else { return }
+      let params = request["params"] as? [String: Any]
       let result: String? =
         switch method {
-        case "axo.protocol.negotiate": #"{"protocolVersion":2,"methods":[]}"#
-        case "axo.host.subscribe": #"{"subscriptionId":"\#(UUID().uuidString)"}"#
-        case "axo.remote.workspace.list":
-          #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
-        case "axo.remote.session.key": #"{"accepted":true}"#
+        case "axo.client.hello", "axo.client.refresh": PreviewFixture.listing
+        case "axo.client.session.open":
+          (params?["sessionId"] as? String).flatMap(SessionID.init(rawValue:)).map(PreviewFixture.opened(_:))
+        case "axo.client.command":
+          switch params?["method"] as? String {
+          case "axo.remote.workspace.list":
+            #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
+          case "axo.remote.session.key": #"{"accepted":true}"#
+          default: nil
+          }
         default: nil
         }
       let reply = result.map { #"{"jsonrpc":"2.0","id":\#(id),"result":\#($0)}"# }

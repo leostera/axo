@@ -12,8 +12,6 @@ import XCTest
 ///
 /// They only report; they are skipped unless asked for.
 final class TranscriptPerformanceTests: XCTestCase {
-  private let stream = UUID()
-
   override func setUpWithError() throws {
     try XCTSkipUnless(ProcessInfo.processInfo.environment["AXO_PHONE_PERF"] == "1", "set AXO_PHONE_PERF=1")
   }
@@ -50,39 +48,50 @@ final class TranscriptPerformanceTests: XCTestCase {
 
   private static let output = String(repeating: "test result: ok. 37 passed; 0 failed; finished in 2.06s\n", count: 60)
 
-  private func record(_ sequence: UInt64, _ name: String, _ data: JSONValue) -> PiEventRecord {
-    PiEventRecord(streamId: stream, sequence: sequence, name: name, data: data)
+  private func record(_ cursor: Int, _ message: JSONValue) -> ClientRecord {
+    piRecord(Int64(cursor), message: Self.json(message))
   }
 
-  private func turn(_ index: Int) -> [PiEventRecord] {
-    let base = UInt64(index * 5)
-    let user: JSONValue = .object(["message": .object(["role": .string("user"), "content": .string("Please look at item \(index)")])])
+  private static func json(_ value: JSONValue) -> String {
+    func plain(_ value: JSONValue) -> Any {
+      switch value {
+      case .null: NSNull()
+      case .bool(let bool): bool
+      case .number(let number): number
+      case .string(let string): string
+      case .array(let items): items.map(plain)
+      case .object(let fields): fields.mapValues(plain)
+      }
+    }
+    return String(decoding: try! JSONSerialization.data(withJSONObject: plain(value)), as: UTF8.self)
+  }
+
+  private func turn(_ index: Int) -> [ClientRecord] {
+    let base = index * 4
+    let user: JSONValue = .object(["role": .string("user"), "content": .string("Please look at item \(index)")])
     let assistant: JSONValue = .object([
-      "message": .object([
-        "role": .string("assistant"),
-        "content": .array([
-          .object(["type": .string("thinking"), "thinking": .string(String(repeating: "Let me think about it. ", count: 20))]),
-          .object(["type": .string("text"), "text": .string(Self.reply)]),
-          .object(["type": .string("toolCall"), "id": .string("a\(index)"), "name": .string("bash"),
-                   "arguments": .object(["command": .string("cargo test")])]),
-          .object(["type": .string("toolCall"), "id": .string("b\(index)"), "name": .string("read"),
-                   "arguments": .object(["path": .string("README.md")])]),
-        ]),
-      ])
+      "role": .string("assistant"),
+      "content": .array([
+        .object(["type": .string("thinking"), "thinking": .string(String(repeating: "Let me think about it. ", count: 20))]),
+        .object(["type": .string("text"), "text": .string(Self.reply)]),
+        .object(["type": .string("toolCall"), "id": .string("a\(index)"), "name": .string("bash"),
+                 "arguments": .object(["command": .string("cargo test")])]),
+        .object(["type": .string("toolCall"), "id": .string("b\(index)"), "name": .string("read"),
+                 "arguments": .object(["path": .string("README.md")])]),
+      ]),
     ])
     func result(_ id: String) -> JSONValue {
-      .object(["message": .object(["role": .string("toolResult"), "toolCallId": .string(id), "content": .string(Self.output)])])
+      .object(["role": .string("toolResult"), "toolCallId": .string(id), "content": .string(Self.output)])
     }
     return [
-      record(base + 1, "message.end", user),
-      record(base + 2, "message.end", assistant),
-      record(base + 3, "message.end", result("a\(index)")),
-      record(base + 4, "message.end", result("b\(index)")),
-      record(base + 5, "agent.end", .object([:])),
+      record(base + 1, user),
+      record(base + 2, assistant),
+      record(base + 3, result("a\(index)")),
+      record(base + 4, result("b\(index)")),
     ]
   }
 
-  private func history(turns: Int) -> [PiEventRecord] { (0..<turns).flatMap(turn) }
+  private func history(turns: Int) -> [ClientRecord] { (0..<turns).flatMap(turn) }
 
   private func median(_ label: String, runs: Int = 9, _ work: () -> Void) {
     var samples: [Duration] = []
@@ -99,28 +108,26 @@ final class TranscriptPerformanceTests: XCTestCase {
   // MARK: - Measurements
 
   func testReadingHistory() {
-    let page = history(turns: 10)  // 50 events, one page
-    let ten = history(turns: 100)  // 500 events, ten pages
-    median("first page, 50 events") { var t = ChatTranscript(); t.merge(history: page) }
-    median("all ten pages rebuilt, 500 events (the old way to add a page)") { var t = ChatTranscript(); t.merge(history: ten) }
-    // Now: a page is parsed away from the main actor, then joined to what is shown on it.
-    let older = Array(ten.prefix(50))
-    var shown = ChatTranscript()
-    shown.merge(newest: ChatTranscript(history: Array(ten.dropFirst(50))), keepingOlder: false)
-    median("older page parsed, 50 events (off the main actor)") { _ = ChatTranscript(history: older) }
-    let parsed = ChatTranscript(history: older)
-    median("older page joined to 450 events shown (main actor)") { var t = shown; t.prepend(older: parsed) }
+    let page = history(turns: 12)  // 48 records, one page
+    let ten = history(turns: 125)  // 500 records, ten pages
+    median("first page, 48 records") { _ = ChatTranscript(records: page) }
+    median("500 records at once") { _ = ChatTranscript(records: ten) }
+    // A page is parsed away from the main actor, then joined to what is shown on it.
+    let older = Array(ten.prefix(48))
+    let shown = ChatTranscript(records: Array(ten.dropFirst(48)))
+    median("older page parsed, 48 records (off the main actor)") { _ = ChatTranscript(records: older) }
+    let parsed = ChatTranscript(records: older)
+    median("older page joined to 452 records shown (main actor)") { var t = shown; t.prepend(older: parsed) }
   }
 
   func testAReplyAsItGrows() {
     for size in [2_000, 8_000, 16_000] {
       let text = String(String(repeating: Self.reply + "\n\n", count: size / Self.reply.count + 1).prefix(size))
-      let update = record(1, "message.update", .object([
+      let snapshot: JSONValue = .object([
         "message": .object(["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string(text)])])])
-      ]))
-      var transcript = ChatTranscript()
-      transcript.merge(history: history(turns: 20))
-      median("message.update, \(size / 1000) kB reply") { transcript.apply(update) }
+      ])
+      var transcript = ChatTranscript(records: history(turns: 20))
+      median("message progress, \(size / 1000) kB reply") { transcript.progress(slot: "message", snapshot: snapshot) }
     }
   }
 

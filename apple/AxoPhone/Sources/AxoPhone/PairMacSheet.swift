@@ -8,8 +8,8 @@ struct PairMacSheet: View {
   @State private var pairing: MacPairing
   @Environment(\.dismiss) private var dismiss
 
-  init(issuer: any HostPairingIssuing, hosts: HostsModel) {
-    _pairing = State(initialValue: MacPairing(issuer: issuer, hosts: hosts))
+  init(issuer: any HostPairingIssuing, hosts: HostsModel, refresh: @escaping @MainActor () async -> Void) {
+    _pairing = State(initialValue: MacPairing(issuer: issuer, hosts: hosts, refresh: refresh))
   }
 
   var body: some View {
