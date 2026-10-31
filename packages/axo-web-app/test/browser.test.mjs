@@ -112,6 +112,16 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let sessionCreateCount = 0;
   let authenticated = false;
   let pairingRequestCount = 0;
+  // The account's connections (RFD0016), as the Worker lists them.
+  const connections = [
+    { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
+    { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, syncedAt: now, lastError: null },
+    { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
+  ];
+  const callLog = [
+    { callId: "c-2", at: now, sessionId: sid(1), hostId, service: "linear", tool: "list_issues", targetHostId: null, durationMs: 320, outcome: "ok", error: null, input: { team: "AXO" } },
+    { callId: "c-1", at: now, sessionId: sid(1), hostId, service: "browser_fixture_mac", tool: "bash", targetHostId: hostId, durationMs: 41, outcome: "ok", error: null, input: { command: "git status", cwd: null, timeoutMs: 60000 } },
+  ];
   const apiHttp = createHttpServer((request, response) => {
     const origin = request.headers.origin;
     const url = new URL(request.url, "http://127.0.0.1");
@@ -131,6 +141,25 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     if (request.method === "POST" && url.pathname === "/api/v1/account/host-pairings") {
       pairingRequestCount++;
       json(response, { code: "B26A-NRKT", expiresAt: new Date(Date.now() + 600_000).toISOString() }, origin);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/v1/account/connections") {
+      json(response, { connections }, origin);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log") {
+      json(response, { records: callLog }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections") {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const { name, url: serverUrl } = JSON.parse(body);
+        const connection = { kind: "thirdParty", name, url: serverUrl, state: "ready", tools: 3, syncedAt: now, lastError: null };
+        connections.push(connection);
+        json(response, { connection, signInUrl: null }, origin);
+      });
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/auth/logout") {
@@ -467,6 +496,25 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
+
+    // A connection's sign-in comes back to /app/connections: the Connections page opens and says
+    // how it went, and the URL goes back to the app's.
+    await page.goto(`${appUrl}/app/connections?signedIn=linear`, { waitUntil: "networkidle" });
+    const connectionsSheet = page.getByRole("dialog", { name: "Connections" });
+    await expect(connectionsSheet.getByText("Signed in to linear. Its tools are available to your Sessions."));
+    assert.equal(new URL(page.url()).pathname, "/app");
+    await expect(connectionsSheet.locator(".connection-row strong", { hasText: "notion" }));
+    assert.deepEqual(await connectionsSheet.locator(".connection-row strong").allTextContents(), ["browser_fixture_mac", "linear", "notion"]);
+    assert.equal(await connectionsSheet.getByRole("button", { name: "Sign in" }).count(), 1, "only the server that needs it offers sign-in");
+    assert.deepEqual(await connectionsSheet.locator(".call-row strong").allTextContents(), ["linear.list_issues", "browser_fixture_mac.bash"]);
+    await connectionsSheet.getByLabel("Name").fill("docs");
+    await connectionsSheet.getByLabel("Server URL").fill("https://docs.example.com/mcp");
+    await connectionsSheet.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(connectionsSheet.getByText("Added docs."));
+    await expect(connectionsSheet.locator(".connection-row strong", { hasText: "docs" }));
+    await shot("connections");
+    await connectionsSheet.getByRole("button", { name: "Close Connections" }).click();
+
     await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Settings" }).click();
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Sign out" }).click();
     await expect(page.getByRole("link", { name: "Continue with Cloudflare" }));

@@ -54,6 +54,7 @@ test("an agent adds a server that needs sign-in, the person signs in, and a scri
   assert.equal(server.clients.size, 1, "Axo registered itself as a client");
 
   const landed = await signInThroughBrowser(h, server, session, added.signInUrl!);
+  assert.equal(landed.pathname, "/app/connections");
   assert.equal(landed.searchParams.get("signedIn"), "linear", landed.toString());
 
   // Tools are listed after sign-in; names become identifiers, and keep their upstream title.

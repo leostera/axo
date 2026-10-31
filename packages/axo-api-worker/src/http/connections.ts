@@ -103,7 +103,7 @@ export async function completeConnectionSignIn(request: Request, env: AuthEnviro
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
   const done = (query: Record<string, string>) => new Response(null, {
     status: 302,
-    headers: { ...privateHeaders, Location: `${APP}/connections?${new URLSearchParams(query)}`, "Set-Cookie": clearCookie(FLOW_COOKIE) },
+    headers: { ...privateHeaders, Location: `${APP}/app/connections?${new URLSearchParams(query)}`, "Set-Cookie": clearCookie(FLOW_COOKIE) },
   });
   const configuration = parseAuthConfiguration(env);
   const caller = await requireAccount(request, env, exports, "read");

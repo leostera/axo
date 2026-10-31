@@ -3,6 +3,7 @@ import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
+import { ConnectionsView, signInNotice } from "./connections.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import { parseRoute, routePath, type ChatRoute } from "./route.ts";
@@ -96,13 +97,15 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, onRoute: () =>
 }
 
 /** The signed-in app: chats with Axo on your Macs, as on the phone. */
-export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/app" }: {
+export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUrl, basePath = "/app" }: {
   profile?: AccountProfile;
   /** Tests give their own; otherwise the account's API. */
   backend?: ChatBackend;
   onSignOut?: () => void;
   /** Where pairing codes are made; no pairing without it. */
   pairingUrl?: string;
+  /** The account's connections API; no Connections page without it. */
+  connectionsUrl?: string;
   /** The app's own path: chats are at `<basePath>/<hostId>/<sessionId>`. */
   basePath?: string;
 }) {
@@ -111,7 +114,15 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
   const wide = useWide();
   const [layer, setLayer] = useState<Layer>("conversation");
   const [infoOpen, setInfoOpen] = useState(false);
-  const [sheet, setSheet] = useState<"settings" | "pair" | "search" | null>(null);
+  const [sheet, setSheet] = useState<"settings" | "pair" | "search" | "connections" | null>(null);
+  // A connection's sign-in comes back to `<base>/connections`: open the page, with how it went.
+  const [connectionsNotice] = useState(() =>
+    window.location.pathname === `${basePath}/connections` ? signInNotice(window.location.search) : null);
+  useEffect(() => {
+    if (window.location.pathname !== `${basePath}/connections`) return;
+    window.history.replaceState(null, "", basePath);
+    if (connectionsUrl) setSheet("connections");
+  }, []);
   useChatRoute(workbench, basePath, () => setLayer("conversation"));
 
   useEffect(() => {
@@ -174,6 +185,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
             }}
             onShowChats={() => show("chats")}
             onPair={pairingUrl ? () => setSheet("pair") : undefined}
+            onConnections={connectionsUrl ? () => setSheet("connections") : undefined}
             onSettings={() => setSheet("settings")}
           />
         </div>
@@ -217,6 +229,11 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
       ) : null}
       {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
+      {sheet === "connections" && connectionsUrl ? (
+        <Sheet title="Connections" onClose={() => setSheet(null)}>
+          <ConnectionsView connectionsUrl={connectionsUrl} initialNotice={connectionsNotice} />
+        </Sheet>
+      ) : null}
     </main>
   );
 }
@@ -318,12 +335,13 @@ function hostSummary(host: Host): string {
   return Number.isNaN(seen) ? `${count} · offline` : `${count} · last seen ${relativeTime(seen)}`;
 }
 
-function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onSettings }: {
+function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onConnections, onSettings }: {
   workbench: ChatWorkbench;
   profile?: AccountProfile;
   onOpenMac: (hostId: string) => void;
   onShowChats: () => void;
   onPair?: () => void;
+  onConnections?: () => void;
   onSettings: () => void;
 }) {
   const name = profile?.name || profile?.email || "Signed in";
@@ -359,6 +377,18 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onSe
           </button>
         ))}
         {workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? <p className="panel-note">No Macs yet. Pair one to chat with it from here.</p> : null}
+        {onConnections ? (
+          <>
+            <h2 className="section-title"><span>Tools</span></h2>
+            <button className="mac-row" onClick={onConnections}>
+              <Icon name="plug" size={22} />
+              <span className="mac-copy">
+                <strong>Connections</strong>
+                <small>Your Macs and servers, as tools for your Sessions</small>
+              </span>
+            </button>
+          </>
+        ) : null}
       </div>
       <footer className="layer-bar bottom panel-footer">
         {onPair ? <button className="pill-button primary" onClick={onPair}><Icon name="pair" size={18} /> Pair a Mac</button> : null}

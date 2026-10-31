@@ -375,7 +375,7 @@ export class ThirdPartyConnections {
 
 /** Where a person starts signing in: Axo's own page, which checks they are signed in to the account. */
 export function startUrl(nonce: string | null): string {
-  return nonce ? `https://axo.leostera.dev/api/v1/connections/oauth/start?flow=${nonce}` : "https://axo.leostera.dev/connections";
+  return nonce ? `https://axo.leostera.dev/api/v1/connections/oauth/start?flow=${nonce}` : "https://axo.leostera.dev/app/connections";
 }
 
 /** An upstream tool name as a JavaScript-safe identifier. */

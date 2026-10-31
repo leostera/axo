@@ -578,3 +578,25 @@ button.grouped-row:hover { background: var(--fill); }
 .signin-error { margin: 0; color: #ff3b30; font-size: 12px; line-height: 1.4; }
 .signin-build { margin: 0; color: var(--signin-tertiary); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Connections (RFD0016) */
+.connections .grouped + .sheet-note { margin-bottom: 4px; }
+.connections-notice { margin: 0 0 8px; padding: 10px 12px; border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--green) 14%, transparent); font-size: 14px; line-height: 1.4; }
+.connections-notice.error { background: color-mix(in srgb, var(--orange) 16%, transparent); }
+.connection-row, .call-row { gap: 10px; padding-block: 8px; }
+.connection-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.connection-copy strong { overflow: hidden; font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.connection-copy small { overflow: hidden; color: var(--secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.connection-form input.grouped-row { font: inherit; font-size: 15px; outline: none; }
+.connection-form button.grouped-row { justify-content: center; color: var(--text); background: transparent; font-weight: 600; }
+.connection-form button.grouped-row:hover:not(:disabled) { background: var(--fill); }
+.connection-form input.grouped-row { background: transparent; }
+.grouped-row.muted { margin: 0; color: var(--secondary); font-size: 14px; }
+.call-outcome { width: 18px; flex: none; text-align: center; font-size: 13px; }
+.call-outcome.ok { color: var(--green); }
+.call-outcome.error { color: var(--red); }
+.call-outcome.unknown { color: var(--orange); }
+.call-age { flex: none; color: var(--tertiary); font-size: 12px; }
+
+.connection-copy .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.connection-row .bordered-button { min-height: 32px; flex: none; padding: 0 12px; border-radius: 9px; font-size: 14px; }
