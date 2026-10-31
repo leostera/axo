@@ -93,6 +93,8 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     url: z.url(),
     state: z.enum(["ready", "needsSignIn", "error"]),
     tools: z.number().int().nonnegative(),
+    /** The server's icon, an https URL the browser loads for its tile; null until found, or when it has none. */
+    icon: z.url({ protocol: /^https$/ }).max(2048).nullable().default(null),
     syncedAt: z.iso.datetime().nullable(),
     lastError: z.string().max(512).nullable(),
   }).strict(),

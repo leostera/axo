@@ -4,6 +4,7 @@ import { connectionsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { FakeMcp } from "./fake-mcp";
+import { iconsIn } from "../src/connections/site-icon";
 
 /**
  * RFD0016, third-party connections: an agent adds a remote MCP server, the person signs in to it
@@ -142,3 +143,50 @@ async function waitForTools(call: (method: string, params?: Record<string, unkno
   }
   throw new Error("the tool list never arrived");
 }
+
+test("a server's tile shows the icon it names for itself, or else the one its site declares", async (t) => {
+  const named = new FakeMcp("mcp.linear.test");
+  named.requireAuth = false;
+  named.serverIcons = [{ src: "https://linear.test/icon.svg", mimeType: "image/svg+xml" }];
+  const plain = new FakeMcp("mcp.notion.test");
+  plain.requireAuth = false;
+  const sites: string[] = [];
+  const h = await harness({
+    outbound: async (request) => {
+      const url = new URL(request.url);
+      if (url.hostname === "notion.test") {
+        sites.push(url.pathname);
+        if (url.pathname === "/") return new Response(`<html><head><link rel="icon" href="/front-static/favicon.ico"><link rel="apple-touch-icon" href="/front-static/logo-ios.png"></head></html>`, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return new Response("not found", { status: 404 });
+      }
+      if (url.hostname === "linear.test") sites.push(`linear${url.pathname}`);
+      return (await named.handle(request)) ?? plain.handle(request);
+    },
+  });
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const host = await pairHost(h, session, "Studio");
+  const daemon = await connectHost(h, session, host);
+  t.after(() => daemon.close());
+  const call = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId: crypto.randomUUID(), ...params }) as Promise<Reply>;
+  result(await call("axo.connections.add", { name: "linear", url: named.url }));
+  result(await call("axo.connections.add", { name: "notion", url: plain.url }));
+  let icons: Record<string, string | null> = {};
+  for (let i = 0; i < 50; i++) {
+    const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections;
+    icons = Object.fromEntries(listed.flatMap((c) => (c.kind === "thirdParty" ? [[c.name, c.icon]] : [])));
+    if (icons.linear && icons.notion) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.deepEqual(icons, { linear: "https://linear.test/icon.svg", notion: "https://notion.test/front-static/logo-ios.png" });
+  assert.ok(!sites.some((s) => s.startsWith("linear")), "a server that names its icon is not asked for its site");
+});
+
+test("a page's icons: an Apple touch icon first, then SVG, then PNG, then any; only https", () => {
+  const base = "https://example.test/start";
+  assert.equal(iconsIn(`<link rel="icon" href="/a.ico"><link rel="icon" type="image/png" href="b.png"><link rel="icon" href='/c.svg'>`, base), "https://example.test/c.svg");
+  assert.equal(iconsIn(`<link href="/x.png" rel="apple-touch-icon" sizes="180x180"><link rel="icon" href="/c.svg">`, base), "https://example.test/x.png");
+  assert.equal(iconsIn(`<link rel="shortcut icon" href="/f.ico?v=1&amp;x=2">`, base), "https://example.test/f.ico?v=1&x=2");
+  assert.equal(iconsIn(`<link rel="icon" href="http://insecure.test/i.png"><link rel="stylesheet" href="/s.css">`, base), null);
+  assert.equal(iconsIn(`<link rel="icon" href="javascript:alert(1)">`, base), null);
+});

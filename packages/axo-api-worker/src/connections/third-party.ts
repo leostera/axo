@@ -1,6 +1,7 @@
 import type { Connection, ToolDefinition } from "@axo/protocol";
 import { seal, unseal } from "../auth/crypto";
 import { callTool, initialize, listTools, McpAuthRequired, McpError, toolOutput, type McpSession } from "./mcp-client";
+import { findSiteIcon } from "./site-icon";
 import {
   authorizationUrl,
   discover,
@@ -43,7 +44,11 @@ type Row = {
   synced_at: number | null;
   last_error: string | null;
   needs_sign_in: number;
+  icon_url: string | null;
+  icon_checked_at: number | null;
 };
+
+const ICON_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Where to send a browser that opened a sign-in link, and for which connection. */
 export type OpenedFlow = { authorizeUrl: string; name: string };
@@ -72,6 +77,14 @@ export class ThirdPartyConnections {
       client_sealed TEXT, grant_sealed TEXT, grant_generation INTEGER NOT NULL DEFAULT 0,
       tools_json TEXT NOT NULL DEFAULT '[]', synced_at REAL, last_error TEXT,
       needs_sign_in INTEGER NOT NULL DEFAULT 0)`);
+    // A server's icon, for its tile: looked up once a week, when its tools are.
+    for (const column of ["icon_url TEXT", "icon_checked_at REAL"]) {
+      try {
+        deps.sql.exec(`ALTER TABLE third_party_connections ADD COLUMN ${column}`);
+      } catch {
+        // Already there.
+      }
+    }
     deps.sql.exec(`CREATE TABLE IF NOT EXISTS connection_flows (
       nonce TEXT PRIMARY KEY, name TEXT NOT NULL, verifier TEXT NOT NULL, created_at REAL NOT NULL,
       opened INTEGER NOT NULL DEFAULT 0, redeemed INTEGER NOT NULL DEFAULT 0)`);
@@ -100,6 +113,7 @@ export class ThirdPartyConnections {
       url: row.url,
       state: row.needs_sign_in ? "needsSignIn" : row.last_error && row.synced_at === null ? "error" : "ready",
       tools: this.storedTools(row).length,
+      icon: row.icon_url ?? null,
       syncedAt: row.synced_at === null ? null : new Date(row.synced_at).toISOString(),
       lastError: row.last_error,
     }));
@@ -281,6 +295,13 @@ export class ThirdPartyConnections {
       };
     });
     this.deps.sql.exec("UPDATE third_party_connections SET tools_json = ?, synced_at = ?, last_error = NULL WHERE name = ?", JSON.stringify(tools), this.now(), name);
+    const row = this.row(name);
+    if (row && (row.icon_checked_at === null || row.icon_checked_at === undefined || this.now() - row.icon_checked_at > ICON_TTL_MS)) {
+      this.deps.sql.exec("UPDATE third_party_connections SET icon_checked_at = ? WHERE name = ?", this.now(), name);
+      this.deps.waitUntil(findSiteIcon(row.url, session.icons ?? [], this.deps.fetcher)
+        .then((icon) => { this.deps.sql.exec("UPDATE third_party_connections SET icon_url = ? WHERE name = ? AND url = ?", icon, name, row.url); })
+        .catch(() => undefined));
+    }
   }
 
   private async session(name: string, fresh: boolean): Promise<McpSession> {

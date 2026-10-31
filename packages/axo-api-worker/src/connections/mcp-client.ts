@@ -30,7 +30,8 @@ export class McpError extends Error {
   }
 }
 
-export type McpSession = { url: string; token: string | null; sessionId: string | null };
+/** `icons` are the srcs of the icons the server named for itself in `initialize`, if any. */
+export type McpSession = { url: string; token: string | null; sessionId: string | null; icons?: string[] };
 
 type JsonRpcReply = { jsonrpc: "2.0"; id: number | string; result?: unknown; error?: { code: number; message: string } };
 
@@ -38,13 +39,15 @@ let nextId = 1;
 
 export async function initialize(url: string, token: string | null, fetcher: typeof fetch = fetch): Promise<McpSession> {
   const session: McpSession = { url, token, sessionId: null };
-  const { headers } = await post(session, {
+  const { headers, reply } = await post(session, {
     jsonrpc: "2.0",
     id: nextId++,
     method: "initialize",
     params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "Axo", version: "1" } },
   }, fetcher);
   session.sessionId = headers.get("Mcp-Session-Id");
+  const icons = (reply?.result as { serverInfo?: { icons?: Array<{ src?: unknown }> } } | undefined)?.serverInfo?.icons;
+  session.icons = Array.isArray(icons) ? icons.flatMap((icon) => (typeof icon?.src === "string" ? [icon.src] : [])).slice(0, 8) : [];
   await post(session, { jsonrpc: "2.0", method: "notifications/initialized" }, fetcher);
   return session;
 }
