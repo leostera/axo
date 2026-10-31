@@ -27,6 +27,8 @@ type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** Calls the provider's API as the signed-in account. A path may also be an absolute URL on another host of the provider. */
 export type ProviderApi = {
+  /** The account the call acts as, as the call named it: an email, or the name a token app's account was given. */
+  readonly account: string;
   /** The answer as JSON, or null if empty. */
   request(method: Method, path: string, options?: ProviderRequest): Promise<unknown>;
   requestBytes(method: Method, path: string, options?: ProviderRequest): Promise<ArrayBuffer>;
@@ -115,7 +117,7 @@ export type TokenSignIn = {
    * name for the account (an email, a login), or null when the person names it. Throws a
    * ProviderError when the service refuses it.
    */
-  identify(api: ProviderApi): Promise<string | null>;
+  identify(api: ProviderApi, fields: Readonly<Record<string, string>>): Promise<string | null>;
 };
 
 /** An app the person adds an account to by pasting a token the service issued them. */

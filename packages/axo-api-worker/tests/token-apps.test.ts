@@ -36,7 +36,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 test("Hetzner is listed without any client of Axo's, asking for a token the person names, and its tools all need an account", () => {
   const { apps } = fixture();
   const all = apps.list();
-  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt"], "without a Google client, only apps that need no client of Axo's are listed");
+  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise"], "without a Google client, only apps that need no client of Axo's are listed");
   const listed = all[0];
   const parsed = connectionSchema.parse(listed);
   assert.ok(parsed.kind === "app");
@@ -131,4 +131,64 @@ test("a token Hetzner refuses is dropped: the project stays listed, needing a ne
 
   assert.equal(await apps.disconnect("hetzner", "personal"), true);
   assert.deepEqual(apps.accounts("hetzner"), []);
+});
+
+/** Octopus and Wise as their apps see them: Octopus's key as basic auth's user, Wise's token as a bearer. */
+function services() {
+  const seen: Array<{ url: URL; auth: string | null; body: string }> = [];
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    const auth = request.headers.get("Authorization");
+    seen.push({ url, auth, body: request.body ? await request.text() : "" });
+    if (url.origin === "https://api.octopus.energy") {
+      if (auth !== `Basic ${btoa("sk_live_octo:")}`) return json({ detail: "Authentication credentials were not provided." }, 401);
+      if (url.pathname === "/v1/accounts/A-1234ABCD/")
+        return json({ number: "A-1234ABCD", properties: [{ id: 1, address_line_1: "1 Road", town: "London", postcode: "E1 1AA", moved_in_at: "2024-01-01T00:00:00Z", moved_out_at: null,
+          electricity_meter_points: [{ mpan: "1012345678901", is_export: false, meters: [{ serial_number: "21L123" }], agreements: [{ tariff_code: "E-1R-OLD-22-C", valid_from: "2022-01-01", valid_to: "2024-01-01" }, { tariff_code: "E-1R-AGILE-24-10-01-C", valid_from: "2024-01-01", valid_to: null }] }],
+          gas_meter_points: [] }] });
+      if (url.pathname === "/v1/accounts/A-00000000/") return json({ detail: "Not found." }, 404);
+      if (url.pathname === "/v1/electricity-meter-points/1012345678901/meters/21L123/consumption/") {
+        const page = url.searchParams.get("page") ?? "1";
+        return json({ count: 3, next: page === "1" ? "https://api.octopus.energy/v1/electricity-meter-points/1012345678901/meters/21L123/consumption/?page=2" : null,
+          results: page === "1" ? [{ consumption: 0.2, interval_start: "a" }, { consumption: 0.3, interval_start: "b" }] : [{ consumption: 0.1, interval_start: "c" }] });
+      }
+      if (url.pathname === "/v1/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-C/standard-unit-rates/") return json({ results: [{ value_inc_vat: 21.5 }] });
+    }
+    if (url.origin === "https://api.wise.com") {
+      if (auth !== "Bearer wise-token") return json({ error: "invalid_token" }, 401);
+      if (url.pathname === "/v1/me") return json({ id: 1, email: "Ada@Example.com" });
+      if (url.pathname === "/v2/profiles") return json([{ id: 10, type: "PERSONAL", fullName: "Ada Lovelace" }, { id: 11, type: "BUSINESS", fullName: "Engines Ltd" }]);
+      if (url.pathname === "/v4/profiles/10/balances") return json([{ id: 5, currency: "EUR", type: "STANDARD", amount: { value: 120.5 }, reservedAmount: { value: 0 } }]);
+      if (url.pathname === "/v3/profiles/10/quotes") return json({ id: "q1", rate: 0.85, ...JSON.parse(seen.at(-1)!.body) });
+    }
+    return json({ error: "not found" }, 404);
+  }) as typeof fetch;
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), google: null, fetcher, waitUntil: () => undefined });
+  return { apps, seen };
+}
+
+test("Octopus is named by its account number, checked with Octopus, and reads meters, usage across pages, and Agile prices", async () => {
+  const { apps, seen } = services();
+  assert.match(await refused(apps.addToken("octopus", null, { number: "A-1234ABCD", key: "wrong" })), /Octopus Energy did not accept this token/);
+  assert.match(await refused(apps.addToken("octopus", null, { number: "A-00000000", key: "sk_live_octo" })), /did not accept/);
+  assert.match(await refused(apps.addToken("octopus", null, { number: "1234", key: "sk_live_octo" })), /A-1234ABCD/);
+  assert.deepEqual(await apps.addToken("octopus", null, { number: "a-1234abcd", key: "sk_live_octo" }), { name: "apps.octopus", account: "a-1234abcd" });
+  const account = (await apps.call("octopus", "get_account", { account: "A-1234ABCD" })) as { properties: Array<{ address: string; electricity: Array<{ tariff: string; meters: string[] }> }> };
+  assert.deepEqual(account.properties[0], { address: "1 Road, London, E1 1AA", movedIn: "2024-01-01T00:00:00Z", electricity: [{ mpan: "1012345678901", export: false, meters: ["21L123"], tariff: "E-1R-AGILE-24-10-01-C" }], gas: [] });
+  const usage = (await apps.call("octopus", "get_consumption", { account: "a-1234abcd", fuel: "electricity", meterPoint: "1012345678901", serial: "21L123", from: "2026-10-01T00:00:00Z" })) as { results: unknown[] };
+  assert.equal(usage.results.length, 3, "every page is read");
+  assert.deepEqual(await apps.call("octopus", "get_unit_rates", { account: "a-1234abcd", fuel: "electricity", tariff: "E-1R-AGILE-24-10-01-C" }), { results: [{ value_inc_vat: 21.5 }] });
+  assert.ok(seen.every((s) => s.url.origin === "https://api.octopus.energy"));
+});
+
+test("Wise is named by the token's email, and reads profiles and balances and prices transfers", async () => {
+  const { apps } = services();
+  assert.deepEqual(await apps.addToken("wise", "ignored", { token: "wise-token" }), { name: "apps.wise", account: "ada@example.com" });
+  assert.deepEqual(await apps.call("wise", "list_profiles", { account: "ada@example.com" }), { profiles: [{ id: 10, type: "personal", name: "Ada Lovelace" }, { id: 11, type: "business", name: "Engines Ltd" }] });
+  assert.deepEqual(await apps.call("wise", "list_balances", { account: "ada@example.com", profile: 10 }), { balances: [{ id: 5, currency: "EUR", amount: 120.5, reserved: 0, name: null, type: "standard" }] });
+  assert.deepEqual(await apps.call("wise", "create_quote", { account: "ada@example.com", profile: 10, sourceCurrency: "EUR", targetCurrency: "GBP", sourceAmount: 100 }),
+    { id: "q1", rate: 0.85, sourceCurrency: "EUR", targetCurrency: "GBP", sourceAmount: 100 });
+  assert.match(await refused(apps.call("wise", "create_quote", { account: "ada@example.com", profile: 10, sourceCurrency: "EUR", targetCurrency: "GBP" })), /sourceAmount or targetAmount/);
 });

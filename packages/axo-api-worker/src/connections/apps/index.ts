@@ -13,6 +13,7 @@ import { drive } from "./drive";
 import { gmail } from "./gmail";
 import { hetzner } from "./hetzner";
 import { meet } from "./meet";
+import { octopus } from "./octopus";
 import { onepassword } from "./onepassword";
 import {
   DEVICE_CODE_LIFETIME_MS,
@@ -27,6 +28,7 @@ import { requestTool } from "./request";
 import { sheets } from "./sheets";
 import { slides } from "./slides";
 import { tasks } from "./tasks";
+import { wise } from "./wise";
 import {
   googleAuthorizationUrl,
   redeemGoogleCode,
@@ -49,7 +51,7 @@ import {
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise };
 
 /** Where a person adds an account to an app, or signs in to one again. */
 export function appPage(app: AppName): string {
@@ -379,7 +381,7 @@ export class AppConnections {
     if (definition.token.named && !named) throw new AppAccountRefused("Name this account, such as \"personal\"");
     let identified: string | null;
     try {
-      identified = await definition.token.identify(this.api(definition, CHECK_TOOL, definition.token.authorize(credential.fields)));
+      identified = await definition.token.identify(this.api(definition, CHECK_TOOL, definition.token.authorize(credential.fields), named ?? ""), credential.fields);
     } catch (error) {
       if (error instanceof Unauthorized) throw new AppAccountRefused(`${definition.title} did not accept this token`);
       if (error instanceof ProviderError) throw new AppAccountRefused(`${definition.title} did not accept this token: ${error.message}`.slice(0, 300));
@@ -423,7 +425,7 @@ export class AppConnections {
       if (!grant || !grantFits(definition, grant))
         throw new Error(`${account} needs sign-in: ${await this.signInLink(app)}`);
       try {
-        return await tool.run(this.api(definition, tool, authorization(grant)), rest);
+        return await tool.run(this.api(definition, tool, authorization(grant), account), rest);
       } catch (error) {
         if (!(error instanceof Unauthorized)) throw error;
         if (attempt > 0) {
@@ -456,7 +458,7 @@ export class AppConnections {
     const credential = row?.grant_sealed ? await this.unsealToken(row.grant_sealed) : null;
     if (!row || !credential) throw new Error(`${account}'s token needs adding again at ${appPage(definition.name)}`);
     try {
-      return await tool.run(this.api(definition, tool, definition.token.authorize(credential.fields)), input);
+      return await tool.run(this.api(definition, tool, definition.token.authorize(credential.fields), account), input);
     } catch (error) {
       if (!(error instanceof Unauthorized)) throw error;
       this.dropGrant(definition.name, account, row.grant_generation, `${definition.title} refused the token`);
@@ -465,7 +467,7 @@ export class AppConnections {
   }
 
   /** The provider's API with `auth`, the headers that carry the credential, on every request. */
-  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, auth: Record<string, string>): ProviderApi {
+  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, auth: Record<string, string>, account: string): ProviderApi {
     const fetcher = this.deps.fetcher;
     const authNames = new Set(Object.keys(auth).map((name) => name.toLowerCase()));
     const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
@@ -519,6 +521,7 @@ export class AppConnections {
       return response;
     };
     return {
+      account,
       async request(method, path, options) {
         const text = await (await send(method, path, options)).text();
         return text ? (JSON.parse(text) as unknown) : null;
