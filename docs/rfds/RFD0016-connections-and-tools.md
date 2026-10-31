@@ -56,7 +56,7 @@ The service is the connection's name. A third-party connection's name is chosen 
 
 Every paired Mac is a host connection from the moment it is paired; there is no separate switch. Unpairing or revoking the host (RFD0013) removes the connection, and while the Mac is offline its `bash` calls fail with a host-offline error.
 
-`bash` runs one non-interactive command as the user `axod` runs as, with a working directory, a timeout and an output limit, and returns its exit status, standard output and standard error. Whatever that user can reach (installed CLIs, Keychain, a signed-in password-manager CLI, local servers such as Executor on `127.0.0.1:4312`) is reachable, and nothing else is set up for it.
+`bash` runs one non-interactive command as the user `axod` runs as, with a working directory, a timeout and an output limit, and returns its exit status, standard output and standard error. Whatever that user can reach (installed CLIs, Keychain, a signed-in password-manager CLI, local servers on `127.0.0.1`) is reachable, and nothing else is set up for it.
 
 Scripts run in the cloud, not on the calling Mac. `axod mcp` forwards `connections_search` and `connections_execute` over the host relay to the account's Durable Object, which runs the script in a Dynamic Worker. Third-party calls are made from the cloud with the account's grants; host-connection calls travel over the relay to the Mac that owns the connection and back. A script that only uses host tools still makes that round trip; that is the price of keeping grants in one place.
 
