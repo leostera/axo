@@ -89,6 +89,14 @@ type AccountStub = {
   connectionsCall(call: ConnectionsCall): Promise<HostCommandOutcome>;
 };
 
+/**
+ * Presence a HostDO reported while its base class was still being constructed, by generation.
+ * The base constructor fences the routes of sockets that did not survive a restart (a deploy, an
+ * eviction), which reports the host offline before this class's fields exist. The report waits
+ * here, outside the object, and is sent once construction is done.
+ */
+const offlineDuringConstruction = new WeakMap<AxoHostDO, string>();
+
 export class AxoHostDO extends AxoHostRelay {
   /** The newest progress snapshot per Session and slot; never stored (RFD0018, Ephemeral progress). */
   private readonly progress = new Map<string, Map<string, unknown>>();
@@ -113,6 +121,11 @@ export class AxoHostDO extends AxoHostRelay {
       missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
     sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS subscribers (client_do TEXT PRIMARY KEY, lease_until REAL NOT NULL)");
+    const offline = offlineDuringConstruction.get(this);
+    if (offline !== undefined) {
+      offlineDuringConstruction.delete(this);
+      this.presenceChanged("", offline, "offline");
+    }
   }
 
   // ─── Socket admission and registration ─────────────────────────────────────
@@ -147,6 +160,10 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   protected override presenceChanged(_hostId: string, hostGeneration: string, status: "online" | "offline"): void {
+    if (this.constructing()) {
+      if (status === "offline") offlineDuringConstruction.set(this, hostGeneration);
+      return;
+    }
     if (status === "offline") {
       this.progress.clear();
       this.statuses.clear();
@@ -156,6 +173,8 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override fence(connectionId: string): void {
     super.fence(connectionId);
+    // Nothing waits on a connection while the object is still being built: the maps start empty.
+    if (this.constructing()) return;
     for (const [id, hop] of this.hops) {
       if (hop.connectionId !== connectionId) continue;
       this.hops.delete(id);
@@ -165,6 +184,14 @@ export class AxoHostDO extends AxoHostRelay {
       this.commands.delete(id);
       command.resolve({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } });
     }
+  }
+
+  /**
+   * Whether the base class constructor is still running, so this class's fields do not exist
+   * yet. The base constructor calls `fence` and, through it, `presenceChanged`.
+   */
+  private constructing(): boolean {
+    return this.progress === undefined;
   }
 
   // ─── Upload: Axod → HostDO ─────────────────────────────────────────────────

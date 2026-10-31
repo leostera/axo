@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CallHostRequest, HostCommandOutcome } from "../src/host-do";
 import { harness, signIn } from "./harness";
-import { connectHost, pairHost } from "./account-support";
+import { connectClient, connectHost, pairHost } from "./account-support";
 
 /** The account's view of a HostDO: the RPC methods the account calls on it (RFD0016, Connections). */
 type HostStub = { callHost(request: CallHostRequest): Promise<HostCommandOutcome>; disconnect(): Promise<void> };
@@ -104,4 +104,18 @@ test("a revoked host's socket closes with 4003, and a callHost waiting on it fai
   await stub.disconnect();
   assert.equal(await daemon.closed, 4003);
   assert.deepEqual(await waiting, { error: { code: -32004, message: "Host disconnected; the call may have run" } });
+});
+
+test("a Mac reconnects after a restart that dropped its socket, as a deploy does", async (t) => {
+  const { h, session, host } = await fixture(t);
+  const before = await connectHost(h, session, host);
+  // A deploy restarts the HostDO without closing the socket in storage: its route outlives it.
+  await h.restart();
+  before.close();
+  // Starting again fences the dead route, which reports the host offline while the HostDO is
+  // still being constructed; that must not stop it from starting.
+  const after = await connectHost(h, session, host);
+  t.after(() => after.close());
+  const { client } = await connectClient(h, session);
+  t.after(() => client.close());
 });
