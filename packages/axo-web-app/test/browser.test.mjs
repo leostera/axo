@@ -143,6 +143,15 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "app", name: "apps.kraken", title: "Kraken", provider: "Kraken", category: "finance", description: "Your Kraken account.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://pro.kraken.com/app/settings/api", named: true, fields: [{ name: "key", label: "API key", help: "In settings.", secret: true }, { name: "secret", label: "Private key", help: "Shown once.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["get_balance", "request"], lastError: null },
+    { kind: "app", name: "apps.github", title: "GitHub", provider: "GitHub", category: "developer", description: "Your GitHub.", permissions: [],
+      signIn: { kind: "token", helpUrl: "https://github.com/settings/personal-access-tokens/new", named: false, fields: [{ name: "token", label: "Personal access token", help: "In settings.", secret: true }] },
+      state: "needsSignIn", accounts: [], tools: ["get_issue", "request"], lastError: null },
+    { kind: "app", name: "apps.discord", title: "Discord", provider: "Discord", category: "communication", description: "A Discord bot of yours.", permissions: [],
+      signIn: { kind: "token", helpUrl: "https://discord.com/developers/applications", named: false, fields: [{ name: "token", label: "Bot token", help: "In the portal.", secret: true }] },
+      state: "needsSignIn", accounts: [], tools: ["send_message", "request"], lastError: null },
+    { kind: "app", name: "apps.unifi", title: "UniFi", provider: "Ubiquiti", category: "home", description: "Your UniFi consoles.", permissions: [],
+      signIn: { kind: "token", helpUrl: "https://unifi.ui.com/api", named: true, fields: [{ name: "key", label: "API key", help: "At unifi.ui.com.", secret: true }] },
+      state: "needsSignIn", accounts: [], tools: ["list_hosts", "request"], lastError: null },
   ];
   const callLog = [
     { callId: "c-3", at: now, sessionId: sid(1), hostId, service: "apps.gmail", tool: "search_messages", targetHostId: null, durationMs: 210, outcome: "ok", error: null, input: { account: "ada@example.com", query: "is:unread" } },
@@ -625,11 +634,11 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "linear", "notion", "docs", "Stripe", "PayPal", "GitHub", "Add MCP server"]);
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Discord", "UniFi", "linear", "notion", "docs", "Stripe", "PayPal", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 14, "every app and suggested server has its maker's logo, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 16, "every app and suggested server has its maker's logo, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
     assert.deepEqual(await cards(), ["Gmail", "1Password", "linear", "docs"], "only what is connected");

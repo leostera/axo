@@ -7,6 +7,7 @@ import calendarLogo from "./logos/calendar.svg";
 import chatgptLogo from "./logos/chatgpt.svg";
 import cloudLogo from "./logos/cloud.svg";
 import contactsLogo from "./logos/contacts.svg";
+import discordLogo from "./logos/discord.svg";
 import docsLogo from "./logos/docs.svg";
 import driveLogo from "./logos/drive.svg";
 import githubLogo from "./logos/github.svg";
@@ -22,6 +23,7 @@ import slidesLogo from "./logos/slides.svg";
 import stripeLogo from "./logos/stripe.svg";
 import tasksLogo from "./logos/tasks.svg";
 import telegramLogo from "./logos/telegram.svg";
+import unifiLogo from "./logos/unifi.svg";
 import wiseLogo from "./logos/wise.svg";
 
 /**
@@ -158,7 +160,6 @@ type Suggestion = { name: string; title: string; url: string; category: string; 
 const SUGGESTED_SERVERS: Suggestion[] = [
   { name: "stripe", title: "Stripe", url: "https://mcp.stripe.com", category: "finance", provider: "Stripe", logo: stripeLogo, full: true },
   { name: "paypal", title: "PayPal", url: "https://mcp.paypal.com/mcp", category: "finance", provider: "PayPal", logo: paypalLogo },
-  { name: "github", title: "GitHub", url: "https://api.githubcopilot.com/mcp/", category: "developer", provider: "GitHub", logo: githubLogo },
 ];
 
 /** Apps: filters, a grid of every app and MCP server, and what Sessions used lately. */
@@ -626,9 +627,12 @@ const APP_LOGOS: Record<string, string> = {
   "apps.wise": wiseLogo,
   "apps.telegram": telegramLogo,
   "apps.kraken": krakenLogo,
+  "apps.github": githubLogo,
+  "apps.discord": discordLogo,
+  "apps.unifi": unifiLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
-const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise", "apps.kraken"]);
+const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise", "apps.kraken", "apps.unifi"]);
 
 function AppTile({ app, large = false }: { app: string; large?: boolean }) {
   const logo = APP_LOGOS[app];
@@ -662,7 +666,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken", "apps.github": "GitHub", "apps.discord": "Discord", "apps.unifi": "UniFi",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */
