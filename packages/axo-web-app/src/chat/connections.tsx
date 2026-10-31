@@ -12,6 +12,7 @@ import driveLogo from "./logos/drive.svg";
 import gmailLogo from "./logos/gmail.svg";
 import hetznerLogo from "./logos/hetzner.svg";
 import meetLogo from "./logos/meet.svg";
+import onepasswordLogo from "./logos/onepassword.svg";
 import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
 import tasksLogo from "./logos/tasks.svg";
@@ -152,7 +153,7 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go }: {
     ...apps.map((app): Tile => ({
       key: app.name, title: app.title, subtitle: app.description, category: app.category || "other", provider: app.provider,
       connected: app.accounts.some((a) => a.state === "ready"), look: <AppTile app={app.name} large />,
-      detail: count(app.accounts.length, "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
+      detail: count(app.accounts.length, app.signIn.kind === "mac" ? "Mac" : "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
     })),
     ...servers.map((server): Tile => ({
       key: server.name, title: server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
@@ -304,7 +305,7 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
         <div className="grouped" hidden={!app.accounts.length && (adding !== null || device !== null)}>
           {app.accounts.map((account) => (
             <div key={account.account} className="grouped-row connection-row">
-              <Icon name="person" size={18} />
+              <Icon name={app.signIn.kind === "mac" ? "laptop" : "person"} size={18} />
               <span className="connection-copy">
                 <strong>{account.account}</strong>
                 {account.state === "needsSignIn" ? <small>{app.signIn.kind === "token" ? account.lastError ?? "Needs a new token" : "Needs sign-in"}</small> : null}
@@ -312,13 +313,19 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
               {account.state === "needsSignIn"
                 ? <button className="bordered-button" disabled={busy || device !== null} onClick={() => add(account.account)}>{app.signIn.kind === "token" ? "Add token" : "Sign in"}</button>
                 : <span className="mac-dot online" aria-label="Connected" title="Connected" />}
-              <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
-                <Icon name="close" size={16} />
-              </button>
+              {app.signIn.kind === "mac" ? null : (
+                <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
+                  <Icon name="close" size={16} />
+                </button>
+              )}
             </div>
           ))}
-          {adding === null && device === null ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
+          {app.signIn.kind === "mac" && !app.accounts.length ? <p className="grouped-row muted">Pair a Mac to use {app.title}.</p> : null}
+          {adding === null && device === null && app.signIn.kind !== "mac" ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
         </div>
+        {app.signIn.kind === "mac"
+          ? <p className="sheet-note">Your Macs are its accounts. {app.signIn.setup} <a href={app.signIn.helpUrl} target="_blank" rel="noreferrer">Learn more</a>.</p>
+          : null}
         {device ? <DeviceCode app={app} flow={device.flow} shown={device.shown} connectionsUrl={connectionsUrl}
           onDone={(result) => {
             setDevice(null);
@@ -586,6 +593,7 @@ const APP_LOGOS: Record<string, string> = {
   "apps.cloud": cloudLogo,
   "apps.hetzner": hetznerLogo,
   "apps.chatgpt": chatgptLogo,
+  "apps.onepassword": onepasswordLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
 const FULL_LOGOS = new Set(["apps.hetzner"]);
@@ -622,7 +630,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */
