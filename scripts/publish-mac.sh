@@ -2,14 +2,14 @@
 # Uploads a packaged Axo.app (default: dist/Axo.app) for https://axo.leostera.dev/cdn/Axo.app,
 # which `curl -fsSL https://axo.leostera.dev/install | sh` installs.
 #
-# Every build is kept at mac/builds/<CFBundleVersion>/Axo.app.zip in the axo-downloads bucket;
+# Every build is kept at mac/builds/<CFBundleVersion>/Axo.app.zip in the axo-cdn bucket;
 # mac/Axo.app.zip is the one served. A build from a dirty tree is refused unless
 # AXO_PUBLISH_ALLOW_DIRTY=1.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 app=$(cd "$(dirname "${1:-$root/dist/Axo.app}")" && pwd)/$(basename "${1:-$root/dist/Axo.app}")
-bucket=${AXO_DOWNLOADS_BUCKET:-axo-downloads}
+bucket=${AXO_CDN_BUCKET:-axo-cdn}
 # The install script refuses any other signing team.
 team_id=RGH6S9S55G
 

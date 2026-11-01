@@ -25,7 +25,7 @@ export default defineConfig(({ isPreview }) => ({
     env: {
       PUBLIC_SESSIONS: bindings.r2({ name: "axo-public-sessions" }),
       // The Mac app `/cdn/Axo.app` serves and `/install` downloads; `scripts/publish-mac.sh` uploads it.
-      DOWNLOADS: bindings.r2({ name: "axo-downloads" }),
+      CDN: bindings.r2({ name: "axo-cdn" }),
       OAUTH_CLIENT_ID: bindings.secret(),
       OAUTH_CLIENT_SECRET: bindings.secret(),
       SESSION_SECRET: bindings.secret(),

@@ -36,7 +36,7 @@ plutil -p dist/Axo.app/Contents/Info.plist | grep -E 'CFBundleVersion|AXOGitComm
 
 ## Publishing
 
-`scripts/publish-mac.sh` uploads a clean, packaged `dist/Axo.app` to the `axo-downloads` bucket, served at `https://axo.leostera.dev/cdn/Axo.app`; `curl -fsSL https://axo.leostera.dev/install | sh` installs it on another Mac (see `sites/axo.leostera.dev/README.md`). Publish only when Leo asks. Never copy the bundle to another Mac through a browser or AirDrop: it gets quarantined and translocated, and then it cannot register axod.
+`scripts/publish-mac.sh` uploads a clean, packaged `dist/Axo.app` to the `axo-cdn` bucket, served at `https://axo.leostera.dev/cdn/Axo.app`; `curl -fsSL https://axo.leostera.dev/install | sh` installs it on another Mac (see `sites/axo.leostera.dev/README.md`). Publish only when Leo asks. Never copy the bundle to another Mac through a browser or AirDrop: it gets quarantined and translocated, and then it cannot register axod.
 
 ## Runtime safety
 

@@ -54,7 +54,7 @@ export default {
     const { pathname } = new URL(request.url);
     if (pathname === "/install") return installScriptResponse(request);
     if (pathname === "/cdn/Axo.app" || pathname === "/cdn/Axo.app.zip")
-      return await macAppResponse(request, env.DOWNLOADS);
+      return await macAppResponse(request, env.CDN);
     if (pathname.startsWith("/api/public-sessions/")) {
       return await publicSessionSnapshot(request, env) ?? new Response("Not found", { status: 404 });
     }
