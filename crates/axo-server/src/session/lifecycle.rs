@@ -245,18 +245,36 @@ impl SessionManager {
                 archive_session(&mut state.database, record.id, "missing_open_pane")?;
                 continue;
             }
+            let mut remaining_shell_ids: HashSet<ShellId> =
+                record.shell_ids.iter().map(|(id, _, _)| *id).collect();
+            let mut unrestorable_shell_ids = Vec::new();
             for (shell_id, role, pane_id) in record.shell_ids {
                 if state.panes.contains(shell_id) {
                     continue;
                 }
 
                 let running = match role {
-                    PaneRole::Terminal => Some(spawn_shell(
+                    // One terminal that cannot start (its directory was deleted, say) must not
+                    // keep Axod from starting: archive it as if its shell had exited.
+                    PaneRole::Terminal => match spawn_shell(
                         &state.shell_command,
                         record.id,
                         &record.initial_pwd,
                         state.pane_size(record.id, shell_id),
-                    )?),
+                    ) {
+                        Ok(running) => Some(running),
+                        Err(error) => {
+                            log::warn!(
+                                "event=session.shell_restore_failed session_id={} shell_id={} error_kind={:?} reason={error}",
+                                record.id,
+                                shell_id.get(),
+                                error.kind()
+                            );
+                            remaining_shell_ids.remove(&shell_id);
+                            unrestorable_shell_ids.push(shell_id);
+                            None
+                        }
+                    },
                     PaneRole::Pi => {
                         // Not open (checked above), so this cannot be refused.
                         let _ = state.panes.insert_unavailable(
@@ -270,6 +288,22 @@ impl SessionManager {
                 if let Some(running) = running {
                     state.install_running(shell_id, running);
                 }
+            }
+            if unrestorable_shell_ids.is_empty() {
+                continue;
+            }
+            if remaining_shell_ids.is_empty() {
+                archive_session(&mut state.database, record.id, "shell_restore_failed")?;
+                continue;
+            }
+            for shell_id in unrestorable_shell_ids {
+                archive_shell_and_prune_layout(
+                    &mut state.database,
+                    shell_id,
+                    record.id,
+                    "shell_restore_failed",
+                    &remaining_shell_ids,
+                )?;
             }
         }
         drop(state);
@@ -631,6 +665,41 @@ mod tests {
                 .runtime_id,
             runtime
         );
+    }
+
+    #[test]
+    fn a_terminal_whose_directory_is_gone_is_archived_instead_of_failing_restore() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.create_session_and_publish().unwrap();
+        let terminal = terminal_shell(&session);
+        let missing = fixture.directory.join("deleted-workspace");
+        {
+            let mut state = manager.lock_state().unwrap();
+            stop_panes(state.panes.remove(terminal).into_iter().collect());
+            state
+                .database
+                .execute(
+                    "UPDATE sessions SET initial_pwd = ?1 WHERE id = ?2",
+                    params![missing.to_string_lossy(), session.id.to_string()],
+                )
+                .unwrap();
+        }
+
+        manager.restore_open_sessions().unwrap();
+
+        let state = manager.lock_state().unwrap();
+        assert!(!state.panes.contains(terminal));
+        assert!(!open_shell_ids(&state, session.id).contains(&terminal));
+        let terminal_state: String = state
+            .database
+            .query_row(
+                "SELECT state FROM shells WHERE id = ?1",
+                params![terminal.get()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_state, "archived");
     }
 
     #[test]
