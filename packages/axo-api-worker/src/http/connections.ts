@@ -55,8 +55,8 @@ export async function serveConnections(
   const caller = await requireAccount(request, env, exports, reads ? "read" : "change");
   if (caller instanceof Response) return caller;
   const stub = account(ctx, caller.accountId);
-  // Signing in and removing also take an app, `apps.<app>`; a client is only ever a third party's.
-  const names = route === "signIn" || route === "remove" ? serviceSchema : connectionNameSchema;
+  // Signing in, removing and setting a client also take an app, `apps.<app>` (its provider's client).
+  const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema : connectionNameSchema;
   const name = rawName === undefined ? null : names.safeParse(rawName);
   if (name && !name.success) return json({ error: "Invalid connection name" }, 400);
   try {

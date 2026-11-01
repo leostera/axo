@@ -21,7 +21,7 @@ import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller
 import { ThirdPartyConnections } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
-import { AppConnections } from "./apps";
+import { AppAccountRefused, AppConnections, appPage } from "./apps";
 import { ProviderError, ProviderOutcomeUnknown } from "@axo/apps";
 import type { GoogleClient } from "./apps/google";
 
@@ -168,8 +168,16 @@ export class AccountConnections {
     return { result };
   }
 
+  /**
+   * Sets the OAuth client of a third-party connection, or of an app's provider (`apps.<app>`),
+   * which needs a secret. An app's answer is its page, where the person adds an account.
+   */
   async setClient(name: string, client: Client): Promise<{ signInUrl: string }> {
-    return this.thirdParty.setClient(name, client);
+    const app = AppConnections.appOf(name);
+    if (!app) return this.thirdParty.setClient(name, client);
+    if (!client.clientSecret) throw new AppAccountRefused("Enter the client secret too");
+    await this.apps.setClient(app, client.clientId, client.clientSecret);
+    return { signInUrl: appPage(app) };
   }
 
   /** A fresh sign-in link for a third-party connection or an app. */

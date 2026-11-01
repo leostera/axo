@@ -579,3 +579,23 @@ test("a call logged while the chain is cut past 30 days still verifies from the 
   const check = (await (await fetch(new URL("api/v1/account/connections/log/integrity", h.url), { headers: session.headers })).json()) as { verified: boolean; events: number; reason: string | null };
   assert.deepEqual([check.verified, check.events], [true, 2], check.reason ?? "");
 });
+
+test("an app's OAuth client is set on its page through the client route, kept by the account, and never returned", async (t) => {
+  const { h, session, call } = await fixture(t);
+  const post = (body: unknown) => fetch(new URL("api/v1/account/connections/apps.github/client", h.url), {
+    method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev", "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const github = async () => connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections.find((c) => c.name === "apps.github");
+  const before = await github();
+  assert.ok(before?.kind === "app" && before.signIn.kind === "oauth" && before.signIn.client?.ready === false);
+  assert.equal((await post({ clientId: "Ov23li" })).status, 503, "an app's client needs its secret");
+  const set = await post({ clientId: "Ov23liClient", clientSecret: "gh-secret-value" });
+  assert.equal(set.status, 200, await set.clone().text());
+  assert.deepEqual(await set.json(), { signInUrl: "https://axo.leostera.dev/app/settings/apps/github" });
+  const after = await github();
+  assert.ok(after?.kind === "app" && after.signIn.kind === "oauth" && after.signIn.client?.ready === true);
+  const page = await (await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers })).text();
+  assert.equal(page.includes("gh-secret-value"), false);
+  const link = await fetch(new URL("api/v1/account/connections/apps.github/sign-in", h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
+  assert.match(((await link.json()) as { signInUrl: string }).signInUrl, /\/api\/v1\/connections\/oauth\/start\?flow=/, "GitHub can be signed in to now");
+});
