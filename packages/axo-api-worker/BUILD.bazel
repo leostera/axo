@@ -18,6 +18,7 @@ _DEPS = [
     ":node_modules/@axo/app",
     ":node_modules/@axo/apps",
     ":node_modules/@axo/protocol",
+    ":node_modules/@cfworker/json-schema",
     ":node_modules/@modelcontextprotocol/sdk",
     ":node_modules/@types/node",
     ":node_modules/@types/ws",
@@ -42,6 +43,12 @@ ts_project(
     ],
 )
 
+_RELAY_TESTS = [
+    "tests/axod-relay.test.ts",
+    "tests/phone-path.test.ts",
+    "tests/connections-e2e.test.ts",
+]
+
 # Every file the tests read, copied to the output tree by an untagged target (see node_test).
 js_library(
     name = "test_files",
@@ -58,31 +65,13 @@ node_test(
         ":test_files",
         "//packages/axo-api:fixtures",
     ],
-    tests = [
-        "tests/api.test.ts",
-        "tests/auth.test.ts",
-        "tests/account-manager.test.ts",
-        "tests/hosts.test.ts",
-        "tests/lifecycle.test.ts",
-        "tests/limits.test.ts",
-        "tests/machines.test.ts",
-        "tests/observability.test.ts",
-        "tests/replies.property.test.ts",
-        "tests/replies.test.ts",
-        "tests/session-sync.test.ts",
-        "tests/host-calls.test.ts",
-        "tests/connections.test.ts",
-        "tests/third-party.test.ts",
-        "tests/apps.test.ts",
-        "tests/token-apps.test.ts",
-        "tests/device-apps.test.ts",
-        "tests/oauth-apps.test.ts",
-        "tests/mac-apps.test.ts",
-        "tests/kraken-signin.test.ts",
-        "tests/fragments.test.ts",
-        "tests/relay-fragments.test.ts",
-        "tests/share.test.ts",
-    ],
+    tests = glob(
+        ["tests/*.test.ts"],
+        exclude = _RELAY_TESTS + [
+            # Never part of npm test; it drives a local stack by hand.
+            "tests/local.test.ts",
+        ],
+    ),
     tests_in_data = True,
     tsx = True,
 )
@@ -101,11 +90,7 @@ node_test(
     # Relative to the package, where node_test runs.
     env = {"AXOD_BINARY": "../../crates/axod/axod"},
     tags = ["no-sandbox"],
-    tests = [
-        "tests/axod-relay.test.ts",
-        "tests/phone-path.test.ts",
-        "tests/connections-e2e.test.ts",
-    ],
+    tests = _RELAY_TESTS,
     tests_in_data = True,
     tsx = True,
 )
