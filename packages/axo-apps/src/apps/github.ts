@@ -1,52 +1,10 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
-import { standardToken, type OAuthProvider } from "./oauth-provider";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
- * GitHub as an app: `codemode.apps.github.<tool>({ account, ... })`, signed in with Axo's own
- * OAuth app (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) and named by the user's login. The OAuth
- * app has expiring user tokens on: an access token lives eight hours, and each renewal spends the
- * refresh token for a new one.
+ * GitHub as an app: `codemode.apps.github.<tool>({ account, ... })`, signed in with an OAuth app
+ * of the person's (oauth/github.ts) and named by the user's login.
  */
-
-const TIMEOUT_MS = 15_000;
-
-export const githubProvider: OAuthProvider = {
-  name: "github",
-  title: "GitHub",
-  authorizeUrl: "https://github.com/login/oauth/authorize",
-  tokenUrl: "https://github.com/login/oauth/access_token",
-  env: { clientId: "GITHUB_CLIENT_ID", clientSecret: "GITHUB_CLIENT_SECRET" },
-  scopeSeparator: " ",
-  // A choice of account, so a second one can be added.
-  authorizeParams: { prompt: "select_account" },
-  pkce: true,
-  tokenAuth: "body",
-  tokenParams: {},
-  // GitHub answers a refused code or refresh token with HTTP 200 and `{ error }`; standardToken refuses it.
-  parseToken: (json) => standardToken(json, "GitHub"),
-  rotatesRefreshTokens: true,
-  async identify(_grant, api) {
-    const me = (await get(api, "/user")) as { login?: unknown };
-    return typeof me.login === "string" ? me.login : null;
-  },
-  /** Deletes the person's authorization of Axo's OAuth app, and every token of it. */
-  async revoke(grant, client, fetcher) {
-    const response = await fetcher(`https://api.github.com/applications/${encodeURIComponent(client.clientId)}/grant`, {
-      method: "DELETE",
-      headers: {
-        Authorization: `Basic ${btoa(`${client.clientId}:${client.clientSecret}`)}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        ...API_HEADERS,
-      },
-      body: JSON.stringify({ access_token: grant.accessToken }),
-      redirect: "manual",
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    await response.body?.cancel();
-  },
-};
 
 const owner = z.string().regex(/^[A-Za-z0-9-]{1,39}$/).describe("A user or organisation, such as \"leostera\".");
 const repo = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/).describe("A repository's name, without its owner.");

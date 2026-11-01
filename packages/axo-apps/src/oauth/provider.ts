@@ -1,22 +1,22 @@
-import { CALLBACK_URL, GrantRefused, OAuthError } from "../oauth";
-import type { ProviderApi } from "./app";
+import { GrantRefused, OAuthError } from "../errors";
+import type { ProviderApi } from "../app";
 
 /**
- * The OAuth providers Axo has its own client with (RFD0016, Apps): Google, GitHub, Spotify,
- * Withings. Each is a config: where to send the browser, how to redeem a code and renew a grant,
- * how to read the provider's token answer, and how to name the account that signed in. Its
- * client's ID and secret are set on the Worker (`<PROVIDER>_CLIENT_ID`, `<PROVIDER>_CLIENT_SECRET`);
- * a provider without one is not set up, and its apps are not listed.
+ * The OAuth providers an app can sign in with (RFD0016, Apps): Google, GitHub, Spotify, Withings.
+ * Each is a config: where to send the browser, how to redeem a code and renew a grant, how to read
+ * the provider's token answer, and how to name the account that signed in.
  *
- * Every sign-in goes through the connections callback (CALLBACK_URL), with its flow cookie and
- * sealed state checks (specs/connection-sign-in.ts).
+ * The client (its ID and secret) is not part of the config: the person registers one with the
+ * provider, with the deployment's callback as its redirect URI, and enters it on the app's page.
+ * The account's gateway keeps it sealed, so it can be changed or rotated at any time. A provider
+ * without a client is not set up yet, and its apps say so.
  */
 
 export const OAUTH_PROVIDERS = ["google", "github"] as const;
 export type OAuthProviderName = (typeof OAUTH_PROVIDERS)[number];
 
 export type OAuthClient = { clientId: string; clientSecret: string };
-/** Axo's clients on this deployment, by provider; a provider without one is left out. */
+/** The clients set up, by provider; a provider without one is left out. */
 export type OAuthClients = Partial<Record<OAuthProviderName, OAuthClient>>;
 
 /** A grant for one provider account, with the scopes the provider actually granted. */
@@ -50,8 +50,8 @@ export type OAuthProvider = {
   title: string;
   authorizeUrl: string;
   tokenUrl: string;
-  /** The Worker's environment variables holding Axo's client. */
-  env: { clientId: string; clientSecret: string };
+  /** Where the person registers a client with the provider, and finds its ID and secret. */
+  consoleUrl: string;
   /** How the authorize URL joins scopes: Withings wants commas. */
   scopeSeparator: " " | ",";
   /** Sent on the authorize URL besides the standard ones, such as Google's `access_type=offline`. */
@@ -80,23 +80,12 @@ export type OAuthProvider = {
 
 const TIMEOUT_MS = 15_000;
 
-/** The clients set on the Worker. */
-export function oauthClients(env: Record<string, unknown>, providers: readonly OAuthProvider[]): OAuthClients {
-  const clients: OAuthClients = {};
-  for (const provider of providers) {
-    const clientId = env[provider.env.clientId];
-    const clientSecret = env[provider.env.clientSecret];
-    if (typeof clientId === "string" && clientId && typeof clientSecret === "string" && clientSecret) clients[provider.name] = { clientId, clientSecret };
-  }
-  return clients;
-}
-
-/** Where to send the browser to sign in, asking for `scopes`. */
-export function authorizationUrl(provider: OAuthProvider, client: OAuthClient, scopes: readonly string[], challenge: string, state: string): string {
+/** Where to send the browser to sign in, asking for `scopes`; the provider sends it back to `redirectUri`. */
+export function authorizationUrl(provider: OAuthProvider, client: OAuthClient, scopes: readonly string[], challenge: string, state: string, redirectUri: string): string {
   const url = new URL(provider.authorizeUrl);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", client.clientId);
-  url.searchParams.set("redirect_uri", CALLBACK_URL);
+  url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("scope", scopes.join(provider.scopeSeparator));
   for (const [name, value] of Object.entries(provider.authorizeParams)) url.searchParams.set(name, value);
   if (provider.pkce) {
@@ -107,8 +96,9 @@ export function authorizationUrl(provider: OAuthProvider, client: OAuthClient, s
   return url.toString();
 }
 
-export function redeemCode(provider: OAuthProvider, client: OAuthClient, code: string, verifier: string, fetcher: typeof fetch, now: number): Promise<OAuthGrant> {
-  const form: Record<string, string> = { grant_type: "authorization_code", code, redirect_uri: CALLBACK_URL };
+/** Redeems the code the provider sent the browser back with; `redirectUri` is the one the sign-in started with. */
+export function redeemCode(provider: OAuthProvider, client: OAuthClient, code: string, verifier: string, redirectUri: string, fetcher: typeof fetch, now: number): Promise<OAuthGrant> {
+  const form: Record<string, string> = { grant_type: "authorization_code", code, redirect_uri: redirectUri };
   if (provider.pkce) form.code_verifier = verifier;
   return token(provider, client, form, fetcher, now, null);
 }

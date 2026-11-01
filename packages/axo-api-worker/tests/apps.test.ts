@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connectionsResults } from "@axo/protocol";
+import { APPS, connectionsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { FakeGoogle } from "./fake-google";
@@ -72,7 +72,7 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
     "list_filters", "create_filter", "delete_filter", "get_vacation", "set_vacation", "list_send_as", "request"];
   const gmail = listed.connections.find((c) => c.kind === "app");
   assert.deepEqual({ ...gmail, description: undefined, permissions: undefined }, {
-    kind: "app", name: "apps.gmail", title: "Gmail", description: undefined, provider: "Google", category: "communication", permissions: undefined, signIn: { kind: "oauth" }, state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
+    kind: "app", name: "apps.gmail", title: "Gmail", description: undefined, provider: "Google", category: "communication", permissions: undefined, signIn: { kind: "oauth", client: { provider: "google", ready: true, consoleUrl: "https://console.cloud.google.com/apis/credentials", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback" } }, state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
   });
   assert.ok(gmail?.kind === "app" && gmail.description && gmail.permissions.length >= 3, "an app says what it is for and what it may do");
   const tools = result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => [t.call, t.inputSchema.required])` })).result;
@@ -189,7 +189,7 @@ test("a sign-in without Gmail access does not land, and signing out revokes the 
   assert.match(failure(await call("axo.connections.remove", { name: "apps.gmail", account: "ada@example.com" })), /not signed in/);
 });
 
-test("apps is a reserved name, and a deployment without a Google client lists no Google apps", async (t) => {
+test("apps is a reserved name, and an account without a Google client lists Google's apps waiting for one, without their tools", async (t) => {
   const { call } = await fixture(t);
   assert.match(failure(await call("axo.connections.add", { name: "apps", url: "https://mcp.example.test/mcp" })), /reserved/);
 
@@ -199,8 +199,14 @@ test("apps is a reserved name, and a deployment without a Google client lists no
   const daemon = await connectHost(bare, session, await pairHost(bare, session, "Studio"));
   t.after(() => daemon.close());
   const listed = (await daemon.call("axo.connections.list", { sessionId: crypto.randomUUID() })) as Reply;
-  // Token apps need no client of Axo's: the person brings the token.
-  assert.deepEqual(result(listed).connections.map((c: { name: string }) => c.name), ["studio", "apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.discord", "apps.unifi"]);
+  const connections = connectionsResults["axo.connections.list"].parse(result(listed)).connections;
+  assert.deepEqual(connections.map((c) => c.name), ["studio", ...APPS.map((app) => `apps.${app}`)], "every app is listed, so its client can be set up on its page");
+  const gmail = connections.find((c) => c.name === "apps.gmail");
+  assert.ok(gmail?.kind === "app" && gmail.signIn.kind === "oauth");
+  assert.equal(gmail.signIn.client?.ready, false);
+  const tools = result((await daemon.call("axo.connections.search", { sessionId: crypto.randomUUID(), code: `async () => [...new Set(codemode.tools().map((t) => t.service))]` })) as Reply).result;
+  assert.deepEqual(tools.filter((s: string) => s.startsWith("apps.")), ["apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.discord", "apps.unifi"],
+    "an app waiting for its client has no tools; one that needs none does");
 });
 
 test("several Google accounts sign in to Gmail; each call acts as the account it names, and no call guesses one", async (t) => {
@@ -278,7 +284,7 @@ test("every Workspace app is listed, signs in with full access to its own servic
   const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
     ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.slides", 0],
-    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.discord", 0], ["apps.unifi", 0],
+    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.github", 0], ["apps.discord", 0], ["apps.unifi", 0],
   ]);
   const scopes: Record<string, string> = {};
   for (const app of ["apps.gmail", "apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.slides", "apps.contacts", "apps.tasks", "apps.meet", "apps.cloud"]) {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProviderError, tool, type AppDefinition, type AppTool } from "./app";
+import { ProviderError, tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * ChatGPT as an app: `codemode.apps.chatgpt.<tool>({ account, ... })`, signed in the way the

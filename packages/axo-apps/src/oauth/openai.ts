@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GrantRefused, OAuthError } from "../oauth";
+import { GrantRefused, OAuthError } from "../errors";
 
 /**
  * Axo signed in to ChatGPT the way the Codex CLI is (openai/codex, `codex-rs/login`): as Codex's

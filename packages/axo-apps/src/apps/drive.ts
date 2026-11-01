@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Google Drive as an app: `codemode.apps.drive.<tool>({ account, ... })` over the Drive API, with

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "./app";
+import { tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * Google Docs as an app: `codemode.apps.docs.<tool>({ account, ... })` over the Docs API, with

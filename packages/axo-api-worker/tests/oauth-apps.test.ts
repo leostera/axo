@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema, type AppName } from "@axo/protocol";
 import { AppConnections } from "../src/connections/apps";
-import type { OAuthClients } from "../src/connections/apps/oauth-provider";
-import { appClients } from "../src/connections/apps/providers";
 import type { FakeOAuth } from "./fake-oauth";
 import { FakeGitHub } from "./fake-github";
 import { sqlStorage } from "./sql-storage";
 
 /**
- * RFD0016, OAuth apps of providers other than Google: each signs in with Axo's own client for its
- * provider (set on the Worker), through the same flow as Google's. Each provider's quirks are in
+ * RFD0016, OAuth apps of providers other than Google: each signs in with a client the person
+ * registered with its provider and entered on the app's page, kept sealed in the account's
+ * gateway, through the same flow as Google's. Each provider's quirks are in
  * its config: how it authenticates the token request, reads its answer, rotates refresh tokens and
  * names the account. The HTTP side of the flow (start page, cookie, callback) is Google's, tested
  * in apps.test.ts; here the flow is driven on AppConnections itself.
@@ -18,7 +17,7 @@ import { sqlStorage } from "./sql-storage";
 
 type Fake = { oauth: FakeOAuth; handle(request: Request): Promise<Response | undefined> };
 
-function fixture<F extends Fake>(fake: F, provider: keyof OAuthClients) {
+async function fixture<F extends Fake>(fake: F, app: AppName) {
   let clock = Date.parse("2026-10-31T12:00:00Z");
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -29,10 +28,12 @@ function fixture<F extends Fake>(fake: F, provider: keyof OAuthClients) {
   const background: Promise<unknown>[] = [];
   const apps = new AppConnections({
     sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
-    clients: { [provider]: { clientId: fake.oauth.clientId, clientSecret: fake.oauth.clientSecret } }, fetcher, waitUntil: (p) => background.push(p), now: () => clock,
+    fetcher, waitUntil: (p) => background.push(p), now: () => clock,
   });
+  const ready = apps.setClient(app, fake.oauth.clientId, fake.oauth.clientSecret);
   /** The person adds an account: Axo's link, the provider's consent page, and back to the callback. */
   const signIn = async (app: AppName, person = "ada") => {
+    await ready;
     const link = new URL(await apps.signInLink(app));
     const nonce = link.searchParams.get("flow")!;
     const opened = await apps.openFlow(nonce);
@@ -41,6 +42,7 @@ function fixture<F extends Fake>(fake: F, provider: keyof OAuthClients) {
     const back = fake.oauth.approve(opened.authorizeUrl);
     return apps.completeFlow(nonce, back.searchParams.get("code")!);
   };
+  await ready;
   return { fake, apps, signIn, tick: (ms: number) => { clock += ms; }, settled: () => Promise.all(background) };
 }
 
@@ -53,21 +55,48 @@ async function refused(promise: Promise<unknown>): Promise<string> {
   assert.fail("expected a refusal");
 }
 
-test("each provider's client comes from its own Worker variables, and an app is listed only with its provider's", () => {
-  assert.deepEqual(appClients({ GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret", GOOGLE_CLIENT_ID: "g" }), { github: { clientId: "id", clientSecret: "secret" } });
-  const { apps } = fixture(new FakeGitHub(), "github");
-  const names = apps.list().map((c) => c.name);
-  assert.ok(names.includes("apps.github"));
-  assert.ok(!names.includes("apps.gmail"), "Google's apps need Google's client");
-  const bare = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher: fetch, waitUntil: () => undefined });
-  assert.ok(!bare.list().some((c) => c.name === "apps.github"), "without GitHub's client, GitHub is not listed");
+test("an OAuth app is listed before its provider's client is set up, with where to register one, and its tools appear once it is", async () => {
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
+  const listed = () => connectionSchema.parse(apps.list().find((c) => c.name === "apps.github"));
+  const before = listed();
+  assert.deepEqual(before.kind === "app" && before.signIn, { kind: "oauth", client: {
+    provider: "github", ready: false, consoleUrl: "https://github.com/settings/developers", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback",
+  } });
+  assert.ok(!apps.tools().some((t) => t.service === "apps.github"), "no tools until it can be used");
+  assert.match(await refused(apps.call("github", "get_me", { account: "ada" })), /^GitHub is not set up yet: the person enters GitHub's OAuth client at https:\/\/axo\.leostera\.dev\/app\/settings\/apps\/github$/);
+  assert.match(await refused(apps.signInLink("github")), /not set up yet/);
+  assert.match(await refused(apps.setClient("github", "Iv1 abc", "secret")), /without spaces/);
+  assert.match(await refused(apps.setClient("hetzner", "id", "secret")), /does not sign in with an OAuth client/);
+
+  assert.deepEqual(await apps.setClient("github", " Ov23liAbc ", "s3cret"), { provider: "github" });
+  const ready = listed();
+  assert.ok(ready.kind === "app" && ready.signIn.kind === "oauth" && ready.signIn.client?.ready);
+  assert.ok(apps.tools().some((t) => t.service === "apps.github"));
+  assert.ok(!JSON.stringify([apps.list(), apps.tools()]).includes("s3cret"), "the secret is never shown");
+  const gmail = connectionSchema.parse(apps.list().find((c) => c.name === "apps.gmail"));
+  assert.ok(gmail.kind === "app" && gmail.signIn.kind === "oauth" && gmail.signIn.client?.ready === false, "a client serves its own provider's apps only");
+  assert.equal(apps.removeClient("github"), true);
+  assert.ok(!apps.tools().some((t) => t.service === "apps.github"));
 });
 
-test("GitHub signs in with Axo's OAuth app, is named by the login, and its tools all need an account", async () => {
-  const { apps, fake, signIn } = fixture(new FakeGitHub(), "github");
+test("a replaced client is used for the next sign-in and renewal; a renewal the provider refuses then asks for sign-in", async () => {
+  const { apps, fake, signIn, tick } = await fixture(new FakeGitHub(), "github");
+  await signIn("github");
+  await apps.setClient("github", fake.oauth.clientId, "rotated-secret");
+  tick(8 * 3600_000);
+  assert.match(await refused(apps.call("github", "get_me", { account: "ada" })), /needs sign-in/);
+  assert.equal(fake.oauth.tokenRequests.at(-1)!.form.get("client_secret"), "rotated-secret");
+  assert.deepEqual(apps.accounts("github"), [{ account: "ada", state: "needsSignIn", lastError: "GitHub refused to renew the grant" }]);
+  await apps.setClient("github", fake.oauth.clientId, fake.oauth.clientSecret);
+  assert.deepEqual(await signIn("github"), { name: "apps.github" });
+  assert.equal(apps.accounts("github")[0]!.state, "ready");
+});
+
+test("GitHub signs in with the person's OAuth app, is named by the login, and its tools all need an account", async () => {
+  const { apps, fake, signIn } = await fixture(new FakeGitHub(), "github");
   const github = connectionSchema.parse(apps.list().find((c) => c.name === "apps.github"));
   assert.ok(github.kind === "app");
-  assert.deepEqual([github.provider, github.signIn, github.state], ["GitHub", { kind: "oauth" }, "needsSignIn"]);
+  assert.deepEqual([github.provider, github.signIn.kind, github.state], ["GitHub", "oauth", "needsSignIn"]);
   assert.deepEqual(github.tools, ["get_me", "list_repos", "search", "list_issues", "get_issue", "create_issue", "comment", "get_pull", "get_file", "list_notifications", "request"]);
   assert.ok(apps.tools().filter((t) => t.service === "apps.github").every((t) => (t.inputSchema.required as string[])[0] === "account"));
   assert.match(await refused(apps.call("github", "get_me", { account: "ada" })), /^needs sign-in: https:\/\/axo\.leostera\.dev\/api\/v1\/connections\/oauth\/start\?flow=/);
@@ -97,7 +126,7 @@ test("GitHub signs in with Axo's OAuth app, is named by the login, and its tools
 });
 
 test("GitHub's eight-hour token renews before a call, spending the refresh token; a refused renewal asks for sign-in", async () => {
-  const { apps, fake, signIn, tick } = fixture(new FakeGitHub(), "github");
+  const { apps, fake, signIn, tick } = await fixture(new FakeGitHub(), "github");
   await signIn("github");
   const first = fake.oauth.tokenRequests[0]!;
   assert.equal(first.form.get("grant_type"), "authorization_code");
@@ -117,7 +146,7 @@ test("GitHub's eight-hour token renews before a call, spending the refresh token
 });
 
 test("a GitHub renewal that got no answer may have spent the refresh token: the account needs sign-in", async () => {
-  const { apps, fake, signIn, tick } = fixture(new FakeGitHub(), "github");
+  const { apps, fake, signIn, tick } = await fixture(new FakeGitHub(), "github");
   await signIn("github");
   tick(8 * 3600_000);
   fake.oauth.dropNextToken = true;
@@ -126,7 +155,7 @@ test("a GitHub renewal that got no answer may have spent the refresh token: the 
 });
 
 test("a GitHub code is redeemed once, and signing out deletes Axo's authorization at GitHub", async () => {
-  const { apps, fake, settled } = fixture(new FakeGitHub(), "github");
+  const { apps, fake, settled } = await fixture(new FakeGitHub(), "github");
   const link = new URL(await apps.signInLink("github"));
   const nonce = link.searchParams.get("flow")!;
   const back = fake.oauth.approve((await apps.openFlow(nonce))!.authorizeUrl);

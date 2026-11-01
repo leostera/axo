@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema } from "@axo/protocol";
 import { AppConnections, macCommand } from "../src/connections/apps";
-import { ProviderOutcomeUnknown } from "../src/connections/apps/app";
+import { ProviderOutcomeUnknown } from "@axo/apps";
 import { sqlStorage } from "./sql-storage";
 
 /**
@@ -39,11 +39,11 @@ function fixture(macs = ["studio", "leo_s_laptop"]) {
         { id: "password", label: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2", reference: "op://Private/GitHub/password" }] },
   };
   const apps = new AppConnections({
-    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {},
+    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
     fetcher: (async () => { throw new Error("no network"); }) as typeof fetch, waitUntil: () => undefined,
     macs: () => macs,
     runOnMac: async (mac, command) => {
-      if (offline) throw new (await import("../src/connections/apps/app")).ProviderError(0, `${mac}: host offline; nothing sent`);
+      if (offline) throw new (await import("@axo/apps")).ProviderError(0, `${mac}: host offline; nothing sent`);
       if (lost) throw new ProviderOutcomeUnknown(`${mac} did not answer; the command may have run`);
       const r = { mac, ...parse(command) };
       ran.push(r);
@@ -91,7 +91,7 @@ test("1Password's accounts are the account's Macs; it is listed only where Macs 
   assert.equal(listed.signIn.kind, "mac");
   assert.ok(!listed.tools.includes("request"), "a Mac app has no HTTP API");
   assert.ok(listed.tools.includes("op"));
-  const bare = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher: fetch, waitUntil: () => undefined });
+  const bare = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
   assert.equal(bare.list().some((c) => c.name === "apps.onepassword"), false);
 });
 

@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { AppName, AppTokenField } from "@axo/protocol";
-import type { OAuthProviderName } from "./oauth-provider";
+import type { OAuthProviderName } from "./oauth/provider";
 
 /**
  * An app: a service Axo provides itself (RFD0016, Apps), reached as `codemode.apps.<app>.<tool>()`.

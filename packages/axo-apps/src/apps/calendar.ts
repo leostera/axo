@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "./app";
+import { tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * Google Calendar as an app: `codemode.apps.calendar.<tool>({ account, ... })` over the Calendar

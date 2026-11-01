@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Gmail as an app: `codemode.apps.gmail.<tool>({ account, ... })` over the Gmail REST API, as

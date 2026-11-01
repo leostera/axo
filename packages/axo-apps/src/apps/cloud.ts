@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderRequest } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderRequest } from "../app";
 
 /**
  * Google Cloud as an app: `codemode.apps.cloud.<tool>({ account, ... })`, with `cloud-platform`:

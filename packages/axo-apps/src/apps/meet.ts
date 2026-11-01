@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Google Meet as an app: `codemode.apps.meet.<tool>({ account, ... })` over the Meet REST API:

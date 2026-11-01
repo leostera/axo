@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
-import { bearer } from "./token";
+import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { bearer } from "../token";
 
 /**
  * Hetzner as an app: `codemode.apps.hetzner.<tool>({ account, ... })`, with an API token from

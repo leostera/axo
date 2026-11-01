@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProviderError, tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest, type ProviderApi } from "./app";
+import { ProviderError, tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest, type ProviderApi } from "../app";
 
 /**
  * Kraken as an app: `codemode.apps.kraken.<tool>({ account, ... })`, with an API key and its

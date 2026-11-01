@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
-import { header } from "./token";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { header } from "../token";
 
 /**
  * UniFi as an app: `codemode.apps.unifi.<tool>({ account, ... })`, with a Site Manager API key

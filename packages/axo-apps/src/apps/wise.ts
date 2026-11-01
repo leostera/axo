@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ProviderError, tool, type AppDefinition, type AppTool } from "./app";
-import { bearer } from "./token";
+import { ProviderError, tool, type AppDefinition, type AppTool } from "../app";
+import { bearer } from "../token";
 
 /**
  * Wise as an app: `codemode.apps.wise.<tool>({ account, ... })`, with a personal API token from

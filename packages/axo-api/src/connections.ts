@@ -86,7 +86,28 @@ export const appTokenFieldSchema = z.object({
 }).strict();
 export type AppTokenField = z.infer<typeof appTokenFieldSchema>;
 /**
- * How a person adds an account to an app. `oauth`: Add account opens the provider's sign-in.
+ * The OAuth client an `oauth` app signs in with: one the person registered with the provider
+ * (`provider` names it, such as "github"; one client serves every app of a provider), with
+ * `redirectUri` as its redirect URI. Its ID and secret are entered on the app's page and kept,
+ * sealed, in the account's gateway, where they can be replaced at any time. `ready`: one is set
+ * up. `consoleUrl`: the provider's page for registering one.
+ */
+export const appOAuthClientSchema = z.object({
+  provider: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/),
+  ready: z.boolean(),
+  consoleUrl: z.url({ protocol: /^https$/ }).max(2048),
+  redirectUri: z.url({ protocol: /^https$/ }).max(2048),
+}).strict();
+export type AppOAuthClient = z.infer<typeof appOAuthClientSchema>;
+/** What setting up an OAuth app's client sends, once; the secret is never shown again. */
+export const appClientRequestSchema = z.object({
+  clientId: z.string().min(1).max(512).regex(/^[^\s]+$/, "no spaces or line breaks"),
+  clientSecret: z.string().min(1).max(2048).regex(/^[^\s]+$/, "no spaces or line breaks"),
+}).strict();
+export type AppClientRequest = z.infer<typeof appClientRequestSchema>;
+/**
+ * How a person adds an account to an app. `oauth`: Add account opens the provider's sign-in,
+ * once its client is set up (`client`; left out by Workers from before clients were the person's).
  * `token`: the person pastes what the service issued them (an API token, a key), which Axo seals
  * and never shows again; `named` says the person names the account, since the service does not.
  * `device`: Add account shows a code the person enters at the provider (ChatGPT), while the page
@@ -94,7 +115,7 @@ export type AppTokenField = z.infer<typeof appTokenFieldSchema>;
  * CLI), which are its accounts; `setup` says what to set up on a Mac first.
  */
 export const appSignInSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("oauth") }).strict(),
+  z.object({ kind: z.literal("oauth"), client: appOAuthClientSchema.optional() }).strict(),
   z.object({ kind: z.literal("device") }).strict(),
   z.object({ kind: z.literal("mac"), setup: z.string().max(1024), helpUrl: z.url({ protocol: /^https$/ }).max(2048) }).strict(),
   z.object({

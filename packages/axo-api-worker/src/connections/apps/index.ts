@@ -1,46 +1,52 @@
 import { z } from "zod";
 import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
-import { seal, unseal } from "../../auth/crypto";
-import { GrantRefused } from "../oauth";
-import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
-import { allowedUrl, ProviderError, ProviderOutcomeUnknown, Unauthorized, type AppDefinition, type AppTool, type Authorized, type DeviceApp, type MacApp, type OutgoingRequest, type MacShell, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
-import { calendar } from "./calendar";
-import { chatgpt } from "./chatgpt";
-import { cloud } from "./cloud";
-import { contacts } from "./contacts";
-import { docs } from "./docs";
-import { discord } from "./discord";
-import { drive } from "./drive";
-import { github } from "./github";
-import { gmail } from "./gmail";
-import { hetzner } from "./hetzner";
-import { kraken } from "./kraken";
-import { meet } from "./meet";
-import { octopus } from "./octopus";
-import { onepassword } from "./onepassword";
 import {
+  allowedUrl,
+  APP_DEFINITIONS,
+  authorizationUrl,
   DEVICE_CODE_LIFETIME_MS,
   DEVICE_VERIFICATION_URL,
+  GrantRefused,
+  OAUTH_PROVIDER_CONFIGS,
+  OAUTH_PROVIDERS,
   pollDeviceCode,
+  ProviderError,
+  ProviderOutcomeUnknown,
+  redeemCode,
+  refreshGrant,
   refreshOpenAIGrant,
   requestDeviceCode,
   revokeOpenAIGrant,
+  toolsOf,
+  macCommand,
+  Unauthorized,
+  type AppDefinition,
+  type AppTool,
+  type Authorized,
+  type DeviceApp,
+  type MacApp,
+  type MacShell,
+  type OAuthApp,
+  type OAuthClient,
+  type OAuthGrant,
+  type OAuthProviderName,
   type OpenAIGrant,
-} from "./openai";
-import { requestTool } from "./request";
-import { sheets } from "./sheets";
-import { slides } from "./slides";
-import { tasks } from "./tasks";
-import { telegram } from "./telegram";
-import { unifi } from "./unifi";
-import { wise } from "./wise";
-import { authorizationUrl, redeemCode, refreshGrant, type OAuthClient, type OAuthClients, type OAuthGrant, type OAuthProviderName } from "./oauth-provider";
-import { OAUTH_PROVIDER_CONFIGS } from "./providers";
+  type OutgoingRequest,
+  type ProviderApi,
+  type ProviderRequest,
+  type TokenApp,
+} from "@axo/apps";
+import { seal, unseal } from "../../auth/crypto";
+import { CALLBACK_URL } from "../oauth";
+import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
+
+export { APP_DEFINITIONS, macCommand, toolsOf };
 
 /**
- * The account's apps (RFD0016, Apps): services Axo provides itself, such as Gmail, reached as
- * `codemode.apps.<app>.<tool>({ account, ... })`. An OAuth app signs in with Axo's own client for
- * its provider, set on the Worker; a token app takes a token the person pasted (Hetzner). Each
+ * The account's apps (RFD0016, Apps; what each app is lives in @axo/apps): services Axo provides
+ * itself, such as Gmail, reached as `codemode.apps.<app>.<tool>({ account, ... })`. An OAuth app
+ * signs in with a client the person registered with its provider and entered on the app's page,
+ * kept sealed here with the grants; a token app takes a token the person pasted (Hetzner). Each
  * holds any number of provider accounts, each named by its email or by the person. Every call
  * names the account it acts as: nothing is read or sent from a guessed one.
  *
@@ -49,8 +55,6 @@ import { OAUTH_PROVIDER_CONFIGS } from "./providers";
  * minutes, only in a browser signed in to this account. Each provider account's grant carries a
  * generation, and a renewal lands only on the generation it renewed.
  */
-
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise, telegram, kraken, github, discord, unifi };
 
 /** Where a person adds an account to an app, or signs in to one again. */
 export function appPage(app: AppName): string {
@@ -71,29 +75,6 @@ export type DeviceSignIn =
 /** Adding an account was refused: the token was not accepted, or the input was wrong. Nothing was stored. */
 export class AppAccountRefused extends Error {}
 
-/** An app's tools: its named ones, then, for an app with an HTTP API, `request`, for any endpoint of it. */
-const TOOLS = new Map<AppName, readonly AppTool<any, any>[]>();
-export function toolsOf(app: AppName): readonly AppTool<any, any>[] {
-  let tools = TOOLS.get(app);
-  if (!tools) {
-    const definition = APP_DEFINITIONS[app];
-    tools = definition.signIn === "mac" ? [...definition.tools] : [...definition.tools, requestTool(definition)];
-    TOOLS.set(app, tools);
-  }
-  return tools;
-}
-
-/** A command a Mac app runs: its arguments quoted for the shell, and its input fed from a builtin, never on the command line. */
-export function macCommand(args: readonly string[], stdin?: string): string {
-  const quote = (arg: string) => `'${arg.replace(/'/g, "'\\''")}'`;
-  const command = args.map(quote).join(" ");
-  if (stdin === undefined) return command;
-  const bytes = new TextEncoder().encode(stdin);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return `printf '%s' '${btoa(binary)}' | base64 -d | ${command}`;
-}
-
 /** An access token this close to expiring is renewed before use. */
 const EXPIRY_MARGIN_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -113,8 +94,11 @@ export type AppsDeps = {
   sql: SqlStorage;
   secret: string;
   accountId: string;
-  /** Axo's OAuth clients on this deployment, by provider: the apps of a provider without one are not listed. */
-  clients: OAuthClients;
+  /**
+   * Google's client from the Worker's environment, from when Axo's clients were set there: used
+   * while the account has none of its own stored. Goes once the account manager stops passing it.
+   */
+  legacyGoogle?: OAuthClient | null;
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
   now?: () => number;
@@ -144,6 +128,9 @@ export class AppConnections {
     deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_flows (
       nonce TEXT PRIMARY KEY, app TEXT NOT NULL, verifier TEXT NOT NULL, created_at REAL NOT NULL,
       opened INTEGER NOT NULL DEFAULT 0, redeemed INTEGER NOT NULL DEFAULT 0)`);
+    // The OAuth clients the person set up, one per provider: the ID as entered, the secret sealed.
+    deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_clients (
+      provider TEXT PRIMARY KEY, client_id TEXT NOT NULL, secret_sealed TEXT NOT NULL, updated_at REAL NOT NULL)`);
     this.migrateSingleGrants();
   }
 
@@ -170,9 +157,12 @@ export class AppConnections {
     return app && (APPS as readonly string[]).includes(app) ? (app as AppName) : null;
   }
 
-  /** The apps this deployment can sign in to, with their accounts; one without a client for its provider is not listed. */
+  /**
+   * Every app, with its accounts; an OAuth app whose provider has no client yet is listed too, so
+   * the person can set one up on its page. A Mac app is listed where Macs can be reached.
+   */
   list(): Connection[] {
-    return this.available().map((app): Connection => {
+    return APPS.filter((app) => this.isListed(APP_DEFINITIONS[app])).map((app): Connection => {
       const definition = APP_DEFINITIONS[app];
       const accounts = this.accounts(app);
       return {
@@ -183,7 +173,7 @@ export class AppConnections {
         provider: definition.providerTitle,
         category: definition.category,
         permissions: [...definition.permissions],
-        signIn: signInOf(definition),
+        signIn: this.signInOf(definition),
         state: accounts.some((a) => a.state === "ready") ? "ready" : "needsSignIn",
         accounts,
         tools: toolsOf(app).map((t) => t.name),
@@ -198,7 +188,7 @@ export class AppConnections {
     return this.rows(app).map((row) => ({ account: row.account, state: row.grant_sealed ? "ready" : "needsSignIn", lastError: row.last_error }));
   }
 
-  /** The tools of every listed app, signed in or not: a call explains how to sign in. */
+  /** The tools of every app that is set up, signed in or not: a call explains how to sign in. */
   tools(): ToolDefinition[] {
     return this.available().flatMap((app) => {
       const definition = APP_DEFINITIONS[app];
@@ -226,7 +216,7 @@ export class AppConnections {
     const definition = APP_DEFINITIONS[app];
     // A token app has no provider page to send the browser to: the person pastes a token on the app's page.
     if (definition.signIn !== "oauth") return appPage(app);
-    if (!this.client(definition)) throw new Error(`${definition.title} is not set up on this Axo deployment`);
+    if (!this.hasClient(definition.provider)) throw new Error(notSetUp(definition));
     const nonce = crypto.randomUUID();
     const verifier = randomVerifier();
     this.deps.sql.exec("DELETE FROM app_flows WHERE created_at < ?", this.now() - FLOW_LIFETIME_MS);
@@ -240,11 +230,11 @@ export class AppConnections {
     if (!flow || flow.opened) return null;
     this.deps.sql.exec("UPDATE app_flows SET opened = 1 WHERE nonce = ?", nonce);
     const definition = APP_DEFINITIONS[flow.app as AppName];
-    const client = definition?.signIn === "oauth" ? this.client(definition) : null;
+    const client = definition?.signIn === "oauth" ? await this.client(definition.provider) : null;
     if (!client || definition?.signIn !== "oauth") return null;
     const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
-    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await challengeOf(flow.verifier), state), name: `apps.${flow.app}` };
+    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await challengeOf(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}` };
   }
 
   /**
@@ -260,12 +250,12 @@ export class AppConnections {
     this.deps.sql.exec("UPDATE app_flows SET redeemed = 1 WHERE nonce = ?", nonce);
     const app = flow.app as AppName;
     const definition = APP_DEFINITIONS[app];
-    const client = definition?.signIn === "oauth" ? this.client(definition) : null;
-    if (!client || definition?.signIn !== "oauth") return { error: "this app is not set up on this Axo deployment" };
+    const client = definition?.signIn === "oauth" ? await this.client(definition.provider) : null;
+    if (!client || definition?.signIn !== "oauth") return { error: "this app's OAuth client was removed; set it up again on the app's page" };
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
     let grant: OAuthGrant;
     try {
-      grant = await redeemCode(provider, client, code, live.verifier, this.deps.fetcher, this.now());
+      grant = await redeemCode(provider, client, code, live.verifier, CALLBACK_URL, this.deps.fetcher, this.now());
     } catch {
       return { error: `${definition.title} did not accept the sign-in` };
     }
@@ -311,8 +301,39 @@ export class AppConnections {
       return;
     }
     const provider = OAUTH_PROVIDER_CONFIGS[providerOf(grant)];
-    const client = this.deps.clients[provider.name];
-    if (provider.revoke && client) this.deps.waitUntil(provider.revoke(grant, client, this.deps.fetcher).catch(() => undefined));
+    if (!provider.revoke) return;
+    this.deps.waitUntil((async () => {
+      const client = await this.client(provider.name);
+      if (client) await provider.revoke!(grant, client, this.deps.fetcher);
+    })().catch(() => undefined));
+  }
+
+  /**
+   * Sets up the OAuth client an app signs in with, or replaces it (a rotated secret, another
+   * client): one per provider, so it serves every app of that provider. The person registered it
+   * with the provider, with CALLBACK_URL as its redirect URI. The secret is sealed, and never
+   * shown again. Accounts signed in with an older client keep working while the provider honours
+   * their grants; a renewal the provider refuses asks for sign-in again.
+   */
+  async setClient(app: AppName, clientId: string, clientSecret: string): Promise<{ provider: OAuthProviderName }> {
+    const definition = APP_DEFINITIONS[app];
+    if (definition.signIn !== "oauth") throw new AppAccountRefused(`${definition.title} does not sign in with an OAuth client`);
+    const id = clientId.trim();
+    const secret = clientSecret.trim();
+    if (!id || id.length > 512 || /\s/.test(id)) throw new AppAccountRefused("Enter the client ID, without spaces");
+    if (!secret || secret.length > 2048 || /\s/.test(secret)) throw new AppAccountRefused("Enter the client secret, without spaces");
+    const sealed = await seal(this.deps.secret, `apps-client\0${this.deps.accountId}`, { clientId: id, clientSecret: secret } satisfies OAuthClient);
+    this.deps.sql.exec(`INSERT INTO app_clients (provider, client_id, secret_sealed, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (provider) DO UPDATE SET client_id = excluded.client_id, secret_sealed = excluded.secret_sealed, updated_at = excluded.updated_at`,
+    definition.provider, id, sealed, this.now());
+    return { provider: definition.provider };
+  }
+
+  /** Forgets the OAuth client of an app's provider. Signed-in accounts stay, but cannot sign in or renew until one is set up again. */
+  removeClient(app: AppName): boolean {
+    const definition = APP_DEFINITIONS[app];
+    if (definition.signIn !== "oauth") return false;
+    return this.deps.sql.exec("DELETE FROM app_clients WHERE provider = ?", definition.provider).rowsWritten > 0;
   }
 
   /**
@@ -421,7 +442,7 @@ export class AppConnections {
     const definition = APP_DEFINITIONS[app];
     const tool = toolsOf(app).find((t) => t.name === toolName);
     if (!tool) throw new Error(`apps.${app} has no tool named ${toolName}; it has ${toolsOf(app).map((t) => t.name).join(", ")}`);
-    if (!this.isAvailable(definition)) throw new Error(`${definition.title} is not set up on this Axo deployment`);
+    if (!this.isAvailable(definition)) throw new Error(definition.signIn === "oauth" ? notSetUp(definition) : `${definition.title} is not set up on this Axo deployment`);
     const parsed = inputOf(tool).safeParse(input ?? {});
     if (!parsed.success) throw new Error(`invalid input: ${z.prettifyError(parsed.error)}`.slice(0, 1024));
     const { account: named, ...rest } = parsed.data as { account: string } & Record<string, unknown>;
@@ -566,7 +587,7 @@ export class AppConnections {
     if (!grant) return null;
     const due = force || (grant.expiresAt !== null && grant.expiresAt - this.now() < EXPIRY_MARGIN_MS);
     if (!due) return grant;
-    const client = isOpenAI(grant) ? null : this.deps.clients[providerOf(grant)] ?? null;
+    const client = isOpenAI(grant) ? null : await this.client(providerOf(grant));
     if (!grant.refreshToken || (!client && !isOpenAI(grant))) {
       this.dropGrant(app, account, row.grant_generation, "the grant expired and cannot be renewed");
       return null;
@@ -611,18 +632,38 @@ export class AppConnections {
     return APPS.filter((app) => this.isAvailable(APP_DEFINITIONS[app]));
   }
 
-  /** An OAuth app needs Axo's client for its provider on this deployment, a Mac app a way to reach the Macs; the others need nothing. */
+  /** A Mac app needs a way to reach the Macs; every other app is listed. */
+  private isListed(definition: AppDefinition): boolean {
+    return definition.signIn !== "mac" || Boolean(this.deps.runOnMac && this.deps.macs);
+  }
+
+  /** Whether an app can be used: listed, and for an OAuth app, its provider's client set up. */
   private isAvailable(definition: AppDefinition): boolean {
-    if (definition.signIn === "mac") return Boolean(this.deps.runOnMac && this.deps.macs);
-    return definition.signIn !== "oauth" || this.client(definition) !== null;
+    return this.isListed(definition) && (definition.signIn !== "oauth" || this.hasClient(definition.provider));
+  }
+
+  /** Whether a provider has a client: one the person set up, or Google's from the Worker's environment. */
+  private hasClient(provider: OAuthProviderName): boolean {
+    if (provider === "google" && this.deps.legacyGoogle) return true;
+    return this.deps.sql.exec("SELECT 1 FROM app_clients WHERE provider = ?", provider).toArray().length > 0;
   }
 
   private macs(): string[] {
     return this.deps.macs?.() ?? [];
   }
 
-  private client(definition: OAuthApp): OAuthClient | null {
-    return this.deps.clients[definition.provider] ?? null;
+  /** A provider's client, unsealed; the person's own comes before Google's from the environment. */
+  private async client(provider: OAuthProviderName): Promise<OAuthClient | null> {
+    const row = this.deps.sql.exec<{ secret_sealed: string }>("SELECT secret_sealed FROM app_clients WHERE provider = ?", provider).toArray()[0];
+    if (row) return (await unseal(this.deps.secret, `apps-client\0${this.deps.accountId}`, row.secret_sealed)) as OAuthClient | null;
+    return provider === "google" ? this.deps.legacyGoogle ?? null : null;
+  }
+
+  /** How the web app's Add account works for an app; an OAuth app's says whether its client is set up, and how to register one. */
+  private signInOf(definition: AppDefinition): AppSignIn {
+    if (definition.signIn !== "oauth") return signInOf(definition);
+    const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
+    return { kind: "oauth", client: { provider: provider.name, ready: this.hasClient(provider.name), consoleUrl: provider.consoleUrl, redirectUri: CALLBACK_URL } };
   }
 
   private rows(app: string): Row[] {
@@ -679,9 +720,13 @@ function authorization(grant: Grant): Record<string, string> {
   return { Authorization: `Bearer ${grant.accessToken}`, "chatgpt-account-id": grant.chatgptAccountId ?? "", originator: "axo" };
 }
 
-/** How the web app's Add account works for an app. */
-function signInOf(definition: AppDefinition): AppSignIn {
-  if (definition.signIn === "oauth") return { kind: "oauth" };
+/** What a call to an OAuth app whose provider has no client yet says. */
+function notSetUp(definition: OAuthApp): string {
+  return `${definition.title} is not set up yet: the person enters ${OAUTH_PROVIDER_CONFIGS[definition.provider].title}'s OAuth client at ${appPage(definition.name)}`;
+}
+
+/** How the web app's Add account works for a token, device or Mac app. */
+function signInOf(definition: Exclude<AppDefinition, OAuthApp>): AppSignIn {
   if (definition.signIn === "device") return { kind: "device" };
   if (definition.signIn === "mac") return { kind: "mac", setup: definition.setup, helpUrl: definition.reference };
   const { helpUrl, named, fields } = definition.token;

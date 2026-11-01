@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { macTool, ProviderError, type AppDefinition, type AppTool, type MacShell } from "./app";
+import { macTool, ProviderError, type AppDefinition, type AppTool, type MacShell } from "../app";
 
 /**
  * 1Password as an app: `codemode.apps.onepassword.<tool>({ account, ... })`, where the account is

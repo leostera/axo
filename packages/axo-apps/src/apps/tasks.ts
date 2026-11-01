@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "./app";
+import { tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * Google Tasks as an app: `codemode.apps.tasks.<tool>({ account, ... })` over the Tasks API, with

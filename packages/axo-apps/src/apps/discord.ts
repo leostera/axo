@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
-import type { Authorized } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import type { Authorized } from "../app";
 
 /**
  * A Discord bot as an app: `codemode.apps.discord.<tool>({ account, ... })`, with the bot token

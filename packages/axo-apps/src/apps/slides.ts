@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "./app";
+import { tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * Google Slides as an app: `codemode.apps.slides.<tool>({ account, ... })` over the Slides API,

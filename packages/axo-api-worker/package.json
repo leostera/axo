@@ -22,6 +22,7 @@
     "smoke": "tsx scripts/dummy-client.ts"
   },
   "dependencies": {
+    "@axo/apps": "file:../axo-apps",
     "@axo/protocol": "file:../axo-api",
     "hono": "4.13.13",
     "jose": "^6.2.12",

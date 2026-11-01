@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
+import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Google Contacts as an app: `codemode.apps.contacts.<tool>({ account, ... })` over the People

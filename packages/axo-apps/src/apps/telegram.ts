@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest } from "./app";
+import { tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest } from "../app";
 
 /**
  * A Telegram bot as an app: `codemode.apps.telegram.<tool>({ account, ... })`, with the token

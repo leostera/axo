@@ -21,7 +21,7 @@ function fixture() {
     if (!answer) throw new Error(`unexpected request to ${request.url}`);
     return answer;
   }) as typeof fetch;
-  const apps = new AppConnections({ sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher, waitUntil: () => undefined });
+  const apps = new AppConnections({ sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { hetzner, sql, apps };
 }
 
@@ -37,8 +37,9 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 test("Hetzner is listed without any client of Axo's, asking for a token the person names, and its tools all need an account", () => {
   const { apps } = fixture();
   const all = apps.list();
-  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.discord", "apps.unifi"], "without a Google client, only apps that need no client of Axo's are listed");
-  const listed = all[0];
+  assert.deepEqual(apps.tools().map((t) => t.service).filter((s, i, all) => all.indexOf(s) === i), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.discord", "apps.unifi"],
+    "without any OAuth client set up, only apps that need none have tools");
+  const listed = all.find((c) => c.name === "apps.hetzner");
   const parsed = connectionSchema.parse(listed);
   assert.ok(parsed.kind === "app");
   assert.deepEqual([parsed.name, parsed.provider, parsed.state, parsed.accounts], ["apps.hetzner", "Hetzner", "needsSignIn", []]);
@@ -166,7 +167,7 @@ function services() {
     }
     return json({ error: "not found" }, 404);
   }) as typeof fetch;
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher, waitUntil: () => undefined });
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen };
 }
 
@@ -226,7 +227,7 @@ function signedServices() {
     }
     return json({ error: ["not found"] }, 404);
   }) as typeof fetch;
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher, waitUntil: () => undefined });
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen, krakenSecret };
 }
 
@@ -275,7 +276,7 @@ function moreServices() {
     }
     return json({ message: "not found" }, 404);
   }) as typeof fetch;
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher, waitUntil: () => undefined });
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen };
 }
 

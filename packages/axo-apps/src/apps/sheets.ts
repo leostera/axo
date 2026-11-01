@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "./app";
+import { tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * Google Sheets as an app: `codemode.apps.sheets.<tool>({ account, ... })` over the Sheets API,

@@ -22,9 +22,8 @@ import { ThirdPartyConnections } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
 import { AppConnections } from "./apps";
-import { ProviderError, ProviderOutcomeUnknown } from "./apps/app";
+import { ProviderError, ProviderOutcomeUnknown } from "@axo/apps";
 import type { GoogleClient } from "./apps/google";
-import type { OAuthClients } from "./apps/oauth-provider";
 
 /**
  * An account's connections (RFD0016): what `axo.connections.*` calls from its Macs reach. It
@@ -51,14 +50,11 @@ export type ConnectionsDeps = {
   hosts(): HostLink[];
   presence(hostId: string): Promise<{ online: boolean; hostGeneration: string | null }>;
   callHost(hostId: string, request: { method: string; params: unknown; deadlineMs: number }): Promise<CallOutcome>;
-  /** Axo's Google client for Google apps, or null when this deployment has none. */
-  google: GoogleClient | null;
   /**
-   * Axo's OAuth clients for the other providers' apps (GitHub, Spotify, Withings), from
-   * `appClients(env)`; a provider without one has its apps unlisted. Google's comes from `google`
-   * until the account manager passes it here too.
+   * Google's client from the Worker's environment, from before OAuth clients were the person's:
+   * used only while the account has set up none of its own (AppsDeps.legacyGoogle).
    */
-  clients?: OAuthClients;
+  google: GoogleClient | null;
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
 };
@@ -85,7 +81,7 @@ export class AccountConnections {
       sql: deps.sql, secret: deps.secret, accountId: deps.accountId, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
     });
     this.apps = new AppConnections({
-      sql: deps.sql, secret: deps.secret, accountId: deps.accountId, clients: { ...deps.clients, ...(deps.google ? { google: deps.google } : {}) }, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
+      sql: deps.sql, secret: deps.secret, accountId: deps.accountId, legacyGoogle: deps.google, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
       // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
       macs: () => this.named().map((entry) => entry.name),
       runOnMac: (mac, command, timeoutMs) => this.runOnMac(mac, command, timeoutMs),

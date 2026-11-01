@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
-import { basic } from "./token";
+import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { basic } from "../token";
 
 /**
  * Octopus Energy as an app: `codemode.apps.octopus.<tool>({ account, ... })`, with the API key

@@ -1,0 +1,23 @@
+{
+  "name": "@axo/apps",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Axo's apps: each app's sign-in, API hosts and tools, and the OAuth providers they sign in with (RFD0016)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run typecheck && tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@axo/protocol": "file:../axo-api",
+    "zod": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^7.0.2"
+  }
+}
