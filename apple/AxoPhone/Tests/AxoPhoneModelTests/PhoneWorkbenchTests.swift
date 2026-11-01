@@ -244,6 +244,50 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(workbench.draft(for: try XCTUnwrap(workbench.selection)), "hello")
   }
 
+  func testANewChatsMacIsChosenByTheMessageBoxAndWhatIsTypedComesAlong() async throws {
+    let studio = Mac("Studio", online: true, sessions: [1])
+    let laptop = Mac("Laptop", online: true)
+    let world = PhoneWorld([studio, laptop])
+    try await world.start()
+    let workbench = world.workbench!
+    workbench.select(host: studio.id, session: nil)
+    XCTAssertTrue(workbench.canChooseHost)
+    try type("hello", in: workbench)
+
+    workbench.chooseHost(laptop.id)
+    XCTAssertEqual(workbench.selection, PhoneWorkbench.Selection(host: laptop.id, session: nil))
+    XCTAssertEqual(workbench.current?.hostLabel, "Laptop")
+    XCTAssertEqual(workbench.draft(for: try XCTUnwrap(workbench.selection)), "hello", "the words move with it")
+    XCTAssertEqual(workbench.draft(for: PhoneWorkbench.Selection(host: studio.id, session: nil)), "")
+
+    let sent = await workbench.send()
+    XCTAssertEqual(sent, .sent)
+    XCTAssertEqual(workbench.selection, PhoneWorkbench.Selection(host: laptop.id, session: 99), "the chat starts on the Mac chosen")
+    XCTAssertEqual(world.creations.places, [.home])
+  }
+
+  func testOnlyANewChatMovesAndOnlyToAnotherOnlineMac() async throws {
+    let studio = Mac("Studio", online: true, sessions: [1])
+    let old = Mac("Old", online: false)
+    let world = PhoneWorld([studio, old])
+    try await world.start()
+    let workbench = world.workbench!
+    XCTAssertEqual(workbench.selection?.host, studio.id, "the online Mac")
+    workbench.chooseHost(old.id)
+    XCTAssertEqual(workbench.selection?.host, studio.id, "an offline Mac cannot take a chat")
+    workbench.chooseHost(UUID())
+    XCTAssertEqual(workbench.selection?.host, studio.id, "nor a Mac the account does not have")
+
+    workbench.select(session: 1)
+    XCTAssertFalse(workbench.canChooseHost, "a chat already going stays on its Mac")
+    workbench.chooseHost(old.id)
+    XCTAssertEqual(workbench.selection, PhoneWorkbench.Selection(host: studio.id, session: 1))
+
+    let alone = PhoneWorld([Mac("Only", online: true)])
+    try await alone.start()
+    XCTAssertFalse(alone.workbench.canChooseHost, "with one Mac there is nothing to choose")
+  }
+
   func testNoChatCanStartWhenEveryMacIsOffline() async throws {
     let world = PhoneWorld([Mac("Old", online: false, sessions: [1])])
     try await world.start()

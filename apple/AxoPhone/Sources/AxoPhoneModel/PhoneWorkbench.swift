@@ -232,6 +232,23 @@ public final class PhoneWorkbench {
     if let session { Task { await workbench.follow(session) } } else { workbench.stop() }
   }
 
+  /// Whether the person can choose the Mac the open chat starts on: it is a new chat, and there is
+  /// more than one Mac to choose from.
+  public var canChooseHost: Bool { isDrafting && hosts.hosts.count > 1 }
+
+  /// The Mac a new chat starts on, chosen by the message box: what is typed comes along, and the
+  /// chat goes back to that Mac's Home Workspace, since Workspaces are a Mac's own. Only a new chat
+  /// can move, and only to another Mac of the account that is online.
+  public func chooseHost(_ hostID: UUID) {
+    guard let draft = selection, draft.session == nil, draft.host != hostID,
+      hosts.hosts.contains(where: { $0.hostId == hostID && $0.status == .online })
+    else { return }
+    let text = self.draft(for: draft)
+    setDraft("", for: draft)
+    select(host: hostID, session: nil)
+    if !text.isEmpty { setDraft(text, for: Selection(host: hostID, session: nil)) }
+  }
+
   /// The Mac a new chat goes to: the open one if it is online, else the first Mac that is.
   public var newChatHost: RemoteHost? {
     if let current, current.status == .online,
