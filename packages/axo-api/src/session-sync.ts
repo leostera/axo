@@ -51,6 +51,31 @@ const line = z.string().min(2);
 export const sessionStatusSchema = z.enum(["starting", "ready", "working", "needsAttention", "unavailable"]);
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
 
+const gitHash = z.string().regex(/^[0-9a-f]{7,64}$/);
+const pathText = z.string().max(1024);
+
+/**
+ * A Session's folder and its repository as git saw it when the agent last settled, so another Mac
+ * can tell what it would need to continue the Session (RFD0022). Outside a repository only `path`.
+ */
+export const workspaceStateSchema = z.object({
+  path: pathText,
+  repoRoot: pathText.nullable(),
+  /** The upstream remote's URL, with any credentials removed. */
+  remote: z.string().min(1).max(1024).nullable(),
+  /** Null when HEAD is detached. */
+  branch: z.string().min(1).max(255).nullable(),
+  head: gitHash.nullable(),
+  /** Where the branch's upstream was, as last fetched on that Mac. */
+  upstreamHead: gitHash.nullable(),
+  /** Paths `git status` lists, at most 50; `dirtyMore` counts the rest. */
+  dirty: z.array(pathText).max(50),
+  dirtyMore: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  /** Unix seconds. */
+  at: unixSeconds,
+}).strict();
+export type WorkspaceState = z.infer<typeof workspaceStateSchema>;
+
 /** What a client lists a Session by. The host owns it and raises its version on every change. */
 export const sessionMetadataSchema = z.object({
   name: z.string().min(1).max(80).nullable(),
@@ -64,6 +89,8 @@ export const sessionMetadataSchema = z.object({
   lastMessageAt: unixSeconds.nullable(),
   /** Archived on the Mac, deleted there, or missing from its manifest: the cloud never deletes. */
   archived: z.boolean(),
+  /** Absent until the Mac has read it; older Macs never send it. */
+  workspaceState: workspaceStateSchema.optional(),
 }).strict();
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 
