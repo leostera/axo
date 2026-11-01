@@ -220,7 +220,7 @@ const TOOLS: &[Tool] = &[
         description: "Adds a remote MCP server to the account as a connection, so `codemode.<name>.*` reaches it from every Session. If the server needs sign-in, returns `signInUrl`: give it to the person to open in a browser signed in to Axo. Never ask the person for a token or secret in chat.",
         properties: || {
             json!({
-                "name": { "type": "string", "description": "The service name scripts use: letters, digits and _, not starting with a digit. Unique in the account." },
+                "name": { "type": "string", "description": "What to call it, any text, e.g. \"emdash: leostera.com\". Scripts reach it by its slug, returned as `connection.name` (emdash_leostera_com). The same server may be added again under another name, for another account with it." },
                 "url": { "type": "string", "description": "The server's streamable HTTP endpoint, https only, e.g. https://mcp.linear.app/mcp" }
             })
         },
