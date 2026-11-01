@@ -12,7 +12,7 @@ import type { ProviderApi } from "../app";
  * without a client is not set up yet, and its apps say so.
  */
 
-export const OAUTH_PROVIDERS = ["google", "github", "spotify"] as const;
+export const OAUTH_PROVIDERS = ["google", "github", "spotify", "withings"] as const;
 export type OAuthProviderName = (typeof OAUTH_PROVIDERS)[number];
 
 export type OAuthClient = { clientId: string; clientSecret: string };

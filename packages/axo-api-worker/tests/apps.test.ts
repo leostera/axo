@@ -286,7 +286,7 @@ test("every Workspace app is listed, signs in with full access to its own servic
   const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
     ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.slides", 0],
-    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.github", 0], ["apps.discord", 0], ["apps.unifi", 0], ["apps.spotify", 0],
+    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.github", 0], ["apps.discord", 0], ["apps.unifi", 0], ["apps.spotify", 0], ["apps.withings", 0],
   ]);
   const scopes: Record<string, string> = {};
   for (const app of ["apps.gmail", "apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.slides", "apps.contacts", "apps.tasks", "apps.meet", "apps.cloud"]) {

@@ -5,6 +5,7 @@ import { AppConnections } from "../src/connections/apps";
 import type { FakeOAuth } from "./fake-oauth";
 import { FakeGitHub } from "./fake-github";
 import { FakeSpotify } from "./fake-spotify";
+import { FakeWithings } from "./fake-withings";
 import { sqlStorage } from "./sql-storage";
 
 /**
@@ -229,4 +230,45 @@ test("Spotify signs in with PKCE and the client in HTTP basic, is named by its S
   assert.equal(fake.oauth.refreshable(renewal.form.get("refresh_token")!), false);
   tick(3600_000);
   assert.deepEqual((await call("list_devices") as { devices: unknown[] }).devices.length, 1, "the rotated refresh token renews again");
+});
+
+test("Withings signs in without PKCE through its requesttoken action, is named by its user ID, and reads measures, activity, sleep and ECGs", async () => {
+  const { apps, fake, signIn, tick } = await fixture(new FakeWithings(), "withings");
+  const withings = connectionSchema.parse(apps.list().find((c) => c.name === "apps.withings"));
+  assert.ok(withings.kind === "app");
+  assert.deepEqual([withings.provider, withings.category], ["Withings", "health"]);
+  assert.deepEqual(await signIn("withings"), { name: "apps.withings" });
+  assert.equal(fake.oauth.authorizeUrls[0]!.searchParams.get("scope"), "user.info,user.metrics,user.activity");
+  assert.equal(fake.oauth.tokenRequests[0]!.form.get("action"), "requesttoken");
+  assert.deepEqual(apps.accounts("withings").map((a) => a.account), ["31337001"]);
+
+  const call = (tool: string, input: Record<string, unknown> = {}) => apps.call("withings", tool, { account: "31337001", ...input });
+  assert.deepEqual(await call("get_measures", { types: ["weight", "fat_ratio", "systolic"], start: "2026-10-01" }), {
+    measures: [
+      { date: "2026-10-26T07:33:20.000Z", type: "weight", value: 72.35, unit: "kg", device: "scale1" },
+      { date: "2026-10-26T07:33:20.000Z", type: "fat_ratio", value: 21.5, unit: "%", device: "scale1" },
+      { date: "2026-10-25T03:46:40.000Z", type: "systolic", value: 121, unit: "mmHg", device: "bpm1" },
+      { date: "2026-10-25T03:46:40.000Z", type: "diastolic", value: 79, unit: "mmHg", device: "bpm1" },
+      { date: "2026-10-25T03:46:40.000Z", type: "heart_rate", value: 64, unit: "bpm", device: "bpm1" },
+    ],
+    more: false, offset: 0,
+  });
+  const measured = fake.calls.at(-1)!;
+  assert.deepEqual([measured.path, measured.form.get("meastypes"), measured.form.get("startdate")], ["/measure", "1,6,10", String(Date.parse("2026-10-01T00:00:00Z") / 1000)]);
+  assert.equal(((await call("get_activity", { start: "2026-10-30", end: "2026-10-30" })) as { days: Array<{ steps: number }> }).days[0]!.steps, 9120);
+  assert.equal(((await call("get_sleep_summary", { start: "2026-10-30", end: "2026-10-31" })) as { nights: Array<{ data: { sleep_score: number } }> }).nights[0]!.data.sleep_score, 81);
+  assert.deepEqual(await call("list_ecgs"), { ecgs: [{ id: 77, date: "2026-10-26T07:33:20.000Z", afib: 0, heartRate: 62, device: "watch1" }], more: false, offset: 0 });
+  assert.deepEqual(((await call("list_devices")) as { devices: Array<{ model: string }> }).devices.map((d) => d.model), ["Body+"]);
+
+  // Withings answers errors with HTTP 200: a status other than 0 fails the call, request included.
+  assert.match(await refused(call("request", { method: "POST", path: "/v2/measure", text: { contentType: "application/x-www-form-urlencoded", data: "action=nope" } })), /^Withings: An unknown error occurred \(status 2555\)$/);
+  // Its 401 is a token it no longer takes: renewed once (the refresh token rotates) and sent again.
+  fake.oauth.expireAccessTokens();
+  assert.equal(((await call("list_devices")) as { devices: unknown[] }).devices.length, 1);
+  assert.equal(fake.oauth.tokenRequests.at(-1)!.form.get("grant_type"), "refresh_token");
+  assert.equal(fake.oauth.tokenRequests.at(-1)!.form.get("action"), "requesttoken");
+  fake.oauth.refuseRefresh = true;
+  tick(3 * 3600_000);
+  assert.match(await refused(call("list_devices")), /needs sign-in/);
+  assert.deepEqual(apps.accounts("withings")[0]!.lastError, "Withings refused to renew the grant");
 });

@@ -557,7 +557,7 @@ export class AppConnections {
         const text = await response.text();
         throw new ProviderError(response.status, `${definition.title}: ${providerMessage(text) ?? `HTTP ${response.status}`}`);
       }
-      return response;
+      return definition.answerError ? checkAnswer(definition, response) : response;
     };
     return {
       account,
@@ -718,6 +718,25 @@ function grantFits(definition: OAuthApp | DeviceApp, grant: Grant): boolean {
 function authorization(grant: Grant): Record<string, string> {
   if (!isOpenAI(grant)) return { Authorization: `Bearer ${grant.accessToken}` };
   return { Authorization: `Bearer ${grant.accessToken}`, "chatgpt-account-id": grant.chatgptAccountId ?? "", originator: "axo" };
+}
+
+/**
+ * An answer of a service that reports errors with HTTP 200 (HttpApp.answerError): read once and
+ * checked, then handed on as it came.
+ */
+async function checkAnswer(definition: OAuthApp | TokenApp | DeviceApp, response: Response): Promise<Response> {
+  if (!/[/+]json\b/i.test(response.headers.get("Content-Type") ?? "")) return response;
+  const text = await response.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  const error = json === undefined ? null : definition.answerError!(json);
+  if (error?.unauthorized) throw new Unauthorized();
+  if (error) throw new ProviderError(error.status, `${definition.title}: ${error.message}`.slice(0, 300));
+  return new Response(text, { status: response.status, headers: response.headers });
 }
 
 /** What a call to an OAuth app whose provider has no client yet says. */

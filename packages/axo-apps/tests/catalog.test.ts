@@ -72,3 +72,22 @@ test("a token answer that is a refusal in disguise (HTTP 200 with { error }) is 
   answer = { error: "bad_refresh_token" };
   await assert.rejects(refreshGrant(OAUTH_PROVIDER_CONFIGS.github, client, grant, fetcher, 3000), GrantRefused);
 });
+
+test("Withings: commas between scopes, no PKCE, `action=requesttoken`, and an answer wrapped in { status, body }", async () => {
+  const url = new URL(authorizationUrl(OAUTH_PROVIDER_CONFIGS.withings, { clientId: "id", clientSecret: "s" }, ["user.info", "user.metrics"], "challenge", "state", CALLBACK));
+  assert.equal(url.searchParams.get("scope"), "user.info,user.metrics");
+  assert.equal(url.searchParams.has("code_challenge"), false);
+  let answer: unknown = { status: 0, body: { userid: 1234567, access_token: "a", refresh_token: "r", expires_in: 10800, scope: "user.info,user.metrics", token_type: "Bearer" } };
+  const forms: URLSearchParams[] = [];
+  const fetcher = (async (_url: string, init: RequestInit) => {
+    forms.push(new URLSearchParams(init.body as URLSearchParams));
+    return new Response(JSON.stringify(answer), { status: 200 });
+  }) as unknown as typeof fetch;
+  const grant = await redeemCode(OAUTH_PROVIDER_CONFIGS.withings, { clientId: "id", clientSecret: "s" }, "code", "verifier", CALLBACK, fetcher, 0);
+  assert.deepEqual([grant.userId, grant.scopes, grant.expiresAt], ["1234567", ["user.info", "user.metrics"], 10_800_000]);
+  assert.deepEqual(Object.fromEntries(forms[0]!), { action: "requesttoken", grant_type: "authorization_code", code: "code", redirect_uri: CALLBACK, client_id: "id", client_secret: "s" });
+  answer = { status: 503, error: "Invalid params" };
+  await assert.rejects(refreshGrant(OAUTH_PROVIDER_CONFIGS.withings, { clientId: "id", clientSecret: "s" }, grant, fetcher, 0), GrantRefused);
+  assert.deepEqual(APP_DEFINITIONS.withings.signIn === "oauth" && APP_DEFINITIONS.withings.answerError?.({ status: 401 }), { unauthorized: true });
+  assert.equal(APP_DEFINITIONS.withings.signIn === "oauth" && APP_DEFINITIONS.withings.answerError?.({ status: 0, body: {} }), null);
+});

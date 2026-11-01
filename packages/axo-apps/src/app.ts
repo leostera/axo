@@ -77,7 +77,7 @@ type AppBase = {
   /** Who makes the service, as shown: "Google", "Hetzner". */
   providerTitle: string;
   /** What kind of app it is, for filtering. */
-  category: "communication" | "productivity" | "files" | "developer" | "finance" | "home" | "media" | "security";
+  category: "communication" | "productivity" | "files" | "developer" | "finance" | "home" | "media" | "security" | "health";
 };
 
 /** An app whose tools call its service's HTTP API with the account's credential. */
@@ -92,7 +92,16 @@ export type HttpApp = AppBase & {
   reference: string;
   /** The app's named tools; every app also has `request`, for any endpoint of its API. */
   tools: readonly AppTool[];
+  /**
+   * For a service that answers errors with HTTP 200 (Withings' `status`, Slack's `ok: false`):
+   * reads a JSON answer and says whether it is one. `unauthorized` is treated as a 401 (the grant
+   * is renewed once and the call sent again); `message` fails the call as the service's error.
+   * Applies to every call, `request` included.
+   */
+  answerError?(json: unknown): AnswerError | null;
 };
+
+export type AnswerError = { unauthorized: true } | { unauthorized?: false; status: number; message: string };
 
 /** An app the person signs in to with Axo's own OAuth client for its provider. */
 export type OAuthApp = HttpApp & {

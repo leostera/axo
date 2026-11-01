@@ -21,10 +21,11 @@ import { tasks } from "./apps/tasks";
 import { telegram } from "./apps/telegram";
 import { unifi } from "./apps/unifi";
 import { wise } from "./apps/wise";
+import { withings } from "./apps/withings";
 import { requestTool } from "./request";
 
 /** Every app Axo provides, by name (RFD0016, Apps). */
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise, telegram, kraken, github, discord, unifi, spotify };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise, telegram, kraken, github, discord, unifi, spotify, withings };
 
 /** An app's tools: its named ones, then, for an app with an HTTP API, `request`, for any endpoint of it. */
 const TOOLS = new Map<AppName, readonly AppTool<any, any>[]>();
