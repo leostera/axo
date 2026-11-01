@@ -26,6 +26,7 @@ import tasksLogo from "./logos/tasks.svg";
 import telegramLogo from "./logos/telegram.svg";
 import unifiLogo from "./logos/unifi.svg";
 import wiseLogo from "./logos/wise.svg";
+import withingsLogo from "./logos/withings.svg";
 
 /**
  * Settings › Apps (RFD0016): what the account's Sessions can use, as pages over the chats, each
@@ -738,6 +739,7 @@ const APP_LOGOS: Record<string, string> = {
   "apps.discord": discordLogo,
   "apps.unifi": unifiLogo,
   "apps.spotify": spotifyLogo,
+  "apps.withings": withingsLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
 const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise", "apps.kraken", "apps.unifi"]);
@@ -774,7 +776,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken", "apps.github": "GitHub", "apps.discord": "Discord", "apps.unifi": "UniFi", "apps.spotify": "Spotify",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken", "apps.github": "GitHub", "apps.discord": "Discord", "apps.unifi": "UniFi", "apps.spotify": "Spotify", "apps.withings": "Withings",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */
