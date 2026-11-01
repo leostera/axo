@@ -15,20 +15,11 @@ The Mac host owns local agent processes and terminal sessions. Remote clients co
 
 ## Development
 
-Axo is developed on macOS. The native app and daemon build use Bazel; the JavaScript packages use npm. See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites, validation commands, and contribution guidance.
-
-Quick checks from the repository root:
+Axo is developed on macOS, and Bazel builds all of it: the Mac and phone apps, the Rust daemon, and the JavaScript packages and site. See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites, validation commands, and contribution guidance.
 
 ```sh
-# Rust/daemon tests
-bazel test //crates/...
-
-# JavaScript package tests and type checks
-npm test
-npm run typecheck
-
-# Native Mac app and daemon build
-bazel build //apple/AxoMac:AxoApp //crates/axod:axod
+bazel build //...   # everything; the signed app lands at dist/Axo.app, the report at bazel-bin/report.txt
+bazel test //...    # every test that needs no desktop, phone or browser of its own
 ```
 
 The native visual UI tests require an unlocked macOS desktop and Xcode UI Automation permission. See the contributor guide before running them.

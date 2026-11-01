@@ -23,7 +23,7 @@ Resolve paths from the Axo root (`../../..`). Follow the [native app](../axo-mac
 
 ## Validation
 
-- `npm --prefix packages/pi-axo test` covers the extension: title validation, guidance injection, bridge protocol and config.
-- `bazel test //crates/axod:rpc_tests` and `cargo test -p axo-server --lib` cover bridge activity, status derivation and session events with the inert Pi fixtures.
+- `bazel test //packages/pi-axo/...` covers the extension: title validation, guidance injection, bridge protocol and config.
+- `bazel test //crates/axod:rpc_tests //crates/axo-server:axo_server_tests` cover bridge activity, status derivation and session events with the inert Pi fixtures.
 - `bazel test //apple/AxoMac:AxoMacTests` covers catalog event application; the visual UI suite covers real sidebar rename and a Pi Session surviving app relaunch.
-- Package after extension changes (`build-mac.sh` rebuilds and embeds it). Never stop a Pi hosting an active assistant turn, and get the user's consent before live restarts or notification acceptance that needs interaction.
+- Package after extension changes (`bazel build //...` rebuilds it, embeds it and puts the app at `dist/Axo.app`). Never stop a Pi hosting an active assistant turn, and get the user's consent before live restarts or notification acceptance that needs interaction.

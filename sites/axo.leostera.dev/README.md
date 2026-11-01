@@ -10,7 +10,7 @@ The unified site is deployed at `axo.leostera.dev`. The legacy `api.axo.leostera
 
 `curl -fsSL https://axo.leostera.dev/install | sh` installs and starts Axo on a Mac; `/install?code=ABCD-EFGH` also opens the pairing code in Axo's Remote Access settings. The Worker writes the script (`src/install.ts`) with the request's origin, so a preview installs from itself. It downloads `/cdn/Axo.app` (also `/cdn/Axo.app.zip`), a zip of the signed bundle read from `mac/Axo.app.zip` in the `axo-cdn` R2 binding, then checks the signature and team, installs into `/Applications` (or `~/Applications`, or `$AXO_INSTALL_DIR`), quits a running Axo, and opens the new one, which registers axod. Downloading with curl leaves no quarantine attribute, so macOS does not translocate the app; a translocated copy cannot register its LaunchAgent ("the bundled axod LaunchAgent definition is missing"). The app is signed for development and not notarized, so a copy downloaded in a browser would hit Gatekeeper.
 
-`scripts/publish-mac.sh [path/to/Axo.app]` uploads a packaged build (default `dist/Axo.app`) to `mac/builds/<build>/Axo.app.zip` and then `mac/Axo.app.zip`. It refuses a build from a dirty tree unless `AXO_PUBLISH_ALLOW_DIRTY=1`.
+`bazel run //:publish` uploads the Mac app the build signed to `mac/builds/<build>/Axo.app.zip` and then `mac/Axo.app.zip` (the bucket is `publish.bucket` in `config.json`). It refuses a checkout with changes and an app not signed by the team.
 
 ## Shared-session viewer prototype
 
@@ -19,10 +19,10 @@ The unified site is deployed at `axo.leostera.dev`. The legacy `api.axo.leostera
 ## Validate locally
 
 ```sh
-npm --userconfig=/tmp/axo-npmrc --prefix sites/axo.leostera.dev install
-npm --userconfig=/tmp/axo-npmrc --prefix sites/axo.leostera.dev run typecheck
-npm --userconfig=/tmp/axo-npmrc --prefix sites/axo.leostera.dev run test
-npm --userconfig=/tmp/axo-npmrc --prefix sites/axo.leostera.dev run build
+bazel build //sites/axo.leostera.dev:site   # bazel-bin/sites/axo.leostera.dev/.cloudflare/output
+bazel test //sites/axo.leostera.dev/...      # typecheck, and the whole site under Vite
 ```
+
+For `cf dev`, install the workspace's packages once with `pnpm install` at the repository root.
 
 Use `cf dev` from this directory for the combined Worker/assets development server. For local testing, copy `.env.example` to `.dev.vars` and replace the placeholders; without a session, account routes answer 401, and `/api/auth/cloudflare/start` redirects to Cloudflare. `.dev.vars` is ignored by Git; never commit real credentials. Production values belong in the Worker’s Variables and Secrets settings.

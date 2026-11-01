@@ -5,36 +5,31 @@ Thanks for your interest in Axo. The project is under active development, so beh
 ## Before you start
 
 - Axo's native app, daemon, and iOS client are developed on macOS with Xcode.
-- The shared native build and test graph uses **Bazel 9.3.0** (pinned in `.bazelversion`). Install Xcode and its command-line tools as well.
-- JavaScript packages use npm. Install dependencies in the package you intend to work on; several packages have their own lockfiles and test commands.
+- Bazel (**9.3.0**, pinned in `.bazelversion`) is the only build: the native apps, the Rust crates and the JavaScript packages, from one pnpm workspace (`pnpm-lock.yaml`). Install Xcode and its command-line tools as well. Run `pnpm install` at the root only for editor support or `cf dev`.
+- `config.json` holds the version, build numbers, bundle ids and minimum OS versions. Settings for your own Mac (your phone, whether to install on it) go in `config.local.json`, which git ignores.
 - Never commit API keys, OAuth secrets, signing credentials, personal session data, agent transcripts, or production configuration. Use local development fixtures and environment files, which should remain untracked.
 
 ## Build and test
 
-Run checks that cover the area you changed. From the repository root:
+From the repository root:
 
 ```sh
-# Rust daemon and supporting crates
-bazel test //crates/...
-
-# All JavaScript tests and type checks declared at the repository root
-npm test
-npm run typecheck
-
-# Build the native Mac app and daemon
-bazel build //apple/AxoMac:AxoApp //crates/axod:axod
-
-# Generate the local Xcode project from Bazel targets when needed
-bazel run //apple:xcodeproj
+bazel build //...
+bazel test //...
 ```
 
-For the iOS app, use the phone-specific visual lane:
+`bazel build //...` builds everything, signs the Mac app with your Apple identity for the team in `config.json` (ad hoc if you have none) and puts it at `dist/Axo.app`. It also writes `apple/Axo.xcodeproj` (one Xcode project for every Apple target, driving Bazel) and `rust-project.json` for rust-analyzer. If this Mac has the phone's provisioning profile it builds the phone app for a device, and installs it when `config.local.json` asks. What it did, and why anything fell back, is in `bazel-bin/report.txt`. It does not fail because a piece of your Mac is missing, only on a broken build or an invalid config.
+
+`bazel test //...` runs every test that needs no desktop, phone or browser of its own. Narrow it to the area you changed, for example `bazel test //crates/...` or `bazel test //packages/pi-axo/...`.
+
+The iPhone UI tests compare screenshots with reviewed baselines (see `apple/AxoPhone/Snapshots/README.md`):
 
 ```sh
-scripts/phone-visual-loop.sh verify
+bazel test //apple/AxoPhone:AxoPhoneUITests --test_filter=AxoPhoneUITests/testVisual
+bazel run //apple/AxoPhone:record_snapshots   # after reviewing a change, accept the new screenshots
 ```
 
-The native Mac visual UI suite is interactive and requires an unlocked desktop, Xcode UI Automation authorization, and macOS 14 or later:
+The native Mac visual UI suite is interactive and requires an unlocked desktop, Xcode UI Automation authorization, Axo closed, and macOS 14 or later:
 
 ```sh
 bazel test //apple/AxoMac:AxoVisualUITestsBazel --test_output=all
@@ -42,13 +37,7 @@ bazel test //apple/AxoMac:AxoVisualUITestsBazel --test_output=all
 
 The visual suite drives a real terminal surface. Do not run it in a locked session or bypass macOS's UI Automation authorization. Its screenshots and test results are written to local temporary/Bazel output directories.
 
-To package a signed development app bundle, run:
-
-```sh
-bash scripts/build-mac.sh
-```
-
-This packaging step requires a valid Apple code-signing identity. It builds and verifies the app but does not run the test suite. Prefer the focused test command for your change; `bazel test //...` includes the interactive visual UI-test wrapper on macOS.
+Publishing the Mac app for `curl -fsSL https://axo.leostera.dev/install | sh` is its own step, from a checkout without changes: `bazel run //:publish`.
 
 ## Making a change
 
