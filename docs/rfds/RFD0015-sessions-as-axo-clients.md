@@ -6,6 +6,7 @@
 - Start Date: 2026-10-27
 - Updated: 2026-10-27
 - Document Type: Proposal
+- Amended By: [RFD0022](RFD0022-sessions-across-macs.md)
 
 ## Summary
 
