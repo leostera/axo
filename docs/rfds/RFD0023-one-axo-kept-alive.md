@@ -242,6 +242,15 @@ SIGTERM from `launchctl bootout` or `kill` is not routed through `applicationSho
 - If they differ and the person hasn't declined that build, Axo asks.
 - **Restart** opens the bundle with `NSWorkspace.OpenConfiguration.createsNewApplicationInstance = true` and `--replace-running`. The new process decides `replace(askFirst: false)`, and the running Axo receives `quitForReplacement`.
 
+### Upgrading from the menu bar
+
+Added after this RFD was accepted. The menu bar shows **Upgrade to Build N** when there is a newer build (`AppUpgradeModel`, `AppUpgrade.choose`):
+
+- **A newer build over this bundle** (a `bazel build` at `dist/Axo.app`) wins. Upgrading is the restart above.
+- **Otherwise, a newer published build.** `//:publish` uploads `mac/Axo.app.json` (`{ build, axodBuild, commit }`) after the zip, served at `/cdn/Axo.app.json`. Axo reads it at launch, hourly, and when the menu opens if it is over ten minutes old. Upgrading downloads `/cdn/Axo.app.zip` and checks the whole bundle is signed as this app's bundle ID by this app's team under an Apple anchor, and that it is newer. It then swaps the bundle in as `install_app` does, keeping `.Axo.app.previous`, and restarts as above. An ad hoc signed Axo is not offered downloads.
+
+Axo asks first only when axod's build changes, because axod's restart restarts the terminals. This is still not an automatic update: nothing is installed until the person picks the item.
+
 ### axod
 
 Three changes to `DaemonController`, plus the signing fix.

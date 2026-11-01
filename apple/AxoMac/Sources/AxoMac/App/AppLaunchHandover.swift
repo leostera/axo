@@ -149,17 +149,6 @@ enum InstalledUpdateCheck {
       return
     }
     // The new Axo replaces this one (and asks it to quit) without asking again.
-    let configuration = NSWorkspace.OpenConfiguration()
-    configuration.createsNewApplicationInstance = true
-    configuration.arguments = [AppAgentController.replaceRunningArgument]
-    NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
-      guard let error else { return }
-      Task { @MainActor in
-        let failure = NSAlert()
-        failure.messageText = "Couldn’t start Axo build \(installed)"
-        failure.informativeText = error.localizedDescription
-        failure.runModal()
-      }
-    }
+    AppUpgradeModel.shared.restart(into: Int(installed) ?? 0)
   }
 }

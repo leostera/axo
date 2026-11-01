@@ -9,6 +9,7 @@ final class AxoURLSchemeDelegate: NSObject, NSApplicationDelegate {
     LaunchBoot.scheduleFallback()
     StatusItemDrag.install()
     observeOtherAxos()
+    AppUpgradeModel.shared.start()
   }
 
   func application(_ application: NSApplication, open urls: [URL]) {

@@ -480,6 +480,9 @@ private struct AxoMenu: View {
       }
     }
     .disabled(true)
+    .onAppear { AppUpgradeModel.shared.refresh() }
+
+    AppUpgradeMenuItem(upgrades: AppUpgradeModel.shared)
 
     Divider()
 
@@ -509,6 +512,24 @@ private struct AxoMenu: View {
     .keyboardShortcut("q")
   }
 
+}
+
+/// "Upgrade to Build N" while there is one; "Upgrading to Build N…" while it downloads and restarts.
+private struct AppUpgradeMenuItem: View {
+  var upgrades: AppUpgradeModel
+
+  var body: some View {
+    switch upgrades.phase {
+    case .downloading(let build):
+      Text("Downloading Build \(build)…").disabled(true)
+    case .restarting(let build):
+      Text("Restarting into Build \(build)…").disabled(true)
+    case .idle:
+      if let upgrade = upgrades.available {
+        Button("Upgrade to Build \(upgrade.build)") { upgrades.upgrade() }
+      }
+    }
+  }
 }
 
 private struct AxoApplicationCommands: Commands {
