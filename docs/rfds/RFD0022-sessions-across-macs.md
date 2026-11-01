@@ -99,13 +99,17 @@ This keeps the HostDO and ClientDO as they are. A ClientDO driven over the host 
 
 ### The mirror
 
-Axod writes peer transcripts under `~/.axo/server/peers/<hostId>/<sessionId>.jsonl`. These are Pi's header line and then the cloud's `pi/3` lines in order, so they are the files Pi wrote, and Pi can open them. Next to each is `<sessionId>.state.json` with `{ epoch, cursor }`, saved after the lines are on disk and before the batch is acknowledged. `peers/index.json` holds the other Macs and their Sessions as the cloud last listed them, for the catalog.
+Every Mac's transcripts are kept by host, the same way on every Mac: `~/.axo/sessions/<hostId>/<workspaceId>/<sessionId>.jsonl`. A Mac writes its own under its host id and keeps the others' copies beside them, so a Session has the same path under `sessions/` on every Mac. Each host folder has a `host.json` with its id and name. `~/.axo/server/` keeps only this Mac's server state: its database, Pi's bridge sockets, and `peers.json`, the other Macs and their Sessions as the cloud last listed them.
+
+A copy is Pi's header line and then the cloud's `pi/3` lines in order, so it is the file Pi wrote, and Pi can open it. Next to each is `<sessionId>.state.json` with `{ epoch, cursor }`, saved after the lines are on disk and before the batch is acknowledged. Every path segment the cloud names must be an id, and this Mac's own folder is never written by copying.
+
+- **Moving older transcripts:** they used to live in `server/pi-sessions/<workspaceId>/`. Opening moves each folder to the host's folder once, rewrites the paths in `axo.db`, and leaves a symlink behind for a Pi still writing by the old path. Resuming by an old path looks up its canonical path too.
 
 - **Crash safety:** on its first look at a copy, axod cuts away lines past the saved cursor. A copy shorter than its state is made again from nothing.
 
 - **Which Sessions are mirrored:** all of them. That includes archived ones, so continuing an old chat needs nothing. At about one transcript per chat, this is far less than one Mac's disk.
 - **Truncation:** a `reset` (the source Mac rewrote history) truncates the mirror to the cut and reads on, as the ClientDO's reads already do.
-- **Invariant: a Mac uploads only the Sessions it owns.** The peers directory is outside `pi-sessions/`, so the uploader never sees it. A mirror is never sent back to the cloud.
+- **Invariant: a Mac uploads only the Sessions it owns.** The uploader lists only Sessions in this Mac's catalog, never a copy, so a copy is never sent back to the cloud.
 - **Catalog:** `axo.session.catalog` gains `host: { hostId, label, online }` and `mirror: true` on peer Sessions. Prompt, stop and answer on a mirror go out as `axo.client.command` on the peers socket.
 
 ### The Mac app
