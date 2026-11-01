@@ -33,6 +33,13 @@ js_library(
     deps = _NODE_MODULES,
 )
 
+# The Cloudflare CLI, run from the site so it uses the site's account (bazel run //:publish).
+cf_bin.cf_binary(
+    name = "cf",
+    chdir = package_name(),
+    data = [":app_files"],
+)
+
 # .cloudflare/types/index.d.ts: the Worker's Env and the Workers runtime (cloudflare:workers),
 # generated from cloudflare.config.ts by `cf workers types`.
 cf_bin.cf(

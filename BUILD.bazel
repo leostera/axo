@@ -1,5 +1,7 @@
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@axo_config//:defs.bzl", "AXO")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//bazel/apple:defs.bzl", "build_report")
 
 # The workspace's node_modules: every package in pnpm-lock.yaml (RFD0021).
@@ -29,5 +31,25 @@ build_report(
         "//apple/AxoMac:dist",
         "//apple/AxoPhone:AxoPhone_ipa",
         "//apple/AxoPhone:install",
+    ],
+)
+
+# bazel run //:publish uploads the signed Mac app to the CDN the install script fetches from. It is
+# the one step outside bazel build: it changes what everyone installs (RFD0021).
+sh_binary(
+    name = "publish",
+    srcs = ["//bazel/publish:publish.sh"],
+    args = [
+        "$(rootpath //apple/AxoMac:Axo)",
+        "$(rootpath //apple/AxoMac:Axo_zip)",
+        "$(rootpath //sites/axo.leostera.dev:cf)",
+        AXO["apple"]["team"],
+        AXO["publish"]["bucket"],
+        AXO["publish"]["url"],
+    ],
+    data = [
+        "//apple/AxoMac:Axo",
+        "//apple/AxoMac:Axo_zip",
+        "//sites/axo.leostera.dev:cf",
     ],
 )
