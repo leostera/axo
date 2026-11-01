@@ -253,6 +253,31 @@ public final class DaemonController {
   private func checkBuildAndRestartIfNeeded() async throws {
     let socketPath = try makeSocketPath()
     let daemonBuildNumber = try makeDaemonBuildNumber()
+
+    // launchd still runs what an earlier registration gave it: another bundle, another plist, or
+    // a helper signed as someone launchd no longer accepts (then axod cannot start at all, and
+    // waiting for it would only time out). Register this app's definition first.
+    //
+    // launchd also resolves `BundleProgram` through the bundle that registered the job, not its
+    // path: once an install swaps a new bundle in and the old one is deleted, the job cannot spawn
+    // (`copy_bundle_path` fails, exit 78) although the definition looks unchanged.
+    let definitionChanged = registeredDefinition().map { $0 != currentDefinition() } ?? false
+    let launchdState = await LaunchdJobState.read(label: Self.serviceLabel)
+    if definitionChanged || launchdState.isFailingToRun {
+      logger.info(
+        "event=daemon.reregister_needed definition_changed=\(definitionChanged, privacy: .public) launchd=\(launchdState.description, privacy: .public)"
+      )
+      setStatus(.updating)
+      guard
+        let restartedDaemon =
+          try await restartDaemon(
+            at: socketPath, expectedBuild: daemonBuildNumber, forceReregister: true)
+      else { return }
+      setStatus(
+        .running(version: restartedDaemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
+      return
+    }
+
     logger.info("event=daemon.health_check_started")
 
     // A slow daemon may be recovering many Sessions; restarting it would kill their shells.
@@ -275,10 +300,13 @@ public final class DaemonController {
 
   private func restartDaemon(
     at socketPath: UnixSocketPath,
-    expectedBuild: BuildNumber
+    expectedBuild: BuildNumber,
+    forceReregister: Bool = false
   ) async throws -> DaemonHealth? {
-    let method = RestartMethod.decide(
-      registered: registeredDefinition(), current: currentDefinition())
+    let method =
+      forceReregister
+      ? .reregister
+      : RestartMethod.decide(registered: registeredDefinition(), current: currentDefinition())
     logger.info("event=daemon.restart_started method=\(String(describing: method), privacy: .public)")
     if method == .kickstart {
       do {
@@ -288,7 +316,12 @@ public final class DaemonController {
         logger.info("event=daemon.restart_succeeded")
         return daemon
       } catch let error as DaemonControllerError {
-        guard case .kickstartFailed = error else { throw error }
+        // A kickstart that launchd refused, or whose axod never came back with this build:
+        // registering again is the one remaining way to hand launchd this app's helper.
+        switch error {
+        case .kickstartFailed, .restartTimedOut: break
+        default: throw error
+        }
         logger.warning(
           "event=daemon.kickstart_failed reason=\(error.localizedDescription, privacy: .public)")
       }
@@ -315,7 +348,8 @@ public final class DaemonController {
   // MARK: - Restarting in place
 
   private func currentDefinition() -> LaunchAgentDefinition? {
-    LaunchAgentDefinition.current(bundle: .main, plistName: Self.servicePlistName)
+    LaunchAgentDefinition.current(
+      bundle: .main, plistName: Self.servicePlistName, programPath: "Contents/Helpers/axod")
   }
 
   private func registeredDefinition() -> LaunchAgentDefinition? {

@@ -1,21 +1,48 @@
 import CryptoKit
 import Foundation
+import Security
 
 /// What launchd was given when the LaunchAgent was registered: which app bundle (its
-/// `BundleProgram` resolves inside it) and the exact plist.
+/// `BundleProgram` resolves inside it), the exact plist, and who signed the program it runs.
 struct LaunchAgentDefinition: Codable, Equatable {
   var bundlePath: String
   var plistSHA256: String
+  /// `<team>:<signing identifier>` of the `BundleProgram`. Background Task Management approves
+  /// the agent for that identity, and launchd refuses a program signed as anything else (a
+  /// Launch Constraint Violation) until the agent is registered again. `nil` in definitions
+  /// recorded before it existed, which makes the next restart register again.
+  var programSigningIdentity: String? = nil
 
   /// The definition this app would register, or `nil` when its plist cannot be read.
-  static func current(bundle: Bundle, plistName: String) -> LaunchAgentDefinition? {
+  /// `programPath` is the `BundleProgram`, relative to the bundle.
+  static func current(
+    bundle: Bundle, plistName: String, programPath: String? = nil
+  ) -> LaunchAgentDefinition? {
     let plist = bundle.bundleURL
       .appendingPathComponent("Contents/Library/LaunchAgents")
       .appendingPathComponent(plistName)
     guard let data = try? Data(contentsOf: plist) else { return nil }
     return LaunchAgentDefinition(
       bundlePath: bundle.bundleURL.standardizedFileURL.path,
-      plistSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+      plistSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+      programSigningIdentity: programPath.flatMap {
+        signingIdentity(of: bundle.bundleURL.appendingPathComponent($0))
+      })
+  }
+
+  static func signingIdentity(of program: URL) -> String? {
+    var code: SecStaticCode?
+    guard SecStaticCodeCreateWithPath(program as CFURL, [], &code) == errSecSuccess, let code
+    else { return nil }
+    var information: CFDictionary?
+    guard
+      SecCodeCopySigningInformation(
+        code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+      let information = information as? [String: Any],
+      let identifier = information[kSecCodeInfoIdentifier as String] as? String
+    else { return nil }
+    let team = information[kSecCodeInfoTeamIdentifier as String] as? String ?? "-"
+    return "\(team):\(identifier)"
   }
 }
 
