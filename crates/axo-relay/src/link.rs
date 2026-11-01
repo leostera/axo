@@ -164,8 +164,31 @@ pub fn link_host(
     Ok(label)
 }
 
-/// How this host names itself to the account: its hostname.
+/// How this host names itself to the account: its Computer Name, or else its hostname. A person
+/// may name it otherwise in the account (RFD0022), which reconnecting never undoes.
 pub fn host_label() -> String {
+    computer_name().unwrap_or_else(network_host_name)
+}
+
+/// The name macOS shows for this Mac (System Settings, General, Sharing), as people know it.
+fn computer_name() -> Option<String> {
+    let output = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let name = String::from_utf8(output.stdout).ok()?;
+    let name = name.trim();
+    (output.status.success() && is_label(name)).then(|| name.to_owned())
+}
+
+fn is_label(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
+}
+
+/// The network's name for this Mac, when macOS has no Computer Name.
+fn network_host_name() -> String {
     let mut bytes = [0_u8; 256];
     // SAFETY: bytes is writable storage for gethostname's NUL-terminated output.
     if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0 {
@@ -175,7 +198,7 @@ pub fn host_label() -> String {
             .unwrap_or(bytes.len());
         if let Ok(name) = std::str::from_utf8(&bytes[..length]) {
             let name = name.trim_end_matches('.').trim();
-            if !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control) {
+            if is_label(name) {
                 return name.to_owned();
             }
         }
