@@ -50,8 +50,17 @@ impl RelayEndpoint {
 
     /// The account-scoped WebSocket this host connects to once linked.
     pub(crate) fn daemon_url(&self, account_id: &str, host_id: &str) -> Url {
+        self.host_socket_url(account_id, host_id, "daemon")
+    }
+
+    /// Where this host follows the account's other hosts (RFD0022).
+    pub(crate) fn peers_url(&self, account_id: &str, host_id: &str) -> Url {
+        self.host_socket_url(account_id, host_id, "peers")
+    }
+
+    fn host_socket_url(&self, account_id: &str, host_id: &str, route: &str) -> Url {
         let mut url = self.at(&format!(
-            "/api/v1/accounts/{account_id}/hosts/{host_id}/daemon"
+            "/api/v1/accounts/{account_id}/hosts/{host_id}/{route}"
         ));
         let scheme = if self.origin.scheme() == "https" {
             "wss"

@@ -9,6 +9,7 @@ mod host;
 mod link;
 mod outbound;
 mod pairing;
+pub mod peers;
 pub mod pi3;
 mod relay;
 pub mod signin;

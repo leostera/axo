@@ -220,6 +220,8 @@ pub fn serve_ipc(
         endpoint: remote_access.endpoint.clone(),
         links: host.clone(),
         credentials: Arc::clone(&credentials),
+        // Outside pi-sessions/: copies of other Macs' Sessions are never uploaded (RFD0022).
+        peers_directory: Some(server_directory.join("peers")),
     }) {
         Ok(worker) => Some(worker),
         Err(error) => {

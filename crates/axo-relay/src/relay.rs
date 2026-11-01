@@ -4,6 +4,7 @@ use crate::fragments::{self, Reassembler};
 use crate::host::RelayHost;
 use crate::link::{AccountLink, HostLinkStore, host_label};
 use crate::outbound::{FRAMES_PER_TURN, Outbox, Priority, RelayChannel, ReplySender};
+use crate::peers::{PeersDependencies, PeersWorker};
 use crate::sync::{SyncWaker, SyncWorker};
 use axo_protocol::{
     Event, HostKind, LayoutNode, RelayState, RelayStatus, RemoteSessionSnapshot, SessionId, ShellId,
@@ -23,14 +24,14 @@ use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
-const MAX_FRAME_BYTES: usize = fragments::FRAME_BYTES;
+pub(crate) const MAX_FRAME_BYTES: usize = fragments::FRAME_BYTES;
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(20);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const NOT_LINKED: &str = "This Mac is not linked to an Axo account.";
 
-type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
+pub(crate) type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
 type RelayStatusObserver = Box<dyn Fn(&RelayStatus) + Send + Sync>;
 
@@ -126,6 +127,8 @@ pub struct RelayWorker {
     thread: Option<JoinHandle<()>>,
     /// Uploads every Session's transcript while the socket is open (RFD0018).
     sync: SyncWorker,
+    /// Keeps this Mac's copy of the other Macs' Sessions (RFD0022).
+    peers: Option<PeersWorker>,
 }
 
 /// What the relay worker needs from axod.
@@ -134,6 +137,8 @@ pub struct RelayDependencies {
     pub endpoint: RelayEndpoint,
     pub links: Arc<dyn HostLinkStore>,
     pub credentials: Arc<dyn HostCredentialStore>,
+    /// Where the other Macs' Sessions are copied; None copies nothing.
+    pub peers_directory: Option<std::path::PathBuf>,
 }
 
 impl RelayWorker {
@@ -162,6 +167,19 @@ impl RelayWorker {
             waker.clone(),
             Arc::clone(&stop),
         )?;
+        let peers = match dependencies.peers_directory.clone() {
+            Some(directory) => Some(PeersWorker::start(
+                PeersDependencies {
+                    host_id: dependencies.host.host_id().to_owned(),
+                    endpoint: dependencies.endpoint.clone(),
+                    links: Arc::clone(&dependencies.links),
+                    credentials: Arc::clone(&dependencies.credentials),
+                    directory,
+                },
+                Arc::clone(&stop),
+            )?),
+            None => None,
+        };
         let worker = thread::Builder::new()
             .name("axo-cloud-relay".to_owned())
             .spawn(move || {
@@ -179,6 +197,7 @@ impl RelayWorker {
             channel,
             thread: Some(worker),
             sync,
+            peers,
         })
     }
 
@@ -201,6 +220,9 @@ impl RelayWorker {
             let _ = worker.join();
         }
         self.sync.join();
+        if let Some(peers) = &mut self.peers {
+            peers.join();
+        }
     }
 }
 
@@ -385,6 +407,19 @@ fn relay_websocket_request(
     host_id: &str,
     credentials: &dyn HostCredentialStore,
 ) -> io::Result<tungstenite::http::Request<()>> {
+    host_websocket_request(
+        endpoint.daemon_url(account.account_id(), host_id),
+        account,
+        credentials,
+    )
+}
+
+/// A WebSocket request to one of the host's account routes, authenticated with its credential.
+pub(crate) fn host_websocket_request(
+    url: url::Url,
+    account: &AccountLink,
+    credentials: &dyn HostCredentialStore,
+) -> io::Result<tungstenite::http::Request<()>> {
     let mut secret = credentials.load(account.credential_id())?;
     if secret.len() != 32 {
         secret.fill(0);
@@ -395,8 +430,7 @@ fn relay_websocket_request(
     }
     let token = crate::pairing::encode_base64url(&secret);
     secret.fill(0);
-    let mut request = endpoint
-        .daemon_url(account.account_id(), host_id)
+    let mut request = url
         .as_str()
         .into_client_request()
         .map_err(io::Error::other)?;
@@ -415,7 +449,7 @@ fn relay_websocket_request(
 /// One connection attempt. The daemon route authenticates with the host credential and never
 /// redirects; a redirect means something in front of it (usually a Cloudflare Access login)
 /// is intercepting the route, which is reported instead of followed.
-fn connect_websocket(
+pub(crate) fn connect_websocket(
     request: tungstenite::http::Request<()>,
     config: WebSocketConfig,
 ) -> io::Result<RelaySocket> {
@@ -587,7 +621,10 @@ fn start_sign_in(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
         SIGN_INS.fetch_sub(1, Ordering::SeqCst);
         return context.replies.reply(
             &id,
-            Err((-32006, "another sign-in is waiting on this Mac; finish it first".into())),
+            Err((
+                -32006,
+                "another sign-in is waiting on this Mac; finish it first".into(),
+            )),
         );
     }
     let replies = context.replies.clone();
@@ -700,7 +737,7 @@ fn relay_session(
 
 /// One whole message: a frame, or the last fragment's frame completing a larger message. A
 /// fragment that breaks the rules ends the connection.
-fn read_message(
+pub(crate) fn read_message(
     socket: &mut RelaySocket,
     reassembler: &mut Reassembler,
 ) -> io::Result<Option<String>> {
@@ -765,7 +802,7 @@ fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
 }
 
 /// Sends one message: in one frame, or as fragments when it is larger (RFD0016, Transport).
-fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()> {
+pub(crate) fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()> {
     static MESSAGES: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_string(value).map_err(io::Error::other)?;
     let message_id = format!(
@@ -787,7 +824,7 @@ fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()>
     Ok(())
 }
 
-fn set_read_timeout(
+pub(crate) fn set_read_timeout(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     timeout: Duration,
 ) -> io::Result<()> {
