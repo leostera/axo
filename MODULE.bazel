@@ -3,9 +3,12 @@ module(
     version = "0.1.0",
 )
 
+bazel_dep(name = "aspect_rules_js", version = "3.5.2")
+bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_apple", version = "5.3.0")
 bazel_dep(name = "rules_cc", version = "0.2.25")
+bazel_dep(name = "rules_nodejs", version = "6.7.7")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift", version = "4.2.1")
 bazel_dep(name = "rules_swift_package_manager", version = "1.25.0")
@@ -67,3 +70,20 @@ ghostty_repository(name = "ghostty")
 
 ghostty_vt_repository = use_repo_rule("//:ghostty_vt_repository.bzl", "ghostty_vt_repository")
 ghostty_vt_repository(name = "ghostty_vt")
+
+# JavaScript and TypeScript: one pnpm workspace (pnpm-workspace.yaml, pnpm-lock.yaml), built and
+# tested by aspect_rules_js and aspect_rules_ts (RFD0021).
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "24.22.1")
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//:pnpm-lock.yaml",
+    verify_node_modules_ignored = "//:.bazelignore",
+)
+use_repo(npm, "npm")
+
+typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript")
+typescript.deps(version = "7.0.2")
+use_repo(typescript, "npm_typescript")

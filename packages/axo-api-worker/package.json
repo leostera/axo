@@ -22,8 +22,8 @@
     "smoke": "tsx scripts/dummy-client.ts"
   },
   "dependencies": {
-    "@axo/apps": "file:../axo-apps",
-    "@axo/protocol": "file:../axo-api",
+    "@axo/apps": "workspace:*",
+    "@axo/protocol": "workspace:*",
     "@cfworker/json-schema": "^4.1.4",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "hono": "4.13.13",
@@ -32,7 +32,7 @@
     "zod": "^4.5.0"
   },
   "devDependencies": {
-    "@axo/app": "file:../axo-app",
+    "@axo/app": "workspace:*",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.0",
     "esbuild": "^0.28.0",

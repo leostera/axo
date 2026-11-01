@@ -3,3 +3,6 @@ build --enable_platform_specific_config
 build --macos_minimum_os=14.0
 test --test_output=errors
 try-import %workspace%/.bazelrc.local
+common --repo_env=DO_NOT_TRACK=1
+# TypeScript 7 (tsc) writes the JavaScript, as it did before Bazel.
+common --@aspect_rules_ts//ts:default_to_tsc_transpiler

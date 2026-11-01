@@ -15,7 +15,7 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@axo/protocol": "file:../axo-api",
+    "@axo/protocol": "workspace:*",
     "zod": "^4.5.0"
   },
   "devDependencies": {

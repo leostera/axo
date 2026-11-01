@@ -19,8 +19,8 @@
     "test": "npm run typecheck && npm run test:model && npm run test:browser"
   },
   "dependencies": {
-    "@axo/app": "file:../axo-app",
-    "@axo/protocol": "file:../axo-api",
+    "@axo/app": "workspace:*",
+    "@axo/protocol": "workspace:*",
     "@rive-app/canvas": "2.47.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

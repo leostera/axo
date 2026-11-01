@@ -1,4 +1,20 @@
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# The workspace's node_modules: every package in pnpm-lock.yaml (RFD0021).
+npm_link_all_packages(name = "node_modules")
+
 exports_files([
     ".bazelrc",
     "MODULE.bazel",
+    "config.json",
+    "package.json",
+    "tsconfig.base.json",
 ])
+
+# Every package's tsconfig.json extends this one.
+ts_config(
+    name = "tsconfig_base",
+    src = "tsconfig.base.json",
+    visibility = ["//visibility:public"],
+)

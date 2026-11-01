@@ -1,0 +1,53 @@
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["//:tsconfig_base"],
+)
+
+ts_config(
+    name = "tsconfig_tests",
+    src = "tsconfig.tests.json",
+    deps = [":tsconfig"],
+)
+
+_DEPS = [
+    ":node_modules/@earendil-works/pi-coding-agent",
+    ":node_modules/@types/node",
+    ":node_modules/typebox",
+]
+
+# The Pi extension axod loads: dist/*.js, which the Mac app bundles in Resources/AxoPi.
+ts_project(
+    name = "pi-axo",
+    srcs = glob(["src/**/*.ts"]),
+    declaration = True,
+    out_dir = "dist",
+    root_dir = "src",
+    source_map = True,
+    tsconfig = ":tsconfig",
+    deps = _DEPS,
+)
+
+ts_project(
+    name = "typecheck_tests",
+    srcs = glob(["src/**/*.ts", "test/**/*.ts"]),
+    no_emit = True,
+    out_dir = "dist",
+    tsconfig = ":tsconfig_tests",
+    deps = _DEPS,
+)
+
+node_test(
+    name = "test",
+    data = glob(["src/**/*.ts", "test/**/*"]) + _DEPS + [":node_modules/tsx"],
+    tests = glob(["test/*.test.ts"]),
+    tsx = True,
+)

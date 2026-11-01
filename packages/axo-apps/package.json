@@ -12,7 +12,7 @@
     "test": "npm run typecheck && tsx --test tests/*.test.ts"
   },
   "dependencies": {
-    "@axo/protocol": "file:../axo-api",
+    "@axo/protocol": "workspace:*",
     "oauth4webapi": "^3.8.8",
     "zod": "^4.5.0"
   },

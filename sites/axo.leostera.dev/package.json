@@ -10,8 +10,8 @@
     "test": "node --test tests/*.test.mjs && npm --prefix ../../packages/axo-api-worker run test:core && npm --prefix ../../packages/axo-web-app run test"
   },
   "dependencies": {
-    "@axo/api-worker": "file:../../packages/axo-api-worker",
-    "@axo/web-app": "file:../../packages/axo-web-app",
+    "@axo/api-worker": "workspace:*",
+    "@axo/web-app": "workspace:*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -21,9 +21,5 @@
     "cf": "1.0.0-beta.13",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
-  },
-  "overrides": {
-    "sharp": "0.35.5",
-    "workerd": "1.20261016.1"
   }
 }

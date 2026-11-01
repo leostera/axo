@@ -1,0 +1,22 @@
+# One pnpm workspace for every JavaScript package; Bazel installs it from pnpm-lock.yaml
+# (aspect_rules_js, RFD0021).
+packages:
+  - packages/*
+  - sites/*
+  - docs/explainers/remote-access
+
+# The site pins these (they were npm overrides in its package.json).
+overrides:
+  sharp: "0.35.5"
+  workerd: "1.20261016.1"
+
+# No install scripts run: the native pieces (esbuild, workerd, tree-sitter) come as prebuilt
+# platform packages, so their scripts would only check or rebuild what is already there.
+allowBuilds:
+  "@google/genai": false
+  esbuild: false
+  protobufjs: false
+  tree-sitter: false
+  tree-sitter-javascript: false
+  tree-sitter-typescript: false
+  workerd: false
