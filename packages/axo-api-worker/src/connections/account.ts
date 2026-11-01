@@ -7,6 +7,7 @@ import {
   CONNECTIONS_ERRORS,
   CONNECTIONS_LIMITS,
   CONNECTIONS_METHODS,
+  connectionSlug,
   bashResultSchema,
   connectionsParams,
   isConnectionsMethod,
@@ -146,11 +147,18 @@ export class AccountConnections {
   }
 
   /** Adds a third-party connection; its name may not be taken by any connection, Mac or not, nor be `apps`. */
-  async add(name: string, url: string): Promise<CallOutcome> {
+  /**
+   * Adds a remote MCP server under what the person called it ("emdash: leostera.com"); scripts
+   * reach it by that name's slug (emdash_leostera_com). The same server may be added again under
+   * another name, for another account with it.
+   */
+  async add(title: string, url: string): Promise<CallOutcome> {
+    const name = connectionSlug(title);
+    if (!name) return failure(-32602, "a name needs a letter or a digit");
     if (name === APPS_NAMESPACE) return failure(CONNECTIONS_ERRORS.nameTaken, `${APPS_NAMESPACE} is reserved for the apps Axo provides`);
     if (this.named().some((entry) => entry.name === name) || this.thirdParty.has(name))
-      return failure(CONNECTIONS_ERRORS.nameTaken, `a connection named ${name} already exists`);
-    const { signInUrl } = await this.thirdParty.add(name, url);
+      return failure(CONNECTIONS_ERRORS.nameTaken, name === title ? `a connection named ${name} already exists` : `a connection named ${name} already exists (the name of "${title}"); choose another name`);
+    const { signInUrl } = await this.thirdParty.add(name, url, title.trim() === name ? null : title.trim());
     const connection = this.thirdParty.list().find((c) => c.name === name)!;
     const result: ConnectionsResult<typeof CONNECTIONS_METHODS.add> = { connection, signInUrl };
     return { result };

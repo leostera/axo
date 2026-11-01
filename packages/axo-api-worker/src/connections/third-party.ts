@@ -49,6 +49,7 @@ type Row = {
   last_error: string | null;
   needs_sign_in: number;
   icon_url: string | null;
+  title: string | null;
   icon_checked_at: number | null;
 };
 
@@ -82,7 +83,8 @@ export class ThirdPartyConnections {
       tools_json TEXT NOT NULL DEFAULT '[]', synced_at REAL, last_error TEXT,
       needs_sign_in INTEGER NOT NULL DEFAULT 0)`);
     // A server's icon, for its tile: looked up once a week, when its tools are.
-    for (const column of ["icon_url TEXT", "icon_checked_at REAL"]) {
+    // The name the person typed, as typed (`name` is its slug); null for connections from before.
+    for (const column of ["icon_url TEXT", "icon_checked_at REAL", "title TEXT"]) {
       try {
         deps.sql.exec(`ALTER TABLE third_party_connections ADD COLUMN ${column}`);
       } catch {
@@ -114,6 +116,7 @@ export class ThirdPartyConnections {
     return this.rows().map((row) => ({
       kind: "thirdParty",
       name: row.name,
+      title: row.title ?? null,
       url: row.url,
       state: row.needs_sign_in ? "needsSignIn" : row.last_error && row.synced_at === null ? "error" : "ready",
       tools: this.storedTools(row).length,
@@ -138,8 +141,8 @@ export class ThirdPartyConnections {
    * Adds a connection and tries it without a grant. A server that needs sign-in gets a client
    * (registered, or to be entered on the Connections page) and a sign-in link.
    */
-  async add(name: string, url: string): Promise<{ signInUrl: string | null }> {
-    this.deps.sql.exec("INSERT INTO third_party_connections (name, url, created_at) VALUES (?, ?, ?)", name, url, this.now());
+  async add(name: string, url: string, title: string | null = null): Promise<{ signInUrl: string | null }> {
+    this.deps.sql.exec("INSERT INTO third_party_connections (name, url, created_at, title) VALUES (?, ?, ?, ?)", name, url, this.now(), title);
     try {
       await this.sync(name);
       return { signInUrl: null };

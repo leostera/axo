@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { appMacSignInRequestSchema, appServiceSchema, appTokenRequestSchema, connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
+import { appMacSignInRequestSchema, appServiceSchema, appTokenRequestSchema, connectionNameSchema, connectionTitleSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
 import type { ChainCheck } from "../connections/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
@@ -38,7 +38,7 @@ type ConnectionsStub = {
 
 export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll";
 
-const addBody = z.object({ name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict();
+const addBody = z.object({ name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
 const pollBody = z.object({ flow: z.uuid() }).strict();
 const clientBody = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(2048).nullable().optional() }).strict();

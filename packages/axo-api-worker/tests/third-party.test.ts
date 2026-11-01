@@ -133,6 +133,29 @@ test("a server that needs no sign-in is ready at once, and names are unique acro
   assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
 });
 
+test("a server is added under any name, reached by its slug, and may be added again under another, each signing in on its own", async (t) => {
+  const { server, h, session, call } = await fixture(t);
+  const first = result(await call("axo.connections.add", { name: "emdash: leostera.com", url: server.url }));
+  assert.deepEqual([first.connection.name, first.connection.title], ["emdash_leostera_com", "emdash: leostera.com"]);
+  const second = result(await call("axo.connections.add", { name: "Emdash — ocaml.ai", url: server.url }));
+  assert.deepEqual([second.connection.name, second.connection.title], ["emdash_ocaml_ai", "Emdash — ocaml.ai"]);
+  assert.notEqual(first.signInUrl, second.signInUrl, "each has its own sign-in");
+  assert.equal(server.clients.size, 2, "and its own client");
+  const taken = await call("axo.connections.add", { name: "Emdash: leostera.com!", url: server.url });
+  assert.ok("error" in taken && /emdash_leostera_com already exists \(the name of "Emdash: leostera.com!"\); choose another name/.test(taken.error.message), JSON.stringify(taken));
+  const empty = await call("axo.connections.add", { name: " — ", url: server.url });
+  assert.ok("error" in empty && /a letter or a digit/.test(empty.error.message), JSON.stringify(empty));
+  const plain = result(await call("axo.connections.add", { name: "linear", url: server.url }));
+  assert.deepEqual([plain.connection.name, plain.connection.title], ["linear", null], "a name that is already its slug keeps no title");
+
+  await signInThroughBrowser(h, server, session, first.signInUrl);
+  await waitForTools(call);
+  const executed = result(await call("axo.connections.execute", { code: `async () => (await codemode.emdash_leostera_com.list_issues({ team: "AXO" })).tool` }));
+  assert.equal(executed.result, "list-issues");
+  const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "thirdParty").map((c: { name: string; state: string }) => [c.name, c.state]);
+  assert.deepEqual(listed, [["emdash_leostera_com", "ready"], ["emdash_ocaml_ai", "needsSignIn"], ["linear", "needsSignIn"]]);
+});
+
 test("a server whose tools answer 401 says so on its page and to the agent, until a call works again", async (t) => {
   const { server, call } = await fixture(t);
   server.requireAuth = false;

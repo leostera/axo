@@ -70,6 +70,24 @@ export const CONNECTIONS_ERRORS = {
 export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/);
 
 /**
+ * What the person calls a connection they add, as typed: "emdash: leostera.com". Scripts reach it
+ * by its slug (connectionSlug), the connection's `name`.
+ */
+export const connectionTitleSchema = z.string().trim().min(1).max(100);
+
+/**
+ * The name a script calls a connection by, made from what the person typed: lowercase letters,
+ * digits and underscores, so `codemode.<name>` is plain JavaScript ("emdash: leostera.com" is
+ * emdash_leostera_com). Null when nothing in it is a letter or digit.
+ */
+export function connectionSlug(title: string): string | null {
+  const slug = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64).replace(/_+$/, "");
+  if (!slug) return null;
+  return /^[0-9]/.test(slug) ? `_${slug}`.slice(0, 64) : slug;
+}
+
+/**
  * Apps are services Axo itself provides, each with its own sign-in and tools, reached as
  * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
  */
@@ -196,6 +214,8 @@ export const connectionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("thirdParty"),
     name: connectionNameSchema,
+    /** What the person called it; null when that is its name (and from a Worker one release older). */
+    title: connectionTitleSchema.nullable().default(null),
     url: z.url(),
     state: z.enum(["ready", "needsSignIn", "error"]),
     tools: z.number().int().nonnegative(),
@@ -262,7 +282,8 @@ export const connectionsParams = {
   [CONNECTIONS_METHODS.list]: z.object({ sessionId }).strict(),
   [CONNECTIONS_METHODS.search]: z.object({ sessionId, code: script }).strict(),
   [CONNECTIONS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
-  [CONNECTIONS_METHODS.add]: z.object({ sessionId, name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
+  /** `name` is what to call it, any text; the connection's name is its slug (connectionSlug). */
+  [CONNECTIONS_METHODS.add]: z.object({ sessionId, name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
   /** Removes a third-party connection, or signs out of an app (`apps.<app>`). */
   [CONNECTIONS_METHODS.remove]: z.object({
     sessionId,

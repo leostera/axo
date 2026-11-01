@@ -175,6 +175,20 @@
                     "type": "string",
                     "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
                   },
+                  "title": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "What the person called it; null when that is its name."
+                  },
                   "url": {
                     "type": "string",
                     "format": "uri"
@@ -716,7 +730,9 @@
             },
             "name": {
               "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "What to call it, any text; the connection's name is its slug."
             },
             "url": {
               "type": "string",
@@ -787,6 +803,20 @@
                 "name": {
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "What the person called it; null when that is its name."
                 },
                 "url": {
                   "type": "string",
