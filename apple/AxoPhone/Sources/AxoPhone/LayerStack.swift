@@ -121,13 +121,8 @@ struct LayerStack: View {
       .overlay(alignment: .leading) {
         if isEdge { edgeButton(for: index, stack: stack) }
       }
-      .overlay(alignment: .leading) {
-        // Only for measuring motion in the simulator (`PreviewFixture.markers`).
-        if PreviewFixture.markers && index == home {
-          Color(red: 1, green: 0, blue: 1).frame(width: 4).ignoresSafeArea().allowsHitTesting(false)
-        }
-      }
-      .offset(x: stack.offset(of: index, at: position))
+      // Home's motion is noted frame by frame when it is being measured (`PreviewFixture.motionLog`).
+      .modifier(LayerOffset(x: stack.offset(of: index, at: position), log: index == home ? PreviewFixture.motionLog : nil))
       // VoiceOver reads the layer showing only. (UI tests still find the others' elements.)
       .accessibilityHidden(index != showing)
       .zIndex(Double(index))

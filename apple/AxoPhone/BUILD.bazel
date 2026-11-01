@@ -2,6 +2,7 @@ load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 load("@axo_config//:defs.bzl", "AXO", "CAN", "REASONS")
@@ -75,12 +76,14 @@ ios_application(
 )
 
 # The app driven as a person would, against its simulator preview:
-# `bazel test //apple/AxoPhone:AxoPhoneUITests --ios_multi_cpus=sim_arm64`.
+# `bazel test //apple/AxoPhone:AxoPhoneUITests`.
 swift_library(
     name = "AxoPhoneUITestsLib",
     testonly = True,
     srcs = glob(["UITests/**/*.swift"]),
     copts = ["-swift-version", "5"],
+    # The reviewed screenshots the visual tests compare against (UITests/Snapshots.swift).
+    data = glob(["Snapshots/Phone/*.png"]),
     module_name = "AxoPhoneUITests",
 )
 
@@ -156,4 +159,11 @@ phone_install(
     bundle_id = AXO["apple"]["bundle_ids"]["phone"],
     device = AXO.get("phone", {}).get("device", ""),
     off = REASONS.get("phone_install", ""),
+)
+
+# bazel run //apple/AxoPhone:record_snapshots: after reviewing them, the last UI test run's
+# screenshots become the baselines the visual tests compare against.
+sh_binary(
+    name = "record_snapshots",
+    srcs = ["record_snapshots.sh"],
 )

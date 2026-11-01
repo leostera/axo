@@ -274,20 +274,20 @@ final class AxoPhoneUITests: XCTestCase {
     XCTAssertTrue(app.buttons["Sign out"].exists)
   }
 
-  // MARK: - Visual snapshots and interaction recording
+  // MARK: - Visual snapshots (compared against apple/AxoPhone/Snapshots/Phone, see Snapshots)
 
   @MainActor
   func testVisualSnapshotBlankChatLight() {
     let app = launch(appearance: "light")
     XCTAssertTrue(app.textFields["composer"].exists)
-    capture(app, named: "blank-chat-light")
+    Snapshots.check(app, named: "blank-chat-light", in: self)
   }
 
   @MainActor
   func testVisualSnapshotConversationDark() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"], appearance: "dark")
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "Ship the remote Workbench")
-    capture(app, named: "conversation-dark")
+    Snapshots.check(app, named: "conversation-dark", in: self)
   }
 
   @MainActor
@@ -298,11 +298,10 @@ final class AxoPhoneUITests: XCTestCase {
     composer.tap()
     composer.typeText("Check the composer while the keyboard is open")
     XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-    capture(app, named: "composer-keyboard-light")
+    Snapshots.check(app, named: "composer-keyboard-light", in: self)
   }
 
-  /// A short, deterministic interaction sequence. XCTest records a screen video for the test;
-  /// the visual-loop script exports it as a reviewable artifact.
+  /// A short, deterministic interaction sequence, ending on a snapshot.
   @MainActor
   func testVisualInteractionSequence() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"], appearance: "dark")
@@ -314,7 +313,7 @@ final class AxoPhoneUITests: XCTestCase {
     composer.tap()
     composer.typeText("A deterministic interaction recording")
     XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-    capture(app, named: "interaction-composer-keyboard-dark")
+    Snapshots.check(app, named: "interaction-composer-keyboard-dark", in: self)
   }
 
   // MARK: - Conversation
