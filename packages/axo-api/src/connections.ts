@@ -23,6 +23,19 @@ export type ConnectionsMethod = (typeof CONNECTIONS_METHODS)[keyof typeof CONNEC
 
 /** Sent by the account to a Mac; never by a Mac. */
 export const BASH_METHOD = "axo.connections.bash";
+/**
+ * A loopback sign-in on a Mac (axo-relay's signin.rs): axod opens the sign-in page in the
+ * person's browser, waits for the redirect to `http://localhost:<port><path>`, and answers with
+ * the code. For services that send sign-ins back only to localhost (Kraken's public client).
+ */
+export const SIGN_IN_METHOD = "axo.connections.signIn";
+/** What the Mac answers a sign-in with: the redirect it used, and the code or the service's error. */
+export const signInResultSchema = z.object({
+  redirectUri: z.string().regex(/^http:\/\/localhost:\d{4,5}\/[A-Za-z0-9/_.-]*$/),
+  code: z.string().min(1).max(4096).optional(),
+  error: z.string().max(256).optional(),
+  errorDescription: z.string().max(1024).optional(),
+}).strict();
 
 export const CONNECTIONS_LIMITS = {
   scriptWallMs: 5 * 60_000,
@@ -114,6 +127,11 @@ export type AppClientRequest = z.infer<typeof appClientRequestSchema>;
  * asks Axo whether they have. `mac`: the app runs a program on the account's Macs (1Password's
  * CLI), which are its accounts; `setup` says what to set up on a Mac first.
  */
+/** A token app's sign-in on a Mac: the button, and what the person chooses the credential may do. */
+export const appMacSignInOfferSchema = z.object({
+  title: z.string().min(1).max(64),
+  presets: z.array(z.object({ id: connectionNameSchema, label: z.string().min(1).max(64), description: z.string().max(256) }).strict()).min(1).max(8),
+}).strict();
 export const appSignInSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("oauth"), client: appOAuthClientSchema.optional() }).strict(),
   z.object({ kind: z.literal("device") }).strict(),
@@ -124,6 +142,8 @@ export const appSignInSchema = z.discriminatedUnion("kind", [
     helpUrl: z.url({ protocol: /^https$/ }).max(2048),
     named: z.boolean(),
     fields: z.array(appTokenFieldSchema).min(1).max(4),
+    /** A sign-in that ends on one of the account's Macs, offered beside pasting a token (Kraken's). */
+    mac: appMacSignInOfferSchema.optional(),
   }).strict(),
 ]);
 export type AppSignIn = z.infer<typeof appSignInSchema>;
@@ -146,6 +166,20 @@ export const appDeviceSignInSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
 ]);
 export type AppDeviceSignIn = z.infer<typeof appDeviceSignInSchema>;
+/** What starting a sign-in on a Mac sends: which Mac, the preset chosen, and the account's name when the person names it. */
+export const appMacSignInRequestSchema = z.object({
+  mac: connectionNameSchema,
+  preset: connectionNameSchema,
+  account: z.string().min(3).max(64).regex(/^[a-z0-9][a-z0-9._@-]*$/, "use lowercase letters, digits, dots, dashes and @").optional(),
+}).strict();
+export type AppMacSignInRequest = z.infer<typeof appMacSignInRequestSchema>;
+/** A sign-in on a Mac as the web app polls it: waiting for the person in their browser, done, or failed. */
+export const appMacSignInSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("pending"), mac: connectionNameSchema, expiresAt: z.iso.datetime() }).strict(),
+  z.object({ state: z.literal("done"), account: z.string().min(3).max(320), expiresAt: z.iso.datetime().nullable() }).strict(),
+  z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
+]);
+export type AppMacSignIn = z.infer<typeof appMacSignInSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
 export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
 

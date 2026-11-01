@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@axo/protocol": "file:../axo-api",
+    "oauth4webapi": "^3.8.8",
     "zod": "^4.5.0"
   },
   "devDependencies": {

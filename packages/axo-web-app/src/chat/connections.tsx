@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { appDeviceSignInSchema, connectionsResults, type AppDeviceSignIn, type CallRecord, type Connection } from "@axo/protocol";
+import { appDeviceSignInSchema, appMacSignInSchema, connectionsResults, type AppDeviceSignIn, type CallRecord, type Connection } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
@@ -110,6 +110,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
 
   const apps = (connections ?? []).filter((c): c is App => c.kind === "app");
   const servers = (connections ?? []).filter((c): c is Server => c.kind === "thirdParty");
+  const macs = (connections ?? []).flatMap((c) => (c.kind === "host" ? [{ name: c.name, online: c.state === "online" }] : []));
   const shared: Shared = { connectionsUrl, busy, act, setNotice };
 
   let title = "Apps";
@@ -117,7 +118,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
   if (route.kind === "app") {
     const app = apps.find((a) => a.name === `apps.${route.app}`);
     title = app?.title ?? "App";
-    body = app ? <AppPage key={app.name} app={app} version={version} {...shared} /> : <p className="settings-muted">{connections ? "This app is not available." : "Loading…"}</p>;
+    body = app ? <AppPage key={app.name} app={app} macs={macs} version={version} {...shared} /> : <p className="settings-muted">{connections ? "This app is not available." : "Loading…"}</p>;
   } else if (route.kind === "servers") {
     title = "MCP servers";
     body = <div className="settings-narrow"><ServersPage servers={servers} loaded={connections !== null} {...shared} /></div>;
@@ -316,7 +317,7 @@ type Shared = {
   setNotice: (notice: Notice) => void;
 };
 
-function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared & { app: App; version: number }) {
+function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: Shared & { app: App; macs: Mac[]; version: number }) {
   // A token app's Add account is a form on this page; an OAuth app's opens the provider's sign-in.
   const [adding, setAdding] = useState<{ account: string } | null>(null);
   const [device, setDevice] = useState<{ flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }> } | null>(null);
@@ -343,7 +344,9 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
     });
   };
   const revoked = app.signIn.kind === "token"
-    ? `Axo forgets its token. To stop it working, delete it at ${app.provider || "the service"} too.`
+    ? app.signIn.mac
+      ? `Axo deletes a key it created at ${app.provider || "the service"}; one you pasted, delete there too.`
+      : `Axo forgets its token. To stop it working, delete it at ${app.provider || "the service"} too.`
     : app.signIn.kind === "device" ? `Axo signs out of ${app.provider || "the provider"}.`
     : `Axo's access is revoked at ${app.provider || "the provider"}.`;
   const signOut = (account: string) => {
@@ -407,8 +410,9 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
             void act(async () => undefined);
           }} onCancel={() => setDevice(null)} /> : null}
         {adding !== null && app.signIn.kind === "token"
-          ? <TokenForm app={app} signIn={app.signIn} account={adding.account} busy={busy} act={act} connectionsUrl={connectionsUrl}
-            onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); }} onCancel={() => setAdding(null)} />
+          ? <TokenForm app={app} signIn={app.signIn} macs={macs} account={adding.account} busy={busy} act={act} connectionsUrl={connectionsUrl}
+            onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); void act(async () => undefined); }}
+            onFailed={(error) => setNotice({ kind: "error", text: error })} onCancel={() => setAdding(null)} />
           : null}
 
         {app.permissions.length ? <h2 className="settings-section">What Axo can do</h2> : null}
@@ -481,6 +485,8 @@ function DeviceCode({ app, flow, shown, connectionsUrl, onDone, onCancel }: {
 }
 
 type TokenSignIn = Extract<App["signIn"], { kind: "token" }>;
+/** A paired Mac, which can run a sign-in that ends on localhost (Kraken's). */
+type Mac = { name: string; online: boolean };
 type OAuthClient = NonNullable<Extract<App["signIn"], { kind: "oauth" }>["client"]>;
 
 /** Whether an OAuth app is waiting for its provider's client to be set up. */
@@ -545,11 +551,119 @@ function ClientForm({ app, client, busy, act, connectionsUrl, onDone, onCancel }
   );
 }
 
+/** Adds an account to a token app: signed in on a Mac where the app offers it, or pasted. */
+function TokenForm({ app, signIn, macs, account, busy, act, connectionsUrl, onDone, onFailed, onCancel }: {
+  app: App; signIn: TokenSignIn; macs: Mac[]; account: string; busy: boolean; connectionsUrl: string;
+  act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onCancel: () => void;
+}) {
+  // An app that signs in on a Mac offers that first, and pasting a key beside it.
+  const [pasting, setPasting] = useState(!signIn.mac);
+  if (signIn.mac && !pasting) {
+    return <MacSignInForm app={app} signIn={signIn} offer={signIn.mac} macs={macs} account={account} busy={busy} act={act} connectionsUrl={connectionsUrl}
+      onDone={onDone} onFailed={onFailed} onPaste={() => setPasting(true)} onCancel={onCancel} />;
+  }
+  return <PasteForm app={app} signIn={signIn} account={account} busy={busy} act={act} connectionsUrl={connectionsUrl} onDone={onDone} onCancel={onCancel} />;
+}
+
+/**
+ * A token app's sign-in on one of the person's Macs (Kraken's): the Mac opens the service's
+ * sign-in page in its browser, and this page waits until Axo has the key.
+ */
+function MacSignInForm({ app, signIn, offer, macs, account, busy, act, connectionsUrl, onDone, onFailed, onPaste, onCancel }: {
+  app: App; signIn: TokenSignIn; offer: NonNullable<TokenSignIn["mac"]>; macs: Mac[]; account: string; busy: boolean; connectionsUrl: string;
+  act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onPaste: () => void; onCancel: () => void;
+}) {
+  const online = macs.filter((m) => m.online);
+  const [name, setName] = useState(account);
+  const [mac, setMac] = useState(online[0]?.name ?? "");
+  const [preset, setPreset] = useState(offer.presets[0].id);
+  const [waiting, setWaiting] = useState<{ flow: string; mac: string } | null>(null);
+  const provider = app.provider || app.title;
+  const done = useRef({ onDone, onFailed });
+  done.current = { onDone, onFailed };
+  useEffect(() => {
+    if (!waiting) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const answer = appMacSignInSchema.parse(await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/mac-sign-in/poll`, "POST", { flow: waiting.flow }));
+        if (!live) return;
+        if (answer.state === "done") return done.current.onDone(answer.account);
+        if (answer.state === "failed") {
+          setWaiting(null);
+          return done.current.onFailed(answer.error);
+        }
+      } catch {
+        // A poll that failed is asked again; the sign-in ends by itself at its timeout.
+      }
+      if (live) timer = setTimeout(() => void poll(), 2000);
+    };
+    timer = setTimeout(() => void poll(), 2000);
+    return () => { live = false; clearTimeout(timer); };
+  }, [app.name, connectionsUrl, waiting]);
+  const submit = () => act(async () => {
+    const body = { mac, preset, ...(signIn.named ? { account: name.trim().toLowerCase() } : {}) };
+    const { flow } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/mac-sign-in`, "POST", body)) as { flow: string };
+    setWaiting({ flow, mac });
+  });
+  if (waiting) {
+    return (
+      <>
+        <h2 className="settings-section">Sign in to {provider}</h2>
+        <div className="grouped">
+          <div className="grouped-row connection-row">
+            <Icon name="laptop" size={18} />
+            <span className="connection-copy">
+              <strong>Finish in the browser on {waiting.mac}</strong>
+              <small>{provider}'s sign-in page opened there. This page finishes by itself once you approve.</small>
+            </span>
+          </div>
+        </div>
+        <p className="sheet-note">It waits for 5 minutes. <button className="link" type="button" onClick={() => setWaiting(null)}>Stop waiting</button></p>
+      </>
+    );
+  }
+  return (
+    <>
+      <h2 className="settings-section">{account ? `Sign in again as ${account}` : `Add a ${app.title} account`}</h2>
+      <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        {signIn.named ? (
+          <input className="grouped-row" required minLength={3} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._@\-]*" placeholder="Name, e.g. personal" value={name}
+            readOnly={Boolean(account)} autoFocus={!account} onChange={(event) => setName(event.target.value)} aria-label="Account name"
+            autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+        ) : null}
+        <fieldset className="grouped-row preset-choices">
+          <legend>What Axo may do</legend>
+          {offer.presets.map((p) => (
+            <label key={p.id} className="preset-choice">
+              <input type="radio" name="preset" value={p.id} checked={preset === p.id} onChange={() => setPreset(p.id)} />
+              <span className="connection-copy"><strong>{p.label}</strong><small>{p.description}</small></span>
+            </label>
+          ))}
+        </fieldset>
+        <label className="grouped-row mac-choice">
+          <span>Sign in on</span>
+          <select value={mac} required onChange={(event) => setMac(event.target.value)} aria-label="Mac" disabled={!online.length}>
+            {online.length ? online.map((m) => <option key={m.name} value={m.name}>{m.name}</option>) : <option value="">No Mac is online</option>}
+          </select>
+        </label>
+        <button className="grouped-row" disabled={busy || !mac} type="submit">{offer.title}</button>
+      </form>
+      <p className="sheet-note">
+        {provider}'s sign-in page opens in the browser on that Mac. Axo then gets a key with only these permissions, and keeps it encrypted.
+        {" "}<button className="link" type="button" onClick={onPaste}>Paste a key instead</button>
+        {" · "}<button className="link" type="button" onClick={onCancel}>Cancel</button>
+      </p>
+    </>
+  );
+}
+
 /**
  * Adds an account to a token app: what the service issued, pasted once. It is sent to Axo, which
  * checks it with the service and seals it; this page never sees it again.
  */
-function TokenForm({ app, signIn, account, busy, act, connectionsUrl, onDone, onCancel }: {
+function PasteForm({ app, signIn, account, busy, act, connectionsUrl, onDone, onCancel }: {
   app: App; signIn: TokenSignIn; account: string; busy: boolean; connectionsUrl: string;
   act: Shared["act"]; onDone: (account: string) => void; onCancel: () => void;
 }) {

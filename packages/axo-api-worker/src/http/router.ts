@@ -156,6 +156,8 @@ app.post("/api/v1/account/connections/:name/sign-in", connectionsRoute("signIn")
 app.post("/api/v1/account/connections/:name/token", connectionsRoute("token"));
 app.post("/api/v1/account/connections/:name/device", connectionsRoute("device"));
 app.post("/api/v1/account/connections/:name/device/poll", connectionsRoute("devicePoll"));
+app.post("/api/v1/account/connections/:name/mac-sign-in", connectionsRoute("macSignIn"));
+app.post("/api/v1/account/connections/:name/mac-sign-in/poll", connectionsRoute("macSignInPoll"));
 app.all("/api/v1/connections/oauth/start", context =>
   startConnectionSignIn(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.executionCtx as ExecutionContext),
 );

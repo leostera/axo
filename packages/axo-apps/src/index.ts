@@ -22,3 +22,4 @@ export {
   type DeviceCode,
   type OpenAIGrant,
 } from "./oauth/openai";
+export { KRAKEN_CLI_CLIENT_ID, KRAKEN_REDIRECT_PORTS } from "./oauth/kraken";

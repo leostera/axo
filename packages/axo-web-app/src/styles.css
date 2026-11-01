@@ -722,6 +722,12 @@ a.link:hover { text-decoration: underline; }
 .device-code-actions { justify-content: space-between; }
 /* Setting up an OAuth app's client: two numbered steps, and the redirect URI to copy. */
 .client-setup + .connection-form { margin-top: 8px; }
+.preset-choices { display: grid; gap: 10px; margin: 0; padding-block: 12px; border: 0; }
+.preset-choices legend { float: left; margin-bottom: 2px; color: var(--secondary); font-size: 13px; }
+.preset-choice { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.preset-choice input { margin: 3px 0 0; accent-color: var(--blue); }
+.mac-choice { justify-content: space-between; gap: 12px; }
+.mac-choice select { font: inherit; font-size: 15px; color: var(--text); background: transparent; border: 0; text-align: right; }
 .client-step { padding-block: 10px; }
 .step-number { display: inline-grid; flex: none; width: 22px; height: 22px; place-items: center; border-radius: 50%; color: #fff; background: var(--blue); font-size: 12px; font-weight: 600; }
 .redirect-row { justify-content: space-between; gap: 12px; padding-block: 8px; }

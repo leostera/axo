@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { krakenMacSignIn } from "../oauth/kraken";
 import { ProviderError, tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest, type ProviderApi } from "../app";
 
 /**
@@ -183,6 +184,7 @@ export const kraken: AppDefinition = {
       { name: "secret", label: "Private key", help: "Shown once, when the key is created.", secret: true },
     ],
     authorize: signKraken,
+    mac: krakenMacSignIn,
     async identify(api) {
       await privateCall(api, "BalanceEx");
       return null;

@@ -2,6 +2,8 @@ import { z } from "zod";
 import {
   APPS_NAMESPACE,
   BASH_METHOD,
+  SIGN_IN_METHOD,
+  signInResultSchema,
   CONNECTIONS_ERRORS,
   CONNECTIONS_LIMITS,
   CONNECTIONS_METHODS,
@@ -9,6 +11,7 @@ import {
   connectionsParams,
   isConnectionsMethod,
   type BashResult,
+  type AppMacSignIn,
   type Connection,
   type ConnectionsMethod,
   type ConnectionsParams,
@@ -21,7 +24,7 @@ import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller
 import { ThirdPartyConnections } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
-import { AppAccountRefused, AppConnections, appPage, type DeviceSignIn } from "./apps";
+import { AppAccountRefused, AppConnections, appPage, type DeviceSignIn, type MacSignInCallback } from "./apps";
 import { ProviderError, ProviderOutcomeUnknown } from "@axo/apps";
 import type { GoogleClient } from "./apps/google";
 
@@ -85,6 +88,7 @@ export class AccountConnections {
       // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
       macs: () => this.named().map((entry) => entry.name),
       runOnMac: (mac, command, timeoutMs) => this.runOnMac(mac, command, timeoutMs),
+      signInOnMac: (mac, request) => this.signInOnMac(mac, request),
     });
   }
 
@@ -356,6 +360,52 @@ export class AccountConnections {
     const result = bashResultSchema.safeParse(outcome.result);
     if (!result.success) throw new ProviderOutcomeUnknown(`${mac}: the Mac's reply was not a command's result; it may have run`);
     return result.data;
+  }
+
+  /**
+   * Has a Mac run a loopback sign-in (an app's TokenSignIn.mac): it opens the page in the
+   * person's browser and answers with the redirect's code. The code is never logged.
+   */
+  private async signInOnMac(mac: string, request: { authorizeUrl: string; ports: readonly number[]; path: string; state: string; timeoutMs: number }): Promise<MacSignInCallback> {
+    const target = this.named().find((entry) => entry.name === mac);
+    if (!target) throw new ProviderError(0, `no Mac named ${mac}`);
+    let outcome: CallOutcome;
+    try {
+      outcome = await this.deps.callHost(target.host.hostId, {
+        method: SIGN_IN_METHOD,
+        params: { accountId: this.deps.accountId, callId: crypto.randomUUID(), ...request, ports: [...request.ports] },
+        deadlineMs: request.timeoutMs + BASH_GRACE_MS,
+      });
+    } catch {
+      throw new ProviderError(0, `${mac} did not answer`);
+    }
+    if ("error" in outcome) {
+      // An axod from before sign-ins answers that it has no such method.
+      const old = outcome.error.code === -32601;
+      throw new ProviderError(0, old ? `${mac} runs an Axo too old to sign in; update Axo there` : `${mac}: ${outcome.error.message}`);
+    }
+    const result = signInResultSchema.safeParse(outcome.result);
+    if (!result.success) throw new ProviderError(0, `${mac}'s reply was not a sign-in`);
+    return result.data;
+  }
+
+  /** Starts a token app's sign-in on one of the account's Macs (Kraken). */
+  async startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<({ flow: string } & AppMacSignIn) | { error: string }> {
+    const app = AppConnections.appOf(name);
+    if (!app) return { error: `${name} is not an app` };
+    try {
+      return await this.apps.startMacSignIn(app, mac, preset, account);
+    } catch (error) {
+      if (error instanceof AppAccountRefused) return { error: error.message.slice(0, 300) };
+      throw error;
+    }
+  }
+
+  /** Whether a sign-in on a Mac finished. */
+  async pollAppMacSignIn(name: string, flow: string): Promise<AppMacSignIn> {
+    const app = AppConnections.appOf(name);
+    if (!app) return { state: "failed", error: `${name} is not an app` };
+    return this.apps.pollMacSignIn(app, flow);
   }
 
   /** Calls an app's tool from here, with the account's grant; logged before it is sent. */

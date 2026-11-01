@@ -304,12 +304,32 @@
                             "type": "object",
                             "description": "The OAuth client the app signs in with, which the person registered with the provider and entered on the app's page; one client serves every app of a provider. Left out by older Workers.",
                             "properties": {
-                              "provider": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$" },
-                              "ready": { "type": "boolean" },
-                              "consoleUrl": { "type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048 },
-                              "redirectUri": { "type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048 }
+                              "provider": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                              },
+                              "ready": {
+                                "type": "boolean"
+                              },
+                              "consoleUrl": {
+                                "type": "string",
+                                "format": "uri",
+                                "pattern": "^https://",
+                                "maxLength": 2048
+                              },
+                              "redirectUri": {
+                                "type": "string",
+                                "format": "uri",
+                                "pattern": "^https://",
+                                "maxLength": 2048
+                              }
                             },
-                            "required": ["provider", "ready", "consoleUrl", "redirectUri"],
+                            "required": [
+                              "provider",
+                              "ready",
+                              "consoleUrl",
+                              "redirectUri"
+                            ],
                             "additionalProperties": false
                           }
                         },
@@ -403,6 +423,50 @@
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "mac": {
+                            "type": "object",
+                            "properties": {
+                              "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64
+                              },
+                              "presets": {
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                    },
+                                    "label": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 64
+                                    },
+                                    "description": {
+                                      "type": "string",
+                                      "maxLength": 256
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "label",
+                                    "description"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "title",
+                              "presets"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -853,12 +917,32 @@
                           "type": "object",
                           "description": "The OAuth client the app signs in with, which the person registered with the provider and entered on the app's page; one client serves every app of a provider. Left out by older Workers.",
                           "properties": {
-                            "provider": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$" },
-                            "ready": { "type": "boolean" },
-                            "consoleUrl": { "type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048 },
-                            "redirectUri": { "type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048 }
+                            "provider": {
+                              "type": "string",
+                              "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                            },
+                            "ready": {
+                              "type": "boolean"
+                            },
+                            "consoleUrl": {
+                              "type": "string",
+                              "format": "uri",
+                              "pattern": "^https://",
+                              "maxLength": 2048
+                            },
+                            "redirectUri": {
+                              "type": "string",
+                              "format": "uri",
+                              "pattern": "^https://",
+                              "maxLength": 2048
+                            }
                           },
-                          "required": ["provider", "ready", "consoleUrl", "redirectUri"],
+                          "required": [
+                            "provider",
+                            "ready",
+                            "consoleUrl",
+                            "redirectUri"
+                          ],
                           "additionalProperties": false
                         }
                       },
@@ -952,6 +1036,50 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "mac": {
+                          "type": "object",
+                          "properties": {
+                            "title": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            },
+                            "presets": {
+                              "minItems": 1,
+                              "maxItems": 8,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                  },
+                                  "label": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 64
+                                  },
+                                  "description": {
+                                    "type": "string",
+                                    "maxLength": 256
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "label",
+                                  "description"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "title",
+                            "presets"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [

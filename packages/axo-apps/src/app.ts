@@ -137,6 +137,34 @@ export type TokenSignIn = {
    * ProviderError when the service refuses it.
    */
   identify(api: ProviderApi, fields: Readonly<Record<string, string>>): Promise<string | null>;
+  /**
+   * A sign-in that ends on one of the person's Macs, for a service that sends sign-ins back only
+   * to `http://localhost` (Kraken's public client): axod opens the sign-in page and waits on the
+   * redirect port, and the Worker, which keeps the PKCE verifier, finishes it and gets the token
+   * fields the person would otherwise paste.
+   */
+  mac?: MacSignIn;
+};
+
+/** A token app's sign-in on the person's Mac (TokenSignIn.mac). */
+export type MacSignIn = {
+  /** The button, such as "Sign in with Kraken". */
+  title: string;
+  /** What the person chooses the credential may do; the first is the default. */
+  presets: ReadonlyArray<{ id: string; label: string; description: string }>;
+  /** The redirect ports the service registered, tried in order, and the redirect's path. */
+  ports: readonly number[];
+  path: string;
+  /** The sign-in page, with every parameter but `redirect_uri`, which axod adds. */
+  authorizeUrl(preset: string, state: string, challenge: string): string;
+  /**
+   * Redeems the code and returns the token fields (as TokenSignIn.fields), when they stop
+   * working, and what `revoke` needs later, sealed with them.
+   */
+  complete(input: { code: string; state: string; redirectUri: string; verifier: string; preset: string }, fetcher: typeof fetch, now: number):
+    Promise<{ fields: Record<string, string>; expiresAt: number | null; revocation: unknown }>;
+  /** Undoes the sign-in at the service when the account is removed; best effort. */
+  revoke?(revocation: unknown, fields: Readonly<Record<string, string>>, fetcher: typeof fetch, now: number): Promise<void>;
 };
 
 /** An app the person adds an account to by pasting a token the service issued them. */

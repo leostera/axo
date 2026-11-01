@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
+import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppMacSignIn, type AppName, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
 import {
   allowedUrl,
   APP_DEFINITIONS,
@@ -61,8 +61,17 @@ export function appPage(app: AppName): string {
   return `https://axo.leostera.dev/app/settings/apps/${app}`;
 }
 
-/** A token the person pasted, as stored (sealed) for one account of a token app. */
-type TokenCredential = { kind: "token"; fields: Record<string, string> };
+/**
+ * A token app's credential, as stored (sealed) for one account: the fields the person pasted, or
+ * that a sign-in on their Mac got (TokenSignIn.mac), with when they stop working and what undoes
+ * that sign-in at the service.
+ */
+type TokenCredential = { kind: "token"; fields: Record<string, string>; expiresAt?: number | null; revocation?: unknown };
+
+/** How long a sign-in on a Mac waits for the person in their browser. */
+export const MAC_SIGN_IN_TIMEOUT_MS = 5 * 60_000;
+/** What axod's loopback sign-in answers (axo-relay's signin.rs). */
+export type MacSignInCallback = { redirectUri: string; code?: string; error?: string; errorDescription?: string };
 /** A signed-in account's grant: an OAuth provider's (Google's stored before grants had a provider) or OpenAI's. */
 type Grant = OAuthGrant | OpenAIGrant;
 
@@ -110,6 +119,12 @@ export type AppsDeps = {
    * when it may have run.
    */
   runOnMac?: (mac: string, command: string, timeoutMs: number) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
+  /**
+   * Has a Mac open a sign-in page in the person's browser and wait on a localhost redirect port
+   * (axod's loopback sign-in), for a token app's sign-in on a Mac. Throws ProviderError when the
+   * Mac refused or could not finish it.
+   */
+  signInOnMac?: (mac: string, request: { authorizeUrl: string; ports: readonly number[]; path: string; state: string; timeoutMs: number }) => Promise<MacSignInCallback>;
 };
 
 const accountInput = z.string().min(3).max(320)
@@ -125,6 +140,10 @@ export class AppConnections {
     deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_device_flows (
       id TEXT PRIMARY KEY, app TEXT NOT NULL, device_sealed TEXT NOT NULL, interval_s INTEGER NOT NULL, created_at REAL NOT NULL,
       polled_at REAL NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0)`);
+    // Sign-ins on a Mac in progress: the work runs in the background, and the web app polls this.
+    deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_mac_sign_ins (
+      id TEXT PRIMARY KEY, app TEXT NOT NULL, mac TEXT NOT NULL, state TEXT NOT NULL, account TEXT, error TEXT,
+      expires_at REAL, created_at REAL NOT NULL)`);
     deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_flows (
       nonce TEXT PRIMARY KEY, app TEXT NOT NULL, verifier TEXT NOT NULL, created_at REAL NOT NULL,
       opened INTEGER NOT NULL DEFAULT 0, redeemed INTEGER NOT NULL DEFAULT 0)`);
@@ -294,8 +313,14 @@ export class AppConnections {
     const row = this.row(app, account.toLowerCase());
     if (!row) return false;
     this.deps.sql.exec("DELETE FROM app_accounts WHERE app = ? AND account = ?", app, row.account);
-    // A token stays valid at the service: Axo can only forget it. The person deletes it there.
-    const grant = row.grant_sealed && APP_DEFINITIONS[app].signIn !== "token" ? await this.unsealGrant(row.grant_sealed) : null;
+    // A pasted token stays valid at the service: Axo can only forget it, and the person deletes
+    // it there. One a sign-in on a Mac made is deleted at the service too.
+    const definition = APP_DEFINITIONS[app];
+    if (definition.signIn === "token") {
+      if (row.grant_sealed) this.revokeToken(definition, row.grant_sealed);
+      return true;
+    }
+    const grant = row.grant_sealed ? await this.unsealGrant(row.grant_sealed) : null;
     if (grant) this.revoke(grant);
     return true;
   }
@@ -430,13 +455,104 @@ export class AppConnections {
       throw error;
     }
     const account = (definition.token.named ? named : identified ?? named)?.toLowerCase();
+    return this.storeToken(definition, account, credential);
+  }
+
+  /** Keeps a checked credential as the account's, replacing the one it had. */
+  private async storeToken(definition: TokenApp, account: string | undefined, credential: TokenCredential): Promise<{ name: string; account: string }> {
+    const app = definition.name;
     if (!account || account.length < 3) throw new AppAccountRefused("Name this account, such as \"personal\"");
     const known = this.rows(app).some((r) => r.account === account);
     if (!known && this.rows(app).length >= APP_ACCOUNTS_MAX) throw new AppAccountRefused(`${definition.title} holds at most ${APP_ACCOUNTS_MAX} accounts; remove one first.`);
+    const replaced = known ? this.row(app, account) : null;
     this.deps.sql.exec(`INSERT INTO app_accounts (app, account, grant_sealed, grant_generation, last_error, created_at) VALUES (?, ?, ?, 1, NULL, ?)
       ON CONFLICT (app, account) DO UPDATE SET grant_sealed = excluded.grant_sealed, grant_generation = app_accounts.grant_generation + 1, last_error = NULL`,
     app, account, await this.seal(credential), this.now());
+    // A credential a Mac sign-in made is undone at the service once it is replaced.
+    if (replaced?.grant_sealed) this.revokeToken(definition, replaced.grant_sealed);
     return { name: `apps.${app}`, account };
+  }
+
+  /**
+   * Starts a token app's sign-in on one of the account's Macs (TokenSignIn.mac): the Mac opens
+   * the service's sign-in page and waits on its localhost redirect, and this Durable Object, which
+   * keeps the PKCE verifier, redeems the code and checks the credential as a pasted one is. It
+   * runs in the background; the web app polls `pollMacSignIn` with the returned flow.
+   */
+  async startMacSignIn(app: AppName, mac: string, preset: string, named: string | null): Promise<{ flow: string } & AppMacSignIn> {
+    const definition = APP_DEFINITIONS[app];
+    const signIn = definition.signIn === "token" ? definition.token.mac : undefined;
+    if (definition.signIn !== "token" || !signIn) throw new AppAccountRefused(`${definition.title} does not sign in on a Mac`);
+    if (!this.deps.signInOnMac || !this.macs().includes(mac)) throw new AppAccountRefused(`No Mac named ${mac} is paired with this account`);
+    if (!signIn.presets.some((p) => p.id === preset)) throw new AppAccountRefused(`${definition.title} has no choice named ${preset}`);
+    if (definition.token.named && !named) throw new AppAccountRefused("Name this account, such as \"personal\"");
+    const running = this.deps.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM app_mac_sign_ins WHERE mac = ? AND state = 'pending' AND created_at >= ?",
+      mac, this.now() - MAC_SIGN_IN_TIMEOUT_MS - 60_000).one().n;
+    if (running > 0) throw new AppAccountRefused(`A sign-in is already waiting on ${mac}; finish it in the browser there, or wait for it to end.`);
+    const id = crypto.randomUUID();
+    this.deps.sql.exec("DELETE FROM app_mac_sign_ins WHERE created_at < ?", this.now() - 24 * 3600_000);
+    this.deps.sql.exec("INSERT INTO app_mac_sign_ins (id, app, mac, state, created_at) VALUES (?, ?, ?, 'pending', ?)", id, app, mac, this.now());
+    this.deps.waitUntil(this.runMacSignIn(id, definition, mac, preset, named));
+    return { flow: id, state: "pending", mac, expiresAt: new Date(this.now() + MAC_SIGN_IN_TIMEOUT_MS).toISOString() };
+  }
+
+  /** A sign-in on a Mac, as the web app polls it. */
+  pollMacSignIn(app: AppName, flowId: string): AppMacSignIn {
+    const row = this.deps.sql.exec<{ mac: string; state: string; account: string | null; error: string | null; expires_at: number | null; created_at: number }>(
+      "SELECT mac, state, account, error, expires_at, created_at FROM app_mac_sign_ins WHERE id = ? AND app = ?", flowId, app).toArray()[0];
+    if (!row) return { state: "failed", error: "This sign-in has ended. Start again." };
+    if (row.state === "done" && row.account) return { state: "done", account: row.account, expiresAt: row.expires_at ? new Date(row.expires_at).toISOString() : null };
+    if (row.state === "failed") return { state: "failed", error: (row.error ?? "The sign-in failed.").slice(0, 512) };
+    // A sign-in whose background work was lost (the Durable Object restarted) ends with its timeout.
+    if (this.now() > row.created_at + MAC_SIGN_IN_TIMEOUT_MS + 60_000) return { state: "failed", error: "The sign-in was not finished in time. Start again." };
+    return { state: "pending", mac: row.mac, expiresAt: new Date(row.created_at + MAC_SIGN_IN_TIMEOUT_MS).toISOString() };
+  }
+
+  private async runMacSignIn(id: string, definition: TokenApp, mac: string, preset: string, named: string | null): Promise<void> {
+    const signIn = definition.token.mac!;
+    const fail = (error: string) => {
+      this.deps.sql.exec("UPDATE app_mac_sign_ins SET state = 'failed', error = ? WHERE id = ?", error.slice(0, 512), id);
+    };
+    try {
+      const verifier = randomVerifier();
+      const state = randomVerifier();
+      const callback = await this.deps.signInOnMac!(mac, {
+        authorizeUrl: signIn.authorizeUrl(preset, state, await challengeOf(verifier)),
+        ports: signIn.ports,
+        path: signIn.path,
+        state,
+        timeoutMs: MAC_SIGN_IN_TIMEOUT_MS,
+      });
+      if (!callback.code) {
+        const declined = callback.error === "access_denied";
+        return fail(declined ? `The sign-in was declined at ${definition.providerTitle}.` : `${definition.providerTitle} did not finish the sign-in: ${callback.errorDescription ?? callback.error ?? "no code came back"}`);
+      }
+      const done = await signIn.complete({ code: callback.code, state, redirectUri: callback.redirectUri, verifier, preset }, this.deps.fetcher, this.now());
+      const credential: TokenCredential = { kind: "token", fields: done.fields, expiresAt: done.expiresAt, revocation: done.revocation };
+      // Checked as a pasted credential is, with one read call.
+      let identified: string | null;
+      try {
+        identified = await definition.token.identify(this.api(definition, CHECK_TOOL, (request) => definition.token.authorize(credential.fields, request), named ?? ""), credential.fields);
+      } catch (error) {
+        if (signIn.revoke) await signIn.revoke(done.revocation, done.fields, this.deps.fetcher, this.now()).catch(() => undefined);
+        throw error instanceof Unauthorized ? new ProviderError(401, `${definition.providerTitle} did not accept the new key`) : error;
+      }
+      const account = (definition.token.named ? named : identified ?? named)?.toLowerCase();
+      await this.storeToken(definition, account, credential);
+      this.deps.sql.exec("UPDATE app_mac_sign_ins SET state = 'done', account = ?, expires_at = ? WHERE id = ?", account!, done.expiresAt, id);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Undoes a credential a Mac sign-in made, in the background; a pasted one only the person can delete. */
+  private revokeToken(definition: TokenApp, sealed: string): void {
+    const revoke = definition.token.mac?.revoke;
+    if (!revoke) return;
+    this.deps.waitUntil((async () => {
+      const credential = await this.unsealToken(sealed);
+      if (credential?.revocation !== undefined) await revoke(credential.revocation, credential.fields, this.deps.fetcher, this.now());
+    })().catch(() => undefined));
   }
 
   /**
@@ -499,6 +615,9 @@ export class AppConnections {
     const row = this.row(definition.name, account);
     const credential = row?.grant_sealed ? await this.unsealToken(row.grant_sealed) : null;
     if (!row || !credential) throw new Error(`${account}'s token needs adding again at ${appPage(definition.name)}`);
+    if (credential.expiresAt && credential.expiresAt <= this.now()) {
+      throw new Error(`${account}'s ${definition.providerTitle} key expired on ${new Date(credential.expiresAt).toISOString().slice(0, 10)}; sign in again at ${appPage(definition.name)}`);
+    }
     try {
       return await tool.run(this.api(definition, tool, (request) => definition.token.authorize(credential.fields, request), account), input);
     } catch (error) {
@@ -756,8 +875,11 @@ function notSetUp(definition: OAuthApp): string {
 function signInOf(definition: Exclude<AppDefinition, OAuthApp>): AppSignIn {
   if (definition.signIn === "device") return { kind: "device" };
   if (definition.signIn === "mac") return { kind: "mac", setup: definition.setup, helpUrl: definition.reference };
-  const { helpUrl, named, fields } = definition.token;
-  return { kind: "token", helpUrl, named, fields: fields.map((f) => ({ ...f })) };
+  const { helpUrl, named, fields, mac } = definition.token;
+  return {
+    kind: "token", helpUrl, named, fields: fields.map((f) => ({ ...f })),
+    ...(mac ? { mac: { title: mac.title, presets: mac.presets.map((p) => ({ ...p })) } } : {}),
+  };
 }
 
 /** A tool's input as scripts see it: `account` first, then the tool's own fields. */

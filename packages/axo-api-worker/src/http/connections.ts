@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { appServiceSchema, appTokenRequestSchema, connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
+import { appMacSignInRequestSchema, appServiceSchema, appTokenRequestSchema, connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
 import type { ChainCheck } from "../connections/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
@@ -27,6 +27,8 @@ type ConnectionsStub = {
   addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }>;
   startAppDevice(name: string): Promise<Record<string, unknown> | { error: string }>;
   pollAppDevice(name: string, flow: string): Promise<Record<string, unknown>>;
+  startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<Record<string, unknown> | { error: string }>;
+  pollAppMacSignIn(name: string, flow: string): Promise<Record<string, unknown>>;
   connectionSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
@@ -34,7 +36,7 @@ type ConnectionsStub = {
   connectionsLogIntegrity(): Promise<ChainCheck>;
 };
 
-export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll";
+export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll";
 
 const addBody = z.object({ name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
@@ -61,7 +63,7 @@ export async function serveConnections(
   const stub = account(ctx, caller.accountId);
   // Signing in, removing and setting a client also take an app, `apps.<app>` (its provider's client).
   const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema
-    : route === "token" || route === "device" || route === "devicePoll" ? appServiceSchema : connectionNameSchema;
+    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" ? appServiceSchema : connectionNameSchema;
   const name = rawName === undefined ? null : names.safeParse(rawName);
   if (name && !name.success) return json({ error: "Invalid connection name" }, 400);
   try {
@@ -112,6 +114,18 @@ export async function serveConnections(
         const body = pollBody.safeParse(await request.json().catch(() => null));
         if (!body.success) return json({ error: "Expected { flow }" }, 400);
         return json(plain(await stub.pollAppDevice(name!.data!, body.data.flow)));
+      }
+      case "macSignIn": {
+        // Kraken's sign-in, run on one of the account's Macs: { mac, preset, account? }.
+        const body = appMacSignInRequestSchema.safeParse(await request.json().catch(() => null));
+        if (!body.success) return json({ error: "Expected { mac, preset, account? }" }, 400);
+        const started = plain(await stub.startAppMacSignIn(name!.data!, body.data.mac, body.data.preset, body.data.account ?? null));
+        return "error" in started ? json(started, 400) : json(started);
+      }
+      case "macSignInPoll": {
+        const body = pollBody.safeParse(await request.json().catch(() => null));
+        if (!body.success) return json({ error: "Expected { flow }" }, 400);
+        return json(plain(await stub.pollAppMacSignIn(name!.data!, body.data.flow)));
       }
     }
   } catch (error) {

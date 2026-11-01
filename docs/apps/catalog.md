@@ -140,7 +140,7 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | Stripe (suggested MCP server) | MCP (`mcp.stripe.com`, OAuth) | n/a | n/a | n/a |
 | Telegram (built: `apps.telegram`, bots) | Token (bot token) → Bot API. A personal account needs MTProto: Mac (a CLI such as `tdl`) | `api.telegram.org` | bot username | send, updates, chats |
 | WhatsApp | Browser (WhatsApp Web) or Mac. The Cloud API is for business numbers only | n/a | n/a | n/a |
-| Kraken (built: `apps.kraken`) | Token, signed (API key + HMAC-SHA512) | `api.kraken.com` | person | balances, trades, orders |
+| Kraken (built: `apps.kraken`) | Token, signed (API key + HMAC-SHA512), pasted or created by signing in on a Mac (kraken-cli's public client, 90-day Fast API key) | `api.kraken.com` | person | balances, trades, orders |
 | Spotify (built: `apps.spotify`) | OAuth (PKCE, client in HTTP basic, rotating refresh tokens; development mode allows only allow-listed users). Follows the February 2026 API changes: `/me/library`, `/playlists/{id}/items`, search at most 10 per type | `api.spotify.com/v1` | Spotify ID (development-mode apps get no email) | playback, devices, queue, search, playlists, library, history, top items |
 | Strava | OAuth | `www.strava.com/api/v3` | athlete name | activities, stats |
 | Withings (built: `apps.withings`) | OAuth (token endpoint `POST /v2/oauth2 action=requesttoken`, no PKCE, commas between scopes, `{ status, body }` answers, rotating refresh tokens). Revoking needs a signed nonce, so signing out only forgets the grant | `wbsapi.withings.net` (form POSTs with `action`; errors are HTTP 200 with `status` ≠ 0) | user ID | measures, activity, workouts, sleep, ECGs, devices |

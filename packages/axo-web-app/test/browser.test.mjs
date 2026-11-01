@@ -113,6 +113,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let authenticated = false;
   let pairingRequestCount = 0;
   const tokenRequests = [];
+  const macSignIns = [];
+  let macPolls = 0;
   const clientRequests = [];
   /** A ChatGPT device sign-in: polls so far, and whether the person has entered the code. */
   const device = { polls: 0, entered: false };
@@ -142,7 +144,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       signIn: { kind: "token", helpUrl: "https://t.me/BotFather", named: false, fields: [{ name: "token", label: "Bot token", help: "From @BotFather.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["send_message", "request"], lastError: null },
     { kind: "app", name: "apps.kraken", title: "Kraken", provider: "Kraken", category: "finance", description: "Your Kraken account.", permissions: [],
-      signIn: { kind: "token", helpUrl: "https://pro.kraken.com/app/settings/api", named: true, fields: [{ name: "key", label: "API key", help: "In settings.", secret: true }, { name: "secret", label: "Private key", help: "Shown once.", secret: true }] },
+      signIn: { kind: "token", helpUrl: "https://pro.kraken.com/app/settings/api", named: true, fields: [{ name: "key", label: "API key", help: "In settings.", secret: true }, { name: "secret", label: "Private key", help: "Shown once.", secret: true }],
+        mac: { title: "Sign in with Kraken", presets: [{ id: "read", label: "Read only", description: "See balances, orders and trades." }, { id: "trade", label: "Read and trade", description: "And place and cancel orders." }] } },
       state: "needsSignIn", accounts: [], tools: ["get_balance", "request"], lastError: null },
     { kind: "app", name: "apps.github", title: "GitHub", provider: "GitHub", category: "developer", description: "Your GitHub: repositories, issues, pull requests, code search and notifications.",
       permissions: ["See and change every repository you can reach", "See your notifications"],
@@ -231,6 +234,27 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.github/sign-in") {
       json(response, { signInUrl: "/app/settings/apps/github?signedIn=apps.github" }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.kraken/mac-sign-in") {
+      // Kraken's sign-in on a Mac: the page sends the Mac and the choice, then polls until it is done.
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        macSignIns.push(JSON.parse(body));
+        json(response, { flow: "kraken-flow", state: "pending", mac: "browser_fixture_mac", expiresAt: now }, origin);
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.kraken/mac-sign-in/poll") {
+      macPolls++;
+      if (macPolls < 2) {
+        json(response, { state: "pending", mac: "browser_fixture_mac", expiresAt: now }, origin);
+        return;
+      }
+      const kraken = connections.find((c) => c.name === "apps.kraken");
+      kraken.accounts.push({ account: "main", state: "ready", lastError: null });
+      json(response, { state: "done", account: "main", expiresAt: now }, origin);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.hetzner/token") {
@@ -749,6 +773,24 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(tokenRequests.map((r) => r.account), ["personal", "personal"]);
     assert.equal((await page.content()).includes("hz-good-token"), false);
     await shot("apps-hetzner");
+
+    // Kraken signs in on a Mac: choose what Axo may do and the Mac, then finish in the browser there.
+    await page.goto(`${appUrl}/app/settings/apps/kraken`, { waitUntil: "networkidle" });
+    const kraken = page.getByRole("region", { name: "Kraken" });
+    await kraken.getByRole("button", { name: "Add account" }).click();
+    await kraken.getByLabel("Account name").fill("Main");
+    await kraken.getByLabel("Read and trade").check();
+    assert.equal(await kraken.getByLabel("Mac").inputValue(), "browser_fixture_mac");
+    await shot("apps-kraken-signin");
+    await kraken.getByRole("button", { name: "Sign in with Kraken" }).click();
+    await expect(kraken.getByText("Finish in the browser on browser_fixture_mac"));
+    await shot("apps-kraken-waiting");
+    await expect(kraken.getByText("Added main."));
+    assert.deepEqual(macSignIns, [{ mac: "browser_fixture_mac", preset: "trade", account: "main" }]);
+    assert.deepEqual(await kraken.locator(".connection-row strong").allTextContents(), ["main"]);
+    await kraken.getByRole("button", { name: "Add account" }).click();
+    await kraken.getByRole("button", { name: "Paste a key instead" }).click();
+    await expect(kraken.getByLabel("Private key"));
 
     // An OAuth app of the person's own: set up its client first, then add accounts.
     await page.goto(`${appUrl}/app/settings/apps/github`, { waitUntil: "networkidle" });
