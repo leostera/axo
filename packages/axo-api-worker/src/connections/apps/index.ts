@@ -113,7 +113,7 @@ export type AppsDeps = {
 };
 
 const accountInput = z.string().min(3).max(320)
-  .describe("The account to act as: the email of one of this app's signed-in accounts (see connections_list).");
+  .describe("The account to act as: one of this app's accounts, by its name in connections_list (an email, a username, an account number or a Mac, depending on the app).");
 
 export class AppConnections {
   private readonly refreshing = new Map<string, Promise<Grant | null>>();
@@ -200,14 +200,20 @@ export class AppConnections {
         : definition.signIn === "oauth"
           ? " No account is signed in yet: a call returns a sign-in link to give the person."
           : ` No account is added yet: the person adds one at ${appPage(app)}.`;
-      return toolsOf(app).map((tool) => ({
-        service: `apps.${app}`,
-        name: tool.name,
-        title: tool.name,
-        description: `${tool.description} Every call names its account.${signedIn}`,
-        inputSchema: z.toJSONSchema(inputOf(tool), { io: "input" }) as Record<string, unknown>,
-        call: `codemode.apps.${app}.${tool.name}`,
-      }));
+      return toolsOf(app).map((tool) => {
+        const inputSchema = z.toJSONSchema(inputOf(tool), { io: "input" }) as { properties?: Record<string, { description?: string }> };
+        // The schema names the accounts there are, so an agent passes one without looking them up.
+        const account = inputSchema.properties?.account;
+        if (account && accounts.length) account.description = `The account to act as: one of ${accounts.map((a) => JSON.stringify(a)).join(", ")}.`;
+        return {
+          service: `apps.${app}`,
+          name: tool.name,
+          title: tool.name,
+          description: `${tool.description} Every call names its account.${signedIn}`,
+          inputSchema: inputSchema as Record<string, unknown>,
+          call: `codemode.apps.${app}.${tool.name}`,
+        };
+      });
     });
   }
 
@@ -532,6 +538,8 @@ export class AppConnections {
         response = await fetcher(target, {
           method,
           headers: {
+            // Some APIs (GitHub's) refuse a request without one, and Workers send none of their own.
+            "User-Agent": "Axo (https://axo.leostera.dev)",
             ...Object.fromEntries(own),
             Accept: options.accept ?? "application/json",
             ...(body ? { "Content-Type": body.contentType } : {}),
@@ -761,16 +769,21 @@ function inputOf(tool: AppTool): z.ZodObject {
  * A service's error answer as one short line: Google's `{ error: { message } }`, and the common
  * others (`{ message }`, `{ description }` as Telegram's, `{ error: "..." }`, `{ detail }`).
  */
+/** What an API said when it refused a call: its JSON error's message, or the start of its text. */
 function providerMessage(text: string): string | null {
+  const plain = () => {
+    const words = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    return words ? words.slice(0, 300) : null;
+  };
   try {
     const answer = JSON.parse(text) as { error?: unknown; message?: unknown; description?: unknown; detail?: unknown; errors?: unknown };
     const nested = typeof answer.error === "object" && answer.error ? (answer.error as { message?: unknown }).message : undefined;
     const first = Array.isArray(answer.errors) ? (answer.errors[0] as { message?: unknown } | string | undefined) : undefined;
     const message = [nested, answer.message, answer.description, typeof answer.error === "string" ? answer.error : undefined, answer.detail, typeof first === "string" ? first : first?.message]
       .find((m): m is string => typeof m === "string" && m.length > 0);
-    return message ? message.replace(/\s+/g, " ").slice(0, 300) : null;
+    return message ? message.replace(/\s+/g, " ").slice(0, 300) : plain();
   } catch {
-    return null;
+    return plain();
   }
 }
 

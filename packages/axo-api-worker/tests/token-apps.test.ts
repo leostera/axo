@@ -154,7 +154,9 @@ function services() {
       if (url.pathname === "/v1/electricity-meter-points/1012345678901/meters/21L123/consumption/") {
         const page = url.searchParams.get("page") ?? "1";
         return json({ count: 3, next: page === "1" ? "https://api.octopus.energy/v1/electricity-meter-points/1012345678901/meters/21L123/consumption/?page=2" : null,
-          results: page === "1" ? [{ consumption: 0.2, interval_start: "a" }, { consumption: 0.3, interval_start: "b" }] : [{ consumption: 0.1, interval_start: "c" }] });
+          results: page === "1"
+            ? [{ consumption: 0.2, interval_start: "2026-10-03T00:00:00+01:00" }, { consumption: 0.3, interval_start: "2026-10-30T00:00:00Z" }]
+            : [{ consumption: 0.1, interval_start: "2026-10-02T00:00:00+01:00" }] });
       }
       if (url.pathname === "/v1/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-C/standard-unit-rates/") return json({ results: [{ value_inc_vat: 21.5 }] });
     }
@@ -180,7 +182,7 @@ test("Octopus is named by its account number, checked with Octopus, and reads me
   const account = (await apps.call("octopus", "get_account", { account: "A-1234ABCD" })) as { properties: Array<{ address: string; electricity: Array<{ tariff: string; meters: string[] }> }> };
   assert.deepEqual(account.properties[0], { address: "1 Road, London, E1 1AA", movedIn: "2024-01-01T00:00:00Z", electricity: [{ mpan: "1012345678901", export: false, meters: ["21L123"], tariff: "E-1R-AGILE-24-10-01-C" }], gas: [] });
   const usage = (await apps.call("octopus", "get_consumption", { account: "a-1234abcd", fuel: "electricity", meterPoint: "1012345678901", serial: "21L123", from: "2026-10-01T00:00:00Z" })) as { results: unknown[] };
-  assert.equal(usage.results.length, 3, "every page is read");
+  assert.deepEqual((usage.results as Array<{ consumption: number }>).map((r) => r.consumption), [0.1, 0.2, 0.3], "every page is read, and the readings come oldest first whatever order Octopus sent");
   assert.deepEqual(await apps.call("octopus", "get_unit_rates", { account: "a-1234abcd", fuel: "electricity", tariff: "E-1R-AGILE-24-10-01-C" }), { results: [{ value_inc_vat: 21.5 }] });
   assert.ok(seen.every((s) => s.url.origin === "https://api.octopus.energy"));
 });

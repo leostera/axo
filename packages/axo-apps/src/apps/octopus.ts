@@ -34,8 +34,8 @@ const tools: AppTool[] = [
   tool({
     name: "get_account",
     description:
-      "The account's properties and meters: { number, properties: [{ address, movedIn, electricity: [{ mpan, export, meters, tariff }], gas: [{ mprn, meters, tariff }] }] }. " +
-      "`tariff` is the current tariff code, such as E-1R-AGILE-24-10-01-C; pass meters and tariffs to the other tools.",
+      "The account's properties and meters: { number, properties: [{ address, movedIn, electricity: [{ mpan, export, meters: [serial numbers], tariff }], gas: [{ mprn, meters: [serial numbers], tariff }] }] }. " +
+      "`tariff` is the current tariff code, such as E-1R-AGILE-24-10-01-C. get_consumption takes an mpan or mprn as `meterPoint` and one of its serial numbers as `serial`; a meter point may have old meters with no readings.",
     input: z.object({}).strict(),
     idempotent: true,
     async run(api) {
@@ -76,7 +76,9 @@ const tools: AppTool[] = [
         next = page.next ?? null;
         query = undefined; // `next` carries its own query
       }
-      return { results };
+      // Octopus ignores order_by when it groups readings, so they are put in order here.
+      const at = (r: unknown) => Date.parse((r as { interval_start?: string }).interval_start ?? "");
+      return { results: results.sort((a, b) => at(a) - at(b)) };
     },
   }),
   tool({

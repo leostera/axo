@@ -27,7 +27,7 @@ const track = (t: Track | null | undefined) => t ? ({
 }) : null;
 const playlist = (p: Playlist) => ({
   id: p.id, uri: p.uri, name: p.name, description: p.description ?? null, public: p.public ?? null, collaborative: p.collaborative ?? false,
-  owner: p.owner?.display_name ?? p.owner?.id ?? null, items: (p.items ?? p.tracks)?.total ?? null,
+  owner: p.owner?.display_name ?? p.owner?.id ?? null, trackCount: (p.items ?? p.tracks)?.total ?? null,
 });
 type Page<T> = { items: T[]; total?: number; next?: string | null };
 const page = <T,>(answer: Page<T>, map: (item: any) => unknown) => ({ items: answer.items.map(map), total: answer.total ?? null, more: Boolean(answer.next) });
@@ -66,7 +66,7 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "now_playing",
-    description: "The track or episode playing now: { playing, track: { uri, name, artists, album, durationMs }, progressMs }, or { playing: false, track: null }.",
+    description: "The track or episode playing now: { playing, track: { uri, name, artists: [names], album: name, durationMs }, progressMs }, or { playing: false, track: null }.",
     input: z.object({}).strict(),
     idempotent: true,
     async run(api) {
@@ -206,7 +206,7 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "list_playlists",
-    description: "The user's playlists, their own and followed: { items: [{ id, uri, name, description, public, collaborative, owner, items }], total, more }.",
+    description: "The user's playlists, their own and followed: { items: [{ id, uri, name, description, public, collaborative, owner: name, trackCount }], total, more }.",
     input: z.object({ limit: limit(50), offset }).strict(),
     idempotent: true,
     async run(api, input) {
@@ -215,7 +215,7 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "get_playlist",
-    description: "A playlist and its tracks: { ...playlist, tracks: { items: [{ uri, name, artists, album, durationMs, addedAt }], total, more } }. Spotify only lists the tracks of the user's own playlists and ones they collaborate on.",
+    description: "A playlist and its tracks: { ...playlist, tracks: { items: [{ uri, name, artists: [names], album: name, durationMs, addedAt }], total, more } }. Spotify only lists the tracks of the user's own playlists and ones they collaborate on.",
     input: z.object({ id, limit: limit(50), offset }).strict(),
     idempotent: true,
     async run(api, input) {
@@ -249,7 +249,7 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "list_saved_tracks",
-    description: "Tracks the user saved (liked), newest first: { items: [{ uri, name, artists, album, durationMs, addedAt }], total, more }.",
+    description: "Tracks the user saved (liked), newest first: { items: [{ uri, name, artists: [names], album: name, durationMs, addedAt }], total, more }.",
     input: z.object({ limit: limit(50), offset }).strict(),
     idempotent: true,
     async run(api, input) {
@@ -259,7 +259,7 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "list_saved_albums",
-    description: "Albums the user saved, newest first: { items: [{ uri, name, artists, released, addedAt }], total, more }.",
+    description: "Albums the user saved, newest first: { items: [{ uri, name, artists: [names], released, addedAt }], total, more }.",
     input: z.object({ limit: limit(50), offset }).strict(),
     idempotent: true,
     async run(api, input) {
@@ -286,7 +286,7 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "recently_played",
-    description: "Tracks the user played lately, newest first (Spotify keeps about the last 50): { items: [{ uri, name, artists, album, durationMs, playedAt }] }.",
+    description: "Tracks the user played lately, newest first (Spotify keeps about the last 50): { items: [{ uri, name, artists: [names], album: name, durationMs, playedAt }] }.",
     input: z.object({ limit: limit(50), before: z.number().int().positive().optional().describe("Only plays before this time, in Unix milliseconds.") }).strict(),
     idempotent: true,
     async run(api, input) {
@@ -296,11 +296,12 @@ const tools: AppTool[] = [
   }),
   tool({
     name: "top_items",
-    description: "The user's most played artists or tracks over about 4 weeks (short), 6 months (medium, the default) or a year (long): { items, total, more }.",
-    input: z.object({ type: z.enum(["artists", "tracks"]), range: z.enum(["short", "medium", "long"]).optional(), limit: limit(50), offset }).strict(),
+    description: "The user's most played artists or tracks over about 4 weeks (short_term), 6 months (medium_term, the default) or a year (long_term): " +
+      "{ items: [{ uri, name, genres }] } for artists, { items: [{ uri, name, artists: [names], album: name, durationMs }] } for tracks, with total and more.",
+    input: z.object({ type: z.enum(["artists", "tracks"]), timeRange: z.enum(["short_term", "medium_term", "long_term"]).optional(), limit: limit(50), offset }).strict(),
     idempotent: true,
     async run(api, input) {
-      const answer = (await api.request("GET", `/v1/me/top/${input.type}`, { query: { time_range: `${input.range ?? "medium"}_term`, limit: n(input.limit), offset: n(input.offset) } })) as Page<any>;
+      const answer = (await api.request("GET", `/v1/me/top/${input.type}`, { query: { time_range: input.timeRange ?? "medium_term", limit: n(input.limit), offset: n(input.offset) } })) as Page<any>;
       return page(answer, input.type === "tracks" ? track : (a: { uri: string; name: string; genres?: string[] }) => ({ uri: a.uri, name: a.name, genres: a.genres ?? [] }));
     },
   }),

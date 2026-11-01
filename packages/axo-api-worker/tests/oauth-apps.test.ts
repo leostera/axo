@@ -119,6 +119,12 @@ test("GitHub signs in with the person's OAuth app, is named by the login, and it
   assert.deepEqual(await apps.call("github", "get_file", { account: "ada", owner: "ada", repo: "engine", path: "src/main.rs" }), { path: "src/main.rs", sha: "s", size: 12, text: "fn main() {}" });
   assert.equal(fake.apiCalls.at(-1)!.headers.get("user-agent"), "Axo");
   assert.match(await refused(apps.call("github", "get_issue", { account: "ada", owner: "ada", repo: "secret", number: 1 })), /GitHub: Not Found/);
+  // `request` reaches any endpoint as the named tools do, with the User-Agent GitHub requires.
+  assert.deepEqual(await apps.call("github", "request", { account: "ada", method: "GET", path: "/repos/ada/engine" }), { status: 200, contentType: "application/json", json: { full_name: "ada/engine", stargazers_count: 7 }, truncated: false });
+  assert.match(fake.apiCalls.at(-1)!.headers.get("user-agent") ?? "", /^Axo/);
+  assert.match(await refused(apps.call("github", "request", { account: "ada", method: "GET", path: "/repos/ada/archived" })), /^GitHub: Repository access blocked$/, "an error that is not JSON still says what went wrong");
+  const accountInput = (apps.tools().find((t) => t.call === "codemode.apps.github.get_me")!.inputSchema as { properties: { account: { description: string } } }).properties.account;
+  assert.equal(accountInput.description, 'The account to act as: one of "ada".');
   assert.equal(fake.oauth.leaks(JSON.stringify([apps.list(), apps.tools()])), false);
 
   assert.deepEqual(await signIn("github", "grace"), { name: "apps.github" });
@@ -210,15 +216,15 @@ test("Spotify signs in with PKCE and the client in HTTP basic, is named by its S
 
   assert.deepEqual(await call("search", { query: "artist:Ada", types: ["track"] }), { tracks: { items: [{ uri: "spotify:track:t2", name: "Song 2", type: "track", artists: ["Ada"], album: "Engines", durationMs: 180_000 }], total: 1, more: false } });
   assert.match(await refused(call("search", { query: "x", limit: 20 })), /invalid input/, "Spotify allows at most 10");
-  const mine = await call("get_playlist", { id: "p1" }) as { name: string; items: number; tracks: { items: Array<{ uri: string; addedAt: string }> } };
-  assert.deepEqual([mine.name, mine.items, mine.tracks.items.map((t) => t.uri)], ["Mine", 2, ["spotify:track:t1", "spotify:track:t3"]], "the playlist's items, as Spotify now names them");
+  const mine = await call("get_playlist", { id: "p1" }) as { name: string; trackCount: number; tracks: { items: Array<{ uri: string; addedAt: string }> } };
+  assert.deepEqual([mine.name, mine.trackCount, mine.tracks.items.map((t) => t.uri)], ["Mine", 2, ["spotify:track:t1", "spotify:track:t3"]], "the playlist's items, as Spotify now names them");
   assert.deepEqual(await call("add_to_playlist", { id: "p1", uris: ["spotify:track:t9"] }), { snapshotId: "snap2" });
   assert.equal(fake.calls.at(-1)!.call, "POST /v1/playlists/p1/items");
   assert.deepEqual(await call("create_playlist", { name: "Focus" }), { id: "p2", uri: "spotify:playlist:p2", name: "Focus", url: "https://open.spotify.com/playlist/p2" });
   assert.deepEqual(JSON.parse(fake.calls.at(-1)!.body), { name: "Focus", public: false, collaborative: false }, "private unless asked");
   assert.deepEqual(await call("save_to_library", { uris: ["spotify:track:t1", "spotify:album:a1"] }), { ok: true });
   assert.deepEqual([fake.calls.at(-1)!.call, fake.calls.at(-1)!.query.get("uris")], ["PUT /v1/me/library", "spotify:track:t1,spotify:album:a1"]);
-  assert.deepEqual(await call("top_items", { type: "artists", range: "short" }), { items: [{ uri: "spotify:artist:a1", name: "Ada", genres: ["synth"] }], total: 1, more: true });
+  assert.deepEqual(await call("top_items", { type: "artists", timeRange: "short_term" }), { items: [{ uri: "spotify:artist:a1", name: "Ada", genres: ["synth"] }], total: 1, more: true });
   assert.equal(fake.calls.at(-1)!.query.get("time_range"), "short_term");
   assert.match(await refused(call("request", { method: "GET", path: "https://accounts.spotify.com/api/token" })), /only reach api\.spotify\.com/);
 
