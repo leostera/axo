@@ -176,6 +176,7 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | NHS | Phone / Browser | NHS App |
 | Honest Mobile | Browser / Phone | |
 | Kiwi.com | Browser | The Tequila API is closed to new partners |
+| Luma (lu.ma events) | Token (API key, needs Luma Plus) for calendars you run | Events you attend are Browser, or the calendar invites Luma sends |
 | Lovense Remote | Phone | Its developer API is for platforms |
 | Luna events | ? | **Leo:** which service is this? |
 | Navan | Browser | Its API is for company admins |
@@ -187,7 +188,7 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | TipTapp | Phone | |
 | Tradera | Token (app ID and key, SOAP) | Search and items. The account is Browser |
 | Vinted | Browser / Phone | |
-| Voy | ? | **Leo:** which service is this? |
+| Voy (UK healthcare, weight-loss clinic) | Browser / Phone | No public API; health records stay in its app |
 | Wetherspoon | Phone | |
 | Zalando | Browser | |
 | Facebook | Browser | The Graph API gives little for a personal account |
