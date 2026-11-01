@@ -647,6 +647,20 @@ export class ChatWorkbench {
     this.changed();
   }
 
+  /**
+   * The Mac a new chat starts on, chosen by the message box: what is typed comes along, and the
+   * Workspace goes back to the Mac's Home, since Workspaces are a Mac's own.
+   */
+  chooseHost(hostId: string): void {
+    const selection = this.selection;
+    if (selection?.kind !== "new" || hostId === this.openHostId || !this.hosts.some(host => host.hostId === hostId)) return;
+    const text = this.draft(selection);
+    this.setDraft("", selection);
+    this.openMac(hostId);
+    if (text) this.setDraft(text);
+    this.changed();
+  }
+
   dismissFailure(): void {
     this.failure = null;
     this.changed();

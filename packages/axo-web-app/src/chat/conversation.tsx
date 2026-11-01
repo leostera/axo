@@ -250,6 +250,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
         ) : null}
         <Composer
           workbench={workbench}
+          wide={wide}
           voice={voice}
           placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
           canSend={Boolean(host && host.status === "online")}
@@ -284,8 +285,10 @@ const encoder = new TextEncoder();
  * typed, Send. While listening the box becomes the listening bar. With a keyboard, Enter sends and
  * Shift-Enter starts a new line; on a touch screen Return starts a new line and Send sends.
  */
-function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: {
+function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEscape }: {
   workbench: ChatWorkbench;
+  /** Wide, the Mac is chosen inside the box; narrow, from a chip floating above it. */
+  wide: boolean;
   voice: VoicePrompt | null;
   placeholder: string;
   canSend: boolean;
@@ -358,12 +361,14 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
   return (
     <div className="composer-stack">
       {voice ? <VoiceStatusCard voice={voice} /> : null}
+      {!wide ? <HostPicker workbench={workbench} floating /> : null}
       {tooLong ? <p className="composer-note" role="status">Too long to send: {bytes.toLocaleString()} of {maxMessageBytes.toLocaleString()} bytes.</p> : null}
       {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
         <form className="composer" onSubmit={event => {
           event.preventDefault();
           if (ready) onSend();
         }}>
+          {wide ? <HostPicker workbench={workbench} /> : null}
           <textarea
             ref={field}
             rows={1}
@@ -394,6 +399,58 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
 }
 
 const noSubscribe = () => () => {};
+
+/**
+ * Which Mac the chat is on. On a new chat it is the choice of where to start it: tap, pick a Mac,
+ * send. On a chat already going it only says where it is.
+ */
+function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench; floating?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const host = workbench.openHost;
+  const choosing = workbench.selection?.kind === "new" && workbench.hosts.length > 1;
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", escape); };
+  }, [open]);
+  if (!host) return null;
+  const face = (
+    <>
+      <Icon name="laptop" size={15} />
+      <span className="host-picker-label">{host.label}</span>
+      <span className={`mac-dot ${host.status}`} aria-hidden="true" />
+    </>
+  );
+  return (
+    <div className={floating ? "host-picker floating" : "host-picker"} ref={root}>
+      {choosing ? (
+        <button type="button" className="host-picker-button" aria-haspopup="menu" aria-expanded={open}
+          aria-label={`Start on ${host.label}`} title="Choose the Mac to start this chat on" onClick={() => setOpen(!open)}>
+          {face}<Icon name="arrowDown" size={11} />
+        </button>
+      ) : (
+        <span className="host-picker-button static" title={`This chat is on ${host.label}`} aria-label={`On ${host.label}`}>{face}</span>
+      )}
+      {open ? (
+        <div className="host-menu" role="menu" aria-label="Start on">
+          {workbench.hosts.map(candidate => (
+            <button key={candidate.hostId} type="button" role="menuitemradio" aria-checked={candidate.hostId === host.hostId}
+              className="host-menu-item" disabled={candidate.status !== "online"}
+              onClick={() => { workbench.chooseHost(candidate.hostId); setOpen(false); }}>
+              <Icon name={candidate.hostId === host.hostId ? "check" : "laptop"} size={15} />
+              <span className="host-picker-label">{candidate.label}</span>
+              <small>{candidate.status === "online" ? "Online" : "Offline"}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 type ShownMessage = { message: ChatMessage; live: boolean; enter: boolean; reveal: Reveal | null };
 

@@ -331,6 +331,26 @@ button:disabled { cursor: default; }
   background: transparent; font-size: 16px; line-height: 22px;
 }
 .composer textarea::placeholder { color: var(--tertiary); }
+/* The Mac a chat is on: in the box on a wide screen, a chip above it on a narrow one. */
+.host-picker { position: relative; flex: none; align-self: flex-end; }
+.host-picker.floating { align-self: flex-start; }
+.host-picker-button {
+  display: inline-flex; height: 36px; max-width: 190px; align-items: center; gap: 6px; padding: 0 10px 0 12px;
+  border: 0; border-radius: 18px; color: var(--secondary); background: var(--fill); font-size: 13px; white-space: nowrap;
+}
+.host-picker-button:not(.static):hover { background: var(--fill-strong); color: var(--text); }
+.host-picker-button.static { background: transparent; padding-right: 4px; }
+.host-picker.floating .host-picker-button { height: 28px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6); border: 0.5px solid color-mix(in srgb, var(--text) 6%, transparent); }
+.host-picker-label { overflow: hidden; text-overflow: ellipsis; }
+.host-menu {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 20; display: flex; min-width: 220px; flex-direction: column; padding: 5px;
+  border: 0.5px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 14px; background: var(--surface); box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+}
+.host-menu-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 0; border-radius: 9px; background: none; color: var(--text); font-size: 14px; text-align: left; }
+.host-menu-item:hover:not(:disabled) { background: var(--fill); }
+.host-menu-item:disabled { color: var(--tertiary); }
+.host-menu-item small { margin-left: auto; color: var(--tertiary); font-size: 12px; }
+.chat-row-host { flex: none; max-width: 40%; overflow: hidden; color: var(--tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-note { align-self: flex-start; margin: 0; padding: 6px 12px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6); color: var(--orange); font-size: 12px; }
 .round-button {
   display: grid; width: 36px; height: 36px; flex: none; place-items: center; padding: 0;

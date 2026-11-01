@@ -19,6 +19,8 @@ const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev")
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 const clientHost = { hostId, hostGeneration, label: "Browser fixture Mac", hostKind: "macos", online: true, lastSeenAt: now };
+/** A second Mac of the account's, with no chats yet. */
+const studioHost = { hostId: "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7", hostGeneration: "a9c5761c-3b2d-42a8-bb19-9a8c0b8cf231", label: "Mac Studio", hostKind: "macos", online: true, lastSeenAt: now };
 
 /** A chat as the ClientDO lists it. */
 function listed({ sessionId, status = "ready", head = 0, ...metadata }) {
@@ -330,7 +332,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       const reply = (result) => socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
       if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
         methods.push(call.method);
-        reply({ hosts: [clientHost], sessions });
+        reply({ hosts: [clientHost, studioHost], sessions });
         return;
       }
       if (call.method === "axo.client.session.open") {
@@ -471,6 +473,21 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByText("What are we working on?"));
     assert.equal(new URL(page.url()).pathname, "/__tests__/chat");
     await shot("new-chat");
+
+    // With two Macs, each chat says which it is on, and a new chat picks its Mac right by the message box.
+    assert.deepEqual(await recent.locator(".chat-row-host").allTextContents(), ["Browser fixture Mac", "Browser fixture Mac", "Browser fixture Mac"]);
+    const composer = page.locator(".conversation-footer .composer");
+    await page.getByLabel("Message").fill("Check the disk");
+    await composer.getByRole("button", { name: "Start on Browser fixture Mac" }).click();
+    const startOn = page.getByRole("menu", { name: "Start on" });
+    await shot("new-chat-host-menu");
+    await startOn.getByRole("menuitemradio", { name: /Mac Studio/ }).click();
+    await expect(composer.getByRole("button", { name: "Start on Mac Studio" }));
+    assert.equal(await page.getByLabel("Message").inputValue(), "Check the disk", "what is typed comes along");
+    await composer.getByRole("button", { name: "Start on Mac Studio" }).click();
+    await startOn.getByRole("menuitemradio", { name: /Browser fixture Mac/ }).click();
+    await expect(composer.getByRole("button", { name: "Start on Browser fixture Mac" }));
+    await page.getByLabel("Message").fill("");
 
     // A chat's history: words, Markdown and the tools Pi used.
     await chats.getByRole("button", { name: "Browser Agent" }).click();

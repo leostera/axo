@@ -274,6 +274,8 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
   onSettings: () => void;
 }) {
   const entries = recentChatList(workbench.hosts);
+  // With more than one Mac, each chat says which it is on.
+  const manyHosts = workbench.hosts.length > 1;
   const selection = workbench.selection;
   return (
     <nav className="panel chats-panel" aria-label="Chats">
@@ -286,7 +288,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
         {entries.length > 0 ? (
-          <RecentChats
+          <RecentChats showHost={manyHosts}
             entries={entries}
             isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
             onSelect={onSelect}
@@ -311,8 +313,9 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
 }
 
 /** Every chat, the most recently active at the top, each with how long ago. */
-function RecentChats({ entries, isSelected, onSelect }: {
+function RecentChats({ entries, showHost, isSelected, onSelect }: {
   entries: ChatMenuEntry[];
+  showHost: boolean;
   isSelected: (hostId: string, sessionId: string) => boolean;
   onSelect: (hostId: string, sessionId: string) => void;
 }) {
@@ -332,6 +335,7 @@ function RecentChats({ entries, isSelected, onSelect }: {
           <button key={chatKey(entry)} className={selected ? "chat-row selected" : "chat-row"}
             aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
             <span className="chat-row-name">{chatTitle(session)}</span>
+            {showHost ? <span className="chat-row-host" title={`On ${host.label}`}>{host.label}</span> : null}
             <StatusDot status={session.status} />
             <span className="chat-row-age">{active > 0 ? shortAge(active, now) : ""}</span>
           </button>
