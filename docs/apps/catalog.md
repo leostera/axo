@@ -31,16 +31,26 @@ Kinds:
      `request` tool works unchanged, limited to `hosts`.
    - The web app gets an "Add account" form that posts the fields once. A token is never sent
      back.
-2. **OAuth providers** (`connections/apps/oauth-provider.ts`). Google's settings become one
-   provider config: endpoints, client secrets on the Worker, extra authorize parameters, how to
-   learn the account's name, whether refresh tokens rotate, revocation. Spotify, GitHub, Slack,
-   Strava, Withings and the rest are each a config.
+2. **OAuth providers** (built: `packages/axo-apps/src/oauth/`). Each provider is a config:
+   endpoints, extra authorize parameters, PKCE or not, how the token request carries the client
+   (basic or form), how its answer is read, whether refresh tokens rotate, how the account is
+   named, and revocation. Google, GitHub and Spotify are built; each new one is a config plus an
+   app file (`src/apps/<app>.ts`) and a fake provider in the Worker's tests.
+   - **Clients are the person's, not the Worker's.** The person registers an OAuth app with the
+     provider, with redirect URI `https://axo.leostera.dev/api/v1/connections/oauth/callback`,
+     and enters its client ID and secret on the app's page in Apps. The account's gateway keeps
+     them sealed (`app_clients`, one per provider), so they can be changed or rotated at any time
+     without a deploy. No `<PROVIDER>_CLIENT_ID` Worker secrets. (Google's from the environment is
+     used until an account sets up its own.)
+   - The page posts to `POST /api/v1/account/connections/apps.<app>/client` with
+     `{ clientId, clientSecret }`; that route goes in with the gateway (RFD0020).
 3. **Device sign-in.** For providers whose client only allows a device code (ChatGPT): Apps shows
    a code and a link, and the gateway polls the provider until the person approves.
 4. **Suggested MCP servers.** Catalog entries that add an official MCP server by URL with its
    logo.
 
-Everything lands in `connections/apps/*` and the web app. The routes and RPC methods for adding a
+What each app is lives in `packages/axo-apps` (`@axo/apps`); what is stateful (grants, clients,
+sign-ins, calls) in the gateway, `packages/axo-api-worker/src/connections/apps`, and the web app. The routes and RPC methods for adding a
 token or starting a device sign-in go in once AxoGateway (RFD0020) is on main.
 
 ## Priorities
@@ -125,13 +135,13 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | ChatGPT | Device OAuth (Codex) | see above | ChatGPT email | see above |
 | Octopus Energy (built: `apps.octopus`) | Token, basic (key as user) | `api.octopus.energy/v1` + GraphQL | account number | consumption, tariffs, account |
 | Wise (built: `apps.wise`) | Token, bearer (personal token) | `api.wise.com` (some EU/UK statement calls need SCA signing) | profile email | profiles, balances, transfers, rates |
-| GitHub (built: `apps.github`, personal token) | MCP (`api.githubcopilot.com/mcp/`, needs a registered OAuth app) or OAuth → REST | REST v3 / GraphQL | login | repos, issues, PRs, search |
+| GitHub (built: `apps.github`) | OAuth (an OAuth app with expiring user tokens: 8 h, rotating refresh tokens; PKCE) → REST. Scopes `repo read:org notifications` | REST v3 | login | repos, issues, PRs, search, notifications |
 | Slack | OAuth (user token) → Web API; the official MCP server is for approved apps only | `slack.com/api` | workspace and user | search, history, post, users |
 | Stripe (suggested MCP server) | MCP (`mcp.stripe.com`, OAuth) | n/a | n/a | n/a |
 | Telegram (built: `apps.telegram`, bots) | Token (bot token) → Bot API. A personal account needs MTProto: Mac (a CLI such as `tdl`) | `api.telegram.org` | bot username | send, updates, chats |
 | WhatsApp | Browser (WhatsApp Web) or Mac. The Cloud API is for business numbers only | n/a | n/a | n/a |
 | Kraken (built: `apps.kraken`) | Token, signed (API key + HMAC-SHA512) | `api.kraken.com` | person | balances, trades, orders |
-| Spotify | OAuth (PKCE; development mode allows a few users) | `api.spotify.com/v1` | email | playback, search, playlists |
+| Spotify (built: `apps.spotify`) | OAuth (PKCE, client in HTTP basic, rotating refresh tokens; development mode allows only allow-listed users). Follows the February 2026 API changes: `/me/library`, `/playlists/{id}/items`, search at most 10 per type | `api.spotify.com/v1` | Spotify ID (development-mode apps get no email) | playback, devices, queue, search, playlists, library, history, top items |
 | Strava | OAuth | `www.strava.com/api/v3` | athlete name | activities, stats |
 | Withings | OAuth (signed nonce on some calls) | `wbsapi.withings.net` | user ID | measures, sleep, activity |
 | PayPal (suggested MCP server) | MCP (`mcp.paypal.com`) for business accounts; personal → Browser | n/a | n/a | n/a |
