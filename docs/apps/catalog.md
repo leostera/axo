@@ -34,7 +34,7 @@ Kinds:
 2. **OAuth providers** (built: `packages/axo-apps/src/oauth/`). Each provider is a config:
    endpoints, extra authorize parameters, PKCE or not, how the token request carries the client
    (basic or form), how its answer is read, whether refresh tokens rotate, how the account is
-   named, and revocation. Google, GitHub and Spotify are built; each new one is a config plus an
+   named, and revocation. Google, GitHub, Spotify and Withings are built; each new one is a config plus an
    app file (`src/apps/<app>.ts`) and a fake provider in the Worker's tests.
    - **Clients are the person's, not the Worker's.** The person registers an OAuth app with the
      provider, with redirect URI `https://axo.leostera.dev/api/v1/connections/oauth/callback`,
@@ -143,7 +143,7 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | Kraken (built: `apps.kraken`) | Token, signed (API key + HMAC-SHA512) | `api.kraken.com` | person | balances, trades, orders |
 | Spotify (built: `apps.spotify`) | OAuth (PKCE, client in HTTP basic, rotating refresh tokens; development mode allows only allow-listed users). Follows the February 2026 API changes: `/me/library`, `/playlists/{id}/items`, search at most 10 per type | `api.spotify.com/v1` | Spotify ID (development-mode apps get no email) | playback, devices, queue, search, playlists, library, history, top items |
 | Strava | OAuth | `www.strava.com/api/v3` | athlete name | activities, stats |
-| Withings | OAuth (signed nonce on some calls) | `wbsapi.withings.net` | user ID | measures, sleep, activity |
+| Withings (built: `apps.withings`) | OAuth (token endpoint `POST /v2/oauth2 action=requesttoken`, no PKCE, commas between scopes, `{ status, body }` answers, rotating refresh tokens). Revoking needs a signed nonce, so signing out only forgets the grant | `wbsapi.withings.net` (form POSTs with `action`; errors are HTTP 200 with `status` ≠ 0) | user ID | measures, activity, workouts, sleep, ECGs, devices |
 | PayPal (suggested MCP server) | MCP (`mcp.paypal.com`) for business accounts; personal → Browser | n/a | n/a | n/a |
 | Discord (built: `apps.discord`, bots) | Token (bot) → REST; a user's own DMs are not allowed by Discord | `discord.com/api/v10` | bot | messages, channels |
 | Bluesky | Token (app password → AT Protocol session) | `bsky.social/xrpc` | handle | timeline, post, search |
