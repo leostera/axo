@@ -417,6 +417,8 @@ button.grouped-row:hover { background: var(--fill); }
 .bordered-button:hover { background: var(--fill-strong); }
 .pairing-waiting { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--secondary); font-size: 15px; }
 .pairing-done { font-size: 20px; font-weight: 600; }
+.pairing-install { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; padding-top: 20px; border-top: 1px solid var(--fill); }
+.pairing-command { display: block; width: 100%; box-sizing: border-box; padding: 12px 14px; border-radius: 12px; background: var(--surface); font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; overflow-wrap: anywhere; user-select: all; }
 
 /* On a big screen, with a pointer: the same look, denser. The phone's sizes are for thumbs. */
 @media (min-width: 900px) {
@@ -531,6 +533,8 @@ button.grouped-row:hover { background: var(--fill); }
   .pairing-countdown { font-size: 11.5px; }
   .bordered-button { min-height: 36px; border-radius: 10px; font-size: 13px; }
   .pairing-done { font-size: 16px; }
+  .pairing-install { gap: 10px; padding-top: 14px; }
+  .pairing-command { padding: 10px 12px; border-radius: 10px; font-size: 11.5px; }
 }
 
 /* Sign-in: the iPhone app's, following the system's light or dark. */

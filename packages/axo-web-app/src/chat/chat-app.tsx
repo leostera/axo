@@ -573,11 +573,23 @@ type Pairing =
   | { kind: "expired" }
   | { kind: "failed"; message: string };
 
+/** The signed Mac app, zipped; the site serves it (`sites/axo.leostera.dev/src/install.ts`). */
+const MAC_APP_DOWNLOAD = "/cdn/Axo.app.zip";
+
+/**
+ * Installs Axo on a Mac from this site and opens `code` in it. Preferred over the download: a
+ * browser-downloaded app is quarantined, so Gatekeeper asks about it on first open.
+ */
+function installCommand(code: string): string {
+  return `curl -fsSL '${window.location.origin}/install?code=${code}' | sh`;
+}
+
 /** A one-time code for a Mac to redeem; says so when a new Mac shows up on the account. */
 function PairMacSheet({ workbench, pairingUrl, onClose }: { workbench: ChatWorkbench; pairingUrl: string; onClose: () => void }) {
   const [pairing, setPairing] = useState<Pairing>({ kind: "creating" });
   const [now, setNow] = useState(Date.now());
   const [copied, setCopied] = useState(false);
+  const [copiedInstall, setCopiedInstall] = useState(false);
   const known = useRef(new Set(workbench.hosts.map(host => host.hostId)));
 
   const create = async () => {
@@ -627,6 +639,14 @@ function PairMacSheet({ workbench, pairingUrl, onClose }: { workbench: ChatWorkb
       setCopied(false);
     }
   };
+  const copyInstall = async (command: string) => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopiedInstall(true);
+    } catch {
+      setCopiedInstall(false);
+    }
+  };
 
   return (
     <Sheet title="Pair a Mac" onClose={onClose}>
@@ -647,6 +667,14 @@ function PairMacSheet({ workbench, pairingUrl, onClose }: { workbench: ChatWorkb
               <a className="bordered-button" href={`axo://pair/${pairing.code}`}><Icon name="laptop" size={17} /> Open on this Mac</a>
             </div>
             <p className="pairing-waiting"><span className="spinner" aria-hidden="true" /> Waiting for your Mac…</p>
+            <div className="pairing-install">
+              <p className="pairing-note">No Axo on that Mac yet? The Terminal command installs it, starts it and fills in this code.</p>
+              <code className="pairing-command">{installCommand(pairing.code)}</code>
+              <div className="pairing-actions">
+                <button className="bordered-button" onClick={() => void copyInstall(installCommand(pairing.code))}><Icon name={copiedInstall ? "check" : "terminal"} size={17} /> {copiedInstall ? "Copied" : "Copy command"}</button>
+                <a className="bordered-button" href={MAC_APP_DOWNLOAD} download><Icon name="pair" size={17} /> Download Axo</a>
+              </div>
+            </div>
           </>
         ) : null}
         {pairing.kind === "linked" ? (

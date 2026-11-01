@@ -628,10 +628,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("account");
     await account.getByRole("button", { name: "Pair a Mac" }).click();
     const pairing = page.getByRole("dialog", { name: "Pair a Mac" });
-    await expect(pairing.getByText("B26A-NRKT"));
+    await expect(pairing.getByText("B26A-NRKT", { exact: true }));
     assert.equal(pairingRequestCount, 1);
     await shot("pairing");
     assert.equal(await pairing.getByRole("link", { name: "Open on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
+    // A Mac without Axo: download it, or install it from Terminal with this code.
+    assert.equal(await pairing.getByRole("link", { name: "Download Axo" }).getAttribute("href"), "/cdn/Axo.app.zip");
+    await expect(pairing.getByText(/^curl -fsSL 'http:\/\/[^']+\/install\?code=B26A-NRKT' \| sh$/));
     await pairing.getByRole("button", { name: "Close Pair a Mac" }).click();
     await account.getByRole("button", { name: "Back to chats" }).click();
     await expect(chats.getByRole("button", { name: "Browser Agent" }));
