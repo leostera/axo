@@ -156,6 +156,33 @@ final class ChatTranscriptTests: XCTestCase {
     XCTAssertEqual(transcript.messages.map(\.text), ["Checking done"])
   }
 
+  func testProgressForAReplyAlreadyRecordedIsNotShownAgain() {
+    // Pi stamps a reply when it starts; its progress and its record carry the same stamp.
+    let snapshot = jsonValue(#"{"message":{"role":"assistant","timestamp":1792810292069,"content":[{"type":"text","text":"Checking"}]}}"#)
+    var transcript = transcript(
+      record(1, #"{"role":"assistant","timestamp":1792810292069,"content":[{"type":"text","text":"Checking done"}]}"#))
+    transcript.progress(slot: "message", snapshot: snapshot)
+    XCTAssertTrue(transcript.live.isEmpty, "a snapshot that arrives after its record, or replayed on reopening")
+    XCTAssertEqual(transcript.messages.map(\.text), ["Checking done"])
+
+    // The next reply, stamped later, shows as it is written.
+    transcript.progress(
+      slot: "message",
+      snapshot: jsonValue(#"{"message":{"role":"assistant","timestamp":1792810299000,"content":[{"type":"text","text":"Next"}]}}"#))
+    XCTAssertEqual(transcript.live.map(\.text), ["Next"])
+  }
+
+  func testAReplyRecordedOnAnOlderPageIsKnownToo() {
+    var transcript = transcript(message(2, role: "user", content: #""thanks""#))
+    transcript.prepend(older: ChatTranscript(records: [
+      record(1, #"{"role":"assistant","timestamp":1792810292069,"content":[{"type":"text","text":"Done"}]}"#)
+    ]))
+    transcript.progress(
+      slot: "message",
+      snapshot: jsonValue(#"{"message":{"role":"assistant","timestamp":1792810292069,"content":[{"type":"text","text":"Do"}]}}"#))
+    XCTAssertTrue(transcript.live.isEmpty)
+  }
+
   func testAClearedSlotAndAUserMessageAreNoReply() {
     var transcript = ChatTranscript()
     transcript.progress(slot: "message", snapshot: jsonValue(#"{"message":{"role":"user","content":"hi"}}"#))

@@ -110,6 +110,10 @@ public struct ChatTranscript: Equatable, Sendable {
   /// The records held, oldest first, without gaps.
   public private(set) var records: [ClientRecord] = []
   private var results: [String: ToolResult] = [:]
+  /// When each recorded reply was started, as Pi stamps it. A reply's progress carries the same
+  /// stamp, so a snapshot that arrives after its record (or is replayed on reopening) is known and
+  /// not shown a second time below it.
+  private var recordedReplies: Set<Int64> = []
   /// Running tools' output so far, by call id.
   private var toolOutput: [String: String] = [:]
 
@@ -147,6 +151,7 @@ public struct ChatTranscript: Equatable, Sendable {
     messages.insert(contentsOf: older, at: 0)
     records.insert(contentsOf: page.records, at: 0)
     results.merge(page.results) { newer, _ in newer }
+    recordedReplies.formUnion(page.recordedReplies)
   }
 
   /// The host's copy was cut back: everything after `keep` goes.
@@ -156,6 +161,7 @@ public struct ChatTranscript: Equatable, Sendable {
     messages = []
     records = []
     results = [:]
+    recordedReplies = []
     append(kept)
   }
 
@@ -164,7 +170,9 @@ public struct ChatTranscript: Equatable, Sendable {
   public mutating func progress(slot: String, snapshot: JSONValue) {
     switch slot {
     case "message":
-      guard let message = snapshot["message"], message["role"]?.stringValue == "assistant" else {
+      guard let message = snapshot["message"], message["role"]?.stringValue == "assistant",
+        Self.timestamp(of: message).map(recordedReplies.contains) != true
+      else {
         live = []
         return
       }
@@ -213,8 +221,11 @@ public struct ChatTranscript: Equatable, Sendable {
       recordResult(of: message)
       return
     }
-    if role == "assistant" { live = [] }
-    let timestamp = message["timestamp"]?.numberValue.map { Int64($0) }
+    let timestamp = Self.timestamp(of: message)
+    if role == "assistant" {
+      live = []
+      if let timestamp { recordedReplies.insert(timestamp) }
+    }
     for (index, piece) in Self.pieces(of: message, role: role).enumerated() {
       var tool = piece.tool
       if let callID = tool?.callID {
@@ -226,6 +237,11 @@ public struct ChatTranscript: Equatable, Sendable {
           blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
           timestamp: timestamp, tool: tool, images: piece.images))
     }
+  }
+
+  /// When Pi started the message, in milliseconds since 1970.
+  private static func timestamp(of message: JSONValue) -> Int64? {
+    message["timestamp"]?.numberValue.map { Int64($0) }
   }
 
   /// A record as the conversation sees it: a message, or nothing to show.
