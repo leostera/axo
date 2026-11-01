@@ -1,0 +1,14 @@
+load("@axo_config//:defs.bzl", "AXO")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+exports_files(["extension.bzl"])
+
+sh_test(
+    name = "macos_minimum_os_test",
+    srcs = ["macos_minimum_os_test.sh"],
+    args = [
+        AXO["apple"]["macos_min"],
+        "$(rootpath //:.bazelrc)",
+    ],
+    data = ["//:.bazelrc"],
+)

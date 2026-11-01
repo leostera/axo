@@ -3,6 +3,7 @@ load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
+load("@axo_config//:defs.bzl", "AXO")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -90,8 +91,8 @@ swift_library(
 # Plays the generated assets/mascot/axo.riv in the real Rive runtime (Metal required).
 macos_unit_test(
     name = "AxoMascotRiveTests",
-    bundle_id = "dev.leostera.axo.mascot-tests",
-    minimum_os_version = "14.0",
+    bundle_id = AXO["apple"]["bundle_ids"]["mac_mascot_tests"],
+    minimum_os_version = AXO["apple"]["macos_min"],
     deps = [":AxoMascotRiveTestsLib"],
 )
 
@@ -130,8 +131,8 @@ swift_library(
 
 macos_ui_test(
     name = "AxoVisualUITests",
-    bundle_id = "dev.leostera.axo.vt",
-    minimum_os_version = "14.0",
+    bundle_id = AXO["apple"]["bundle_ids"]["mac_visual_tests"],
+    minimum_os_version = AXO["apple"]["macos_min"],
     test_host = ":AxoUITestApp",
     resources = ["//crates/axod:axod"],
     deps = [":AxoVisualUITestsLib"],
@@ -180,13 +181,11 @@ swift_test(
     timeout = "short",
 )
 
+# The app's version and build number come from config.json (RFD0021).
 apple_bundle_version(
     name = "build_version",
-    build_label_pattern = "axo_build_{build}",
-    build_version = "{build}",
-    capture_groups = {"build": "[0-9]+"},
-    fallback_build_label = "axo_build_3",
-    short_version_string = "0.1.0",
+    build_version = str(AXO["builds"]["mac"]),
+    short_version_string = AXO["version"],
 )
 
 genrule(
@@ -200,11 +199,11 @@ macos_application(
     name = "AxoApp",
     app_icons = ["//assets:macos_app_icon"],
     resources = ["//assets:mascot"],
-    bundle_id = "dev.leostera.axo",
+    bundle_id = AXO["apple"]["bundle_ids"]["mac"],
     bundle_name = "Axo",
     executable_name = "Axo",
-    infoplists = ["Info.plist"],
-    minimum_os_version = "14.0",
+    infoplists = ["Info.plist", "@axo_config//:mac.plist"],
+    minimum_os_version = AXO["apple"]["macos_min"],
     version = ":build_version",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
@@ -217,11 +216,11 @@ macos_application(
 
 macos_application(
     name = "AxoUITestApp",
-    bundle_id = "dev.leostera.axo.ui-tests",
+    bundle_id = AXO["apple"]["bundle_ids"]["mac_ui_tests"],
     bundle_name = "Axo",
     executable_name = "Axo",
     infoplists = ["AxoUITest-Info.plist"],
-    minimum_os_version = "14.0",
+    minimum_os_version = AXO["apple"]["macos_min"],
     version = ":build_version",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",

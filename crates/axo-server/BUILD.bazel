@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@axo_config//:defs.bzl", "AXO")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -13,8 +14,9 @@ rust_library(
     name = "axo_server",
     srcs = glob(["src/**/*.rs"]),
     edition = crate_edition(),
-    rustc_env_files = ["build_number.env"],
-    stamp = 1,
+    # AXO_BUILD_NUMBER: axod's build number from config.json (RFD0021).
+    rustc_env_files = ["@axo_config//:axod.env"],
+    version = AXO["version"],
     deps = ["//crates/axo-ipc:axo_ipc", "//crates/axo-panes:axo_panes", "//crates/axo-pi:axo_pi", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "//crates/axo-relay:axo_relay", "//crates/axo-store:axo_store"] + all_crate_deps(normal = True),
 )
 
@@ -24,7 +26,8 @@ rust_test(
     data = [":pi_extension_fixture"],
     env = {"AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)"},
     edition = crate_edition(),
-    rustc_env_files = ["build_number.env"],
-    stamp = 1,
+    # AXO_BUILD_NUMBER: axod's build number from config.json (RFD0021).
+    rustc_env_files = ["@axo_config//:axod.env"],
+    version = AXO["version"],
     deps = ["//crates/axo-ipc:axo_ipc", "//crates/axo-panes:axo_panes", "//crates/axo-pi:axo_pi", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "//crates/axo-relay:axo_relay", "//crates/axo-store:axo_store"] + all_crate_deps(normal = True, normal_dev = True),
 )

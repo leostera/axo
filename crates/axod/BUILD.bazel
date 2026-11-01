@@ -1,21 +1,18 @@
 load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
-load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@axo_config//:defs.bzl", "AXO")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(["testdata/pi-fixture.sh"])
 
-cargo_toml_env_vars(
-    name = "cargo_env",
-    src = "Cargo.toml",
-)
-
 rust_binary(
     name = "axod",
     srcs = ["src/main.rs"],
     edition = crate_edition(),
-    rustc_env_files = [":cargo_env"],
+    # The macOS the Mac app requires, so axod's minimum matches the app's (RFD0021).
+    rustc_env = {"MACOSX_DEPLOYMENT_TARGET": AXO["apple"]["macos_min"]},
+    version = AXO["version"],
     deps = ["//crates/axo-pty:axo_pty", "//crates/axo-server:axo_server"] + all_crate_deps(normal = True),
 )
 

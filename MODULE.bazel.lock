@@ -308,6 +308,19 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//bazel/config:extension.bzl%axo_config": {
+      "general": {
+        "bzlTransitiveDigest": "YeiB1djzARtllspFZAyJjDQQnr9eF+SNres/kCMU2EM=",
+        "usagesDigest": "BzsNwjMt5WNPt7R5NfciSdgQxI5TjKoigINeUWZ1xOE=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "axo_config": {
+            "repoRuleId": "@@//bazel/config:extension.bzl%_axo_config",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "@@cgrindel_bazel_starlib+//tools/git:extensions.bzl%local_git_ext": {
       "general": {
         "bzlTransitiveDigest": "Q/NQyKFI2DljjsevKbLpWlOrT/bOsP3m/A8uvcXQb40=",

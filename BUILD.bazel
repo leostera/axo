@@ -1,5 +1,5 @@
 exports_files([
-    "BUILD_NUMBER",
+    ".bazelrc",
     "Cargo.lock",
     "Cargo.toml",
     "MODULE.bazel",
