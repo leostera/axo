@@ -110,7 +110,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "session_prompt",
         method: Some(method::SESSION_PROMPT),
-        description: "Sends a message to a Session's agent, as if a person typed it. Returns its chain depth and whether it waits for Pi to start.",
+        description: "Sends a message to a Session's agent, as if a person typed it. Returns whether it waits for Pi to start.",
         properties: || {
             json!({
                 "sessionId": session_id_schema(),

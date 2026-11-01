@@ -393,8 +393,6 @@ pub struct ArchivedSessionRecord {
 #[serde(rename_all = "camelCase")]
 pub struct PromptAccepted {
     pub accepted: bool,
-    /// Agent prompts between this one and the last thing a person said (0 for a person).
-    pub depth: u32,
     /// True when Pi is still starting and the prompt waits for it.
     pub queued: bool,
 }

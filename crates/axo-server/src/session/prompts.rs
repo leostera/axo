@@ -6,10 +6,8 @@
 //! what someone is typing in the pane. A Pi still starting (its bridge not bound yet) cannot take
 //! one: the prompt waits in `queued_pi_prompts` and is sent when the bridge binds.
 //!
-//! Provenance: each Session remembers the depth of the last prompt it was sent, the number of
-//! agent prompts since a person last spoke to it. A prompt from Session S has depth
-//! `depth(S) + 1`; a person's has depth 0, and a person typing into a Pi pane resets its depth.
-//! Deeper than [`MAX_PROMPT_DEPTH`], or faster than the rate limits, is refused.
+//! Agents may prompt each other, and themselves, as often as they like within the rate limits;
+//! a prompt from an agent reaches Pi headed with its sender.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -26,8 +24,6 @@ use axo_protocol::{PaneRole, SessionId, ShellId};
 pub(super) const MAX_PI_PROMPT_BYTES: usize = 16_000;
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
 pub(super) const MAX_QUEUED_PI_PROMPTS: usize = 8;
-/// The longest chain of agents prompting agents (or themselves) since a person last spoke.
-pub(super) const MAX_PROMPT_DEPTH: u32 = 8;
 /// Prompts one Session's agent may send per [`RATE_WINDOW`], to anyone and to itself.
 const MAX_AGENT_PROMPTS_PER_WINDOW: usize = 30;
 const MAX_SELF_PROMPTS_PER_WINDOW: usize = 10;
@@ -39,28 +35,16 @@ pub(super) struct QueuedPrompt {
     delivery: PromptDelivery,
 }
 
-/// What each Session has sent and been sent, for loop limits.
+/// What each Session's agent has sent, for rate limits.
 #[derive(Default)]
 pub(super) struct PromptProvenance {
-    /// Depth of the last prompt each Session was sent; absent means 0.
-    depth: std::collections::HashMap<SessionId, u32>,
     /// When each Session's agent sent prompts in the last window, and whether to itself.
     sent: std::collections::HashMap<SessionId, VecDeque<(Instant, bool)>>,
 }
 
 impl PromptProvenance {
-    /// A person spoke to the Session's Pi directly.
-    pub(super) fn reset(&mut self, session_id: SessionId) {
-        self.depth.remove(&session_id);
-    }
-
     pub(super) fn forget(&mut self, session_id: SessionId) {
-        self.depth.remove(&session_id);
         self.sent.remove(&session_id);
-    }
-
-    fn depth_of(&self, session_id: SessionId) -> u32 {
-        self.depth.get(&session_id).copied().unwrap_or(0)
     }
 
     /// Counts one prompt from `from` against its limits, or refuses it.
@@ -90,8 +74,6 @@ pub(super) enum PromptError {
     Invalid(&'static str),
     /// The Session has no running Pi.
     NoPi,
-    /// The chain of agent prompts is deeper than [`MAX_PROMPT_DEPTH`].
-    ChainTooDeep,
     RateLimited,
     /// `turn` delivery, and Pi is working.
     Busy,
@@ -106,10 +88,6 @@ impl fmt::Display for PromptError {
         match self {
             Self::Invalid(message) => formatter.write_str(message),
             Self::NoPi => formatter.write_str("Pi is not running in that Session"),
-            Self::ChainTooDeep => write!(
-                formatter,
-                "chain too deep: more than {MAX_PROMPT_DEPTH} agent prompts since a person spoke"
-            ),
             Self::RateLimited => write!(
                 formatter,
                 "rate limited: at most {MAX_AGENT_PROMPTS_PER_WINDOW} prompts a minute, \
@@ -129,9 +107,7 @@ impl From<PromptError> for io::Error {
         let kind = match error {
             PromptError::Invalid(_) => io::ErrorKind::InvalidInput,
             PromptError::NoPi => io::ErrorKind::NotFound,
-            PromptError::ChainTooDeep | PromptError::RateLimited | PromptError::QueueFull => {
-                io::ErrorKind::WouldBlock
-            }
+            PromptError::RateLimited | PromptError::QueueFull => io::ErrorKind::WouldBlock,
             PromptError::Busy => io::ErrorKind::ResourceBusy,
             PromptError::Unavailable(_) => io::ErrorKind::Other,
         };
@@ -188,8 +164,8 @@ fn pi_bridge(state: &SessionState, session_id: SessionId) -> io::Result<PiBridge
 }
 
 impl SessionManager {
-    /// Sends `request.text` to the Session's Pi. Returns the prompt's depth, and whether it
-    /// waits for Pi to finish starting.
+    /// Sends `request.text` to the Session's Pi. Returns whether it waits for Pi to finish
+    /// starting.
     pub(super) fn prompt_session(
         &self,
         request: &PromptSession,
@@ -205,22 +181,17 @@ impl SessionManager {
                 "a prompt must contain 1 to 16000 bytes of text",
             ));
         }
-        let (depth, bridge, text) = match self.admit_prompt(target, text, delivery, from) {
-            Ok(Admitted::Queued { depth }) => {
-                log_prompt(target, from, depth, delivery, "queued");
+        let (bridge, text) = match self.admit_prompt(target, text, delivery, from) {
+            Ok(Admitted::Queued) => {
+                log_prompt(target, from, delivery, "queued");
                 return Ok(PromptAccepted {
                     accepted: true,
-                    depth,
                     queued: true,
                 });
             }
-            Ok(Admitted::Send {
-                depth,
-                bridge,
-                text,
-            }) => (depth, bridge, text),
+            Ok(Admitted::Send { bridge, text }) => (bridge, text),
             Err(error) => {
-                log_prompt(target, from, 0, delivery, refusal(&error));
+                log_prompt(target, from, delivery, refusal(&error));
                 return Err(error);
             }
         };
@@ -228,17 +199,12 @@ impl SessionManager {
         log_prompt(
             target,
             from,
-            depth,
             delivery,
             sent.as_ref().map_or_else(refusal, |()| "delivered"),
         );
         sent?;
-        if let Ok(mut state) = self.lock_state() {
-            state.prompt_provenance.depth.insert(target, depth);
-        }
         Ok(PromptAccepted {
             accepted: true,
-            depth,
             queued: false,
         })
     }
@@ -271,10 +237,6 @@ impl SessionManager {
             }
             None => text.to_owned(),
         };
-        let depth = from.map_or(0, |from| state.prompt_provenance.depth_of(from) + 1);
-        if depth > MAX_PROMPT_DEPTH {
-            return Err(PromptError::ChainTooDeep);
-        }
         if let Some(from) = from {
             state
                 .prompt_provenance
@@ -290,16 +252,11 @@ impl SessionManager {
                 return Err(PromptError::QueueFull);
             }
             queue.push(QueuedPrompt { text, delivery });
-            state.prompt_provenance.depth.insert(target, depth);
-            return Ok(Admitted::Queued { depth });
+            return Ok(Admitted::Queued);
         }
         let bridge = pi_bridge(&state, target)
             .map_err(|error| PromptError::Unavailable(error.to_string()))?;
-        Ok(Admitted::Send {
-            depth,
-            bridge,
-            text,
-        })
+        Ok(Admitted::Send { bridge, text })
     }
 
     /// A person away from the Mac prompts the Session's Pi. Arriving while Pi works, it steers,
@@ -348,11 +305,8 @@ impl SessionManager {
 }
 
 enum Admitted {
-    Queued {
-        depth: u32,
-    },
+    Queued,
     Send {
-        depth: u32,
         bridge: PiBridge,
         /// What Pi is sent: the prompt, with its sender when an agent sent it.
         text: String,
@@ -363,7 +317,6 @@ fn refusal(error: &PromptError) -> &'static str {
     match error {
         PromptError::Invalid(_) => "invalid",
         PromptError::NoPi => "no_pi",
-        PromptError::ChainTooDeep => "chain_too_deep",
         PromptError::RateLimited => "rate_limited",
         PromptError::Busy => "busy",
         PromptError::QueueFull => "queue_full",
@@ -371,15 +324,9 @@ fn refusal(error: &PromptError) -> &'static str {
     }
 }
 
-fn log_prompt(
-    target: SessionId,
-    from: Option<SessionId>,
-    depth: u32,
-    delivery: PromptDelivery,
-    outcome: &str,
-) {
+fn log_prompt(target: SessionId, from: Option<SessionId>, delivery: PromptDelivery, outcome: &str) {
     log::info!(
-        "event=session.prompt target_session_id={} from_session_id={} depth={depth} delivery={delivery:?} outcome={outcome}",
+        "event=session.prompt target_session_id={} from_session_id={} delivery={delivery:?} outcome={outcome}",
         target,
         from.map_or_else(|| "person".to_owned(), |from| from.to_string()),
     );

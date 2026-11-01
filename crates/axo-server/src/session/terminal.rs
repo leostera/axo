@@ -396,10 +396,6 @@ impl SessionManager {
             TERMINAL_INPUT_WRITE_TIMEOUT,
         )?;
         running.last_input_sequence = Some(sequence);
-        if running.role == PaneRole::Pi {
-            // A person is talking to this Pi: any chain of agent prompts ends here.
-            state.prompt_provenance.reset(session_id);
-        }
         Ok(())
     }
 
@@ -937,13 +933,13 @@ mod tests {
                 from_session_id: None,
             })
             .unwrap();
-        assert_eq!((accepted.depth, accepted.queued), (0, false));
+        assert!(!accepted.queued);
         assert_eq!(
             actions.recv_timeout(Duration::from_secs(5)).unwrap(),
             serde_json::json!({ "kind": "send", "text": "and again" })
         );
 
-        // An agent prompting itself climbs one level per prompt and stops at the limit.
+        // An agent may prompt itself, up to the rate limit, however long the chain.
         let to_self = |text: &str| {
             manager.prompt_session(&rpc::PromptSession {
                 session_id: session.id,
@@ -952,8 +948,8 @@ mod tests {
                 from_session_id: Some(session.id),
             })
         };
-        for depth in 1..=crate::session::prompts::MAX_PROMPT_DEPTH {
-            assert_eq!(to_self("again").unwrap().depth, depth);
+        for _ in 0..10 {
+            assert!(!to_self("again").unwrap().queued);
         }
         let sent = actions.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(
@@ -965,14 +961,10 @@ mod tests {
             "an agent's prompt names its sender"
         );
         assert_eq!(sent["delivery"], "followUp");
-        assert!(matches!(to_self("again"), Err(PromptError::ChainTooDeep)));
-        // A person typing into the pane ends the chain.
         let typed = axo_protocol::base64::encode(b"x\r");
         manager
             .write_terminal_input(session.id, shell_id, 0, &typed)
             .unwrap();
-        assert_eq!(to_self("again").unwrap().depth, 1);
-        assert_eq!(to_self("again").unwrap().depth, 2);
         // Ten prompts to itself a minute, then no more.
         assert!(matches!(to_self("again"), Err(PromptError::RateLimited)));
 

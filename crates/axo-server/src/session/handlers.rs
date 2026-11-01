@@ -258,12 +258,11 @@ const SESSION_NOT_REOPENED: i64 = -32005;
 const DEFAULT_SCREEN_LINES: u32 = 200;
 const MAX_SCREEN_LINES: u32 = 10_000;
 
-/// RPC errors for `axo.session.prompt`: the caller's mistakes are invalid params; loop limits
-/// have codes of their own so an agent can tell them apart from Pi not taking the prompt.
+/// RPC errors for `axo.session.prompt`: the caller's mistakes are invalid params; the rate limit
+/// has a code of its own so an agent can tell it apart from Pi not taking the prompt.
 fn prompt_rpc_error(error: PromptError) -> RpcError {
     let code = match error {
         PromptError::Invalid(_) => ErrorCode::InvalidParams,
-        PromptError::ChainTooDeep => ErrorCode::ServerError(-32002),
         PromptError::RateLimited => ErrorCode::ServerError(-32003),
         PromptError::NoPi
         | PromptError::Busy

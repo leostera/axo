@@ -1096,7 +1096,7 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
     );
     assert_eq!(
         prompted["result"],
-        json!({ "accepted": true, "depth": 1, "queued": true })
+        json!({ "accepted": true, "queued": true })
     );
     let empty = rpc_with_params(
         &socket,
@@ -1236,13 +1236,13 @@ fn axod_mcp_serves_one_sessions_agent_over_stdio() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    // A prompt always names this Session as its sender, so it counts toward the chain.
+    // A prompt always names this Session as its sender.
     let prompted = call(
         &mut request,
         "session_prompt",
         json!({ "sessionId": "self", "text": "remind me" }),
     );
-    assert_eq!(prompted["depth"], 1, "{prompted}");
+    assert_eq!(prompted["accepted"], true, "{prompted}");
     let refused = request(
         "tools/call",
         json!({ "name": "session_prompt", "arguments": { "sessionId": "self", "text": "" } }),
