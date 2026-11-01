@@ -3,6 +3,7 @@ load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
+    "install_phone_app.sh",
     "package_test.sh",
     "sign_mac_app.sh",
 ])

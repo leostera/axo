@@ -92,3 +92,72 @@ build_report = rule(
         "pieces": attr.label_list(providers = [StatusInfo]),
     },
 )
+
+def _ios_device_transition_impl(_settings, _attr):
+    return {"//command_line_option:ios_multi_cpus": ["arm64"]}
+
+_ios_device_transition = transition(
+    implementation = _ios_device_transition_impl,
+    inputs = [],
+    outputs = ["//command_line_option:ios_multi_cpus"],
+)
+
+def _ios_device_app_impl(ctx):
+    status = ctx.actions.declare_file(ctx.attr.name + ".status")
+    ctx.actions.write(status, "AxoPhoneDevice: built for a phone\n")
+    return [
+        DefaultInfo(files = ctx.attr.app[0][DefaultInfo].files),
+        StatusInfo(files = depset([status])),
+    ]
+
+ios_device_app = rule(
+    implementation = _ios_device_app_impl,
+    doc = "An ios_application built for a phone (arm64) in the same build as the simulator targets.",
+    attrs = {"app": attr.label(mandatory = True, cfg = _ios_device_transition)},
+)
+
+def _phone_install_impl(ctx):
+    status = ctx.actions.declare_file(ctx.attr.name + ".status")
+    inputs = ctx.files.app
+    ctx.actions.run(
+        executable = ctx.executable._install,
+        arguments = [
+            inputs[0].path if inputs else "",
+            ctx.attr.device,
+            ctx.attr.bundle_id,
+            status.path,
+            ctx.attr.off,
+        ],
+        inputs = inputs,
+        outputs = [status],
+        execution_requirements = _LOCAL | {"no-cache": "1"},
+        mnemonic = "InstallPhoneApp",
+        progress_message = "Installing %{label} on the phone",
+    )
+    return [
+        DefaultInfo(files = depset([status])),
+        StatusInfo(files = depset([status])),
+    ]
+
+phone_install = rule(
+    implementation = _phone_install_impl,
+    doc = "Installs the device build on the phone, or reports why it did not (`off`).",
+    attrs = {
+        "app": attr.label(doc = "An ios_device_app; empty when this Mac cannot build one.", allow_files = True),
+        "bundle_id": attr.string(mandatory = True),
+        "device": attr.string(),
+        "off": attr.string(doc = "Why installing is off; empty to install."),
+        "_install": attr.label(default = ":install_phone_app.sh", executable = True, cfg = "exec", allow_single_file = True),
+    },
+)
+
+def _status_line_impl(ctx):
+    status = ctx.actions.declare_file(ctx.attr.name + ".status")
+    ctx.actions.write(status, ctx.attr.line + "\n")
+    return [DefaultInfo(files = depset([status])), StatusInfo(files = depset([status]))]
+
+status_line = rule(
+    implementation = _status_line_impl,
+    doc = "A fixed line for the build report, for a piece this Mac skips.",
+    attrs = {"line": attr.string(mandatory = True)},
+)

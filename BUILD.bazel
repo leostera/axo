@@ -27,5 +27,7 @@ build_report(
     pieces = [
         "//apple/AxoMac:Axo",
         "//apple/AxoMac:dist",
+        "//apple/AxoPhone:AxoPhone_ipa",
+        "//apple/AxoPhone:install",
     ],
 )

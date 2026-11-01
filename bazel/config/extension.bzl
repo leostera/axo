@@ -303,10 +303,8 @@ REASONS = json.decode({reasons})
         config["builds"]["axod"],
         commit,
     )]
-    lines.append("signing: " + (identity.name if identity else "ad-hoc: " + reasons["sign"]))
-    for key in ["phone_device", "phone_install", "pi"]:
-        if key in reasons:
-            lines.append("%s: %s" % (key, reasons[key]))
+    if "pi" in reasons:
+        lines.append("pi: " + reasons["pi"])
     rctx.file("machine.txt", "\n".join(lines) + "\n")
 
     # The build writes these into the workspace. Each install action depends on this file, which

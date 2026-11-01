@@ -4,7 +4,8 @@ load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
-load("@axo_config//:defs.bzl", "AXO")
+load("@axo_config//:defs.bzl", "AXO", "CAN", "REASONS")
+load("//bazel/apple:defs.bzl", "ios_device_app", "phone_install", "status_line")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -112,14 +113,16 @@ apple_bundle_version(
 # Provisioning Profiles the first time Xcode signs the app automatically; or download one from the
 # developer portal). Only a Mac that has it builds the device target.
 
+# Only a Mac with the phone's provisioning profile can sign the app for a phone; elsewhere the
+# device targets are a line in the build report (RFD0021).
 local_provisioning_profile(
     name = "AxoPhoneProfile",
     profile_name = AXO["apple"]["phone_profile"],
     team_id = AXO["apple"]["team"],
-)
+) if CAN.phone_device else None
 
-# The same app, signed for a phone: `bazel build //apple/AxoPhone:AxoPhoneDevice --ios_multi_cpus=arm64`,
-# or Run on a device from the Xcode project.
+# The same app, signed for a phone and built for arm64 in every build. Xcode's Run on a device uses
+# it too.
 ios_application(
     name = "AxoPhoneDevice",
     app_icons = ["//assets:ios_app_icon"],
@@ -132,6 +135,25 @@ ios_application(
     resources = ["//assets:mascot", "//assets:fonts"],
     version = ":build_version",
     provisioning_profile = ":AxoPhoneProfile",
+    # Built through :AxoPhone_ipa, which picks the phone's CPU.
     tags = ["manual"],
     deps = [":AxoPhoneMain"],
+) if CAN.phone_device else None
+
+ios_device_app(
+    name = "AxoPhone_ipa",
+    app = ":AxoPhoneDevice",
+) if CAN.phone_device else status_line(
+    name = "AxoPhone_ipa",
+    line = "AxoPhoneDevice: skipped: " + REASONS.get("phone_device", ""),
+)
+
+# Installs and opens each new device build on the phone in config.local.json (phone.device), when
+# phone.install is set; the build report says what happened.
+phone_install(
+    name = "install",
+    app = ":AxoPhone_ipa" if CAN.phone_device else None,
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    device = AXO.get("phone", {}).get("device", ""),
+    off = REASONS.get("phone_install", ""),
 )
