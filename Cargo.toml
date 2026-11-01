@@ -1,3 +1,0 @@
-[workspace]
-members = ["crates/axo-ipc", "crates/axo-panes", "crates/axo-pi", "crates/axo-protocol", "crates/axo-pty", "crates/axo-relay", "crates/axo-signin", "crates/axo-server", "crates/axo-store", "crates/axo-vt", "crates/axod", "crates/axod-loadtest"]
-resolver = "3"

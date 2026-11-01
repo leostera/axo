@@ -1,4 +1,3 @@
-load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("@axo_config//:defs.bzl", "AXO")
 
@@ -9,17 +8,24 @@ exports_files(["testdata/pi-fixture.sh"])
 rust_binary(
     name = "axod",
     srcs = ["src/main.rs"],
-    edition = crate_edition(),
+    edition = "2024",
     # The macOS the Mac app requires, so axod's minimum matches the app's (RFD0021).
     rustc_env = {"MACOSX_DEPLOYMENT_TARGET": AXO["apple"]["macos_min"]},
     version = AXO["version"],
-    deps = ["//crates/axo-pty:axo_pty", "//crates/axo-server:axo_server"] + all_crate_deps(normal = True),
+    deps = [
+        "//crates/axo-pty:axo_pty",
+        "//crates/axo-server:axo_server",
+        "@crates//:clap",
+        "@crates//:env_logger",
+        "@crates//:libc",
+        "@crates//:log",
+    ],
 )
 
 rust_test(
     name = "rpc_tests",
     srcs = ["tests/rpc.rs"],
-    edition = crate_edition(),
+    edition = "2024",
     data = [":axod", "//crates/axo-server:pi_extension_fixture", "testdata/pi-fixture.sh"],
     env = {
         "AXOD_BINARY": "$(rootpath :axod)",
@@ -27,5 +33,11 @@ rust_test(
         "AXO_TEST_PI_EXECUTABLE": "$(rootpath testdata/pi-fixture.sh)",
     },
     timeout = "short",
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = [
+        "@crates//:clap",
+        "@crates//:env_logger",
+        "@crates//:libc",
+        "@crates//:log",
+        "@crates//:serde_json",
+    ],
 )

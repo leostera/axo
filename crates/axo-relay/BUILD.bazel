@@ -1,4 +1,3 @@
-load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -6,17 +5,26 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "axo_relay",
     srcs = glob(["src/*.rs"]),
-    edition = crate_edition(),
-    proc_macro_deps = all_crate_deps(proc_macro = True),
+    edition = "2024",
     deps = [
         "//crates/axo-protocol:axo_protocol",
         "//crates/axo-signin:axo_signin",
-    ] + all_crate_deps(normal = True),
+        "@crates//:httparse",
+        "@crates//:native-tls",
+        "@crates//:tungstenite",
+        "@crates//:url",
+        "@crates//:libc",
+        "@crates//:log",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:security-framework",
+    ],
 )
 
 rust_test(
     name = "axo_relay_tests",
     compile_data = ["//schemas/axo.leostera.dev/v1"],
     crate = ":axo_relay",
-    edition = crate_edition(),
+    edition = "2024",
 )

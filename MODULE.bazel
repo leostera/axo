@@ -21,11 +21,30 @@ use_repo(rust, "rust_toolchains")
 
 register_toolchains("@rust_toolchains//:all")
 
+# Every external crate the Rust code uses, declared here instead of in Cargo manifests (RFD0021).
+# crate_universe resolves them and pins the versions in bazel/rust/Cargo.lock, which it rewrites
+# when a spec changes; no Cargo command is ever run by hand.
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate.from_cargo(
+crate.spec(package = "clap", version = "4.5", features = ["derive", "string"])
+crate.spec(package = "core-foundation", version = "0.10.1")
+crate.spec(package = "env_logger", version = "0.11")
+crate.spec(package = "httparse", version = "1.10.1")
+crate.spec(package = "jsonrpc-core", version = "18.0.0")
+crate.spec(package = "libc", version = "0.2")
+crate.spec(package = "log", version = "0.4")
+crate.spec(package = "native-tls", version = "0.2.18")
+crate.spec(package = "rusqlite", version = "0.39.0", features = ["bundled"])
+crate.spec(package = "security-framework", version = "3.7.0")
+crate.spec(package = "serde", version = "1", features = ["derive"])
+crate.spec(package = "serde_json", version = "1")
+crate.spec(package = "sha2", version = "0.10")
+crate.spec(package = "shlex", version = "2.0.1")
+crate.spec(package = "tokio", version = "1", features = ["io-util", "net", "rt-multi-thread", "sync", "time"])
+crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls", "url"])
+crate.spec(package = "url", version = "2.5.8")
+crate.from_specs(
     name = "crates",
-    cargo_lockfile = "//:Cargo.lock",
-    manifests = ["//:Cargo.toml"],
+    cargo_lockfile = "//bazel/rust:Cargo.lock",
 )
 use_repo(crate, "crates")
 

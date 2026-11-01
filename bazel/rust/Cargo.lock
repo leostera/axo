@@ -62,135 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axo-ipc"
-version = "0.1.0"
-dependencies = [
- "jsonrpc-core",
- "log",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "axo-panes"
-version = "0.1.0"
-dependencies = [
- "axo-protocol",
-]
-
-[[package]]
-name = "axo-pi"
-version = "0.1.0"
-dependencies = [
- "axo-protocol",
- "axo-pty",
- "libc",
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "axo-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "axo-pty"
-version = "0.1.0"
-dependencies = [
- "axo-vt",
- "libc",
- "log",
- "shlex",
-]
-
-[[package]]
-name = "axo-relay"
-version = "0.1.0"
-dependencies = [
- "axo-protocol",
- "axo-signin",
- "httparse",
- "libc",
- "log",
- "native-tls",
- "security-framework",
- "serde",
- "serde_json",
- "sha2",
- "tungstenite",
- "url",
-]
-
-[[package]]
-name = "axo-server"
-version = "0.1.0"
-dependencies = [
- "axo-ipc",
- "axo-panes",
- "axo-pi",
- "axo-protocol",
- "axo-pty",
- "axo-relay",
- "axo-store",
- "core-foundation",
- "jsonrpc-core",
- "libc",
- "log",
- "rusqlite",
- "serde",
- "serde_json",
- "shlex",
-]
-
-[[package]]
-name = "axo-signin"
-version = "0.1.0"
-
-[[package]]
-name = "axo-store"
-version = "0.1.0"
-dependencies = [
- "axo-pi",
- "axo-protocol",
- "log",
- "rusqlite",
- "serde_json",
-]
-
-[[package]]
-name = "axo-vt"
-version = "0.1.0"
-
-[[package]]
-name = "axod"
-version = "0.1.0"
-dependencies = [
- "axo-pty",
- "axo-server",
- "clap",
- "env_logger",
- "libc",
- "log",
- "serde_json",
-]
-
-[[package]]
-name = "axod-loadtest"
-version = "0.1.0"
-dependencies = [
- "clap",
- "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -420,6 +291,29 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid",
  "crypto-common 0.2.2",
+]
+
+[[package]]
+name = "direct-cargo-bazel-deps"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "core-foundation",
+ "env_logger",
+ "httparse",
+ "jsonrpc-core",
+ "libc",
+ "log",
+ "native-tls",
+ "rusqlite",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "tokio",
+ "tungstenite",
+ "url",
 ]
 
 [[package]]

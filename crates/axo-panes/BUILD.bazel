@@ -1,4 +1,3 @@
-load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -6,12 +5,12 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "axo_panes",
     srcs = glob(["src/*.rs"]),
-    edition = crate_edition(),
-    deps = ["//crates/axo-protocol:axo_protocol"] + all_crate_deps(normal = True),
+    edition = "2024",
+    deps = ["//crates/axo-protocol:axo_protocol"],
 )
 
 rust_test(
     name = "axo_panes_tests",
     crate = ":axo_panes",
-    edition = crate_edition(),
+    edition = "2024",
 )
