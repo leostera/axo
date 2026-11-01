@@ -34,12 +34,21 @@ codesign --verify --deep --strict "$work/$(basename "$app")"
 cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
 [[ "$(cdhash "$app")" == "$(cdhash "$work/$(basename "$app")")" ]] || { echo "The zip does not unpack to the signed app" >&2; exit 1; }
 
+# The zip people download carries writable modes: an installer moves the app into /Applications,
+# and macOS moves a folder only if it may write it. Modes are not part of the signature.
+chmod -R u+w "$work/$(basename "$app")"
+ditto -c -k --keepParent "$work/$(basename "$app")" "$work/Axo.app.zip"
+check=$work/check
+ditto -x -k "$work/Axo.app.zip" "$check"
+[[ "$(cdhash "$app")" == "$(cdhash "$check/$(basename "$app")")" ]] || { echo "The writable zip does not unpack to the signed app" >&2; exit 1; }
+[[ -z "$(find "$check" ! -perm -u+w -print -quit)" ]] || { echo "The writable zip still has read-only files" >&2; exit 1; }
+zip=$work/Axo.app.zip
+
 plist=$app/Contents/Info.plist
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
 axod_build=$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$plist")
 commit=$(/usr/libexec/PlistBuddy -c 'Print :AXOGitCommit' "$plist")
 size=$(stat -L -f %z "$zip")
-zip=$(cd "$(dirname "$zip")" && pwd)/$(basename "$zip")
 
 upload() {
   "$cf" r2 objects put "$1" --bucket-name "$bucket" --file "$zip" \
