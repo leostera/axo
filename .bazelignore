@@ -1,2 +1,3 @@
 bazel-*
 dist
+.rules_rust_analyzer

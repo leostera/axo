@@ -335,7 +335,7 @@
   "moduleExtensions": {
     "//bazel/config:extension.bzl%axo_config": {
       "general": {
-        "bzlTransitiveDigest": "MpNEHGnmAJOrLXLw5ANtdMrOyILucUp58XXXZ1TzcME=",
+        "bzlTransitiveDigest": "sBV36XLSonjLbyO7yrwWwWKKWxWApN0pY1cU/gisGbc=",
         "usagesDigest": "BzsNwjMt5WNPt7R5NfciSdgQxI5TjKoigINeUWZ1xOE=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
@@ -343,8 +343,8 @@
             "repoRuleId": "@@//bazel/config:extension.bzl%_axo_config",
             "attributes": {}
           },
-          "axo_apple_files": {
-            "repoRuleId": "@@//bazel/config:extension.bzl%_axo_apple_files",
+          "axo_files": {
+            "repoRuleId": "@@//bazel/config:extension.bzl%_axo_files",
             "attributes": {}
           }
         }

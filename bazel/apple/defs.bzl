@@ -195,7 +195,7 @@ xcodeproj_install = rule(
     doc = "Writes the Xcode project of an xcodeproj target into the workspace, as `bazel run` of it does.",
     attrs = {
         "bazel": attr.string(doc = "The bazel the project's own builds run, as found on PATH."),
-        "files": attr.label(allow_single_file = True, default = "@axo_apple_files//:apple_files.txt"),
+        "files": attr.label(allow_single_file = True, default = "@axo_files//:apple_files.txt"),
         "home": attr.string(),
         "runner": attr.label(mandatory = True, executable = True, cfg = "target", doc = "An xcodeproj target."),
         "state": attr.label(allow_single_file = True, default = "@axo_config//:install_state.txt"),

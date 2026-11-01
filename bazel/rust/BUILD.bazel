@@ -1,1 +1,18 @@
-exports_files(["Cargo.lock"])
+load("@axo_config//:defs.bzl", "MACHINE")
+load(":defs.bzl", "rust_project_install")
+
+exports_files([
+    "Cargo.lock",
+    "install_rust_project.sh",
+])
+
+# Every build writes rust-project.json, for rust-analyzer, when the files under crates/ or the
+# crates in MODULE.bazel change, or it is missing (RFD0021).
+rust_project_install(
+    name = "rust_project",
+    bazel = MACHINE.bazel or "",
+    home = MACHINE.home,
+    output_base = MACHINE.output_base + "_rust_project",
+    visibility = ["//:__pkg__"],
+    workspace = MACHINE.workspace,
+)
