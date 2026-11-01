@@ -718,4 +718,10 @@ button.grouped-row:hover { background: var(--fill); }
 .device-code-row code { font: 600 22px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; user-select: all; }
 .device-code-row { padding-block: 12px; gap: 16px; }
 .device-code-actions { justify-content: space-between; }
+/* Setting up an OAuth app's client: two numbered steps, and the redirect URI to copy. */
+.client-setup + .connection-form { margin-top: 8px; }
+.client-step { padding-block: 10px; }
+.step-number { display: inline-grid; flex: none; width: 22px; height: 22px; place-items: center; border-radius: 50%; color: #fff; background: var(--blue); font-size: 12px; font-weight: 600; }
+.redirect-row { justify-content: space-between; gap: 12px; padding-block: 8px; }
+.redirect-row code { overflow-wrap: anywhere; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; user-select: all; }
 .app-tile.logo.full img { width: 100%; height: 100%; }

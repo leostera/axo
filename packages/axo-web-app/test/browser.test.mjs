@@ -113,6 +113,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let authenticated = false;
   let pairingRequestCount = 0;
   const tokenRequests = [];
+  const clientRequests = [];
   /** A ChatGPT device sign-in: polls so far, and whether the person has entered the code. */
   const device = { polls: 0, entered: false };
   // The account's connections (RFD0016), as the Worker lists them.
@@ -143,8 +144,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "app", name: "apps.kraken", title: "Kraken", provider: "Kraken", category: "finance", description: "Your Kraken account.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://pro.kraken.com/app/settings/api", named: true, fields: [{ name: "key", label: "API key", help: "In settings.", secret: true }, { name: "secret", label: "Private key", help: "Shown once.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["get_balance", "request"], lastError: null },
-    { kind: "app", name: "apps.github", title: "GitHub", provider: "GitHub", category: "developer", description: "Your GitHub.", permissions: [],
-      signIn: { kind: "token", helpUrl: "https://github.com/settings/personal-access-tokens/new", named: false, fields: [{ name: "token", label: "Personal access token", help: "In settings.", secret: true }] },
+    { kind: "app", name: "apps.github", title: "GitHub", provider: "GitHub", category: "developer", description: "Your GitHub: repositories, issues, pull requests, code search and notifications.",
+      permissions: ["See and change every repository you can reach", "See your notifications"],
+      signIn: { kind: "oauth", client: { provider: "github", ready: false, consoleUrl: "https://github.com/settings/developers", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback" } },
       state: "needsSignIn", accounts: [], tools: ["get_issue", "request"], lastError: null },
     { kind: "app", name: "apps.discord", title: "Discord", provider: "Discord", category: "communication", description: "A Discord bot of yours.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://discord.com/developers/applications", named: false, fields: [{ name: "token", label: "Bot token", help: "In the portal.", secret: true }] },
@@ -206,6 +208,21 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       chatgpt.accounts = [{ account: "ada@example.com", state: "ready", lastError: null }];
       chatgpt.state = "ready";
       json(response, { state: "done", account: "ada@example.com" }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.github/client") {
+      // Setting up an OAuth app's client: sent once, and the secret never comes back.
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        clientRequests.push(JSON.parse(body));
+        connections.find((c) => c.name === "apps.github").signIn.client.ready = true;
+        json(response, { provider: "github" }, origin);
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.github/sign-in") {
+      json(response, { signInUrl: "/app/settings/apps/github?signedIn=apps.github" }, origin);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.hetzner/token") {
@@ -714,6 +731,32 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(tokenRequests.map((r) => r.account), ["personal", "personal"]);
     assert.equal((await page.content()).includes("hz-good-token"), false);
     await shot("apps-hetzner");
+
+    // An OAuth app of the person's own: set up its client first, then add accounts.
+    await page.goto(`${appUrl}/app/settings/apps/github`, { waitUntil: "networkidle" });
+    const github = page.getByRole("region", { name: "GitHub" });
+    await expect(github.getByRole("heading", { name: "Set up GitHub" }));
+    assert.equal(await github.getByRole("button", { name: "Add account" }).count(), 0, "no account before the client");
+    assert.equal(await github.getByLabel("Redirect URI").textContent(), "https://axo.leostera.dev/api/v1/connections/oauth/callback");
+    assert.equal(await github.getByRole("link", { name: "Open GitHub" }).getAttribute("href"), "https://github.com/settings/developers");
+    await github.getByLabel("Client ID").fill(" Ov23liClient ");
+    await github.getByLabel("Client secret").fill("gh-client-secret");
+    assert.equal(await github.getByLabel("Client secret").getAttribute("type"), "password");
+    await shot("apps-github-setup");
+    await github.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(github.getByText("GitHub is set up. Add an account."));
+    assert.deepEqual(clientRequests, [{ clientId: "Ov23liClient", clientSecret: "gh-client-secret" }]);
+    assert.equal(await github.getByLabel("Client secret").count(), 0, "the form is gone, and the secret with it");
+    assert.equal((await page.content()).includes("gh-client-secret"), false);
+    await expect(github.getByRole("button", { name: "Add account" }));
+    await expect(github.getByText("Signs in with your own GitHub OAuth app."));
+    await shot("apps-github");
+    await github.getByRole("button", { name: "Change client" }).click();
+    await expect(github.getByRole("heading", { name: "Change GitHub client" }));
+    await github.getByRole("button", { name: "Cancel" }).click();
+    await expect(github.getByRole("button", { name: "Add account" }));
+    await github.getByRole("button", { name: "Add account" }).click();
+    await page.waitForURL(/signedIn=apps\.github/);
 
     // A device sign-in: the code to enter at OpenAI, until the person has.
     await page.goto(`${appUrl}/app/settings/apps/chatgpt`, { waitUntil: "networkidle" });

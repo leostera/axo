@@ -176,7 +176,7 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go, busy, addSuggeste
     ...apps.map((app): Tile => ({
       key: app.name, title: app.title, subtitle: app.description, category: app.category || "other", provider: app.provider,
       connected: app.accounts.some((a) => a.state === "ready"), look: <AppTile app={app.name} large />,
-      detail: count(app.accounts.length, app.signIn.kind === "mac" ? "Mac" : "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
+      detail: needsClient(app) ? "Needs set-up" : count(app.accounts.length, app.signIn.kind === "mac" ? "Mac" : "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
     })),
     ...servers.map((server): Tile => ({
       key: server.name, title: server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
@@ -289,6 +289,10 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
   // A token app's Add account is a form on this page; an OAuth app's opens the provider's sign-in.
   const [adding, setAdding] = useState<{ account: string } | null>(null);
   const [device, setDevice] = useState<{ flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }> } | null>(null);
+  // An OAuth app signs in with the person's own client for its provider: set up once, changed any time.
+  const [changingClient, setChangingClient] = useState(false);
+  const client = app.signIn.kind === "oauth" ? app.signIn.client : undefined;
+  const settingUp = client !== undefined && (!client.ready || changingClient);
   const add = (account = "") => {
     if (app.signIn.kind === "token") {
       setAdding({ account });
@@ -330,6 +334,12 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
       </aside>
 
       <section className="app-main">
+        {settingUp && client ? (
+          <ClientForm app={app} client={client} busy={busy} act={act} connectionsUrl={connectionsUrl}
+            onDone={() => { setChangingClient(false); setNotice({ kind: "ok", text: `${app.provider || app.title} is set up. Add an account.` }); }}
+            onCancel={client.ready ? () => setChangingClient(false) : undefined} />
+        ) : null}
+        {settingUp && !app.accounts.length ? null : <>
         {app.accounts.length || (adding === null && device === null) ? <h2 className="settings-section">Accounts</h2> : null}
         <div className="grouped" hidden={!app.accounts.length && (adding !== null || device !== null)}>
           {app.accounts.map((account) => (
@@ -350,8 +360,12 @@ function AppPage({ app, version, connectionsUrl, busy, act, setNotice }: Shared 
             </div>
           ))}
           {app.signIn.kind === "mac" && !app.accounts.length ? <p className="grouped-row muted">Pair a Mac to use {app.title}.</p> : null}
-          {adding === null && device === null && app.signIn.kind !== "mac" ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
+          {adding === null && device === null && app.signIn.kind !== "mac" && !settingUp ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
         </div>
+        {client?.ready && !changingClient
+          ? <p className="sheet-note">Signs in with your own {app.provider || app.title} OAuth app. <button className="link" type="button" onClick={() => setChangingClient(true)}>Change client</button></p>
+          : null}
+        </>}
         {app.signIn.kind === "mac"
           ? <p className="sheet-note">Your Macs are its accounts. {app.signIn.setup} <a href={app.signIn.helpUrl} target="_blank" rel="noreferrer">Learn more</a>.</p>
           : null}
@@ -436,6 +450,69 @@ function DeviceCode({ app, flow, shown, connectionsUrl, onDone, onCancel }: {
 }
 
 type TokenSignIn = Extract<App["signIn"], { kind: "token" }>;
+type OAuthClient = NonNullable<Extract<App["signIn"], { kind: "oauth" }>["client"]>;
+
+/** Whether an OAuth app is waiting for its provider's client to be set up. */
+function needsClient(app: App): boolean {
+  return app.signIn.kind === "oauth" && app.signIn.client?.ready === false;
+}
+
+/**
+ * Sets up the OAuth app Axo signs in to a provider with, or replaces it: the person registers it
+ * with the provider, with Axo's redirect URI, and enters its ID and secret here once. Axo keeps
+ * them encrypted with the account; the secret is never shown again. One serves every app of the
+ * provider (all of Google's).
+ */
+function ClientForm({ app, client, busy, act, connectionsUrl, onDone, onCancel }: {
+  app: App; client: OAuthClient; busy: boolean; connectionsUrl: string;
+  act: Shared["act"]; onDone: () => void; onCancel?: () => void;
+}) {
+  const [fields, setFields] = useState({ clientId: "", clientSecret: "" });
+  const [copied, setCopied] = useState(false);
+  const provider = app.provider || app.title;
+  const submit = () => act(async () => {
+    await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/client`, "POST", { clientId: fields.clientId.trim(), clientSecret: fields.clientSecret.trim() });
+    setFields({ clientId: "", clientSecret: "" });
+    onDone();
+  });
+  const copy = () => {
+    void navigator.clipboard?.writeText(client.redirectUri).then(() => setCopied(true), () => undefined);
+  };
+  return (
+    <>
+      <h2 className="settings-section">{onCancel ? `Change ${provider} client` : `Set up ${provider}`}</h2>
+      <div className="grouped client-setup">
+        <div className="grouped-row client-step">
+          <span className="step-number" aria-hidden="true">1</span>
+          <span className="connection-copy">
+            <strong>Register an OAuth app with {provider}</strong>
+            <small>Use this redirect URI. <a className="link" href={client.consoleUrl} target="_blank" rel="noreferrer">Open {provider}</a></small>
+          </span>
+        </div>
+        <div className="grouped-row redirect-row">
+          <code aria-label="Redirect URI">{client.redirectUri}</code>
+          <button className="link" type="button" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
+        </div>
+        <div className="grouped-row client-step">
+          <span className="step-number" aria-hidden="true">2</span>
+          <span className="connection-copy"><strong>Enter its client ID and secret</strong></span>
+        </div>
+      </div>
+      <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <input className="grouped-row" required placeholder="Client ID" value={fields.clientId} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+          onChange={(event) => setFields({ ...fields, clientId: event.target.value })} aria-label="Client ID" autoFocus />
+        <input className="grouped-row" required type="password" placeholder="Client secret" value={fields.clientSecret} autoComplete="off"
+          onChange={(event) => setFields({ ...fields, clientSecret: event.target.value })} aria-label="Client secret" />
+        <button className="grouped-row" disabled={busy} type="submit">Save</button>
+      </form>
+      <p className="sheet-note">
+        Axo keeps them encrypted with your account and never shows the secret again.
+        {app.provider === "Google" ? " One client serves every Google app." : ""}
+        {onCancel ? <> Accounts signed in with the old one may need to sign in again. <button className="link" type="button" onClick={onCancel}>Cancel</button></> : null}
+      </p>
+    </>
+  );
+}
 
 /**
  * Adds an account to a token app: what the service issued, pasted once. It is sent to Axo, which
