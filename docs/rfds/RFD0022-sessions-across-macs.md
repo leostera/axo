@@ -4,7 +4,7 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-11-01
-- Updated: 2026-11-01
+- Updated: 2026-11-01 (the peers socket, as built)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md), [RFD0018](RFD0018-session-sync-and-client-delivery.md)
 
@@ -78,30 +78,35 @@ If the laptop is offline, the Studio writes the handoff itself from the last wor
 
 ### Following the account from axod
 
-The HostDO already holds axod's socket. A new host method lets axod follow the account on that socket instead of opening a client socket:
+Axod opens a second socket next to its host socket: the same client socket a browser tab opens (RFD0018), signed in with the host credential instead of the account sign-in.
 
-```ts
-// axod → HostDO, on the host socket
-"axo.host.peers.follow":  {}                            // → { hosts, sessions } as axo.client.hello replies
-"axo.host.peers.open":    { hostId, sessionId, cursor } // records from the cursor, paced by ack, as axo.client.session.open
-"axo.host.peers.ack":     { hostId, sessionId, cursor }
-"axo.host.peers.command": { hostId, method, params }    // as axo.client.command
-// HostDO → axod
-"axo.host.peers.sessions" / ".records" / ".progress" / ".reset"   // as the axo.client.* notices
+```
+GET /api/v1/accounts/<account>/hosts/<host>/peers     (WebSocket)
+Authorization: Bearer <host credential>
+X-Axo-Credential-Id: <credential id>
 ```
 
-The HostDO serves this by owning a ClientDO named `(account, "host:" + hostId)`. It reuses the ClientDO's subscriptions, pacing and acknowledgements unchanged, and forwards its notices on the host socket at `bulk` priority, below the host's own uploads. The host's own Sessions are left out of the listing, since axod has them already.
+The Worker checks the credential with the account (`authorizeHost`, as for the daemon socket), then hands the socket to an ordinary ClientDO named `(account, "host-" + hostId)`. Everything after that is the client protocol unchanged: `axo.client.hello`, `session.open` with `have`, `records` batches paced by `ack`, `reset`, `command`. Two things differ:
 
-**Authorization.** The host credential is enough. A paired Mac can already run commands on every other Mac of the account through connections, so reading and prompting their Sessions grants nothing new. Revoking a host (RFD0013) ends its ClientDO with its socket.
+- **This Mac's own Sessions are left out.** A ClientDO whose client id is `host-<hostId>` does not follow that host; axod has those Sessions already.
+- **An open from nothing returns Pi's header line.** `session.open` with `have.cursor` 0 carries `header`, so the copy is the whole file Pi wrote. Other clients never ask for it.
+
+This keeps the HostDO and ClientDO as they are. A ClientDO driven over the host socket would have needed a second way to deliver everything the ClientDO now sends to its one socket.
+
+**Authorization.** The host credential is enough. A paired Mac can already run commands on every other Mac of the account through connections, so reading and prompting their Sessions grants nothing new. The socket is signed in for an hour, and axod opens it again before then, so a revoked Mac is refused within the hour.
+
+**Pacing.** Axod sends at most 30 frames a second (the ClientDO closes a client past 60), with at most 4 opens waiting at once.
 
 ### The mirror
 
-Axod writes peer transcripts under `~/.axo/server/peers/<hostId>/<sessionId>.jsonl`. These are exact copies of the cloud's `pi/3` lines, so Pi can open them. It keeps a cursor per Session next to them.
+Axod writes peer transcripts under `~/.axo/server/peers/<hostId>/<sessionId>.jsonl`. These are Pi's header line and then the cloud's `pi/3` lines in order, so they are the files Pi wrote, and Pi can open them. Next to each is `<sessionId>.state.json` with `{ epoch, cursor }`, saved after the lines are on disk and before the batch is acknowledged. `peers/index.json` holds the other Macs and their Sessions as the cloud last listed them, for the catalog.
+
+- **Crash safety:** on its first look at a copy, axod cuts away lines past the saved cursor. A copy shorter than its state is made again from nothing.
 
 - **Which Sessions are mirrored:** all of them. That includes archived ones, so continuing an old chat needs nothing. At about one transcript per chat, this is far less than one Mac's disk.
 - **Truncation:** a `reset` (the source Mac rewrote history) truncates the mirror to the cut and reads on, as the ClientDO's reads already do.
 - **Invariant: a Mac uploads only the Sessions it owns.** The peers directory is outside `pi-sessions/`, so the uploader never sees it. A mirror is never sent back to the cloud.
-- **Catalog:** `axo.session.catalog` gains `host: { hostId, label, online }` and `mirror: true` on peer Sessions. Prompt, stop and answer on a mirror go out as `axo.host.peers.command`, and their results come back on the same path.
+- **Catalog:** `axo.session.catalog` gains `host: { hostId, label, online }` and `mirror: true` on peer Sessions. Prompt, stop and answer on a mirror go out as `axo.client.command` on the peers socket.
 
 ### The Mac app
 
@@ -154,7 +159,7 @@ The handoff runs **before** the new Session starts. If the source agent is busy,
 ## Rollout
 
 1. **Workspace state** in metadata. axod only, harmless alone.
-2. **`axo.host.peers.*` and the mirror.** Worker and axod. The catalog lists peers, with no UI yet.
+2. **The peers socket and the mirror.** Worker and axod. Copies and the index are on disk, with no UI yet.
 3. **The Mac app's peer sections and chat view.**
 4. **Continue**: the `session.continue` and `session.handoff` methods, the handoff turn, and the button in the Mac, web and phone apps.
 
