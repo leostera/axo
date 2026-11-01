@@ -275,6 +275,30 @@ function moreServices() {
       if (request.headers.get("X-API-KEY") !== "ui-key") return json({ code: "unauthorized", message: "unauthorized" }, 401);
       if (url.pathname === "/v1/hosts") return url.searchParams.get("nextToken") ? json({ data: [{ id: "h2" }] }) : json({ data: [{ id: "h1" }], nextToken: "t" });
       if (url.pathname === "/v1/devices") return json({ data: [{ hostId: url.searchParams.getAll("hostIds[]").join("+"), devices: [] }] });
+      const proxy = "/v1/connector/consoles/h2/proxy/network";
+      if (url.pathname === `${proxy}/api/s/default/stat/sta`) return json({ meta: { rc: "ok" }, data: [
+        { mac: "aa:aa", hostname: "Galaxy-A54", name: "Phone", last_ip: "192.168.0.84", is_wired: false, essid: "Home", last_uplink_name: "Express 7", first_seen: 1_773_232_249, last_seen: 1_793_494_577 },
+        { mac: "bb:bb", ip: "192.168.0.9", is_wired: true },
+      ] });
+      if (url.pathname === `${proxy}/integration/v1/dpi/applications`) {
+        // Two pages, and IDs both ways: category << 16 | app, and the app's number alone.
+        const offset = Number(url.searchParams.get("offset"));
+        return json({ offset, totalCount: 2, data: offset === 0 ? [{ id: 5 * 65_536 + 132, name: "YouTube" }] : offset === 1 ? [{ id: 7, name: "QUIC" }] : [] });
+      }
+      if (url.pathname === `${proxy}/v2/api/site/default/traffic`) {
+        if (!url.searchParams.get("start") || url.searchParams.get("includeUnidentified") !== "true") return json({ error: "bad query" }, 400);
+        return json({
+          total_usage_by_app: [
+            { application: 7, category: 13, bytes_received: 1, bytes_transmitted: 1, total_bytes: 2, client_count: 1 },
+            { application: 132, category: 5, bytes_received: 90, bytes_transmitted: 10, total_bytes: 100, client_count: 2 },
+            { application: 65_535, category: 255, total_bytes: 50, client_count: 1 },
+          ],
+          client_usage_by_app: [
+            { client: { mac: "aa:aa", name: "Phone" }, usage_by_app: [{ application: 132, category: 5, total_bytes: 30 }] },
+            { client: { mac: "bb:bb", hostname: "studio" }, usage_by_app: [{ application: 132, category: 5, total_bytes: 70 }, { application: 65_535, category: 255, total_bytes: 50 }, { application: 7, category: 13, total_bytes: 2 }] },
+          ],
+        });
+      }
     }
     return json({ message: "not found" }, 404);
   }) as typeof fetch;
@@ -296,4 +320,25 @@ test("UniFi takes its key as X-API-KEY, needs a name, and reads every page", asy
   assert.deepEqual(await apps.addToken("unifi", "Home", { key: "ui-key" }), { name: "apps.unifi", account: "home" });
   assert.deepEqual(await apps.call("unifi", "list_hosts", { account: "home" }), { hosts: [{ id: "h1" }, { id: "h2" }] });
   assert.deepEqual(await apps.call("unifi", "list_devices", { account: "home", hostIds: ["a", "b"] }), { hosts: [{ hostId: "a+b", devices: [] }] });
+});
+
+test("UniFi lists a console's clients and what the network was used for, by app and device, with the apps named", async () => {
+  const { apps } = moreServices();
+  await apps.addToken("unifi", "Home", { key: "ui-key" });
+  assert.match(await refused(apps.call("unifi", "get_traffic", { account: "home" })), /has 2 consoles: pass `host`, one of h1 .*h2/);
+  assert.deepEqual(await apps.call("unifi", "list_clients", { account: "home", host: "h2" }), { clients: [
+    { name: "Phone", hostname: "Galaxy-A54", mac: "aa:aa", ip: "192.168.0.84", wired: false, network: "Home", uplink: "Express 7", firstSeen: "2026-03-11T12:30:49.000Z", lastSeen: "2026-11-01T00:56:17.000Z", receivedBytes: null, sentBytes: null, signal: null },
+    { name: "bb:bb", hostname: null, mac: "bb:bb", ip: "192.168.0.9", wired: true, network: null, uplink: null, firstSeen: null, lastSeen: null, receivedBytes: null, sentBytes: null, signal: null },
+  ] });
+  const traffic = (await apps.call("unifi", "get_traffic", { account: "home", host: "h2", hours: 6, limit: 2 })) as { from: string; to: string; totalBytes: number; apps: unknown[]; devices: unknown[] };
+  assert.equal(Date.parse(traffic.to) - Date.parse(traffic.from), 6 * 3_600_000);
+  assert.equal(traffic.totalBytes, 152);
+  assert.deepEqual(traffic.apps, [
+    { app: "YouTube", bytes: 100, receivedBytes: 90, sentBytes: 10, devices: [{ device: "studio", bytes: 70 }, { device: "Phone", bytes: 30 }] },
+    { app: "Unknown", bytes: 50, receivedBytes: 0, sentBytes: 0, devices: [{ device: "studio", bytes: 50 }] },
+  ], "biggest first, named from the catalogue, cut at the limit");
+  assert.deepEqual(traffic.devices, [
+    { device: "studio", mac: "bb:bb", bytes: 122, apps: [{ app: "YouTube", bytes: 70 }, { app: "Unknown", bytes: 50 }, { app: "QUIC", bytes: 2 }] },
+    { device: "Phone", mac: "aa:aa", bytes: 30, apps: [{ app: "YouTube", bytes: 30 }] },
+  ]);
 });
