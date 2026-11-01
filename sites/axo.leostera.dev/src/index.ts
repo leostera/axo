@@ -1,5 +1,5 @@
 import api from "@axo/api-worker";
-import { installScriptResponse, macAppResponse } from "./install.ts";
+import { installScriptResponse, macAppManifestResponse, macAppResponse } from "./install.ts";
 
 export {
   AxoAccountDirectory,
@@ -55,6 +55,7 @@ export default {
     if (pathname === "/install") return installScriptResponse(request);
     if (pathname === "/cdn/Axo.app" || pathname === "/cdn/Axo.app.zip")
       return await macAppResponse(request, env.CDN);
+    if (pathname === "/cdn/Axo.app.json") return await macAppManifestResponse(request, env.CDN);
     if (pathname.startsWith("/api/public-sessions/")) {
       return await publicSessionSnapshot(request, env) ?? new Response("Not found", { status: 404 });
     }

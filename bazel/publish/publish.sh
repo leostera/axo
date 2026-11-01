@@ -2,7 +2,8 @@
 # bazel run //:publish: uploads the Mac app this build signed for https://axo.leostera.dev/cdn/Axo.app,
 # which `curl -fsSL https://axo.leostera.dev/install | sh` installs (RFD0021).
 #
-# Every build is kept at mac/builds/<CFBundleVersion>/Axo.app.zip; mac/Axo.app.zip is the one served.
+# Every build is kept at mac/builds/<CFBundleVersion>/Axo.app.zip; mac/Axo.app.zip is the one served,
+# and mac/Axo.app.json says which build it is.
 # It refuses an app not signed by the team, and a checkout with changes: what is published must be
 # a commit.
 set -euo pipefail
@@ -45,8 +46,17 @@ upload() {
     --content-type application/zip --content-length "$size" --quiet >/dev/null
 }
 
+# What Axo.app reads to offer "Upgrade to Build N"; uploaded after the zip it describes.
+manifest=$work/Axo.app.json
+printf '{"build":%s,"axodBuild":%s,"commit":"%s"}\n' "$build" "$axod_build" "$commit" > "$manifest"
+upload_manifest() {
+  "$cf" r2 objects put mac/Axo.app.json --bucket-name "$bucket" --file "$manifest" \
+    --content-type application/json --content-length "$(stat -f %z "$manifest")" --quiet >/dev/null
+}
+
 echo "Uploading Axo build $build (axod $axod_build, $commit, $((size / 1024 / 1024)) MiB)"
 upload "mac/builds/$build/Axo.app.zip"
 upload "mac/Axo.app.zip"
+upload_manifest
 echo "Published: $url"
 echo "Install:   curl -fsSL https://axo.leostera.dev/install | sh"

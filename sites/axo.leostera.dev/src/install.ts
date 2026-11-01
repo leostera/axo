@@ -10,6 +10,13 @@
 /** The R2 key `scripts/publish-mac.sh` writes the latest Mac app to. */
 export const MAC_APP_KEY = "mac/Axo.app.zip";
 
+/**
+ * The R2 key `//:publish` writes the served build's description to, after its zip, so it never
+ * names a build that is not there yet: `{ "build": 260, "axodBuild": 23, "commit": "…" }`.
+ * Axo.app reads it to offer "Upgrade to Build N" from its menu.
+ */
+export const MAC_APP_MANIFEST_KEY = "mac/Axo.app.json";
+
 /** The team that signs Axo.app and its axod helper; the script refuses any other signature. */
 const SIGNING_TEAM = "RGH6S9S55G";
 
@@ -63,6 +70,22 @@ export async function macAppResponse(request: Request, bucket: R2Bucket): Promis
     "X-Content-Type-Options": "nosniff",
   });
   return new Response("body" in object ? (object as R2ObjectBody).body : null, { headers });
+}
+
+export async function macAppManifestResponse(request: Request, bucket: R2Bucket): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
+  }
+  const object = await bucket.get(MAC_APP_MANIFEST_KEY);
+  if (!object) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  const headers = new Headers({
+    "Content-Type": "application/json; charset=utf-8",
+    // As short as the zip's, so the two agree within a minute.
+    "Cache-Control": "public, max-age=60",
+    ETag: object.httpEtag,
+    "X-Content-Type-Options": "nosniff",
+  });
+  return new Response(request.method === "HEAD" ? null : object.body, { headers });
 }
 
 /** Single-quotes `value` for POSIX sh. The inputs are an origin and a parsed code, but be safe. */
