@@ -57,6 +57,8 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   public let lastMessageAt: Int64?
   /// Unix seconds when the Session was created.
   public let createdAt: Int64?
+  /// The Session's folder and repository as its Mac last read them (RFD0022); nil until it has.
+  public let workspaceState: WorkspaceState?
 
   public var displayName: String { name ?? "Session" }
 
@@ -64,7 +66,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     hostId: UUID, sessionId: SessionID, workspaceId: UUID? = nil, workspaceName: String? = nil,
     name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil,
     shells: [RemoteShell] = [], layout: SessionLayout? = nil, updatedAt: String = "",
-    lastMessageAt: Int64? = nil, createdAt: Int64? = nil
+    lastMessageAt: Int64? = nil, createdAt: Int64? = nil, workspaceState: WorkspaceState? = nil
   ) {
     self.hostId = hostId
     self.sessionId = sessionId
@@ -79,6 +81,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     self.updatedAt = updatedAt
     self.lastMessageAt = lastMessageAt
     self.createdAt = createdAt
+    self.workspaceState = workspaceState
   }
 
   /// A Session as the account's client lists it (RFD0018): what the host says of it, without
@@ -88,7 +91,8 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
       hostId: listed.hostId, sessionId: listed.sessionId, workspaceId: listed.metadata.workspaceId,
       workspaceName: listed.metadata.workspaceName, name: listed.metadata.name, emoji: listed.metadata.emoji,
       status: listed.status, hasAgent: listed.metadata.hasAgent,
-      lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt)
+      lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt,
+      workspaceState: listed.metadata.workspaceState)
   }
 }
 
@@ -171,10 +175,13 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
   public let lastMessageAt: Int64?
   /// Archived on the Mac, deleted there, or missing from its listing: the cloud never deletes.
   public let archived: Bool
+  /// Absent until the Mac has read it; older Macs never send it.
+  public let workspaceState: WorkspaceState?
 
   public init(
     name: String? = nil, emoji: String? = nil, workspaceId: UUID? = nil, workspaceName: String? = nil,
-    hasAgent: Bool = true, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false
+    hasAgent: Bool = true, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false,
+    workspaceState: WorkspaceState? = nil
   ) {
     self.name = name
     self.emoji = emoji
@@ -184,6 +191,53 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
     self.createdAt = createdAt
     self.lastMessageAt = lastMessageAt
     self.archived = archived
+    self.workspaceState = workspaceState
+  }
+}
+
+/// A Session's folder and its repository as git saw it when the agent last settled, so another
+/// device can tell what continuing the Session elsewhere would need (RFD0022). Outside a
+/// repository only `path` is set.
+public struct WorkspaceState: Decodable, Equatable, Sendable {
+  public let path: String
+  public let repoRoot: String?
+  /// The upstream remote's URL, with any credentials removed.
+  public let remote: String?
+  /// Nil when HEAD is detached.
+  public let branch: String?
+  public let head: String?
+  /// Where the branch's upstream was, as last fetched on that Mac.
+  public let upstreamHead: String?
+  /// Paths `git status` lists, at most 50; `dirtyMore` counts the rest.
+  public let dirty: [String]
+  public let dirtyMore: Int
+  /// Unix seconds.
+  public let at: Int64
+
+  public init(
+    path: String, repoRoot: String? = nil, remote: String? = nil, branch: String? = nil, head: String? = nil,
+    upstreamHead: String? = nil, dirty: [String] = [], dirtyMore: Int = 0, at: Int64
+  ) {
+    self.path = path
+    self.repoRoot = repoRoot
+    self.remote = remote
+    self.branch = branch
+    self.head = head
+    self.upstreamHead = upstreamHead
+    self.dirty = dirty
+    self.dirtyMore = dirtyMore
+    self.at = at
+  }
+
+  /// Whether the folder is in a git repository.
+  public var isRepository: Bool { repoRoot != nil }
+  /// How many paths have changes not committed.
+  public var changedCount: Int { dirty.count + dirtyMore }
+  /// Whether the commit checked out is not where the upstream was last fetched: unpushed work, or
+  /// work not pulled yet.
+  public var differsFromUpstream: Bool {
+    guard let head, let upstreamHead else { return false }
+    return head != upstreamHead
   }
 }
 

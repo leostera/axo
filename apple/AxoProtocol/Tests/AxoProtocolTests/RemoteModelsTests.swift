@@ -45,6 +45,28 @@ final class RemoteModelsTests: XCTestCase {
     XCTAssertEqual(remote.reference.hostGeneration.uuidString.lowercased(), generation)
   }
 
+  func testASessionsWorkspaceStateDecodesAndIsAbsentFromOlderMacs() throws {
+    let head = String(repeating: "a1", count: 20)
+    let json = """
+      {"hosts":[],"sessions":[{"hostId":"\(host)","sessionId":"00000009-0000-4000-8000-000000000009","epoch":2,"head":40,
+      "status":"ready","metadata":{"name":"Ship it","emoji":null,"workspaceId":null,"workspaceName":"Axo","hasAgent":true,
+      "createdAt":1700000000,"lastMessageAt":null,"archived":false,"workspaceState":{"path":"/Users/leo/axo/apple",
+      "repoRoot":"/Users/leo/axo","remote":"https://github.com/leostera/axo","branch":"main","head":"\(head)",
+      "upstreamHead":null,"dirty":["README.md","apple/BUILD.bazel"],"dirtyMore":3,"at":1700000200}}},
+      {"hostId":"\(host)","sessionId":"00000001-0000-4000-8000-000000000001","epoch":null,"head":0,"status":null,
+      "metadata":{"name":null,"emoji":null,"workspaceId":null,"workspaceName":null,"hasAgent":true,"createdAt":null,
+      "lastMessageAt":null,"archived":false}}]}
+      """
+    let hello = try JSONDecoder().decode(ClientHello.self, from: Data(json.utf8))
+    let state = try XCTUnwrap(RemoteSession(hello.sessions[0]).workspaceState)
+    XCTAssertEqual(state.branch, "main")
+    XCTAssertEqual(state.head, head)
+    XCTAssertEqual(state.changedCount, 5)
+    XCTAssertTrue(state.isRepository)
+    XCTAssertFalse(state.differsFromUpstream, "an upstream never fetched says nothing")
+    XCTAssertNil(RemoteSession(hello.sessions[1]).workspaceState)
+  }
+
   func testRecordsAndProgressDecodeAndAClearedSlotIsNull() throws {
     let open = """
       {"epoch":1,"records":[{"cursor":4,"id":"a1b2","format":"pi/3","line":"{\\"type\\":\\"message\\"}",
