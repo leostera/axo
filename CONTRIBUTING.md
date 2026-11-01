@@ -37,6 +37,14 @@ bazel test //apple/AxoMac:AxoVisualUITestsBazel --test_output=all
 
 The visual suite drives a real terminal surface. Do not run it in a locked session or bypass macOS's UI Automation authorization. Its screenshots and test results are written to local temporary/Bazel output directories.
 
+### Adding a dependency
+
+Bazel gives each target only what its `BUILD.bazel` lists, so a dependency goes in two places:
+
+- **npm:** add it to the package's `package.json`, run `pnpm install` at the root (it updates `pnpm-lock.yaml`), then add `:node_modules/<name>` to the targets that import it in that package's `BUILD.bazel`. A package that imports something it does not declare fails to typecheck, even if it worked under npm's hoisting.
+- **Rust:** add a `crate.spec` in `MODULE.bazel` and `@crates//:<name>` to the crate's `deps`. There are no `Cargo.toml` files.
+- **Swift:** add the remote package to `apple/Package.swift`, run `swift package resolve` in `apple/`, then depend on it from the target's `BUILD.bazel`.
+
 Publishing the Mac app for `curl -fsSL https://axo.leostera.dev/install | sh` is its own step, from a checkout without changes: `bazel run //:publish`.
 
 ## Making a change
