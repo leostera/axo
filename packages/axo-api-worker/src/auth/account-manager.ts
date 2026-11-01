@@ -4,6 +4,7 @@ import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
 import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
+import type { DeviceSignIn } from "../connections/apps";
 import { googleClient } from "../connections/apps/google";
 import type { CallRecord, Connection } from "@axo/protocol";
 import type { ChainCheck } from "../connections/call-log";
@@ -344,6 +345,19 @@ export class AxoAccountManager extends DurableObject<Env> {
   /** A client the person registered with the provider, typed on the Connections page only. */
   async setConnectionClient(name: string, clientId: string, clientSecret: string | null): Promise<{ signInUrl: string }> {
     return this.requireConnections().setClient(name, { clientId, clientSecret });
+  }
+
+  /** A token app's account, from what the person pasted on its page (RFD0016). */
+  async addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }> {
+    return this.requireConnections().addAppToken(name, account, fields);
+  }
+
+  async startAppDevice(name: string): Promise<({ flow: string } & Extract<DeviceSignIn, { state: "pending" }>) | { error: string }> {
+    return this.requireConnections().startAppDevice(name);
+  }
+
+  async pollAppDevice(name: string, flow: string): Promise<DeviceSignIn> {
+    return this.requireConnections().pollAppDevice(name, flow);
   }
 
   async connectionSignInLink(name: string): Promise<string> {

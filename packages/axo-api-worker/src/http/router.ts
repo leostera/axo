@@ -153,6 +153,9 @@ app.get("/api/v1/account/connections/log/integrity", connectionsRoute("integrity
 app.post("/api/v1/account/connections/:name/remove", connectionsRoute("remove"));
 app.post("/api/v1/account/connections/:name/client", connectionsRoute("client"));
 app.post("/api/v1/account/connections/:name/sign-in", connectionsRoute("signIn"));
+app.post("/api/v1/account/connections/:name/token", connectionsRoute("token"));
+app.post("/api/v1/account/connections/:name/device", connectionsRoute("device"));
+app.post("/api/v1/account/connections/:name/device/poll", connectionsRoute("devicePoll"));
 app.all("/api/v1/connections/oauth/start", context =>
   startConnectionSignIn(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.executionCtx as ExecutionContext),
 );

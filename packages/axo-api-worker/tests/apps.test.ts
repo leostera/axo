@@ -4,6 +4,8 @@ import { APPS, connectionsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { FakeGoogle } from "./fake-google";
+import { FakeHetzner } from "./fake-hetzner";
+import { FakeOpenAI } from "./fake-openai";
 
 /**
  * RFD0016, apps: Gmail is a service Axo provides itself. The person signs in to Google with Axo's
@@ -598,4 +600,34 @@ test("an app's OAuth client is set on its page through the client route, kept by
   assert.equal(page.includes("gh-secret-value"), false);
   const link = await fetch(new URL("api/v1/account/connections/apps.github/sign-in", h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
   assert.match(((await link.json()) as { signInUrl: string }).signInUrl, /\/api\/v1\/connections\/oauth\/start\?flow=/, "GitHub can be signed in to now");
+});
+
+test("a token app's account is added, and ChatGPT signed in with a code, through the app's page routes", async (t) => {
+  const hetzner = new FakeHetzner();
+  const openai = new FakeOpenAI();
+  const h = await harness({ outbound: async (request) => (await hetzner.handle(request)) ?? openai.handle(request) });
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const post = (path: string, body?: unknown) => fetch(new URL(`api/v1/account/connections/${path}`, h.url), {
+    method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const refused = await post("apps.hetzner/token", { account: "personal", fields: { token: "hz-wrong" } });
+  assert.equal(refused.status, 400);
+  assert.match(((await refused.json()) as { error: string }).error, /Hetzner did not accept this token/);
+  const added = await post("apps.hetzner/token", { account: "personal", fields: { token: "hz-personal-token" } });
+  assert.equal(added.status, 200, await added.clone().text());
+  assert.deepEqual(await added.json(), { name: "apps.hetzner", account: "personal" });
+  const listed = await (await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers })).text();
+  assert.ok(listed.includes('"account":"personal"') && !hetzner.leaks(listed), "listed, and the token never comes back");
+  assert.equal((await post("apps.gmail/token", { fields: { token: "x" } })).status, 400, "an OAuth app takes no token");
+  assert.equal((await post("linear/token", { fields: { token: "x" } })).status, 400, "only apps take tokens");
+
+  const started = await post("apps.chatgpt/device");
+  assert.equal(started.status, 200, await started.clone().text());
+  const device = (await started.json()) as { flow: string; state: string; userCode: string; verificationUrl: string };
+  assert.deepEqual([device.state, device.verificationUrl], ["pending", "https://auth.openai.com/codex/device"]);
+  const poll = await post("apps.chatgpt/device/poll", { flow: device.flow });
+  assert.equal(poll.status, 200);
+  assert.equal(((await poll.json()) as { state: string }).state, "pending");
+  assert.equal((await post("apps.chatgpt/device/poll", { flow: "nope" })).status, 400);
 });

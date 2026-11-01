@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
+import { appServiceSchema, appTokenRequestSchema, connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
 import type { ChainCheck } from "../connections/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
@@ -24,6 +24,9 @@ type ConnectionsStub = {
   addConnection(name: string, url: string): Promise<CallOutcome>;
   removeConnection(name: string, account?: string): Promise<CallOutcome>;
   setConnectionClient(name: string, clientId: string, clientSecret: string | null): Promise<{ signInUrl: string }>;
+  addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }>;
+  startAppDevice(name: string): Promise<Record<string, unknown> | { error: string }>;
+  pollAppDevice(name: string, flow: string): Promise<Record<string, unknown>>;
   connectionSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
@@ -31,10 +34,11 @@ type ConnectionsStub = {
   connectionsLogIntegrity(): Promise<ChainCheck>;
 };
 
-export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity";
+export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll";
 
 const addBody = z.object({ name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
+const pollBody = z.object({ flow: z.uuid() }).strict();
 const clientBody = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(2048).nullable().optional() }).strict();
 
 function account(ctx: ExecutionContext, accountId: string): ConnectionsStub {
@@ -56,7 +60,8 @@ export async function serveConnections(
   if (caller instanceof Response) return caller;
   const stub = account(ctx, caller.accountId);
   // Signing in, removing and setting a client also take an app, `apps.<app>` (its provider's client).
-  const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema : connectionNameSchema;
+  const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema
+    : route === "token" || route === "device" || route === "devicePoll" ? appServiceSchema : connectionNameSchema;
   const name = rawName === undefined ? null : names.safeParse(rawName);
   if (name && !name.success) return json({ error: "Invalid connection name" }, 400);
   try {
@@ -92,6 +97,22 @@ export async function serveConnections(
       }
       case "signIn":
         return json({ signInUrl: plain(await stub.connectionSignInLink(name!.data!)) });
+      case "token": {
+        // A token app's Add account: what the service issued, sent once; nothing is sent back but the account's name.
+        const body = appTokenRequestSchema.safeParse(await request.json().catch(() => null));
+        if (!body.success) return json({ error: "Expected { account?, fields }" }, 400);
+        const added = plain(await stub.addAppToken(name!.data!, body.data.account ?? null, body.data.fields));
+        return "error" in added ? json(added, 400) : json(added);
+      }
+      case "device": {
+        const started = plain(await stub.startAppDevice(name!.data!));
+        return "error" in started ? json(started, 400) : json(started);
+      }
+      case "devicePoll": {
+        const body = pollBody.safeParse(await request.json().catch(() => null));
+        if (!body.success) return json({ error: "Expected { flow }" }, 400);
+        return json(plain(await stub.pollAppDevice(name!.data!, body.data.flow)));
+      }
     }
   } catch (error) {
     return json({ error: error instanceof Error ? error.message.slice(0, 256) : "Connections are unavailable" }, 503);

@@ -21,7 +21,7 @@ import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller
 import { ThirdPartyConnections } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
-import { AppAccountRefused, AppConnections, appPage } from "./apps";
+import { AppAccountRefused, AppConnections, appPage, type DeviceSignIn } from "./apps";
 import { ProviderError, ProviderOutcomeUnknown } from "@axo/apps";
 import type { GoogleClient } from "./apps/google";
 
@@ -178,6 +178,40 @@ export class AccountConnections {
     if (!client.clientSecret) throw new AppAccountRefused("Enter the client secret too");
     await this.apps.setClient(app, client.clientId, client.clientSecret);
     return { signInUrl: appPage(app) };
+  }
+
+  /**
+   * Adds an account to a token app (`apps.<app>`) from what the person pasted on its page. A
+   * refusal (the service did not take the token, a field is missing) is an answer, not a failure.
+   */
+  async addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }> {
+    const app = AppConnections.appOf(name);
+    if (!app) return { error: `${name} is not an app` };
+    try {
+      return await this.apps.addToken(app, account, fields);
+    } catch (error) {
+      if (error instanceof AppAccountRefused) return { error: error.message.slice(0, 300) };
+      throw error;
+    }
+  }
+
+  /** Starts an app's device sign-in (ChatGPT): the code the person enters at the provider. */
+  async startAppDevice(name: string): Promise<({ flow: string } & Extract<DeviceSignIn, { state: "pending" }>) | { error: string }> {
+    const app = AppConnections.appOf(name);
+    if (!app) return { error: `${name} is not an app` };
+    try {
+      return await this.apps.startDevice(app);
+    } catch (error) {
+      if (error instanceof AppAccountRefused) return { error: error.message.slice(0, 300) };
+      throw error;
+    }
+  }
+
+  /** Whether the person entered a device sign-in's code yet. */
+  async pollAppDevice(name: string, flow: string): Promise<DeviceSignIn> {
+    const app = AppConnections.appOf(name);
+    if (!app) return { state: "failed", error: `${name} is not an app` };
+    return this.apps.pollDevice(app, flow);
   }
 
   /** A fresh sign-in link for a third-party connection or an app. */
