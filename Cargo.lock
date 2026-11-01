@@ -114,6 +114,7 @@ name = "axo-relay"
 version = "0.1.0"
 dependencies = [
  "axo-protocol",
+ "axo-signin",
  "httparse",
  "libc",
  "log",
@@ -146,6 +147,10 @@ dependencies = [
  "serde_json",
  "shlex",
 ]
+
+[[package]]
+name = "axo-signin"
+version = "0.1.0"
 
 [[package]]
 name = "axo-store"

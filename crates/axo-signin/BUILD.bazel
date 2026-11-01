@@ -1,0 +1,16 @@
+load("@crates//:defs.bzl", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "axo_signin",
+    srcs = glob(["src/*.rs"]),
+    edition = crate_edition(),
+)
+
+rust_test(
+    name = "axo_signin_tests",
+    crate = ":axo_signin",
+    edition = crate_edition(),
+)

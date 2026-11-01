@@ -11,6 +11,7 @@ mod outbound;
 mod pairing;
 pub mod pi3;
 mod relay;
+pub mod signin;
 mod sync;
 
 pub use endpoint::{DEFAULT_RELAY_URL, RelayEndpoint};

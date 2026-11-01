@@ -573,6 +573,44 @@ fn start_bash(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
     }
 }
 
+/// Sign-ins waiting on one Mac at once: each holds a redirect port, and a service registers few.
+const MAX_SIGN_INS: usize = 2;
+static SIGN_INS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Starts a loopback sign-in on a thread of its own; its reply goes back on this socket only.
+fn start_sign_in(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
+    let params = match crate::signin::parse(params, &context.account_id) {
+        Ok(params) => params,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    if SIGN_INS.fetch_add(1, Ordering::SeqCst) >= MAX_SIGN_INS {
+        SIGN_INS.fetch_sub(1, Ordering::SeqCst);
+        return context.replies.reply(
+            &id,
+            Err((-32006, "another sign-in is waiting on this Mac; finish it first".into())),
+        );
+    }
+    let replies = context.replies.clone();
+    let spawned = thread::Builder::new()
+        .name("axo-connections-sign-in".to_owned())
+        .spawn(move || {
+            // The code and the URL's parameters are never logged.
+            log::info!("event=connections.sign_in_started call={}", params.call_id);
+            let outcome = crate::signin::run(&params, axo_signin::open_in_browser)
+                .map(|result| serde_json::to_value(result).expect("a sign-in result serializes"));
+            SIGN_INS.fetch_sub(1, Ordering::SeqCst);
+            log::info!(
+                "event=connections.sign_in_finished call={} outcome={}",
+                params.call_id,
+                if outcome.is_ok() { "ok" } else { "error" }
+            );
+            replies.reply(&id, outcome);
+        });
+    if spawned.is_err() {
+        SIGN_INS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn relay_session(
     socket: &mut RelaySocket,
     reassembler: &mut Reassembler,
@@ -636,6 +674,12 @@ fn relay_session(
         if value.get("method").and_then(Value::as_str) == Some(crate::bash::METHOD) {
             if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
                 start_bash(id.clone(), &value["params"], &context);
+            }
+            continue;
+        }
+        if value.get("method").and_then(Value::as_str) == Some(crate::signin::METHOD) {
+            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
+                start_sign_in(id.clone(), &value["params"], &context);
             }
             continue;
         }
