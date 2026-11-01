@@ -193,8 +193,11 @@ export class FakeGoogle {
     } else return json({ error: "unsupported_grant_type" }, 400);
     const accessToken = `ya29.${randomBytes(16).toString("hex")}`;
     this.access.set(accessToken, email);
-    const claims = { iss: "https://accounts.google.com", aud: this.clientId, sub: email, email, email_verified: true };
-    const idToken = `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+    // As Google's: issued now, for an hour.
+    const iat = Math.floor(Date.now() / 1000);
+    const claims = { iss: "https://accounts.google.com", aud: this.clientId, sub: email, email, email_verified: true, iat, exp: iat + 3600 };
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "fake", typ: "JWT" })).toString("base64url");
+    const idToken = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
     return json({
       access_token: accessToken,
       expires_in: this.tokenLifetime,

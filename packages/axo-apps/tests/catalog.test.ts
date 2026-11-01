@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { APPS } from "@axo/protocol";
-import { allowedUrl, APP_DEFINITIONS, authorizationUrl, GrantRefused, OAUTH_PROVIDER_CONFIGS, OAUTH_PROVIDERS, redeemCode, refreshGrant, standardToken, toolsOf } from "../src/index";
+import { allowedUrl, APP_DEFINITIONS, authorizationUrl, GrantRefused, OAUTH_PROVIDER_CONFIGS, OAUTH_PROVIDERS, redeemCode, refreshGrant, toolsOf } from "../src/index";
 
 /**
  * What every app in the catalog promises, whatever its service: the gateway relies on these to
@@ -56,8 +56,7 @@ test("the authorize URL carries the provider's own parameters, and PKCE only whe
 });
 
 test("a token answer that is a refusal in disguise (HTTP 200 with { error }) is refused; a renewal keeps what its answer leaves out", async () => {
-  assert.throws(() => standardToken({ error: "bad_verification_code" }, "GitHub"), GrantRefused);
-  let answer: unknown = { access_token: "a1", refresh_token: "r1", expires_in: 60, scope: "repo,read:org" };
+  let answer: unknown = { access_token: "a1", token_type: "bearer", refresh_token: "r1", expires_in: 60, scope: "repo,read:org" };
   const forms: URLSearchParams[] = [];
   const fetcher = (async (_url: string, init: RequestInit) => {
     forms.push(new URLSearchParams(init.body as URLSearchParams));
@@ -67,7 +66,7 @@ test("a token answer that is a refusal in disguise (HTTP 200 with { error }) is 
   const grant = await redeemCode(OAUTH_PROVIDER_CONFIGS.github, client, "code", "verifier", CALLBACK, fetcher, 1000);
   assert.deepEqual(grant, { provider: "github", accessToken: "a1", refreshToken: "r1", expiresAt: 61_000, scopes: ["repo", "read:org"], email: null, userId: null });
   assert.equal(forms[0]!.get("code_verifier"), "verifier");
-  answer = { access_token: "a2", expires_in: 60, scope: "" };
+  answer = { access_token: "a2", token_type: "bearer", expires_in: 60, scope: "" };
   assert.deepEqual(await refreshGrant(OAUTH_PROVIDER_CONFIGS.github, client, grant, fetcher, 2000), { ...grant, accessToken: "a2", expiresAt: 62_000 });
   answer = { error: "bad_refresh_token" };
   await assert.rejects(refreshGrant(OAUTH_PROVIDER_CONFIGS.github, client, grant, fetcher, 3000), GrantRefused);

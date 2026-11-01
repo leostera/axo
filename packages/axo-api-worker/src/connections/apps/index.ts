@@ -9,9 +9,12 @@ import {
   GrantRefused,
   OAUTH_PROVIDER_CONFIGS,
   OAUTH_PROVIDERS,
+  pkceChallenge,
+  pkceVerifier,
   pollDeviceCode,
   ProviderError,
   ProviderOutcomeUnknown,
+  randomState,
   redeemCode,
   refreshGrant,
   refreshOpenAIGrant,
@@ -243,7 +246,7 @@ export class AppConnections {
     if (definition.signIn !== "oauth") return appPage(app);
     if (!this.hasClient(definition.provider)) throw new Error(notSetUp(definition));
     const nonce = crypto.randomUUID();
-    const verifier = randomVerifier();
+    const verifier = pkceVerifier();
     this.deps.sql.exec("DELETE FROM app_flows WHERE created_at < ?", this.now() - FLOW_LIFETIME_MS);
     this.deps.sql.exec("INSERT INTO app_flows (nonce, app, verifier, created_at) VALUES (?, ?, ?, ?)", nonce, app, verifier, this.now());
     return startUrl(nonce);
@@ -259,7 +262,7 @@ export class AppConnections {
     if (!client || definition?.signIn !== "oauth") return null;
     const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
-    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await challengeOf(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}` };
+    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await pkceChallenge(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}` };
   }
 
   /**
@@ -514,10 +517,10 @@ export class AppConnections {
       this.deps.sql.exec("UPDATE app_mac_sign_ins SET state = 'failed', error = ? WHERE id = ?", error.slice(0, 512), id);
     };
     try {
-      const verifier = randomVerifier();
-      const state = randomVerifier();
+      const verifier = pkceVerifier();
+      const state = randomState();
       const callback = await this.deps.signInOnMac!(mac, {
-        authorizeUrl: signIn.authorizeUrl(preset, state, await challengeOf(verifier)),
+        authorizeUrl: signIn.authorizeUrl(preset, state, await pkceChallenge(verifier)),
         ports: signIn.ports,
         path: signIn.path,
         state,
@@ -948,12 +951,3 @@ function providerMessage(text: string): string | null {
   }
 }
 
-function randomVerifier(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function challengeOf(verifier: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  return btoa(String.fromCharCode(...digest)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}

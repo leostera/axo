@@ -1,4 +1,4 @@
-import { standardToken, type OAuthProvider } from "./provider";
+import type { OAuthProvider } from "./provider";
 
 /**
  * Spotify as an OAuth provider: the authorization code flow with PKCE, the client sent with HTTP
@@ -9,6 +9,7 @@ import { standardToken, type OAuthProvider } from "./provider";
 export const spotifyProvider: OAuthProvider = {
   name: "spotify",
   title: "Spotify",
+  issuer: "https://accounts.spotify.com",
   authorizeUrl: "https://accounts.spotify.com/authorize",
   tokenUrl: "https://accounts.spotify.com/api/token",
   consoleUrl: "https://developer.spotify.com/dashboard",
@@ -18,7 +19,6 @@ export const spotifyProvider: OAuthProvider = {
   pkce: true,
   tokenAuth: "basic",
   tokenParams: {},
-  parseToken: (json) => standardToken(json, "Spotify"),
   rotatesRefreshTokens: true,
   async identify(_grant, api) {
     const me = (await api.request("GET", "/v1/me")) as { id?: unknown };

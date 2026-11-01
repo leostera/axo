@@ -1,4 +1,4 @@
-import { standardToken, type OAuthProvider } from "./provider";
+import { jsonResponse, type OAuthProvider } from "./provider";
 
 /**
  * GitHub as an OAuth provider: an OAuth app (not a GitHub App) with expiring user tokens on, so an
@@ -14,6 +14,7 @@ const API_HEADERS = { "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Axo",
 export const githubProvider: OAuthProvider = {
   name: "github",
   title: "GitHub",
+  issuer: "https://github.com",
   authorizeUrl: "https://github.com/login/oauth/authorize",
   tokenUrl: "https://github.com/login/oauth/access_token",
   consoleUrl: "https://github.com/settings/developers",
@@ -23,7 +24,12 @@ export const githubProvider: OAuthProvider = {
   pkce: true,
   tokenAuth: "body",
   tokenParams: {},
-  parseToken: (json) => standardToken(json, "GitHub"),
+  // GitHub refuses with HTTP 200 and `{ error }`: made the 400 the standard says.
+  async adaptTokenResponse(response) {
+    if (response.status !== 200) return response;
+    const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+    return jsonResponse(body, typeof body?.error === "string" ? 400 : 200);
+  },
   rotatesRefreshTokens: true,
   async identify(_grant, api) {
     const me = (await api.request("GET", "/user", { headers: API_HEADERS, accept: API_HEADERS.Accept })) as { login?: unknown };

@@ -1,10 +1,12 @@
+import * as oauth from "oauth4webapi";
 import { GrantRefused, OAuthError } from "../errors";
 import type { ProviderApi } from "../app";
 
 /**
  * The OAuth providers an app can sign in with (RFD0016, Apps): Google, GitHub, Spotify, Withings.
- * Each is a config: where to send the browser, how to redeem a code and renew a grant, how to read
- * the provider's token answer, and how to name the account that signed in.
+ * Each is a config: its endpoints and quirks, and how to name the account that signed in. The
+ * token endpoint is spoken with oauth4webapi; a provider that answers it out of the standard
+ * (GitHub's refusals with HTTP 200, Withings' `{ status, body }`) adapts its answers first.
  *
  * The client (its ID and secret) is not part of the config: the person registers one with the
  * provider, with the deployment's callback as its redirect URI, and enters it on the app's page.
@@ -33,21 +35,12 @@ export type OAuthGrant = {
   userId?: string | null;
 };
 
-/** A token endpoint's answer, as a provider reads it. */
-export type TokenAnswer = {
-  accessToken: string;
-  refreshToken?: string;
-  expiresIn?: number;
-  /** As the provider sent it; split on spaces and commas. */
-  scope?: string;
-  email?: string | null;
-  userId?: string | null;
-};
-
 export type OAuthProvider = {
   name: OAuthProviderName;
   /** As shown: "Google", "GitHub". */
   title: string;
+  /** The issuer its ID tokens name (Google's); the authorize URL's origin for the rest. */
+  issuer: string;
   authorizeUrl: string;
   tokenUrl: string;
   /** Where the person registers a client with the provider, and finds its ID and secret. */
@@ -62,8 +55,11 @@ export type OAuthProvider = {
   tokenAuth: "basic" | "body";
   /** Sent on every token request besides the standard ones (Withings' `action=requesttoken`). */
   tokenParams: Readonly<Record<string, string>>;
-  /** Reads the token endpoint's JSON answer; throws GrantRefused when it is a refusal. */
-  parseToken(json: unknown, client: OAuthClient): TokenAnswer;
+  /**
+   * Turns the token endpoint's answer into a standard one (RFC 6749, 5.1 and 5.2), for a provider
+   * that answers out of the standard. Called on every answer.
+   */
+  adaptTokenResponse?(response: Response): Promise<Response>;
   /**
    * Whether a renewal spends the refresh token. A renewal of one that does that and got no
    * answer may have spent the only one, so the grant is dropped and the person signs in again.
@@ -98,59 +94,75 @@ export function authorizationUrl(provider: OAuthProvider, client: OAuthClient, s
 
 /** Redeems the code the provider sent the browser back with; `redirectUri` is the one the sign-in started with. */
 export function redeemCode(provider: OAuthProvider, client: OAuthClient, code: string, verifier: string, redirectUri: string, fetcher: typeof fetch, now: number): Promise<OAuthGrant> {
-  const form: Record<string, string> = { grant_type: "authorization_code", code, redirect_uri: redirectUri };
-  if (provider.pkce) form.code_verifier = verifier;
-  return token(provider, client, form, fetcher, now, null);
+  return token(provider, client, fetcher, now, null, async (as, oauthClient, auth, options) => {
+    // The callback checked the state already; this only hands oauth4webapi the code.
+    const callback = oauth.validateAuthResponse(as, oauthClient, new URLSearchParams({ code }), oauth.skipStateCheck);
+    const response = await oauth.authorizationCodeGrantRequest(as, oauthClient, auth, callback, redirectUri, provider.pkce ? verifier : oauth.nopkce, options);
+    return oauth.processAuthorizationCodeResponse(as, oauthClient, response);
+  });
 }
 
 /** Renews a grant. What the answer leaves out (a refresh token that did not rotate, the scopes, the account) carries over. */
 export function refreshGrant(provider: OAuthProvider, client: OAuthClient, grant: OAuthGrant, fetcher: typeof fetch, now: number): Promise<OAuthGrant> {
-  if (!grant.refreshToken) throw new GrantRefused("the grant has no refresh token");
-  return token(provider, client, { grant_type: "refresh_token", refresh_token: grant.refreshToken }, fetcher, now, grant);
+  const refreshToken = grant.refreshToken;
+  if (!refreshToken) throw new GrantRefused("the grant has no refresh token");
+  return token(provider, client, fetcher, now, grant, async (as, oauthClient, auth, options) => {
+    const response = await oauth.refreshTokenGrantRequest(as, oauthClient, auth, refreshToken, options);
+    return oauth.processRefreshTokenResponse(as, oauthClient, response);
+  });
 }
 
-async function token(provider: OAuthProvider, client: OAuthClient, form: Record<string, string>, fetcher: typeof fetch, now: number, previous: OAuthGrant | null): Promise<OAuthGrant> {
-  const body = new URLSearchParams({ ...provider.tokenParams, ...form });
-  const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
-  if (provider.tokenAuth === "basic") headers.Authorization = `Basic ${btoa(`${client.clientId}:${client.clientSecret}`)}`;
-  else {
-    body.set("client_id", client.clientId);
-    body.set("client_secret", client.clientSecret);
-  }
-  const response = await fetcher(provider.tokenUrl, { method: "POST", headers, body, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (response.status >= 400 && response.status < 500) {
-    await response.body?.cancel();
-    throw new GrantRefused(`${provider.title} refused: HTTP ${response.status}`);
-  }
-  if (!response.ok) throw new OAuthError(`${provider.title} failed: HTTP ${response.status}`);
-  let json: unknown;
+type Exchange = (as: oauth.AuthorizationServer, client: oauth.Client, auth: oauth.ClientAuth, options: oauth.TokenEndpointRequestOptions) => Promise<oauth.TokenEndpointResponse>;
+
+/**
+ * One token request. A 4xx answer is a refusal (GrantRefused: the code or refresh token is
+ * spent); a 5xx or an answer out of the standard is a failure (OAuthError), and no answer at all
+ * throws as fetch did.
+ */
+async function token(provider: OAuthProvider, client: OAuthClient, fetcher: typeof fetch, now: number, previous: OAuthGrant | null, exchange: Exchange): Promise<OAuthGrant> {
+  const as: oauth.AuthorizationServer = { issuer: provider.issuer, authorization_endpoint: provider.authorizeUrl, token_endpoint: provider.tokenUrl };
+  const oauthClient: oauth.Client = { client_id: client.clientId };
+  const auth = provider.tokenAuth === "basic" ? oauth.ClientSecretBasic(client.clientSecret) : oauth.ClientSecretPost(client.clientSecret);
+  let status = 0;
+  const adapted = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await fetcher(input, init);
+    const answer = provider.adaptTokenResponse ? await provider.adaptTokenResponse(response) : response;
+    status = answer.status;
+    return answer;
+  }) as typeof fetch;
+  let answer: oauth.TokenEndpointResponse;
   try {
-    json = await response.json();
-  } catch {
-    throw new OAuthError(`${provider.title} answered with something other than JSON`);
+    answer = await exchange(as, oauthClient, auth, {
+      [oauth.customFetch]: adapted,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      additionalParameters: provider.tokenParams,
+    });
+  } catch (error) {
+    if (error instanceof oauth.ResponseBodyError || (status >= 400 && status < 500 && error instanceof oauth.OperationProcessingError)) {
+      const code = error instanceof oauth.ResponseBodyError ? error.error.slice(0, 64) : `HTTP ${status}`;
+      throw new GrantRefused(`${provider.title} refused: ${code}`);
+    }
+    if (error instanceof oauth.OperationProcessingError || error instanceof oauth.UnsupportedOperationError) {
+      throw new OAuthError(`${provider.title} failed: ${status && status !== 200 ? `HTTP ${status}` : error.message}`);
+    }
+    throw error;
   }
-  const answer = provider.parseToken(json, client);
+  const claims = oauth.getValidatedIdTokenClaims(answer);
+  const email = typeof claims?.email === "string" ? claims.email.slice(0, 320) : null;
+  const userId = typeof answer.userid === "string" || typeof answer.userid === "number" ? String(answer.userid) : null;
   return {
     provider: provider.name,
-    accessToken: answer.accessToken,
-    refreshToken: answer.refreshToken ?? previous?.refreshToken ?? null,
-    expiresAt: answer.expiresIn ? now + answer.expiresIn * 1000 : null,
+    accessToken: answer.access_token,
+    refreshToken: answer.refresh_token || previous?.refreshToken || null,
+    expiresAt: answer.expires_in ? now + answer.expires_in * 1000 : null,
     // A renewal's answer may leave the scopes out, or send them empty (GitHub): they carry over.
     scopes: answer.scope ? answer.scope.split(/[ ,]+/).filter(Boolean) : previous?.scopes ?? [],
-    email: answer.email ?? previous?.email ?? null,
-    userId: answer.userId ?? previous?.userId ?? null,
+    email: email ?? previous?.email ?? null,
+    userId: userId ?? previous?.userId ?? null,
   };
 }
 
-/** The common token answer (RFC 6749, 5.1). A provider that answers 200 with `{ error }` (GitHub) is refused. */
-export function standardToken(json: unknown, title: string): TokenAnswer {
-  const answer = (json ?? {}) as Record<string, unknown>;
-  if (typeof answer.error === "string") throw new GrantRefused(`${title} refused: ${answer.error.slice(0, 64)}`);
-  if (typeof answer.access_token !== "string" || !answer.access_token) throw new OAuthError(`${title} returned no access token`);
-  return {
-    accessToken: answer.access_token,
-    refreshToken: typeof answer.refresh_token === "string" && answer.refresh_token ? answer.refresh_token : undefined,
-    expiresIn: typeof answer.expires_in === "number" && answer.expires_in > 0 ? answer.expires_in : undefined,
-    scope: typeof answer.scope === "string" ? answer.scope : undefined,
-  };
+/** A JSON answer with this body and status, keeping nothing of the original but that it came. */
+export function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }

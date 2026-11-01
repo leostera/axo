@@ -93,7 +93,8 @@ export class FakeOAuth {
       throw new TypeError("connection reset");
     }
     const [id, secret] = this.options.tokenAuth === "basic"
-      ? Buffer.from((headers.get("authorization") ?? "").replace(/^Basic /, ""), "base64").toString().split(":")
+      // Each half form-encoded, as RFC 6749 2.3.1 says.
+      ? Buffer.from((headers.get("authorization") ?? "").replace(/^Basic /, ""), "base64").toString().split(":").map((half) => decodeURIComponent(half.replace(/\+/g, " ")))
       : [form.get("client_id"), form.get("client_secret")];
     if (id !== this.clientId || secret !== this.clientSecret) return { ok: false, status: 401, error: "invalid_client" };
     let scopes: string[];
