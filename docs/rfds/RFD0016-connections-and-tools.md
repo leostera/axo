@@ -50,7 +50,9 @@ Connection tools are not declared one by one. Like Cloudflare MCP server portals
 
 - `connections_list` lists the account's connections, their kind, host and state.
 - `connections_add` adds a third-party connection from a name and URL and returns a sign-in link for the person to open when the server needs OAuth; `connections_remove` removes a third-party connection and its grant.
-- `connections_search` runs a JavaScript function over `codemode.tools()`, the typed definitions of every reachable tool, and returns what it selects.
+- `connections_search` finds tools: given `query`, plain words such as "wise balance", it answers the best matches with how to call each, its inputs and what it answers; given `code`, it runs a JavaScript function over `codemode.tools()`, the typed definitions of every reachable tool, and returns what it selects.
+
+Every `axod mcp` tool answers JSON in `structuredContent` and declares its shape as an `outputSchema`, so an agent's codemode reads a script's value as `structuredContent.result` and never parses the text copy in `content`. `connections_list` gives an agent each app's name, state, accounts and tool names, and leaves out the description, permissions and sign-in set-up that only the Apps page shows. An app tool's `account` input names the app's accounts.
 - `connections_execute` runs a JavaScript function with a `codemode` proxy whose methods call tools, so one call can chain several tools and return only what the agent needs.
 
 Tools are grouped by service: a script calls `codemode.<service>.<tool_name>(input)`, for example `codemode.linear.list_issues({ team: "AXO" })`. Both parts are JavaScript-safe identifiers; each tool also keeps the upstream server's original name for display.
