@@ -8,9 +8,13 @@ enum RegistrationDecision: Equatable {
   case missingService
   case unknown
 
+  /// `definitionBundled`: the app holds its LaunchAgent plist. macOS reports `.notFound` for a
+  /// LaunchAgent it has never registered on that Mac, so that status alone does not mean the plist
+  /// is missing: registering is what makes macOS find it.
   static func resolve(
     serviceStatus: SMAppService.Status,
-    registrationIntentRecorded: Bool
+    registrationIntentRecorded: Bool,
+    definitionBundled: Bool
   ) -> RegistrationDecision {
     switch serviceStatus {
     case .enabled:
@@ -18,7 +22,7 @@ enum RegistrationDecision: Equatable {
     case .requiresApproval:
       .approvalRequired
     case .notFound:
-      .missingService
+      definitionBundled ? .registerOnce : .missingService
     case .notRegistered:
       registrationIntentRecorded ? .userDisabled : .registerOnce
     @unknown default:

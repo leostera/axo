@@ -157,7 +157,8 @@ public final class DaemonController {
     )
     let decision = RegistrationDecision.resolve(
       serviceStatus: serviceStatus,
-      registrationIntentRecorded: defaults.bool(forKey: DaemonPreferenceKey.registrationRequested)
+      registrationIntentRecorded: defaults.bool(forKey: DaemonPreferenceKey.registrationRequested),
+      definitionBundled: currentDefinition() != nil
     )
     switch decision {
     case .alreadyEnabled:
@@ -199,9 +200,9 @@ public final class DaemonController {
         try await checkBuildAndRestartIfNeeded()
       case .requiresApproval:
         setStatus(.requiresApproval)
-      case .notFound:
+      case .notFound where currentDefinition() == nil:
         throw DaemonControllerError.missingServiceDefinition
-      case .notRegistered:
+      case .notFound, .notRegistered:
         defaults.set(true, forKey: DaemonPreferenceKey.registrationRequested)
         do {
           try service.register()
@@ -238,7 +239,12 @@ public final class DaemonController {
       }
       throw DaemonControllerError.registrationDidNotComplete
     case .notFound:
-      throw DaemonControllerError.missingServiceDefinition
+      // register() returned without an error, and macOS can be slow to report the new job;
+      // the health check that follows says whether axod really started.
+      logger.warning("event=daemon.registered_status_not_found")
+      defaults.set(true, forKey: DaemonPreferenceKey.registrationSucceeded)
+      recordRegisteredDefinition()
+      return true
     @unknown default:
       throw DaemonControllerError.unknownServiceStatus
     }
