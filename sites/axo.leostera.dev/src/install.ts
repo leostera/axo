@@ -132,7 +132,8 @@ app=$install_dir/Axo.app
 
 # Stage beside the destination, so replacing the app is a rename on one volume.
 stage=$(mktemp -d "$install_dir/.axo-install.XXXXXX")
-trap 'rm -rf "$stage"' EXIT
+# An app zipped with read-only modes stays read-only when unpacked; rm needs to write its folders.
+trap 'chmod -R u+w "$stage" 2>/dev/null; rm -rf "$stage"' EXIT
 trap 'exit 130' INT TERM
 
 say "Downloading Axo from $AXO_ORIGIN"
@@ -141,6 +142,8 @@ curl -fL --progress-bar -o "$stage/Axo.app.zip" "$AXO_ORIGIN/cdn/Axo.app.zip" \\
 ditto -x -k "$stage/Axo.app.zip" "$stage/unpacked" || fail "the download is not a readable zip"
 new_app=$stage/unpacked/Axo.app
 [ -d "$new_app" ] || fail "the download has no Axo.app in it"
+# macOS moves a folder to another folder only if it may write the folder; modes are not signed.
+chmod -R u+w "$new_app"
 
 say "Checking its signature"
 codesign --verify --deep --strict "$new_app" 2>/dev/null || fail "the downloaded Axo.app has a broken signature"
@@ -165,6 +168,7 @@ fi
 
 say "Installing Axo build $build in $install_dir"
 if [ -e "$app" ]; then
+  chmod -R u+w "$app" 2>/dev/null || true
   mv "$app" "$stage/previous.app"
 fi
 if ! mv "$new_app" "$app"; then
