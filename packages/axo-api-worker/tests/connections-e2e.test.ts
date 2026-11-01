@@ -50,9 +50,11 @@ test("a Session's script runs bash on its own Mac through the account, and the c
     const host = await waitFor("the Mac coming online", 20_000, async () =>
       (await listHosts(api.url, account)).find((candidate) => candidate.status === "online"), daemon);
 
-    const { connections } = (await localCall(socketPath, "axo.connections.list", { sessionId })) as {
+    const listed = (await localCall(socketPath, "axo.connections.list", { sessionId })) as {
       connections: Array<{ kind: string; name: string; hostId: string; state: string }>;
     };
+    // The Mac, beside the apps every account lists.
+    const connections = listed.connections.filter((c) => c.kind === "host");
     assert.equal(connections.length, 1);
     assert.deepEqual({ ...connections[0], name: typeof connections[0]!.name }, { kind: "host", name: "string", hostId: host.hostId, state: "online" });
     const service = connections[0]!.name;
