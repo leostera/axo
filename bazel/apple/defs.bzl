@@ -1,0 +1,94 @@
+"""Signing the Mac app and putting it at dist/Axo.app, as build actions (RFD0021)."""
+
+# Actions that need the keychain, the network (codesign's secure timestamp) or that write into the
+# workspace cannot run in the sandbox, remotely or from a cache.
+_LOCAL = {
+    "local": "1",
+    "no-remote": "1",
+    "no-sandbox": "1",
+}
+
+StatusInfo = provider(
+    doc = "One line for the build report: what a piece of the build did, or why it fell back.",
+    fields = {"files": "depset of files, each one status line"},
+)
+
+def _signed_mac_app_impl(ctx):
+    app = ctx.actions.declare_directory(ctx.attr.name + "/Axo.app")
+    status = ctx.actions.declare_file(ctx.attr.name + ".status")
+    ctx.actions.run(
+        executable = ctx.executable._sign,
+        arguments = [ctx.file.app.path, app.path, status.path, ctx.attr.identity],
+        inputs = [ctx.file.app],
+        outputs = [app, status],
+        execution_requirements = _LOCAL | {"requires-network": "1"},
+        mnemonic = "SignMacApp",
+        progress_message = "Signing %{label}",
+    )
+    return [
+        DefaultInfo(files = depset([app]), runfiles = ctx.runfiles([app])),
+        StatusInfo(files = depset([status])),
+    ]
+
+signed_mac_app = rule(
+    implementation = _signed_mac_app_impl,
+    doc = "The Mac app unpacked and signed with `identity` (hardened runtime, secure timestamp), or ad hoc when it is empty or unusable.",
+    attrs = {
+        "app": attr.label(allow_single_file = [".zip"], mandatory = True, doc = "The macos_application."),
+        "identity": attr.string(doc = "A signing identity's SHA-1, or empty for ad hoc."),
+        "_sign": attr.label(default = ":sign_mac_app.sh", executable = True, cfg = "exec", allow_single_file = True),
+    },
+)
+
+def _mac_app_install_impl(ctx):
+    status = ctx.actions.declare_file(ctx.attr.name + ".status")
+    app = ctx.files.app[0]
+    ctx.actions.run(
+        executable = ctx.executable._install,
+        arguments = [app.path, ctx.attr.destination, status.path],
+        # `state` changes when the installed bundle appears or disappears, so deleting it brings it back.
+        inputs = [app, ctx.file.state],
+        outputs = [status],
+        execution_requirements = _LOCAL | {"no-cache": "1"},
+        mnemonic = "InstallMacApp",
+        progress_message = "Installing %{label} at " + ctx.attr.destination,
+    )
+    return [
+        DefaultInfo(files = depset([status])),
+        StatusInfo(files = depset([status])),
+    ]
+
+mac_app_install = rule(
+    implementation = _mac_app_install_impl,
+    doc = "Swaps the built app in at `destination`, an absolute path in the workspace.",
+    attrs = {
+        "app": attr.label(mandatory = True, doc = "A signed_mac_app."),
+        "destination": attr.string(mandatory = True),
+        "state": attr.label(allow_single_file = True, default = "@axo_config//:install_state.txt"),
+        "_install": attr.label(default = ":install_app", executable = True, cfg = "exec"),
+    },
+)
+
+def _build_report_impl(ctx):
+    report = ctx.actions.declare_file(ctx.attr.name + ".txt")
+    statuses = depset(transitive = [target[StatusInfo].files for target in ctx.attr.pieces])
+    inputs = [ctx.file.machine] + statuses.to_list()
+    ctx.actions.run_shell(
+        # Printed to stderr too, so Bazel shows it whenever it changes.
+        command = 'out=$1; shift; { echo "Axo build report"; for f in "$@"; do sed "s/^/  /" "$f"; done; } > "$out"; cat "$out" >&2',
+        arguments = [report.path] + [f.path for f in inputs],
+        inputs = inputs,
+        outputs = [report],
+        mnemonic = "AxoBuildReport",
+        progress_message = "Writing the build report",
+    )
+    return [DefaultInfo(files = depset([report]))]
+
+build_report = rule(
+    implementation = _build_report_impl,
+    doc = "bazel-bin/<name>.txt: what every optional piece of the build did, and this Mac's facts.",
+    attrs = {
+        "machine": attr.label(allow_single_file = True, default = "@axo_config//:machine.txt"),
+        "pieces": attr.label_list(providers = [StatusInfo]),
+    },
+)

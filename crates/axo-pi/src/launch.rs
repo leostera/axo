@@ -94,9 +94,6 @@ fn resolve_extension_path() -> io::Result<PathBuf> {
     {
         candidates.push(contents_directory.join("Resources/AxoPi/index.js"));
     }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/pi-axo/dist/index.js"),
-    );
     let path = candidates
         .into_iter()
         .find(|path| path.is_file())

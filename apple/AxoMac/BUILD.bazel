@@ -1,9 +1,11 @@
+load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
 load("@rules_apple//apple:macos.bzl", "macos_application", "macos_ui_test", "macos_unit_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
-load("@axo_config//:defs.bzl", "AXO")
+load("@axo_config//:defs.bzl", "AXO", "CAN", "MACHINE")
+load("//bazel/apple:defs.bzl", "mac_app_install", "signed_mac_app")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -195,6 +197,13 @@ genrule(
     cmd = "cp $(location Resources/dev.leostera.axo.axod.plist) $@",
 )
 
+# The Pi extension axod loads from Contents/Resources/AxoPi.
+copy_to_directory(
+    name = "AxoPi",
+    srcs = ["//packages/pi-axo:extension_js"],
+    root_paths = ["packages/pi-axo/dist"],
+)
+
 macos_application(
     name = "AxoApp",
     app_icons = ["//assets:macos_app_icon"],
@@ -208,10 +217,50 @@ macos_application(
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
         "//crates/axod:axod": "Helpers",
+        ":AxoPi": "Resources/AxoPi",
         "@ghostty//:resources": "Resources",
         "@ghostty//:terminfo": "Resources",
     },
     deps = [":AxoMacMain"],
+)
+
+# The app as it ships: signed for launchd with this Mac's identity for the team in config.json, or
+# ad hoc when there is none (RFD0021).
+signed_mac_app(
+    name = "Axo",
+    app = ":AxoApp",
+    identity = MACHINE.signing_identity or "",
+)
+
+# Puts it at config.json's dist.mac_app (dist/Axo.app) on every build that changes it.
+mac_app_install(
+    name = "dist",
+    app = ":Axo",
+    destination = MACHINE.workspace + "/" + AXO["dist"]["mac_app"],
+)
+
+# What `bazel run //:publish` uploads.
+genrule(
+    name = "Axo_zip",
+    srcs = [":Axo"],
+    outs = ["Axo.app.zip"],
+    # ditto keeps the bundle's symlinks, permissions and signature intact.
+    cmd = "/usr/bin/ditto -c -k --sequesterRsrc --keepParent $(execpath :Axo) $@",
+)
+
+sh_test(
+    name = "package_test",
+    srcs = ["//bazel/apple:package_test.sh"],
+    args = [
+        "$(rootpath :Axo)",
+        str(AXO["builds"]["mac"]),
+        str(AXO["builds"]["axod"]),
+        AXO["apple"]["macos_min"],
+        AXO["apple"]["team"] if CAN.sign else "-",
+    ],
+    data = [":Axo"],
+    # codesign must see the bundle itself, not the sandbox's per-file symlinks to it.
+    tags = ["no-sandbox"],
 )
 
 macos_application(

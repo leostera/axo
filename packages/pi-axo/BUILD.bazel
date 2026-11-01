@@ -36,6 +36,12 @@ ts_project(
     deps = _DEPS,
 )
 
+# What the Mac app bundles in Contents/Resources/AxoPi: the compiled JavaScript only.
+filegroup(
+    name = "extension_js",
+    srcs = ["dist/%s.js" % src[len("src/"):-len(".ts")] for src in glob(["src/*.ts"])],
+)
+
 ts_project(
     name = "typecheck_tests",
     srcs = glob(["src/**/*.ts", "test/**/*.ts"]),

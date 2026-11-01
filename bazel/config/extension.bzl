@@ -9,6 +9,7 @@ profile, the Pi CLI) and generates:
 - `axod.env`: the build number axod reports.
 - `mac.plist`: `AXODBuildNumber` and `AXOGitCommit` for the Mac app's Info.plist.
 - `machine.txt`: the facts above, for the build report.
+- `install_state.txt`: which of the files the build writes into the workspace exist.
 
 It reruns when either config file, the keychain, the provisioning profile folders or git HEAD
 change. Whether the phone is plugged in is not checked here; the install action checks it.
@@ -308,9 +309,22 @@ REASONS = json.decode({reasons})
             lines.append("%s: %s" % (key, reasons[key]))
     rctx.file("machine.txt", "\n".join(lines) + "\n")
 
+    # The build writes these into the workspace. Each install action depends on this file, which
+    # changes when one of them appears or disappears, so deleting one brings it back.
+    state = []
+    for name, path in [
+        ("mac_app", config["dist"]["mac_app"] + "/Contents/Info.plist"),
+        ("xcodeproj", "apple/Axo.xcodeproj/project.pbxproj"),
+        ("rust_project", "rust-project.json"),
+    ]:
+        marker = workspace.get_child(path)
+        rctx.watch(marker)
+        state.append("%s %s" % (name, "present" if marker.exists else "absent"))
+    rctx.file("install_state.txt", "\n".join(state) + "\n")
+
     rctx.file("BUILD.bazel", """package(default_visibility = ["//visibility:public"])
 
-exports_files(["axod.env", "mac.plist", "machine.txt", "defs.bzl"])
+exports_files(["axod.env", "defs.bzl", "install_state.txt", "mac.plist", "machine.txt"])
 """)
 
 _axo_config = repository_rule(
