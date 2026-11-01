@@ -46,7 +46,7 @@ export type ReadRequest = {
 };
 
 export type ReadResult =
-  | { kind: "records"; epoch: number | null; count: number; records: ClientRecord[]; older: number | null }
+  | { kind: "records"; epoch: number | null; count: number; records: ClientRecord[]; older: number | null; header: string | null }
   /** The reader's epoch is over: drop records past `keep`, the lowest cut since its epoch. */
   | { kind: "reset"; epoch: number; keep: number };
 
@@ -201,7 +201,7 @@ export class AxoSessionDO extends DurableObject<Env> {
   async read(binding: SessionBinding, request: ReadRequest): Promise<ReadResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
     const transcript = this.transcript();
-    if (!transcript) return { kind: "records", epoch: null, count: 0, records: [], older: null };
+    if (!transcript) return { kind: "records", epoch: null, count: 0, records: [], older: null, header: null };
     const sql = this.ctx.storage.sql;
     if (request.epoch !== null && request.epoch !== transcript.epoch) {
       const keep = sql.exec<{ keep: number | null }>("SELECT MIN(keep) AS keep FROM cuts WHERE epoch > ?", request.epoch).one().keep;
@@ -231,7 +231,7 @@ export class AxoSessionDO extends DurableObject<Env> {
       "SELECT cursor, id, hash, chain, line FROM records WHERE cursor BETWEEN ? AND ? ORDER BY cursor", chosen[0]!, chosen.at(-1)!,
     ).toArray().map((row) => ({ cursor: row.cursor, id: row.id, format: PI3_FORMAT, line: row.line ?? this.parts(row.cursor), hash: row.hash }) satisfies ClientRecord);
     const first = records[0]?.cursor ?? (request.after !== undefined ? request.after + 1 : range.from);
-    return { kind: "records", epoch: transcript.epoch, count, records, older: first > 1 ? first : null };
+    return { kind: "records", epoch: transcript.epoch, count, records, older: first > 1 ? first : null, header: transcript.header };
   }
 
   private parts(cursor: number): string {

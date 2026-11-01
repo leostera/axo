@@ -7,7 +7,7 @@ import {
   truncateResultSchema,
   type ClientRecord,
 } from "@axo/protocol";
-import type { Peer } from "../testing/client";
+import { Peer } from "../testing/client";
 import { harness, signIn, type AccountSession, type Harness } from "./harness";
 import { FakeTranscript, assistantMessage, connectClient, connectHost, pairHost, userMessage, type PairedHost } from "./account-support";
 
@@ -231,4 +231,36 @@ test("a host paired after hello is listed when the client asks again", async (t)
   const host = await pairHost(h, session);
   const refreshed = await call<{ hosts: Array<{ hostId: string }> }>(client, "axo.client.refresh", {});
   assert.deepEqual(refreshed.hosts.map((listed) => listed.hostId), [host.hostId]);
+});
+
+test("a paired Mac follows the account's other Macs with its pairing credential, and only them (RFD0022)", async (t) => {
+  const { h, session, host: studio, transcript } = await fixture(t);
+  const laptop = await pairHost(h, session, "MacBook Pro");
+  const laptopDaemon = await connectHost(h, session, laptop);
+  t.after(() => laptopDaemon.close());
+  const credential = { Authorization: `Bearer ${laptop.credential}`, "X-Axo-Credential-Id": laptop.credentialId };
+
+  const peers = await Peer.connectHostPeers(h.url, session.accountId, laptop.hostId, credential);
+  t.after(() => peers.close());
+  const clientId = `host-${laptop.hostId}`;
+  const hello = await call<{ hosts: Array<{ hostId: string }>; sessions: Array<{ hostId: string; sessionId: string; head: number }> }>(
+    peers, "axo.client.hello", { protocolVersion: 2, clientId });
+  // The Studio's Session, not the laptop's own: it has those already.
+  assert.deepEqual(hello.hosts.map((listed) => listed.hostId), [studio.hostId]);
+  assert.deepEqual(hello.sessions.map((listed) => [listed.hostId, listed.sessionId, listed.head]), [[studio.hostId, transcript.sessionId, 3]]);
+  // A copy from nothing gets Pi's header and every record, so it is the file Pi wrote.
+  const opened = await call<{ records: ClientRecord[]; header?: string }>(peers, "axo.client.session.open", { hostId: studio.hostId, sessionId: transcript.sessionId, have: { epoch: 1, cursor: 0 } });
+  assert.equal(opened.header, transcript.transcript.header);
+  assert.deepEqual(opened.records.map((record) => record.cursor), [1, 2, 3]);
+  const resumed = await call<{ records: ClientRecord[]; header?: string }>(peers, "axo.client.session.open", { hostId: studio.hostId, sessionId: transcript.sessionId, have: { epoch: 1, cursor: 3 } });
+  assert.equal(resumed.header, undefined, "only a copy from nothing needs it");
+
+  // Another Mac's credential, or none, signs in nobody.
+  await assert.rejects(Peer.connectHostPeers(h.url, session.accountId, laptop.hostId, { Authorization: `Bearer ${studio.credential}`, "X-Axo-Credential-Id": studio.credentialId }));
+  await assert.rejects(Peer.connectHostPeers(h.url, session.accountId, laptop.hostId, {}));
+
+  // A revoked Mac cannot sign in again.
+  const revoked = await fetch(new URL(`api/v1/account/hosts/${laptop.hostId}/revoke`, h.url), { method: "POST", headers: session.headers });
+  assert.equal(revoked.status, 204);
+  await assert.rejects(Peer.connectHostPeers(h.url, session.accountId, laptop.hostId, credential));
 });

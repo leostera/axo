@@ -41,6 +41,18 @@ export function clientDOName(accountId: string, clientId: string): string {
   return `${uuid.parse(accountId)}:${clientId}`;
 }
 
+/**
+ * The client id of a paired Mac following its account's other Macs (RFD0022). The Mac signs in
+ * with its host credential, and its own Sessions are left out: it has them already.
+ */
+export function peerClientId(hostId: string): string {
+  return `host-${uuid.parse(hostId)}`;
+}
+
+function peerHostOf(clientId: string): string | null {
+  return clientId.startsWith("host-") ? clientId.slice("host-".length) : null;
+}
+
 /** Frames a client may send per second; acknowledgements count. */
 const FRAMES_PER_SECOND = 60;
 /** The largest message a client may send, reassembled. */
@@ -292,6 +304,8 @@ export class AxoClientDO extends DurableObject<Env> {
       cursor,
       older: params.have ? null : read.older,
       progress: await progress,
+      // A copy that starts from nothing needs Pi's header line too (RFD0022).
+      ...(params.have?.cursor === 0 && read.header !== null ? { header: read.header } : {}),
     };
   }
 
@@ -349,7 +363,8 @@ export class AxoClientDO extends DurableObject<Env> {
   private async followHosts(socket: WebSocket, hello: boolean): Promise<ClientSession[]> {
     const { accountId } = this.identity()!;
     const account = this.ctx.exports.AxoAccountDirectory.getByName(accountId) as unknown as AccountStub;
-    const listed = await account.clientHosts();
+    const self = peerHostOf(this.identity()!.clientId);
+    const listed = (await account.clientHosts()).filter((host) => host.hostId !== self);
     const name = clientDOName(accountId, this.identity()!.clientId);
     const sql = this.ctx.storage.sql;
     const sessions: ClientSession[] = [];

@@ -1,6 +1,6 @@
 import { clientIdSchema, uuid } from "@axo/protocol";
 import { hostIdSchema, hostListResultSchema } from "@axo/protocol/v1";
-import { clientDOName } from "../client-do";
+import { clientDOName, peerClientId } from "../client-do";
 import { hostDOName } from "../host-do";
 import { requireAccount, type AuthExports } from "../auth/account-access";
 import type { AuthEnvironment } from "../auth/config";
@@ -73,6 +73,49 @@ export async function upgradeHostDaemon(
       "X-Axo-Machine": hostId.data,
       "X-Axo-Credential": credential,
       "X-Axo-Credential-Id": credentialId,
+    },
+  }));
+}
+
+/** How long a Mac's peers socket stays signed in; it signs in again with its credential, so a revoked Mac is refused within this. */
+const PEERS_SIGN_IN_MS = 60 * 60 * 1000;
+
+type HostAuthorizer = { authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean> };
+
+/**
+ * A paired Mac following the account's other Macs (RFD0022): the same client socket a browser
+ * tab opens, served by a ClientDO named for the Mac, but signed in with the host credential.
+ * Pairing is the sign-in; a Mac can already run commands on the others through connections.
+ */
+export async function upgradeHostPeers(
+  request: Request,
+  ctx: ExecutionContext,
+  rawAccountId: string,
+  rawHostId: string,
+): Promise<Response> {
+  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+    return new Response("WebSocket required", { status: 426, headers: privateHeaders });
+  if (request.headers.has("Origin")) return json({ error: "Origin not allowed" }, 403);
+  const hostId = hostIdSchema.safeParse(rawHostId);
+  const accountId = uuid.safeParse(rawAccountId);
+  if (!hostId.success) return json({ error: "Invalid host" }, 400);
+  if (!accountId.success) return json({ error: "Invalid account" }, 400);
+  const credential = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get("Authorization") ?? "")?.[1];
+  const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
+  if (!credential || !uuid.safeParse(credentialId).success) return json({ error: "Host authentication required" }, 401);
+  try {
+    const account = ctx.exports.AxoAccountDirectory.getByName(accountId.data) as unknown as HostAuthorizer;
+    if (!(await account.authorizeHost(hostId.data, credentialId, credential))) return json({ error: "Host authentication required" }, 401);
+  } catch {
+    return unavailable();
+  }
+  const clientId = peerClientId(hostId.data);
+  return ctx.exports.AxoClientDO.getByName(clientDOName(accountId.data, clientId)).fetch(new Request("https://client.internal/", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Account": accountId.data,
+      "X-Axo-Client": clientId,
+      "X-Axo-Expiry": String(Date.now() + PEERS_SIGN_IN_MS),
     },
   }));
 }

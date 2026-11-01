@@ -7,7 +7,7 @@ import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } 
 import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
-import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon } from "./account-hosts";
+import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon, upgradeHostPeers } from "./account-hosts";
 import { completeConnectionSignIn, serveConnections, startConnectionSignIn, type ConnectionsRoute } from "./connections";
 
 type Api = { Bindings: Env };
@@ -171,6 +171,15 @@ app.all("/api/v1/account/client", context =>
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
     context.executionCtx as ExecutionContext,
+  ),
+);
+
+app.all("/api/v1/accounts/:account/hosts/:host/peers", context =>
+  upgradeHostPeers(
+    context.req.raw,
+    context.executionCtx as ExecutionContext,
+    context.req.param("account"),
+    context.req.param("host"),
   ),
 );
 

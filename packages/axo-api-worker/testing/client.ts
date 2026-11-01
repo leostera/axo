@@ -122,6 +122,15 @@ export class Peer {
     });
     return Peer.open(socket);
   }
+  /** A paired Mac following its account's other Macs, signed in with its host credential (RFD0022). */
+  static async connectHostPeers(url: string, accountId: string, hostId: string, headers: Record<string, string>) {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/accounts/${accountId}/hosts/${hostId}/peers`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket);
+  }
   /** A client's one socket, served by its ClientDO (RFD0018). */
   static async connectClient(url: string, clientId: string, headers: Record<string, string>) {
     const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/account/client?clientId=${clientId}`, {

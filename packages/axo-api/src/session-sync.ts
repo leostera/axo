@@ -275,6 +275,8 @@ export const clientOpenResultSchema = z.object({
   /** Records below this cursor exist; null when the client holds the start. */
   older: count.nullable(),
   progress: z.array(progressSnapshotSchema),
+  /** Pi's header line, for a client that opened from `have.cursor` 0 to keep a whole copy (RFD0022). */
+  header: line.optional(),
 }).strict();
 export type ClientOpenResult = z.infer<typeof clientOpenResultSchema>;
 
