@@ -38,6 +38,8 @@ swift_library(
     module_name = "AxoPhone",
     srcs = glob(["Sources/AxoPhone/**/*.swift"]),
     copts = ["-swift-version", "5"],
+    # UIKit-backed SwiftUI: only the iOS apps build it, through their platform transition.
+    target_compatible_with = ["@platforms//os:ios"],
     deps = [
         ":AxoPhoneModel",
         "//apple/AxoClient",
@@ -52,6 +54,7 @@ swift_library(
     module_name = "AxoPhoneMain",
     srcs = glob(["Sources/AxoPhoneMain/*.swift"]),
     copts = ["-swift-version", "5"],
+    target_compatible_with = ["@platforms//os:ios"],
     deps = [":AxoPhone"],
 )
 
