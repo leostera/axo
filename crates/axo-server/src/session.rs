@@ -34,6 +34,7 @@ pub(crate) use spawn::set_agent_socket;
 mod terminal;
 #[cfg(test)]
 mod test_support;
+mod workspace_state;
 mod workspaces;
 
 use self::events::{EventBus, LocalSubscription};
@@ -142,6 +143,8 @@ pub struct SessionManager {
     /// The Workspace at the user's home directory, where Sessions created outside any other
     /// Workspace live. It always exists and cannot be archived.
     home_workspace_id: String,
+    /// Each Session's folder as git saw it when the agent last settled (RFD0022).
+    workspace_states: workspace_state::WorkspaceStates,
     /// When each Workspace last failed to get a Session; see `ensure_open_workspace_sessions`.
     workspace_session_failures: Mutex<HashMap<String, Instant>>,
 }
@@ -196,6 +199,7 @@ impl SessionManager {
             workspace_access: Mutex::new(workspace_access),
             home_workspace_id,
             workspace_session_failures: Mutex::new(HashMap::new()),
+            workspace_states: Default::default(),
         });
 
         manager.restore_open_sessions()?;

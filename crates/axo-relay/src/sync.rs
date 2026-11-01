@@ -56,6 +56,61 @@ pub struct SessionMetadata {
     pub created_at: Option<i64>,
     pub last_message_at: Option<i64>,
     pub archived: bool,
+    /// Where the Session's work is, as git saw it after the agent last settled (RFD0022). Absent
+    /// means not known yet; the last known state is then kept, never erased.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_state: Option<WorkspaceState>,
+}
+
+/// A Session's folder and its repository, so another Mac can tell what it would need to continue
+/// the Session (RFD0022). Outside a repository only `path` is set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceState {
+    pub path: String,
+    pub repo_root: Option<String>,
+    /// The upstream remote's URL, with any credentials removed.
+    pub remote: Option<String>,
+    /// None when HEAD is detached.
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    /// Where the branch's upstream was, as last fetched on this Mac.
+    pub upstream_head: Option<String>,
+    /// Paths `git status` lists, at most `WorkspaceState::MAX_DIRTY`.
+    pub dirty: Vec<String>,
+    /// Paths beyond those in `dirty`.
+    pub dirty_more: u32,
+    /// Unix seconds.
+    pub at: i64,
+}
+
+impl WorkspaceState {
+    pub const MAX_DIRTY: usize = 50;
+    const MAX_PATH: usize = 1024;
+
+    fn bounded(mut self) -> Self {
+        let path = |value: String| value.chars().take(Self::MAX_PATH).collect::<String>();
+        let short = |value: Option<String>, max: usize| {
+            value.filter(|value| !value.is_empty() && value.chars().count() <= max)
+        };
+        let hash = |value: Option<String>| {
+            value.filter(|value| {
+                (7..=64).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        };
+        self.path = path(self.path);
+        self.repo_root = self.repo_root.map(path);
+        self.remote = short(self.remote, Self::MAX_PATH);
+        self.branch = short(self.branch, 255);
+        self.head = hash(self.head);
+        self.upstream_head = hash(self.upstream_head);
+        let total = self.dirty.len() as u32 + self.dirty_more;
+        self.dirty.truncate(Self::MAX_DIRTY);
+        self.dirty = self.dirty.into_iter().map(path).collect();
+        self.dirty_more = total - self.dirty.len() as u32;
+        self.at = self.at.max(0);
+        self
+    }
 }
 
 impl SessionMetadata {
@@ -76,7 +131,15 @@ impl SessionMetadata {
             .map(|name| name.chars().take(80).collect());
         self.created_at = self.created_at.filter(|at| *at >= 0);
         self.last_message_at = self.last_message_at.filter(|at| *at >= 0);
+        self.workspace_state = self.workspace_state.map(WorkspaceState::bounded);
         self
+    }
+
+    /// A state not known now (axod restarted, or the Session is archived) is the one known before.
+    fn keep_workspace_state(&mut self, before: &SessionMetadata) {
+        if self.workspace_state.is_none() {
+            self.workspace_state = before.workspace_state.clone();
+        }
     }
 }
 
@@ -390,7 +453,7 @@ impl Uploader {
                 );
             }
             for session in self.host.sync_catalog()? {
-                let metadata = session.metadata.clone().bounded();
+                let mut metadata = session.metadata.clone().bounded();
                 if !self.sessions.contains_key(&session.session_id) {
                     let state = self
                         .stored
@@ -419,6 +482,7 @@ impl Uploader {
                     .sessions
                     .get_mut(&session.session_id)
                     .expect("inserted above");
+                metadata.keep_workspace_state(&entry.metadata);
                 if entry.file.path != session.pi_session_file {
                     entry.file = LocalFile::new(session.pi_session_file.clone());
                 }
@@ -925,6 +989,64 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    fn state(head: &str) -> WorkspaceState {
+        WorkspaceState {
+            path: "/Users/leo/src/axo".into(),
+            repo_root: Some("/Users/leo/src/axo".into()),
+            remote: Some("https://github.com/leostera/axo.git".into()),
+            branch: Some("main".into()),
+            head: Some(head.into()),
+            upstream_head: None,
+            dirty: Vec::new(),
+            dirty_more: 0,
+            at: 1,
+        }
+    }
+
+    fn listed(workspace_state: Option<WorkspaceState>) -> SessionMetadata {
+        SessionMetadata {
+            name: Some("Relay".into()),
+            emoji: None,
+            workspace_id: None,
+            workspace_name: None,
+            has_agent: true,
+            created_at: None,
+            last_message_at: None,
+            archived: false,
+            workspace_state,
+        }
+    }
+
+    #[test]
+    fn a_workspace_state_not_known_now_is_the_one_known_before() {
+        let before = listed(Some(state("3f2c1aa")));
+        let mut now = listed(None);
+        now.keep_workspace_state(&before);
+        assert_eq!(now, before, "unchanged, so the version is not raised");
+        let mut read = listed(Some(state("9e01b2c")));
+        read.keep_workspace_state(&before);
+        assert_eq!(
+            read.workspace_state,
+            Some(state("9e01b2c")),
+            "a new read replaces it"
+        );
+    }
+
+    #[test]
+    fn a_workspace_state_fits_the_clouds_bounds() {
+        let mut wide = state("not-a-hash");
+        wide.dirty = (0..60).map(|n| format!("file{n}.rs")).collect();
+        wide.dirty_more = 5;
+        wide.branch = Some("b".repeat(300));
+        let bounded = listed(Some(wide)).bounded().workspace_state.unwrap();
+        assert_eq!(bounded.head, None);
+        assert_eq!(bounded.branch, None);
+        assert_eq!((bounded.dirty.len(), bounded.dirty_more), (50, 15));
+        // Absent stays absent on the wire, so a cloud without the field still takes the metadata.
+        let json = serde_json::to_value(listed(None)).unwrap();
+        assert!(json.get("workspaceState").is_none());
+    }
+
     #[test]
     fn metadata_outside_the_clouds_bounds_is_left_out() {
         let metadata = SessionMetadata {
@@ -936,6 +1058,7 @@ mod tests {
             created_at: Some(-1),
             last_message_at: Some(5),
             archived: false,
+            workspace_state: None,
         }
         .bounded();
         assert_eq!(metadata.name, None);

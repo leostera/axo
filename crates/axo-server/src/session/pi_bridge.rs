@@ -367,13 +367,21 @@ impl SessionManager {
         data: &Value,
     ) -> io::Result<bool> {
         let session_id = binding.session_id;
-        let changed = {
+        let event = PiCatalogEvent::parse(name, data);
+        let settled = matches!(event, PiCatalogEvent::AgentSettled);
+        let (changed, settled_in) = {
             let mut state = self.lock_state()?;
             if !binding.is_current(&state) {
                 return Ok(false);
             }
+            // The agent may have changed the repository: read it again, off this lock.
+            let settled_in = if settled {
+                axo_store::session_initial_pwd(&state.database, session_id).ok()
+            } else {
+                None
+            };
 
-            match PiCatalogEvent::parse(name, data) {
+            let changed = match event {
                 PiCatalogEvent::AgentStarted => !std::mem::replace(
                     &mut state.pi_activity.entry(session_id).or_default().working,
                     true,
@@ -414,8 +422,12 @@ impl SessionManager {
                     describe_session(&state.database, session_id, title, emoji)?
                 }
                 PiCatalogEvent::Ignored => false,
-            }
+            };
+            (changed, settled_in)
         };
+        if let Some(path) = settled_in {
+            self.workspace_states.refresh(session_id, path);
+        }
         if changed {
             self.publish_session_snapshot(session_id)?;
         }

@@ -53,10 +53,15 @@ impl axo_relay::RelayHost for RelayHostAdapter {
 
     fn sync_catalog(&self) -> io::Result<Vec<axo_relay::SyncSession>> {
         let catalog = self.0.session_catalog()?;
-        let open = catalog
-            .sessions
-            .into_iter()
-            .map(|session| axo_relay::SyncSession {
+        let open = catalog.sessions.into_iter().map(|session| {
+            let workspace_state = self.0.workspace_states.get(session.id);
+            if workspace_state.is_none() {
+                // Not read since axod started: read it once now, for the next round.
+                self.0
+                    .workspace_states
+                    .refresh(session.id, session.initial_pwd.clone());
+            }
+            axo_relay::SyncSession {
                 session_id: session.id,
                 metadata: axo_relay::SessionMetadata {
                     name: Some(
@@ -72,10 +77,12 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                     created_at: (session.created_at > 0).then_some(session.created_at),
                     last_message_at: session.last_message_at,
                     archived: false,
+                    workspace_state,
                 },
                 status: Some(session.status),
                 pi_session_file: session.pi_session_file,
-            });
+            }
+        });
         let archived = catalog
             .archived
             .into_iter()
@@ -90,6 +97,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                     created_at: None,
                     last_message_at: session.last_message_at,
                     archived: true,
+                    workspace_state: None,
                 },
                 status: None,
                 pi_session_file: session.pi_session_file,
