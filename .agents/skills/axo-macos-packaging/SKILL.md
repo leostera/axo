@@ -13,6 +13,7 @@ Resolve paths from the Axo root (`../../..`). **Repackage `dist/Axo.app` after e
 - Signed with an Apple Development or Developer ID identity; not notarized. Ad-hoc signing is unsupported because launchd must accept the helper. App and helper must share a team.
 - Minimum macOS is 14.0 for both executables (`build-mac.sh` checks `vtool` minos against `LSMinimumSystemVersion`).
 - `DaemonController` registers the LaunchAgent through `SMAppService` and restarts axod when its build number differs from the app's.
+- **Bump `BUILD_NUMBER` (the axod build) in its own commit every time anything axod runs changes (`crates/axod`, `axo-server`, `axo-relay` or any crate they use) before building the app.** Otherwise Axo keeps the running axod and the change never reaches the Mac. `build-mac.sh` only reserves the app build number; it never moves the axod one.
 
 ## Build and verify
 
