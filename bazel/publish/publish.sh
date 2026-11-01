@@ -10,7 +10,8 @@ set -euo pipefail
 app=$1 zip=$2 cf=$3 team=$4 bucket=$5 url=$6
 
 root=${BUILD_WORKSPACE_DIRECTORY:?run me with bazel run //:publish}
-if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
+changes=$(git -C "$root" status --porcelain)
+if [[ -n "$changes" ]]; then
   echo "The checkout has changes; commit them first, so the published app is a commit:" >&2
   git -C "$root" status --short >&2
   exit 1
@@ -23,11 +24,20 @@ if [[ "$signed_by" != "$team" ]]; then
   exit 1
 fi
 
+# What is uploaded is the zip: it must unpack to the same signed app.
+work=$(mktemp -d "${TMPDIR:-/tmp}/axo-publish.XXXXXX")
+# The app keeps Bazel's read-only modes through the zip.
+trap 'chmod -R u+w "$work"; rm -rf "$work"' EXIT
+ditto -x -k "$zip" "$work"
+codesign --verify --deep --strict "$work/$(basename "$app")"
+cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
+[[ "$(cdhash "$app")" == "$(cdhash "$work/$(basename "$app")")" ]] || { echo "The zip does not unpack to the signed app" >&2; exit 1; }
+
 plist=$app/Contents/Info.plist
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
 axod_build=$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$plist")
 commit=$(/usr/libexec/PlistBuddy -c 'Print :AXOGitCommit' "$plist")
-size=$(stat -f %z "$zip")
+size=$(stat -L -f %z "$zip")
 zip=$(cd "$(dirname "$zip")" && pwd)/$(basename "$zip")
 
 upload() {

@@ -246,6 +246,8 @@ genrule(
     outs = ["Axo.app.zip"],
     # ditto keeps the bundle's symlinks, permissions and signature intact.
     cmd = "/usr/bin/ditto -c -k --sequesterRsrc --keepParent $(execpath :Axo) $@",
+    # In the sandbox the bundle's files are symlinks, which ditto would zip as symlinks.
+    tags = ["no-sandbox"],
 )
 
 sh_test(
