@@ -112,6 +112,16 @@ A copy is Pi's header line and then the cloud's `pi/3` lines in order, so it is 
 - **Invariant: a Mac uploads only the Sessions it owns.** The uploader lists only Sessions in this Mac's catalog, never a copy, so a copy is never sent back to the cloud.
 - **Catalog:** `axo.session.catalog` gains `host: { hostId, label, online }` and `mirror: true` on peer Sessions. Prompt, stop and answer on a mirror go out as `axo.client.command` on the peers socket.
 
+### Naming a Mac
+
+A Mac reports a name on every connect: its macOS Computer Name, or else its network hostname. Either is often a serial number or `Leos-MBP.lan`, not what anyone calls it, so a person names it in the account:
+
+```ts
+"axo.client.host.rename": { hostId, name }   // → { label }: the name shown; an empty name shows the reported one again
+```
+
+The account keeps the chosen `name` beside the reported `label` and shows `name ?? label` everywhere: client listings, the host list, `host.json` on the other Macs, and connections, where a Mac is `codemode.<name>`. Reconnecting updates only `label`, so it never undoes a name. The HostDO tells every client following the Mac at once with a `label` notice. The web app renames from the account panel's Macs list.
+
 ### The Mac app
 
 The sidebar groups Sessions by Mac: this Mac first, then each peer by label, offline ones dimmed. A peer Session opens in the existing chat view, fed by axod from the mirror plus the forwarded progress. It shows no terminal or shell panes. The message box gets the same Mac picker as the web app: on a new chat it chooses the Mac, and on a peer chat it offers **Continue here**.
