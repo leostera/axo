@@ -59,7 +59,7 @@ export async function connectClient(h: Harness, session: AccountSession, clientI
   const client = await Peer.connectClient(h.url, clientId, session.headers);
   const hello = await client.call("axo.client.hello", { protocolVersion: 2, clientId });
   assert.ok("result" in hello, JSON.stringify(hello));
-  return { client, clientId, hello: hello.result as { hosts: Array<{ hostId: string; online: boolean }>; sessions: Array<{ sessionId: string; head: number; epoch: number | null; metadata: SessionMetadata }> } };
+  return { client, clientId, hello: hello.result as { hosts: Array<{ hostId: string; label: string; online: boolean }>; sessions: Array<{ sessionId: string; head: number; epoch: number | null; metadata: SessionMetadata }> } };
 }
 
 export function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {

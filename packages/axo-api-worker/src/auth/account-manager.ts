@@ -24,7 +24,10 @@ type AccountHostRow = {
   host_generation: string;
   credential_id: string;
   credential_verifier: string;
+  /** What the Mac reports, on every connect. */
   label: string;
+  /** What a person named it; shown instead of `label` when set. */
+  name: string | null;
   host_kind: string;
   capabilities_json: string | null;
   linked_at: number;
@@ -35,9 +38,15 @@ const MAX_SESSIONS = 20;
 const MAX_PENDING_LOGIN_CODES = 10;
 type HostStub = {
   disconnect(): Promise<void>;
+  renamed(label: string): Promise<void>;
   presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }>;
   callHost(request: { method: string; params: unknown; deadlineMs: number }): Promise<CallOutcome>;
 };
+
+/** A Mac is shown by the name a person gave it, or else by what it reports. */
+function shownLabel(row: AccountHostRow): string {
+  return row.name ?? row.label;
+}
 
 export type PairingCreationStatus = "created" | "collision" | "limited";
 export type PairingRedemption =
@@ -89,6 +98,9 @@ export class AxoAccountManager extends DurableObject<Env> {
     const hostColumns = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(account_hosts)").toArray();
     if (!hostColumns.some(column => column.name === "capabilities_json")) {
       ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN capabilities_json TEXT");
+    }
+    if (!hostColumns.some(column => column.name === "name")) {
+      ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN name TEXT");
     }
     // Each host's Session index moved to its HostDO (RFD0018), and the relay tables with it.
     for (const table of ["host_sessions_v1", "host_sessions_v2", "groups", "pending", "route", "fragments_in", "fragments_discarded", "outbox"])
@@ -277,9 +289,23 @@ export class AxoAccountManager extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<AccountHostRow>(
       "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY host_id LIMIT ?", LIMITS.machines,
     ).toArray().map((row) => ({
-      hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
+      hostId: row.host_id, hostGeneration: row.host_generation, label: shownLabel(row), hostKind: row.host_kind,
       lastSeenAt: new Date(row.last_seen_at).toISOString(),
     }));
+  }
+
+  /**
+   * Names a Mac (RFD0022): it is shown by that name everywhere, and reconnecting never undoes it.
+   * An empty name shows what the Mac reports again. Returns the name shown.
+   */
+  async renameHost(hostId: string, name: string): Promise<string | null> {
+    const host = this.activeHost(hostId);
+    if (!host) return null;
+    const chosen = name.trim() || null;
+    this.ctx.storage.sql.exec("UPDATE account_hosts SET name = ? WHERE host_id = ?", chosen, hostId);
+    const label = chosen ?? host.label;
+    await this.hostDO(hostId)?.renamed(label).catch(() => undefined);
+    return label;
   }
 
   revokeHost(hostId: string, now = Date.now()): void {
@@ -408,7 +434,7 @@ export class AxoAccountManager extends DurableObject<Env> {
       loader: this.env.LOADER,
       hosts: () => this.ctx.storage.sql.exec<AccountHostRow>(
         "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY linked_at, host_id LIMIT ?", LIMITS.machines,
-      ).toArray().map((row) => ({ hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, linkedAt: row.linked_at })),
+      ).toArray().map((row) => ({ hostId: row.host_id, hostGeneration: row.host_generation, label: shownLabel(row), linkedAt: row.linked_at })),
       presence: async (hostId) => plain(await this.hostDO(hostId)!.presenceOf()),
       callHost: async (hostId, request) => plain(await this.hostDO(hostId)!.callHost(request)),
       google: googleClient(this.env as Env & { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }),
@@ -435,7 +461,7 @@ export class AxoAccountManager extends DurableObject<Env> {
     const presence = row.revoked_at === null ? await this.hostDO(row.host_id)?.presenceOf().catch(() => null) : null;
     const online = Boolean(presence?.online && presence.hostGeneration === row.host_generation);
     return hostSnapshotSchema.parse({
-      hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
+      hostId: row.host_id, hostGeneration: row.host_generation, label: shownLabel(row), hostKind: row.host_kind,
       ...(row.capabilities_json === null ? {} : { capabilities: JSON.parse(row.capabilities_json) as unknown }),
       status: online ? "online" : "offline", stale: !online,
       lastSeenAt: new Date(row.last_seen_at).toISOString(), sessions: [],

@@ -10,6 +10,7 @@ import {
   clientCloseParamsSchema,
   clientCommandParamsSchema,
   clientHelloParamsSchema,
+  clientHostRenameParamsSchema,
   clientOlderParamsSchema,
   clientOpenParamsSchema,
   decode,
@@ -75,7 +76,10 @@ type HostRow = { host_id: string; host_generation: string; label: string; host_k
  */
 type OpenRow = { session_id: string; host_id: string; epoch: number | null; sent: number; acked: number; read_id: number; sent_at: number };
 
-type AccountStub = { clientHosts(): Promise<Array<Omit<ClientHost, "online">>> };
+type AccountStub = {
+  clientHosts(): Promise<Array<Omit<ClientHost, "online">>>;
+  renameHost(hostId: string, name: string): Promise<string | null>;
+};
 type HostStub = {
   subscribe(clientDO: string, leaseMs: number): Promise<HostSubscription>;
   unsubscribe(clientDO: string): Promise<void>;
@@ -201,6 +205,10 @@ export class AxoClientDO extends DurableObject<Env> {
           break;
         case "epoch":
           break;
+        case "label":
+          this.ctx.storage.sql.exec("UPDATE hosts SET label = ? WHERE host_id = ?", notice.label, hostId);
+          this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.hosts, params: { hosts: this.hosts() } });
+          break;
       }
     }
     if (sessions.length) this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.sessions, params: { hostId, sessions } });
@@ -266,6 +274,14 @@ export class AxoClientDO extends DurableObject<Env> {
           if (!params.success || !this.host(params.data.hostId)) return failure(id, -32602, "Invalid params");
           const outcome = await this.hostStub(params.data.hostId).command(params.data.method, params.data.params);
           return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
+        }
+        case CLIENT_METHODS.renameHost: {
+          const params = clientHostRenameParamsSchema.safeParse(call.params);
+          if (!params.success || !this.host(params.data.hostId)) return failure(id, -32602, "Invalid params");
+          const label = await this.account().renameHost(params.data.hostId, params.data.name);
+          if (label === null) return failure(id, -32602, "Invalid params");
+          this.ctx.storage.sql.exec("UPDATE hosts SET label = ? WHERE host_id = ?", label, params.data.hostId);
+          return success(id, { label });
         }
         default:
           return failure(id, -32601, "Method not found");
@@ -362,7 +378,7 @@ export class AxoClientDO extends DurableObject<Env> {
    */
   private async followHosts(socket: WebSocket, hello: boolean): Promise<ClientSession[]> {
     const { accountId } = this.identity()!;
-    const account = this.ctx.exports.AxoAccountDirectory.getByName(accountId) as unknown as AccountStub;
+    const account = this.account();
     const self = peerHostOf(this.identity()!.clientId);
     const listed = (await account.clientHosts()).filter((host) => host.hostId !== self);
     const name = clientDOName(accountId, this.identity()!.clientId);
@@ -441,6 +457,10 @@ export class AxoClientDO extends DurableObject<Env> {
 
   private openRows(): OpenRow[] {
     return this.ctx.storage.sql.exec<OpenRow>("SELECT * FROM open_sessions").toArray();
+  }
+
+  private account(): AccountStub {
+    return this.ctx.exports.AxoAccountDirectory.getByName(this.identity()!.accountId) as unknown as AccountStub;
   }
 
   private hostStub(hostId: string): HostStub {

@@ -49,7 +49,9 @@ export type HostNotice =
   | { kind: "session"; session: ClientSession }
   | { kind: "progress"; sessionId: string; slot: string; snapshot: unknown }
   | { kind: "epoch"; sessionId: string; epoch: number; head: number }
-  | { kind: "presence"; online: boolean; hostGeneration: string | null };
+  | { kind: "presence"; online: boolean; hostGeneration: string | null }
+  /** The Mac was named (RFD0022). */
+  | { kind: "label"; label: string };
 
 export type HostSubscription = {
   online: boolean;
@@ -510,6 +512,11 @@ export class AxoHostDO extends AxoHostRelay {
     this.closeHostRelay(identity.host_id);
   }
 
+  /** Tells the clients following this Mac its new name at once. */
+  async renamed(label: string): Promise<void> {
+    this.queue({ kind: "label", label }, true);
+  }
+
   async presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }> {
     return this.presence();
   }
@@ -534,6 +541,7 @@ export class AxoHostDO extends AxoHostRelay {
   /** Gathers notices for `SYNC.noticeMs`, keeping the newest per key; `now` sends at once. */
   private queue(notice: HostNotice, now = false): void {
     const key = notice.kind === "presence" ? "presence"
+      : notice.kind === "label" ? "label"
       : notice.kind === "session" ? `session:${notice.session.sessionId}`
       : notice.kind === "epoch" ? `epoch:${notice.sessionId}`
       : `progress:${notice.sessionId}:${notice.slot}`;

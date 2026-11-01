@@ -264,3 +264,38 @@ test("a paired Mac follows the account's other Macs with its pairing credential,
   assert.equal(revoked.status, 204);
   await assert.rejects(Peer.connectHostPeers(h.url, session.accountId, laptop.hostId, credential));
 });
+
+test("a Mac is named by its person, everywhere at once, and reconnecting never undoes it (RFD0022)", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const host = await pairHost(h, session, "Leos-MBP.lan");
+  const daemon = await connectHost(h, session, host);
+  t.after(() => daemon.close());
+  const { client } = await connectClient(h, session);
+  t.after(() => client.close());
+  const { client: other } = await connectClient(h, session);
+  t.after(() => other.close());
+
+  const renamed = await call<{ label: string }>(client, "axo.client.host.rename", { hostId: host.hostId, name: "  MacBook Pro  " });
+  assert.equal(renamed.label, "MacBook Pro");
+  // Another tab hears it at once.
+  const heard = await until(other, "axo.client.hosts") as { hosts: Array<{ hostId: string; label: string }> };
+  assert.equal(heard.hosts.find((listed) => listed.hostId === host.hostId)?.label, "MacBook Pro");
+
+  // The Mac reconnects and reports its network name again; the name stays.
+  daemon.close();
+  const again = await connectHost(h, session, host);
+  t.after(() => again.close());
+  const listed = await fetch(new URL("api/v1/account/hosts", h.url), { headers: session.headers });
+  assert.deepEqual(((await listed.json()) as { hosts: Array<{ label: string }> }).hosts.map((listedHost) => listedHost.label), ["MacBook Pro"]);
+  const { hello } = await connectClient(h, session);
+  assert.equal(hello.hosts.find((listedHost) => listedHost.hostId === host.hostId)?.label, "MacBook Pro");
+
+  // An empty name shows what the Mac reports again; a Mac not of this account cannot be named.
+  assert.equal((await call<{ label: string }>(client, "axo.client.host.rename", { hostId: host.hostId, name: "" })).label, "Leos-MBP.lan");
+  const stranger = await client.call("axo.client.host.rename", { hostId: crypto.randomUUID(), name: "Mine" });
+  assert.ok("error" in stranger);
+  const unsafe = await client.call("axo.client.host.rename", { hostId: host.hostId, name: "bad\u0007name" });
+  assert.ok("error" in unsafe);
+});

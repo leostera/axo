@@ -211,9 +211,16 @@ export const CLIENT_METHODS = {
   reset: "axo.client.session.reset",
   close: "axo.client.session.close",
   command: "axo.client.command",
+  /** Names a Mac of the account (RFD0022). */
+  renameHost: "axo.client.host.rename",
 } as const;
 
 export const clientIdSchema = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
+
+/** What a person calls a Mac; empty goes back to the name the Mac reports. */
+export const hostNameSchema = z.string().trim().max(64).refine((value) => !/\p{Cc}/u.test(value), "No control characters");
+export const clientHostRenameParamsSchema = z.object({ hostId: uuid, name: hostNameSchema }).strict();
+export const clientHostRenameResultSchema = z.object({ label: z.string().min(1).max(128) }).strict();
 
 /** A durable record as clients see it. Only the format adapter on the client knows Pi. */
 export const clientRecordSchema = z.object({
