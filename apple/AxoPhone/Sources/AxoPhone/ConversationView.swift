@@ -356,6 +356,7 @@ struct ConversationView: View {
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .accessibilityLabel(follow.hasNew ? "Jump to new message" : "Jump to latest")
       }
+      HostPicker(phone: phone)
       DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, send: sendDraft)
     }
     // With the keyboard down the composer sits down in the home indicator's area, as the

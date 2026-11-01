@@ -30,6 +30,10 @@ struct SessionInfoPanel: View {
           .padding(.bottom, 24)
         if let session, let workbench {
           SessionFacts(workbench: workbench, session: session)
+          if let state = session.workspaceState {
+            WorkspaceFacts(state: state, host: workbench.hostLabel)
+              .padding(.top, 20)
+          }
         } else {
           Text("Nothing here yet. Send a message and this chat starts on your Mac.")
             .font(.callout)
@@ -72,8 +76,10 @@ private struct SessionFacts: View {
       if let workspace = session.workspaceName { Fact(label: "Workspace", value: workspace) }
       Fact(label: "Messages", value: messages(chat))
       Fact(label: "Terminals", value: session.shells.count.formatted())
-      if let updated = try? Date(session.updatedAt, strategy: .iso8601) {
-        Fact(label: "Last active", value: updated.formatted(.relative(presentation: .named)))
+      // The latest finished message (or its creation): `updatedAt` only says when the listing was sent.
+      let active = ChatMenu.activity(session)
+      if active != .distantPast {
+        Fact(label: "Last active", value: active.formatted(.relative(presentation: .named)))
       }
       Fact(label: "Chat", value: session.sessionId.rawValue, monospaced: true)
     }
@@ -99,6 +105,60 @@ private struct SessionFacts: View {
     case .loaded(_, hasOlder: true), .loadingOlder: return "\(count)+"
     default: return count.formatted()
     }
+  }
+}
+
+/// The chat's folder and its repository, as its Mac last read them when the agent settled
+/// (RFD0022): what continuing it somewhere else would need.
+private struct WorkspaceFacts: View {
+  let state: WorkspaceState
+  let host: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("On \(host)")
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.leading, 16)
+        .accessibilityAddTraits(.isHeader)
+      VStack(spacing: 0) {
+        Fact(label: "Folder", value: Self.short(state.path), monospaced: true)
+        if state.isRepository {
+          Fact(label: "Branch", value: branch)
+          if let head = state.head { Fact(label: "Commit", value: String(head.prefix(8)), monospaced: true) }
+          Fact(label: "Changes", value: changes)
+          if state.differsFromUpstream { Fact(label: "Upstream", value: "Not in step with the remote") }
+        } else {
+          Fact(label: "Repository", value: "None")
+        }
+        Fact(
+          label: "Read",
+          value: Date(timeIntervalSince1970: TimeInterval(state.at)).formatted(.relative(presentation: .named)))
+      }
+      .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+    .accessibilityIdentifier("workspace-state")
+  }
+
+  private var branch: String {
+    if let branch = state.branch { return branch }
+    return state.head.map { "Detached at \($0.prefix(8))" } ?? "Detached"
+  }
+
+  private var changes: String {
+    switch state.changedCount {
+    case 0: "None"
+    case 1: "1 file"
+    case let count: "\(count) files"
+    }
+  }
+
+  /// A home folder path as people write it: `~/axo` rather than `/Users/leo/axo`.
+  static func short(_ path: String) -> String {
+    let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count >= 3, parts[0].isEmpty, parts[1] == "Users" else { return path }
+    let rest = parts.dropFirst(3).joined(separator: "/")
+    return rest.isEmpty ? "~" : "~/" + rest
   }
 }
 

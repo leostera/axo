@@ -84,7 +84,12 @@ enum PreviewFixture {
       func ago(_ seconds: TimeInterval) -> Int64 { Int64(Date.now.addingTimeInterval(-seconds).timeIntervalSince1970) }
       func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> String {
         let host = host.uuidString.lowercased()
-        return #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","workspaceId":null,"workspaceName":"\#(workspace)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false}}"#
+        // The Axo chats are in the repository, with a couple of files changed; Home is no repository.
+        let path = workspace == "Axo" ? "/Users/leo/Developer/axo" : "/Users/leo"
+        let state = workspace == "Axo"
+          ? #"{"path":"\#(path)","repoRoot":"\#(path)","remote":"https://github.com/leostera/axo","branch":"main","head":"e71752e0c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5a6","upstreamHead":"c22a4480c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5a6","dirty":["apple/AxoPhone/BUILD.bazel","README.md"],"dirtyMore":0,"at":\#(active)}"#
+          : #"{"path":"\#(path)","repoRoot":null,"remote":null,"branch":null,"head":null,"upstreamHead":null,"dirty":[],"dirtyMore":0,"at":\#(active)}"#
+        return #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","workspaceId":null,"workspaceName":"\#(workspace)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false,"workspaceState":\#(state)}}"#
       }
       return """
         {"hosts":[

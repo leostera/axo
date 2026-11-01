@@ -215,7 +215,8 @@ final class AxoPhoneUITests: XCTestCase {
     }
     XCTAssertTrue(app.staticTexts["10m"].exists, "each row says how long ago")
     XCTAssertTrue(app.staticTexts["1w"].exists)
-    XCTAssertEqual(rows[1].value as? String, "Working, 20 minutes ago")
+    XCTAssertEqual(rows[1].value as? String, "on Studio, Working, 20 minutes ago", "with two Macs, each row says which")
+    XCTAssertTrue((rows[5].value as? String)?.hasPrefix("on Old iMac, ") == true, "\(rows[5].value ?? "")")
     capture(app, named: "menu-recent-light")
 
     app.terminate()

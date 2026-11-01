@@ -188,11 +188,23 @@ struct WorkbenchView: View {
     }
     .task {
       await workbench.start()
+      if PreviewFixture.chatOpen != nil {
+        // The listing is applied as the socket's hello arrives, after `start` returns: wait for it
+        // (a few seconds at most) before choosing the chat to open.
+        for _ in 0..<100 where sections.flatMap(\.chats).isEmpty {
+          try? await Task.sleep(for: .milliseconds(30))
+        }
+      }
       let chats = sections.flatMap(\.chats)
       if let index = PreviewFixture.chatOpen, chats.indices.contains(index - 1) {
         workbench.select(host: chats[index - 1].host.hostId, session: chats[index - 1].session.sessionId)
         #if DEBUG && targetEnvironment(simulator)
           if let live = PreviewFixture.live, live != "stream", let current = workbench.current, let id = current.selectedSessionID {
+            // Played over the chat once it is open, or opening it would replace what was played.
+            for _ in 0..<100 {
+              if case .loaded = current.chat(id).history { break }
+              try? await Task.sleep(for: .milliseconds(30))
+            }
             try? await Task.sleep(for: .milliseconds(300))
             current.playForPreview(PreviewFixture.liveEvents(live), in: id)
             if live == "stopping" { current.markStoppingForPreview(id) }
@@ -375,7 +387,9 @@ struct WorkbenchView: View {
         selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
         name: entry.session.displayName,
         status: entry.session.status,
-        lastActive: showsAge ? ChatMenu.activity(entry.session) : nil)
+        lastActive: showsAge ? ChatMenu.activity(entry.session) : nil,
+        // In Workspaces the section's title names the Mac; the recent list mixes them.
+        hostLabel: showsAge && workbench.hosts.hosts.count > 1 ? entry.host.label : nil)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
@@ -492,6 +506,8 @@ private struct SessionRow: View {
   let status: RemoteSessionStatus?
   /// When the chat was last active, shown as a short age in the recent list; nil in Workspaces.
   var lastActive: Date?
+  /// The Mac the chat is on, when there is more than one to tell apart.
+  var hostLabel: String?
 
   // Read here, in the row's own body, so the row redraws when the open chat changes: a lazy
   // stack does not re-run its rows for a change only the menu's body saw.
@@ -503,6 +519,12 @@ private struct SessionRow: View {
         .font(.callout)
         .lineLimit(1)
       Spacer(minLength: 0)
+      if let hostLabel {
+        Text(hostLabel)
+          .font(.caption)
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+      }
       SessionStatusDot(status: status)
       if let lastActive {
         // Ages only need to move once a minute.
@@ -531,7 +553,8 @@ private struct SessionRow: View {
 
   private var spokenValue: String {
     let age = lastActive.map { $0.formatted(.relative(presentation: .named)) }
-    return [SessionStatusDot.spoken(status), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
+    let host = hostLabel.map { "on \($0)" }
+    return [host ?? "", SessionStatusDot.spoken(status), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
   }
 }
 
