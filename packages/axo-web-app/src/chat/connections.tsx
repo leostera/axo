@@ -20,6 +20,7 @@ import onepasswordLogo from "./logos/onepassword.svg";
 import paypalLogo from "./logos/paypal.svg";
 import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
+import spotifyLogo from "./logos/spotify.svg";
 import stripeLogo from "./logos/stripe.svg";
 import tasksLogo from "./logos/tasks.svg";
 import telegramLogo from "./logos/telegram.svg";
@@ -707,6 +708,7 @@ const APP_LOGOS: Record<string, string> = {
   "apps.github": githubLogo,
   "apps.discord": discordLogo,
   "apps.unifi": unifiLogo,
+  "apps.spotify": spotifyLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
 const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise", "apps.kraken", "apps.unifi"]);
@@ -743,7 +745,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken", "apps.github": "GitHub", "apps.discord": "Discord", "apps.unifi": "UniFi",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken", "apps.github": "GitHub", "apps.discord": "Discord", "apps.unifi": "UniFi", "apps.spotify": "Spotify",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */

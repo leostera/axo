@@ -148,6 +148,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       permissions: ["See and change every repository you can reach", "See your notifications"],
       signIn: { kind: "oauth", client: { provider: "github", ready: false, consoleUrl: "https://github.com/settings/developers", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback" } },
       state: "needsSignIn", accounts: [], tools: ["get_issue", "request"], lastError: null },
+    { kind: "app", name: "apps.spotify", title: "Spotify", provider: "Spotify", category: "media", description: "Your Spotify: what is playing, playback on your devices, search, playlists, your library and what you listen to.",
+      permissions: ["See what you are playing, on which device, and your queue", "Play, pause, skip, seek and change the volume on your devices"],
+      signIn: { kind: "oauth", client: { provider: "spotify", ready: true, consoleUrl: "https://developer.spotify.com/dashboard", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback" } },
+      state: "ready", accounts: [{ account: "ada.l", state: "ready", lastError: null }], tools: ["get_playback", "request"], lastError: null },
     { kind: "app", name: "apps.discord", title: "Discord", provider: "Discord", category: "communication", description: "A Discord bot of yours.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://discord.com/developers/applications", named: false, fields: [{ name: "token", label: "Bot token", help: "In the portal.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["send_message", "request"], lastError: null },
@@ -651,14 +655,14 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Discord", "UniFi", "linear", "notion", "docs", "Stripe", "PayPal", "Add MCP server"]);
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Spotify", "Discord", "UniFi", "linear", "notion", "docs", "Stripe", "PayPal", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 16, "every app and suggested server has its maker's logo, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 17, "every app and suggested server has its maker's logo, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
-    assert.deepEqual(await cards(), ["Gmail", "1Password", "linear", "docs"], "only what is connected");
+    assert.deepEqual(await cards(), ["Gmail", "1Password", "Spotify", "linear", "docs"], "only what is connected");
     await apps.getByRole("radio", { name: /^All/ }).first().click();
     await apps.getByRole("radio", { name: /^Files/ }).click();
     assert.deepEqual(await cards(), ["Google Drive"]);
@@ -757,6 +761,16 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(github.getByRole("button", { name: "Add account" }));
     await github.getByRole("button", { name: "Add account" }).click();
     await page.waitForURL(/signedIn=apps\.github/);
+
+    // An OAuth app of another provider, set up: its own logo and maker, and Add account as Google's.
+    await page.goto(`${appUrl}/app/settings/apps/spotify`, { waitUntil: "networkidle" });
+    const spotify = page.getByRole("region", { name: "Spotify" });
+    await expect(spotify.getByRole("heading", { name: "Spotify" }));
+    assert.equal(await spotify.locator(".app-meta").textContent(), "Spotify · Media");
+    assert.deepEqual(await spotify.locator(".connection-row strong").allTextContents(), ["ada.l"]);
+    assert.equal(await spotify.getByRole("button", { name: "Add account" }).count(), 1);
+    await page.waitForFunction(() => [...document.querySelectorAll(".app-info img")].every((img) => img.complete && img.naturalWidth > 0));
+    await shot("apps-spotify");
 
     // A device sign-in: the code to enter at OpenAI, until the person has.
     await page.goto(`${appUrl}/app/settings/apps/chatgpt`, { waitUntil: "networkidle" });
