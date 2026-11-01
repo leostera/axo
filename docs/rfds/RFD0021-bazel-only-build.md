@@ -1,7 +1,7 @@
 # RFD0021 - Axo: One build, `bazel build //...`
 
 - Feature Name: `axo-bazel-only-build`
-- Status: Draft
+- Status: Implementing (see As built)
 - Author: leostera
 - Start Date: 2026-11-01
 - Updated: 2026-11-01
@@ -218,7 +218,7 @@ The `dist/Axo.app` action is `replace-app.swift` as a `swift_binary`. It swaps t
 ### Phone visual and motion tests
 
 - **Screenshots:** the UI tests save them to `TEST_UNDECLARED_OUTPUTS_DIR` themselves. The XCUITest runner is a Mac process, so it can write there. The comparison from `compare-phone-snapshots.swift` moves into the test target, so a difference fails the test. No `xcresulttool` export and no Python.
-- **Motion:** in preview mode the app records the layer's offset on every display frame (`CADisplayLink`) to a file the test is given. `AxoPhoneMotionTests` checks for speed changes above 2500 pt/s between frames, the threshold the script used. No video, ffmpeg or Python.
+- **Motion:** in preview mode the app records the layer's offset on every display frame to a file the test is given (an animatable `GeometryEffect`, see As built). `AxoPhoneMotionTests` checks for speed changes above 2500 pt/s between frames, the threshold the script used. No video, ffmpeg or Python.
 - **Recording baselines:** `//apple/AxoPhone:record_snapshots` (`bazel run`) copies the newest screenshots from `bazel-testlogs` into `apple/AxoPhone/Snapshots/`.
 - `scripts/phone-visual-loop.sh`, `scripts/phone-swipe-motion.sh` and `scripts/compare-phone-snapshots.swift` are deleted.
 
@@ -230,11 +230,11 @@ The `dist/Axo.app` action is `replace-app.swift` as a `swift_binary`. It swaps t
 - It stops inheriting the environment and stops running `npm`, because pi-axo is a data dependency.
 - It no longer regenerates the project or edits its scheme. The fixture root is passed to the runner through a file in the test's control directory.
 
-It is tagged `requires-mac-ui`, which `.bazelrc` excludes from `bazel test //...`.
+It is tagged `requires-mac-ui` and `manual`, so `bazel test //...` skips it and running it by name still works (a `.bazelrc` tag filter would skip it by name too).
 
 ### Xcode project
 
-`//apple:xcodeproj` stays a rules_xcodeproj target. Building it produces the project. A workspace-writing action copies that output to `apple/Axo.xcodeproj` and fills in the paths `bazel run` would otherwise fill in (execution root, output base) from `@axo_config`.
+`//apple:xcodeproj` stays a rules_xcodeproj target. Building it does not produce the project: the runner generates it with a Bazel of its own (see As built). `//apple:xcodeproj_install` is a workspace-writing action that runs the runner as `bazel run` would.
 
 The project stays out of git, because every build writes it.
 
@@ -347,6 +347,23 @@ Out of scope:
 
 - Notarization and Developer ID distribution.
 - CI.
+
+## As built
+
+What the implementation on `feat/bazel-only-build` settled, where it differs from the proposal above.
+
+- **Xcode project.** Building `//apple:xcodeproj` produces only its runner. The runner writes the generator's package into the output base and builds it with `--config=rules_xcodeproj_generator`, in an output base of its own (`<output_base>/rules_xcodeproj.noindex/build_output_base`). So there is nothing to copy. Instead `//apple:xcodeproj_install` runs the runner from a workspace-writing action. Because the runner's Bazel uses another output base, it never waits on the outer build. The first generation takes about 5 minutes and later ones take seconds. The action reruns when a file under `apple/` comes or goes (`@axo_files//:apple_files.txt`, from a repository that watches the tree) and when the project is deleted. Xcode builds through the result.
+- **rust-project.json.** rules_rust's `gen_rust_project` also runs Bazel. `//bazel/rust:rust_project` runs it from an action with `--output-base <output_base>_rust_project`, for the same reason. It reruns when a file under `crates/` comes or goes, or when `MODULE.bazel` or its lock changes. The first run takes about 2 minutes.
+- **Signing.** A separate action signs the unpacked bundle after rules_apple builds it (`bazel/apple/sign_mac_app.sh`): the helper, then the frameworks, then the app, with hardened runtime and a secure timestamp, or ad hoc. axod is not a `macos_command_line_application`. `--define=apple.experimental.tree_artifact_outputs` is not used, because the signing action unpacks the zip.
+- **Mac app zip.** `//apple/AxoMac:Axo_zip` runs unsandboxed. In the sandbox the bundle's files are symlinks, which `ditto` would zip as symlinks. `//:publish` unzips the archive and compares code directory hashes before uploading.
+- **Motion.** The app records the conversation layer's offset with an animatable `GeometryEffect` instead of `CADisplayLink`. SwiftUI hands it the interpolated value of every frame of a spring and every step of a drag, which is the value drawn. `CADisplayLink` would only say that a frame happened.
+- **Phone baselines.** The interaction video (`Snapshots/Phone/Videos`) is gone with the scripts that exported it. XCTest still records every UI test run in its result bundle.
+- **TypeScript.** `ts_project` works with TypeScript 7's native `tsc` (aspect_rules_ts 3.10.1, `--@aspect_rules_ts//ts:default_to_tsc_transpiler`). Vite builds run unsandboxed: Vite follows the sandbox's symlinks out of its root. `cf build` and `cf dev` shell out to `npx vite`, so the site builds with Vite and Cloudflare's plugin directly. Packages that relied on pnpm hoisting declare what they use. `@types/react` is added to two component libraries' peers through `packageExtensions`.
+- **workerd** is pinned only under the site's Cloudflare tooling. Miniflare's tests in `packages/axo-api-worker` need the workerd their miniflare ships with.
+- **Remote access explainer.** `docs/explainers/remote-access` typechecks, tests and builds in Bazel. A `write_source_files` test keeps its committed `index.html` equal to the build. `bazel run //docs/explainers/remote-access:update_index_html` rewrites it.
+- **Not done yet:**
+  - `run_visual_ui_test.sh` still edits the generated scheme with Python, runs `npm` and inherits the environment. It cannot be rewritten and tested while Axo is open.
+  - The Feynman specs (`pnpm exec feynman check`) are not a Bazel test.
 
 ## Future possibilities
 
