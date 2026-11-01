@@ -3,6 +3,7 @@ import {
   FRAGMENT_METHOD,
   MemoryPartialStore,
   clientHelloResultSchema,
+  clientHostRenameResultSchema,
   clientHostsParamsSchema,
   clientOlderResultSchema,
   clientOpenResultSchema,
@@ -222,6 +223,11 @@ export class AccountConnection {
   /** Lists the account's hosts and Sessions again now: for a host paired a moment ago. */
   async refresh(): Promise<ClientHello> {
     return clientHelloResultSchema.parse(await this.request(CLIENT_METHODS.refresh, {}));
+  }
+
+  /** Names a Mac of the account; an empty name goes back to what the Mac reports. Returns the name shown. */
+  async renameHost(hostId: string, name: string): Promise<string> {
+    return clientHostRenameResultSchema.parse(await this.request(CLIENT_METHODS.renameHost, { hostId, name })).label;
   }
 
   /** Opens a Session: the records after `have`, or its last `window`. Newer records follow as `records` events. */

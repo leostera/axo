@@ -330,6 +330,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       const call = JSON.parse(raw.toString());
       if (!call.method || call.method === "axo.client.session.ack" || call.method === "axo.client.session.close") return;
       const reply = (result) => socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
+      if (call.method === "axo.client.host.rename") {
+        methods.push(call.method);
+        const label = call.params.name.trim() || "Mac Studio";
+        if (call.params.hostId === studioHost.hostId) studioHost.label = label;
+        reply({ label });
+        return;
+      }
       if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
         methods.push(call.method);
         reply({ hosts: [clientHost, studioHost], sessions });
@@ -645,6 +652,17 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(account.getByText("Browser fixture Mac"));
     await expect(account.getByText("4 chats"));
     await shot("account");
+
+    // A Mac is named by its person: the pencil, a name, Enter.
+    const studioRow = account.locator(".mac-row-wrap", { hasText: "Mac Studio" });
+    await studioRow.hover();
+    await studioRow.getByRole("button", { name: "Rename Mac Studio" }).click();
+    const nameField = account.getByLabel("Name for Mac Studio");
+    await nameField.fill("Leo's Studio");
+    await shot("account-rename");
+    await nameField.press("Enter");
+    await expect(account.getByText("Leo's Studio", { exact: true }));
+    assert.ok(methods.includes("axo.client.host.rename"));
     await account.getByRole("button", { name: "Pair a Mac" }).click();
     const pairing = page.getByRole("dialog", { name: "Pair a Mac" });
     await expect(pairing.getByText("B26A-NRKT", { exact: true }));

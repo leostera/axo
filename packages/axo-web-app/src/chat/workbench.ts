@@ -67,6 +67,7 @@ export interface AccountLink {
   readonly hello: ClientHello;
   readonly active: boolean;
   refresh(): Promise<ClientHello>;
+  renameHost(hostId: string, name: string): Promise<string>;
   open(request: OpenRequest): Promise<ClientOpenResult>;
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
@@ -404,6 +405,30 @@ export class ChatWorkbench {
   }
 
   // MARK: - Macs and their chats
+
+  /**
+   * Names a Mac, for this account everywhere: the network's name for it is rarely what anyone
+   * calls it. An empty name goes back to that. Says whether it was saved.
+   */
+  async renameHost(hostId: string, name: string): Promise<boolean> {
+    const connection = this.connection;
+    if (!connection?.active) {
+      this.failure = "Not connected; try again in a moment.";
+      this.changed();
+      return false;
+    }
+    try {
+      const label = await connection.renameHost(hostId, name);
+      this.listedHosts = this.listedHosts.map(host => host.hostId === hostId ? { ...host, label } : host);
+      this.rebuildHosts();
+      this.changed();
+      return true;
+    } catch (error) {
+      this.failure = `Could not rename the Mac: ${describe(error)}`;
+      this.changed();
+      return false;
+    }
+  }
 
   /** Lists the account's hosts again now: for a Mac paired a moment ago. */
   async refreshHosts(): Promise<void> {

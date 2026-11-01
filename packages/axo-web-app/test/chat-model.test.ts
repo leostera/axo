@@ -347,6 +347,17 @@ class FakeAccount implements AccountLink {
 
   async refresh() { return this.hello; }
 
+  renames: Array<{ hostId: string; name: string }> = [];
+  async renameHost(hostId: string, name: string) {
+    this.renames.push({ hostId, name });
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      throw error;
+    }
+    return name.trim() || "Studio";
+  }
+
   async open(request: OpenRequest) {
     this.opens.push(request);
     const all = this.records.get(request.sessionId) ?? [];
@@ -553,4 +564,15 @@ test("a lost connection is tried again, comes back connected, and reopens the ch
   assert.equal(workbench.link, "connected");
   assert.deepEqual(account.opens.at(-1)!.have, { epoch: 1, cursor: 1 });
   workbench.dispose();
+});
+
+test("a Mac is named by the person, and a name that could not be saved says so", async () => {
+  const { workbench, account } = await workbenchWith();
+  assert.equal(await workbench.renameHost(hostId, "Mac Studio"), true);
+  assert.deepEqual(account.renames, [{ hostId, name: "Mac Studio" }]);
+  assert.equal(workbench.hosts[0]!.label, "Mac Studio");
+  account.failNext = new Error("offline");
+  assert.equal(await workbench.renameHost(hostId, "Other"), false);
+  assert.equal(workbench.hosts[0]!.label, "Mac Studio", "unchanged");
+  assert.match(workbench.failure ?? "", /Could not rename the Mac/);
 });

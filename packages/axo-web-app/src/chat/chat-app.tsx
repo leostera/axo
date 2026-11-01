@@ -355,6 +355,57 @@ function hostSummary(host: Host): string {
   return Number.isNaN(seen) ? `${count} · offline` : `${count} · last seen ${relativeTime(seen)}`;
 }
 
+/**
+ * A Mac of the account: tap to start a chat on it, as on the phone (an offline one cannot), or
+ * name it with the pencil. The network's name for a Mac is rarely what anyone calls it.
+ */
+function MacRow({ host, selected, onOpen, onRename }: {
+  host: Host;
+  selected: boolean;
+  onOpen: () => void;
+  onRename: (name: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(host.label);
+  const [saving, setSaving] = useState(false);
+  const start = () => { setName(host.label); setEditing(true); };
+  const save = async () => {
+    if (name.trim() === host.label) return setEditing(false);
+    setSaving(true);
+    const saved = await onRename(name);
+    setSaving(false);
+    if (saved) setEditing(false);
+  };
+  if (editing) {
+    return (
+      <form className="mac-row editing" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <Icon name="laptop" size={22} />
+        <input className="mac-name-input" value={name} maxLength={64} autoFocus disabled={saving}
+          aria-label={`Name for ${host.label}`} placeholder="Empty goes back to the Mac's own name"
+          onChange={event => setName(event.target.value)}
+          onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); setEditing(false); } }} />
+        <button type="submit" className="plain-icon-button" aria-label="Save the name" disabled={saving}><Icon name="check" size={16} /></button>
+      </form>
+    );
+  }
+  return (
+    <div className="mac-row-wrap">
+      <button className={selected ? "mac-row selected" : "mac-row"} aria-current={selected ? "true" : undefined} onClick={onOpen}
+        disabled={host.status !== "online"} title={host.status === "online" ? "Start a new chat on this Mac" : undefined}>
+        <Icon name="laptop" size={22} />
+        <span className="mac-copy">
+          <strong>{host.label}</strong>
+          <small>{hostSummary(host)}</small>
+        </span>
+        <span className={`mac-dot ${host.status}`} aria-label={host.status === "online" ? "Online" : "Offline"} />
+      </button>
+      <button className="plain-icon-button mac-rename" onClick={start} aria-label={`Rename ${host.label}`} title="Rename this Mac">
+        <Icon name="pencil" size={14} />
+      </button>
+    </div>
+  );
+}
+
 function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onConnections, onSettings }: {
   workbench: ChatWorkbench;
   profile?: AccountProfile;
@@ -384,17 +435,8 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onCo
         </div>
         <h2 className="section-title"><span>Macs</span></h2>
         {workbench.hosts.map(host => (
-          // A Mac starts a new chat on it, as on the phone; an offline one cannot.
-          <button key={host.hostId} className={host.hostId === workbench.openHostId ? "mac-row selected" : "mac-row"}
-            aria-current={host.hostId === workbench.openHostId ? "true" : undefined} onClick={() => onOpenMac(host.hostId)}
-            disabled={host.status !== "online"} title={host.status === "online" ? "Start a new chat on this Mac" : undefined}>
-            <Icon name="laptop" size={22} />
-            <span className="mac-copy">
-              <strong>{host.label}</strong>
-              <small>{hostSummary(host)}</small>
-            </span>
-            <span className={`mac-dot ${host.status}`} aria-label={host.status === "online" ? "Online" : "Offline"} />
-          </button>
+          <MacRow key={host.hostId} host={host} selected={host.hostId === workbench.openHostId}
+            onOpen={() => onOpenMac(host.hostId)} onRename={name => workbench.renameHost(host.hostId, name)} />
         ))}
         {workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? <p className="panel-note">No Macs yet. Pair one to chat with it from here.</p> : null}
         {onConnections ? (

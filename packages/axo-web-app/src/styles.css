@@ -173,6 +173,14 @@ button:disabled { cursor: default; }
 .mac-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .mac-copy strong { font-size: 15px; font-weight: 400; }
 .mac-row.selected .mac-copy strong { font-weight: 600; }
+/* The pencil shows on hover or focus, so the list stays quiet; touch screens always show it. */
+.mac-row-wrap { position: relative; }
+.mac-rename { position: absolute; top: 50%; right: 30px; transform: translateY(-50%); opacity: 0; color: var(--secondary); }
+.mac-row-wrap:hover .mac-rename, .mac-rename:focus-visible { opacity: 1; }
+@media (hover: none) { .mac-rename { opacity: 1; } }
+.mac-row.editing { cursor: default; }
+.mac-name-input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--separator, color-mix(in srgb, var(--text) 14%, transparent)); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.mac-name-input::placeholder { color: var(--tertiary); font-size: 12px; }
 .mac-copy small { color: var(--secondary); font-size: 12px; }
 .mac-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--gray); opacity: 0.6; }
 .mac-dot.online { background: var(--green); opacity: 1; }
