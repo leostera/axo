@@ -4,7 +4,11 @@
 # so it does not wait on this build. It never fails the build (RFD0021).
 set -uo pipefail
 
-gen=$PWD/$1 workspace=$2 bazel=$3 home=$4 output_base=$5 status=$PWD/$6 log=$PWD/$7
+# On failure, a note in the retry directory makes @axo_config change this action's inputs, so the
+# next build tries again; on success, it goes.
+failed() { mkdir -p "$(dirname "$retry")" && date +%s > "$retry"; }
+
+gen=$PWD/$1 workspace=$2 bazel=$3 home=$4 output_base=$5 status=$PWD/$6 log=$PWD/$7 retry=$8
 
 export HOME=$home
 export PATH="$(dirname "$bazel"):/usr/bin:/bin:/usr/sbin:/sbin"
@@ -12,12 +16,15 @@ export PATH="$(dirname "$bazel"):/usr/bin:/bin:/usr/sbin:/sbin"
 if [[ -z "$bazel" ]]; then
   echo "rust-project.json: not generated: no bazel on PATH" > "$status"
   : > "$log"
+  failed
   exit 0
 fi
 
 if "$gen" --workspace "$workspace" --output-base "$output_base" --bazel "$bazel" //crates/... > "$log" 2>&1; then
+  rm -f "$retry"
   echo "rust-project.json: current, for rust-analyzer" > "$status"
 else
   echo "rust-project.json: not generated; see bazel-bin/bazel/rust/rust_project.log" > "$status"
+  failed
 fi
 exit 0

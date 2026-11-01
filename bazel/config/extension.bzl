@@ -256,6 +256,7 @@ def _axo_config_impl(rctx):
     machine = {
         "workspace": str(workspace),
         "output_base": str(output_base),
+        "retry_dir": str(output_base) + "/axo_retry",
         "bazel": str(bazel) if bazel else None,
         "home": rctx.os.environ.get("HOME", ""),
         "user": rctx.os.environ.get("USER", ""),
@@ -323,6 +324,14 @@ REASONS = json.decode({reasons})
         marker = workspace.get_child(path)
         rctx.watch(marker)
         state.append("%s %s" % (name, "present" if marker.exists else "absent"))
+
+    # An action that could not write its file leaves a note here (`retry_dir`), so its inputs
+    # change and the next build tries again instead of keeping the failure.
+    for name in ["xcodeproj", "rust_project"]:
+        note = output_base.get_child("axo_retry").get_child(name)
+        rctx.watch(note)
+        if note.exists:
+            state.append("%s retry %s" % (name, rctx.read(note).strip()))
     rctx.file("install_state.txt", "\n".join(state) + "\n")
 
     rctx.file("BUILD.bazel", """package(default_visibility = ["//visibility:public"])

@@ -16,6 +16,7 @@ def _rust_project_install_impl(ctx):
             ctx.attr.output_base,
             status.path,
             log.path,
+            ctx.attr.retry,
         ],
         # The project changes with the files under crates/ and the crates MODULE.bazel declares;
         # `state` brings it back when it is deleted.
@@ -41,6 +42,7 @@ rust_project_install = rule(
         "home": attr.string(),
         "module": attr.label_list(allow_files = True, default = ["//:MODULE.bazel", "//:MODULE.bazel.lock"]),
         "output_base": attr.string(mandatory = True, doc = "gen_rust_project's own output base."),
+        "retry": attr.string(mandatory = True, doc = "Where to leave a note when it fails, for @axo_config to retry it."),
         "state": attr.label(allow_single_file = True, default = "@axo_config//:install_state.txt"),
         "workspace": attr.string(mandatory = True),
         "_gen": attr.label(default = "@rules_rust//tools/rust_analyzer:gen_rust_project", executable = True, cfg = "exec"),

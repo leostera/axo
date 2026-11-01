@@ -4,7 +4,11 @@
 # one. It never fails the build; the status line says what happened (RFD0021).
 set -uo pipefail
 
-runner=$PWD/$1 workspace=$2 bazel=$3 home=$4 status=$PWD/$5 log=$PWD/$6
+# On failure, a note in the retry directory makes @axo_config change this action's inputs, so the
+# next build tries again; on success, it goes.
+failed() { mkdir -p "$(dirname "$retry")" && date +%s > "$retry"; }
+
+runner=$PWD/$1 workspace=$2 bazel=$3 home=$4 status=$PWD/$5 log=$PWD/$6 retry=$7
 
 export BUILD_WORKSPACE_DIRECTORY=$workspace
 export HOME=$home
@@ -13,14 +17,17 @@ export PATH="$(dirname "$bazel"):/usr/bin:/bin:/usr/sbin:/sbin"
 if [[ -z "$bazel" ]]; then
   echo "Axo.xcodeproj: not generated: no bazel on PATH" > "$status"
   : > "$log"
+  failed
   exit 0
 fi
 
 # The runner reads its files from its runfiles, as under bazel run.
 cd "$runner.runfiles/_main" || exit 1
 if "$runner" > "$log" 2>&1; then
+  rm -f "$retry"
   echo "Axo.xcodeproj: apple/Axo.xcodeproj is current" > "$status"
 else
   echo "Axo.xcodeproj: not generated; see bazel-bin/apple/xcodeproj_install.log" > "$status"
+  failed
 fi
 exit 0

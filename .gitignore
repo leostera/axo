@@ -23,7 +23,6 @@ vendor/*
 !vendor/hex-rust/**
 local/
 bazel-*
-.bazelrc.local
 xcuserdata/
 .feynman/
 config.local.json

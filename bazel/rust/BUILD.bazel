@@ -14,5 +14,6 @@ rust_project_install(
     home = MACHINE.home,
     output_base = MACHINE.output_base + "_rust_project",
     visibility = ["//:__pkg__"],
+    retry = MACHINE.retry_dir + "/rust_project",
     workspace = MACHINE.workspace,
 )

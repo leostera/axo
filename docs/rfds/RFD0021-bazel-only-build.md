@@ -361,6 +361,8 @@ What the implementation on `feat/bazel-only-build` settled, where it differs fro
 - **TypeScript.** `ts_project` works with TypeScript 7's native `tsc` (aspect_rules_ts 3.10.1, `--@aspect_rules_ts//ts:default_to_tsc_transpiler`). Vite builds run unsandboxed: Vite follows the sandbox's symlinks out of its root. `cf build` and `cf dev` shell out to `npx vite`, so the site builds with Vite and Cloudflare's plugin directly. Packages that relied on pnpm hoisting declare what they use. `@types/react` is added to two component libraries' peers through `packageExtensions`.
 - **workerd** is pinned only under the site's Cloudflare tooling. Miniflare's tests in `packages/axo-api-worker` need the workerd their miniflare ships with.
 - **Remote access explainer.** `docs/explainers/remote-access` typechecks, tests and builds in Bazel. A `write_source_files` test keeps its committed `index.html` equal to the build. `bazel run //docs/explainers/remote-access:update_index_html` rewrites it.
+- **Retries.** A workspace-writing action that fails leaves a note in `<output_base>/axo_retry/`. `@axo_config` watches the note and adds it to `install_state.txt`, so the next build reruns the action instead of keeping the failure. Success removes the note.
+- **`.bazelrc.local` is gone**, along with its `try-import`. The nested Bazels read `.bazelrc`, so a stale machine-local file broke them (a JVM truststore that no longer existed). The corporate CA belongs in `~/.bazelrc`, which every Bazel reads.
 - **Not done yet:**
   - `run_visual_ui_test.sh` still edits the generated scheme with Python, runs `npm` and inherits the environment. It cannot be rewritten and tested while Axo is open.
   - The Feynman specs (`pnpm exec feynman check`) are not a Bazel test.

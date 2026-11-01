@@ -175,6 +175,7 @@ def _xcodeproj_install_impl(ctx):
             ctx.attr.home,
             status.path,
             log.path,
+            ctx.attr.retry,
         ],
         # The project changes with the files under apple/ and the targets the runner is made for;
         # `state` brings it back when it is deleted.
@@ -198,6 +199,7 @@ xcodeproj_install = rule(
         "files": attr.label(allow_single_file = True, default = "@axo_files//:apple_files.txt"),
         "home": attr.string(),
         "runner": attr.label(mandatory = True, executable = True, cfg = "target", doc = "An xcodeproj target."),
+        "retry": attr.string(mandatory = True, doc = "Where to leave a note when it fails, for @axo_config to retry it."),
         "state": attr.label(allow_single_file = True, default = "@axo_config//:install_state.txt"),
         "workspace": attr.string(mandatory = True),
         "_install": attr.label(default = ":install_xcodeproj.sh", executable = True, cfg = "exec", allow_single_file = True),

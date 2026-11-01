@@ -44,5 +44,6 @@ xcodeproj_install(
     home = MACHINE.home,
     runner = ":xcodeproj",
     visibility = ["//:__pkg__"],
+    retry = MACHINE.retry_dir + "/xcodeproj",
     workspace = MACHINE.workspace,
 )
