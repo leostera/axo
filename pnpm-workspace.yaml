@@ -25,3 +25,13 @@ allowBuilds:
   tree-sitter-javascript: false
   tree-sitter-typescript: false
   workerd: false
+
+# React component libraries whose types import React's but do not declare @types/react. pnpm hoists
+# it where they find it; Bazel's node_modules does not, so they say so here.
+packageExtensions:
+  "@phosphor-icons/react":
+    peerDependencies:
+      "@types/react": "*"
+  "@cloudflare/kumo":
+    peerDependencies:
+      "@types/react": "*"

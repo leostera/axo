@@ -3,14 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build && cp dist/index.html index.html"
+    "dev": "vite"
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.15.0",
     "@phosphor-icons/react": "^2.1.10",
     "echarts": "^6.1.0",
     "lz-string": "^1.5.0",
+    "motion": "^12.43.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "zod": "^4.6.7"
@@ -21,6 +21,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "tailwindcss": "^4.3.3",
+    "tsx": "4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vite-plugin-singlefile": "^2.3.4"

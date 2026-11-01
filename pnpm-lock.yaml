@@ -11,6 +11,8 @@ overrides:
   '@cloudflare/runtime-types>workerd': 1.20261016.1
   '@cloudflare/unenv-preset>workerd': 1.20261016.1
 
+packageExtensionsChecksum: sha256-thEItU6K8bOf+JL39JJs18dYrJFtjdCa3ZPkRFeTqTQ=
+
 importers:
 
   .:
@@ -44,16 +46,19 @@ importers:
     dependencies:
       '@cloudflare/kumo':
         specifier: ^2.15.0
-        version: 2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+        version: 2.15.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
       '@phosphor-icons/react':
         specifier: ^2.1.10
-        version: 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       echarts:
         specifier: ^6.1.0
         version: 6.1.0
       lz-string:
         specifier: ^1.5.0
         version: 1.5.0
+      motion:
+        specifier: ^12.43.0
+        version: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -79,6 +84,9 @@ importers:
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -467,11 +475,28 @@ packages:
   '@cloudflare/config@0.24.0':
     resolution: {integrity: sha512-DBKkL2fFfHIL0cdjXOoWybNzBxD5xAvuebu0nfcBphWeUiWKnSUYu8JMaboKzmAJRp6V1RGtPAdfdtXMHueqAA==}
 
+  '@cloudflare/kumo@2.15.0':
+    resolution: {integrity: sha512-XIbtmhbPrrohp6XL6XtEXNlaJhQFcg7qkWYmp4Cx+koyy3W56LBsrrPMEIjLzXH5Ud2jo3P2RAHj47phH0Eosg==}
+    hasBin: true
+    peerDependencies:
+      '@phosphor-icons/react': ^2.1.10
+      '@types/react': '*'
+      echarts: ^6.0.0
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
+      zod: ^4.0.0
+    peerDependenciesMeta:
+      echarts:
+        optional: true
+      zod:
+        optional: true
+
   '@cloudflare/kumo@2.16.0':
     resolution: {integrity: sha512-8XLxYI+Zn/XV3e33C1gDU6UpPcmZNDz9v9Z65vNRINPGXsdKvCe3pKPqCz/SExn556/gaUE4+qTObxxKyopneQ==}
     hasBin: true
     peerDependencies:
       '@phosphor-icons/react': ^2.1.10
+      '@types/react': '*'
       echarts: ^6.0.0
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -996,6 +1021,7 @@ packages:
     resolution: {integrity: sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA==}
     engines: {node: '>=10'}
     peerDependencies:
+      '@types/react': '*'
       react: '>= 16.8'
       react-dom: '>= 16.8'
 
@@ -2962,12 +2988,13 @@ snapshots:
     dependencies:
       zod: 4.4.3
 
-  '@cloudflare/kumo@2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+  '@cloudflare/kumo@2.15.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
       '@base-ui/react': 1.9.0(@date-fns/tz@1.5.0)(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      '@phosphor-icons/react': 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@phosphor-icons/react': 2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@shikijs/langs': 4.5.0
       '@shikijs/themes': 4.5.0
+      '@types/react': 19.3.0
       cn: 0.4.0
       d3-geo: 3.1.1
       motion: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -2982,7 +3009,29 @@ snapshots:
     transitivePeerDependencies:
       - '@date-fns/tz'
       - '@emotion/is-prop-valid'
-      - '@types/react'
+      - date-fns
+
+  '@cloudflare/kumo@2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+    dependencies:
+      '@base-ui/react': 1.9.0(@date-fns/tz@1.5.0)(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@phosphor-icons/react': 2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@shikijs/langs': 4.5.0
+      '@shikijs/themes': 4.5.0
+      '@types/react': 19.3.0
+      cn: 0.4.0
+      d3-geo: 3.1.1
+      motion: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react: 19.3.1
+      react-day-picker: 9.14.0(react@19.3.1)
+      react-dom: 19.3.1(react@19.3.1)
+      shiki: 4.5.0
+      use-sync-external-store: 1.7.0(react@19.3.1)
+    optionalDependencies:
+      echarts: 6.1.0
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - '@date-fns/tz'
+      - '@emotion/is-prop-valid'
       - date-fns
 
   '@cloudflare/runtime-types@0.1.6(@types/node@24.19.2)':
@@ -3403,8 +3452,8 @@ snapshots:
 
   '@leostera/feynman@0.15.0(@date-fns/tz@1.5.0)(@types/node@24.19.2)(date-fns@4.4.0)(echarts@6.1.0)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.1(react@19.3.1))(tsx@4.23.15)(yaml@2.9.1)(zod@4.6.7)':
     dependencies:
-      '@cloudflare/kumo': 2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
-      '@phosphor-icons/react': 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@cloudflare/kumo': 2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@phosphor-icons/react': 2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@types/react': 19.3.0
       calldiff: 0.5.0
       react: 19.3.1
@@ -3461,8 +3510,9 @@ snapshots:
 
   '@oxc-project/types@0.156.0': {}
 
-  '@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@phosphor-icons/react@2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
+      '@types/react': 19.3.0
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
 

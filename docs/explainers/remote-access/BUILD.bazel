@@ -1,0 +1,75 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//docs/explainers/remote-access:vite/package_json.bzl", vite_bin = "bin")
+load("//bazel/js:defs.bzl", "node_test")
+
+npm_link_all_packages(name = "node_modules")
+
+_NODE_MODULES = [
+    ":node_modules/@cloudflare/kumo",
+    ":node_modules/@phosphor-icons/react",
+    ":node_modules/@tailwindcss/vite",
+    ":node_modules/@types/react",
+    ":node_modules/@types/react-dom",
+    ":node_modules/@vitejs/plugin-react",
+    ":node_modules/echarts",
+    ":node_modules/lz-string",
+    ":node_modules/motion",
+    ":node_modules/react",
+    ":node_modules/react-dom",
+    ":node_modules/tailwindcss",
+    ":node_modules/vite",
+    ":node_modules/vite-plugin-singlefile",
+    ":node_modules/zod",
+]
+
+js_library(
+    name = "files",
+    srcs = [
+        "package.json",
+        "vite.config.ts",
+    ] + glob(["src/**"]),
+    deps = _NODE_MODULES,
+)
+
+ts_project(
+    name = "typecheck",
+    srcs = glob(
+        ["src/**/*.ts", "src/**/*.tsx"],
+        exclude = ["src/**/*.test.ts"],
+    ),
+    no_emit = True,
+    tsconfig = "tsconfig.json",
+    deps = _NODE_MODULES,
+)
+
+node_test(
+    name = "test",
+    data = [
+        ":files",
+        ":node_modules/tsx",
+    ],
+    tests = ["src/replay.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
+# The explainer as one self-contained page, dist/index.html.
+vite_bin.vite(
+    name = "page",
+    srcs = [":files"],
+    outs = ["dist/index.html"],
+    args = ["build"],
+    chdir = package_name(),
+    # The sandbox's inputs are symlinks out of the output tree; Vite follows them out of its root.
+    execution_requirements = {"no-sandbox": "1"},
+)
+
+# index.html is the built page, committed so it opens straight from the repository. The test keeps
+# it current; `bazel run //docs/explainers/remote-access:update_index_html` rewrites it.
+write_source_files(
+    name = "update_index_html",
+    files = {"index.html": ":page"},
+)
