@@ -4,6 +4,7 @@ import { connectionSchema, type AppName } from "@axo/protocol";
 import { AppConnections } from "../src/connections/apps";
 import type { FakeOAuth } from "./fake-oauth";
 import { FakeGitHub } from "./fake-github";
+import { FakeSpotify } from "./fake-spotify";
 import { sqlStorage } from "./sql-storage";
 
 /**
@@ -173,4 +174,59 @@ test("a GitHub code is redeemed once, and signing out deletes Axo's authorizatio
   assert.equal(fake.revoked[0]!.authorization, `Basic ${btoa(`${fake.oauth.clientId}:${fake.oauth.clientSecret}`)}`);
   assert.match(fake.revoked[0]!.accessToken, /^at-/);
   assert.deepEqual(apps.accounts("github"), []);
+});
+
+test("Spotify signs in with PKCE and the client in HTTP basic, is named by its Spotify ID, and plays, searches and edits playlists", async () => {
+  const { apps, fake, signIn, tick } = await fixture(new FakeSpotify(), "spotify");
+  const spotify = connectionSchema.parse(apps.list().find((c) => c.name === "apps.spotify"));
+  assert.ok(spotify.kind === "app" && spotify.signIn.kind === "oauth");
+  assert.deepEqual([spotify.provider, spotify.category, spotify.signIn.client?.consoleUrl], ["Spotify", "media", "https://developer.spotify.com/dashboard"]);
+  assert.ok(apps.tools().filter((t) => t.service === "apps.spotify").every((t) => (t.inputSchema.required as string[])[0] === "account"));
+
+  assert.deepEqual(await signIn("spotify", "ada.l"), { name: "apps.spotify" });
+  const asked = fake.oauth.authorizeUrls[0]!;
+  assert.equal(asked.searchParams.get("show_dialog"), "true", "another account can be signed in to");
+  assert.ok(!asked.searchParams.get("scope")!.includes("user-read-email"), "Spotify no longer gives the email");
+  assert.ok(asked.searchParams.get("scope")!.split(" ").includes("user-modify-playback-state"));
+  const redeemed = fake.oauth.tokenRequests[0]!;
+  assert.equal(redeemed.form.has("client_secret"), false, "the client goes in HTTP basic");
+  assert.ok(redeemed.headers.get("authorization")?.startsWith("Basic "));
+  assert.deepEqual(apps.accounts("spotify").map((a) => a.account), ["ada.l"]);
+
+  const call = (tool: string, input: Record<string, unknown> = {}) => apps.call("spotify", tool, { account: "ada.l", ...input });
+  assert.deepEqual(await call("get_playback"), {
+    playing: true, track: { uri: "spotify:track:t1", name: "Song 1", type: "track", artists: ["Ada"], album: "Engines", durationMs: 180_000 }, progressMs: 1000,
+    device: { id: "d1", name: "Kitchen", type: "Speaker", volume: 40 }, shuffle: false, repeat: "off", context: "spotify:playlist:p1",
+  });
+  fake.playing = false;
+  assert.deepEqual(await call("get_playback"), { playing: false, track: null, device: null }, "nothing playing is an answer, not an error");
+  assert.deepEqual(await call("play", { context: "spotify:playlist:p1", offset: 1, device: "d1" }), { ok: true });
+  assert.deepEqual([fake.calls.at(-1)!.query.get("device_id"), JSON.parse(fake.calls.at(-1)!.body)], ["d1", { context_uri: "spotify:playlist:p1", offset: { position: 1 } }]);
+  assert.deepEqual(await call("set_volume", { percent: 30 }), { ok: true });
+  assert.equal(fake.calls.at(-1)!.query.get("volume_percent"), "30");
+  assert.deepEqual(await call("transfer_playback", { device: "d1", play: true }), { ok: true });
+  assert.deepEqual(JSON.parse(fake.calls.at(-1)!.body), { device_ids: ["d1"], play: true });
+
+  assert.deepEqual(await call("search", { query: "artist:Ada", types: ["track"] }), { tracks: { items: [{ uri: "spotify:track:t2", name: "Song 2", type: "track", artists: ["Ada"], album: "Engines", durationMs: 180_000 }], total: 1, more: false } });
+  assert.match(await refused(call("search", { query: "x", limit: 20 })), /invalid input/, "Spotify allows at most 10");
+  const mine = await call("get_playlist", { id: "p1" }) as { name: string; items: number; tracks: { items: Array<{ uri: string; addedAt: string }> } };
+  assert.deepEqual([mine.name, mine.items, mine.tracks.items.map((t) => t.uri)], ["Mine", 2, ["spotify:track:t1", "spotify:track:t3"]], "the playlist's items, as Spotify now names them");
+  assert.deepEqual(await call("add_to_playlist", { id: "p1", uris: ["spotify:track:t9"] }), { snapshotId: "snap2" });
+  assert.equal(fake.calls.at(-1)!.call, "POST /v1/playlists/p1/items");
+  assert.deepEqual(await call("create_playlist", { name: "Focus" }), { id: "p2", uri: "spotify:playlist:p2", name: "Focus", url: "https://open.spotify.com/playlist/p2" });
+  assert.deepEqual(JSON.parse(fake.calls.at(-1)!.body), { name: "Focus", public: false, collaborative: false }, "private unless asked");
+  assert.deepEqual(await call("save_to_library", { uris: ["spotify:track:t1", "spotify:album:a1"] }), { ok: true });
+  assert.deepEqual([fake.calls.at(-1)!.call, fake.calls.at(-1)!.query.get("uris")], ["PUT /v1/me/library", "spotify:track:t1,spotify:album:a1"]);
+  assert.deepEqual(await call("top_items", { type: "artists", range: "short" }), { items: [{ uri: "spotify:artist:a1", name: "Ada", genres: ["synth"] }], total: 1, more: true });
+  assert.equal(fake.calls.at(-1)!.query.get("time_range"), "short_term");
+  assert.match(await refused(call("request", { method: "GET", path: "https://accounts.spotify.com/api/token" })), /only reach api\.spotify\.com/);
+
+  // A renewal spends the refresh token, and keeps the new one.
+  tick(3600_000);
+  await call("list_devices");
+  const renewal = fake.oauth.tokenRequests.at(-1)!;
+  assert.equal(renewal.form.get("grant_type"), "refresh_token");
+  assert.equal(fake.oauth.refreshable(renewal.form.get("refresh_token")!), false);
+  tick(3600_000);
+  assert.deepEqual((await call("list_devices") as { devices: unknown[] }).devices.length, 1, "the rotated refresh token renews again");
 });
