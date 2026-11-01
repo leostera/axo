@@ -191,7 +191,7 @@ Exceeding a limit fails the call with an error that names the limit. Values are 
 
 [`specs/tool-lists.ts`](../../specs/tool-lists.ts) models tool-list sync: searches never wait on a server, a list not marked stale matches the server unless a change went unannounced, and a refresh in flight always ends.
 
-The specs point at their code (sources, locked in `feynman.lock`): the host-connection path of `specs/connections.ts`, and the sign-in and tool-list specs. Third-party calls in `specs/connections.ts` and the Linear stand-ins are model only. Run them with `npx feynman check`.
+The specs point at their code (sources, locked in `feynman.lock`): the host-connection path of `specs/connections.ts`, and the sign-in and tool-list specs. Third-party calls in `specs/connections.ts` and the Linear stand-ins are model only. Run them with `pnpm exec feynman check`.
 
 ### Invariants
 

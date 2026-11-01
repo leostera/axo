@@ -26,8 +26,36 @@ swift_library(
 
 swift_test(
     name = "AxoPhoneModelTests",
-    srcs = glob(["Tests/AxoPhoneModelTests/**/*.swift"]),
+    srcs = glob(
+        ["Tests/AxoPhoneModelTests/**/*.swift"],
+        exclude = ["Tests/AxoPhoneModelTests/EndToEndTests.swift"],
+    ),
     copts = ["-swift-version", "5"],
+    deps = [
+        ":AxoPhoneModel",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+# The phone's model and client against a real Worker relaying to a real axod.
+swift_test(
+    name = "AxoPhoneEndToEndTests",
+    srcs = [
+        "Tests/AxoPhoneModelTests/EndToEndTests.swift",
+        "Tests/AxoPhoneModelTests/MemoryTokenStore.swift",
+    ],
+    copts = ["-swift-version", "5"],
+    data = [
+        "//crates/axod",
+        "//packages/axo-api-worker:e2e_stack",
+    ],
+    env = {
+        "AXO_E2E_AXOD": "$(rootpath //crates/axod)",
+        "AXO_E2E_STACK": "$(rootpath //packages/axo-api-worker:e2e_stack)",
+    },
+    # axod's socket and the Worker's port, on this Mac.
+    tags = ["no-sandbox"],
     deps = [
         ":AxoPhoneModel",
         "//apple/AxoClient",

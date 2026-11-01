@@ -1,4 +1,4 @@
-load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
@@ -93,4 +93,23 @@ node_test(
     tests = _RELAY_TESTS,
     tests_in_data = True,
     tsx = True,
+)
+
+# A Worker relaying to a real axod, for the phone's end-to-end test (//apple/AxoPhone:AxoPhoneEndToEndTests).
+# AXOD_BINARY is set by whoever runs it.
+js_binary(
+    name = "e2e_stack",
+    testonly = True,
+    chdir = package_name(),
+    data = _DEPS + [
+        ":node_modules/tsx",
+        ":test_files",
+        "//crates/axo-server:pi_extension_fixture_js",
+    ],
+    entry_point = "scripts/e2e-stack.ts",
+    node_options = [
+        "--import",
+        "tsx",
+    ],
+    visibility = ["//apple/AxoPhone:__pkg__"],
 )

@@ -9,10 +9,10 @@ import XCTest
 /// a real Worker (simulated Cloudflare sign-in) that relays to a real axod, whose Pi is a stand-in
 /// recording what it is sent and writing a transcript. Nothing in between is faked.
 ///
-///     cargo build --release -p axod
-///     AXO_E2E_AXOD=$PWD/target/release/axod swift test --package-path apple/AxoPhone --filter EndToEnd
+///     bazel test //apple/AxoPhone:AxoPhoneEndToEndTests
 ///
-/// Skipped without `AXO_E2E_AXOD`: it needs Node and a built axod.
+/// Bazel gives it axod and the stack (`AXO_E2E_AXOD`, `AXO_E2E_STACK`, runfiles paths); without
+/// them it is skipped.
 @MainActor
 final class EndToEndTests: XCTestCase {
   private struct Stack {
@@ -23,15 +23,10 @@ final class EndToEndTests: XCTestCase {
     let piLog: URL
     let hostID: UUID
 
-    /// Starts `scripts/e2e-stack.ts` and waits for its ready line.
-    static func start(axod: String) throws -> Stack {
-      let repository = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
+    /// Starts the Worker's `scripts/e2e-stack.ts` and waits for its ready line.
+    static func start(axod: String, stack: String) throws -> Stack {
       let process = Process()
-      process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-      process.arguments = ["npx", "tsx", "scripts/e2e-stack.ts"]
-      process.currentDirectoryURL = repository.appendingPathComponent("packages/axo-api-worker")
+      process.executableURL = URL(fileURLWithPath: stack)
       process.environment = ProcessInfo.processInfo.environment.merging(["AXOD_BINARY": axod]) { $1 }
       let output = Pipe()
       let input = Pipe()
@@ -65,10 +60,15 @@ final class EndToEndTests: XCTestCase {
   }
 
   func testAPhoneStartsAChatOnTheMacAndPromptsItsPi() async throws {
-    guard let axod = ProcessInfo.processInfo.environment["AXO_E2E_AXOD"] else {
-      throw XCTSkip("set AXO_E2E_AXOD to a built axod to run the end-to-end test")
+    let environment = ProcessInfo.processInfo.environment
+    guard let axod = environment["AXO_E2E_AXOD"], let script = environment["AXO_E2E_STACK"] else {
+      throw XCTSkip("run with bazel test //apple/AxoPhone:AxoPhoneEndToEndTests")
     }
-    let stack = try Stack.start(axod: axod)
+    // Runfiles paths, from the runfiles root.
+    let runfiles = URL(fileURLWithPath: environment["TEST_SRCDIR"] ?? FileManager.default.currentDirectoryPath)
+      .appendingPathComponent("_main")
+    let stack = try Stack.start(
+      axod: runfiles.appendingPathComponent(axod).path, stack: runfiles.appendingPathComponent(script).path)
     defer { stack.stop() }
 
     let endpoint = try XCTUnwrap(RelayEndpoint(origin: stack.url, allowInsecureLoopback: true))

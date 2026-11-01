@@ -57,7 +57,7 @@ replay reproduces a live run exactly; keep it passing when you change `sim.ts`.
 Because old links store a different shape, changing the rules in `sim.ts` can change what an old
 link replays to. That is fine for an explainer; there is no compatibility promise.
 
-Run the tests with `npx tsx --test src/replay.test.ts`.
+Run the tests with `bazel test //docs/explainers/remote-access/...`.
 
 ## How to Use
 
@@ -80,10 +80,12 @@ Run the tests with `npx tsx --test src/replay.test.ts`.
 ## Development
 
 ```bash
-npm install
-npm run dev     # Dev server
-npm run build   # Production build
+pnpm install                                                    # once, at the repository root
+pnpm --dir docs/explainers/remote-access dev                    # dev server
+bazel run //docs/explainers/remote-access:update_index_html     # rebuild the committed index.html
 ```
+
+`bazel test //...` fails while `index.html` differs from what the sources build.
 
 The simulator in `src/sim.ts` mirrors the real implementation in:
 - `crates/axo-relay/src/link.rs` (Rust)
