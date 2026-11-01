@@ -1,0 +1,3 @@
+# pnpm install, for editors and tools outside Bazel, makes node_modules beside every package;
+# Bazel uses its own (RFD0021).
+ignore_directories(["**/node_modules"])

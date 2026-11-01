@@ -1,3 +1,4 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@axo_config//:defs.bzl", "AXO")
 
@@ -7,6 +8,13 @@ filegroup(
     name = "pi_extension_fixture",
     srcs = ["testdata/pi-extension.js"],
     testonly = True,
+)
+
+# The same extension for the Worker's relay tests, which read it from the output tree.
+js_library(
+    name = "pi_extension_fixture_js",
+    testonly = True,
+    srcs = ["testdata/pi-extension.js"],
 )
 
 rust_library(

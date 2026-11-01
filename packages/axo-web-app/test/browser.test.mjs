@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { once } from "node:events";
 import { resolve } from "node:path";
 import { test } from "node:test";
@@ -403,13 +403,15 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         __AXO_WEB_BUILD__: JSON.stringify("test"),
       },
       plugins: [react()],
-      resolve: { dedupe: ["react", "react-dom"] },
+      // The web app from its sources, as a workspace link gives it, even where it is an installed
+      // package (Bazel's node_modules): Vite only converts the CommonJS imports of sources.
+      resolve: { dedupe: ["react", "react-dom"], alias: { "@axo/web-app": resolve(import.meta.dirname, "../src/main.tsx") } },
       server: {
         host: "127.0.0.1",
         port: appPort,
         strictPort: true,
-        // The wordmark's font and the mascot are shared with the apps, in the repository's assets/.
-        fs: { allow: [resolve(siteRoot, "../..")] },
+        // The repository, where it is and where its files really are (Bazel links them from its output tree).
+        fs: { allow: [resolve(siteRoot, "../.."), resolve(realpathSync(resolve(siteRoot, "index.html")), "../../..")] },
         proxy: {
           "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
         },

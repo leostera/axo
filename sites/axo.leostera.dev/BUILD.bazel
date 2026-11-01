@@ -1,0 +1,95 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//sites/axo.leostera.dev:cf/package_json.bzl", cf_bin = "bin")
+load("@npm//sites/axo.leostera.dev:vite/package_json.bzl", vite_bin = "bin")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+_CONFIG = [
+    "cloudflare.config.ts",
+    "package.json",
+    "vite.config.ts",
+]
+
+_NODE_MODULES = [
+    ":node_modules/@axo/api-worker",
+    ":node_modules/@axo/web-app",
+    ":node_modules/@cloudflare/vite-plugin",
+    ":node_modules/@vitejs/plugin-react",
+    ":node_modules/cf",
+    ":node_modules/react",
+    ":node_modules/react-dom",
+    ":node_modules/vite",
+]
+
+# The site's files, copied to the output tree by an untagged target (see node_test).
+js_library(
+    name = "app_files",
+    srcs = _CONFIG + ["index.html"] + glob(["public/**", "src/**"]),
+    deps = _NODE_MODULES,
+)
+
+# .cloudflare/types/index.d.ts: the Worker's Env and the Workers runtime (cloudflare:workers),
+# generated from cloudflare.config.ts by `cf workers types`.
+cf_bin.cf(
+    name = "worker_types_d_ts",
+    srcs = [":app_files"],
+    outs = [".cloudflare/types/index.d.ts"],
+    args = [
+        "workers",
+        "types",
+        "--quiet",
+    ],
+    chdir = package_name(),
+)
+
+# The types refer to cloudflare.config.ts, so they come with the site's files.
+js_library(
+    name = "worker_types",
+    srcs = [":worker_types_d_ts"],
+    deps = [":app_files"],
+)
+
+ts_project(
+    name = "typecheck",
+    srcs = glob(["src/**/*.ts", "src/**/*.tsx"]),
+    no_emit = True,
+    tsconfig = "tsconfig.json",
+    deps = _NODE_MODULES + [
+        ":worker_types",
+        "//packages/axo-web-app:vite_env",
+    ],
+)
+
+# .cloudflare/output: the Worker and the web app's assets, built by Vite with Cloudflare's plugin, as
+# `cf build` does (it runs `npx vite build`).
+vite_bin.vite(
+    name = "site",
+    srcs = [":app_files"],
+    out_dirs = [".cloudflare/output"],
+    args = ["build"],
+    chdir = package_name(),
+    # The sandbox's inputs are symlinks out of the output tree; Vite follows them out of its root.
+    execution_requirements = {"no-sandbox": "1"},
+)
+
+# The whole site under `cf dev`: pages, assets and the account APIs failing closed.
+node_test(
+    name = "test",
+    data = [
+        ":app_files",
+        ":site_test_files",
+    ],
+    tags = ["no-sandbox"],
+    tests = glob(["tests/*.test.mjs"]),
+    tests_in_data = True,
+)
+
+js_library(
+    name = "site_test_files",
+    srcs = glob(["tests/*.test.mjs"]),
+)

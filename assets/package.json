@@ -1,0 +1,9 @@
+{
+  "name": "@axo/assets",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The brand assets the web app imports: the mascot and the wordmark's font",
+  "exports": {
+    "./*": "./*"
+  }
+}

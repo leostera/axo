@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer as createNetServer } from "node:net";
 import { once } from "node:events";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import react from "@vitejs/plugin-react";
@@ -58,8 +59,10 @@ test("a shared session renders read-only from its published snapshot", { timeout
         });
       },
     }],
-    resolve: { dedupe: ["react", "react-dom"] },
-    server: { host: "127.0.0.1", port, strictPort: true, fs: { allow: [resolve(siteRoot, "../..")] } },
+    // The web app from its sources, as a workspace link gives it, even where it is an installed
+    // package (Bazel's node_modules): Vite only converts the CommonJS imports of sources.
+    resolve: { dedupe: ["react", "react-dom"], alias: { "@axo/web-app": resolve(import.meta.dirname, "../src/main.tsx") } },
+    server: { host: "127.0.0.1", port, strictPort: true, fs: { allow: [resolve(siteRoot, "../.."), resolve(realpathSync(resolve(siteRoot, "index.html")), "../../..")] } },
     logLevel: "error",
   });
   await vite.listen();

@@ -1,0 +1,111 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+# @axo/api-worker: the Worker and its Durable Objects, imported by the site as source.
+npm_package(
+    name = "pkg",
+    srcs = ["package.json"] + glob(["src/**/*.ts"]),
+)
+
+_DEPS = [
+    ":node_modules/@axo/app",
+    ":node_modules/@axo/apps",
+    ":node_modules/@axo/protocol",
+    ":node_modules/@modelcontextprotocol/sdk",
+    ":node_modules/@types/node",
+    ":node_modules/@types/ws",
+    ":node_modules/esbuild",
+    ":node_modules/fast-check",
+    ":node_modules/hono",
+    ":node_modules/jose",
+    ":node_modules/miniflare",
+    ":node_modules/ws",
+    ":node_modules/zod",
+]
+
+ts_project(
+    name = "typecheck",
+    srcs = glob(["src/**/*.ts", "tests/**/*.ts", "testing/**/*.ts", "scripts/**/*.ts"]),
+    no_emit = True,
+    tsconfig = "tsconfig.json",
+    # tsconfig.json includes the site's generated Worker types (cloudflare:workers, Env).
+    deps = _DEPS + [
+        ":node_modules/@axo/pi-axo",
+        "//sites/axo.leostera.dev:worker_types",
+    ],
+)
+
+# Every file the tests read, copied to the output tree by an untagged target (see node_test).
+js_library(
+    name = "test_files",
+    srcs = glob(["src/**/*.ts", "tests/**", "testing/**"]),
+)
+
+# The Worker in Miniflare, with fake identity providers, apps and hosts.
+node_test(
+    name = "test",
+    concurrency = 1,
+    data = _DEPS + [
+        ":node_modules/tsx",
+        ":node_modules/@axo/pi-axo",
+        ":test_files",
+        "//packages/axo-api:fixtures",
+    ],
+    tests = [
+        "tests/api.test.ts",
+        "tests/auth.test.ts",
+        "tests/account-manager.test.ts",
+        "tests/hosts.test.ts",
+        "tests/lifecycle.test.ts",
+        "tests/limits.test.ts",
+        "tests/machines.test.ts",
+        "tests/observability.test.ts",
+        "tests/replies.property.test.ts",
+        "tests/replies.test.ts",
+        "tests/session-sync.test.ts",
+        "tests/host-calls.test.ts",
+        "tests/connections.test.ts",
+        "tests/third-party.test.ts",
+        "tests/apps.test.ts",
+        "tests/token-apps.test.ts",
+        "tests/device-apps.test.ts",
+        "tests/oauth-apps.test.ts",
+        "tests/mac-apps.test.ts",
+        "tests/kraken-signin.test.ts",
+        "tests/fragments.test.ts",
+        "tests/relay-fragments.test.ts",
+        "tests/share.test.ts",
+    ],
+    tests_in_data = True,
+    tsx = True,
+)
+
+# The Worker relaying to a real axod, as the Mac and the phone use it.
+node_test(
+    name = "relay_test",
+    concurrency = 1,
+    data = _DEPS + [
+        ":node_modules/tsx",
+        ":test_files",
+        "//crates/axo-server:pi_extension_fixture_js",
+        "//crates/axod",
+        "//crates/axod:pi_fixture_js",
+    ],
+    # Relative to the package, where node_test runs.
+    env = {"AXOD_BINARY": "../../crates/axod/axod"},
+    tags = ["no-sandbox"],
+    tests = [
+        "tests/axod-relay.test.ts",
+        "tests/phone-path.test.ts",
+        "tests/connections-e2e.test.ts",
+    ],
+    tests_in_data = True,
+    tsx = True,
+)

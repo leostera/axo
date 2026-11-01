@@ -1,3 +1,4 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("@axo_config//:defs.bzl", "AXO")
 
@@ -40,4 +41,11 @@ rust_test(
         "@crates//:log",
         "@crates//:serde_json",
     ],
+)
+
+# The Pi stand-in for the Worker's relay tests, which read it from the output tree.
+js_library(
+    name = "pi_fixture_js",
+    testonly = True,
+    srcs = ["testdata/pi-fixture.sh"],
 )

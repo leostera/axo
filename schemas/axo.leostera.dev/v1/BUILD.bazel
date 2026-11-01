@@ -1,7 +1,17 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+
 package(default_visibility = ["//visibility:public"])
+
+_FILES = glob(["*.schema.json", "fixtures/*.json", "fixtures/*.jsonl"])
 
 # The v1 wire contract, for conformance tests of its implementations.
 filegroup(
     name = "v1",
-    srcs = glob(["*.schema.json", "fixtures/*.json", "fixtures/*.jsonl"]),
+    srcs = _FILES,
+)
+
+# The same files for JavaScript tests, which read them from the output tree.
+js_library(
+    name = "js",
+    srcs = _FILES,
 )

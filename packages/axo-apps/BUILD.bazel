@@ -1,0 +1,35 @@
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+# @axo/apps: each app's sign-in, API hosts and tools (RFD0016), imported as TypeScript source.
+npm_package(
+    name = "pkg",
+    srcs = ["package.json"] + glob(["src/**/*.ts"]),
+)
+
+_DEPS = [
+    ":node_modules/@axo/protocol",
+    ":node_modules/oauth4webapi",
+    ":node_modules/zod",
+]
+
+ts_project(
+    name = "typecheck",
+    srcs = glob(["src/**/*.ts", "tests/**/*.ts"]),
+    no_emit = True,
+    tsconfig = "tsconfig.json",
+    deps = _DEPS + [":node_modules/@types/node"],
+)
+
+node_test(
+    name = "test",
+    data = glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx"],
+    tests = glob(["tests/*.test.ts"]),
+    tsx = True,
+)

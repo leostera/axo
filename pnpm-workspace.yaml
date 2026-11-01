@@ -1,14 +1,19 @@
 # One pnpm workspace for every JavaScript package; Bazel installs it from pnpm-lock.yaml
 # (aspect_rules_js, RFD0021).
 packages:
+  - assets
   - packages/*
   - sites/*
   - docs/explainers/remote-access
 
-# The site pins these (they were npm overrides in its package.json).
+# The site pins these (they were npm overrides in its package.json). workerd is pinned only under
+# the site's own Cloudflare tooling: the Worker's tests run miniflare with the workerd it ships with.
 overrides:
   sharp: "0.35.5"
-  workerd: "1.20261016.1"
+  "miniflare@5.20260930.0-alpha>workerd": "1.20261016.1"
+  "miniflare@5.20261006.0-alpha>workerd": "1.20261016.1"
+  "@cloudflare/runtime-types>workerd": "1.20261016.1"
+  "@cloudflare/unenv-preset>workerd": "1.20261016.1"
 
 # No install scripts run: the native pieces (esbuild, workerd, tree-sitter) come as prebuilt
 # platform packages, so their scripts would only check or rebuild what is already there.

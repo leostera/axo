@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SHARE_PUBLISH_METHOD, sharePublishResultSchema, sharedSnapshotSchema, type SharedSnapshot } from "@axo/protocol";
-import { buildSharedMessages, redactSnapshot } from "../../pi-axo/src/share.ts";
+import { buildSharedMessages, redactSnapshot } from "@axo/pi-axo/share";
 import { harness, Peer } from "./harness";
 
 const snapshot: SharedSnapshot = {

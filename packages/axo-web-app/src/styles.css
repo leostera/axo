@@ -560,7 +560,7 @@ button.grouped-row:hover { background: var(--fill); }
 /* Sign-in: the iPhone app's, following the system's light or dark. */
 @font-face {
   font-family: "Fredoka";
-  src: url("../../../assets/fonts/Fredoka.ttf") format("truetype");
+  src: url("@axo/assets/fonts/Fredoka.ttf") format("truetype");
   font-weight: 300 700;
   font-display: swap;
 }

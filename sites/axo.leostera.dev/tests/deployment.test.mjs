@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 
 const siteRoot = resolve(import.meta.dirname, "..");
-const cf = resolve(siteRoot, "node_modules/.bin/cf");
+// `cf dev` runs `npx vite`; this runs the site's Vite itself, however node_modules is laid out
+// (pnpm's, or Bazel's), so no npx goes looking for one.
+const vite = resolve(dirname(createRequire(import.meta.url).resolve("vite/package.json")), "bin/vite.js");
 
 async function freePort() {
   const server = createServer();
@@ -23,7 +26,7 @@ async function freePort() {
 async function waitForWorker(url, child, output) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`cf dev exited early (${child.exitCode})\n${output()}`);
+    if (child.exitCode !== null) throw new Error(`vite exited early (${child.exitCode})\n${output()}`);
     try {
       // Any Worker answer means it is up; unconfigured sign-in answers 503 with JSON.
       const response = await fetch(`${url}/api/auth/me`);
@@ -33,7 +36,7 @@ async function waitForWorker(url, child, output) {
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
   }
-  throw new Error(`Timed out waiting for cf dev\n${output()}`);
+  throw new Error(`Timed out waiting for vite\n${output()}`);
 }
 
 async function stop(child) {
@@ -55,7 +58,7 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   let logs = "";
-  const child = spawn(cf, ["dev"], {
+  const child = spawn(process.execPath, [vite], {
     cwd: siteRoot,
     detached: true,
     // A developer's own .env must not decide what this test sees: sign-in starts unconfigured.

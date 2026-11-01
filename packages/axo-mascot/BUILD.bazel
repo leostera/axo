@@ -1,0 +1,61 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "typecheck",
+    srcs = glob(["src/**/*.ts", "test/**/*.ts"]),
+    no_emit = True,
+    tsconfig = "tsconfig.json",
+    deps = [
+        ":node_modules/@types/node",
+        ":node_modules/playwright-core",
+    ],
+)
+
+# assets/mascot/axo.riv is what src/build.ts writes; `node src/build.ts` updates it.
+js_test(
+    name = "riv_up_to_date",
+    args = ["--check"],
+    chdir = package_name(),
+    data = glob(["src/**/*.ts"]) + ["//assets:mascot_js"],
+    entry_point = "src/build.ts",
+)
+
+node_test(
+    name = "test",
+    data = glob(["src/**/*.ts"]),
+    tests = ["test/riv.test.ts"],
+)
+
+# The browser test's files, copied to the output tree by an untagged target: a tagged test's own
+# copies would clash with the typecheck's.
+js_library(
+    name = "browser_test_files",
+    srcs = glob(["src/**/*.ts", "test/*.ts", "preview/**"]),
+)
+
+# Plays the mascot in the Rive web runtime, in the Chrome installed on this Mac.
+node_test(
+    name = "browser_test",
+    data = [
+        ":browser_test_files",
+        ":node_modules/@rive-app/canvas",
+        ":node_modules/playwright-core",
+        "//assets:mascot_js",
+    ],
+    tags = [
+        "no-sandbox",
+        "requires-browser",
+    ],
+    tests = [
+        "test/bounds.test.ts",
+        "test/web-runtime.test.ts",
+    ],
+    tests_in_data = True,
+)

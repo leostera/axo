@@ -1,0 +1,55 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+# @axo/protocol: the RPC contracts other packages import as TypeScript source.
+npm_package(
+    name = "pkg",
+    srcs = ["package.json"] + glob(["src/**/*.ts"]),
+)
+
+ts_project(
+    name = "typecheck",
+    srcs = glob(["src/**/*.ts"]),
+    no_emit = True,
+    tsconfig = "tsconfig.json",
+    deps = [
+        ":node_modules/json-rpc-2.0",
+        ":node_modules/zod",
+    ],
+)
+
+# The Zod contracts agree with schemas/axo.leostera.dev/v1.
+node_test(
+    name = "schema_check",
+    data = glob(["src/**/*.ts"]) + [
+        ":node_modules/ajv",
+        ":node_modules/ajv-formats",
+        ":node_modules/json-rpc-2.0",
+        ":node_modules/zod",
+        "//schemas/axo.leostera.dev/v1:js",
+    ],
+    tests = ["scripts/check-schemas.mjs"],
+)
+
+node_test(
+    name = "test",
+    data = glob(["src/**/*.ts"]) + [
+        ":node_modules/json-rpc-2.0",
+        ":node_modules/zod",
+        "//schemas/axo.leostera.dev/v1:js",
+    ],
+    tests = glob(["tests/*.test.ts"]),
+)
+
+# Shared JSON-RPC envelope fixtures, which the Worker's tests check against too.
+js_library(
+    name = "fixtures",
+    srcs = glob(["fixtures/**"]),
+)
