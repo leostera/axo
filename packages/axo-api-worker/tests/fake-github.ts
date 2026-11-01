@@ -34,6 +34,8 @@ export class FakeGitHub {
     if (!request.headers.get("User-Agent")) return new Response("Request forbidden by administrative rules. Please make sure your request has a User-Agent header (https://docs.github.com/en/rest/overview/resources-in-the-rest-api#user-agent-required).\n", { status: 403, headers: { "Content-Type": "text/plain" } });
     const as = this.oauth.who(request);
     if (!as) return json({ message: "Bad credentials" }, 401);
+    // GitHub reads an encoded slash in a path as a slash, as Octokit sends a file's path.
+    url.pathname = decodeURIComponent(url.pathname);
     this.apiCalls.push({ as, call: `${request.method} ${url.pathname}`, headers: request.headers });
     if (url.pathname === "/user") return json({ login: as === "ada" ? "Ada" : as, name: as });
     if (url.pathname === "/repos/ada/engine/issues/3") return json({ number: 3, title: "Bug", state: "open", user: { login: "bob" }, labels: [{ name: "bug" }], comments: 1, created_at: "c", updated_at: "u", html_url: "https://github.com/ada/engine/issues/3", body: "It breaks" });

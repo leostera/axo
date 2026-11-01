@@ -15,6 +15,12 @@ npm_package(
 
 _DEPS = [
     ":node_modules/@axo/protocol",
+    ":node_modules/@discordjs/rest",
+    ":node_modules/@octokit/core",
+    ":node_modules/@octokit/plugin-paginate-rest",
+    ":node_modules/@octokit/plugin-rest-endpoint-methods",
+    ":node_modules/discord-api-types",
+    ":node_modules/grammy",
     ":node_modules/oauth4webapi",
     ":node_modules/zod",
 ]

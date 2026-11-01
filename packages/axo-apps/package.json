@@ -13,6 +13,12 @@
   },
   "dependencies": {
     "@axo/protocol": "workspace:*",
+    "@discordjs/rest": "^2.6.3",
+    "@octokit/core": "^7.0.8",
+    "@octokit/plugin-paginate-rest": "^16.0.0",
+    "@octokit/plugin-rest-endpoint-methods": "^18.0.0",
+    "discord-api-types": "^0.38.57",
+    "grammy": "^1.46.0",
     "oauth4webapi": "^3.8.8",
     "zod": "^4.5.0"
   },

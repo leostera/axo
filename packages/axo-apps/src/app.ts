@@ -34,6 +34,14 @@ export type ProviderApi = {
   request(method: Method, path: string, options?: ProviderRequest): Promise<unknown>;
   requestBytes(method: Method, path: string, options?: ProviderRequest): Promise<ArrayBuffer>;
   requestRaw(method: Method, path: string, options?: ProviderRequest): Promise<ProviderResponse>;
+  /**
+   * A fetch for an SDK of the provider's (Octokit, grammY): the same credential, hosts, timeout
+   * and outcomes as `request`, but any answer but a 401 comes back as a Response, for the SDK to
+   * read as it does. The credential replaces any `Authorization` the SDK sets. A request with
+   * the SDK's own abort signal ends when it does, within the longest a call may take; one
+   * without, within the usual timeout.
+   */
+  fetch: typeof fetch;
 };
 
 /** What a Mac app's tool gets instead of an API: commands run on the Mac the call names (its account). */

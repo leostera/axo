@@ -1,6 +1,15 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
-import type { Authorized } from "../app";
+import { REST } from "@discordjs/rest";
+import {
+  Routes,
+  type RESTGetAPIChannelMessagesResult,
+  type RESTGetAPICurrentUserGuildsResult,
+  type RESTGetAPICurrentUserResult,
+  type RESTGetAPIGuildChannelsResult,
+  type RESTPostAPIChannelMessageJSONBody,
+  type RESTPostAPIChannelMessageResult,
+} from "discord-api-types/v10";
+import { tool, type AppDefinition, type AppTool, type Authorized, type ProviderApi } from "../app";
 
 /**
  * A Discord bot as an app: `codemode.apps.discord.<tool>({ account, ... })`, with the bot token
@@ -9,7 +18,22 @@ import type { Authorized } from "../app";
  */
 
 const snowflake = z.string().regex(/^\d{15,22}$/, "a Discord ID, such as 1234567890123456789");
-const get = (api: ProviderApi, path: string, query: Record<string, string | undefined> = {}) => api.request("GET", `/api/v10${path}`, { query });
+
+/**
+ * discord.js's REST client, sending through the gateway's fetch, which puts the bot token on.
+ * It neither retries (a write that got no answer may have run) nor sweeps on timers; it still
+ * waits out Discord's rate limits.
+ */
+const rest = (api: ProviderApi) => new REST({
+  version: "10",
+  api: "https://discord.com/api",
+  makeRequest: api.fetch as never,
+  retries: 0,
+  timeout: 30_000,
+  handlerSweepInterval: 0,
+  hashSweepInterval: 0,
+  userAgentAppendix: "Axo (https://axo.leostera.dev)",
+}).setToken("from-the-gateway");
 
 const tools: AppTool[] = [
   tool({
@@ -18,7 +42,7 @@ const tools: AppTool[] = [
     input: z.object({}).strict(),
     idempotent: true,
     async run(api) {
-      const guilds = (await get(api, "/users/@me/guilds")) as Array<{ id: string; name: string; owner?: boolean }>;
+      const guilds = (await rest(api).get(Routes.userGuilds())) as RESTGetAPICurrentUserGuildsResult;
       return { guilds: guilds.map((g) => ({ id: g.id, name: g.name, owner: g.owner ?? false })) };
     },
   }),
@@ -28,8 +52,8 @@ const tools: AppTool[] = [
     input: z.object({ guild: snowflake }).strict(),
     idempotent: true,
     async run(api, input) {
-      const channels = (await get(api, `/guilds/${input.guild}/channels`)) as Array<{ id: string; name: string; type: number; parent_id?: string | null; topic?: string | null }>;
-      return { channels: channels.map((c) => ({ id: c.id, name: c.name, type: c.type, parent: c.parent_id ?? null, topic: c.topic ?? null })) };
+      const channels = (await rest(api).get(Routes.guildChannels(input.guild))) as RESTGetAPIGuildChannelsResult;
+      return { channels: channels.map((c) => ({ id: c.id, name: c.name, type: c.type, parent: c.parent_id ?? null, topic: "topic" in c ? c.topic ?? null : null })) };
     },
   }),
   tool({
@@ -38,8 +62,9 @@ const tools: AppTool[] = [
     input: z.object({ channel: snowflake, limit: z.number().int().min(1).max(100).optional(), before: snowflake.optional() }).strict(),
     idempotent: true,
     async run(api, input) {
-      const messages = (await get(api, `/channels/${input.channel}/messages`, { limit: String(input.limit ?? 50), before: input.before })) as Array<{ id: string; author: { username: string; bot?: boolean }; content: string; timestamp: string; attachments?: Array<{ filename: string; url: string }> }>;
-      return { messages: messages.map((m) => ({ id: m.id, author: m.author.username, bot: m.author.bot ?? false, content: m.content, timestamp: m.timestamp, attachments: (m.attachments ?? []).map((a) => ({ name: a.filename, url: a.url })) })) };
+      const query = new URLSearchParams({ limit: String(input.limit ?? 50), ...(input.before ? { before: input.before } : {}) });
+      const messages = (await rest(api).get(Routes.channelMessages(input.channel), { query })) as RESTGetAPIChannelMessagesResult;
+      return { messages: messages.map((m) => ({ id: m.id, author: m.author.username, bot: m.author.bot ?? false, content: m.content, timestamp: m.timestamp, attachments: m.attachments.map((a) => ({ name: a.filename, url: a.url })) })) };
     },
   }),
   tool({
@@ -48,9 +73,8 @@ const tools: AppTool[] = [
     input: z.object({ channel: snowflake, content: z.string().min(1).max(2000), replyTo: snowflake.optional() }).strict(),
     idempotent: false,
     async run(api, input) {
-      const sent = (await api.request("POST", `/api/v10/channels/${input.channel}/messages`, {
-        body: { content: input.content, message_reference: input.replyTo ? { message_id: input.replyTo } : undefined, allowed_mentions: { parse: [] } },
-      })) as { id: string };
+      const body: RESTPostAPIChannelMessageJSONBody = { content: input.content, message_reference: input.replyTo ? { message_id: input.replyTo } : undefined, allowed_mentions: { parse: [] } };
+      const sent = (await rest(api).post(Routes.channelMessages(input.channel), { body })) as RESTPostAPIChannelMessageResult;
       return { id: sent.id };
     },
   }),
@@ -78,7 +102,7 @@ export const discord: AppDefinition = {
     fields: [{ name: "token", label: "Bot token", help: "In Discord's developer portal, open your application, then Bot, and reset the token to copy it. Invite the bot to your servers from OAuth2.", secret: true }],
     authorize: (fields): Authorized => ({ headers: { Authorization: `Bot ${fields.token}`, "User-Agent": "DiscordBot (https://axo.leostera.dev, 1)" } }),
     async identify(api) {
-      const me = (await get(api, "/users/@me")) as { username?: string };
+      const me = (await rest(api).get(Routes.user())) as RESTGetAPICurrentUserResult;
       return me.username?.toLowerCase() ?? null;
     },
   },

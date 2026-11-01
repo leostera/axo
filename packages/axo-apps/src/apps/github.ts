@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { Octokit as Core } from "@octokit/core";
+import { paginateRest } from "@octokit/plugin-paginate-rest";
+import { restEndpointMethods, type RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods";
 import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
@@ -12,18 +15,17 @@ const number = z.number().int().positive();
 const perPage = z.number().int().min(1).max(100).optional().describe("Default 30.");
 const page = z.number().int().min(1).optional();
 
-// GitHub refuses requests without a User-Agent.
-const API_HEADERS = { "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Axo" };
-const get = (api: ProviderApi, path: string, query: Record<string, string | undefined> = {}) =>
-  api.request("GET", path, { query, headers: API_HEADERS, accept: "application/vnd.github+json" });
-const send = (api: ProviderApi, method: "POST" | "PATCH" | "PUT" | "DELETE", path: string, body: unknown) =>
-  api.request(method, path, { body, headers: API_HEADERS, accept: "application/vnd.github+json" });
-const n = (value: number | undefined) => (value === undefined ? undefined : String(value));
+/**
+ * Octokit, GitHub's own SDK, with its REST methods and pagination, sending through the gateway's
+ * fetch: the grant goes on there, never in Octokit. GitHub refuses requests without a User-Agent.
+ */
+const Octokit = Core.plugin(restEndpointMethods, paginateRest);
+const octokit = (api: ProviderApi) => new Octokit({ baseUrl: "https://api.github.com", userAgent: "Axo", request: { fetch: api.fetch } }).rest;
 
-type Issue = { number: number; title: string; state: string; user?: { login?: string }; labels?: Array<{ name?: string } | string>; comments?: number; created_at: string; updated_at: string; html_url: string; pull_request?: unknown; body?: string | null };
+type Issue = RestEndpointMethodTypes["issues"]["get"]["response"]["data"];
 const issue = (i: Issue) => ({
   number: i.number, title: i.title, state: i.state, author: i.user?.login ?? null, pullRequest: Boolean(i.pull_request),
-  labels: (i.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)).filter(Boolean), comments: i.comments ?? 0,
+  labels: i.labels.map((l) => (typeof l === "string" ? l : l.name)).filter(Boolean), comments: i.comments,
   created: i.created_at, updated: i.updated_at, url: i.html_url,
 });
 
@@ -33,7 +35,7 @@ const tools: AppTool[] = [
     description: "The signed-in user: { login, name, email, ... }.",
     input: z.object({}).strict(),
     idempotent: true,
-    run: (api) => get(api, "/user"),
+    run: async (api) => (await octokit(api).users.getAuthenticated()).data,
   }),
   tool({
     name: "list_repos",
@@ -41,9 +43,11 @@ const tools: AppTool[] = [
     input: z.object({ owner: owner.optional().describe("Only this user's or organisation's; all the user's when left out."), perPage, page }).strict(),
     idempotent: true,
     async run(api, input) {
-      const path = input.owner ? `/users/${input.owner}/repos` : "/user/repos";
-      const repos = (await get(api, path, { sort: "pushed", per_page: n(input.perPage), page: n(input.page) })) as Array<{ full_name: string; private: boolean; description: string | null; default_branch: string; pushed_at: string; html_url: string }>;
-      return { repos: repos.map((r) => ({ fullName: r.full_name, private: r.private, description: r.description, defaultBranch: r.default_branch, pushed: r.pushed_at, url: r.html_url })) };
+      const paging = { per_page: input.perPage, page: input.page };
+      const repos = input.owner
+        ? (await octokit(api).repos.listForUser({ username: input.owner, sort: "pushed", ...paging })).data
+        : (await octokit(api).repos.listForAuthenticatedUser({ sort: "pushed", ...paging })).data;
+      return { repos: repos.map((r) => ({ fullName: r.full_name, private: r.private, description: r.description, defaultBranch: r.default_branch ?? null, pushed: r.pushed_at, url: r.html_url })) };
     },
   }),
   tool({
@@ -54,8 +58,14 @@ const tools: AppTool[] = [
     input: z.object({ kind: z.enum(["issues", "repositories", "code", "commits"]), query: z.string().min(1).max(512), perPage, page }).strict(),
     idempotent: true,
     async run(api, input) {
-      const answer = (await get(api, `/search/${input.kind}`, { q: input.query, per_page: n(input.perPage), page: n(input.page) })) as { total_count: number; items: unknown[] };
-      return { total: answer.total_count, items: input.kind === "issues" ? (answer.items as Issue[]).map(issue) : answer.items };
+      const query = { q: input.query, per_page: input.perPage, page: input.page };
+      const search = octokit(api).search;
+      if (input.kind === "issues") {
+        const answer = (await search.issuesAndPullRequests({ ...query, advanced_search: "true" })).data;
+        return { total: answer.total_count, items: answer.items.map((i) => issue(i as Issue)) };
+      }
+      const answer = (await (input.kind === "repositories" ? search.repos(query) : input.kind === "code" ? search.code(query) : search.commits(query))).data;
+      return { total: answer.total_count, items: answer.items };
     },
   }),
   tool({
@@ -64,8 +74,8 @@ const tools: AppTool[] = [
     input: z.object({ owner, repo, state: z.enum(["open", "closed", "all"]).optional(), labels: z.string().max(256).optional().describe("Comma-separated."), perPage, page }).strict(),
     idempotent: true,
     async run(api, input) {
-      const issues = (await get(api, `/repos/${input.owner}/${input.repo}/issues`, { state: input.state, labels: input.labels, per_page: n(input.perPage), page: n(input.page) })) as Issue[];
-      return { issues: issues.map(issue) };
+      const issues = (await octokit(api).issues.listForRepo({ owner: input.owner, repo: input.repo, state: input.state, labels: input.labels, per_page: input.perPage, page: input.page })).data;
+      return { issues: issues.map((i) => issue(i as Issue)) };
     },
   }),
   tool({
@@ -74,9 +84,9 @@ const tools: AppTool[] = [
     input: z.object({ owner, repo, number }).strict(),
     idempotent: true,
     async run(api, input) {
-      const base = `/repos/${input.owner}/${input.repo}/issues/${input.number}`;
-      const [found, comments] = await Promise.all([get(api, base) as Promise<Issue>, get(api, `${base}/comments`, { per_page: "100" }) as Promise<Array<{ user?: { login?: string }; body?: string; created_at: string }>>]);
-      return { ...issue(found), body: found.body ?? "", comments: comments.map((c) => ({ author: c.user?.login ?? null, body: c.body ?? "", created: c.created_at })) };
+      const target = { owner: input.owner, repo: input.repo, issue_number: input.number };
+      const [found, comments] = await Promise.all([octokit(api).issues.get(target), octokit(api).issues.listComments({ ...target, per_page: 100 })]);
+      return { ...issue(found.data), body: found.data.body ?? "", comments: comments.data.map((c) => ({ author: c.user?.login ?? null, body: c.body ?? "", created: c.created_at })) };
     },
   }),
   tool({
@@ -85,7 +95,7 @@ const tools: AppTool[] = [
     input: z.object({ owner, repo, title: z.string().min(1).max(256), body: z.string().max(65536).optional(), labels: z.array(z.string().max(50)).max(20).optional() }).strict(),
     idempotent: false,
     async run(api, input) {
-      const created = (await send(api, "POST", `/repos/${input.owner}/${input.repo}/issues`, { title: input.title, body: input.body, labels: input.labels })) as Issue;
+      const created = (await octokit(api).issues.create({ owner: input.owner, repo: input.repo, title: input.title, body: input.body, labels: input.labels })).data;
       return { number: created.number, url: created.html_url };
     },
   }),
@@ -95,7 +105,7 @@ const tools: AppTool[] = [
     input: z.object({ owner, repo, number, body: z.string().min(1).max(65536) }).strict(),
     idempotent: false,
     async run(api, input) {
-      const created = (await send(api, "POST", `/repos/${input.owner}/${input.repo}/issues/${input.number}/comments`, { body: input.body })) as { id: number; html_url: string };
+      const created = (await octokit(api).issues.createComment({ owner: input.owner, repo: input.repo, issue_number: input.number, body: input.body })).data;
       return { id: created.id, url: created.html_url };
     },
   }),
@@ -105,15 +115,12 @@ const tools: AppTool[] = [
     input: z.object({ owner, repo, number }).strict(),
     idempotent: true,
     async run(api, input) {
-      const base = `/repos/${input.owner}/${input.repo}/pulls/${input.number}`;
-      const [p, files] = await Promise.all([
-        get(api, base) as Promise<{ number: number; title: string; state: string; draft?: boolean; merged?: boolean; user?: { login?: string }; head: { ref: string }; base: { ref: string }; mergeable?: boolean | null; additions?: number; deletions?: number; changed_files?: number; html_url: string; body?: string | null }>,
-        get(api, `${base}/files`, { per_page: "100" }) as Promise<Array<{ filename: string; status: string; additions: number; deletions: number }>>,
-      ]);
+      const target = { owner: input.owner, repo: input.repo, pull_number: input.number };
+      const [{ data: p }, { data: files }] = await Promise.all([octokit(api).pulls.get(target), octokit(api).pulls.listFiles({ ...target, per_page: 100 })]);
       return {
-        number: p.number, title: p.title, state: p.state, draft: p.draft ?? false, merged: p.merged ?? false, author: p.user?.login ?? null,
-        head: p.head.ref, base: p.base.ref, mergeable: p.mergeable ?? null, additions: p.additions ?? 0, deletions: p.deletions ?? 0,
-        changedFiles: p.changed_files ?? files.length, url: p.html_url, body: p.body ?? "", files: files.map((f) => ({ name: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })),
+        number: p.number, title: p.title, state: p.state, draft: p.draft ?? false, merged: p.merged, author: p.user?.login ?? null,
+        head: p.head.ref, base: p.base.ref, mergeable: p.mergeable, additions: p.additions, deletions: p.deletions,
+        changedFiles: p.changed_files, url: p.html_url, body: p.body ?? "", files: files.map((f) => ({ name: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })),
       };
     },
   }),
@@ -123,10 +130,14 @@ const tools: AppTool[] = [
     input: z.object({ owner, repo, path: z.string().min(1).max(1024), ref: z.string().max(255).optional() }).strict(),
     idempotent: true,
     async run(api, input) {
-      const file = (await get(api, `/repos/${input.owner}/${input.repo}/contents/${input.path.split("/").map(encodeURIComponent).join("/")}`, { ref: input.ref })) as { path: string; sha: string; size: number; content?: string; encoding?: string; type: string };
-      if (file.type !== "file" || file.encoding !== "base64" || !file.content) return { path: file.path, sha: file.sha, size: file.size, text: null };
-      const bytes = Uint8Array.from(atob(file.content.replace(/\n/g, "")), (c) => c.charCodeAt(0));
-      return { path: file.path, sha: file.sha, size: file.size, text: new TextDecoder().decode(bytes) };
+      const { data } = await octokit(api).repos.getContent({ owner: input.owner, repo: input.repo, path: input.path, ref: input.ref });
+      if (Array.isArray(data) || data.type !== "file" || !("content" in data)) {
+        const entry = Array.isArray(data) ? null : data;
+        return { path: entry?.path ?? input.path, sha: entry?.sha ?? null, size: entry?.size ?? 0, text: null };
+      }
+      if (data.encoding !== "base64" || !data.content) return { path: data.path, sha: data.sha, size: data.size, text: null };
+      const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, "")), (c) => c.charCodeAt(0));
+      return { path: data.path, sha: data.sha, size: data.size, text: new TextDecoder().decode(bytes) };
     },
   }),
   tool({
@@ -135,7 +146,7 @@ const tools: AppTool[] = [
     input: z.object({ all: z.boolean().optional().describe("Read ones too."), perPage }).strict(),
     idempotent: true,
     async run(api, input) {
-      const items = (await get(api, "/notifications", { all: input.all ? "true" : undefined, per_page: n(input.perPage) })) as Array<{ id: string; reason: string; updated_at: string; repository: { full_name: string }; subject: { type: string; title: string } }>;
+      const items = (await octokit(api).activity.listNotificationsForAuthenticatedUser({ all: input.all, per_page: input.perPage })).data;
       return { notifications: items.map((x) => ({ id: x.id, reason: x.reason, repo: x.repository.full_name, type: x.subject.type, title: x.subject.title, updated: x.updated_at })) };
     },
   }),

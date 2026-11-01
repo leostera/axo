@@ -117,7 +117,7 @@ test("GitHub signs in with the person's OAuth app, is named by the login, and it
     created: "c", updated: "u", url: "https://github.com/ada/engine/issues/3", body: "It breaks",
   });
   assert.deepEqual(await apps.call("github", "get_file", { account: "ada", owner: "ada", repo: "engine", path: "src/main.rs" }), { path: "src/main.rs", sha: "s", size: 12, text: "fn main() {}" });
-  assert.equal(fake.apiCalls.at(-1)!.headers.get("user-agent"), "Axo");
+  assert.match(fake.apiCalls.at(-1)!.headers.get("user-agent") ?? "", /^Axo octokit-core/, "Octokit's own, naming Axo");
   assert.match(await refused(apps.call("github", "get_issue", { account: "ada", owner: "ada", repo: "secret", number: 1 })), /GitHub: Not Found/);
   // `request` reaches any endpoint as the named tools do, with the User-Agent GitHub requires.
   assert.deepEqual(await apps.call("github", "request", { account: "ada", method: "GET", path: "/repos/ada/engine" }), { status: 200, contentType: "application/json", json: { full_name: "ada/engine", stargazers_count: 7 }, truncated: false });

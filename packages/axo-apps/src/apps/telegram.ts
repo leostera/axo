@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest } from "../app";
+import { Api } from "grammy/web";
+import { tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest, type ProviderApi } from "../app";
 
 /**
  * A Telegram bot as an app: `codemode.apps.telegram.<tool>({ account, ... })`, with the token
@@ -10,12 +11,17 @@ import { tool, type AppDefinition, type AppTool, type Authorized, type OutgoingR
 
 const chat = z.union([z.number().int(), z.string().regex(/^@\w{4,64}$/)]).describe("A chat's ID, or a public channel's @username.");
 
-type Answer<T> = { ok: boolean; result: T; description?: string };
-
-async function call<T>(api: Parameters<AppTool["run"]>[0], method: string, body: Record<string, unknown> = {}): Promise<T> {
-  const answer = (await api.request("POST", `/${method}`, { body })) as Answer<T>;
-  return answer.result;
-}
+/**
+ * grammY's Bot API client, sending through the gateway's fetch. It never holds the token: it
+ * calls `/<method>`, and the token goes into the path as the request leaves (`inPath`).
+ */
+const bot = (api: ProviderApi, timeoutSeconds = 30) => new Api("in-path", {
+  apiRoot: "https://api.telegram.org",
+  buildUrl: (root, _token, method) => `${root}/${method}`,
+  // grammY types its fetch as node-fetch's; it calls it as the standard one.
+  fetch: api.fetch as never,
+  timeoutSeconds,
+}).raw as unknown as Record<string, (params?: Record<string, unknown>) => Promise<unknown>>;
 
 const tools: AppTool[] = [
   tool({
@@ -23,7 +29,7 @@ const tools: AppTool[] = [
     description: "The bot itself: { id, username, first_name, can_join_groups, can_read_all_group_messages }.",
     input: z.object({}).strict(),
     idempotent: true,
-    run: (api) => call(api, "getMe"),
+    run: (api) => bot(api).getMe!(),
   }),
   tool({
     name: "get_updates",
@@ -36,8 +42,7 @@ const tools: AppTool[] = [
       timeoutSeconds: z.number().int().min(0).max(50).optional().describe("Wait this long for an update when there is none; 0 when left out."),
     }).strict(),
     idempotent: true,
-    run: (api, input) => api.request("POST", "/getUpdates", { body: { offset: input.offset, limit: input.limit, timeout: input.timeoutSeconds ?? 0 }, timeoutMs: ((input.timeoutSeconds ?? 0) + 15) * 1000 })
-      .then((answer) => (answer as Answer<unknown>).result),
+    run: (api, input) => bot(api, (input.timeoutSeconds ?? 0) + 15).getUpdates!({ offset: input.offset, limit: input.limit, timeout: input.timeoutSeconds ?? 0 }),
   }),
   tool({
     name: "send_message",
@@ -50,7 +55,7 @@ const tools: AppTool[] = [
       silent: z.boolean().optional().describe("Send without a notification sound."),
     }).strict(),
     idempotent: false,
-    run: (api, input) => call(api, "sendMessage", {
+    run: (api, input) => bot(api).sendMessage!({
       chat_id: input.chat, text: input.text, parse_mode: input.parseMode, disable_notification: input.silent,
       reply_parameters: input.replyTo === undefined ? undefined : { message_id: input.replyTo },
     }),
@@ -60,14 +65,14 @@ const tools: AppTool[] = [
     description: "A chat the bot is in: { id, type, title?, username?, description?, ... }.",
     input: z.object({ chat }).strict(),
     idempotent: true,
-    run: (api, input) => call(api, "getChat", { chat_id: input.chat }),
+    run: (api, input) => bot(api).getChat!({ chat_id: input.chat }),
   }),
   tool({
     name: "call",
     description: "Any other Bot API method, such as editMessageText or sendPhoto with a URL, with its parameters as Telegram names them. Returns its `result`. See core.telegram.org/bots/api.",
     input: z.object({ method: z.string().regex(/^[a-zA-Z]{3,64}$/), params: z.record(z.string(), z.unknown()).optional() }).strict(),
     idempotent: false,
-    run: (api, input) => call(api, input.method, input.params ?? {}),
+    run: (api, input) => bot(api)[input.method]!(input.params ?? {}),
   }),
 ];
 
@@ -100,7 +105,7 @@ export const telegram: AppDefinition = {
     fields: [{ name: "token", label: "Bot token", help: "Message @BotFather in Telegram, send /newbot (or /token for a bot you have), and paste the token it gives you.", secret: true }],
     authorize: inPath,
     async identify(api) {
-      const me = await call<{ username?: string }>(api, "getMe");
+      const me = await bot(api).getMe!() as { username?: string };
       return me.username ? `@${me.username.toLowerCase()}` : null;
     },
   },

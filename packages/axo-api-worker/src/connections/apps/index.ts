@@ -295,7 +295,7 @@ export class AppConnections {
       return refuse(`The sign-in did not grant ${definition.title} access. Sign in again and allow every permission asked for.`);
     let identified: string | null;
     try {
-      identified = await provider.identify(grant, this.api(definition, CHECK_TOOL, () => ({ headers: authorization(grant) }), ""));
+      identified = await unwrapped(provider.identify(grant, this.api(definition, CHECK_TOOL, () => ({ headers: authorization(grant) }), "")));
     } catch {
       identified = null;
     }
@@ -451,7 +451,7 @@ export class AppConnections {
     if (definition.token.named && !named) throw new AppAccountRefused("Name this account, such as \"personal\"");
     let identified: string | null;
     try {
-      identified = await definition.token.identify(this.api(definition, CHECK_TOOL, (request) => definition.token.authorize(credential.fields, request), named ?? ""), credential.fields);
+      identified = await unwrapped(definition.token.identify(this.api(definition, CHECK_TOOL, (request) => definition.token.authorize(credential.fields, request), named ?? ""), credential.fields));
     } catch (error) {
       if (error instanceof Unauthorized) throw new AppAccountRefused(`${definition.title} did not accept this token`);
       if (error instanceof ProviderError) throw new AppAccountRefused(`${definition.title} did not accept this token: ${error.message}`.slice(0, 300));
@@ -535,7 +535,7 @@ export class AppConnections {
       // Checked as a pasted credential is, with one read call.
       let identified: string | null;
       try {
-        identified = await definition.token.identify(this.api(definition, CHECK_TOOL, (request) => definition.token.authorize(credential.fields, request), named ?? ""), credential.fields);
+        identified = await unwrapped(definition.token.identify(this.api(definition, CHECK_TOOL, (request) => definition.token.authorize(credential.fields, request), named ?? ""), credential.fields));
       } catch (error) {
         if (signIn.revoke) await signIn.revoke(done.revocation, done.fields, this.deps.fetcher, this.now()).catch(() => undefined);
         throw error instanceof Unauthorized ? new ProviderError(401, `${definition.providerTitle} did not accept the new key`) : error;
@@ -586,7 +586,7 @@ export class AppConnections {
       if (!grant || !grantFits(definition, grant))
         throw new Error(`${account} needs sign-in: ${await this.signInLink(app)}`);
       try {
-        return await tool.run(this.api(definition, tool, () => ({ headers: authorization(grant) }), account), rest);
+        return await runTool(definition, tool, this.api(definition, tool, () => ({ headers: authorization(grant) }), account), rest);
       } catch (error) {
         if (!(error instanceof Unauthorized)) throw error;
         if (attempt > 0) {
@@ -622,7 +622,7 @@ export class AppConnections {
       throw new Error(`${account}'s ${definition.providerTitle} key expired on ${new Date(credential.expiresAt).toISOString().slice(0, 10)}; sign in again at ${appPage(definition.name)}`);
     }
     try {
-      return await tool.run(this.api(definition, tool, (request) => definition.token.authorize(credential.fields, request), account), input);
+      return await runTool(definition, tool, this.api(definition, tool, (request) => definition.token.authorize(credential.fields, request), account), input);
     } catch (error) {
       if (!(error instanceof Unauthorized)) throw error;
       this.dropGrant(definition.name, account, row.grant_generation, `${definition.title} refused the token`);
@@ -633,43 +633,40 @@ export class AppConnections {
   /** The provider's API, with `authorize` putting the credential on every request. */
   private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, authorize: (request: OutgoingRequest) => Authorized | Promise<Authorized>, account: string): ProviderApi {
     const fetcher = this.deps.fetcher;
-    const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
-      let url: URL;
-      try {
-        url = new URL(path, definition.apiOrigin);
-      } catch {
-        throw new ProviderError(0, `not a URL: ${path.slice(0, 100)}`);
-      }
+    const refused = () => new ProviderError(0, `${definition.title} calls only reach ${definition.hosts.join(", ")}`);
+    /**
+     * One request with the credential on: only to the app's own hosts, never redirected, within
+     * the timeout. A 401 is Unauthorized; a write that is not safe to repeat and got no answer
+     * or a server error may have run. Any other answer is returned as it came.
+     */
+    const transmit = async (method: string, url: URL, headers: Record<string, string>, body: { contentType: string; data: string | Uint8Array<ArrayBuffer> } | undefined, timeout: number | AbortSignal | undefined): Promise<Response> => {
       // The grant goes only to the app's own API.
-      if (!allowedUrl(definition, url)) throw new ProviderError(0, `${definition.title} calls only reach ${definition.hosts.join(", ")}`);
-      for (const [key, value] of Object.entries(options.query ?? {})) {
-        if (value === undefined) continue;
-        for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, item);
-      }
+      if (!allowedUrl(definition, url)) throw refused();
       // Only a write that is not safe to repeat can leave its outcome unknown; a failed read ran nothing that matters.
-      const risky = method !== "GET" && !tool.idempotent;
-      const body = options.raw ?? (options.body === undefined ? undefined : { contentType: "application/json", data: JSON.stringify(options.body) });
+      const risky = method !== "GET" && method !== "HEAD" && !tool.idempotent;
       const auth = await authorize({ method, url, body: body?.data, contentType: body?.contentType ?? null });
       // The credential's URL must still be the app's own; no header of a call's own may stand in for the credential's.
       const target = auth.url ?? url;
-      if (!allowedUrl(definition, target)) throw new ProviderError(0, `${definition.title} calls only reach ${definition.hosts.join(", ")}`);
+      if (!allowedUrl(definition, target)) throw refused();
       const authNames = new Set(Object.keys(auth.headers).map((name) => name.toLowerCase()));
       let response: Response;
       try {
-        const own = Object.entries(options.headers ?? {}).filter(([name]) => !authNames.has(name.toLowerCase()) && name.toLowerCase() !== "authorization");
+        // Some APIs (GitHub's) refuse a request without a User-Agent, and Workers send none of their own.
+        const sent = new Headers({ "User-Agent": "Axo (https://axo.leostera.dev)" });
+        for (const [name, value] of Object.entries(headers)) {
+          if (!authNames.has(name.toLowerCase()) && name.toLowerCase() !== "authorization") sent.set(name, value);
+        }
+        if (body) sent.set("Content-Type", body.contentType);
+        for (const [name, value] of Object.entries(auth.headers)) sent.set(name, value);
         response = await fetcher(target, {
           method,
-          headers: {
-            // Some APIs (GitHub's) refuse a request without one, and Workers send none of their own.
-            "User-Agent": "Axo (https://axo.leostera.dev)",
-            ...Object.fromEntries(own),
-            Accept: options.accept ?? "application/json",
-            ...(body ? { "Content-Type": body.contentType } : {}),
-            ...auth.headers,
-          },
+          headers: sent,
           body: auth.body ?? body?.data,
           redirect: "manual",
-          signal: AbortSignal.timeout(Math.min(options.timeoutMs ?? REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS)),
+          // An SDK's own signal (grammY's long poll) is followed, never past the longest a call may take.
+          signal: timeout instanceof AbortSignal
+            ? AbortSignal.any([timeout, AbortSignal.timeout(MAX_REQUEST_TIMEOUT_MS)])
+            : AbortSignal.timeout(Math.min(timeout ?? REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS)),
         });
       } catch {
         if (risky) throw new ProviderOutcomeUnknown(`${definition.title} did not answer; it may have run`);
@@ -683,12 +680,37 @@ export class AppConnections {
         await response.body?.cancel();
         throw new ProviderOutcomeUnknown(`${definition.title} failed (HTTP ${response.status}); it may have run`);
       }
+      return response;
+    };
+    const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
+      let url: URL;
+      try {
+        url = new URL(path, definition.apiOrigin);
+      } catch {
+        throw new ProviderError(0, `not a URL: ${path.slice(0, 100)}`);
+      }
+      for (const [key, value] of Object.entries(options.query ?? {})) {
+        if (value === undefined) continue;
+        for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, item);
+      }
+      const body = options.raw ?? (options.body === undefined ? undefined : { contentType: "application/json", data: JSON.stringify(options.body) });
+      const response = await transmit(method, url, { ...options.headers, Accept: options.accept ?? "application/json" }, body, options.timeoutMs);
       if (!response.ok) {
         const text = await response.text();
         throw new ProviderError(response.status, `${definition.title}: ${providerMessage(text) ?? `HTTP ${response.status}`}`);
       }
       return definition.answerError ? checkAnswer(definition, response) : response;
     };
+    const sdkFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const headers = Object.fromEntries([...request.headers].filter(([name]) => name !== "content-type" && name !== "content-length"));
+      const contentType = request.headers.get("Content-Type");
+      const bytes = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+      // A text body stays text, so a credential that signs it (Kraken's) reads what is sent.
+      const textual = contentType !== null && /json|text|x-www-form-urlencoded/i.test(contentType);
+      const body = bytes ? { contentType: contentType ?? "application/octet-stream", data: textual ? new TextDecoder().decode(bytes) : bytes } : undefined;
+      return transmit(request.method.toUpperCase(), new URL(request.url), headers, body, init?.signal ?? undefined);
+    }) as typeof fetch;
     return {
       account,
       async request(method, path, options) {
@@ -702,6 +724,7 @@ export class AppConnections {
         const response = await send(method, path, options);
         return { status: response.status, contentType: response.headers.get("Content-Type") ?? "", body: await response.arrayBuffer() };
       },
+      fetch: sdkFetch,
     };
   }
 
@@ -827,6 +850,47 @@ export class AppConnections {
 }
 
 /** The call that checks a token before it is stored: a read, so a lost answer ran nothing. */
+/**
+ * Runs a tool. An SDK wraps what its fetch threw in its own error (Octokit's `cause`, grammY's
+ * `error`), so the gateway's own (Unauthorized, may-have-run, refused) is found inside it again;
+ * an SDK's error for an HTTP answer becomes a ProviderError naming the app.
+ */
+async function runTool(definition: AppDefinition, tool: AppTool, api: ProviderApi, input: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await tool.run(api, input);
+  } catch (error) {
+    const own = ownError(error);
+    if (own) throw own;
+    // An SDK's error for an answer it read (Octokit's RequestError) says what the service said.
+    // Octokit's `status`, grammY's `error_code`.
+    const status = (error as { status?: unknown } | null)?.status ?? (error as { error_code?: unknown } | null)?.error_code;
+    if (error instanceof Error && typeof status === "number" && status >= 400) {
+      throw new ProviderError(status, `${definition.title}: ${error.message.replace(/ - https:\/\/docs\.github\.com\S*$/, "").slice(0, 300)}`);
+    }
+    throw error;
+  }
+}
+
+/** An account check's outcome, with the gateway's own error found inside an SDK's (see runTool). */
+async function unwrapped<T>(promise: Promise<T>): Promise<T> {
+  try {
+    return await promise;
+  } catch (error) {
+    throw ownError(error) ?? error;
+  }
+}
+
+function ownError(error: unknown): Error | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    if (current instanceof Unauthorized || current instanceof ProviderOutcomeUnknown || current instanceof ProviderError) return current;
+    const next = (current as { cause?: unknown; error?: unknown }).cause ?? (current as { error?: unknown }).error;
+    if (next === current) break;
+    current = next;
+  }
+  return null;
+}
+
 const CHECK_TOOL: AppTool = { name: "add_account", description: "", input: z.object({}), idempotent: true, run: async () => null };
 
 function isOpenAI(grant: Grant): grant is OpenAIGrant {
