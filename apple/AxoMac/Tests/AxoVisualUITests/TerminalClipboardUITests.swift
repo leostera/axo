@@ -14,7 +14,7 @@ extension AxoVisualUITests {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let pasteboardSnapshot = PasteboardSnapshot()
     defer { pasteboardSnapshot.restore() }
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
 
@@ -98,7 +98,7 @@ extension AxoVisualUITests {
       pasteboardSnapshot.restore()
       selectionSnapshot.restore(to: selectionPasteboard)
     }
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let scriptURL = fixture.root.appendingPathComponent("clipboard-write-probe.py")

@@ -13,7 +13,7 @@ import XCTest
 extension AxoVisualUITests {
   func testKittyKeyboardNegotiationEncodesReturnAndShiftEnter() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
 
@@ -131,7 +131,7 @@ extension AxoVisualUITests {
 
   func testFocusOnlyClickIsNotReportedToTerminalMouseMode() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let readyURL = fixture.root.appendingPathComponent("mouse-reporting-ready")
@@ -190,7 +190,7 @@ extension AxoVisualUITests {
 
   func testTerminalScrollWheelReachesMouseReportingChild() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let readyURL = fixture.root.appendingPathComponent("scroll-reporting-ready")
@@ -242,7 +242,7 @@ extension AxoVisualUITests {
   }
   func testTerminalAccessibilityExposesVisibleScreenText() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     fixture.launchApp()

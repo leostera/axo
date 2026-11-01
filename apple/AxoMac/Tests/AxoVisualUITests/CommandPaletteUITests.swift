@@ -12,7 +12,7 @@ import XCTest
 extension AxoVisualUITests {
   func testCommandPaletteRunsCommandsAndReturnsTypingToTheTerminal() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     fixture.launchApp()

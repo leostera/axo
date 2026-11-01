@@ -13,7 +13,7 @@ import XCTest
 extension AxoVisualUITests {
   func testTerminalContextMenuRoutesSplitsAndCloseThroughAxo() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     fixture.launchApp()
@@ -42,7 +42,7 @@ extension AxoVisualUITests {
 
   func testSessionSidebarContextMenuRenamesAndArchives() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let model = TerminalSessionsModel(
@@ -94,7 +94,7 @@ extension AxoVisualUITests {
 
   func testSessionRenameButtonAppearsOnHoverAndStartsInlineEditing() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let model = TerminalSessionsModel(
@@ -119,7 +119,7 @@ extension AxoVisualUITests {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let pasteboardSnapshot = PasteboardSnapshot()
     defer { pasteboardSnapshot.restore() }
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     fixture.launchApp()
@@ -157,7 +157,7 @@ extension AxoVisualUITests {
   }
   func testCreateWorkspaceShowsFirstSessionAndPiSurvivesAppCloseAndReopen() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let workspaceDirectory = fixture.root.appendingPathComponent("workspace", isDirectory: true)
@@ -294,7 +294,7 @@ extension AxoVisualUITests {
     let pasteboardSnapshot = PasteboardSnapshot()
     defer { pasteboardSnapshot.restore() }
 
-    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     fixture.launchApp()
