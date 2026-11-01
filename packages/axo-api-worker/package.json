@@ -24,6 +24,7 @@
   "dependencies": {
     "@axo/apps": "file:../axo-apps",
     "@axo/protocol": "file:../axo-api",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "hono": "4.13.13",
     "jose": "^6.2.12",
     "ws": "^8.18.0",

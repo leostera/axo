@@ -1,4 +1,5 @@
 import type { Connection, ToolDefinition } from "@axo/protocol";
+import { pkceChallenge } from "@axo/apps";
 import { seal, unseal } from "../auth/crypto";
 import { callTool, initialize, listTools, McpAuthRequired, McpError, toolOutput, type McpSession } from "./mcp-client";
 
@@ -209,7 +210,7 @@ export class ThirdPartyConnections {
     const row = this.row(flow.name);
     const client = row?.client_sealed ? await this.unseal<Client>("client", row.client_sealed) : null;
     if (!row?.discovery_json || !client) return null;
-    const challenge = await challengeOf(flow.verifier);
+    const challenge = await pkceChallenge(flow.verifier);
     const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
     return { authorizeUrl: authorizationUrl(JSON.parse(row.discovery_json) as Discovery, client, challenge, state), name: flow.name };
   }
@@ -434,11 +435,4 @@ export function startUrl(nonce: string | null): string {
 export function identifier(name: string): string {
   const safe = name.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 64) || "tool";
   return /^[0-9]/.test(safe) ? `_${safe}`.slice(0, 64) : safe;
-}
-
-async function challengeOf(verifier: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  let text = "";
-  for (const byte of digest) text += String.fromCharCode(byte);
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }

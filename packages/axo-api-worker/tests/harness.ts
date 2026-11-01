@@ -186,6 +186,8 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     bundle: true,
     format: "esm",
     platform: "neutral",
+    // As Workers' build resolves packages: their workerd or browser builds.
+    conditions: ["workerd", "worker", "browser"],
     mainFields: ["module", "main"],
     external: ["cloudflare:workers"],
   });

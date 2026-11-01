@@ -59,13 +59,16 @@ export class FakeMcp {
         token_endpoint: `${this.origin}/token`,
         registration_endpoint: `${this.origin}/register`,
         code_challenge_methods_supported: ["S256"],
+        response_types_supported: ["code"],
+        token_endpoint_auth_methods_supported: ["none"],
       });
     if (url.pathname === "/register" && request.method === "POST") {
       const body = (await request.json()) as { redirect_uris: string[] };
       assert(body.redirect_uris.length === 1 && body.redirect_uris[0] === "https://axo.leostera.dev/api/v1/connections/oauth/callback", "one fixed callback");
       const clientId = `client-${randomBytes(6).toString("hex")}`;
       this.clients.add(clientId);
-      return json({ client_id: clientId }, 201);
+      // The registered metadata comes back with the client, as RFC 7591 3.2.1 says.
+      return json({ ...body, client_id: clientId }, 201);
     }
     if (url.pathname === "/token" && request.method === "POST") {
       const form = new URLSearchParams(await request.text());

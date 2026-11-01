@@ -1,5 +1,6 @@
-import { z } from "zod";
-import { base64Url, randomToken } from "../auth/crypto";
+import { discoverOAuthServerInfo, exchangeAuthorization, refreshAuthorization, registerClient } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { AuthorizationServerMetadata, OAuthClientInformation, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { pkceVerifier } from "@axo/apps";
 
 /**
  * The account as an OAuth client of a third-party MCP server (RFD0016, Third-party connection
@@ -7,36 +8,15 @@ import { base64Url, randomToken } from "../auth/crypto";
  * spec: the server's protected resource metadata (RFC 9728) names its authorization server,
  * whose metadata (RFC 8414) names the endpoints. A client is registered dynamically (RFC 7591)
  * when the server allows it; otherwise the person enters one on the Connections page.
+ *
+ * Every step is the official MCP SDK's (`@modelcontextprotocol/sdk/client/auth`), the code the
+ * MCP clients most servers are tried with run, so it bends where servers do. This file keeps
+ * what is Axo's: the one callback, the resource indicator, and which failures are refusals.
  */
 
 export const CALLBACK_PATH = "/api/v1/connections/oauth/callback";
 export const CALLBACK_URL = `https://axo.leostera.dev${CALLBACK_PATH}`;
 const TIMEOUT_MS = 15_000;
-
-const resourceMetadataSchema = z.object({
-  resource: z.string().optional(),
-  authorization_servers: z.array(z.url()).min(1),
-  scopes_supported: z.array(z.string()).optional(),
-});
-
-const serverMetadataSchema = z.object({
-  issuer: z.string().optional(),
-  authorization_endpoint: z.url(),
-  token_endpoint: z.url(),
-  registration_endpoint: z.url().optional(),
-  code_challenge_methods_supported: z.array(z.string()).optional(),
-  scopes_supported: z.array(z.string()).optional(),
-});
-
-const registrationSchema = z.object({ client_id: z.string().min(1), client_secret: z.string().optional() });
-
-const tokenSchema = z.object({
-  access_token: z.string().min(1),
-  token_type: z.string().optional(),
-  refresh_token: z.string().optional(),
-  expires_in: z.number().optional(),
-  scope: z.string().optional(),
-});
 
 /** Where to sign in for one connection. Stored sealed with the connection. */
 export type Discovery = {
@@ -45,6 +25,8 @@ export type Discovery = {
   tokenEndpoint: string;
   registrationEndpoint: string | null;
   scopes: string[];
+  /** The authorization server's client authentication methods, when it lists them; absent in discoveries stored before. */
+  authMethods?: string[];
 };
 
 export type Client = { clientId: string; clientSecret: string | null };
@@ -57,69 +39,52 @@ export class OAuthError extends Error {}
 export class GrantRefused extends OAuthError {}
 
 export async function discover(serverUrl: string, wwwAuthenticate: string | null, fetcher: typeof fetch = fetch): Promise<Discovery> {
-  const url = new URL(serverUrl);
   const hinted = /resource_metadata="([^"]+)"/.exec(wwwAuthenticate ?? "")?.[1];
-  const candidates = [
-    ...(hinted ? [hinted] : []),
-    `${url.origin}/.well-known/oauth-protected-resource${url.pathname === "/" ? "" : url.pathname}`,
-    `${url.origin}/.well-known/oauth-protected-resource`,
-  ];
-  let resource: z.infer<typeof resourceMetadataSchema> | null = null;
-  for (const candidate of candidates) {
-    resource = await getJson(candidate, resourceMetadataSchema, fetcher).catch(() => null);
-    if (resource) break;
+  let info: Awaited<ReturnType<typeof discoverOAuthServerInfo>>;
+  try {
+    info = await discoverOAuthServerInfo(serverUrl, { resourceMetadataUrl: hinted ? new URL(hinted, serverUrl) : undefined, fetchFn: timed(fetcher) });
+  } catch (error) {
+    throw new OAuthError(`the server's OAuth metadata could not be read: ${message(error)}`);
   }
-  // A server without resource metadata is its own authorization server (MCP 2025-03-26).
-  const issuer = new URL(resource?.authorization_servers[0] ?? url.origin);
-  const path = issuer.pathname === "/" ? "" : issuer.pathname;
-  let server: z.infer<typeof serverMetadataSchema> | null = null;
-  for (const candidate of [
-    `${issuer.origin}/.well-known/oauth-authorization-server${path}`,
-    `${issuer.origin}/.well-known/openid-configuration${path}`,
-    `${issuer.origin}${path}/.well-known/openid-configuration`,
-  ]) {
-    server = await getJson(candidate, serverMetadataSchema, fetcher).catch(() => null);
-    if (server) break;
-  }
+  const server = info.authorizationServerMetadata;
   if (!server) throw new OAuthError("the server asks for sign-in but publishes no OAuth metadata");
   if (server.code_challenge_methods_supported && !server.code_challenge_methods_supported.includes("S256"))
     throw new OAuthError("the server's sign-in does not support PKCE (S256)");
   return {
-    resource: resource?.resource ?? serverUrl,
+    resource: info.resourceMetadata?.resource ?? serverUrl,
     authorizationEndpoint: server.authorization_endpoint,
     tokenEndpoint: server.token_endpoint,
     registrationEndpoint: server.registration_endpoint ?? null,
-    scopes: resource?.scopes_supported ?? [],
+    scopes: info.resourceMetadata?.scopes_supported ?? [],
+    ...(server.token_endpoint_auth_methods_supported ? { authMethods: server.token_endpoint_auth_methods_supported } : {}),
   };
 }
 
 /** Registers Axo as a public client with the one callback it ever uses. */
 export async function register(discovery: Discovery, fetcher: typeof fetch = fetch): Promise<Client> {
   if (!discovery.registrationEndpoint) throw new OAuthError("the server does not register clients itself; enter a client ID on the Connections page");
-  const response = await fetcher(discovery.registrationEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({
-      client_name: "Axo",
-      redirect_uris: [CALLBACK_URL],
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    }),
-    redirect: "manual",
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  if (!response.ok) throw new OAuthError(`client registration failed: HTTP ${response.status}`);
-  const client = registrationSchema.parse(await response.json());
-  return { clientId: client.client_id, clientSecret: client.client_secret ?? null };
+  try {
+    const client = await registerClient(issuerOf(discovery), {
+      metadata: metadataOf(discovery),
+      clientMetadata: {
+        client_name: "Axo",
+        redirect_uris: [CALLBACK_URL],
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      },
+      fetchFn: timed(fetcher),
+    });
+    return { clientId: client.client_id, clientSecret: client.client_secret ?? null };
+  } catch (error) {
+    throw new OAuthError(`client registration failed: ${message(error)}`);
+  }
 }
 
-export type Pkce = { verifier: string; challenge: string };
+export type Pkce = { verifier: string };
 
 export async function pkce(): Promise<Pkce> {
-  const verifier = randomToken(32);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  return { verifier, challenge: base64Url(digest) };
+  return { verifier: pkceVerifier() };
 }
 
 export function authorizationUrl(discovery: Discovery, client: Client, challenge: string, state: string): string {
@@ -136,45 +101,73 @@ export function authorizationUrl(discovery: Discovery, client: Client, challenge
 }
 
 export async function redeemCode(discovery: Discovery, client: Client, code: string, verifier: string, fetcher: typeof fetch = fetch, now = Date.now()): Promise<Grant> {
-  return token(discovery, client, { grant_type: "authorization_code", code, redirect_uri: CALLBACK_URL, code_verifier: verifier }, fetcher, now, null);
+  return token(fetcher, now, null, (fetchFn) => exchangeAuthorization(issuerOf(discovery), {
+    metadata: metadataOf(discovery), clientInformation: clientOf(client), authorizationCode: code, codeVerifier: verifier,
+    redirectUri: CALLBACK_URL, resource: new URL(discovery.resource), fetchFn,
+  }));
 }
 
 /** Renews a grant. A provider that does not rotate refresh tokens keeps the old one. */
 export async function refresh(discovery: Discovery, client: Client, refreshToken: string, fetcher: typeof fetch = fetch, now = Date.now()): Promise<Grant> {
-  return token(discovery, client, { grant_type: "refresh_token", refresh_token: refreshToken }, fetcher, now, refreshToken);
+  return token(fetcher, now, refreshToken, (fetchFn) => refreshAuthorization(issuerOf(discovery), {
+    metadata: metadataOf(discovery), clientInformation: clientOf(client), refreshToken, resource: new URL(discovery.resource), fetchFn,
+  }));
 }
 
-async function token(
-  discovery: Discovery,
-  client: Client,
-  form: Record<string, string>,
-  fetcher: typeof fetch,
-  now: number,
-  previousRefresh: string | null,
-): Promise<Grant> {
-  const body = new URLSearchParams({ ...form, resource: discovery.resource });
-  const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
-  if (client.clientSecret) headers.Authorization = `Basic ${btoa(`${encodeURIComponent(client.clientId)}:${encodeURIComponent(client.clientSecret)}`)}`;
-  else body.set("client_id", client.clientId);
-  const response = await fetcher(discovery.tokenEndpoint, { method: "POST", headers, body, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (response.status >= 400 && response.status < 500) {
-    await response.body?.cancel();
-    throw new GrantRefused(`the provider refused: HTTP ${response.status}`);
+/**
+ * One token request. A 4xx answer is a refusal (GrantRefused: the code or refresh token is spent);
+ * a 5xx or an answer that is not a token is a failure (OAuthError); no answer throws as fetch did.
+ */
+async function token(fetcher: typeof fetch, now: number, previousRefresh: string | null, request: (fetchFn: typeof fetch) => Promise<OAuthTokens>): Promise<Grant> {
+  let status = 0;
+  let answered = false;
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await timed(fetcher)(input, init);
+    answered = true;
+    status = response.status;
+    return response;
+  }) as typeof fetch;
+  let tokens: OAuthTokens;
+  try {
+    tokens = await request(fetchFn);
+  } catch (error) {
+    if (!answered) throw error;
+    if (status >= 400 && status < 500) throw new GrantRefused(`the provider refused: HTTP ${status}`);
+    throw new OAuthError(status >= 500 ? `the provider failed: HTTP ${status}` : `the provider's answer was not a token: ${message(error)}`);
   }
-  if (!response.ok) throw new OAuthError(`the provider failed: HTTP ${response.status}`);
-  const grant = tokenSchema.parse(await response.json());
   return {
-    accessToken: grant.access_token,
-    refreshToken: grant.refresh_token ?? previousRefresh,
-    expiresAt: grant.expires_in ? now + grant.expires_in * 1000 : null,
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token || previousRefresh,
+    expiresAt: tokens.expires_in ? now + tokens.expires_in * 1000 : null,
   };
 }
 
-async function getJson<T>(url: string, schema: z.ZodType<T>, fetcher: typeof fetch): Promise<T> {
-  const response = await fetcher(url, { headers: { Accept: "application/json" }, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new OAuthError(`${url}: HTTP ${response.status}`);
-  }
-  return schema.parse(await response.json());
+/** The authorization server's metadata, as discovered, for the SDK's token and registration requests. */
+function metadataOf(discovery: Discovery): AuthorizationServerMetadata {
+  return {
+    issuer: issuerOf(discovery),
+    authorization_endpoint: discovery.authorizationEndpoint,
+    token_endpoint: discovery.tokenEndpoint,
+    response_types_supported: ["code"],
+    ...(discovery.registrationEndpoint ? { registration_endpoint: discovery.registrationEndpoint } : {}),
+    ...(discovery.authMethods ? { token_endpoint_auth_methods_supported: discovery.authMethods } : {}),
+  };
+}
+
+function issuerOf(discovery: Discovery): string {
+  return new URL(discovery.tokenEndpoint).origin;
+}
+
+/** A client the person entered or registered: one with a secret authenticates, one without sends its ID. */
+function clientOf(client: Client): OAuthClientInformation {
+  return { client_id: client.clientId, ...(client.clientSecret ? { client_secret: client.clientSecret } : {}) };
+}
+
+/** Every request the SDK makes ends within the timeout and follows no redirect. */
+function timed(fetcher: typeof fetch): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => fetcher(input, { ...init, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) })) as typeof fetch;
+}
+
+function message(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 200);
 }
