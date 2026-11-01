@@ -650,7 +650,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("apps-servers");
 
     // Apps: a grid of every app and server, with filters and what Sessions used lately.
-    await servers.getByRole("navigation", { name: "Breadcrumb" }).getByRole("button", { name: "Apps" }).click();
+    await servers.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "Apps" }).click();
     const apps = page.getByRole("region", { name: "Apps" });
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
@@ -676,7 +676,17 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.goBack();
     await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
     assert.deepEqual((await cards()).filter((c) => /stripe/i.test(c)), ["stripe"], "the suggestion gives way to the server");
-    await apps.getByRole("button", { name: /Gmail/ }).click();
+    // Every app is a link to its page: ⌘-click opens it in a new tab and leaves this one on Apps.
+    assert.equal(await apps.getByRole("link", { name: /Gmail/ }).getAttribute("href"), "/app/settings/apps/gmail");
+    assert.equal(await apps.getByRole("link", { name: "See all" }).getAttribute("href"), "/app/settings/apps/activity");
+    const opened = page.context().waitForEvent("page");
+    await apps.getByRole("link", { name: /Gmail/ }).click({ modifiers: [process.platform === "darwin" ? "Meta" : "Control"] });
+    const tab = await opened;
+    await tab.waitForLoadState();
+    assert.equal(new URL(tab.url()).pathname, "/app/settings/apps/gmail");
+    await tab.close();
+    assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
+    await apps.getByRole("link", { name: /Gmail/ }).click();
     const gmail = page.getByRole("region", { name: "Gmail" });
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps/gmail");
     await expect(gmail.getByRole("heading", { name: "Gmail" }));
@@ -705,7 +715,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // The browser's Back goes back a page; a reload stays on it.
     await page.goBack();
     await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
-    await page.getByRole("region", { name: "Apps" }).getByRole("button", { name: "See all" }).click();
+    await page.getByRole("region", { name: "Apps" }).getByRole("link", { name: "See all" }).click();
     const activityPage = page.getByRole("region", { name: "Activity" });
     await expect(activityPage.locator(".call-row strong", { hasText: "linear · List issues" }));
     assert.deepEqual(await activityPage.locator(".call-row strong").allTextContents(), ["Gmail · Search messages", "linear · List issues", "browser_fixture_mac · Bash"]);

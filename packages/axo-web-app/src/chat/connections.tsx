@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { appDeviceSignInSchema, connectionsResults, type AppDeviceSignIn, type CallRecord, type Connection } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
@@ -56,12 +56,14 @@ export function signInPage(search: string): SettingsRoute {
   return signedIn ? { kind: "servers" } : { kind: "apps" };
 }
 
-export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate, onClose }: {
+export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate, onClose, hrefOf }: {
   connectionsUrl: string;
   route: SettingsRoute;
   initialNotice: Notice;
   onNavigate: (route: SettingsRoute) => void;
   onClose: () => void;
+  /** The URL of a settings page, so its links open in a new tab too. */
+  hrefOf: (route: SettingsRoute) => string;
 }) {
   const [connections, setConnections] = useState<Connection[] | null>(null);
   const [notice, setNotice] = useState<Notice>(initialNotice);
@@ -95,6 +97,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
     onNavigate(next);
   };
   const back = () => (route.kind === "apps" ? onClose() : go({ kind: "apps" }));
+  const link = linkTo(go, hrefOf);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -127,7 +130,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
       if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
       else go({ kind: "servers" });
     });
-    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} go={go} busy={busy} addSuggested={addSuggested} />;
+    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} link={link} busy={busy} addSuggested={addSuggested} />;
   }
 
   return (
@@ -137,7 +140,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
         <nav className="settings-crumbs" aria-label="Breadcrumb">
           <span>Settings</span>
           <Icon name="chevronRight" size={12} />
-          {route.kind === "apps" ? <span aria-current="page">Apps</span> : <button className="link" onClick={() => go({ kind: "apps" })}>Apps</button>}
+          {route.kind === "apps" ? <span aria-current="page">Apps</span> : <a className="link" {...link({ kind: "apps" })}>Apps</a>}
           {route.kind !== "apps" ? <><Icon name="chevronRight" size={12} /><span aria-current="page">{title}</span></> : null}
         </nav>
         <button className="circle-button" onClick={onClose} aria-label="Close settings"><Icon name="close" size={16} /></button>
@@ -157,6 +160,32 @@ const CATEGORY_TITLES: Record<string, string> = {
 type Status = "all" | "connected" | "notConnected";
 
 /** Official remote MCP servers worth adding, shown in Apps until added. Each is added by URL like any other. */
+/**
+ * A settings page link: a real `href`, so ⌘-, Ctrl-, Shift- and middle-click open it as the browser
+ * would; a plain click stays in the app.
+ */
+type Link = (route: SettingsRoute) => { href: string; onClick: (event: MouseEvent<HTMLAnchorElement>) => void };
+function linkTo(go: (route: SettingsRoute) => void, hrefOf: (route: SettingsRoute) => string): Link {
+  return (route) => ({
+    href: hrefOf(route),
+    onClick: (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      go(route);
+    },
+  });
+}
+
+function AppCardFace({ tile }: { tile: { look: ReactNode; title: string; connected: boolean; detail: string } }) {
+  return (
+    <>
+      {tile.look}
+      <strong>{tile.title}</strong>
+      <small className={tile.connected ? "connected" : ""}>{tile.connected ? <span className="mac-dot online" aria-hidden="true" /> : null}{tile.detail}</small>
+    </>
+  );
+}
+
 type Suggestion = { name: string; title: string; url: string; category: string; provider: string; logo: string; full?: boolean };
 const SUGGESTED_SERVERS: Suggestion[] = [
   { name: "stripe", title: "Stripe", url: "https://mcp.stripe.com", category: "finance", provider: "Stripe", logo: stripeLogo, full: true },
@@ -164,26 +193,26 @@ const SUGGESTED_SERVERS: Suggestion[] = [
 ];
 
 /** Apps: filters, a grid of every app and MCP server, and what Sessions used lately. */
-function AppsHome({ apps, servers, loaded, connectionsUrl, go, busy, addSuggested }: {
-  apps: App[]; servers: Server[]; loaded: boolean; connectionsUrl: string; go: (route: SettingsRoute) => void;
+function AppsHome({ apps, servers, loaded, connectionsUrl, link, busy, addSuggested }: {
+  apps: App[]; servers: Server[]; loaded: boolean; connectionsUrl: string; link: Link;
   busy: boolean; addSuggested: (suggestion: Suggestion) => void;
 }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Status>("all");
   const [category, setCategory] = useState<string>("all");
 
-  type Tile = { key: string; title: string; subtitle: string; connected: boolean; category: string; provider: string; look: ReactNode; open: () => void; detail: string };
+  type Tile = { key: string; title: string; subtitle: string; connected: boolean; category: string; provider: string; look: ReactNode; open: SettingsRoute | (() => void); detail: string };
   const tiles: Tile[] = [
     ...apps.map((app): Tile => ({
       key: app.name, title: app.title, subtitle: app.description, category: app.category || "other", provider: app.provider,
       connected: app.accounts.some((a) => a.state === "ready"), look: <AppTile app={app.name} large />,
-      detail: needsClient(app) ? "Needs set-up" : count(app.accounts.length, app.signIn.kind === "mac" ? "Mac" : "account"), open: () => go({ kind: "app", app: app.name.slice("apps.".length) }),
+      detail: needsClient(app) ? "Needs set-up" : count(app.accounts.length, app.signIn.kind === "mac" ? "Mac" : "account"), open: { kind: "app", app: app.name.slice("apps.".length) },
     })),
     ...servers.map((server): Tile => ({
       key: server.name, title: server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
       connected: server.state === "ready", look: <ServerTile icon={server.icon} large />,
       detail: server.state === "ready" ? count(server.tools, "tool") : server.state === "needsSignIn" ? "Needs sign-in" : "Unreachable",
-      open: () => go({ kind: "servers" }),
+      open: { kind: "servers" },
     })),
     // Suggestions that are not added yet, by their host.
     ...(loaded ? SUGGESTED_SERVERS : []).filter((s) => !servers.some((server) => host(server.url) === host(s.url))).map((s): Tile => ({
@@ -223,18 +252,18 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go, busy, addSuggeste
         <div className="apps-grid">
           {!loaded ? <p className="settings-muted">Loading…</p> : null}
           {shown.map((tile) => (
-            <button key={tile.key} className="app-card" onClick={tile.open}>
-              {tile.look}
-              <strong>{tile.title}</strong>
-              <small className={tile.connected ? "connected" : ""}>{tile.connected ? <span className="mac-dot online" aria-hidden="true" /> : null}{tile.detail}</small>
-            </button>
+            typeof tile.open === "function" ? (
+              <button key={tile.key} className="app-card" onClick={tile.open}><AppCardFace tile={tile} /></button>
+            ) : (
+              <a key={tile.key} className="app-card" {...link(tile.open)}><AppCardFace tile={tile} /></a>
+            )
           ))}
           {loaded && status === "all" && (category === "all" || category === "mcp") && !needle ? (
-            <button className="app-card add-card" onClick={() => go({ kind: "servers" })}>
+            <a className="app-card add-card" {...link({ kind: "servers" })}>
               <span className="app-tile large neutral"><Icon name="plug" size={28} /></span>
               <strong>Add MCP server</strong>
               <small>Any server with a URL</small>
-            </button>
+            </a>
           ) : null}
           {loaded && shown.length === 0 && needle ? <p className="settings-muted">No app matches “{query}”.</p> : null}
         </div>
@@ -243,7 +272,7 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go, busy, addSuggeste
       <aside className="apps-activity" aria-label="Recent activity">
         <div className="apps-activity-head">
           <h2 className="settings-section">Recent activity</h2>
-          <button className="link" onClick={() => go({ kind: "activity" })}>See all</button>
+          <a className="link" {...link({ kind: "activity" })}>See all</a>
         </div>
         <Integrity connectionsUrl={connectionsUrl} />
         <Calls connectionsUrl={connectionsUrl} limit={12} compact />

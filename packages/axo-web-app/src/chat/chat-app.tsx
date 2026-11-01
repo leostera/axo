@@ -248,7 +248,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
         onApps={connectionsUrl ? () => { setSheet(null); openSettings({ kind: "apps" }); } : undefined} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
       {settings && connectionsUrl ? (
-        <AppsSettings connectionsUrl={connectionsUrl} route={settings} initialNotice={settingsNotice} onNavigate={openSettings} onClose={closeSettings} />
+        <AppsSettings connectionsUrl={connectionsUrl} route={settings} initialNotice={settingsNotice} onNavigate={openSettings} onClose={closeSettings} hrefOf={(route) => settingsPath(basePath, route)} />
       ) : null}
     </main>
   );
