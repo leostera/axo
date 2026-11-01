@@ -65,7 +65,7 @@ use_repo(swift_deps, "swift_package", "swiftpkg_fuzzymatch", "swiftpkg_rive_ios"
 
 # config.json, config.local.json and what this Mac can do (RFD0021).
 axo_config = use_extension("//bazel/config:extension.bzl", "axo_config")
-use_repo(axo_config, "axo_config")
+use_repo(axo_config, "axo_apple_files", "axo_config")
 
 ghostty_repository = use_repo_rule("//:ghostty_repository.bzl", "ghostty_repository")
 ghostty_repository(name = "ghostty")

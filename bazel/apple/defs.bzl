@@ -161,3 +161,45 @@ status_line = rule(
     doc = "A fixed line for the build report, for a piece this Mac skips.",
     attrs = {"line": attr.string(mandatory = True)},
 )
+
+def _xcodeproj_install_impl(ctx):
+    status = ctx.actions.declare_file(ctx.attr.name + ".status")
+    log = ctx.actions.declare_file(ctx.attr.name + ".log")
+    runner = ctx.attr.runner[DefaultInfo].files_to_run
+    ctx.actions.run(
+        executable = ctx.executable._install,
+        arguments = [
+            runner.executable.path,
+            ctx.attr.workspace,
+            ctx.attr.bazel,
+            ctx.attr.home,
+            status.path,
+            log.path,
+        ],
+        # The project changes with the files under apple/ and the targets the runner is made for;
+        # `state` brings it back when it is deleted.
+        inputs = [ctx.file.files, ctx.file.state],
+        tools = [runner],
+        outputs = [status, log],
+        execution_requirements = _LOCAL | {"no-cache": "1"},
+        mnemonic = "XcodeProject",
+        progress_message = "Generating apple/Axo.xcodeproj",
+    )
+    return [
+        DefaultInfo(files = depset([status, log])),
+        StatusInfo(files = depset([status])),
+    ]
+
+xcodeproj_install = rule(
+    implementation = _xcodeproj_install_impl,
+    doc = "Writes the Xcode project of an xcodeproj target into the workspace, as `bazel run` of it does.",
+    attrs = {
+        "bazel": attr.string(doc = "The bazel the project's own builds run, as found on PATH."),
+        "files": attr.label(allow_single_file = True, default = "@axo_apple_files//:apple_files.txt"),
+        "home": attr.string(),
+        "runner": attr.label(mandatory = True, executable = True, cfg = "target", doc = "An xcodeproj target."),
+        "state": attr.label(allow_single_file = True, default = "@axo_config//:install_state.txt"),
+        "workspace": attr.string(mandatory = True),
+        "_install": attr.label(default = ":install_xcodeproj.sh", executable = True, cfg = "exec", allow_single_file = True),
+    },
+)

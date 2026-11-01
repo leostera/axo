@@ -13,6 +13,10 @@ profile, the Pi CLI) and generates:
 
 It reruns when either config file, the keychain, the provisioning profile folders or git HEAD
 change. Whether the phone is plugged in is not checked here; the install action checks it.
+
+`@axo_apple_files` lists the files under apple/ (`apple_files.txt`), so the Xcode project is
+generated again when one is added, moved or removed. It is its own repository because it reruns
+on every edit under apple/, and that should not probe the keychain again.
 """
 
 # Every key config.json must have, with its type. config.local.json may override any of them and
@@ -330,8 +334,29 @@ _axo_config = repository_rule(
     doc = "config.json merged with config.local.json, and what this Mac can do.",
 )
 
+# Not part of what the project is made from: the project itself, and Swift Package Manager's and
+# Xcode's own state.
+_NOT_SOURCES = ["Axo.xcodeproj", ".build", ".swiftpm", "xcuserdata"]
+
+def _axo_apple_files_impl(rctx):
+    apple = rctx.path(Label("@@//:MODULE.bazel")).dirname.get_child("apple")
+    rctx.watch_tree(apple)
+    prune = []
+    for name in _NOT_SOURCES:
+        prune += ["-name", name, "-prune", "-o"]
+    found = rctx.execute(["/usr/bin/find", "."] + prune + ["-type", "f", "-print"], working_directory = str(apple))
+    files = sorted([line for line in found.stdout.splitlines() if line])
+    rctx.file("apple_files.txt", "\n".join(files) + "\n")
+    rctx.file("BUILD.bazel", """exports_files(["apple_files.txt"], visibility = ["//visibility:public"])\n""")
+
+_axo_apple_files = repository_rule(
+    implementation = _axo_apple_files_impl,
+    doc = "The paths of the files under apple/, for regenerating the Xcode project when they change.",
+)
+
 def _axo_config_extension_impl(module_ctx):
     _axo_config(name = "axo_config")
+    _axo_apple_files(name = "axo_apple_files")
     return module_ctx.extension_metadata(reproducible = False)
 
 axo_config = module_extension(implementation = _axo_config_extension_impl)

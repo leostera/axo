@@ -26,11 +26,14 @@ ts_config(
 # (signing, dist/Axo.app, the phone, the Xcode project) and why any fell back (RFD0021).
 build_report(
     name = "report",
+    # It reports on the Xcode project, which holds the tests.
+    testonly = True,
     pieces = [
         "//apple/AxoMac:Axo",
         "//apple/AxoMac:dist",
         "//apple/AxoPhone:AxoPhone_ipa",
         "//apple/AxoPhone:install",
+        "//apple:xcodeproj_install",
     ],
 )
 

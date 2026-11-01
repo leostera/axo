@@ -4,6 +4,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "install_phone_app.sh",
+    "install_xcodeproj.sh",
     "package_test.sh",
     "sign_mac_app.sh",
 ])

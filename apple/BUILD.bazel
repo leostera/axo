@@ -1,4 +1,6 @@
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
+load("@axo_config//:defs.bzl", "MACHINE")
+load("//bazel/apple:defs.bzl", "xcodeproj_install")
 
 # apple/Package.swift lists every remote Swift package; MODULE.bazel resolves them from here.
 exports_files([
@@ -6,8 +8,8 @@ exports_files([
     "Package.resolved",
 ])
 
-# One Xcode project for every Apple package and app: `bazel run //apple:xcodeproj` writes
-# apple/Axo.xcodeproj (generated, not checked in). Bazel stays the build; Xcode drives it.
+# One Xcode project for every Apple package and app, apple/Axo.xcodeproj (generated, not checked
+# in). Bazel stays the build; Xcode drives it.
 xcodeproj(
     name = "xcodeproj",
     project_name = "Axo",
@@ -30,4 +32,17 @@ xcodeproj(
         "//apple/AxoMac:AxoAppSelfTestTests",
     ],
     visibility = ["//apple:__subpackages__"],
+)
+
+# Every build writes apple/Axo.xcodeproj, as `bazel run //apple:xcodeproj` does, when the files under
+# apple/ change or the project is missing (RFD0021).
+xcodeproj_install(
+    name = "xcodeproj_install",
+    # The project holds the tests.
+    testonly = True,
+    bazel = MACHINE.bazel or "",
+    home = MACHINE.home,
+    runner = ":xcodeproj",
+    visibility = ["//:__pkg__"],
+    workspace = MACHINE.workspace,
 )
