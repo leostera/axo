@@ -96,7 +96,7 @@ export class FakeMcp {
       const message = (await request.json()) as { id?: number; method: string; params?: { name?: string; arguments?: unknown } };
       if (message.id === undefined) return new MiniflareResponse(null, { status: 202 }) as unknown as Response;
       if (message.method === "initialize")
-        return json({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", ...(this.serverIcons.length ? { icons: this.serverIcons } : {}) } } }, 200, { "Mcp-Session-Id": "s-1" });
+        return json({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1.0.0", ...(this.serverIcons.length ? { icons: this.serverIcons } : {}) } } }, 200, { "Mcp-Session-Id": "s-1" });
       if (message.method === "tools/list") return json({ jsonrpc: "2.0", id: message.id, result: { tools: this.tools } });
       if (message.method === "tools/call") {
         this.calls.push({ tool: message.params!.name!, args: message.params!.arguments, token });
