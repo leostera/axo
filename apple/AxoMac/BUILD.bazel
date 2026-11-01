@@ -160,7 +160,12 @@ sh_test(
         "PATH",
         "TMPDIR",
     ],
-    tags = ["no-sandbox", "requires-mac-ui"],
+    # It drives the real desktop: run it by name, with Axo closed and the screen unlocked.
+    tags = [
+        "manual",
+        "no-sandbox",
+        "requires-mac-ui",
+    ],
     timeout = "long",
     target_compatible_with = ["@platforms//os:macos"],
 )

@@ -28,7 +28,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 
 `apple/AxoProtocol` holds the wire models (typed: `PaneRole`, `PaneAvailability`), events, layouts, `AxodMethodName` (the only place a method name is spelled) and the protocol version, with no I/O; `apple/AxoClient` holds the client for hosts: a pluggable `AxoTransport` (`UnixSocketTransport` to the local axod; a relay WebSocket next), `JSONRPCConnection` (one persistent connection, many calls in flight; a timeout retires the connection, so a wedged one is replaced without failing calls still on it), `AxodConnection` (axod's typed API; its methods are one table, `AxodMethods`, pairing each name with its params and result types; the app's `AxodClient` protocol is a conformance of it), and `TerminalAttachment`. Probes that must test a fresh connection (health) use `AxodConnection.withFreshConnection`; `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health); `apple/AxoSearch` holds client-side ranking (`SearchIndex` over `SearchDocument`s, on FuzzyMatch's Smith-Waterman mode), shared with iOS.
 
-Remote Swift packages are listed once in `apple/Package.swift` and pinned in `apple/Package.resolved` (the only manifest `swift_deps` reads); add a dependency there and in the using package's own `Package.swift`, then `swift package resolve` in `apple/`.
+Remote Swift packages are listed once in `apple/Package.swift` and pinned in `apple/Package.resolved` (the only manifest `swift_deps` reads); add a dependency there, `swift package resolve` in `apple/`, then depend on it from the using target's `BUILD.bazel`. There are no per-package manifests: Bazel is the only build.
 
 ## State and data flow
 

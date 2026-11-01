@@ -2,7 +2,7 @@
 // The one manifest Bazel reads external Swift dependencies from
 // (`swift_deps.from_package` in MODULE.bazel accepts a single manifest).
 // Every remote package any Axo Swift package uses must be listed here and pinned in
-// Package.resolved; each package's own Package.swift still lists what it uses for SwiftPM.
+// Package.resolved; the BUILD.bazel files say which package uses which. Bazel is the only build.
 import PackageDescription
 
 let package = Package(
