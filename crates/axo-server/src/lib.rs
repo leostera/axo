@@ -33,6 +33,15 @@ pub fn build_number() -> u64 {
         .expect("build metadata must provide a positive decimal build number")
 }
 
+/// Where every Mac's transcripts live, by host: `sessions/` beside the server directory, so
+/// `~/.axo/server` has `~/.axo/sessions` (RFD0022).
+pub fn sessions_directory_for(server_directory: &Path) -> PathBuf {
+    match server_directory.parent() {
+        Some(parent) => parent.join("sessions"),
+        None => server_directory.join("sessions"),
+    }
+}
+
 /// Returns the default directory for daemon metadata and logs.
 pub fn default_server_directory() -> io::Result<PathBuf> {
     Ok(current_user_home_directory()?.join(".axo/server"))
@@ -212,7 +221,8 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     session::set_agent_socket(&socket_path.0);
-    let sessions = session::SessionManager::open(server_directory)?;
+    let sessions_directory = sessions_directory_for(server_directory);
+    let sessions = session::SessionManager::open(server_directory, &sessions_directory)?;
     let host = Arc::new(session::RelayHostAdapter(Arc::clone(&sessions)));
     let credentials = remote_access.credential_storage.open(server_directory);
     let mut remote_relay = match axo_relay::RelayWorker::start(axo_relay::RelayDependencies {
@@ -220,8 +230,11 @@ pub fn serve_ipc(
         endpoint: remote_access.endpoint.clone(),
         links: host.clone(),
         credentials: Arc::clone(&credentials),
-        // Outside pi-sessions/: copies of other Macs' Sessions are never uploaded (RFD0022).
-        peers_directory: Some(server_directory.join("peers")),
+        // Every Mac's transcripts by host, this Mac's beside the copies (RFD0022).
+        peers: Some(axo_relay::peers::PeersPaths {
+            sessions_directory: sessions_directory.clone(),
+            index: server_directory.join("peers.json"),
+        }),
     }) {
         Ok(worker) => Some(worker),
         Err(error) => {

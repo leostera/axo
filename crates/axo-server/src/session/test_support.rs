@@ -98,7 +98,7 @@ pub(super) fn open_with_silent_shell(directory: &Path) -> Arc<SessionManager> {
         )
         .unwrap();
     drop(database);
-    SessionManager::open(directory).unwrap()
+    SessionManager::open(directory, &directory.join("sessions")).unwrap()
 }
 
 pub(super) struct LifecycleFixture {
@@ -132,7 +132,7 @@ impl LifecycleFixture {
             )
             .unwrap();
         drop(database);
-        let manager = SessionManager::open(&directory).unwrap();
+        let manager = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
         // Keep state transitions deterministic: these tests drive the reaper
         // explicitly, rather than racing its periodic background tick.
         manager.stop_workers.store(true, Ordering::Relaxed);
@@ -169,10 +169,11 @@ impl PiRecoveryFixture {
         let pane_id = new_uuid_v4().unwrap();
         let token = new_uuid_v4().unwrap();
         let file = manager
-            .pi_session_directory
+            .pi_directories
+            .bridges
             .join(format!("{session_uuid}.jsonl"));
         let socket =
-            BridgeSocketPath::for_session(&manager.pi_session_directory, &session_uuid).unwrap();
+            BridgeSocketPath::for_session(&manager.pi_directories.bridges, &session_uuid).unwrap();
         fs::write(&file, b"original history\n").unwrap();
         let executable = lifecycle.directory.join("fake-pi");
         fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();

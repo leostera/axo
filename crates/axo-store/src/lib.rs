@@ -783,6 +783,29 @@ pub fn ensure_session_layout_column(
     Ok(())
 }
 
+/// Points every Session whose Pi transcript is under `from` at the same file under `to`, after
+/// the folder was moved (RFD0022). Returns how many Sessions moved.
+pub fn relocate_pi_session_files(
+    database: &Connection,
+    from: &Path,
+    to: &Path,
+) -> io::Result<usize> {
+    let (Some(from), Some(to)) = (from.to_str(), to.to_str()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "transcript folders must be UTF-8",
+        ));
+    };
+    let prefix = format!("{from}/");
+    database
+        .execute(
+            "UPDATE sessions SET pi_session_file = ?2 || substr(pi_session_file, length(?1) + 1)
+             WHERE substr(pi_session_file, 1, length(?3)) = ?3",
+            params![from, to, prefix],
+        )
+        .map_err(io::Error::other)
+}
+
 pub fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<PathBuf> {
     database
         .query_row(
@@ -1989,6 +2012,48 @@ mod tests {
             kind(reopen_archived_session(database, session, None)),
             io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[test]
+    fn moved_transcripts_are_found_at_their_new_place() {
+        let database = database();
+        let paths = [
+            "/axo/server/pi-sessions/w1/s1.jsonl",
+            "/axo/server/pi-sessions/w10/s2.jsonl",
+            "/elsewhere/s3.jsonl",
+        ];
+        let ids: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let id = insert_session(&database, "open");
+                database
+                    .execute(
+                        "UPDATE sessions SET pi_session_file = ?2 WHERE id = ?1",
+                        params![id.to_string(), path],
+                    )
+                    .unwrap();
+                id
+            })
+            .collect();
+        let moved = relocate_pi_session_files(
+            &database,
+            Path::new("/axo/server/pi-sessions/w1"),
+            Path::new("/axo/sessions/h/w1"),
+        )
+        .unwrap();
+        assert_eq!(moved, 1, "w10 only starts like w1");
+        let path = |id: &SessionId| -> String {
+            database
+                .query_row(
+                    "SELECT pi_session_file FROM sessions WHERE id = ?1",
+                    params![id.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(path(&ids[0]), "/axo/sessions/h/w1/s1.jsonl");
+        assert_eq!(path(&ids[1]), paths[1]);
+        assert_eq!(path(&ids[2]), paths[2]);
     }
 
     #[test]

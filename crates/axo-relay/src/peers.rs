@@ -3,15 +3,17 @@
 //! Pairing is the sign-in: axod opens the account's client socket at `/peers` with its host
 //! credential, and the cloud serves it as an ordinary client that leaves out this Mac's own
 //! Sessions. Every other Mac's Session is opened from where its copy ends, and every record batch
-//! is appended to `<root>/<hostId>/<sessionId>.jsonl`, the same lines Pi wrote, before it is
-//! acknowledged. So the history is already here when a Session is continued on this Mac.
+//! is appended to `~/.axo/sessions/<hostId>/<workspaceId>/<sessionId>.jsonl` before it is
+//! acknowledged: the same lines Pi wrote, at the same place under `sessions/` as on the Mac that
+//! owns it. So the history is already here when a Session is continued on this Mac.
 //!
 //! Invariants:
 //! - A copy is Pi's header line and then records 1..=cursor of one epoch, in order, and nothing
 //!   else. A reset cuts it back to the header and `keep` records.
 //! - A batch is acknowledged only once it is written, so a crash loses nothing the cloud forgets.
-//! - Copies are never uploaded: they live outside `pi-sessions/`, and the uploader lists only the
-//!   Sessions this Mac owns.
+//! - Copies are never uploaded: the uploader lists only the Sessions this Mac owns.
+//! - This Mac's own folder is never written here, and every path segment is an id, so a copy
+//!   can neither replace one of this Mac's transcripts nor land outside `sessions/`.
 
 use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
@@ -57,11 +59,42 @@ pub struct ClientRecord {
     pub line: String,
 }
 
-/// The copies on disk.
+/// Which copy: the Mac that owns the Session, its Workspace there, and the Session.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Place {
+    pub host_id: String,
+    pub workspace: String,
+    pub session_id: String,
+}
+
+impl Place {
+    /// The place of a listed Session, if every part is a safe folder name. A Session without a
+    /// Workspace goes in `no-workspace`.
+    pub fn of(host_id: &str, workspace_id: Option<&str>, session_id: &str) -> Option<Self> {
+        let workspace = workspace_id.unwrap_or("no-workspace");
+        [host_id, workspace, session_id]
+            .iter()
+            .all(|part| is_id(part))
+            .then(|| Self {
+                host_id: host_id.to_owned(),
+                workspace: workspace.to_owned(),
+                session_id: session_id.to_owned(),
+            })
+    }
+}
+
+/// Letters, digits and hyphens: an id, never `..` or a path.
+fn is_id(part: &str) -> bool {
+    !part.is_empty()
+        && part.len() <= 64
+        && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The copies on disk, under `sessions/`.
 pub struct Mirror {
     root: PathBuf,
     /// Copies checked against their state since this process started.
-    checked: HashSet<(String, String)>,
+    checked: HashSet<Place>,
 }
 
 impl Mirror {
@@ -72,38 +105,51 @@ impl Mirror {
         }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    fn folder(&self, place: &Place) -> PathBuf {
+        self.root.join(&place.host_id).join(&place.workspace)
     }
 
-    fn file(&self, host_id: &str, session_id: &str) -> PathBuf {
-        self.root.join(host_id).join(format!("{session_id}.jsonl"))
+    pub fn file(&self, place: &Place) -> PathBuf {
+        self.folder(place)
+            .join(format!("{}.jsonl", place.session_id))
     }
 
-    fn state_file(&self, host_id: &str, session_id: &str) -> PathBuf {
-        self.root
-            .join(host_id)
-            .join(format!("{session_id}.state.json"))
+    fn state_file(&self, place: &Place) -> PathBuf {
+        self.folder(place)
+            .join(format!("{}.state.json", place.session_id))
+    }
+
+    /// `host.json` says which Mac a folder is, as this Mac's own folder does.
+    pub fn describe_host(&self, host_id: &str, label: &str) -> io::Result<()> {
+        if !is_id(host_id) {
+            return Ok(());
+        }
+        let folder = self.root.join(host_id);
+        fs::create_dir_all(&folder)?;
+        let description = json!({ "hostId": host_id, "label": label });
+        write_atomically(
+            &folder.join("host.json"),
+            &serde_json::to_vec_pretty(&description).map_err(io::Error::other)?,
+        )
     }
 
     /// Where the copy is, or None if there is no usable copy.
-    pub fn state(&mut self, host_id: &str, session_id: &str) -> io::Result<Option<CopyState>> {
-        let Ok(text) = fs::read_to_string(self.state_file(host_id, session_id)) else {
+    pub fn state(&mut self, place: &Place) -> io::Result<Option<CopyState>> {
+        let Ok(text) = fs::read_to_string(self.state_file(place)) else {
             return Ok(None);
         };
         let Ok(state) = serde_json::from_str::<CopyState>(&text) else {
             return Ok(None);
         };
-        let key = (host_id.to_owned(), session_id.to_owned());
-        if !self.checked.contains(&key) {
+        if !self.checked.contains(place) {
             // A crash between appending and saving the state leaves lines past the cursor.
-            let file = self.file(host_id, session_id);
+            let file = self.file(place);
             match lines_in(&file) {
-                Ok(lines) if lines > state.cursor => truncate_lines(&file, state.cursor + 1)?,
+                Ok(lines) if lines > state.cursor + 1 => truncate_lines(&file, state.cursor + 1)?,
                 Ok(lines) if lines == state.cursor + 1 => {}
                 _ => return Ok(None),
             }
-            self.checked.insert(key);
+            self.checked.insert(place.clone());
         }
         Ok(Some(state))
     }
@@ -111,34 +157,30 @@ impl Mirror {
     /// The first records of a copy from nothing.
     pub fn start(
         &mut self,
-        host_id: &str,
-        session_id: &str,
+        place: &Place,
         epoch: u64,
         header: &str,
         records: &[ClientRecord],
     ) -> io::Result<CopyState> {
-        let file = self.file(host_id, session_id);
-        fs::create_dir_all(file.parent().expect("a copy is in a host's folder"))?;
-        let mut out = File::create(&file)?;
+        fs::create_dir_all(self.folder(place))?;
+        let mut out = File::create(self.file(place))?;
         writeln!(out, "{}", one_line(header)?)?;
         out.sync_data()?;
         let state = CopyState { epoch, cursor: 0 };
-        self.save(host_id, session_id, state)?;
-        self.checked
-            .insert((host_id.to_owned(), session_id.to_owned()));
-        self.append(host_id, session_id, epoch, records)
+        self.save(place, state)?;
+        self.checked.insert(place.clone());
+        self.append(place, epoch, records)
     }
 
     /// Appends the records that follow the copy. Records it holds already are skipped; a gap or
     /// another epoch is refused, and the Session is opened again from the copy.
     pub fn append(
         &mut self,
-        host_id: &str,
-        session_id: &str,
+        place: &Place,
         epoch: u64,
         records: &[ClientRecord],
     ) -> io::Result<CopyState> {
-        let Some(mut state) = self.state(host_id, session_id)? else {
+        let Some(mut state) = self.state(place)? else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "no copy to append to",
@@ -168,50 +210,33 @@ impl Mirror {
             text.push_str(one_line(&record.line)?);
             text.push('\n');
         }
-        let mut out = OpenOptions::new()
-            .append(true)
-            .open(self.file(host_id, session_id))?;
+        let mut out = OpenOptions::new().append(true).open(self.file(place))?;
         out.write_all(text.as_bytes())?;
         out.sync_data()?;
         state.cursor += fresh.len() as u64;
-        self.save(host_id, session_id, state)?;
+        self.save(place, state)?;
         Ok(state)
     }
 
     /// The source Mac rewrote history: keep the header and the first `keep` records.
-    pub fn reset(
-        &mut self,
-        host_id: &str,
-        session_id: &str,
-        epoch: u64,
-        keep: u64,
-    ) -> io::Result<CopyState> {
-        let Some(state) = self.state(host_id, session_id)? else {
+    pub fn reset(&mut self, place: &Place, epoch: u64, keep: u64) -> io::Result<CopyState> {
+        let Some(state) = self.state(place)? else {
             return Err(io::Error::new(io::ErrorKind::NotFound, "no copy to reset"));
         };
         let keep = keep.min(state.cursor);
-        truncate_lines(&self.file(host_id, session_id), keep + 1)?;
+        truncate_lines(&self.file(place), keep + 1)?;
         let state = CopyState {
             epoch,
             cursor: keep,
         };
-        self.save(host_id, session_id, state)?;
+        self.save(place, state)?;
         Ok(state)
     }
 
-    fn save(&self, host_id: &str, session_id: &str, state: CopyState) -> io::Result<()> {
+    fn save(&self, place: &Place, state: CopyState) -> io::Result<()> {
         write_atomically(
-            &self.state_file(host_id, session_id),
+            &self.state_file(place),
             &serde_json::to_vec(&state).map_err(io::Error::other)?,
-        )
-    }
-
-    /// What the account lists, for this Mac's catalog: the other Macs and their Sessions.
-    pub fn write_index(&self, index: &PeerIndex) -> io::Result<()> {
-        fs::create_dir_all(&self.root)?;
-        write_atomically(
-            &self.root.join("index.json"),
-            &serde_json::to_vec_pretty(index).map_err(io::Error::other)?,
         )
     }
 }
@@ -237,6 +262,18 @@ impl PeerIndex {
                 None => self.sessions.push(session.clone()),
             }
         }
+    }
+
+    /// What the account lists, for this Mac's catalog. It is this Mac's server state, so it is
+    /// kept in `server/`, not with the copies.
+    fn write(&self, path: &Path) -> io::Result<()> {
+        if let Some(folder) = path.parent() {
+            fs::create_dir_all(folder)?;
+        }
+        write_atomically(
+            path,
+            &serde_json::to_vec_pretty(self).map_err(io::Error::other)?,
+        )
     }
 }
 
@@ -290,14 +327,25 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 // ─── The socket ─────────────────────────────────────────────────────────────
 
+/// Where following the account writes: every Mac's transcripts, and this Mac's index of them.
+#[derive(Clone, Debug)]
+pub struct PeersPaths {
+    /// `~/.axo/sessions`.
+    pub sessions_directory: PathBuf,
+    /// `~/.axo/server/peers.json`.
+    pub index: PathBuf,
+}
+
 /// What following the account needs from axod.
 pub struct PeersDependencies {
     pub host_id: String,
     pub endpoint: RelayEndpoint,
     pub links: Arc<dyn HostLinkStore>,
     pub credentials: Arc<dyn HostCredentialStore>,
-    /// Where the copies go: outside `pi-sessions/`, so they are never uploaded.
-    pub directory: PathBuf,
+    /// `~/.axo/sessions`: every Mac's transcripts by host.
+    pub sessions_directory: PathBuf,
+    /// `~/.axo/server/peers.json`: what the account lists.
+    pub index: PathBuf,
 }
 
 pub struct PeersWorker {
@@ -322,7 +370,7 @@ impl PeersWorker {
 }
 
 fn run(dependencies: PeersDependencies, stop: Arc<AtomicBool>) {
-    let mut mirror = Mirror::new(dependencies.directory.clone());
+    let mut mirror = Mirror::new(dependencies.sessions_directory.clone());
     let mut delay = Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
         let account = match dependencies.links.load_link() {
@@ -351,7 +399,7 @@ fn run(dependencies: PeersDependencies, stop: Arc<AtomicBool>) {
                 .max_frame_size(Some(MAX_FRAME_BYTES));
             connect_websocket(request, config)
         })
-        .and_then(|socket| Follower::new(socket, &mut mirror, &dependencies.host_id, &stop)?.run());
+        .and_then(|socket| Follower::new(socket, &mut mirror, &dependencies, &stop)?.run());
         match outcome {
             Ok(()) => log::info!("event=peers.socket_renewed"),
             Err(error) => log::warn!("event=peers.connection_retry reason={error}"),
@@ -375,11 +423,7 @@ fn sleep_unless_stopped(stop: &AtomicBool, delay: Duration) {
 
 enum Pending {
     Hello,
-    Open {
-        host_id: String,
-        session_id: String,
-        from_nothing: bool,
-    },
+    Open { place: Place, from_nothing: bool },
 }
 
 /// One socket's life: hello, then open every Session, then keep the copies current.
@@ -387,14 +431,16 @@ struct Follower<'a> {
     socket: RelaySocket,
     reassembler: Reassembler,
     mirror: &'a mut Mirror,
-    client_id: String,
+    own_host_id: &'a str,
+    index_path: &'a Path,
     stop: &'a AtomicBool,
     next_id: u64,
     pending: HashMap<u64, Pending>,
     /// Sessions waiting to be opened, and those open on this socket, by Session id.
-    to_open: VecDeque<(String, String)>,
-    open: HashMap<String, String>,
-    listed: HashMap<(String, String), Option<u64>>,
+    to_open: VecDeque<String>,
+    open: HashMap<String, Place>,
+    /// Every listed Session with records: where its copy goes, and its epoch.
+    listed: HashMap<String, (Place, u64)>,
     index: PeerIndex,
     sent: VecDeque<Instant>,
 }
@@ -403,7 +449,7 @@ impl<'a> Follower<'a> {
     fn new(
         mut socket: RelaySocket,
         mirror: &'a mut Mirror,
-        host_id: &str,
+        dependencies: &'a PeersDependencies,
         stop: &'a AtomicBool,
     ) -> io::Result<Self> {
         set_read_timeout(&mut socket, READ_TIMEOUT)?;
@@ -411,7 +457,8 @@ impl<'a> Follower<'a> {
             socket,
             reassembler: Reassembler::default(),
             mirror,
-            client_id: format!("host-{host_id}"),
+            own_host_id: &dependencies.host_id,
+            index_path: &dependencies.index,
             stop,
             next_id: 1,
             pending: HashMap::new(),
@@ -426,10 +473,11 @@ impl<'a> Follower<'a> {
     fn run(mut self) -> io::Result<()> {
         let opened = Instant::now();
         let mut pinged = Instant::now();
+        let client_id = format!("host-{}", self.own_host_id);
         self.call(
             Pending::Hello,
             "axo.client.hello",
-            json!({ "protocolVersion": axo_protocol::rpc::PROTOCOL_VERSION, "clientId": self.client_id }),
+            json!({ "protocolVersion": axo_protocol::rpc::PROTOCOL_VERSION, "clientId": client_id }),
         )?;
         while !self.stop.load(Ordering::Relaxed) && opened.elapsed() < SOCKET_LIFETIME {
             self.open_more()?;
@@ -459,8 +507,12 @@ impl<'a> Follower<'a> {
             if let Some(error) = message.get("error") {
                 return match pending {
                     Pending::Hello => Err(io::Error::other(format!("hello refused: {error}"))),
-                    Pending::Open { session_id, .. } => {
-                        log::warn!("event=peers.open_failed session_id={session_id} error={error}");
+                    Pending::Open { place, .. } => {
+                        log::warn!(
+                            "event=peers.open_failed session_id={} error={error}",
+                            place.session_id
+                        );
+                        self.open.remove(&place.session_id);
                         Ok(())
                     }
                 };
@@ -468,22 +520,22 @@ impl<'a> Follower<'a> {
             let result = &message["result"];
             return match pending {
                 Pending::Hello => {
-                    self.index.hosts = result["hosts"].as_array().cloned().unwrap_or_default();
+                    let hosts = result["hosts"].as_array().cloned().unwrap_or_default();
+                    self.listed_hosts(hosts)?;
                     let sessions = result["sessions"].as_array().cloned().unwrap_or_default();
                     self.listed_sessions(&sessions)
                 }
                 Pending::Open {
-                    host_id,
-                    session_id,
+                    place,
                     from_nothing,
-                } => self.opened(&host_id, &session_id, from_nothing, result),
+                } => self.opened(&place, from_nothing, result),
             };
         }
         let params = &message["params"];
         match message.get("method").and_then(Value::as_str) {
             Some("axo.client.hosts") => {
-                self.index.hosts = params["hosts"].as_array().cloned().unwrap_or_default();
-                self.mirror.write_index(&self.index)
+                let hosts = params["hosts"].as_array().cloned().unwrap_or_default();
+                self.listed_hosts(hosts)
             }
             Some("axo.client.sessions") => {
                 let sessions = params["sessions"].as_array().cloned().unwrap_or_default();
@@ -495,23 +547,49 @@ impl<'a> Follower<'a> {
         }
     }
 
+    fn listed_hosts(&mut self, hosts: Vec<Value>) -> io::Result<()> {
+        let hosts: Vec<Value> = hosts
+            .into_iter()
+            .filter(|host| host["hostId"].as_str() != Some(self.own_host_id))
+            .collect();
+        for host in &hosts {
+            if let (Some(host_id), Some(label)) = (host["hostId"].as_str(), host["label"].as_str())
+                && let Err(error) = self.mirror.describe_host(host_id, label)
+            {
+                log::warn!("event=peers.host_description_failed host_id={host_id} error={error}");
+            }
+        }
+        self.index.hosts = hosts;
+        self.index.write(self.index_path)
+    }
+
     /// Lists Sessions, and opens those with records this Mac has not opened yet.
     fn listed_sessions(&mut self, sessions: &[Value]) -> io::Result<()> {
-        self.index.merge(sessions);
-        self.mirror.write_index(&self.index)?;
-        for session in sessions {
-            let (Some(host_id), Some(session_id)) =
-                (session["hostId"].as_str(), session["sessionId"].as_str())
-            else {
+        let theirs: Vec<Value> = sessions
+            .iter()
+            .filter(|session| session["hostId"].as_str() != Some(self.own_host_id))
+            .cloned()
+            .collect();
+        self.index.merge(&theirs);
+        self.index.write(self.index_path)?;
+        for session in &theirs {
+            let (Some(host_id), Some(session_id), Some(epoch)) = (
+                session["hostId"].as_str(),
+                session["sessionId"].as_str(),
+                session["epoch"].as_u64(),
+            ) else {
                 continue;
             };
-            let epoch = session["epoch"].as_u64();
-            self.listed
-                .insert((host_id.to_owned(), session_id.to_owned()), epoch);
-            let queued = self.to_open.iter().any(|(_, queued)| queued == session_id);
-            if epoch.is_some() && !self.open.contains_key(session_id) && !queued {
-                self.to_open
-                    .push_back((host_id.to_owned(), session_id.to_owned()));
+            let workspace_id = session["metadata"]["workspaceId"].as_str();
+            let Some(place) = Place::of(host_id, workspace_id, session_id) else {
+                log::warn!("event=peers.unsafe_place session_id={session_id}");
+                continue;
+            };
+            self.listed.insert(session_id.to_owned(), (place, epoch));
+            if !self.open.contains_key(session_id)
+                && !self.to_open.iter().any(|queued| queued == session_id)
+            {
+                self.to_open.push_back(session_id.to_owned());
             }
         }
         Ok(())
@@ -525,39 +603,36 @@ impl<'a> Follower<'a> {
             .filter(|pending| matches!(pending, Pending::Open { .. }))
             .count();
         for _ in in_flight..OPENS_IN_FLIGHT {
-            let Some((host_id, session_id)) = self.to_open.pop_front() else {
+            let Some(session_id) = self.to_open.pop_front() else {
                 break;
             };
-            let Some(listed_epoch) = self
-                .listed
-                .get(&(host_id.clone(), session_id.clone()))
-                .copied()
-                .flatten()
-            else {
+            let Some((place, listed_epoch)) = self.listed.get(&session_id).cloned() else {
                 continue;
             };
-            let state = self.mirror.state(&host_id, &session_id)?;
+            let state = self.mirror.state(&place)?;
             let have = state.unwrap_or(CopyState {
                 epoch: listed_epoch,
                 cursor: 0,
             });
-            self.open.insert(session_id.clone(), host_id.clone());
+            self.open.insert(session_id.clone(), place.clone());
+            let params = json!({
+                "hostId": place.host_id,
+                "sessionId": session_id,
+                "have": { "epoch": have.epoch, "cursor": have.cursor },
+            });
             self.call(
-                Pending::Open { host_id: host_id.clone(), session_id: session_id.clone(), from_nothing: state.is_none() },
+                Pending::Open {
+                    place,
+                    from_nothing: state.is_none(),
+                },
                 "axo.client.session.open",
-                json!({ "hostId": host_id, "sessionId": session_id, "have": { "epoch": have.epoch, "cursor": have.cursor } }),
+                params,
             )?;
         }
         Ok(())
     }
 
-    fn opened(
-        &mut self,
-        host_id: &str,
-        session_id: &str,
-        from_nothing: bool,
-        result: &Value,
-    ) -> io::Result<()> {
+    fn opened(&mut self, place: &Place, from_nothing: bool, result: &Value) -> io::Result<()> {
         let Some(epoch) = result["epoch"].as_u64() else {
             return Ok(());
         };
@@ -565,15 +640,17 @@ impl<'a> Follower<'a> {
             serde_json::from_value(result["records"].clone()).unwrap_or_default();
         let copied = if from_nothing {
             let Some(header) = result["header"].as_str() else {
-                log::warn!("event=peers.open_without_header session_id={session_id}");
+                log::warn!(
+                    "event=peers.open_without_header session_id={}",
+                    place.session_id
+                );
                 return Ok(());
             };
-            self.mirror
-                .start(host_id, session_id, epoch, header, &records)
+            self.mirror.start(place, epoch, header, &records)
         } else {
-            self.mirror.append(host_id, session_id, epoch, &records)
+            self.mirror.append(place, epoch, &records)
         };
-        self.copied(host_id, session_id, copied).map(|_| ())
+        self.copied(place, copied).map(|_| ())
     }
 
     fn records(&mut self, params: &Value) -> io::Result<()> {
@@ -582,13 +659,13 @@ impl<'a> Follower<'a> {
         else {
             return Ok(());
         };
-        let Some(host_id) = self.open.get(session_id).cloned() else {
+        let Some(place) = self.open.get(session_id).cloned() else {
             return Ok(());
         };
         let records: Vec<ClientRecord> =
             serde_json::from_value(params["records"].clone()).unwrap_or_default();
-        let copied = self.mirror.append(&host_id, session_id, epoch, &records);
-        if let Some(state) = self.copied(&host_id, session_id, copied)? {
+        let copied = self.mirror.append(&place, epoch, &records);
+        if let Some(state) = self.copied(&place, copied)? {
             // Only what is on disk is acknowledged; the next batch follows the acknowledgement.
             self.notify(
                 "axo.client.session.ack",
@@ -606,34 +683,37 @@ impl<'a> Follower<'a> {
         ) else {
             return Ok(());
         };
-        let Some(host_id) = self.open.get(session_id).cloned() else {
+        let Some(place) = self.open.get(session_id).cloned() else {
             return Ok(());
         };
-        let reset = self.mirror.reset(&host_id, session_id, epoch, keep);
-        self.copied(&host_id, session_id, reset).map(|_| ())
+        let reset = self.mirror.reset(&place, epoch, keep);
+        self.copied(&place, reset).map(|_| ())
     }
 
     /// A copy that could not take the records is opened again from where it is.
     fn copied(
         &mut self,
-        host_id: &str,
-        session_id: &str,
+        place: &Place,
         outcome: io::Result<CopyState>,
     ) -> io::Result<Option<CopyState>> {
         match outcome {
             Ok(state) => Ok(Some(state)),
             Err(error)
-                if error.kind() == io::ErrorKind::InvalidData
-                    || error.kind() == io::ErrorKind::NotFound =>
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::NotFound
+                ) =>
             {
-                log::warn!("event=peers.copy_reopened session_id={session_id} reason={error}");
+                log::warn!(
+                    "event=peers.copy_reopened session_id={} reason={error}",
+                    place.session_id
+                );
                 self.notify(
                     "axo.client.session.close",
-                    json!({ "sessionId": session_id }),
+                    json!({ "sessionId": place.session_id }),
                 )?;
-                self.open.remove(session_id);
-                self.to_open
-                    .push_back((host_id.to_owned(), session_id.to_owned()));
+                self.open.remove(&place.session_id);
+                self.to_open.push_back(place.session_id.clone());
                 Ok(None)
             }
             // The disk itself failed: the socket ends, and nothing unwritten was acknowledged.
@@ -694,8 +774,13 @@ mod tests {
     }
 
     const HOST: &str = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7";
+    const WORKSPACE: &str = "04d389d1-9896-420e-9b42-fc7835522937";
     const SESSION: &str = "8f8f8f8f-0000-4000-8000-000000000001";
     const HEADER: &str = r#"{"type":"session","version":3,"id":"8f8f8f8f-0000-4000-8000-000000000001","cwd":"/Users/leo/src/axo"}"#;
+
+    fn place() -> Place {
+        Place::of(HOST, Some(WORKSPACE), SESSION).unwrap()
+    }
 
     fn record(cursor: u64) -> ClientRecord {
         ClientRecord {
@@ -709,7 +794,7 @@ mod tests {
     }
 
     fn copy(mirror: &Mirror) -> String {
-        fs::read_to_string(mirror.file(HOST, SESSION)).unwrap()
+        fs::read_to_string(mirror.file(&place())).unwrap()
     }
 
     fn expected(cursors: std::ops::RangeInclusive<u64>) -> String {
@@ -722,15 +807,39 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_is_at_the_same_place_under_sessions_as_on_its_mac() {
+        let scratch = Scratch::new();
+        let mirror = Mirror::new(scratch.0.clone());
+        assert_eq!(
+            mirror.file(&place()),
+            scratch
+                .0
+                .join(HOST)
+                .join(WORKSPACE)
+                .join(format!("{SESSION}.jsonl"))
+        );
+        assert_eq!(
+            Place::of(HOST, None, SESSION).unwrap().workspace,
+            "no-workspace"
+        );
+    }
+
+    #[test]
+    fn a_place_the_cloud_names_must_be_ids() {
+        assert!(Place::of("..", Some(WORKSPACE), SESSION).is_none());
+        assert!(Place::of(HOST, Some("../../server"), SESSION).is_none());
+        assert!(Place::of(HOST, Some(WORKSPACE), "a/b").is_none());
+        assert!(Place::of(HOST, Some(""), SESSION).is_none());
+    }
+
+    #[test]
     fn a_copy_is_the_header_and_the_records_in_order() {
         let scratch = Scratch::new();
         let mut mirror = Mirror::new(scratch.0.clone());
-        assert_eq!(mirror.state(HOST, SESSION).unwrap(), None);
-        mirror
-            .start(HOST, SESSION, 1, HEADER, &records(1..=3))
-            .unwrap();
+        assert_eq!(mirror.state(&place()).unwrap(), None);
+        mirror.start(&place(), 1, HEADER, &records(1..=3)).unwrap();
         // A batch that repeats what the copy holds adds only what follows.
-        let state = mirror.append(HOST, SESSION, 1, &records(2..=5)).unwrap();
+        let state = mirror.append(&place(), 1, &records(2..=5)).unwrap();
         assert_eq!(
             state,
             CopyState {
@@ -745,19 +854,17 @@ mod tests {
     fn a_gap_or_another_epoch_is_refused_and_changes_nothing() {
         let scratch = Scratch::new();
         let mut mirror = Mirror::new(scratch.0.clone());
-        mirror
-            .start(HOST, SESSION, 1, HEADER, &records(1..=2))
-            .unwrap();
+        mirror.start(&place(), 1, HEADER, &records(1..=2)).unwrap();
         assert_eq!(
             mirror
-                .append(HOST, SESSION, 1, &records(4..=5))
+                .append(&place(), 1, &records(4..=5))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
         );
         assert_eq!(
             mirror
-                .append(HOST, SESSION, 2, &records(3..=3))
+                .append(&place(), 2, &records(3..=3))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
@@ -769,17 +876,15 @@ mod tests {
     fn a_reset_cuts_the_copy_back_and_it_goes_on_in_the_new_epoch() {
         let scratch = Scratch::new();
         let mut mirror = Mirror::new(scratch.0.clone());
-        mirror
-            .start(HOST, SESSION, 1, HEADER, &records(1..=5))
-            .unwrap();
+        mirror.start(&place(), 1, HEADER, &records(1..=5)).unwrap();
         assert_eq!(
-            mirror.reset(HOST, SESSION, 2, 3).unwrap(),
+            mirror.reset(&place(), 2, 3).unwrap(),
             CopyState {
                 epoch: 2,
                 cursor: 3
             }
         );
-        mirror.append(HOST, SESSION, 2, &records(4..=4)).unwrap();
+        mirror.append(&place(), 2, &records(4..=4)).unwrap();
         assert_eq!(copy(&mirror), expected(1..=4));
     }
 
@@ -787,18 +892,16 @@ mod tests {
     fn lines_written_but_not_saved_before_a_crash_are_dropped() {
         let scratch = Scratch::new();
         let mut mirror = Mirror::new(scratch.0.clone());
-        mirror
-            .start(HOST, SESSION, 1, HEADER, &records(1..=2))
-            .unwrap();
+        mirror.start(&place(), 1, HEADER, &records(1..=2)).unwrap();
         let mut out = OpenOptions::new()
             .append(true)
-            .open(mirror.file(HOST, SESSION))
+            .open(mirror.file(&place()))
             .unwrap();
         writeln!(out, "{}", record(3).line).unwrap();
         // A new process checks the copy against its state once.
         let mut restarted = Mirror::new(scratch.0.clone());
         assert_eq!(
-            restarted.state(HOST, SESSION).unwrap(),
+            restarted.state(&place()).unwrap(),
             Some(CopyState {
                 epoch: 1,
                 cursor: 2
@@ -806,9 +909,9 @@ mod tests {
         );
         assert_eq!(copy(&restarted), expected(1..=2));
         // A copy shorter than its state is no copy: it is made again from nothing.
-        fs::write(restarted.file(HOST, SESSION), format!("{HEADER}\n")).unwrap();
+        fs::write(restarted.file(&place()), format!("{HEADER}\n")).unwrap();
         assert_eq!(
-            Mirror::new(scratch.0.clone()).state(HOST, SESSION).unwrap(),
+            Mirror::new(scratch.0.clone()).state(&place()).unwrap(),
             None
         );
     }

@@ -74,7 +74,9 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   const laptop = await waitFor("axod online", 20_000, async () =>
     (await listHosts(api.url, account)).find((host) => host.hostId !== studioHost.hostId && host.status === "online"), daemon);
 
-  const copy = join(serverDirectory, "peers", studioHost.hostId, `${transcript.sessionId}.jsonl`);
+  // Every Mac's transcripts are kept by host beside server/, the same way on every Mac.
+  const sessions = join(root, "sessions");
+  const copy = join(sessions, studioHost.hostId, "no-workspace", `${transcript.sessionId}.jsonl`);
   const read = async () => (existsSync(copy) ? await readFile(copy, "utf8") : undefined);
   await waitFor("the copy of the Studio's chat", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
 
@@ -84,10 +86,14 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   await waitFor("the copy to follow", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
 
   // The index lists the other Mac and its chat, never this Mac's own.
-  const index = JSON.parse(await readFile(join(serverDirectory, "peers", "index.json"), "utf8")) as {
+  const index = JSON.parse(await readFile(join(serverDirectory, "peers.json"), "utf8")) as {
     hosts: Array<{ hostId: string }>; sessions: Array<{ hostId: string; sessionId: string }>;
   };
   assert.deepEqual(index.hosts.map((host) => host.hostId), [studioHost.hostId]);
   assert.ok(index.sessions.every((session) => session.hostId !== laptop.hostId));
   assert.ok(index.sessions.some((session) => session.sessionId === transcript.sessionId));
+  // Each host's folder says which Mac it is: the Studio's copies, and this Mac's own.
+  const described = async (hostId: string) => JSON.parse(await readFile(join(sessions, hostId, "host.json"), "utf8")) as { hostId: string; label: string };
+  assert.deepEqual(await described(studioHost.hostId), { hostId: studioHost.hostId, label: "Mac Studio" });
+  assert.equal((await described(laptop.hostId)).hostId, laptop.hostId);
 });

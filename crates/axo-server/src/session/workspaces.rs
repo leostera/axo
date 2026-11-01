@@ -1,5 +1,6 @@
 //! Workspaces: creating, renaming and archiving them, and the Sessions that live in them.
 
+use super::transcripts::PiDirectories;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -109,7 +110,7 @@ fn validate_workspace_name(name: &str) -> io::Result<()> {
 pub(super) fn create_workspace_session(
     state: &mut SessionState,
     attach_socket_path: &Path,
-    pi_session_directory: &Path,
+    pi_directories: &PiDirectories,
     workspace_id: &str,
     import_source: Option<&Path>,
 ) -> io::Result<SessionRecord> {
@@ -118,11 +119,11 @@ pub(super) fn create_workspace_session(
     let session_id = SessionId::new_v4()?;
     let session_uuid = session_id.to_string();
     let pane_id = new_uuid_v4()?;
-    let pi_directory = pi_session_directory.join(workspace_id);
+    let pi_directory = pi_directories.transcripts.join(workspace_id);
     fs::create_dir_all(&pi_directory)?;
     fs::set_permissions(&pi_directory, fs::Permissions::from_mode(0o700))?;
     let pi_session_file = pi_directory.join(format!("{session_uuid}.jsonl"));
-    let bridge_socket = BridgeSocketPath::for_session(pi_session_directory, &session_uuid)?;
+    let bridge_socket = BridgeSocketPath::for_session(&pi_directories.bridges, &session_uuid)?;
     if let Some(source) = import_source {
         copy_pi_transcript(source, &pi_session_file, &initial_pwd)?;
     }
@@ -330,7 +331,7 @@ impl SessionManager {
                 match create_workspace_session(
                     &mut state,
                     &self.attach_socket_path,
-                    &self.pi_session_directory,
+                    &self.pi_directories,
                     &workspace_id,
                     None,
                 ) {
@@ -384,7 +385,7 @@ impl SessionManager {
         let session = match create_workspace_session(
             &mut state,
             &self.attach_socket_path,
-            &self.pi_session_directory,
+            &self.pi_directories,
             &workspace_id,
             None,
         ) {
@@ -438,7 +439,7 @@ impl SessionManager {
         let session = create_workspace_session(
             &mut state,
             &self.attach_socket_path,
-            &self.pi_session_directory,
+            &self.pi_directories,
             workspace_id,
             None,
         )?;
@@ -489,7 +490,7 @@ impl SessionManager {
             let session = create_workspace_session(
                 &mut state,
                 &self.attach_socket_path,
-                &self.pi_session_directory,
+                &self.pi_directories,
                 &workspace_id,
                 Some(source),
             )?;

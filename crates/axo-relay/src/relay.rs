@@ -137,8 +137,8 @@ pub struct RelayDependencies {
     pub endpoint: RelayEndpoint,
     pub links: Arc<dyn HostLinkStore>,
     pub credentials: Arc<dyn HostCredentialStore>,
-    /// Where the other Macs' Sessions are copied; None copies nothing.
-    pub peers_directory: Option<std::path::PathBuf>,
+    /// Where the other Macs' Sessions are copied (RFD0022); None copies nothing.
+    pub peers: Option<crate::peers::PeersPaths>,
 }
 
 impl RelayWorker {
@@ -167,14 +167,15 @@ impl RelayWorker {
             waker.clone(),
             Arc::clone(&stop),
         )?;
-        let peers = match dependencies.peers_directory.clone() {
-            Some(directory) => Some(PeersWorker::start(
+        let peers = match dependencies.peers.clone() {
+            Some(paths) => Some(PeersWorker::start(
                 PeersDependencies {
                     host_id: dependencies.host.host_id().to_owned(),
                     endpoint: dependencies.endpoint.clone(),
                     links: Arc::clone(&dependencies.links),
                     credentials: Arc::clone(&dependencies.credentials),
-                    directory,
+                    sessions_directory: paths.sessions_directory,
+                    index: paths.index,
                 },
                 Arc::clone(&stop),
             )?),

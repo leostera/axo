@@ -34,6 +34,7 @@ pub(crate) use spawn::set_agent_socket;
 mod terminal;
 #[cfg(test)]
 mod test_support;
+mod transcripts;
 mod workspace_state;
 mod workspaces;
 
@@ -41,6 +42,7 @@ use self::events::{EventBus, LocalSubscription};
 pub(crate) use self::handlers::RelayHostAdapter;
 use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
 use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};
+use self::transcripts::PiDirectories;
 use self::workspaces::restore_workspace_accesses;
 
 const ATTACH_SOCKET_FILE: &str = "attach.sock";
@@ -130,7 +132,7 @@ struct SessionState {
 pub struct SessionManager {
     state: Mutex<SessionState>,
     attach_socket_path: PathBuf,
-    pi_session_directory: PathBuf,
+    pi_directories: PiDirectories,
     host_id: String,
     host_generation: String,
     stop_workers: Arc<AtomicBool>,
@@ -150,7 +152,13 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn open(server_directory: &Path) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    /// `sessions_directory` holds every Mac's transcripts by host (RFD0022): this Mac's are
+    /// written under `<sessions_directory>/<hostId>/`; `server_directory` keeps only this Mac's
+    /// server state.
+    pub fn open(
+        server_directory: &Path,
+        sessions_directory: &Path,
+    ) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         fs::create_dir_all(server_directory)?;
         let server_directory = fs::canonicalize(server_directory)?;
         let database_path = server_directory.join(DATABASE_FILE);
@@ -167,6 +175,12 @@ impl SessionManager {
         fs::create_dir_all(&pi_session_directory)?;
         fs::set_permissions(&pi_session_directory, fs::Permissions::from_mode(0o700))?;
         ensure_pi_bridge_socket_paths(&database, &pi_session_directory)?;
+        let pi_directories = transcripts::open(
+            &mut database,
+            pi_session_directory,
+            sessions_directory,
+            &host_id,
+        )?;
         remove_abandoned_pi_bridge_sockets(&database)?;
 
         let home_workspace_id = axo_store::ensure_home_workspace(&mut database, &initial_pwd)?;
@@ -187,7 +201,7 @@ impl SessionManager {
                 takeover_grace: TakeoverGrace::default(),
             }),
             attach_socket_path,
-            pi_session_directory,
+            pi_directories,
             host_id,
             host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),

@@ -677,7 +677,7 @@ mod tests {
         );
         assert!(!manager.pi_runtime_is_current(old_binding));
         assert!(manager.pi_runtime_is_current(binding));
-        let history = manager.pi_session_directory.join("resume.jsonl");
+        let history = manager.pi_directories.bridges.join("resume.jsonl");
         fs::write(&history, b"unchanged transcript").unwrap();
         assert_eq!(
             manager

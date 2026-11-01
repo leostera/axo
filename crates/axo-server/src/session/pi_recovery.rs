@@ -300,7 +300,7 @@ impl SessionManager {
         let check_current = || recovery.ensure_current();
         let history = axo_pi::recoverable_history(
             &request.session_file,
-            &self.pi_session_directory,
+            self.pi_directories.home_of(&request.session_file),
             has_messages,
         )?;
         let lock = takeover::take_over(
@@ -312,7 +312,7 @@ impl SessionManager {
         )?;
         if axo_pi::recoverable_history(
             &request.session_file,
-            &self.pi_session_directory,
+            self.pi_directories.home_of(&request.session_file),
             has_messages,
         )? != history
         {
@@ -399,7 +399,7 @@ impl SessionManager {
             ));
         }
         let session_file = PathBuf::from(requested_session_file);
-        let canonical_directory = fs::canonicalize(&self.pi_session_directory)?;
+        let canonical_directory = fs::canonicalize(self.pi_directories.home_of(&session_file))?;
         let canonical_file = fs::canonicalize(&session_file)?;
         if !canonical_file.starts_with(&canonical_directory)
             || !fs::metadata(&canonical_file)?.is_file()
@@ -423,7 +423,11 @@ impl SessionManager {
                     "Pi resume request came from a stale pane",
                 ));
             }
-            let owners = pi_history_owners(&state.database, requested_session_file)?;
+            let mut owners = pi_history_owners(&state.database, requested_session_file)?;
+            if owners.is_empty() {
+                // A Pi started before its folder moved names the old path (RFD0022).
+                owners = pi_history_owners(&state.database, &canonical_file.to_string_lossy())?;
+            }
             let Ok([record]) = <[_; 1]>::try_from(owners) else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -638,7 +642,7 @@ impl SessionManager {
                     &mut state,
                     requester_session_id,
                     &self.attach_socket_path,
-                    &self.pi_session_directory,
+                    &self.pi_directories,
                 )?
             } else {
                 (None, Vec::new())
@@ -1220,11 +1224,12 @@ mod tests {
         let pane_id = new_uuid_v4().unwrap();
         let file = fixture
             .manager
-            .pi_session_directory
+            .pi_directories
+            .bridges
             .join(format!("{session_uuid}.jsonl"));
         fs::write(&file, b"preserved history").unwrap();
         let socket =
-            BridgeSocketPath::for_session(&fixture.manager.pi_session_directory, &session_uuid)
+            BridgeSocketPath::for_session(&fixture.manager.pi_directories.bridges, &session_uuid)
                 .unwrap();
         let mut pi = {
             let state = fixture.manager.lock_state().unwrap();

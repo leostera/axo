@@ -1,6 +1,7 @@
 //! Session and pane lifecycle: creating, closing, restoring and reaping, and the layout and
 //! viewport they carry.
 
+use super::transcripts::PiDirectories;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -70,7 +71,7 @@ pub(super) fn close_session(
     state: &mut SessionState,
     id: SessionId,
     attach_socket_path: &Path,
-    pi_session_directory: &Path,
+    pi_directories: &PiDirectories,
 ) -> io::Result<(Option<SessionRecord>, Vec<RunningShell>)> {
     if open_shell_ids(state, id).is_empty() {
         return Err(io::Error::new(
@@ -88,7 +89,7 @@ pub(super) fn close_session(
                 create_workspace_session(
                     state,
                     attach_socket_path,
-                    pi_session_directory,
+                    pi_directories,
                     &workspace_id,
                     None,
                 )
@@ -111,7 +112,7 @@ fn close_shell(
     session_id: SessionId,
     shell_id: ShellId,
     attach_socket_path: &Path,
-    pi_session_directory: &Path,
+    pi_directories: &PiDirectories,
 ) -> io::Result<(rpc::ShellClosed, Vec<RunningShell>)> {
     let Some(pane) = state.panes.get(shell_id) else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "shell is not open"));
@@ -130,7 +131,7 @@ fn close_shell(
     let sibling_count = open_shell_ids(state, session_id).len();
     if sibling_count == 1 || role == PaneRole::Pi {
         let (replacement, shells) =
-            close_session(state, session_id, attach_socket_path, pi_session_directory)?;
+            close_session(state, session_id, attach_socket_path, pi_directories)?;
         return Ok((
             rpc::ShellClosed {
                 archived_shell_id: shell_id,
@@ -410,7 +411,7 @@ impl SessionManager {
                 &mut state,
                 id,
                 &self.attach_socket_path,
-                &self.pi_session_directory,
+                &self.pi_directories,
             )?
         };
         self.terminate_shells_in_background(shells_to_terminate);
@@ -432,7 +433,7 @@ impl SessionManager {
                 session_id,
                 shell_id,
                 &self.attach_socket_path,
-                &self.pi_session_directory,
+                &self.pi_directories,
             )?
         };
         self.terminate_shells_in_background(shells_to_terminate);

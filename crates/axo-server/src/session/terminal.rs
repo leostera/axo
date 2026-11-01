@@ -787,7 +787,10 @@ mod tests {
             )
             .unwrap();
         drop(database);
-        (SessionManager::open(directory).unwrap(), log)
+        (
+            SessionManager::open(directory, &directory.join("sessions")).unwrap(),
+            log,
+        )
     }
 
     /// Stands in for pi-axo's bridge listener: serves one connection at a time and closes any
