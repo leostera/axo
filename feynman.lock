@@ -15,6 +15,10 @@
     "crates/axo-relay/src/pairing.rs#prepare_credential": "ed4ac36d83d6",
     "crates/axo-relay/src/pairing.rs#redeem": "cc3048917961",
     "crates/axo-relay/src/pairing.rs#validate_code": "89109dd1a3ed",
+    "crates/axo-relay/src/peers.rs#Follower::records": "e182f57b02df",
+    "crates/axo-relay/src/peers.rs#Follower::reset": "15a917c4ce01",
+    "crates/axo-relay/src/peers.rs#Follower::run": "9fe0a034f422",
+    "crates/axo-relay/src/peers.rs#PeersWorker::start": "ba56f58f2f0c",
     "crates/axo-relay/src/relay.rs#CONNECT_TIMEOUT": "17041eb8e743",
     "crates/axo-relay/src/relay.rs#MAX_RECONNECT_DELAY": "fcebfa978b7d",
     "crates/axo-relay/src/relay.rs#RelayControl::request_connect": "ed71457f6c8a",
@@ -30,6 +34,7 @@
     "crates/axo-relay/src/relay.rs#run_reconnect_loop": "5472781b90f7",
     "crates/axo-relay/src/relay.rs#start_bash": "f4538e2cfe89",
     "crates/axo-relay/src/relay.rs#wait_for_reconnect": "267c6a19d6a4",
+    "crates/axo-relay/src/sync.rs#Uploader::upload_next": "b9d6c1a0771d",
     "crates/axo-server/src/connections.rs#forward": "628d6d1713e7",
     "crates/axo-server/src/lib.rs#request_shutdown": "d05ec0cbad46",
     "crates/axo-server/src/lib.rs:347-363": "ad42dd909f90",
@@ -37,6 +42,7 @@
     "crates/axo-server/src/lib.rs:364-371": "96b6de340d6c",
     "crates/axo-server/src/mcp.rs#McpServer.call_tool": "5ccb370cd2f9",
     "crates/axo-server/src/session/lifecycle.rs#SessionManager::restore_open_sessions": "3ab9f6eb0c1f",
+    "crates/axo-server/src/session/prompts.rs#SessionManager::prompt_pi": "9b25f7117314",
     "packages/axo-api-worker/src/auth/account-access.ts#requireAccount": "b5a76f2c5bd1",
     "packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.authorizeHost": "82c6faa623cc",
     "packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.createPairing": "2ad4cd32b019",
@@ -61,6 +67,7 @@
     "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.webSocketClose": "bfb18f63ad9c",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.alarm": "43b8ec7af73a",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.notify": "897ae29e4627",
+    "packages/axo-api-worker/src/client-do.ts#AxoClientDO.receive": "0f6460fe4952",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.webSocketClose": "0bee8c83a05e",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.webSocketMessage": "495e78fa9d54",
     "packages/axo-api-worker/src/connections/account.ts#AccountConnections.call": "b99c3ae386fc",
@@ -109,6 +116,7 @@
     "packages/axo-app/src/index.ts#RemoteAxoApi": "0ac85d191f04",
     "packages/axo-web-app/src/chat/connections.tsx#ServersPage": "fdf0d945501c",
     "packages/axo-web-app/src/chat/workbench.ts#ChatWorkbench.listHosts": "c41c83b639e8",
-    "packages/axo-web-app/src/cloudflare-sign-in-app.tsx#CloudflareSignInApp": "fabd3c33b407"
+    "packages/axo-web-app/src/cloudflare-sign-in-app.tsx#CloudflareSignInApp": "fabd3c33b407",
+    "packages/pi-axo/src/extension.ts#installAxoPiExtension": "70c89a770061"
   }
 }
