@@ -3,6 +3,7 @@ import { appDeviceSignInSchema, appMacSignInSchema, connectionsResults, type App
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
+import { KNOWN_SERVERS, knownServerOf, type KnownServer } from "./servers.ts";
 import calendarLogo from "./logos/calendar.svg";
 import chatgptLogo from "./logos/chatgpt.svg";
 import cloudLogo from "./logos/cloud.svg";
@@ -17,11 +18,9 @@ import krakenLogo from "./logos/kraken.svg";
 import meetLogo from "./logos/meet.svg";
 import octopusLogo from "./logos/octopus.svg";
 import onepasswordLogo from "./logos/onepassword.svg";
-import paypalLogo from "./logos/paypal.svg";
 import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
 import spotifyLogo from "./logos/spotify.svg";
-import stripeLogo from "./logos/stripe.svg";
 import tasksLogo from "./logos/tasks.svg";
 import telegramLogo from "./logos/telegram.svg";
 import unifiLogo from "./logos/unifi.svg";
@@ -119,6 +118,10 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
     const app = apps.find((a) => a.name === `apps.${route.app}`);
     title = app?.title ?? "App";
     body = app ? <AppPage key={app.name} app={app} macs={macs} version={version} {...shared} /> : <p className="settings-muted">{connections ? "This app is not available." : "Loading…"}</p>;
+  } else if (route.kind === "server") {
+    const known = KNOWN_SERVERS.find((s) => s.id === route.server);
+    title = known?.title ?? "MCP server";
+    body = known ? <ServerPage key={known.id} known={known} servers={servers} loaded={connections !== null} version={version} {...shared} /> : <p className="settings-muted">This server is not one Axo knows.</p>;
   } else if (route.kind === "servers") {
     title = "MCP servers";
     body = <div className="settings-narrow"><ServersPage servers={servers} loaded={connections !== null} {...shared} /></div>;
@@ -126,13 +129,7 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
     title = "Activity";
     body = <div className="settings-narrow"><ActivityPage connectionsUrl={connectionsUrl} /></div>;
   } else {
-    // A suggested server is added as any other; one that signs in by itself goes straight to its sign-in.
-    const addSuggested = (suggestion: Suggestion) => void act(async () => {
-      const result = connectionsResults["axo.connections.add"].parse(await request(connectionsUrl, "POST", { name: suggestion.name, url: suggestion.url }));
-      if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
-      else go({ kind: "servers" });
-    });
-    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} link={link} busy={busy} addSuggested={addSuggested} />;
+    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} link={link} />;
   }
 
   return (
@@ -157,11 +154,10 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
 
 const CATEGORY_TITLES: Record<string, string> = {
   communication: "Communication", productivity: "Productivity", files: "Files", developer: "Developer", media: "Media", security: "Security",
-  other: "Other", finance: "Finance", social: "Social", travel: "Travel", shopping: "Shopping", entertainment: "Entertainment", health: "Health", home: "Home",
+  other: "Other", finance: "Finance", social: "Social", travel: "Travel", shopping: "Shopping", entertainment: "Entertainment", health: "Health", home: "Home", marketing: "Marketing",
 };
 type Status = "all" | "connected" | "notConnected";
 
-/** Official remote MCP servers worth adding, shown in Apps until added. Each is added by URL like any other. */
 /**
  * A settings page link: a real `href`, so ⌘-, Ctrl-, Shift- and middle-click open it as the browser
  * would; a plain click stays in the app.
@@ -188,39 +184,37 @@ function AppCardFace({ tile }: { tile: { look: ReactNode; title: string; connect
   );
 }
 
-type Suggestion = { name: string; title: string; url: string; category: string; provider: string; logo: string; full?: boolean };
-const SUGGESTED_SERVERS: Suggestion[] = [
-  { name: "stripe", title: "Stripe", url: "https://mcp.stripe.com", category: "finance", provider: "Stripe", logo: stripeLogo, full: true },
-  { name: "paypal", title: "PayPal", url: "https://mcp.paypal.com/mcp", category: "finance", provider: "PayPal", logo: paypalLogo },
-];
 
 /** Apps: filters, a grid of every app and MCP server, and what Sessions used lately. */
-function AppsHome({ apps, servers, loaded, connectionsUrl, link, busy, addSuggested }: {
+function AppsHome({ apps, servers, loaded, connectionsUrl, link }: {
   apps: App[]; servers: Server[]; loaded: boolean; connectionsUrl: string; link: Link;
-  busy: boolean; addSuggested: (suggestion: Suggestion) => void;
 }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Status>("all");
   const [category, setCategory] = useState<string>("all");
 
-  type Tile = { key: string; title: string; subtitle: string; connected: boolean; category: string; provider: string; look: ReactNode; open: SettingsRoute | (() => void); detail: string };
+  type Tile = { key: string; title: string; subtitle: string; connected: boolean; category: string; provider: string; look: ReactNode; open: SettingsRoute; detail: string };
   const tiles: Tile[] = [
     ...apps.map((app): Tile => ({
       key: app.name, title: app.title, subtitle: app.description, category: app.category || "other", provider: app.provider,
       connected: app.accounts.some((a) => a.state === "ready"), look: <AppTile app={app.name} large />,
       detail: needsClient(app) ? "Needs set-up" : count(app.accounts.length, app.signIn.kind === "mac" ? "Mac" : "account"), open: { kind: "app", app: app.name.slice("apps.".length) },
     })),
-    ...servers.map((server): Tile => ({
-      key: server.name, title: server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
+    // Every server Axo knows, with how many of it are connected; each opens its own page.
+    ...(loaded ? KNOWN_SERVERS : []).map((known): Tile => {
+      const added = servers.filter((server) => knownServerOf(server.url)?.id === known.id);
+      return {
+        key: `mcp:${known.id}`, title: known.title, subtitle: known.description, category: known.category, provider: known.provider,
+        connected: added.some((server) => server.state === "ready"), look: <KnownServerTile known={known} large />,
+        detail: added.length ? count(added.length, "account") : "Add", open: { kind: "server", server: known.id },
+      };
+    }),
+    // Servers added by URL.
+    ...servers.filter((server) => !knownServerOf(server.url)).map((server): Tile => ({
+      key: server.name, title: server.title ?? server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
       connected: server.state === "ready", look: <ServerTile icon={server.icon} large />,
       detail: server.state === "ready" ? count(server.tools, "tool") : server.state === "needsSignIn" ? "Needs sign-in" : "Unreachable",
       open: { kind: "servers" },
-    })),
-    // Suggestions that are not added yet, by their host.
-    ...(loaded ? SUGGESTED_SERVERS : []).filter((s) => !servers.some((server) => host(server.url) === host(s.url))).map((s): Tile => ({
-      key: `suggested:${s.name}`, title: s.title, subtitle: host(s.url), category: s.category, provider: s.provider, connected: false,
-      look: <span className={`app-tile logo large${s.full ? " full" : ""}`} aria-hidden="true"><img src={s.logo} alt="" draggable={false} /></span>,
-      detail: "Add", open: () => { if (!busy) addSuggested(s); },
     })),
   ];
   const categories = [...new Set(tiles.map((t) => t.category))];
@@ -253,13 +247,7 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, link, busy, addSugges
       <section className="apps-grid-column" aria-label="All apps">
         <div className="apps-grid">
           {!loaded ? <p className="settings-muted">Loading…</p> : null}
-          {shown.map((tile) => (
-            typeof tile.open === "function" ? (
-              <button key={tile.key} className="app-card" onClick={tile.open}><AppCardFace tile={tile} /></button>
-            ) : (
-              <a key={tile.key} className="app-card" {...link(tile.open)}><AppCardFace tile={tile} /></a>
-            )
-          ))}
+          {shown.map((tile) => <a key={tile.key} className="app-card" {...link(tile.open)}><AppCardFace tile={tile} /></a>)}
           {loaded && status === "all" && (category === "all" || category === "mcp") && !needle ? (
             <a className="app-card add-card" {...link({ kind: "servers" })}>
               <span className="app-tile large neutral"><Icon name="plug" size={28} /></span>
@@ -701,17 +689,18 @@ function PasteForm({ app, signIn, account, busy, act, connectionsUrl, onDone, on
   );
 }
 
-function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: Shared & { servers: Server[]; loaded: boolean }) {
-  const [adding, setAdding] = useState<{ name: string; url: string } | null>(null);
+/** Adding a remote MCP server, signing in to it, its client when it registers none itself, and removing it. */
+function useServers({ connectionsUrl, act, setNotice }: Shared) {
   const [clientFor, setClientFor] = useState<string | null>(null);
   const [client, setClient] = useState({ clientId: "", clientSecret: "" });
+  const nameOf = (server: Pick<Server, "name" | "title">) => server.title ?? server.name;
 
-  const add = (draft: { name: string; url: string }) => act(async () => {
-    const result = connectionsResults["axo.connections.add"].parse(await request(connectionsUrl, "POST", draft));
-    setAdding(null);
+  const add = (draft: { name: string; url: string }, then: () => void) => act(async () => {
+    const result = connectionsResults["axo.connections.add"].parse(await request(connectionsUrl, "POST", { name: draft.name.trim(), url: draft.url }));
+    then();
     if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
     else if (result.connection.kind === "thirdParty" && result.connection.state === "needsSignIn") setClientFor(result.connection.name);
-    else setNotice({ kind: "ok", text: `Added ${result.connection.name}.` });
+    else if (result.connection.kind === "thirdParty") setNotice({ kind: "ok", text: `Added ${nameOf(result.connection)}.` });
   });
   const signIn = (name: string) => act(async () => {
     const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(name)}/sign-in`, "POST")) as { signInUrl: string };
@@ -725,14 +714,114 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
     setClientFor(null);
     if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
   });
-  const remove = (name: string) => {
-    if (!window.confirm(`Remove ${name}? Your Sessions can no longer use it.`)) return;
+  const remove = (server: Server) => {
+    if (!window.confirm(`Remove ${nameOf(server)}? Your Sessions can no longer use it.`)) return;
     void act(async () => {
-      await request(`${connectionsUrl}/${encodeURIComponent(name)}/remove`, "POST");
-      setNotice({ kind: "ok", text: `Removed ${name}.` });
+      await request(`${connectionsUrl}/${encodeURIComponent(server.name)}/remove`, "POST");
+      setNotice({ kind: "ok", text: `Removed ${nameOf(server)}.` });
     });
   };
+  return { add, signIn, saveClient, remove, clientFor, client, setClient, nameOf };
+}
+type ServerActions = ReturnType<typeof useServers>;
 
+/** One added server: what the person called it, how scripts reach it, and its state. */
+function ServerRow({ server, look, busy, actions }: { server: Server; look: ReactNode; busy: boolean; actions: ServerActions }) {
+  const state = server.state === "needsSignIn" ? "needs sign-in" : server.state === "error" ? "unreachable" : server.lastError ? server.lastError : "";
+  return (
+    <div className="grouped-row connection-row">
+      {look}
+      <span className="connection-copy">
+        <strong>{actions.nameOf(server)}</strong>
+        <small>{[`codemode.${server.name}`, state].filter(Boolean).join(" · ")}</small>
+      </span>
+      {server.state === "needsSignIn"
+        ? <button className="bordered-button" disabled={busy} onClick={() => void actions.signIn(server.name)}>Sign in</button>
+        : <span className={`mac-dot ${server.state === "ready" ? "online" : ""}`} aria-label={server.state === "ready" ? "Connected" : "Error"} />}
+      <button className="plain-icon-button" disabled={busy} onClick={() => actions.remove(server)} aria-label={`Remove ${actions.nameOf(server)}`}><Icon name="close" size={16} /></button>
+    </div>
+  );
+}
+
+/** The client form, for a server that does not register Axo as a client by itself. */
+function ServerClient({ name, busy, actions, consoleUrl }: { name: string; busy: boolean; actions: ServerActions; consoleUrl?: string }) {
+  return (
+    <>
+      <h2 className="settings-section">Sign in to {name}</h2>
+      <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void actions.saveClient(name); }}>
+        <input className="grouped-row" required placeholder="Client ID" value={actions.client.clientId} autoComplete="off"
+          onChange={(event) => actions.setClient({ ...actions.client, clientId: event.target.value })} aria-label="Client ID" />
+        <input className="grouped-row" type="password" placeholder="Client secret, if there is one" value={actions.client.clientSecret} autoComplete="off"
+          onChange={(event) => actions.setClient({ ...actions.client, clientSecret: event.target.value })} aria-label="Client secret" />
+        <button className="grouped-row" disabled={busy} type="submit">Save and sign in</button>
+      </form>
+      <p className="sheet-note">
+        This server needs an OAuth app you create{consoleUrl ? <> at <a href={consoleUrl} target="_blank" rel="noreferrer">{host(consoleUrl)}</a></> : " with its provider"}, with redirect URI https://axo.leostera.dev/api/v1/connections/oauth/callback.
+      </p>
+    </>
+  );
+}
+
+/** A server Axo knows: what it is, each of it the person added under a name of theirs, and adding another. */
+function ServerPage({ known, servers, loaded, version, ...shared }: Shared & { known: KnownServer; servers: Server[]; loaded: boolean; version: number }) {
+  const { busy, connectionsUrl } = shared;
+  const actions = useServers(shared);
+  const added = servers.filter((server) => knownServerOf(server.url)?.id === known.id);
+  const [adding, setAdding] = useState<string | null>(null);
+  const startAdding = () => setAdding(added.length ? "" : known.title);
+  return (
+    <div className="app-layout">
+      <aside className="app-info">
+        <KnownServerTile known={known} large />
+        <h1>{known.title}</h1>
+        <p className="app-meta">{[known.provider, "MCP server", CATEGORY_TITLES[known.category] ?? known.category].join(" · ")}</p>
+        <p>{known.description}</p>
+        <p className="app-meta">{host(known.url)}</p>
+      </aside>
+
+      <section className="app-main">
+        <h2 className="settings-section">Accounts</h2>
+        <div className="grouped">
+          {!loaded ? <p className="grouped-row muted">Loading…</p> : null}
+          {added.map((server) => <ServerRow key={server.name} server={server} look={<KnownServerTile known={known} />} busy={busy} actions={actions} />)}
+          {adding === null ? <button className="grouped-row add-row" disabled={busy} onClick={startAdding}>{known.signIn === "none" ? "Add" : "Add account"}</button> : null}
+        </div>
+        {adding !== null ? (
+          <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void actions.add({ name: adding, url: known.url }, () => setAdding(null)); }}>
+            <input className="grouped-row" required maxLength={100} placeholder={`Name, e.g. ${known.title}: work`} value={adding} autoFocus
+              onChange={(event) => setAdding(event.target.value)} aria-label="Name" autoCorrect="off" spellCheck={false} />
+            <button className="grouped-row" disabled={busy} type="submit">{known.signIn === "none" ? "Add" : "Add and sign in"}</button>
+          </form>
+        ) : null}
+        <p className="sheet-note">
+          {known.signIn === "none" ? "Needs no sign-in." : "Add it once for each account you have with it, each under its own name."}{" "}
+          Sessions reach each one by its name, as <code>codemode.{added[0]?.name ?? "name"}.*</code>.
+        </p>
+        {actions.clientFor && added.some((server) => server.name === actions.clientFor)
+          ? <ServerClient name={actions.clientFor} busy={busy} actions={actions} consoleUrl={known.consoleUrl} /> : null}
+      </section>
+
+      <aside className="app-activity">
+        <h2 className="settings-section">Recent activity</h2>
+        {added.length ? added.map((server) => (
+          <div key={server.name}>
+            {added.length > 1 ? <h3 className="settings-subsection">{actions.nameOf(server)}</h3> : null}
+            <Calls connectionsUrl={connectionsUrl} service={server.name} version={version} limit={added.length > 1 ? 5 : undefined} />
+          </div>
+        )) : <p className="settings-muted">Nothing yet.</p>}
+      </aside>
+    </div>
+  );
+}
+
+function ServersPage({ servers, loaded, ...shared }: Shared & { servers: Server[]; loaded: boolean }) {
+  const { busy } = shared;
+  const actions = useServers(shared);
+  const [adding, setAdding] = useState<{ name: string; url: string } | null>(null);
+  const look = (server: Server) => {
+    const known = knownServerOf(server.url);
+    return known ? <KnownServerTile known={known} /> : <ServerTile icon={server.icon} />;
+  };
   return (
     <>
       <header className="settings-hero">
@@ -741,28 +830,16 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
       </header>
       <div className="grouped">
         {!loaded ? <p className="grouped-row muted">Loading…</p> : null}
-        {servers.map((server) => (
-          <div key={server.name} className="grouped-row connection-row">
-            <ServerTile icon={server.icon} />
-            <span className="connection-copy">
-              <strong>{server.name}</strong>
-              <small>{host(server.url)}{server.state === "needsSignIn" ? " · needs sign-in" : server.state === "error" ? " · unreachable" : ""}</small>
-            </span>
-            {server.state === "needsSignIn"
-              ? <button className="bordered-button" disabled={busy} onClick={() => void signIn(server.name)}>Sign in</button>
-              : <span className={`mac-dot ${server.state === "ready" ? "online" : ""}`} aria-label={server.state === "ready" ? "Connected" : "Error"} />}
-            <button className="plain-icon-button" disabled={busy} onClick={() => remove(server.name)} aria-label={`Remove ${server.name}`}><Icon name="close" size={16} /></button>
-          </div>
-        ))}
+        {servers.map((server) => <ServerRow key={server.name} server={server} look={look(server)} busy={busy} actions={actions} />)}
         {adding === null ? <button className="grouped-row add-row" disabled={busy} onClick={() => setAdding({ name: "", url: "" })}>Add server</button> : null}
       </div>
 
       {adding !== null ? (
         <>
           <h2 className="settings-section">Add server</h2>
-          <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void add(adding); }}>
-            <input className="grouped-row" required pattern="[A-Za-z_][A-Za-z0-9_]{0,63}" placeholder="Name, e.g. linear" value={adding.name} autoFocus
-              onChange={(event) => setAdding({ ...adding, name: event.target.value })} aria-label="Name" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+          <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void actions.add(adding, () => setAdding(null)); }}>
+            <input className="grouped-row" required maxLength={100} placeholder="Name, e.g. emdash: leostera.com" value={adding.name} autoFocus
+              onChange={(event) => setAdding({ ...adding, name: event.target.value })} aria-label="Name" autoCorrect="off" spellCheck={false} />
             <input className="grouped-row" required type="url" pattern="https://.*" placeholder="https://mcp.example.com/mcp" value={adding.url}
               onChange={(event) => setAdding({ ...adding, url: event.target.value })} aria-label="Server URL" />
             <button className="grouped-row" disabled={busy} type="submit">Add</button>
@@ -770,19 +847,7 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
         </>
       ) : null}
 
-      {clientFor ? (
-        <>
-          <h2 className="settings-section">Sign in to {clientFor}</h2>
-          <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void saveClient(clientFor); }}>
-            <input className="grouped-row" required placeholder="Client ID" value={client.clientId} autoComplete="off"
-              onChange={(event) => setClient({ ...client, clientId: event.target.value })} aria-label="Client ID" />
-            <input className="grouped-row" type="password" placeholder="Client secret, if there is one" value={client.clientSecret} autoComplete="off"
-              onChange={(event) => setClient({ ...client, clientSecret: event.target.value })} aria-label="Client secret" />
-            <button className="grouped-row" disabled={busy} type="submit">Save and sign in</button>
-          </form>
-          <p className="sheet-note">This server needs an OAuth app you create with its provider, with redirect URI https://axo.leostera.dev/api/v1/connections/oauth/callback.</p>
-        </>
-      ) : null}
+      {actions.clientFor ? <ServerClient name={actions.clientFor} busy={busy} actions={actions} /> : null}
     </>
   );
 }
@@ -862,6 +927,11 @@ function AppTile({ app, large = false }: { app: string; large?: boolean }) {
   const logo = APP_LOGOS[app];
   if (!logo) return <span className={`app-tile neutral${large ? " large" : ""}`} aria-hidden="true"><Icon name="plug" size={large ? 28 : 18} /></span>;
   return <span className={`app-tile logo${FULL_LOGOS.has(app) ? " full" : ""}${large ? " large" : ""}`} aria-hidden="true"><img src={logo} alt="" draggable={false} /></span>;
+}
+
+/** A known server's tile: its maker's logo, bundled. */
+function KnownServerTile({ known, large = false }: { known: KnownServer; large?: boolean }) {
+  return <span className={`app-tile logo${known.full ? " full" : ""}${large ? " large" : ""}`} aria-hidden="true"><img src={known.logo} alt="" draggable={false} /></span>;
 }
 
 /** An MCP server's tile: the icon the Worker found for it, or a plug when it has none or it does not load. */

@@ -279,8 +279,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
-        const { name, url: serverUrl } = JSON.parse(body);
-        const connection = { kind: "thirdParty", name, url: serverUrl, state: "ready", tools: 3, syncedAt: now, lastError: null };
+        // As the Worker does: the name as typed is the title, its slug the name.
+        const { name: title, url: serverUrl } = JSON.parse(body);
+        const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+        const connection = { kind: "thirdParty", name, title: name === title ? null : title, url: serverUrl, state: "ready", tools: 3, syncedAt: now, lastError: null };
         connections.push(connection);
         json(response, { connection, signInUrl: null }, origin);
       });
@@ -670,27 +672,30 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(await servers.locator(".connection-row strong").allTextContents(), ["linear", "notion"]);
     assert.equal(await servers.getByRole("button", { name: "Sign in" }).count(), 1, "only the server that needs it offers sign-in");
     await servers.getByRole("button", { name: "Add server" }).click();
-    await servers.getByLabel("Name").fill("docs");
+    await servers.getByLabel("Name").fill("Docs: work");
     await servers.getByLabel("Server URL").fill("https://docs.example.com/mcp");
     await servers.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(servers.getByText("Added docs."));
-    await expect(servers.locator(".connection-row strong", { hasText: "docs" }));
+    await expect(servers.getByText("Added Docs: work."));
+    await expect(servers.locator(".connection-row strong", { hasText: "Docs: work" }));
+    await expect(servers.getByText("codemode.docs_work", { exact: true }));
     await shot("apps-servers");
 
     // Apps: a grid of every app and server, with filters and what Sessions used lately.
     await servers.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "Apps" }).click();
     const apps = page.getByRole("region", { name: "Apps" });
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
-    await expect(apps.getByText("2 accounts"));
+    await expect(apps.getByRole("link", { name: /Gmail/ }).getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Spotify", "Withings", "Discord", "UniFi", "linear", "notion", "docs", "Stripe", "PayPal", "Add MCP server"]);
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Spotify", "Withings", "Discord", "UniFi",
+      "GitHub MCP", "Cloudflare", "Cloudflare Docs", "Cloudflare Observability", "Cloudflare Browser", "Cloudflare Containers", "Cloudflare Radar", "Hugging Face", "Ahrefs", "Strava", "Stripe", "PayPal",
+      "linear", "notion", "Docs: work", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 18, "every app and suggested server has its maker's logo, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 28, "every app and known server has its maker's logo, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
-    assert.deepEqual(await cards(), ["Gmail", "1Password", "Spotify", "linear", "docs"], "only what is connected");
+    assert.deepEqual(await cards(), ["Gmail", "1Password", "Spotify", "linear", "Docs: work"], "only what is connected");
     await apps.getByRole("radio", { name: /^All/ }).first().click();
     await apps.getByRole("radio", { name: /^Files/ }).click();
     assert.deepEqual(await cards(), ["Google Drive"]);
@@ -698,12 +703,25 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await apps.getByLabel("Search apps").fill("cal");
     assert.deepEqual(await cards(), ["Google Calendar"]);
     await apps.getByLabel("Search apps").fill("");
-    // A suggested server is added by its URL, and then listed as any other.
-    await apps.getByRole("button", { name: /Stripe/ }).click();
-    await expect(page.getByRole("region", { name: "MCP servers" }).locator(".connection-row strong", { hasText: "stripe" }));
+    // A known server has its own page, and is added there as many times as there are accounts, each under a name of the person's.
+    await apps.getByRole("link", { name: /Strava/ }).click();
+    assert.equal(new URL(page.url()).pathname, "/app/settings/apps/mcp/strava");
+    const strava = page.getByRole("region", { name: "Strava" });
+    await expect(strava.getByRole("heading", { name: "Strava" }));
+    await strava.getByRole("button", { name: "Add account" }).click();
+    assert.equal(await strava.getByLabel("Name").inputValue(), "Strava", "the first is named for the server");
+    await strava.getByRole("button", { name: "Add and sign in" }).click();
+    await expect(strava.getByText("Added Strava."));
+    await strava.getByRole("button", { name: "Add account" }).click();
+    await strava.getByLabel("Name").fill("Strava: Mariana");
+    await strava.getByRole("button", { name: "Add and sign in" }).click();
+    await expect(strava.locator(".connection-row strong", { hasText: "Strava: Mariana" }));
+    assert.deepEqual(await strava.locator(".connection-row strong").allTextContents(), ["Strava", "Strava: Mariana"]);
+    await expect(strava.getByText("codemode.strava_mariana", { exact: true }));
+    await shot("apps-server-strava");
     await page.goBack();
-    await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
-    assert.deepEqual((await cards()).filter((c) => /stripe/i.test(c)), ["stripe"], "the suggestion gives way to the server");
+    assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
+    assert.equal(await apps.getByRole("link", { name: /Strava/ }).locator("small").textContent(), "2 accounts");
     // Every app is a link to its page: ⌘-click opens it in a new tab and leaves this one on Apps.
     assert.equal(await apps.getByRole("link", { name: /Gmail/ }).getAttribute("href"), "/app/settings/apps/gmail");
     assert.equal(await apps.getByRole("link", { name: "See all" }).getAttribute("href"), "/app/settings/apps/activity");
@@ -734,7 +752,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.setViewportSize({ width: 390, height: 844 });
     await shot("apps-gmail-phone");
     await page.goBack();
-    await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
+    await expect(page.getByRole("region", { name: "Apps" }).getByRole("link", { name: /Gmail/ }).getByText("2 accounts"));
     await shot("apps-phone");
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goForward();
@@ -742,7 +760,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
 
     // The browser's Back goes back a page; a reload stays on it.
     await page.goBack();
-    await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
+    await expect(page.getByRole("region", { name: "Apps" }).getByRole("link", { name: /Gmail/ }).getByText("2 accounts"));
     await page.getByRole("region", { name: "Apps" }).getByRole("link", { name: "See all" }).click();
     const activityPage = page.getByRole("region", { name: "Activity" });
     await expect(activityPage.locator(".call-row strong", { hasText: "linear · List issues" }));
