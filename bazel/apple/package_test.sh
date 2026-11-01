@@ -47,6 +47,8 @@ if ! codesign --verify --deep --strict "$app"; then
   echo "FAIL: signature does not verify" >&2
   failures=$((failures + 1))
 fi
+# The identifier the registered LaunchAgent was approved with; see sign_mac_app.sh.
+check "axod's signing identifier" "$(codesign -dv "$app/Contents/Helpers/axod" 2>&1 | sed -n 's/^Identifier=//p')" axod
 if [[ "$team" != - ]]; then
   check "app's team" "$(codesign -dv --verbose=4 "$app" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
   check "axod's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axod" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"

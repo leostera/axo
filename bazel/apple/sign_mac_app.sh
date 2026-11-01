@@ -20,11 +20,17 @@ rm -rf "$app"
 mkdir -p "$(dirname "$app")"
 /usr/bin/ditto "$stage/Axo.app" "$app"
 chmod -R u+w "$app"
+# axod's signing identifier must stay "axod". Background Task Management records it when Axo
+# registers the LaunchAgent, and launchd then refuses any other one with a Launch Constraint
+# Violation (OS_REASON_CODESIGNING), so axod never starts. Changing it needs Axo to unregister
+# and register the agent again on every Mac first.
+axod_identifier=axod
 
 sign_all() {
   local id=$1
   shift
-  /usr/bin/codesign --force --sign "$id" "$@" "$app/Contents/Helpers/axod" &&
+  /usr/bin/codesign --force --sign "$id" --identifier "$axod_identifier" "$@" \
+    "$app/Contents/Helpers/axod" &&
     for framework in "$app"/Contents/Frameworks/*.framework; do
       [[ -e "$framework" ]] || continue
       # Vendor frameworks (RiveRuntime) come signed by their vendor; the hardened runtime's
