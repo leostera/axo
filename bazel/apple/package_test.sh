@@ -31,12 +31,15 @@ for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod"; do
   check "minos of ${executable##*/}" "$(xcrun vtool -show-build "$executable" | awk '/minos/ { print $2; exit }')" "$macos_min"
 done
 check "axod --version" "$("$app/Contents/Helpers/axod" --version | sed -n 's/.*(build \([0-9]*\)).*/\1/p')" "$axod_build"
-if plutil -lint "$app/Contents/Library/LaunchAgents/dev.leostera.axo.axod.plist" >/dev/null; then
-  echo "ok: LaunchAgent plist lints"
-else
-  echo "FAIL: LaunchAgent plist does not lint" >&2
-  failures=$((failures + 1))
-fi
+for agent in dev.leostera.axo.axod dev.leostera.axo.app; do
+  if plutil -lint "$app/Contents/Library/LaunchAgents/$agent.plist" >/dev/null; then
+    echo "ok: LaunchAgent $agent plist lints"
+  else
+    echo "FAIL: LaunchAgent $agent plist is missing or does not lint" >&2
+    failures=$((failures + 1))
+  fi
+done
+check "Axo's agent's program" "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$app/Contents/Library/LaunchAgents/dev.leostera.axo.app.plist")" Contents/MacOS/Axo
 if [[ -f "$app/Contents/Resources/AxoPi/index.js" ]]; then
   echo "ok: Pi extension bundled"
 else

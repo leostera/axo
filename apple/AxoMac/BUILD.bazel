@@ -13,6 +13,7 @@ exports_files([
     "Info.plist",
     "AxoUITest-Info.plist",
     "Resources/dev.leostera.axo.axod.plist",
+    "Resources/dev.leostera.axo.app.plist",
 ])
 
 AXO_MAC_DEPS = [
@@ -202,6 +203,14 @@ genrule(
     cmd = "cp $(location Resources/dev.leostera.axo.axod.plist) $@",
 )
 
+# Axo's own LaunchAgent: back at login and after a crash, not after Quit Axo.
+genrule(
+    name = "app_agent_plist",
+    srcs = ["Resources/dev.leostera.axo.app.plist"],
+    outs = ["dev.leostera.axo.app.plist"],
+    cmd = "cp $(location Resources/dev.leostera.axo.app.plist) $@",
+)
+
 # The Pi extension axod loads from Contents/Resources/AxoPi.
 copy_to_directory(
     name = "AxoPi",
@@ -221,6 +230,7 @@ macos_application(
     version = ":build_version",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
+        ":app_agent_plist": "Library/LaunchAgents",
         "//crates/axod:axod": "Helpers",
         ":AxoPi": "Resources/AxoPi",
         "@ghostty//:resources": "Resources",

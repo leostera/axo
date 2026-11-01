@@ -21,11 +21,20 @@ struct AxoAppEnvironment {
     _, _ in
   }
 
+  /// Launch argument for unattended starts (login, a launchd restart): Axod and the menu bar
+  /// item come up, the terminal window stays closed until asked for, unless the Axo the person
+  /// opened handed over to this one (`AppLaunchHandover`).
+  static let backgroundLaunchArgument = "--background"
+
   static func production(daemon: DaemonController) -> AxoAppEnvironment {
-    AxoAppEnvironment(
+    var environment = AxoAppEnvironment(
       sessions: TerminalSessionsModel(),
       daemonIsRunning: { daemon.status.isRunning },
       daemonUnreachable: { daemon.checkHealth() })
+    environment.opensTerminalWindow =
+      !ProcessInfo.processInfo.arguments.contains(backgroundLaunchArgument)
+      || AppLaunchHandover.showTerminalRequested
+    return environment
   }
 }
 
@@ -45,6 +54,8 @@ enum ProductionLaunch: AxoLaunchMode {
 public enum AxoAppEntryPoint {
   @MainActor public static func main(mascot: (any MascotAnimation)? = nil) {
     AxoMascot.installedAnimation = mascot
+    // May exit: an Axo the person opens hands over to launchd's Axo.
+    AppLaunchHandover.run()
     AxoApp<ProductionLaunch>.main()
   }
 }

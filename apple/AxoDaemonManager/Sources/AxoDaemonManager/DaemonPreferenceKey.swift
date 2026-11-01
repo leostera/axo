@@ -11,5 +11,14 @@ public enum DaemonPreferenceKey {
   /// The `LaunchAgentDefinition` (JSON) launchd was last given; see `RestartMethod`.
   public static let registeredDefinition = "dev.leostera.axo.axod.registeredDefinition"
 
-  public static let all = [registrationRequested, registrationSucceeded, registeredDefinition]
+  /// The `LaunchAgentDefinition` (JSON) of Axo's own agent, `dev.leostera.axo.app`.
+  public static let appAgentRegisteredDefinition = "dev.leostera.axo.app.registeredDefinition"
+  /// When an Axo opened by the person handed over to launchd's Axo (seconds since 1970): that
+  /// Axo, started `--background`, opens its terminal window anyway; see `AppAgentController`.
+  public static let showTerminalRequestedAt = "dev.leostera.axo.app.showTerminalRequestedAt"
+
+  public static let all = [
+    registrationRequested, registrationSucceeded, registeredDefinition,
+    appAgentRegisteredDefinition, showTerminalRequestedAt,
+  ]
 }

@@ -502,8 +502,9 @@ private struct AxoMenu: View {
     Divider()
 
     Button("Quit Axo") {
-      // The daemon intentionally outlives the menu-bar app.
-      NSApplication.shared.terminate(nil)
+      // For good: launchd does not bring it back until the next login. The daemon
+      // intentionally outlives the menu-bar app.
+      AppQuit.quitForGood()
     }
     .keyboardShortcut("q")
   }
@@ -526,6 +527,13 @@ private struct AxoApplicationCommands: Commands {
         showSettings(section: .general)
       }
       .keyboardShortcut(",")
+    }
+
+    // ⌘Q leaves Axo in the menu bar; only Quit Axo quits it, and then it stays quit.
+    CommandGroup(replacing: .appTermination) {
+      Button("Close Axo Windows") { AppQuit.closeWindows() }
+        .keyboardShortcut("q")
+      Button("Quit Axo") { AppQuit.quitForGood() }
     }
   }
 

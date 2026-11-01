@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.leostera.axo.app</string>
+    <!-- Resolved inside whichever Axo.app registered the agent (AppAgentController). -->
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/Axo</string>
+    <!-- The menu bar item and axod come up; the terminal window stays closed until asked for. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>Axo</string>
+        <string>--background</string>
+    </array>
+    <!-- At login. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- A crash or a kill brings Axo back; Quit Axo exits 0 and it stays quit. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
