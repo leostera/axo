@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { resolve } from "node:path";
@@ -98,4 +98,31 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   assert.equal(missingShare.status, 404);
   const invalidShare = await fetch(`${url}/api/public-sessions/not-a-share-id`);
   assert.equal(invalidShare.status, 404);
+
+  // `curl … /install | sh` gets a script that downloads this origin's Mac app.
+  const install = await fetch(`${url}/install`);
+  assert.equal(install.status, 200);
+  assert.match(install.headers.get("Content-Type"), /^text\/x-shellscript/);
+  const script = await install.text();
+  assert.match(script, /^#!\/bin\/sh\n/);
+  assert.ok(script.includes(`AXO_ORIGIN='${url}'`));
+  assert.ok(script.includes("AXO_PAIRING_CODE=''"));
+  assert.equal(spawnSync("sh", ["-n"], { input: script }).status, 0, "the install script parses");
+
+  const pairing = await fetch(`${url}/install?code=abcd-2345`);
+  assert.equal(pairing.status, 200);
+  assert.ok((await pairing.text()).includes("AXO_PAIRING_CODE='ABCD-2345'"));
+  // Anything else is refused, still as a script, so `| sh` prints why.
+  for (const code of ["ABCD-EFGI", "ABCD-EFG", "'; rm -rf ~; '"]) {
+    const refused = await fetch(`${url}/install?code=${encodeURIComponent(code)}`);
+    assert.equal(refused.status, 400, code);
+    assert.match(await refused.text(), /should look like ABCD-EFGH/);
+  }
+
+  // The local bucket has no build uploaded.
+  for (const path of ["/cdn/Axo.app", "/cdn/Axo.app.zip"]) {
+    const app = await fetch(`${url}${path}`);
+    assert.equal(app.status, 404, path);
+    await app.body?.cancel();
+  }
 });

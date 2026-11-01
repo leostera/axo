@@ -1,4 +1,5 @@
 import api from "@axo/api-worker";
+import { installScriptResponse, macAppResponse } from "./install.ts";
 
 export {
   AxoAccountDirectory,
@@ -51,6 +52,9 @@ function unavailable(): Response {
 export default {
   async fetch(request: Request, env: WorkerEnvironment, executionContext: ExecutionContext): Promise<Response> {
     const { pathname } = new URL(request.url);
+    if (pathname === "/install") return installScriptResponse(request);
+    if (pathname === "/cdn/Axo.app" || pathname === "/cdn/Axo.app.zip")
+      return await macAppResponse(request, env.DOWNLOADS);
     if (pathname.startsWith("/api/public-sessions/")) {
       return await publicSessionSnapshot(request, env) ?? new Response("Not found", { status: 404 });
     }

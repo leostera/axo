@@ -13,7 +13,7 @@ export default defineConfig(({ isPreview }) => ({
     previewUrls: isPreview,
     assets: {
       notFoundHandling: "single-page-application",
-      runWorkerFirst: ["/api", "/api/*"],
+      runWorkerFirst: ["/api", "/api/*", "/install", "/cdn/*"],
     },
     observability: {
       enabled: true,
@@ -24,6 +24,8 @@ export default defineConfig(({ isPreview }) => ({
     // Sign-in with Cloudflare OAuth. The values are set on the Worker, never in this file.
     env: {
       PUBLIC_SESSIONS: bindings.r2({ name: "axo-public-sessions" }),
+      // The Mac app `/cdn/Axo.app` serves and `/install` downloads; `scripts/publish-mac.sh` uploads it.
+      DOWNLOADS: bindings.r2({ name: "axo-downloads" }),
       OAUTH_CLIENT_ID: bindings.secret(),
       OAUTH_CLIENT_SECRET: bindings.secret(),
       SESSION_SECRET: bindings.secret(),
