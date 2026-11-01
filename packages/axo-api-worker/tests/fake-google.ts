@@ -23,7 +23,7 @@ export class FakeGoogle {
   readonly sent: Array<{ raw: string; threadId: string | null }> = [];
   readonly apiCalls: string[] = [];
   readonly messages = new Map<string, { threadId: string; labelIds: string[]; headers: Record<string, string>; text: string; snippet: string }>([
-    ["m1", { threadId: "t1", labelIds: ["INBOX", "UNREAD"], headers: { From: "Grace <grace@example.com>", To: "ada@example.com", Subject: "Compilers", Date: "Fri, 30 Oct 2026 10:00:00 +0000", "Message-ID": "<m1@example.com>" }, text: "Shall we meet?", snippet: "Shall we meet?" }],
+    ["m1", { threadId: "t1", labelIds: ["INBOX", "UNREAD"], headers: { From: "Grace <grace@example.com>", To: "ada@example.com", Subject: "Compilers", Date: "Fri, 30 Oct 2026 10:00:00 +0000", "Message-ID": "<m1@example.com>" }, text: "Shall we meet?", snippet: "Shall we meet? It&#39;s &lt;soon&gt; &#x2014; G" }],
     ["m2", { threadId: "t2", labelIds: ["INBOX"], headers: { From: "news@example.com", To: "ada@example.com", Subject: "Weekly", Date: "Thu, 29 Oct 2026 10:00:00 +0000", "Message-ID": "<m2@example.com>" }, text: "", snippet: "Hello" }],
   ]);
   private readonly codes = new Map<string, { challenge: string; scopes: string[]; email: string; used: boolean }>();

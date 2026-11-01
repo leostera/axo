@@ -83,6 +83,10 @@ test("each call acts as the project it names; the token is sealed, goes only to 
   assert.deepEqual(work.servers.map((s) => s.name), ["ci"]);
   assert.match(await refused(apps.call("hetzner", "list_servers", {})), /account/);
   assert.match(await refused(apps.call("hetzner", "list_servers", { account: "eve" })), /no Hetzner account eve; signed in: personal, work/);
+  // A refused input says what the tool takes, and the input a wrong name most likely meant.
+  assert.equal(await refused(apps.call("hetzner", "server_metrics", { account: "personal", server: 1, type: "cpu", start: "2026-10-01T00:00:00Z", end: "2026-10-02T00:00:00Z" })),
+    'invalid input: "server" is not an input. It takes { account, id, type, start, end, step? }. ✖ Unrecognized key: "server"\n✖ Invalid input: expected number, received undefined\n  → at id');
+  assert.match(await refused(apps.call("hetzner", "list_servers", { account: "personal", label: "x" })), /^invalid input: "label" is not an input: did you mean "labelSelector"\? It takes \{ account, /);
 
   const rebooted = (await apps.call("hetzner", "server_action", { account: "personal", id: 2, action: "reboot" })) as { action: { command: string } };
   assert.equal(rebooted.action.command, "reboot_server");

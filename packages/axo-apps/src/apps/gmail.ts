@@ -266,7 +266,8 @@ function summary(message: Message) {
     to: header(message.payload, "To"),
     subject: header(message.payload, "Subject"),
     date: header(message.payload, "Date"),
-    snippet: message.snippet ?? "",
+    // Gmail's snippets are HTML-escaped ("Here&#39;s").
+    snippet: decodeEntities(message.snippet ?? ""),
     labelIds: message.labelIds ?? [],
   };
 }
@@ -305,6 +306,17 @@ function decodeBody(part: Part): string {
   }
 }
 
+const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+
+/** HTML character references as the characters they stand for: named ones mail uses, and numeric ones. */
+export function decodeEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (entity, name: string) => {
+    if (name[0] !== "#") return NAMED_ENTITIES[name.toLowerCase()] ?? entity;
+    const code = name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
+
 /** Enough HTML-to-text for reading mail: drops markup, keeps line structure. */
 export function htmlToText(html: string): string {
   return html
@@ -312,12 +324,7 @@ export function htmlToText(html: string): string {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, "\n")
     .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, "\"")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&amp;/gi, "&")
+    .replace(/&[a-z]+;|&#x?[0-9a-f]+;/gi, (entity) => decodeEntities(entity))
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

@@ -133,6 +133,25 @@ test("a server that needs no sign-in is ready at once, and names are unique acro
   assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
 });
 
+test("a server whose tools answer 401 says so on its page and to the agent, until a call works again", async (t) => {
+  const { server, call } = await fixture(t);
+  server.requireAuth = false;
+  result(await call("axo.connections.add", { name: "paypal", url: server.url }));
+  const state = async () => {
+    const listed = result(await call("axo.connections.list")).connections.find((c: { name: string }) => c.name === "paypal");
+    return [listed.state, listed.lastError];
+  };
+  server.upstreamRefuses = true;
+  const refused = await call("axo.connections.execute", { code: `async () => codemode.paypal.list_issues({})` });
+  assert.ok("error" in refused, JSON.stringify(refused));
+  assert.match(refused.error.message, /401 Unauthorized/);
+  assert.match(refused.error.message, /signs in to paypal again: remove it at https:\/\/axo\.leostera\.dev\/app\/settings\/apps\/mcp and add it back/);
+  assert.deepEqual(await state(), ["ready", "its tools answered Unauthorized: Failed to fetch transactions: 401 Unauthorized"]);
+  server.upstreamRefuses = false;
+  result(await call("axo.connections.execute", { code: `async () => codemode.paypal.list_issues({})` }));
+  assert.deepEqual(await state(), ["ready", null], "a call that works clears it");
+});
+
 async function waitForTools(call: (method: string, params?: Record<string, unknown>) => Promise<Reply>) {
   for (let i = 0; i < 50; i++) {
     const found = result(await call("axo.connections.search", {

@@ -100,7 +100,7 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
     return { unread, message, html: html.text };
   }`)).result;
   assert.deepEqual(found.unread, {
-    messages: [{ id: "m1", threadId: "t1", from: "Grace <grace@example.com>", to: "ada@example.com", subject: "Compilers", date: "Fri, 30 Oct 2026 10:00:00 +0000", snippet: "Shall we meet?", labelIds: ["INBOX", "UNREAD"] }],
+    messages: [{ id: "m1", threadId: "t1", from: "Grace <grace@example.com>", to: "ada@example.com", subject: "Compilers", date: "Fri, 30 Oct 2026 10:00:00 +0000", snippet: "Shall we meet? It's <soon> — G", labelIds: ["INBOX", "UNREAD"] }],
     nextPageToken: null,
     resultSizeEstimate: 1,
   });

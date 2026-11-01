@@ -1,6 +1,10 @@
 import type { Connection, ToolDefinition } from "@axo/protocol";
 import { seal, unseal } from "../auth/crypto";
 import { callTool, initialize, listTools, McpAuthRequired, McpError, toolOutput, type McpSession } from "./mcp-client";
+
+/** How a tool's "401" is recorded as the connection's last error; a working call clears it. */
+const REFUSED_UPSTREAM = "its tools answered Unauthorized";
+const SERVERS_PAGE = "https://axo.leostera.dev/app/settings/apps/mcp";
 import { findSiteIcon } from "./site-icon";
 import {
   authorizationUrl,
@@ -239,7 +243,14 @@ export class ThirdPartyConnections {
     for (let attempt = 0; ; attempt++) {
       try {
         const session = await this.session(name, attempt > 0);
-        return toolOutput(await callTool(session, stored.upstream, input, this.deps.fetcher));
+        const result = await callTool(session, stored.upstream, input, this.deps.fetcher);
+        try {
+          const output = toolOutput(result);
+          if (row.last_error?.startsWith(REFUSED_UPSTREAM)) this.deps.sql.exec("UPDATE third_party_connections SET last_error = NULL WHERE name = ? AND last_error = ?", name, row.last_error);
+          return output;
+        } catch (failed) {
+          throw this.refusedUpstream(name, failed);
+        }
       } catch (error) {
         const unauthorized = error instanceof McpAuthRequired;
         const sessionLost = error instanceof McpError && /HTTP 404/.test(error.message);
@@ -359,6 +370,20 @@ export class ThirdPartyConnections {
     this.deps.sql.exec(`UPDATE third_party_connections SET grant_sealed = NULL, needs_sign_in = 1, last_error = ?
       WHERE name = ? AND grant_generation = ?`, reason, name, generation);
     this.sessions.delete(this.key(name));
+  }
+
+  /**
+   * A tool that answers "401 Unauthorized" as its own error: the server took the grant, but the
+   * service behind it did not (PayPal's server, once its sign-in with PayPal lapsed). Axo cannot
+   * renew that, so the connection says so on its page and in connections_list, and the agent is
+   * told what the person can do; the next call that works clears it.
+   */
+  private refusedUpstream(name: string, failed: unknown): unknown {
+    const message = failed instanceof Error ? failed.message : String(failed);
+    if (!/\b401\b|\bunauthori[sz]ed\b|\binvalid[_ ]token\b|\btoken (has )?expired\b/i.test(message)) return failed;
+    const note = `${REFUSED_UPSTREAM}: ${message.replace(/\s+/g, " ").slice(0, 200)}`;
+    this.deps.sql.exec("UPDATE third_party_connections SET last_error = ? WHERE name = ?", note, name);
+    return new Error(`${message.slice(0, 3000)}\n(${name} refused this account. If its other tools say the same, the person signs in to ${name} again: remove it at ${SERVERS_PAGE} and add it back, or connections_remove then connections_add.)`);
   }
 
   private setError(name: string, error: unknown): void {

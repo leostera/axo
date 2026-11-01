@@ -450,7 +450,7 @@ export class AppConnections {
     if (!tool) throw new Error(`apps.${app} has no tool named ${toolName}; it has ${toolsOf(app).map((t) => t.name).join(", ")}`);
     if (!this.isAvailable(definition)) throw new Error(definition.signIn === "oauth" ? notSetUp(definition) : `${definition.title} is not set up on this Axo deployment`);
     const parsed = inputOf(tool).safeParse(input ?? {});
-    if (!parsed.success) throw new Error(`invalid input: ${z.prettifyError(parsed.error)}`.slice(0, 1024));
+    if (!parsed.success) throw new Error(invalidInput(inputOf(tool), parsed.error));
     const { account: named, ...rest } = parsed.data as { account: string } & Record<string, unknown>;
     if (definition.signIn === "mac") return this.callOnMac(definition, tool as AppTool<any, MacShell>, named, rest);
     const account = named.toLowerCase();
@@ -761,6 +761,45 @@ function signInOf(definition: Exclude<AppDefinition, OAuthApp>): AppSignIn {
 }
 
 /** A tool's input as scripts see it: `account` first, then the tool's own fields. */
+/**
+ * Why a tool refused its input, put so an agent can fix the call without looking the tool up:
+ * the closest input to a name it does not take, and every input it takes (`?` when optional).
+ */
+function invalidInput(schema: z.ZodObject, error: z.ZodError): string {
+  const inputs = Object.entries(schema.shape).map(([name, field]) => ((field as z.ZodType).safeParse(undefined).success ? `${name}?` : name));
+  const names = Object.keys(schema.shape);
+  const unknown = error.issues.flatMap((issue) => (issue.code === "unrecognized_keys" ? issue.keys : []));
+  const hints = unknown.map((key) => {
+    const near = closestName(key, names);
+    return near ? `${JSON.stringify(key)} is not an input: did you mean ${JSON.stringify(near)}?` : `${JSON.stringify(key)} is not an input.`;
+  });
+  return [`invalid input: ${hints.join(" ")}`.trimEnd(), `It takes { ${inputs.join(", ")} }.`, z.prettifyError(error)].join(" ").replace(/: It takes/, ": it takes").slice(0, 1024);
+}
+
+/** The name `key` most likely meant: one that contains it or that it contains, else one a couple of edits away. */
+function closestName(key: string, names: string[]): string | null {
+  const plain = (name: string) => name.toLowerCase().replace(/[_-]/g, "");
+  const k = plain(key);
+  const containing = names.filter((name) => plain(name).includes(k) || (k.length > 2 && k.includes(plain(name))));
+  if (containing.length === 1) return containing[0]!;
+  const near = names.map((name) => ({ name, d: editDistance(k, plain(name)) })).filter((x) => x.d <= Math.max(1, Math.floor(k.length / 3))).sort((a, b) => a.d - b.d);
+  return near[0]?.name ?? (containing[0] ?? null);
+}
+
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const above = row[j]!;
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return row[b.length]!;
+}
+
 function inputOf(tool: AppTool): z.ZodObject {
   return z.object({ account: accountInput }).extend(tool.input.shape).strict();
 }

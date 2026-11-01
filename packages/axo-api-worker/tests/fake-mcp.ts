@@ -12,6 +12,8 @@ export class FakeMcp {
   requireAuth = true;
   /** The icons the server names for itself in `initialize`, as MCP lets it. */
   serverIcons: Array<{ src: string; mimeType?: string }> = [];
+  /** The service behind the server refuses it, as PayPal's does once its own sign-in lapses: tools answer a 401 as their error. */
+  upstreamRefuses = false;
   /** Seconds an access token lives. */
   tokenLifetime = 3600;
   tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
@@ -95,7 +97,9 @@ export class FakeMcp {
       if (message.method === "tools/list") return json({ jsonrpc: "2.0", id: message.id, result: { tools: this.tools } });
       if (message.method === "tools/call") {
         this.calls.push({ tool: message.params!.name!, args: message.params!.arguments, token });
-        const result = { content: [{ type: "text", text: JSON.stringify({ tool: message.params!.name, args: message.params!.arguments }) }] };
+        const result = this.upstreamRefuses
+          ? { isError: true, content: [{ type: "text", text: "Failed to fetch transactions: 401 Unauthorized" }] }
+          : { content: [{ type: "text", text: JSON.stringify({ tool: message.params!.name, args: message.params!.arguments }) }] };
         // Answered as a stream, as many servers do.
         const body = `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`;
         return new MiniflareResponse(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as unknown as Response;
