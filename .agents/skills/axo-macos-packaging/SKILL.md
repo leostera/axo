@@ -34,6 +34,10 @@ plutil -p dist/Axo.app/Contents/Info.plist | grep -E 'CFBundleVersion|AXOGitComm
 - Run affected Rust (`cargo test -p axo-server --lib`, `bazel test //crates/...`) and TypeScript (`npm --prefix packages/pi-axo test`, `npm --prefix packages/axo-api run schema:check`) checks for daemon or extension changes.
 - For a delivered build, report the build number, `AXOGitCommit`, signature status and which test lanes ran.
 
+## Publishing
+
+`scripts/publish-mac.sh` uploads a clean, packaged `dist/Axo.app` to the `axo-downloads` bucket, served at `https://axo.leostera.dev/cdn/Axo.app`; `curl -fsSL https://axo.leostera.dev/install | sh` installs it on another Mac (see `sites/axo.leostera.dev/README.md`). Publish only when Leo asks. Never copy the bundle to another Mac through a browser or AirDrop: it gets quarantined and translocated, and then it cannot register axod.
+
 ## Runtime safety
 
 - Packaging is disk delivery, not deployment: running Axo and axod keep their mapped code. Never close, restart or signal discovered Axo/Axod processes; a restart needs the user's direction.
