@@ -1,0 +1,44 @@
+---
+import Site from "./Site.astro";
+import { Toc, type TocHeading } from "../components/Toc";
+
+interface Props {
+  title: string;
+  description: string;
+  current: string;
+  headings: TocHeading[];
+  tocTitle?: string;
+}
+
+const { title, description, current, headings, tocTitle = "Contents" } = Astro.props;
+---
+
+<Site title={title} description={description} current={current}>
+  <div class="mx-auto grid max-w-6xl gap-10 px-5 pt-12 lg:grid-cols-[minmax(0,1fr)_15rem] lg:gap-16 lg:pt-16">
+    <main id="content" class="min-w-0">
+      <slot name="header" />
+      <details class="mb-10 rounded-lg border border-kumo-hairline px-4 py-3 lg:hidden">
+        <summary class="cursor-pointer text-sm font-medium text-kumo-strong">{tocTitle}</summary>
+        <ol class="mt-3 space-y-1.5 text-sm">
+          {
+            headings.map((heading) => (
+              <li>
+                <a class="text-kumo-subtle hover:text-kumo-strong" href={`#${heading.slug}`}>
+                  {heading.text}
+                </a>
+              </li>
+            ))
+          }
+        </ol>
+      </details>
+      <article class="rfc">
+        <slot />
+      </article>
+    </main>
+    <aside class="hidden lg:block" aria-label={tocTitle}>
+      <div class="sticky top-24 max-h-[calc(100vh-7rem)] overflow-y-auto pb-8">
+        <Toc client:idle title={tocTitle} headings={headings} />
+      </div>
+    </aside>
+  </div>
+</Site>

@@ -1,0 +1,57 @@
+---
+import { getEntry, render } from "astro:content";
+import { Badge } from "@cloudflare/kumo";
+import Document from "../../layouts/Document.astro";
+import RfcHeader from "../../components/RfcHeader.astro";
+import { SOURCE_URL, VERSION, extensions, lastUpdated } from "../../lib/site";
+
+const entry = await getEntry("docs", "extensions/readme");
+if (!entry) throw new Error("axp/extensions/README.md not found");
+const { Content, headings } = await render(entry);
+const list = extensions();
+const toc = [
+  { slug: "available", text: "Available extensions" },
+  ...headings.filter((h) => h.depth === 2).map(({ slug, text }) => ({ slug, text })),
+];
+---
+
+<Document
+  title="Extensions · AXP"
+  description="The AXP extension registry: Sessions, Pi, terminals, connections, shares, upgrades and local control."
+  current="/extensions/"
+  headings={toc}
+>
+  <RfcHeader
+    slot="header"
+    designator={`AXP/${VERSION} · Extensions`}
+    title="Extension registry"
+    fields={[
+      { label: "Status", kind: "status", value: "Draft" },
+      { label: "Updated", kind: "date", value: lastUpdated("extensions") },
+      { label: "Source", kind: "link", value: "axp/extensions/", href: `${SOURCE_URL}extensions/README.md` },
+    ]}
+  >
+    <p>
+      Extensions add methods, slots, record conventions and fields to AXP without changing the core (<a href="/#14-extensions">§14</a>). Each one is negotiated per connection in <code>axp.hello</code>, and has its own document, schema, version and range of error codes.
+    </p>
+  </RfcHeader>
+  <h2 id="available">Available extensions</h2>
+  <ul class="extension-list">
+    {
+      list.map((extension) => (
+        <li>
+          <a href={`/extensions/${extension.id}/`} class="extension-card">
+            <span class="flex items-center gap-2">
+              <code>{extension.id}</code>
+              <Badge variant="outline">{extension.version}</Badge>
+              <Badge variant="warning">{extension.status}</Badge>
+            </span>
+            <span class="mt-2 block text-kumo-default">{extension.summary}</span>
+            <span class="mt-2 block text-sm text-kumo-subtle">Roles: {extension.roles}</span>
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+  <div class="registry"><Content /></div>
+</Document>

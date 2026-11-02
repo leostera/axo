@@ -1,0 +1,39 @@
+---
+import { getEntry, render } from "astro:content";
+import Document from "../layouts/Document.astro";
+import RfcHeader from "../components/RfcHeader.astro";
+import { SCHEMA_PATH, SITE_URL, SOURCE_URL, VERSION, lastUpdated } from "../lib/site";
+
+const entry = await getEntry("docs", "spec");
+if (!entry) throw new Error("axp/SPEC.md not found");
+const { Content, headings } = await render(entry);
+const toc = headings.filter((h) => h.depth === 2).map(({ slug, text }) => ({ slug, text }));
+---
+
+<Document
+  title="AXP: Agent Xchange Protocol"
+  description="A protocol for moving live coding-agent Sessions between the machine that runs them and the phones, browsers and computers that watch and steer them. Logs are ATXF transcripts."
+  current="/"
+  headings={toc}
+>
+  <RfcHeader
+    slot="header"
+    designator={`AXP/${VERSION}`}
+    title="Agent Xchange Protocol"
+    fields={[
+      { label: "Status", kind: "status", value: "Draft" },
+      { label: "Version", kind: "text", value: VERSION },
+      { label: "Updated", kind: "date", value: lastUpdated("SPEC.md") },
+      { label: "Author", kind: "text", value: "Leo Ostera" },
+      { label: "Conventions", kind: "link", value: "MUST, SHOULD and MAY as in RFC 2119", href: "https://www.rfc-editor.org/rfc/rfc2119" },
+      { label: "Logs", kind: "link", value: "ATXF 0.1", href: "https://atxf.leostera.dev" },
+      { label: "Schema", kind: "copy", value: `${SITE_URL}${SCHEMA_PATH}` },
+      { label: "Source", kind: "link", value: "axp/SPEC.md", href: `${SOURCE_URL}SPEC.md` },
+    ]}
+  >
+    <p>
+      AXP moves live coding-agent Sessions between the machine that runs them and the people and programs that watch and steer them. A <strong>host</strong> runs Sessions and is the only writer of each one's log, a <strong>hub</strong> connects hosts and clients that cannot reach each other, and a <strong>client</strong> shows Sessions and sends commands. This document is the core: transports, connections, pairing, the directory, log replication, commands and ephemeral state. Everything else is an <a href="/extensions/">extension</a>.
+    </p>
+  </RfcHeader>
+  <Content />
+</Document>

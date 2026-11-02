@@ -1,0 +1,56 @@
+---
+import "../styles/site.css";
+import { SiteHeader } from "../components/SiteHeader";
+import { REPO_URL, TREE_URL } from "../lib/site";
+
+interface Props {
+  title: string;
+  description: string;
+  current: string;
+}
+
+const { title, description, current } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+---
+
+<!doctype html>
+<html lang="en" data-theme="kumo">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="article" />
+    <meta property="og:url" content={canonical} />
+    <script is:inline>
+      // Follow the system colour scheme using Kumo's data-mode attribute.
+      (() => {
+        const query = window.matchMedia("(prefers-color-scheme: dark)");
+        const apply = () => document.documentElement.setAttribute("data-mode", query.matches ? "dark" : "light");
+        apply();
+        query.addEventListener("change", apply);
+      })();
+    </script>
+  </head>
+  <body>
+    <a
+      href="#content"
+      class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-20 focus:rounded focus:bg-kumo-base focus:px-3 focus:py-2"
+      >Skip to content</a
+    >
+    <SiteHeader current={current} />
+    <slot />
+    <footer class="mt-24 border-t border-kumo-hairline">
+      <div class="mx-auto flex max-w-6xl flex-wrap gap-x-6 gap-y-2 px-5 py-8 text-sm text-kumo-subtle">
+        <span>AXP v0.1 is a draft and may change without notice.</span>
+        <a class="underline underline-offset-4 hover:text-kumo-strong" href={TREE_URL}>Source</a>
+        <a class="underline underline-offset-4 hover:text-kumo-strong" href={`${REPO_URL}/issues`}>Issues</a>
+        <a class="underline underline-offset-4 hover:text-kumo-strong" href="https://atxf.leostera.dev">ATXF</a>
+      </div>
+    </footer>
+  </body>
+</html>

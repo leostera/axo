@@ -1,0 +1,56 @@
+---
+import { Badge, Link, Text } from "@cloudflare/kumo";
+import { CopyText } from "./CopyText";
+
+/** One line of RFC front matter. */
+export type RfcField =
+  | { label: string; kind: "text"; value: string }
+  | { label: string; kind: "status"; value: string }
+  | { label: string; kind: "date"; value: string }
+  | { label: string; kind: "link"; value: string; href: string }
+  | { label: string; kind: "copy"; value: string };
+
+interface Props {
+  designator: string;
+  title: string;
+  fields: RfcField[];
+}
+
+const { designator, title, fields } = Astro.props;
+---
+
+<header class="mb-12 max-w-[72ch]">
+  <Text variant="mono-secondary">{designator}</Text>
+  <h1
+    class="mt-2 text-[2rem] font-semibold leading-tight tracking-[-0.02em] text-balance text-kumo-strong sm:text-[2.4rem]"
+  >
+    {title}
+  </h1>
+  <dl class="mt-6 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-6 gap-y-2 border-y border-kumo-hairline py-4 text-sm">
+    {
+      fields.map((field) => (
+        <>
+          <dt class="text-kumo-subtle">{field.label}</dt>
+          <dd class="min-w-0 text-kumo-default">
+            {field.kind === "status" && <Badge variant="warning">{field.value}</Badge>}
+            {field.kind === "text" && field.value}
+            {field.kind === "date" && <time datetime={field.value}>{field.value}</time>}
+            {field.kind === "link" && (
+              <Link href={field.href} variant="inline">
+                {field.value}
+              </Link>
+            )}
+            {field.kind === "copy" && <CopyText client:visible text={field.value} />}
+          </dd>
+        </>
+      ))
+    }
+  </dl>
+  {
+    Astro.slots.has("default") && (
+      <div class="mt-6 text-[1.05rem] leading-relaxed text-kumo-default">
+        <slot />
+      </div>
+    )
+  }
+</header>

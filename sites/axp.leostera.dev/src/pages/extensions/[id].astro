@@ -1,0 +1,40 @@
+---
+import { getEntry, render } from "astro:content";
+import Document from "../../layouts/Document.astro";
+import RfcHeader from "../../components/RfcHeader.astro";
+import { SITE_URL, SOURCE_URL, VERSION, extensions, lastUpdated, type Extension } from "../../lib/site";
+
+export function getStaticPaths() {
+  return extensions().map((extension) => ({ params: { id: extension.id }, props: { extension } }));
+}
+
+const { extension } = Astro.props as { extension: Extension };
+const entry = await getEntry("docs", `extensions/${extension.id}`);
+if (!entry) throw new Error(`axp/extensions/${extension.id}.md not found`);
+const { Content, headings } = await render(entry);
+const toc = headings.filter((h) => h.depth === 2).map(({ slug, text }) => ({ slug, text }));
+const title = headings.find((h) => h.depth === 1)?.text ?? extension.id;
+---
+
+<Document
+  title={`${extension.id} · AXP extensions`}
+  description={extension.summary}
+  current="/extensions/"
+  headings={toc}
+>
+  <RfcHeader
+    slot="header"
+    designator={`AXP/${VERSION} · Extension ${extension.id}/${extension.version}`}
+    title={title.replace(/^AXP extension: /, "")}
+    fields={[
+      { label: "Status", kind: "status", value: extension.status },
+      { label: "Version", kind: "text", value: extension.version },
+      { label: "Requires", kind: "text", value: extension.requires },
+      { label: "Roles", kind: "text", value: extension.roles },
+      { label: "Updated", kind: "date", value: lastUpdated(`extensions/${extension.id}.md`) },
+      { label: "Schema", kind: "copy", value: `${SITE_URL}${extension.schemaPath}` },
+      { label: "Source", kind: "link", value: `axp/extensions/${extension.id}.md`, href: `${SOURCE_URL}extensions/${extension.id}.md` },
+    ]}
+  />
+  <Content />
+</Document>

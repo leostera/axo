@@ -1,0 +1,67 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//sites/axp.leostera.dev:astro/package_json.bzl", astro_bin = "bin")
+load("@npm//sites/axp.leostera.dev:cf/package_json.bzl", cf_bin = "bin")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+_NODE_MODULES = [
+    ":node_modules/@astrojs/cloudflare",
+    ":node_modules/@astrojs/markdown-remark",
+    ":node_modules/@astrojs/react",
+    ":node_modules/@cloudflare/kumo",
+    ":node_modules/@phosphor-icons/react",
+    ":node_modules/@tailwindcss/vite",
+    ":node_modules/astro",
+    ":node_modules/cf",
+    ":node_modules/react",
+    ":node_modules/react-dom",
+    ":node_modules/tailwindcss",
+]
+
+# The site's files, and the documents in axp/ it renders.
+js_library(
+    name = "app_files",
+    srcs = [
+        "astro.config.mjs",
+        "cloudflare.config.ts",
+        "package.json",
+        "tsconfig.json",
+    ] + glob(["public/**", "src/**"]),
+    deps = _NODE_MODULES + ["//axp:spec"],
+)
+
+# .cloudflare/output: the prerendered site as Workers Static Assets, which `cf deploy` uploads.
+astro_bin.astro(
+    name = "site",
+    srcs = [":app_files"],
+    out_dirs = [".cloudflare/output"],
+    args = ["build"],
+    chdir = package_name(),
+    # The sandbox's inputs are symlinks out of the output tree; Vite follows them out of its root.
+    execution_requirements = {"no-sandbox": "1"},
+)
+
+# The Cloudflare CLI, run from the site: `bazel run //sites/axp.leostera.dev:cf -- deploy`.
+cf_bin.cf_binary(
+    name = "cf",
+    chdir = package_name(),
+    data = [
+        ":app_files",
+        ":site",
+    ],
+)
+
+# Every schema is served at its $id, every example at /examples/, and every link between pages
+# goes to a page that exists.
+node_test(
+    name = "test",
+    data = [
+        ":site",
+        "//axp:spec",
+    ],
+    tests = ["tests/site.test.mjs"],
+)

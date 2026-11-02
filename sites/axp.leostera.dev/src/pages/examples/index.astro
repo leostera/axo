@@ -1,0 +1,97 @@
+---
+import { createServerHighlighter, CodeBlock } from "@cloudflare/kumo/code/server";
+import { Link } from "@cloudflare/kumo";
+import Document from "../../layouts/Document.astro";
+import RfcHeader from "../../components/RfcHeader.astro";
+import { TREE_URL, VERSION, examples } from "../../lib/site";
+
+const DESCRIPTIONS: Record<string, string> = {
+  pairing: "A phone that is already signed in lets a new Mac into the account with a code; the Mac then connects with its own key.",
+  replication: "A host announces its Sessions; the hub opens each log from where its replica ends and keeps it open for new records.",
+  reading: "A phone lists hosts and Sessions, opens a log from its last records, pages back, and follows the reply being written.",
+  command: "A prompt whose connection drops before the receipt arrives, resent safely with the same commandId, and its effect arriving in the log.",
+  terminal: "Attaching to a shell, typing into it, and its output, which goes only to attached clients and is never stored.",
+  divergence: "A host restored from a backup lost two records the hub holds. It stops writing, finds where the copies agree, and reads them back.",
+  fragments: "A log batch larger than the hub accepts travels in parts, and a response overtakes it.",
+  session: "The Session log the exchanges carry: an ATXF transcript with integrity. Every hash and chain in the exchanges is computed from it.",
+};
+
+const methodOf = (message: Record<string, unknown>) =>
+  typeof message.method === "string" ? message.method : "error" in message ? "error" : "result";
+
+const files = examples();
+const highlighter = await createServerHighlighter({ languages: ["json", "bash"] });
+const rendered = files.map((example) => ({
+  ...example,
+  description: DESCRIPTIONS[example.slug] ?? "",
+  messages: example.lines.map((line) => ({
+    ...line,
+    label: methodOf(line.message),
+    id: (line.message as { id?: number }).id,
+    html: highlighter.highlight(JSON.stringify(line.message, null, 2), "json"),
+  })),
+  html: example.lines.length === 0 ? highlighter.highlight(example.text.trimEnd(), "json") : "",
+}));
+const checkHtml = highlighter.highlight("bazel test //axp/...", "bash");
+highlighter.dispose();
+
+const toc = rendered.map((example) => ({ slug: example.slug, text: example.file }));
+---
+
+<Document
+  title="Examples · AXP"
+  description="Whole AXP exchanges: pairing, replication, reading a log, commands, terminals, divergence and fragments."
+  current="/examples/"
+  headings={toc}
+  tocTitle="Exchanges"
+>
+  <RfcHeader
+    slot="header"
+    designator={`AXP/${VERSION} · Appendix A`}
+    title="Example exchanges"
+    fields={[
+      { label: "Status", kind: "status", value: "Draft" },
+      { label: "Nature", kind: "text", value: "Informative" },
+      { label: "Source", kind: "link", value: "axp/examples/", href: `${TREE_URL}examples` },
+    ]}
+  >
+    <p>
+      Each file is one exchange, one message per line, with who sent it to whom. The hashes, chains and signatures
+      are real: every message validates against the schemas, every record and Offer matches the example log, and the
+      host's signature verifies with the key it paired with. The repository's tests check all of it:
+    </p>
+  </RfcHeader>
+  <div class="mb-4 max-w-[72ch]"><CodeBlock html={checkHtml} /></div>
+  {
+    rendered.map((example) => (
+      <section class="example">
+        <h2 id={example.slug}>{example.file}</h2>
+        <p>{example.description}</p>
+        {example.messages.length > 0 ? (
+          <ol class="exchange">
+            {example.messages.map((message) => (
+              <li>
+                <div class="direction">
+                  <span class="peer">{message.from}</span>
+                  <span aria-hidden="true">→</span>
+                  <span class="peer">{message.to}</span>
+                  <span class="method">{message.label}</span>
+                  {message.id !== undefined && <span>#{message.id}</span>}
+                </div>
+                {message.note && <p class="note">{message.note}</p>}
+                <CodeBlock html={message.html} className="exchange-code" />
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <CodeBlock html={example.html} className="example-code" />
+        )}
+        <p class="text-sm">
+          <Link href={`/examples/${example.file}`} variant="inline">
+            Raw file
+          </Link>
+        </p>
+      </section>
+    ))
+  }
+</Document>
