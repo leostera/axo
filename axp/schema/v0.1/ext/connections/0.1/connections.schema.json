@@ -1,0 +1,387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/connections/0.1/connections.schema.json",
+  "title": "AXP extension `connections` 0.1",
+  "description": "Tools an account connects at its hub. See extensions/connections.md.",
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "inputSchema": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "inputSchema"
+      ]
+    },
+    "connection": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "kind": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/kind"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "needsSignIn",
+            "error"
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "status",
+        "tools"
+      ]
+    },
+    "call": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "hostId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "connection": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/time"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "isError": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sessionId",
+        "hostId",
+        "connection",
+        "tool",
+        "at",
+        "durationMs",
+        "isError"
+      ]
+    },
+    "connections.list.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "connections.list.result": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/connection"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connections"
+      ]
+    },
+    "connections.search.params": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    },
+    "connections.search.result": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "connection": {
+                "type": "string"
+              },
+              "tool": {
+                "$ref": "#/$defs/tool"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "connection",
+              "tool"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tools"
+      ]
+    },
+    "connections.execute.params": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "connection": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "connection",
+        "tool",
+        "arguments"
+      ]
+    },
+    "connections.execute.result": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "isError": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "content",
+        "isError"
+      ]
+    },
+    "connections.script.params": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 262144
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "source"
+      ]
+    },
+    "connections.script.result": {
+      "type": "object",
+      "properties": {
+        "result": true,
+        "logs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "logs"
+      ]
+    },
+    "connections.log.params": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "before": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      },
+      "additionalProperties": false
+    },
+    "connections.log.result": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/call"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "calls"
+      ]
+    },
+    "connections.add.params": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/kind"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "connections.add.result": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "$ref": "#/$defs/connection"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connection"
+      ]
+    },
+    "connections.remove.params": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "connections.remove.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "connections.signIn.params": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "connections.signIn.result": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ]
+    },
+    "connections.changed.params": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/connection"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connections"
+      ]
+    }
+  }
+}

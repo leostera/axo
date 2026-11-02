@@ -2,6 +2,7 @@
 # (aspect_rules_js, RFD0021).
 packages:
   - assets
+  - axp
   - packages/*
   - sites/*
   - docs/explainers/remote-access

@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/axp.schema.json",
+  "title": "AXP v0.1 core",
+  "description": "Parameters and results of the AXP core methods and notifications. A method `m` has its parameters at `#/$defs/m.params` and, when it is a request, its result at `#/$defs/m.result`. See SPEC.md for the semantics a schema cannot express.",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "time": { "type": "string", "format": "date-time" },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "base64url": { "type": "string", "pattern": "^[A-Za-z0-9_-]*$" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "commandId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$" },
+    "role": { "enum": ["host", "hub", "client"] },
+    "kind": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+    "label": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+    "extensionId": {
+      "type": "string",
+      "pattern": "^([a-z][a-z0-9-]{0,31}|[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+)$"
+    },
+    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/extensionId" },
+      "additionalProperties": { "$ref": "#/$defs/version" }
+    },
+    "ext": {
+      "description": "Extension data, keyed by extension identifier (SPEC §14).",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/extensionId" }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "messageBytes": { "type": "integer", "minimum": 4096 },
+        "fragmentBytes": { "type": "integer", "minimum": 1024 },
+        "maxMessageBytes": { "type": "integer", "minimum": 4096 },
+        "batchRecords": { "type": "integer", "minimum": 1 },
+        "batchBytes": { "type": "integer", "minimum": 4096 },
+        "batchesInFlight": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "priority": { "enum": ["control", "durable", "ephemeral"] },
+
+    "hostIdentity": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "generation": { "$ref": "#/$defs/uuid" },
+        "kind": { "$ref": "#/$defs/kind" },
+        "label": { "$ref": "#/$defs/label" }
+      },
+      "required": ["hostId", "generation", "kind", "label"],
+      "additionalProperties": false
+    },
+    "presence": {
+      "description": "`online`, `offline`, or a value an extension defines (such as `restarting`).",
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z]{0,31}$"
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "generation": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "kind": { "$ref": "#/$defs/kind" },
+        "label": { "$ref": "#/$defs/label" },
+        "presence": { "$ref": "#/$defs/presence" },
+        "lastSeenAt": { "$ref": "#/$defs/time" },
+        "extensions": { "$ref": "#/$defs/extensions" },
+        "ext": { "$ref": "#/$defs/ext" }
+      },
+      "required": ["hostId", "generation", "kind", "label", "presence", "lastSeenAt", "extensions"],
+      "additionalProperties": false
+    },
+    "status": { "enum": ["starting", "ready", "working", "needsAttention", "unavailable"] },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "name": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 80 }, { "type": "null" }] },
+        "createdAt": { "$ref": "#/$defs/time" },
+        "lastActivityAt": { "oneOf": [{ "$ref": "#/$defs/time" }, { "type": "null" }] },
+        "archived": { "type": "boolean" },
+        "agent": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "ext": { "$ref": "#/$defs/ext" }
+      },
+      "required": ["name", "createdAt", "lastActivityAt", "archived", "agent"],
+      "additionalProperties": false
+    },
+    "offer": {
+      "description": "What a copy of a log holds: the values an ATXF seal would carry after its last record (SPEC §8.1).",
+      "type": "object",
+      "properties": {
+        "count": { "$ref": "#/$defs/count" },
+        "chain": { "$ref": "#/$defs/hash" },
+        "heads": { "type": "array", "items": { "$ref": "#/$defs/hash" }, "maxItems": 1024 }
+      },
+      "required": ["count", "chain"],
+      "additionalProperties": false
+    },
+    "sessionSummary": {
+      "type": "object",
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "metadataVersion": { "type": "integer", "minimum": 1 },
+        "metadata": { "$ref": "#/$defs/metadata" },
+        "status": { "$ref": "#/$defs/status" },
+        "log": { "oneOf": [{ "$ref": "#/$defs/offer" }, { "type": "null" }] }
+      },
+      "required": ["sessionId", "metadataVersion", "metadata", "status", "log"],
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "metadataVersion": { "type": "integer", "minimum": 1 },
+        "metadata": { "$ref": "#/$defs/metadata" },
+        "status": { "$ref": "#/$defs/status" },
+        "log": { "oneOf": [{ "$ref": "#/$defs/offer" }, { "type": "null" }] }
+      },
+      "required": ["hostId", "sessionId", "metadataVersion", "metadata", "status", "log"],
+      "additionalProperties": false
+    },
+    "header": {
+      "description": "An ATXF transcript header with integrity declared.",
+      "allOf": [
+        { "$ref": "https://atxf.leostera.dev/schema/v0.1/atxf.schema.json#/$defs/transcriptRecord" },
+        { "required": ["integrity", "hash"] }
+      ]
+    },
+    "record": {
+      "description": "An ATXF record other than the header, carrying its hash.",
+      "allOf": [
+        { "$ref": "https://atxf.leostera.dev/schema/v0.1/atxf.schema.json#/$defs/record" },
+        { "not": { "properties": { "type": { "const": "transcript" } } } },
+        { "required": ["hash"] }
+      ]
+    },
+    "records": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "slot": {
+      "type": "object",
+      "properties": {
+        "slot": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": true,
+        "at": { "$ref": "#/$defs/time" }
+      },
+      "required": ["slot", "value", "at"],
+      "additionalProperties": false
+    },
+    "logRef": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" }
+      },
+      "required": ["hostId", "sessionId"]
+    },
+    "device": {
+      "type": "object",
+      "properties": {
+        "device": { "$ref": "#/$defs/uuid" },
+        "role": { "enum": ["host", "client"] },
+        "kind": { "$ref": "#/$defs/kind" },
+        "label": { "$ref": "#/$defs/label" },
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "pairedAt": { "$ref": "#/$defs/time" },
+        "lastSeenAt": { "oneOf": [{ "$ref": "#/$defs/time" }, { "type": "null" }] }
+      },
+      "required": ["device", "role", "kind", "label", "pairedAt", "lastSeenAt"],
+      "additionalProperties": false
+    },
+    "pairingCode": {
+      "description": "Crockford base32, two groups of four. Receivers normalize case and O/I/L before matching (SPEC §5.3).",
+      "type": "string",
+      "pattern": "^[0-9A-Za-z]{4}-[0-9A-Za-z]{4}$"
+    },
+    "empty": { "type": "object", "additionalProperties": false },
+    "errorData": {
+      "type": "object",
+      "properties": {
+        "retry": { "enum": ["safe", "unknown", "never"] },
+        "retryAfterMs": { "type": "integer", "minimum": 0 },
+        "versions": { "type": "array", "items": { "$ref": "#/$defs/version" } },
+        "have": { "$ref": "#/$defs/offer" },
+        "limit": { "type": "string" }
+      },
+      "required": ["retry"]
+    },
+
+    "axp.hello.params": {
+      "type": "object",
+      "properties": {
+        "axp": { "$ref": "#/$defs/version" },
+        "role": { "$ref": "#/$defs/role" },
+        "device": { "$ref": "#/$defs/uuid" },
+        "host": { "$ref": "#/$defs/hostIdentity" },
+        "extensions": { "$ref": "#/$defs/extensions" },
+        "limits": { "$ref": "#/$defs/limits" }
+      },
+      "required": ["axp", "role", "extensions"],
+      "if": { "properties": { "role": { "const": "host" } } },
+      "then": { "required": ["host"] },
+      "additionalProperties": false
+    },
+    "axp.hello.result": {
+      "type": "object",
+      "properties": {
+        "axp": { "$ref": "#/$defs/version" },
+        "role": { "$ref": "#/$defs/role" },
+        "challenge": { "$ref": "#/$defs/base64url", "minLength": 43, "maxLength": 43 },
+        "extensions": { "$ref": "#/$defs/extensions" },
+        "limits": { "$ref": "#/$defs/limits" }
+      },
+      "required": ["axp", "role", "extensions"],
+      "additionalProperties": false
+    },
+    "axp.auth.params": {
+      "type": "object",
+      "properties": { "signature": { "$ref": "#/$defs/base64url", "minLength": 86, "maxLength": 86 } },
+      "required": ["signature"],
+      "additionalProperties": false
+    },
+    "axp.auth.result": {
+      "type": "object",
+      "properties": {
+        "account": { "$ref": "#/$defs/uuid" },
+        "device": { "$ref": "#/$defs/uuid" },
+        "role": { "enum": ["host", "client"] }
+      },
+      "required": ["account", "device", "role"],
+      "additionalProperties": false
+    },
+    "axp.bye.params": {
+      "type": "object",
+      "properties": { "reason": { "type": "string", "maxLength": 256 } },
+      "additionalProperties": false
+    },
+    "axp.ping.params": { "$ref": "#/$defs/empty" },
+    "axp.ping.result": { "$ref": "#/$defs/empty" },
+    "axp.fragment.params": {
+      "type": "object",
+      "properties": {
+        "message": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "part": { "$ref": "#/$defs/count" },
+        "parts": { "type": "integer", "minimum": 2 },
+        "priority": { "$ref": "#/$defs/priority" },
+        "data": { "$ref": "#/$defs/base64url", "minLength": 1 }
+      },
+      "required": ["message", "part", "parts", "priority", "data"],
+      "additionalProperties": false
+    },
+    "axp.discard.params": {
+      "type": "object",
+      "properties": { "message": { "type": "string", "minLength": 1, "maxLength": 64 } },
+      "required": ["message"],
+      "additionalProperties": false
+    },
+
+    "axp.pair.create.params": {
+      "type": "object",
+      "properties": {
+        "role": { "enum": ["host", "client"] },
+        "label": { "$ref": "#/$defs/label" }
+      },
+      "required": ["role"],
+      "additionalProperties": false
+    },
+    "axp.pair.create.result": {
+      "type": "object",
+      "properties": {
+        "code": { "$ref": "#/$defs/pairingCode" },
+        "uri": { "type": "string", "pattern": "^axp://[^/]+/pair/[0-9A-Za-z]{4}-[0-9A-Za-z]{4}$" },
+        "expiresAt": { "$ref": "#/$defs/time" }
+      },
+      "required": ["code", "uri", "expiresAt"],
+      "additionalProperties": false
+    },
+    "axp.pair.redeem.params": {
+      "type": "object",
+      "properties": {
+        "code": { "$ref": "#/$defs/pairingCode" },
+        "publicKey": { "$ref": "#/$defs/base64url", "minLength": 43, "maxLength": 43 },
+        "role": { "enum": ["host", "client"] },
+        "kind": { "$ref": "#/$defs/kind" },
+        "label": { "$ref": "#/$defs/label" },
+        "hostId": { "$ref": "#/$defs/uuid" }
+      },
+      "required": ["code", "publicKey", "role", "kind", "label"],
+      "if": { "properties": { "role": { "const": "host" } } },
+      "then": { "required": ["hostId"] },
+      "else": { "not": { "required": ["hostId"] } },
+      "additionalProperties": false
+    },
+    "axp.pair.redeem.result": {
+      "type": "object",
+      "properties": {
+        "account": { "$ref": "#/$defs/uuid" },
+        "device": { "$ref": "#/$defs/uuid" },
+        "pairedAt": { "$ref": "#/$defs/time" }
+      },
+      "required": ["account", "device", "pairedAt"],
+      "additionalProperties": false
+    },
+    "axp.devices.list.params": { "$ref": "#/$defs/empty" },
+    "axp.devices.list.result": {
+      "type": "object",
+      "properties": { "devices": { "type": "array", "items": { "$ref": "#/$defs/device" } } },
+      "required": ["devices"],
+      "additionalProperties": false
+    },
+    "axp.device.revoke.params": {
+      "type": "object",
+      "properties": { "device": { "$ref": "#/$defs/uuid" } },
+      "required": ["device"],
+      "additionalProperties": false
+    },
+    "axp.device.revoke.result": { "$ref": "#/$defs/empty" },
+
+    "axp.host.announce.params": {
+      "type": "object",
+      "properties": {
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/sessionSummary" }, "maxItems": 4096 }
+      },
+      "required": ["sessions"],
+      "additionalProperties": false
+    },
+    "axp.host.announce.result": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sessionId": { "$ref": "#/$defs/uuid" },
+              "log": { "oneOf": [{ "$ref": "#/$defs/offer" }, { "type": "null" }] }
+            },
+            "required": ["sessionId", "log"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["sessions"],
+      "additionalProperties": false
+    },
+    "axp.host.rename.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "label": { "type": "string", "maxLength": 128, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" }
+      },
+      "required": ["hostId", "label"],
+      "additionalProperties": false
+    },
+    "axp.host.rename.result": {
+      "type": "object",
+      "properties": { "label": { "$ref": "#/$defs/label" } },
+      "required": ["label"],
+      "additionalProperties": false
+    },
+    "axp.session.update.params": {
+      "type": "object",
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "metadataVersion": { "type": "integer", "minimum": 1 },
+        "metadata": { "$ref": "#/$defs/metadata" },
+        "status": { "$ref": "#/$defs/status" },
+        "log": { "$ref": "#/$defs/offer" }
+      },
+      "required": ["sessionId"],
+      "dependentRequired": { "metadata": ["metadataVersion"], "metadataVersion": ["metadata"] },
+      "additionalProperties": false
+    },
+    "axp.session.update.result": {
+      "type": "object",
+      "properties": { "applied": { "type": "boolean" } },
+      "required": ["applied"],
+      "additionalProperties": false
+    },
+    "axp.hosts.list.params": { "$ref": "#/$defs/empty" },
+    "axp.hosts.list.result": {
+      "type": "object",
+      "properties": { "hosts": { "type": "array", "items": { "$ref": "#/$defs/host" } } },
+      "required": ["hosts"],
+      "additionalProperties": false
+    },
+    "axp.sessions.list.params": {
+      "type": "object",
+      "properties": { "hostId": { "$ref": "#/$defs/uuid" } },
+      "additionalProperties": false
+    },
+    "axp.sessions.list.result": {
+      "type": "object",
+      "properties": { "sessions": { "type": "array", "items": { "$ref": "#/$defs/session" } } },
+      "required": ["sessions"],
+      "additionalProperties": false
+    },
+    "axp.subscribe.params": { "$ref": "#/$defs/empty" },
+    "axp.subscribe.result": { "$ref": "#/$defs/empty" },
+    "axp.unsubscribe.params": { "$ref": "#/$defs/empty" },
+    "axp.unsubscribe.result": { "$ref": "#/$defs/empty" },
+    "axp.hosts.changed.params": {
+      "type": "object",
+      "properties": { "hosts": { "type": "array", "items": { "$ref": "#/$defs/host" }, "minItems": 1 } },
+      "required": ["hosts"],
+      "additionalProperties": false
+    },
+    "axp.sessions.changed.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/session" }, "minItems": 1 }
+      },
+      "required": ["hostId", "sessions"],
+      "additionalProperties": false
+    },
+
+    "axp.log.open.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "have": { "$ref": "#/$defs/offer" },
+        "window": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["hostId", "sessionId"],
+      "additionalProperties": false
+    },
+    "axp.log.open.result": {
+      "type": "object",
+      "properties": {
+        "header": { "oneOf": [{ "$ref": "#/$defs/header" }, { "type": "null" }] },
+        "from": { "$ref": "#/$defs/count" },
+        "records": { "$ref": "#/$defs/records" },
+        "have": { "$ref": "#/$defs/offer" },
+        "older": { "oneOf": [{ "$ref": "#/$defs/count" }, { "type": "null" }] },
+        "slots": { "type": "array", "items": { "$ref": "#/$defs/slot" } }
+      },
+      "required": ["header", "from", "records", "have", "older", "slots"],
+      "additionalProperties": false
+    },
+    "axp.log.records.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "from": { "$ref": "#/$defs/count" },
+        "records": { "allOf": [{ "$ref": "#/$defs/records" }, { "minItems": 1 }] },
+        "have": { "$ref": "#/$defs/offer" }
+      },
+      "required": ["hostId", "sessionId", "from", "records", "have"],
+      "additionalProperties": false
+    },
+    "axp.log.ack.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "count": { "$ref": "#/$defs/count" }
+      },
+      "required": ["hostId", "sessionId", "count"],
+      "additionalProperties": false
+    },
+    "axp.log.older.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "before": { "type": "integer", "minimum": 1 },
+        "limit": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["hostId", "sessionId", "before", "limit"],
+      "additionalProperties": false
+    },
+    "axp.log.older.result": {
+      "type": "object",
+      "properties": {
+        "from": { "$ref": "#/$defs/count" },
+        "records": { "$ref": "#/$defs/records" },
+        "older": { "oneOf": [{ "$ref": "#/$defs/count" }, { "type": "null" }] }
+      },
+      "required": ["from", "records", "older"],
+      "additionalProperties": false
+    },
+    "axp.log.chains.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "positions": { "type": "array", "items": { "$ref": "#/$defs/count" }, "minItems": 1, "maxItems": 32 }
+      },
+      "required": ["hostId", "sessionId", "positions"],
+      "additionalProperties": false
+    },
+    "axp.log.chains.result": {
+      "type": "object",
+      "properties": {
+        "chains": { "type": "array", "items": { "oneOf": [{ "$ref": "#/$defs/hash" }, { "type": "null" }] } }
+      },
+      "required": ["chains"],
+      "additionalProperties": false
+    },
+    "axp.log.close.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" }
+      },
+      "required": ["hostId", "sessionId"],
+      "additionalProperties": false
+    },
+    "axp.log.close.result": { "$ref": "#/$defs/empty" },
+
+    "axp.slot.params": {
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "slot": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": true,
+        "at": { "$ref": "#/$defs/time" }
+      },
+      "required": ["hostId", "sessionId", "slot", "value", "at"],
+      "additionalProperties": false
+    },
+
+    "receipt": {
+      "description": "The result of a command (SPEC §9.2). Extensions add fields to it with `allOf`.",
+      "type": "object",
+      "properties": {
+        "receipt": { "const": "accepted" },
+        "duplicate": { "type": "boolean" }
+      },
+      "required": ["receipt"]
+    },
+    "routed": {
+      "description": "The params every routed call carries (SPEC §9.1). `from` is added by a hub.",
+      "type": "object",
+      "properties": {
+        "hostId": { "$ref": "#/$defs/uuid" },
+        "generation": { "$ref": "#/$defs/uuid" },
+        "from": {
+          "type": "object",
+          "properties": { "device": { "$ref": "#/$defs/uuid" } },
+          "required": ["device"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["hostId"]
+    },
+    "command": {
+      "description": "The params every command carries (SPEC §9.2).",
+      "allOf": [
+        { "$ref": "#/$defs/routed" },
+        { "properties": { "commandId": { "$ref": "#/$defs/commandId" } }, "required": ["commandId"] }
+      ]
+    }
+  }
+}

@@ -1,0 +1,554 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/terminal/0.1/terminal.schema.json",
+  "title": "AXP extension `terminal` 0.1",
+  "description": "Pseudo-terminals, layouts and terminal bytes. See extensions/terminal.md.",
+  "$defs": {
+    "layoutNode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "shell": {
+              "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "shell"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "enum": [
+                "row",
+                "column"
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/layoutNode"
+              },
+              "minItems": 2,
+              "maxItems": 8
+            },
+            "sizes": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 8
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "direction",
+            "children",
+            "sizes"
+          ]
+        }
+      ]
+    },
+    "shell": {
+      "type": "object",
+      "properties": {
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "shellId",
+        "title",
+        "rows",
+        "cols"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "layout": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/layoutNode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shell"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "layout",
+        "shells"
+      ]
+    },
+    "screen": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cursor": {
+          "type": "object",
+          "properties": {
+            "row": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "col": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "row",
+            "col"
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rows",
+        "cols",
+        "cursor",
+        "lines"
+      ]
+    },
+    "terminal.shell.create.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cwd": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "rows",
+        "cols"
+      ]
+    },
+    "terminal.shell.create.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true,
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "shellId"
+      ]
+    },
+    "terminal.shell.close.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "shellId"
+      ]
+    },
+    "terminal.shell.close.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "terminal.layout.set.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "layout": {
+          "$ref": "#/$defs/layoutNode"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "layout"
+      ]
+    },
+    "terminal.layout.set.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "terminal.attach.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/routed"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "shellId"
+      ]
+    },
+    "terminal.attach.result": {
+      "type": "object",
+      "properties": {
+        "screen": {
+          "$ref": "#/$defs/screen"
+        },
+        "seq": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/count"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "screen",
+        "seq"
+      ]
+    },
+    "terminal.detach.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/routed"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "shellId"
+      ]
+    },
+    "terminal.detach.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "terminal.input.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/routed"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "seq": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/count"
+        },
+        "data": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/base64url",
+          "minLength": 1,
+          "maxLength": 87382
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "shellId",
+        "seq",
+        "data"
+      ]
+    },
+    "terminal.input.result": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/count"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "seq"
+      ]
+    },
+    "terminal.resize.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/routed"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "shellId",
+        "rows",
+        "cols"
+      ]
+    },
+    "terminal.resize.result": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rows",
+        "cols"
+      ]
+    },
+    "terminal.screen.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/routed"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "shellId"
+      ]
+    },
+    "terminal.screen.result": {
+      "type": "object",
+      "properties": {
+        "screen": {
+          "$ref": "#/$defs/screen"
+        },
+        "seq": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/count"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "screen",
+        "seq"
+      ]
+    },
+    "terminal.output.params": {
+      "type": "object",
+      "properties": {
+        "hostId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "seq": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/count"
+        },
+        "data": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/base64url",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "hostId",
+        "sessionId",
+        "shellId",
+        "seq",
+        "data"
+      ]
+    },
+    "terminal.gap.params": {
+      "type": "object",
+      "properties": {
+        "hostId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "shellId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "seq": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/count"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "hostId",
+        "sessionId",
+        "shellId",
+        "seq"
+      ]
+    }
+  }
+}

@@ -4,7 +4,7 @@
 - Status: Accepted
 - Author: leostera
 - Start Date: 2026-11-02
-- Updated: 2026-11-02
+- Updated: 2026-11-02 (see As specified)
 - Document Type: Proposal
 
 ## Summary
@@ -212,7 +212,7 @@ Each extension document has front matter (identifier, version, status, requires,
 
 Before acceptance:
 
-- When a host has lost records a replica holds (a restored disk, a crash), does the host recover them from the replica, or does the log start a new epoch? ATXF never deletes, which favours recovery.
+- ~~When a host has lost records a replica holds, does the host recover them from the replica, or does the log start a new epoch?~~ Recovery; see As specified.
 - Is `upgrade` core? Every client benefits from knowing a host is restarting on purpose.
 - Is `local` an extension or out of AXP? It is the least general part.
 - Are the packages published (`@leostera/axp`, the `axp` crate) from the start, as ATXF's are, or private until 1.0?
@@ -233,3 +233,12 @@ Out of scope:
 - Hosts other than axod: a headless Linux host running Codex or Claude Code.
 - Reconciling Sessions continued on two hosts with ATXF §18.
 - Signed seals, from the device keys pairing already creates.
+
+## As specified
+
+`axp/` (SPEC.md, extensions/, schema/v0.1, examples/) and `sites/axp.leostera.dev` implement rollout step 1 and the documents of step 3. Where writing the spec changed this RFD's design:
+
+- **No `axp.command` envelope.** A hub forwards any extension method whose params carry `hostId` to that host without understanding it (SPEC §9.1). A routed call that carries a `commandId` is a command (SPEC §9.2). `pi.prompt` is sent as itself, not wrapped.
+- **One exchange for replication.** The hub reads each log from its host with the same `axp.log.open`/`records`/`ack` a client uses to read from the hub (SPEC §8.2, §8.3). There is no separate upload method set.
+- **Recovery, not epochs.** Logs are append-only and never truncated. A host that lost records a replica holds reads them back and rebuilds its log as the common prefix, the replica's records, then its own; ATXF record hashes do not depend on position (SPEC §8.4).
+- **A `sessions` extension** for creating, renaming and archiving Sessions remotely, which the core leaves out; `local` keeps only health, configuration, the hub link and the viewport.

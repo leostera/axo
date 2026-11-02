@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/upgrade/0.1/upgrade.schema.json",
+  "title": "AXP extension `upgrade` 0.1",
+  "description": "Planned host restarts. See extensions/upgrade.md.",
+  "$defs": {
+    "upgrade.prepare.params": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "enum": [
+            "update",
+            "agentUpdate",
+            "restart"
+          ]
+        },
+        "expectedMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "expectedMs"
+      ]
+    },
+    "upgrade.prepare.result": {
+      "type": "object",
+      "properties": {
+        "deadline": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "deadline"
+      ]
+    },
+    "upgrade.cancel.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "upgrade.cancel.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    }
+  }
+}

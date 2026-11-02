@@ -1,0 +1,15 @@
+{
+  "name": "@axo/axp-spec",
+  "private": true,
+  "type": "module",
+  "description": "AXP, the Agent Xchange Protocol: specification, schemas and examples",
+  "scripts": {
+    "check": "node --test tests/*.test.mjs",
+    "examples": "node scripts/examples.ts"
+  },
+  "devDependencies": {
+    "@leostera/atxf": "0.1.1",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}

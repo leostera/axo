@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/sessions/0.1/sessions.schema.json",
+  "title": "AXP extension `sessions` 0.1",
+  "description": "Creating, renaming and archiving Sessions, and their workspaces. See extensions/sessions.md.",
+  "$defs": {
+    "workspace": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "workspaceId",
+        "name",
+        "path"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "oneOf": [
+            {
+              "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workspaceName": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "workspaceId",
+        "workspaceName"
+      ]
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "agents"
+      ]
+    },
+    "sessions.workspaces.list.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/routed"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true
+      },
+      "unevaluatedProperties": false
+    },
+    "sessions.workspaces.list.result": {
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workspace"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "workspaces"
+      ]
+    },
+    "sessions.create.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "agent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "agent"
+      ]
+    },
+    "sessions.create.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId"
+      ]
+    },
+    "sessions.rename.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "name"
+      ]
+    },
+    "sessions.rename.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "sessions.archive.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId"
+      ]
+    },
+    "sessions.archive.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "sessions.restore.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId"
+      ]
+    },
+    "sessions.restore.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}

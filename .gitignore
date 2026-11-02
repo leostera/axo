@@ -22,6 +22,8 @@ vendor/*
 !vendor/hex-rust/
 !vendor/hex-rust/**
 local/
+# The AXP `local` extension's schema, not a local directory.
+!axp/schema/v0.1/ext/local/
 bazel-*
 xcuserdata/
 .feynman/

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/share/0.1/share.schema.json",
+  "title": "AXP extension `share` 0.1",
+  "description": "Publishing a read-only copy of a Session. See extensions/share.md.",
+  "$defs": {
+    "share.publish.params": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "transcript": {
+          "type": "object",
+          "properties": {
+            "header": {
+              "$ref": "https://atxf.leostera.dev/schema/v0.1/atxf.schema.json#/$defs/transcriptRecord"
+            },
+            "records": {
+              "type": "array",
+              "items": {
+                "$ref": "https://atxf.leostera.dev/schema/v0.1/atxf.schema.json#/$defs/record"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "header",
+            "records"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "title",
+        "transcript"
+      ]
+    },
+    "share.publish.result": {
+      "type": "object",
+      "properties": {
+        "shareId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{22,64}$"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "shareId",
+        "url"
+      ]
+    },
+    "share.unpublish.params": {
+      "type": "object",
+      "properties": {
+        "shareId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{22,64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "shareId"
+      ]
+    },
+    "share.unpublish.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "share.list.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "share.list.result": {
+      "type": "object",
+      "properties": {
+        "shares": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "shareId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{22,64}$"
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "hostId": {
+                "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+              },
+              "sessionId": {
+                "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+              },
+              "title": {
+                "type": "string"
+              },
+              "publishedAt": {
+                "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/time"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "shareId",
+              "url",
+              "hostId",
+              "sessionId",
+              "title",
+              "publishedAt"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "shares"
+      ]
+    }
+  }
+}

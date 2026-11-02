@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/local/0.1/local.schema.json",
+  "title": "AXP extension `local` 0.1",
+  "description": "Control of a host from the same machine. See extensions/local.md.",
+  "$defs": {
+    "hubLink": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "unpaired",
+            "connecting",
+            "online",
+            "offline"
+          ]
+        },
+        "hub": {
+          "type": "string"
+        },
+        "account": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "device": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ]
+    },
+    "local.health.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "local.health.result": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "hostId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "generation": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "startedAt": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/time"
+        },
+        "hub": {
+          "$ref": "#/$defs/hubLink"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "hostId",
+        "generation",
+        "startedAt",
+        "hub"
+      ]
+    },
+    "local.config.get.params": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9.-]{0,63}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key"
+      ]
+    },
+    "local.config.get.result": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9.-]{0,63}$"
+        },
+        "value": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ]
+    },
+    "local.config.set.params": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9.-]{0,63}$"
+        },
+        "value": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ]
+    },
+    "local.config.set.result": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9.-]{0,63}$"
+        },
+        "value": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ]
+    },
+    "local.hub.pair.params": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "pattern": "^axp://[^/]+/pair/[0-9A-Za-z]{4}-[0-9A-Za-z]{4}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uri"
+      ]
+    },
+    "local.hub.pair.result": {
+      "$ref": "#/$defs/hubLink"
+    },
+    "local.hub.unpair.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "local.hub.unpair.result": {
+      "$ref": "#/$defs/hubLink"
+    },
+    "local.hub.status.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "local.hub.status.result": {
+      "$ref": "#/$defs/hubLink"
+    },
+    "local.viewport.set.params": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "cell": {
+          "type": "object",
+          "properties": {
+            "width": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "height": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "scale",
+        "cell"
+      ]
+    },
+    "local.viewport.set.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    }
+  }
+}

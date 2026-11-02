@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/pi/0.1/pi.schema.json",
+  "title": "AXP extension `pi` 0.1",
+  "description": "Steering a Pi agent. See extensions/pi.md.",
+  "$defs": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "mediaType": {
+          "enum": [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp"
+          ]
+        },
+        "data": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/base64url",
+          "maxLength": 6990507
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mediaType",
+        "data"
+      ]
+    },
+    "pi.prompt.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100000
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/image"
+          },
+          "maxItems": 8
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "text"
+      ]
+    },
+    "pi.prompt.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "pi.stop.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "turn": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "turn"
+      ]
+    },
+    "pi.stop.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true,
+        "stopped": {
+          "type": "boolean"
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "pi.answer.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "option": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "option"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100000
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "text"
+              ]
+            }
+          ]
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "question",
+        "answer"
+      ]
+    },
+    "pi.answer.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "pi.restart.params": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "hostId": true,
+        "generation": true,
+        "from": true,
+        "commandId": true,
+        "sessionId": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
+        },
+        "mode": {
+          "enum": [
+            "auto",
+            "force"
+          ]
+        }
+      },
+      "unevaluatedProperties": false,
+      "required": [
+        "sessionId",
+        "mode"
+      ]
+    },
+    "pi.restart.result": {
+      "allOf": [
+        {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "receipt": true,
+        "duplicate": true
+      },
+      "unevaluatedProperties": false
+    },
+    "slot.reply": {
+      "description": "An ATXF message record without hash.",
+      "$ref": "https://atxf.leostera.dev/schema/v0.1/atxf.schema.json#/$defs/messageRecord"
+    },
+    "slot.tool": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "error",
+            "cancelled"
+          ]
+        },
+        "output": {
+          "type": "string",
+          "maxLength": 65536
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ]
+    },
+    "slot.question": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label"
+            ]
+          },
+          "maxItems": 8
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "options"
+      ]
+    }
+  }
+}
