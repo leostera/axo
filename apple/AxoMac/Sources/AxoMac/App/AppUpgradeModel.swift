@@ -4,7 +4,7 @@ import AxoDaemonManager
 import Observation
 import OSLog
 
-/// The menu bar's "Upgrade to Build N": a newer build installed over this bundle (a `bazel build`
+/// The menu bar's "Check for Updates…", "Upgrade to Build N" once one is known: a newer build installed over this bundle (a `bazel build`
 /// at dist/Axo.app) is a restart; otherwise a newer build published at axo.leostera.dev is
 /// downloaded, checked against this app's signature and swapped in first. Either way the new
 /// Axo replaces this one through launchd (`AppLaunchHandover`), so it stays kept alive.
@@ -15,6 +15,7 @@ final class AppUpgradeModel {
 
   enum Phase: Equatable {
     case idle
+    case checking
     case downloading(build: Int)
     case restarting(build: Int)
   }
@@ -64,6 +65,36 @@ final class AppUpgradeModel {
           "event=upgrade.published_check_failed reason=\(error.localizedDescription, privacy: .public)")
       }
       decide()
+    }
+  }
+
+  /// Checks the published build now; then upgrades, or says this is the newest.
+  func checkForUpdates() {
+    guard phase == .idle else { return }
+    if available != nil { return upgrade() }
+    guard let running else { return }
+    phase = .checking
+    publishedCheckedAt = Date()
+    Task {
+      var failure: String?
+      if team != nil {
+        do {
+          published = try await AppUpgradeInstaller.fetchPublished(origin: origin)
+        } catch {
+          failure = error.localizedDescription
+          logger.info(
+            "event=upgrade.published_check_failed reason=\(error.localizedDescription, privacy: .public)")
+        }
+      }
+      phase = .idle
+      decide()
+      if available != nil { return upgrade() }
+      if let failure { return fail("Couldn’t check for updates", failure) }
+      inform(
+        team == nil ? "This Axo can’t update itself" : "Axo is up to date",
+        team == nil
+          ? "Build \(running) is not signed by a team, so it can’t check that a download is Axo’s. A newer build installed over it is still offered."
+          : "Build \(running) is the newest.")
     }
   }
 
@@ -130,6 +161,14 @@ final class AppUpgradeModel {
         AppUpgradeModel.shared.fail("Couldn’t start Axo build \(build)", error.localizedDescription)
       }
     }
+  }
+
+  private func inform(_ message: String, _ detail: String) {
+    let alert = NSAlert()
+    alert.messageText = message
+    alert.informativeText = detail
+    NSApp.activate(ignoringOtherApps: true)
+    alert.runModal()
   }
 
   private func fail(_ message: String, _ detail: String) {

@@ -527,9 +527,13 @@ private struct AppUpgradeMenuItem: View {
       Text("Downloading Build \(build)…").disabled(true)
     case .restarting(let build):
       Text("Restarting into Build \(build)…").disabled(true)
+    case .checking:
+      Text("Checking for Updates…").disabled(true)
     case .idle:
       if let upgrade = upgrades.available {
         Button("Upgrade to Build \(upgrade.build)") { upgrades.upgrade() }
+      } else {
+        Button("Check for Updates…") { upgrades.checkForUpdates() }
       }
     }
   }
@@ -544,6 +548,7 @@ private struct AxoApplicationCommands: Commands {
       Button("About Axo") {
         showSettings(section: .about)
       }
+      AppUpgradeMenuItem(upgrades: AppUpgradeModel.shared)
     }
 
     CommandGroup(replacing: .appSettings) {
