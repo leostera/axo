@@ -124,8 +124,7 @@ const PROMPT_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 struct PiBridge(CommandSender);
 
 impl PiBridge {
-    /// With a `command_id`, pi-axo takes the prompt at most once, with a receipt (RFD0024). A Pi
-    /// still running an older pi-axo refuses the field as invalid: it gets the prompt without it.
+    /// With a `command_id`, pi-axo takes the prompt at most once, with a receipt (RFD0024).
     fn send(
         &self,
         text: &str,
@@ -137,21 +136,12 @@ impl PiBridge {
             PromptDelivery::FollowUp => Some(QueuedDelivery::FollowUp),
             PromptDelivery::Turn => None,
         };
-        let mut answer = self.0.send_message(
+        match self.0.send_message(
             text,
             delivery_on_bridge,
             command_id.map(CommandId::as_str),
             PROMPT_ANSWER_TIMEOUT,
-        );
-        if command_id.is_some()
-            && matches!(answer, Ok(CommandResult::Rejected(RejectReason::Invalid)))
-        {
-            log::warn!("event=session.pi_prompt_without_receipt reason=older_pi_axo");
-            answer = self
-                .0
-                .send_message(text, delivery_on_bridge, None, PROMPT_ANSWER_TIMEOUT);
-        }
-        match answer {
+        ) {
             Ok(CommandResult::Accepted) => Ok(()),
             Ok(CommandResult::Rejected(RejectReason::Busy)) => Err(PromptError::Busy),
             Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(
@@ -161,13 +151,11 @@ impl PiBridge {
         }
     }
 
-    /// Whether the turn `turn_id` names was running and is stopping; `None` from an older pi-axo,
-    /// which cannot stop a named turn.
-    fn stop(&self, turn_id: &TurnId) -> Result<Option<bool>, PromptError> {
+    /// Whether the turn `turn_id` names was running and is stopping.
+    fn stop(&self, turn_id: &TurnId) -> Result<bool, PromptError> {
         match self.0.stop_turn(turn_id.as_str(), PROMPT_ANSWER_TIMEOUT) {
-            Ok(CommandResult::Accepted) => Ok(Some(true)),
-            Ok(CommandResult::Rejected(RejectReason::Idle)) => Ok(Some(false)),
-            Ok(CommandResult::Rejected(RejectReason::Invalid)) => Ok(None),
+            Ok(CommandResult::Accepted) => Ok(true),
+            Ok(CommandResult::Rejected(RejectReason::Idle)) => Ok(false),
             Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(
                 format!("{reason:?}").to_lowercase(),
             )),
@@ -308,8 +296,7 @@ impl SessionManager {
     }
 
     /// A person away from the Mac prompts the Session's Pi. With a `command_id`, pi-axo holds it
-    /// while Pi works (RFD0024); without one, or for an older pi-axo, it steers, as Enter in Pi's
-    /// editor would.
+    /// while Pi works (RFD0024); without one it steers, as Enter in Pi's editor would.
     pub(super) fn prompt_pi(
         &self,
         session_id: SessionId,
@@ -330,29 +317,18 @@ impl SessionManager {
     }
 
     /// Stops the Session's running turn if it is the one `turn_id` names, and says whether it
-    /// did. An older pi-axo cannot tell turns apart: it gets Escape, as before.
+    /// did.
     pub(super) fn stop_pi_turn(&self, session_id: SessionId, turn_id: &TurnId) -> io::Result<bool> {
         let bridge = {
             let state = self.lock_state()?;
             pi_bridge(&state, session_id)?
         };
-        match bridge.stop(turn_id).map_err(io::Error::from)? {
-            Some(stopped) => {
-                log::info!(
-                    "event=session.pi_turn_stop session_id={} stopped={stopped}",
-                    session_id
-                );
-                Ok(stopped)
-            }
-            None => {
-                log::warn!(
-                    "event=session.pi_turn_stop session_id={} outcome=escape reason=older_pi_axo",
-                    session_id
-                );
-                self.press_pi_key(session_id, axo_relay::PiKey::Escape)
-                    .map(|()| true)
-            }
-        }
+        let stopped = bridge.stop(turn_id).map_err(io::Error::from)?;
+        log::info!(
+            "event=session.pi_turn_stop session_id={} stopped={stopped}",
+            session_id
+        );
+        Ok(stopped)
     }
 
     /// Sends the prompts that waited for the Session's Pi to finish starting, oldest first, on a

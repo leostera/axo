@@ -92,7 +92,7 @@ This amends RFD0018's Commands for every client.
 **Receipts.** When pi-axo on the owner hands a remote prompt to Pi, it first writes `appendEntry("axo.command", { commandId })`, and then the user message. Clients retire a pending prompt when they see its receipt, and never by matching text (rule `commandReceipts`). This applies to the phone and the web app too.
 
 - **Clients that send no `commandId`.** For a remote prompt without one, axod makes one up, so pi-axo still holds the prompt while Pi works. The client cannot retry such a prompt safely or match its receipt, but it is no longer lost to a stop.
-- **An older pi-axo.** A Pi started before this change refuses the new field as invalid. axod then sends the prompt again without the field, which steers as before. A stop it refuses becomes Escape in the Pi pane, as before.
+- **No older pi-axo.** All of this ships at once to every Mac, so axod expects a pi-axo that takes `commandId` and `stop`. A Pi still running an older pi-axo after the update refuses both until it restarts.
 
 **At most once.** pi-axo on the owner remembers the `commandId`s it has taken: those whose receipts are in the log when it starts, and every one since. A `commandId` it has seen gets `accepted` back, and Pi is not prompted again (rule `dedupeCommands`).
 
@@ -131,6 +131,8 @@ This amends RFD0018's Commands for every client.
 Nothing new leaves a Mac. A remote pane reads the copy that RFD0022 already keeps, and sends commands with the host credential, which may already reach every Session of the account. The pane runs no tools, so a Session from another Mac cannot run anything on this one.
 
 ## Rollout
+
+All five steps ship together, to every Mac at once.
 
 1. **Commands on the owner:** receipts, the `commandId` check, pi-axo's queue, and stops and answers that name their target. Plus the ClientDO's `-32004` for failed calls. This fixes the phone and the web app first.
 2. **Clients match receipts:** the web app and the phone retire pending prompts by `commandId`, and retry unknown outcomes.

@@ -73,13 +73,12 @@ pub enum Action<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         delivery: Option<QueuedDelivery>,
         /// A client's prompt (RFD0024): Pi takes it at most once, writes a receipt before it, and
-        /// holds it while working, whatever `delivery` says. A pi-axo older than this answers
-        /// `invalid`.
+        /// holds it while working, whatever `delivery` says.
         #[serde(skip_serializing_if = "Option::is_none")]
         command_id: Option<&'a str>,
     },
     /// Stops the running turn if `turn_id`, the entry id of one of its user records, belongs to
-    /// it; otherwise answers `idle`. A pi-axo older than this answers `invalid`.
+    /// it; otherwise answers `idle`.
     Stop { turn_id: &'a str },
 }
 
