@@ -33,7 +33,7 @@ export function toolsOf(app: AppName): readonly AppTool<any, any>[] {
   let tools = TOOLS.get(app);
   if (!tools) {
     const definition = APP_DEFINITIONS[app];
-    tools = definition.signIn === "mac" ? [...definition.tools] : [...definition.tools, requestTool(definition)];
+    tools = definition.signIn === "mac" || definition.signIn === "phone" ? [...definition.tools] : [...definition.tools, requestTool(definition)];
     TOOLS.set(app, tools);
   }
   return tools;

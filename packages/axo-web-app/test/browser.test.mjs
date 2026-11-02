@@ -118,6 +118,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const macSignIns = [];
   let macPolls = 0;
   const clientRequests = [];
+  const phoneSteps = [];
   /** A ChatGPT device sign-in: polls so far, and whether the person has entered the code. */
   const device = { polls: 0, entered: false };
   // The account's connections (RFD0016), as the Worker lists them.
@@ -142,9 +143,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "app", name: "apps.wise", title: "Wise", provider: "Wise", category: "finance", description: "Your Wise balances, transfers, recipients and exchange rates.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://wise.com/settings/api-tokens", named: false, fields: [{ name: "token", label: "API token", help: "In Wise settings.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["list_balances", "request"], lastError: null },
-    { kind: "app", name: "apps.telegram", title: "Telegram", provider: "Telegram", category: "communication", description: "A Telegram bot of yours.", permissions: [],
-      signIn: { kind: "token", helpUrl: "https://t.me/BotFather", named: false, fields: [{ name: "token", label: "Bot token", help: "From @BotFather.", secret: true }] },
-      state: "needsSignIn", accounts: [], tools: ["send_message", "request"], lastError: null },
+    { kind: "app", name: "apps.telegram", title: "Telegram", provider: "Telegram", category: "communication", description: "Your own Telegram account.", permissions: ["Send messages as you"],
+      signIn: { kind: "phone", consoleUrl: "https://my.telegram.org/apps", clientHelp: "Create an app at my.telegram.org.", clientReady: false },
+      state: "needsSignIn", accounts: [], tools: ["send_message"], lastError: null },
     { kind: "app", name: "apps.kraken", title: "Kraken", provider: "Kraken", category: "finance", description: "Your Kraken account.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://pro.kraken.com/app/settings/api", named: true, fields: [{ name: "key", label: "API key", help: "In settings.", secret: true }, { name: "secret", label: "Private key", help: "Shown once.", secret: true }],
         mac: { title: "Sign in with Kraken", presets: [{ id: "read", label: "Read only", description: "See balances, orders and trades." }, { id: "trade", label: "Read and trade", description: "And place and cancel orders." }] } },
@@ -231,6 +232,31 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         clientRequests.push(JSON.parse(body));
         connections.find((c) => c.name === "apps.github").signIn.client.ready = true;
         json(response, { provider: "github" }, origin);
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.telegram/client") {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        clientRequests.push(JSON.parse(body));
+        connections.find((c) => c.name === "apps.telegram").signIn.clientReady = true;
+        json(response, { provider: "telegram" }, origin);
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.telegram/phone-sign-in") {
+      // Telegram's sign-in, a step at a time: the number, a code (wrong once), then the password.
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const step = JSON.parse(body);
+        phoneSteps.push(step);
+        if (step.step === "start") return json(response, { state: "code", flow: "telegram-flow-0001", via: "app" }, origin);
+        if (step.step === "code" && step.code !== "12345") return json(response, { state: "code", flow: step.flow, via: "app", error: "That code is not right." }, origin);
+        if (step.step === "code") return json(response, { state: "password", flow: step.flow, hint: "pet" }, origin);
+        connections.find((c) => c.name === "apps.telegram").accounts.push({ account: "@ada", state: "ready", lastError: null });
+        json(response, { state: "done", account: "@ada" }, origin);
       });
       return;
     }
@@ -875,6 +901,40 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(github.getByRole("button", { name: "Add account" }));
     await github.getByRole("button", { name: "Add account" }).click();
     await page.waitForURL(/signedIn=apps\.github/);
+
+    // A phone app: the person's own API ID first, then their number, the code and their password.
+    await page.goto(`${appUrl}/app/settings/apps/telegram`, { waitUntil: "networkidle" });
+    const telegram = page.getByRole("region", { name: "Telegram" });
+    await expect(telegram.getByRole("heading", { name: "Set up Telegram" }));
+    assert.equal(await telegram.getByRole("link", { name: "Open Telegram" }).getAttribute("href"), "https://my.telegram.org/apps");
+    await telegram.getByLabel("api_id").fill("1234567");
+    await telegram.getByLabel("api_hash").fill("0123456789abcdef0123456789abcdef");
+    await shot("apps-telegram-setup");
+    await telegram.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(telegram.getByText("Telegram is set up. Add an account."));
+    assert.deepEqual(clientRequests.at(-1), { clientId: "1234567", clientSecret: "0123456789abcdef0123456789abcdef" });
+    await telegram.getByRole("button", { name: "Add account" }).click();
+    await telegram.getByLabel("Phone number").fill("+44 7700 900123");
+    await telegram.getByRole("button", { name: "Send code" }).click();
+    await expect(telegram.getByText("Telegram sent a code to your Telegram app on another device."));
+    await telegram.getByLabel("Code").fill("11111");
+    await telegram.getByRole("button", { name: "Continue" }).click();
+    await expect(telegram.getByText("That code is not right."));
+    await telegram.getByLabel("Code").fill("12345");
+    await telegram.getByRole("button", { name: "Continue" }).click();
+    await expect(telegram.getByText("Hint: pet."));
+    assert.equal(await telegram.getByLabel("Password").getAttribute("type"), "password");
+    await shot("apps-telegram-password");
+    await telegram.getByLabel("Password").fill("hunter2");
+    await telegram.getByRole("button", { name: "Continue" }).click();
+    await expect(telegram.getByText("Added @ada."));
+    assert.deepEqual(await telegram.locator(".connection-row strong").allTextContents(), ["@ada"]);
+    assert.deepEqual(phoneSteps, [
+      { step: "start", phone: "+44 7700 900123" },
+      { step: "code", flow: "telegram-flow-0001", code: "11111" },
+      { step: "code", flow: "telegram-flow-0001", code: "12345" },
+      { step: "password", flow: "telegram-flow-0001", password: "hunter2" },
+    ]);
 
     // An OAuth app of another provider, set up: its own logo and maker, and Add account as Google's.
     await page.goto(`${appUrl}/app/settings/apps/spotify`, { waitUntil: "networkidle" });

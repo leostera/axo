@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { appMacSignInRequestSchema, appServiceSchema, appTokenRequestSchema, connectionNameSchema, connectionTitleSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
+import { appMacSignInRequestSchema, appPhoneSignInRequestSchema, appServiceSchema, appTokenRequestSchema, connectionNameSchema, connectionTitleSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
 import type { ChainCheck } from "../connections/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
@@ -29,6 +29,7 @@ type ConnectionsStub = {
   pollAppDevice(name: string, flow: string): Promise<Record<string, unknown>>;
   startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<Record<string, unknown> | { error: string }>;
   pollAppMacSignIn(name: string, flow: string): Promise<Record<string, unknown>>;
+  appPhoneSignIn(name: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
   connectionSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
@@ -36,7 +37,7 @@ type ConnectionsStub = {
   connectionsLogIntegrity(): Promise<ChainCheck>;
 };
 
-export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll";
+export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll" | "phoneSignIn";
 
 const addBody = z.object({ name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
@@ -63,7 +64,7 @@ export async function serveConnections(
   const stub = account(ctx, caller.accountId);
   // Signing in, removing and setting a client also take an app, `apps.<app>` (its provider's client).
   const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema
-    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" ? appServiceSchema : connectionNameSchema;
+    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" || route === "phoneSignIn" ? appServiceSchema : connectionNameSchema;
   const name = rawName === undefined ? null : names.safeParse(rawName);
   if (name && !name.success) return json({ error: "Invalid connection name" }, 400);
   try {
@@ -126,6 +127,12 @@ export async function serveConnections(
         const body = pollBody.safeParse(await request.json().catch(() => null));
         if (!body.success) return json({ error: "Expected { flow }" }, 400);
         return json(plain(await stub.pollAppMacSignIn(name!.data!, body.data.flow)));
+      }
+      case "phoneSignIn": {
+        // Telegram's sign-in, one step at a time: { step: "start", phone }, { step: "code", flow, code }, { step: "password", flow, password }.
+        const body = appPhoneSignInRequestSchema.safeParse(await request.json().catch(() => null));
+        if (!body.success) return json({ error: body.error.issues[0]?.message ?? "Expected a sign-in step" }, 400);
+        return json(plain(await stub.appPhoneSignIn(name!.data!, body.data)));
       }
     }
   } catch (error) {

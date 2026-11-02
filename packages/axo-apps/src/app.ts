@@ -70,6 +70,11 @@ export function tool<S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>>
   return definition as AppTool;
 }
 
+/** A tool of an app that hands it its own client (a phone app's, signed in), whose `run` gets that and its input as its schema parses it. */
+export function clientTool<C>() {
+  return <S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>, C>, "input"> & { input: S }): AppTool<any, C> => definition as AppTool<any, C>;
+}
+
 /** A Mac app's tool, whose `run` gets the Mac's shell and its input as its schema parses it. */
 export function macTool<S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>, MacShell>, "input"> & { input: S }): AppTool<any, MacShell> {
   return definition as AppTool<any, MacShell>;
@@ -199,7 +204,71 @@ export type MacApp = AppBase & {
   tools: readonly AppTool<any, MacShell>[];
 };
 
-export type AppDefinition = OAuthApp | TokenApp | DeviceApp | MacApp;
+/** The API client a phone app signs in with: an ID and hash the person registered with the service (my.telegram.org). */
+export type PhoneClient = { apiId: number; apiHash: string };
+
+/**
+ * Where a phone sign-in stands: a code was sent (to the person's Telegram app, or by SMS), the
+ * account has a password to enter too, or it is done. `pending` is the service's state between
+ * steps, which the gateway keeps sealed and hands back.
+ */
+export type PhoneStep =
+  | { step: "code"; pending: string; via: "app" | "sms" }
+  | { step: "password"; pending: string; hint: string | null }
+  | { step: "done"; session: string; account: string };
+
+/** What went wrong in a phone app's call, as the gateway acts on it. */
+export type PhoneFailure =
+  /** The session is over (the person ended it on another device): only signing in again helps. */
+  | { kind: "ended" }
+  /** The service refused the call, which did not run. */
+  | { kind: "refused"; message: string }
+  /** The call may have reached the service, and no answer came back. */
+  | { kind: "unknown" };
+
+/**
+ * A phone app's sign-in and sessions, speaking the service's own protocol (Telegram's MTProto,
+ * through GramJS). The person's own API client signs in as a new device of theirs; the session
+ * it ends with is the account's credential. Each call opens the session and closes it again.
+ * A step the person got wrong (a code that is not right, a password) throws PhoneRefused.
+ */
+export type PhoneSignIn<Api = unknown> = {
+  /** Where the person registers the API client. */
+  consoleUrl: string;
+  /** How to, in plain words, shown with the form. */
+  clientHelp: string;
+  sendCode(client: PhoneClient, phone: string): Promise<PhoneStep>;
+  enterCode(client: PhoneClient, pending: string, phone: string, code: string): Promise<PhoneStep>;
+  enterPassword(client: PhoneClient, pending: string, password: string): Promise<PhoneStep>;
+  /** Opens the session for one call; `close` gives back the session as it is then (it may have moved). */
+  open(client: PhoneClient, session: string): Promise<{ api: Api; close(): Promise<string> }>;
+  /** Ends the session at the service, when the account is removed. Best effort. */
+  logOut(client: PhoneClient, session: string): Promise<void>;
+  /** What a call's error means. */
+  failure(error: unknown): PhoneFailure;
+};
+
+/** A step of a phone sign-in the person got wrong, said in plain words; the sign-in may go on. */
+export class PhoneRefused extends Error {
+  /** Whether the sign-in is over and must start again (an expired code). */
+  constructor(message: string, readonly over = false) {
+    super(message);
+  }
+}
+
+/**
+ * An app the person signs in to with their phone number, as a new device of theirs (Telegram),
+ * with an API client of their own. Its tools get the service's client, signed in.
+ */
+export type PhoneApp = AppBase & {
+  signIn: "phone";
+  provider: string;
+  reference: string;
+  phone: PhoneSignIn<any>;
+  tools: readonly AppTool<any, any>[];
+};
+
+export type AppDefinition = OAuthApp | TokenApp | DeviceApp | MacApp | PhoneApp;
 
 /** The provider refused the call: it did not run. */
 export class ProviderError extends Error {

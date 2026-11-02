@@ -37,7 +37,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 test("Hetzner is listed without any client of Axo's, asking for a token the person names, and its tools all need an account", () => {
   const { apps } = fixture();
   const all = apps.list();
-  assert.deepEqual(apps.tools().map((t) => t.service).filter((s, i, all) => all.indexOf(s) === i), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.discord", "apps.unifi"],
+  assert.deepEqual(apps.tools().map((t) => t.service).filter((s, i, all) => all.indexOf(s) === i), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.kraken", "apps.discord", "apps.unifi"],
     "without any OAuth client set up, only apps that need none have tools");
   const listed = all.find((c) => c.name === "apps.hetzner");
   const parsed = connectionSchema.parse(listed);
@@ -201,7 +201,7 @@ test("Wise is named by the token's email, and reads profiles and balances and pr
   assert.match(await refused(apps.call("wise", "create_quote", { account: "ada@example.com", profile: 10, sourceCurrency: "EUR", targetCurrency: "GBP" })), /sourceAmount or targetAmount/);
 });
 
-/** A Telegram bot API and Kraken's, which check the token in the path and each request's signature as the services do. */
+/** Kraken's API, which checks each request's signature and nonce as Kraken does. */
 function signedServices() {
   const krakenSecret = Buffer.from("kraken-private-key-of-some-length").toString("base64");
   const seen: Array<{ url: URL; headers: Headers; body: string }> = [];
@@ -212,13 +212,6 @@ function signedServices() {
     const url = new URL(request.url);
     const body = request.body ? await request.text() : "";
     seen.push({ url, headers: request.headers, body });
-    if (url.origin === "https://api.telegram.org") {
-      const [, bot, method] = url.pathname.split("/");
-      if (bot !== "bot123:telegram-token") return json({ ok: false, error_code: 401, description: "Unauthorized" }, 401);
-      if (method === "getMe") return json({ ok: true, result: { id: 123, is_bot: true, username: "AdaBot" } });
-      if (method === "sendMessage") return json({ ok: true, result: { message_id: 7, chat: { id: JSON.parse(body).chat_id }, text: JSON.parse(body).text } });
-      return json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, 400);
-    }
     if (url.origin === "https://api.kraken.com") {
       if (url.pathname.startsWith("/0/public/")) return json({ error: [], result: { XXBTZEUR: { c: ["60000.0", "0.1"] } } });
       const form = new URLSearchParams(body);
@@ -236,17 +229,6 @@ function signedServices() {
   const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen, krakenSecret };
 }
-
-test("a Telegram bot's token goes in the path, only to Telegram, and the bot is named by its username", async () => {
-  const { apps, seen } = signedServices();
-  assert.match(await refused(apps.addToken("telegram", null, { token: "123:wrong" })), /Telegram did not accept this token/);
-  assert.deepEqual(await apps.addToken("telegram", null, { token: "123:telegram-token" }), { name: "apps.telegram", account: "@adabot" });
-  assert.deepEqual(await apps.call("telegram", "send_message", { account: "@adabot", chat: 42, text: "hello" }), { message_id: 7, chat: { id: 42 }, text: "hello" });
-  assert.match(await refused(apps.call("telegram", "get_chat", { account: "@adabot", chat: 43 })), /chat not found/);
-  // Every call, the generic `request` too, has the token put in front of its path.
-  assert.equal(seen.at(-1)!.url.pathname, "/bot123:telegram-token/getChat");
-  assert.ok(seen.every((s) => s.url.origin === "https://api.telegram.org" && s.headers.get("Authorization") === null));
-});
 
 test("Kraken signs every private call with an increasing nonce, and checks the key before keeping it", async () => {
   const { apps, krakenSecret } = signedServices();

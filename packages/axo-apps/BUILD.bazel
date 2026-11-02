@@ -20,8 +20,9 @@ _DEPS = [
     ":node_modules/@octokit/plugin-paginate-rest",
     ":node_modules/@octokit/plugin-rest-endpoint-methods",
     ":node_modules/discord-api-types",
-    ":node_modules/grammy",
+    ":node_modules/big-integer",
     ":node_modules/oauth4webapi",
+    ":node_modules/telegram",
     ":node_modules/zod",
 ]
 

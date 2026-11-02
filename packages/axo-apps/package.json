@@ -17,9 +17,10 @@
     "@octokit/core": "^7.0.8",
     "@octokit/plugin-paginate-rest": "^16.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^18.0.0",
+    "big-integer": "^1.6.52",
     "discord-api-types": "^0.38.57",
-    "grammy": "^1.46.0",
     "oauth4webapi": "^3.8.8",
+    "telegram": "^2.26.22",
     "zod": "^4.5.0"
   },
   "devDependencies": {

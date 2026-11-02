@@ -395,6 +395,35 @@
                         "properties": {
                           "kind": {
                             "type": "string",
+                            "const": "phone"
+                          },
+                          "consoleUrl": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "format": "uri",
+                            "pattern": "^https://"
+                          },
+                          "clientHelp": {
+                            "type": "string",
+                            "maxLength": 1024
+                          },
+                          "clientReady": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "consoleUrl",
+                          "clientHelp",
+                          "clientReady"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
                             "const": "token"
                           },
                           "helpUrl": {
@@ -1016,6 +1045,35 @@
                         "kind",
                         "setup",
                         "helpUrl"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "phone"
+                        },
+                        "consoleUrl": {
+                          "type": "string",
+                          "maxLength": 2048,
+                          "format": "uri",
+                          "pattern": "^https://"
+                        },
+                        "clientHelp": {
+                          "type": "string",
+                          "maxLength": 1024
+                        },
+                        "clientReady": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "consoleUrl",
+                        "clientHelp",
+                        "clientReady"
                       ],
                       "additionalProperties": false
                     },

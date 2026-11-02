@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppMacSignIn, type AppName, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
+import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
 import {
   allowedUrl,
   APP_DEFINITIONS,
@@ -22,6 +22,7 @@ import {
   revokeOpenAIGrant,
   toolsOf,
   macCommand,
+  PhoneRefused,
   Unauthorized,
   type AppDefinition,
   type AppTool,
@@ -35,6 +36,9 @@ import {
   type OAuthProviderName,
   type OpenAIGrant,
   type OutgoingRequest,
+  type PhoneApp,
+  type PhoneClient,
+  type PhoneSignIn,
   type ProviderApi,
   type ProviderRequest,
   type TokenApp,
@@ -128,7 +132,17 @@ export type AppsDeps = {
    * Mac refused or could not finish it.
    */
   signInOnMac?: (mac: string, request: { authorizeUrl: string; ports: readonly number[]; path: string; state: string; timeoutMs: number }) => Promise<MacSignInCallback>;
+  /** Stands in for a phone app's own sign-in and sessions (its PhoneSignIn), in tests. */
+  phone?: Partial<Record<AppName, PhoneSignIn>>;
 };
+
+/** A phone app's account credential: the service's session, as its client library saves it. */
+type PhoneCredential = { kind: "phone"; session: string };
+
+/** A phone sign-in lasts this long from its first step; a code the service sends expires sooner anyway. */
+const PHONE_FLOW_LIFETIME_MS = 10 * 60_000;
+/** Codes and passwords tried per sign-in before it must start again. */
+const PHONE_FLOW_ATTEMPTS = 5;
 
 const accountInput = z.string().min(3).max(320)
   .describe("The account to act as: one of this app's accounts, by its name in connections_list (an email, a username, an account number or a Mac, depending on the app).");
@@ -153,7 +167,23 @@ export class AppConnections {
     // The OAuth clients the person set up, one per provider: the ID as entered, the secret sealed.
     deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_clients (
       provider TEXT PRIMARY KEY, client_id TEXT NOT NULL, secret_sealed TEXT NOT NULL, updated_at REAL NOT NULL)`);
+    // Phone sign-ins in progress: the number, and the service's state between steps, sealed.
+    deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_phone_flows (
+      id TEXT PRIMARY KEY, app TEXT NOT NULL, step TEXT NOT NULL, state_sealed TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+      created_at REAL NOT NULL)`);
+    deps.sql.exec("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY, done_at REAL NOT NULL)");
     this.migrateSingleGrants();
+    this.migrateOnce("telegram-bots-removed", () => {
+      // `apps.telegram` was a bot's (a pasted Bot API token) before it became the person's own account.
+      this.deps.sql.exec("DELETE FROM app_accounts WHERE app = 'telegram'");
+    });
+  }
+
+  /** Runs a one-time change to stored data, once per account. */
+  private migrateOnce(name: string, change: () => void): void {
+    if (this.deps.sql.exec("SELECT 1 FROM app_migrations WHERE name = ?", name).toArray().length) return;
+    change();
+    this.deps.sql.exec("INSERT INTO app_migrations (name, done_at) VALUES (?, ?)", name, this.now());
   }
 
   /**
@@ -323,6 +353,11 @@ export class AppConnections {
       if (row.grant_sealed) this.revokeToken(definition, row.grant_sealed);
       return true;
     }
+    // A phone account is a device of the person's: it is logged out, so it leaves their devices list.
+    if (definition.signIn === "phone") {
+      if (row.grant_sealed) this.logOutPhone(definition, row.grant_sealed);
+      return true;
+    }
     const grant = row.grant_sealed ? await this.unsealGrant(row.grant_sealed) : null;
     if (grant) this.revoke(grant);
     return true;
@@ -351,6 +386,10 @@ export class AppConnections {
    */
   async setClient(app: AppName, clientId: string, clientSecret: string): Promise<{ provider: OAuthProviderName }> {
     const definition = APP_DEFINITIONS[app];
+    if (definition.signIn === "phone") {
+      await this.setPhoneClient(definition, clientId, clientSecret);
+      return { provider: definition.provider as OAuthProviderName };
+    }
     if (definition.signIn !== "oauth") throw new AppAccountRefused(`${definition.title} does not sign in with an OAuth client`);
     const id = clientId.trim();
     const secret = clientSecret.trim();
@@ -366,7 +405,7 @@ export class AppConnections {
   /** Forgets the OAuth client of an app's provider. Signed-in accounts stay, but cannot sign in or renew until one is set up again. */
   removeClient(app: AppName): boolean {
     const definition = APP_DEFINITIONS[app];
-    if (definition.signIn !== "oauth") return false;
+    if (definition.signIn !== "oauth" && definition.signIn !== "phone") return false;
     return this.deps.sql.exec("DELETE FROM app_clients WHERE provider = ?", definition.provider).rowsWritten > 0;
   }
 
@@ -581,6 +620,7 @@ export class AppConnections {
       throw new Error(`no ${definition.title} account ${account.slice(0, 64)}; signed in: ${accounts.join(", ")}`);
     }
     if (definition.signIn === "token") return this.callWithToken(definition, tool, account, rest);
+    if (definition.signIn === "phone") return this.callWithPhone(definition, tool, account, rest);
     for (let attempt = 0; ; attempt++) {
       const grant = await this.grant(app, account, attempt > 0);
       if (!grant || !grantFits(definition, grant))
@@ -628,6 +668,167 @@ export class AppConnections {
       this.dropGrant(definition.name, account, row.grant_generation, `${definition.title} refused the token`);
       throw new Error(`${account}: ${definition.title} refused the token; add a new one at ${appPage(definition.name)}`);
     }
+  }
+
+  /**
+   * Sets up a phone app's API client: the ID and hash the person registered with the service
+   * (my.telegram.org). The hash is sealed and never shown again. Signed-in accounts keep their
+   * sessions, which belong to the client that made them.
+   */
+  private async setPhoneClient(definition: PhoneApp, apiId: string, apiHash: string): Promise<void> {
+    const id = apiId.trim();
+    const hash = apiHash.trim().toLowerCase();
+    if (!/^\d{1,12}$/.test(id) || Number(id) <= 0) throw new AppAccountRefused("The api_id is a number, such as 1234567");
+    if (!/^[0-9a-f]{32}$/.test(hash)) throw new AppAccountRefused("The api_hash is 32 letters and digits");
+    const sealed = await seal(this.deps.secret, `apps-client\0${this.deps.accountId}`, { clientId: id, clientSecret: hash } satisfies OAuthClient);
+    this.deps.sql.exec(`INSERT INTO app_clients (provider, client_id, secret_sealed, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (provider) DO UPDATE SET client_id = excluded.client_id, secret_sealed = excluded.secret_sealed, updated_at = excluded.updated_at`,
+    definition.provider, id, sealed, this.now());
+  }
+
+  private async phoneClient(definition: PhoneApp): Promise<PhoneClient | null> {
+    const client = await this.client(definition.provider as OAuthProviderName);
+    return client ? { apiId: Number(client.clientId), apiHash: client.clientSecret } : null;
+  }
+
+  private phoneOf(definition: PhoneApp): PhoneSignIn {
+    return this.deps.phone?.[definition.name] ?? definition.phone;
+  }
+
+  /**
+   * One step of a phone sign-in: the number (the service sends a code), the code, then the
+   * account's password if it has one. The service's state between steps stays here, sealed; the
+   * web app only holds the flow's ID. A step the person got wrong may be tried again, a few times.
+   */
+  async phoneSignIn(app: AppName, request: AppPhoneSignInRequest): Promise<AppPhoneSignIn> {
+    const definition = APP_DEFINITIONS[app];
+    if (definition.signIn !== "phone") throw new AppAccountRefused(`${definition.title} does not sign in with a phone number`);
+    const client = await this.phoneClient(definition);
+    if (!client) throw new AppAccountRefused(`Set up ${definition.providerTitle}'s API ID and hash first`);
+    const phone = this.phoneOf(definition);
+    const sealedAs = `apps-phone\0${this.deps.accountId}`;
+    this.deps.sql.exec("DELETE FROM app_phone_flows WHERE created_at < ?", this.now() - PHONE_FLOW_LIFETIME_MS);
+    if (request.step === "start") {
+      const number = request.phone.replace(/[^\d+]/g, "");
+      let step;
+      try {
+        step = await phone.sendCode(client, number);
+      } catch (error) {
+        return { state: "failed", error: this.phoneError(definition, error) };
+      }
+      if (step.step !== "code") return { state: "failed", error: `${definition.providerTitle} did not send a code. Start again.` };
+      const id = crypto.randomUUID();
+      this.deps.sql.exec("INSERT INTO app_phone_flows (id, app, step, state_sealed, created_at) VALUES (?, ?, 'code', ?, ?)",
+        id, app, await seal(this.deps.secret, sealedAs, { phone: number, pending: step.pending }), this.now());
+      return { state: "code", flow: id, via: step.via };
+    }
+    const flow = this.deps.sql.exec<{ step: string; state_sealed: string; attempts: number }>(
+      "SELECT step, state_sealed, attempts FROM app_phone_flows WHERE id = ? AND app = ?", request.flow, app).toArray()[0];
+    const state = flow ? (await unseal(this.deps.secret, sealedAs, flow.state_sealed)) as { phone: string; pending: string; via?: "app" | "sms"; hint?: string | null } | null : null;
+    if (!flow || !state || flow.step !== request.step) return { state: "failed", error: "This sign-in has ended. Start again." };
+    const over = (error: string): AppPhoneSignIn => {
+      this.deps.sql.exec("DELETE FROM app_phone_flows WHERE id = ?", request.flow);
+      return { state: "failed", error };
+    };
+    const again = (error: string): AppPhoneSignIn => {
+      if (flow.attempts + 1 >= PHONE_FLOW_ATTEMPTS) return over(`${error} That was the last try. Start again.`);
+      this.deps.sql.exec("UPDATE app_phone_flows SET attempts = attempts + 1 WHERE id = ?", request.flow);
+      return request.step === "code"
+        ? { state: "code", flow: request.flow, via: state.via ?? "app", error }
+        : { state: "password", flow: request.flow, hint: state.hint ?? null, error };
+    };
+    let step;
+    try {
+      step = request.step === "code"
+        ? await phone.enterCode(client, state.pending, state.phone, request.code)
+        : await phone.enterPassword(client, state.pending, request.password);
+    } catch (error) {
+      if (error instanceof PhoneRefused && !error.over) return again(error.message);
+      return over(this.phoneError(definition, error));
+    }
+    if (step.step === "password") {
+      this.deps.sql.exec("UPDATE app_phone_flows SET step = 'password', attempts = 0, state_sealed = ? WHERE id = ?",
+        await seal(this.deps.secret, sealedAs, { phone: state.phone, pending: step.pending, hint: step.hint }), request.flow);
+      return { state: "password", flow: request.flow, hint: step.hint };
+    }
+    if (step.step !== "done") return over(`${definition.providerTitle} did not finish the sign-in. Start again.`);
+    this.deps.sql.exec("DELETE FROM app_phone_flows WHERE id = ?", request.flow);
+    const account = step.account.toLowerCase();
+    const known = this.rows(app).some((r) => r.account === account);
+    if (!known && this.rows(app).length >= APP_ACCOUNTS_MAX) {
+      this.deps.waitUntil(phone.logOut(client, step.session).catch(() => undefined));
+      return { state: "failed", error: `${definition.title} holds at most ${APP_ACCOUNTS_MAX} accounts; remove one first.` };
+    }
+    // Signing in again replaces the account's session; the old one is logged out.
+    const replaced = known ? this.row(app, account)?.grant_sealed ?? null : null;
+    this.deps.sql.exec(`INSERT INTO app_accounts (app, account, grant_sealed, grant_generation, last_error, created_at) VALUES (?, ?, ?, 1, NULL, ?)
+      ON CONFLICT (app, account) DO UPDATE SET grant_sealed = excluded.grant_sealed, grant_generation = app_accounts.grant_generation + 1, last_error = NULL`,
+    app, account, await this.seal({ kind: "phone", session: step.session }), this.now());
+    if (replaced) this.logOutPhone(definition, replaced);
+    return { state: "done", account };
+  }
+
+  /** What a failed sign-in step says: the person's mistake as the app put it, else that the service could not be reached. */
+  private phoneError(definition: PhoneApp, error: unknown): string {
+    if (error instanceof PhoneRefused) return error.message.slice(0, 300);
+    const failure = this.phoneOf(definition).failure(error);
+    return failure.kind === "refused" ? failure.message.slice(0, 300) : `${definition.providerTitle} could not be reached. Try again.`;
+  }
+
+  /**
+   * A phone app's call: the session is opened for it and closed after, within the timeout. A
+   * session the service ended (on another device) is dropped, since only signing in again helps.
+   */
+  private async callWithPhone(definition: PhoneApp, tool: AppTool<any, any>, account: string, input: Record<string, unknown>): Promise<unknown> {
+    const row = this.row(definition.name, account);
+    const credential = row?.grant_sealed ? await this.unsealPhone(row.grant_sealed) : null;
+    if (!row || !credential) throw new Error(`${account} needs signing in again at ${appPage(definition.name)}`);
+    const client = await this.phoneClient(definition);
+    if (!client) throw new Error(`${definition.title} is not set up yet: the person enters ${definition.providerTitle}'s API ID and hash at ${appPage(definition.name)}`);
+    const phone = this.phoneOf(definition);
+    const fail = (error: unknown): never => {
+      if (error instanceof ProviderError || error instanceof ProviderOutcomeUnknown) throw error;
+      const failure = phone.failure(error);
+      if (failure.kind === "ended") {
+        this.dropGrant(definition.name, account, row.grant_generation, `${definition.providerTitle} ended this session`);
+        throw new Error(`${account}: ${definition.providerTitle} ended this session; sign in again at ${appPage(definition.name)}`);
+      }
+      if (failure.kind === "refused") throw new ProviderError(400, failure.message.slice(0, 300));
+      // A read that got no answer ran nothing that matters; a send may have gone out.
+      if (tool.idempotent) throw new ProviderError(0, `${definition.providerTitle} did not answer`);
+      throw new ProviderOutcomeUnknown(`${definition.providerTitle} did not answer; it may have run`);
+    };
+    let opened: Awaited<ReturnType<PhoneSignIn["open"]>>;
+    try {
+      opened = await withTimeout(phone.open(client, credential.session), REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      // Nothing was sent yet: opening the session only connects.
+      if (phone.failure(error).kind === "unknown") throw new ProviderError(0, `${definition.providerTitle} could not be reached`);
+      return fail(error);
+    }
+    let result: unknown;
+    try {
+      result = await withTimeout(Promise.resolve(tool.run(opened.api, input)), REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      await opened.close().catch(() => undefined);
+      return fail(error);
+    }
+    // The service may move the session (another data centre): the newer one is kept.
+    const session = await opened.close().catch(() => credential.session);
+    if (session && session !== credential.session) {
+      this.deps.sql.exec("UPDATE app_accounts SET grant_sealed = ? WHERE app = ? AND account = ? AND grant_generation = ?",
+        await this.seal({ kind: "phone", session }), definition.name, account, row.grant_generation);
+    }
+    return result;
+  }
+
+  /** Logs a phone account's session out at the service, in the background. */
+  private logOutPhone(definition: PhoneApp, sealed: string): void {
+    this.deps.waitUntil((async () => {
+      const credential = await this.unsealPhone(sealed);
+      const client = await this.phoneClient(definition);
+      if (credential && client) await this.phoneOf(definition).logOut(client, credential.session);
+    })().catch(() => undefined));
   }
 
   /** The provider's API, with `authorize` putting the credential on every request. */
@@ -792,6 +993,7 @@ export class AppConnections {
 
   /** Whether an app can be used: listed, and for an OAuth app, its provider's client set up. */
   private isAvailable(definition: AppDefinition): boolean {
+    if (definition.signIn === "phone") return this.hasClient(definition.provider as OAuthProviderName);
     return this.isListed(definition) && (definition.signIn !== "oauth" || this.hasClient(definition.provider));
   }
 
@@ -814,6 +1016,10 @@ export class AppConnections {
 
   /** How the web app's Add account works for an app; an OAuth app's says whether its client is set up, and how to register one. */
   private signInOf(definition: AppDefinition): AppSignIn {
+    if (definition.signIn === "phone") {
+      const phone = this.phoneOf(definition);
+      return { kind: "phone", consoleUrl: phone.consoleUrl, clientHelp: phone.clientHelp, clientReady: this.hasClient(definition.provider as OAuthProviderName) };
+    }
     if (definition.signIn !== "oauth") return signInOf(definition);
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
     return { kind: "oauth", client: { provider: provider.name, ready: this.hasClient(provider.name), consoleUrl: provider.consoleUrl, redirectUri: CALLBACK_URL } };
@@ -833,20 +1039,32 @@ export class AppConnections {
     ).toArray()[0];
   }
 
-  private seal(credential: Grant | TokenCredential): Promise<string> {
+  private seal(credential: Grant | TokenCredential | PhoneCredential): Promise<string> {
     return seal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, credential);
   }
 
   /** An OAuth grant; a token is never one. */
   private async unsealGrant(sealed: string): Promise<Grant | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | null;
-    return value && value.kind !== "token" ? value : null;
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | PhoneCredential | null;
+    return value && value.kind !== "token" && value.kind !== "phone" ? value : null;
+  }
+
+  private async unsealPhone(sealed: string): Promise<PhoneCredential | null> {
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as PhoneCredential | { kind?: undefined } | null;
+    return value?.kind === "phone" ? value : null;
   }
 
   private async unsealToken(sealed: string): Promise<TokenCredential | null> {
     const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as TokenCredential | { kind?: undefined } | null;
     return value?.kind === "token" ? value : null;
   }
+}
+
+/** A promise that rejects after `ms`, for work (a socket) with no signal of its own. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** The call that checks a token before it is stored: a read, so a lost answer ran nothing. */
@@ -939,7 +1157,7 @@ function notSetUp(definition: OAuthApp): string {
 }
 
 /** How the web app's Add account works for a token, device or Mac app. */
-function signInOf(definition: Exclude<AppDefinition, OAuthApp>): AppSignIn {
+function signInOf(definition: Exclude<AppDefinition, OAuthApp | PhoneApp>): AppSignIn {
   if (definition.signIn === "device") return { kind: "device" };
   if (definition.signIn === "mac") return { kind: "mac", setup: definition.setup, helpUrl: definition.reference };
   const { helpUrl, named, fields, mac } = definition.token;

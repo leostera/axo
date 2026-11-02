@@ -143,7 +143,9 @@ export type AppClientRequest = z.infer<typeof appClientRequestSchema>;
  * and never shows again; `named` says the person names the account, since the service does not.
  * `device`: Add account shows a code the person enters at the provider (ChatGPT), while the page
  * asks Axo whether they have. `mac`: the app runs a program on the account's Macs (1Password's
- * CLI), which are its accounts; `setup` says what to set up on a Mac first.
+ * CLI), which are its accounts; `setup` says what to set up on a Mac first. `phone`: the person
+ * signs in with their phone number and the code the service sends, as a new device of theirs
+ * (Telegram), with an API client they register at `consoleUrl` first (`clientReady` once set up).
  */
 /** A token app's sign-in on a Mac: the button, and what the person chooses the credential may do. */
 export const appMacSignInOfferSchema = z.object({
@@ -154,6 +156,7 @@ export const appSignInSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("oauth"), client: appOAuthClientSchema.optional() }).strict(),
   z.object({ kind: z.literal("device") }).strict(),
   z.object({ kind: z.literal("mac"), setup: z.string().max(1024), helpUrl: z.url({ protocol: /^https$/ }).max(2048) }).strict(),
+  z.object({ kind: z.literal("phone"), consoleUrl: z.url({ protocol: /^https$/ }).max(2048), clientHelp: z.string().max(1024), clientReady: z.boolean() }).strict(),
   z.object({
     kind: z.literal("token"),
     /** The service's page where the person creates the token. */
@@ -198,6 +201,25 @@ export const appMacSignInSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
 ]);
 export type AppMacSignIn = z.infer<typeof appMacSignInSchema>;
+/** A step of a phone sign-in: the number, then the code the service sent, then a password if the account has one. */
+export const appPhoneSignInRequestSchema = z.discriminatedUnion("step", [
+  z.object({ step: z.literal("start"), phone: z.string().trim().regex(/^\+?[\d ()-]{6,24}$/, "enter the number with its country code") }).strict(),
+  z.object({ step: z.literal("code"), flow: z.string().min(16).max(64), code: z.string().trim().regex(/^\d{4,8}$/, "the code is digits") }).strict(),
+  z.object({ step: z.literal("password"), flow: z.string().min(16).max(64), password: z.string().min(1).max(256) }).strict(),
+]);
+export type AppPhoneSignInRequest = z.infer<typeof appPhoneSignInRequestSchema>;
+/**
+ * Where a phone sign-in stands after a step: the code to enter (`via` the service's own app or
+ * SMS), the account's password, done, or failed and over. `error` on a step that goes on says what
+ * the person got wrong in the last one (a code that is not right).
+ */
+export const appPhoneSignInSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("code"), flow: z.string().min(16).max(64), via: z.enum(["app", "sms"]), error: z.string().max(512).optional() }).strict(),
+  z.object({ state: z.literal("password"), flow: z.string().min(16).max(64), hint: z.string().max(256).nullable(), error: z.string().max(512).optional() }).strict(),
+  z.object({ state: z.literal("done"), account: z.string().min(3).max(320) }).strict(),
+  z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
+]);
+export type AppPhoneSignIn = z.infer<typeof appPhoneSignInSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
 export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
 

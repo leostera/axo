@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { builtinModules } from "node:module";
 import { Miniflare, Response as MiniflareResponse, convertV4MiniflareOptions } from "miniflare";
 import { generateKeyPair, SignJWT } from "jose";
 import { createHash, randomBytes } from "node:crypto";
@@ -189,7 +190,10 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     // As Workers' build resolves packages: their workerd or browser builds.
     conditions: ["workerd", "worker", "browser"],
     mainFields: ["module", "main"],
-    external: ["cloudflare:workers"],
+    // Node's modules (GramJS's sockets, Telegram's) are workerd's own under nodejs_compat, as in production.
+    external: ["cloudflare:workers", "node:*", ...builtinModules],
+    // CommonJS packages require them; production's build turns those into imports, esbuild needs a `require`.
+    banner: { js: 'import { createRequire as __axoRequire } from "node:module"; const require = __axoRequire("/");' },
   });
   const keys = await generateKeyPair("RS256", { extractable: true });
   const keyId = "harness-key";

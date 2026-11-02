@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { appDeviceSignInSchema, appMacSignInSchema, connectionsResults, type AppDeviceSignIn, type CallRecord, type Connection } from "@axo/protocol";
+import { appDeviceSignInSchema, appMacSignInSchema, appPhoneSignInSchema, connectionsResults, type AppDeviceSignIn, type AppPhoneSignIn, type CallRecord, type Connection } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
@@ -312,9 +312,11 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
   // An OAuth app signs in with the person's own client for its provider: set up once, changed any time.
   const [changingClient, setChangingClient] = useState(false);
   const client = app.signIn.kind === "oauth" ? app.signIn.client : undefined;
-  const settingUp = client !== undefined && (!client.ready || changingClient);
+  // A phone app (Telegram) signs in with the person's own API client: set up once, like an OAuth client.
+  const phone = app.signIn.kind === "phone" ? app.signIn : undefined;
+  const settingUp = (client !== undefined && (!client.ready || changingClient)) || (phone !== undefined && (!phone.clientReady || changingClient));
   const add = (account = "") => {
-    if (app.signIn.kind === "token") {
+    if (app.signIn.kind === "token" || app.signIn.kind === "phone") {
       setAdding({ account });
       return;
     }
@@ -336,6 +338,7 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
       ? `Axo deletes a key it created at ${app.provider || "the service"}; one you pasted, delete there too.`
       : `Axo forgets its token. To stop it working, delete it at ${app.provider || "the service"} too.`
     : app.signIn.kind === "device" ? `Axo signs out of ${app.provider || "the provider"}.`
+    : app.signIn.kind === "phone" ? `Axo logs its device out of ${app.provider || "the service"}.`
     : `Axo's access is revoked at ${app.provider || "the provider"}.`;
   const signOut = (account: string) => {
     if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it. ${revoked}`)) return;
@@ -360,6 +363,11 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
           <ClientForm app={app} client={client} busy={busy} act={act} connectionsUrl={connectionsUrl}
             onDone={() => { setChangingClient(false); setNotice({ kind: "ok", text: `${app.provider || app.title} is set up. Add an account.` }); }}
             onCancel={client.ready ? () => setChangingClient(false) : undefined} />
+        ) : null}
+        {settingUp && phone ? (
+          <PhoneClientForm app={app} signIn={phone} busy={busy} act={act} connectionsUrl={connectionsUrl}
+            onDone={() => { setChangingClient(false); setNotice({ kind: "ok", text: `${app.provider || app.title} is set up. Add an account.` }); }}
+            onCancel={phone.clientReady ? () => setChangingClient(false) : undefined} />
         ) : null}
         {settingUp && !app.accounts.length ? null : <>
         {app.accounts.length || (adding === null && device === null) ? <h2 className="settings-section">Accounts</h2> : null}
@@ -387,6 +395,9 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
         {client?.ready && !changingClient
           ? <p className="sheet-note">Signs in with your own {app.provider || app.title} OAuth app. <button className="link" type="button" onClick={() => setChangingClient(true)}>Change client</button></p>
           : null}
+        {phone?.clientReady && !changingClient && adding === null
+          ? <p className="sheet-note">Axo signs in as a new device of yours, with your own {app.provider || app.title} API ID. <button className="link" type="button" onClick={() => setChangingClient(true)}>Change API ID</button></p>
+          : null}
         </>}
         {app.signIn.kind === "mac"
           ? <p className="sheet-note">Your Macs are its accounts. {app.signIn.setup} <a href={app.signIn.helpUrl} target="_blank" rel="noreferrer">Learn more</a>.</p>
@@ -401,6 +412,11 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
           ? <TokenForm app={app} signIn={app.signIn} macs={macs} account={adding.account} busy={busy} act={act} connectionsUrl={connectionsUrl}
             onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); void act(async () => undefined); }}
             onFailed={(error) => setNotice({ kind: "error", text: error })} onCancel={() => setAdding(null)} />
+          : null}
+        {adding !== null && app.signIn.kind === "phone"
+          ? <PhoneSignInForm app={app} busy={busy} act={act} connectionsUrl={connectionsUrl}
+            onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); void act(async () => undefined); }}
+            onFailed={(error) => { setAdding(null); setNotice({ kind: "error", text: error }); }} onCancel={() => setAdding(null)} />
           : null}
 
         {app.permissions.length ? <h2 className="settings-section">What Axo can do</h2> : null}
@@ -535,6 +551,100 @@ function ClientForm({ app, client, busy, act, connectionsUrl, onDone, onCancel }
         {app.provider === "Google" ? " One client serves every Google app." : ""}
         {onCancel ? <> Accounts signed in with the old one may need to sign in again. <button className="link" type="button" onClick={onCancel}>Cancel</button></> : null}
       </p>
+    </>
+  );
+}
+
+type PhoneSignIn = Extract<App["signIn"], { kind: "phone" }>;
+
+/**
+ * Sets up a phone app's API client (Telegram's): the person creates one at the service and enters
+ * its ID and hash here once. Axo keeps the hash encrypted with the account.
+ */
+function PhoneClientForm({ app, signIn, busy, act, connectionsUrl, onDone, onCancel }: {
+  app: App; signIn: PhoneSignIn; busy: boolean; connectionsUrl: string;
+  act: Shared["act"]; onDone: () => void; onCancel?: () => void;
+}) {
+  const [fields, setFields] = useState({ apiId: "", apiHash: "" });
+  const provider = app.provider || app.title;
+  const submit = () => act(async () => {
+    await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/client`, "POST", { clientId: fields.apiId.trim(), clientSecret: fields.apiHash.trim() });
+    setFields({ apiId: "", apiHash: "" });
+    onDone();
+  });
+  return (
+    <>
+      <h2 className="settings-section">{onCancel ? `Change ${provider} API ID` : `Set up ${provider}`}</h2>
+      <div className="grouped client-setup">
+        <div className="grouped-row client-step">
+          <span className="step-number" aria-hidden="true">1</span>
+          <span className="connection-copy">
+            <strong>Create an API ID for yourself</strong>
+            <small>{signIn.clientHelp} <a className="link" href={signIn.consoleUrl} target="_blank" rel="noreferrer">Open {provider}</a></small>
+          </span>
+        </div>
+        <div className="grouped-row client-step">
+          <span className="step-number" aria-hidden="true">2</span>
+          <span className="connection-copy"><strong>Enter its api_id and api_hash</strong></span>
+        </div>
+      </div>
+      <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <input className="grouped-row" required inputMode="numeric" placeholder="api_id" value={fields.apiId} autoComplete="off" spellCheck={false}
+          onChange={(event) => setFields({ ...fields, apiId: event.target.value })} aria-label="api_id" autoFocus />
+        <input className="grouped-row" required type="password" placeholder="api_hash" value={fields.apiHash} autoComplete="off"
+          onChange={(event) => setFields({ ...fields, apiHash: event.target.value })} aria-label="api_hash" />
+        <button className="grouped-row" disabled={busy} type="submit">Save</button>
+      </form>
+      <p className="sheet-note">
+        Axo keeps them encrypted with your account and never shows the hash again.
+        {onCancel ? <> Accounts signed in with the old one may need to sign in again. <button className="link" type="button" onClick={onCancel}>Cancel</button></> : null}
+      </p>
+    </>
+  );
+}
+
+/**
+ * Signs in to a phone app (Telegram) as a new device of the person's: their number, the code the
+ * service sends, then their password if the account has one. Axo keeps the service's state between
+ * steps; this form only holds the flow.
+ */
+function PhoneSignInForm({ app, busy, act, connectionsUrl, onDone, onFailed, onCancel }: {
+  app: App; busy: boolean; connectionsUrl: string;
+  act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onCancel: () => void;
+}) {
+  const [step, setStep] = useState<Extract<AppPhoneSignIn, { state: "code" | "password" }> | null>(null);
+  const [value, setValue] = useState("");
+  const provider = app.provider || app.title;
+  const send = (body: Record<string, string>) => act(async () => {
+    const answer = appPhoneSignInSchema.parse(await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/phone-sign-in`, "POST", body));
+    setValue("");
+    if (answer.state === "done") return onDone(answer.account);
+    if (answer.state === "failed") return onFailed(answer.error);
+    setStep(answer);
+  });
+  const submit = () => {
+    if (!step) return send({ step: "start", phone: value.trim() });
+    if (step.state === "code") return send({ step: "code", flow: step.flow, code: value.trim() });
+    return send({ step: "password", flow: step.flow, password: value });
+  };
+  const label = !step ? "Phone number" : step.state === "code" ? "Code" : "Password";
+  const hint = !step
+    ? `Your ${provider} number, with its country code. ${provider} sends a code to your ${provider} app.`
+    : step.state === "code"
+      ? step.via === "app" ? `${provider} sent a code to your ${provider} app on another device.` : `${provider} sent a code by SMS.`
+      : `Your account has a password (two-step verification).${step.hint ? ` Hint: ${step.hint}.` : ""}`;
+  return (
+    <>
+      <h2 className="settings-section">Sign in to {provider}</h2>
+      <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <p className="grouped-row muted">{step?.error ?? hint}</p>
+        <input key={label} className="grouped-row" required aria-label={label} placeholder={!step ? "+44 7700 900123" : label}
+          type={step?.state === "password" ? "password" : step ? "text" : "tel"} inputMode={step?.state === "code" ? "numeric" : undefined}
+          autoComplete={!step ? "tel" : step.state === "code" ? "one-time-code" : "current-password"} spellCheck={false}
+          value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
+        <button className="grouped-row" disabled={busy} type="submit">{!step ? "Send code" : "Continue"}</button>
+      </form>
+      <p className="sheet-note">Axo appears in {provider} › Settings › Devices; ending it there signs Axo out. <button className="link" type="button" onClick={onCancel}>Cancel</button></p>
     </>
   );
 }

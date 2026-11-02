@@ -6,7 +6,7 @@ import { hostDOName } from "../host-do";
 import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
 import type { DeviceSignIn } from "../connections/apps";
 import { googleClient } from "../connections/apps/google";
-import type { AppMacSignIn, CallRecord, Connection } from "@axo/protocol";
+import type { AppMacSignIn, AppPhoneSignIn, AppPhoneSignInRequest, CallRecord, Connection } from "@axo/protocol";
 import type { ChainCheck } from "../connections/call-log";
 
 import type { AccountProfile } from "./account-access";
@@ -392,6 +392,10 @@ export class AxoAccountManager extends DurableObject<Env> {
 
   async pollAppMacSignIn(name: string, flow: string): Promise<AppMacSignIn> {
     return this.requireConnections().pollAppMacSignIn(name, flow);
+  }
+
+  async appPhoneSignIn(name: string, request: AppPhoneSignInRequest): Promise<AppPhoneSignIn> {
+    return this.requireConnections().appPhoneSignIn(name, request);
   }
 
   async connectionSignInLink(name: string): Promise<string> {

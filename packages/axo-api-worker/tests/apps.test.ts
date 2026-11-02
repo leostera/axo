@@ -207,7 +207,7 @@ test("apps is a reserved name, and an account without a Google client lists Goog
   assert.ok(gmail?.kind === "app" && gmail.signIn.kind === "oauth");
   assert.equal(gmail.signIn.client?.ready, false);
   const tools = result((await daemon.call("axo.connections.search", { sessionId: crypto.randomUUID(), code: `async () => [...new Set(codemode.tools().map((t) => t.service))]` })) as Reply).result;
-  assert.deepEqual(tools.filter((s: string) => s.startsWith("apps.")), ["apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.discord", "apps.unifi"],
+  assert.deepEqual(tools.filter((s: string) => s.startsWith("apps.")), ["apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.kraken", "apps.discord", "apps.unifi"],
     "an app waiting for its client has no tools; one that needs none does");
 });
 

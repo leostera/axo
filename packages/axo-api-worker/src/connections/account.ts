@@ -13,6 +13,8 @@ import {
   isConnectionsMethod,
   type BashResult,
   type AppMacSignIn,
+  type AppPhoneSignIn,
+  type AppPhoneSignInRequest,
   type Connection,
   type ConnectionsMethod,
   type ConnectionsParams,
@@ -414,6 +416,18 @@ export class AccountConnections {
     const app = AppConnections.appOf(name);
     if (!app) return { state: "failed", error: `${name} is not an app` };
     return this.apps.pollMacSignIn(app, flow);
+  }
+
+  /** One step of a phone app's sign-in (Telegram): the number, the code, then a password. */
+  async appPhoneSignIn(name: string, request: AppPhoneSignInRequest): Promise<AppPhoneSignIn> {
+    const app = AppConnections.appOf(name);
+    if (!app) return { state: "failed", error: `${name} is not an app` };
+    try {
+      return await this.apps.phoneSignIn(app, request);
+    } catch (error) {
+      if (error instanceof AppAccountRefused) return { state: "failed", error: error.message.slice(0, 300) };
+      throw error;
+    }
   }
 
   /** Calls an app's tool from here, with the account's grant; logged before it is sent. */
