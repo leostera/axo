@@ -42,7 +42,8 @@ public final class Chat {
 @MainActor
 @Observable
 public final class HostWorkbenchModel {
-  public let hostLabel: String
+  /// The Mac's name, as the account lists it now (a person may rename it while it is open).
+  public private(set) var hostLabel: String
   public let reference: RemoteHostRef
   public private(set) var status: RemoteHostStatus
   public private(set) var sessions: [RemoteSession]
@@ -162,6 +163,7 @@ public final class HostWorkbenchModel {
   public func adopt(listing host: RemoteHost) {
     guard host.reference == reference else { return }
     status = host.status
+    if hostLabel != host.label { hostLabel = host.label }
     for listed in host.sessions { created[listed.sessionId] = nil }
     sessions = (host.sessions + created.values).sorted(by: RemoteSession.isCreatedBefore)
     settleChats()

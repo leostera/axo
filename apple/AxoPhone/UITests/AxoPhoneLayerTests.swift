@@ -16,7 +16,12 @@ final class AxoPhoneLayerTests: XCTestCase {
     app.launch()
     let title = app.staticTexts["conversation-title"]
     XCTAssertTrue(title.waitForExistence(timeout: 15))
-    // A preview opens its chat a moment after launch; a tap before that is lost.
+    // A preview opens its chat a moment after launch; a tap before that is lost. One asked for
+    // is open once the title is no longer the blank chat's.
+    if app.launchEnvironment["AXO_PHONE_PREVIEW_CHAT"] != nil {
+      let opened = NSPredicate(format: "label != %@", "New chat")
+      _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: opened, object: title)], timeout: 10)
+    }
     var label = title.label
     for _ in 0..<20 {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))

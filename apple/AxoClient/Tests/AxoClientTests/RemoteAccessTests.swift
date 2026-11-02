@@ -428,6 +428,19 @@ final class AccountConnectionTests: XCTestCase {
     XCTAssertEqual(session.sessionId, 7)
   }
 
+  func testAMacIsRenamedOnTheAccountSocketByItsLowercaseIdAndAnswersItsName() async throws {
+    let (account, channel) = try await connect()
+    async let renamed = account.renameHost(UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!, to: "Studio")
+    let sent = try await request(channel, 0)
+    XCTAssertEqual(sent["method"] as? String, "axo.client.host.rename", "the account's, not a command to the Mac")
+    let params = try XCTUnwrap(sent["params"] as? [String: Any])
+    XCTAssertEqual(params["hostId"] as? String, "abcdef00-95fd-4c93-8586-a71a8a52bf73")
+    XCTAssertEqual(params["name"] as? String, "Studio")
+    channel.reply(to: try XCTUnwrap(sent["id"] as? Int), result: #"{"label":"Studio"}"#)
+    let label = try await renamed
+    XCTAssertEqual(label, "Studio")
+  }
+
   func testASessionCreatedOnAnotherHostIsRefused() async throws {
     let (account, channel) = try await connect()
     async let created = HostConnection(account: account, host: host).createSession()

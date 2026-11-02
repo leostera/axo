@@ -87,6 +87,15 @@ public final class AccountConnection: Sendable {
     await rpc.notify("axo.client.session.close", params: CloseParams(sessionId: session))
   }
 
+  /// Names a Mac for the whole account: every client shows the name at once, and the Mac keeps it
+  /// across reconnections. An empty name goes back to the Mac's own. Returns the name it now has.
+  public func renameHost(_ host: UUID, to name: String) async throws -> String {
+    let renamed: HostRenamed = try await rpc.call(
+      "axo.client.host.rename", params: RenameHostParams(hostId: host.uuidString.lowercased(), name: name),
+      timeout: .seconds(10))
+    return renamed.label
+  }
+
   /// Runs `method` on a host. It fails at once when the host is offline (-32005); nothing is
   /// queued.
   public func command<Params: Encodable & Sendable, Result: Decodable & Sendable>(
@@ -149,6 +158,11 @@ private struct AckParams: Encodable, Sendable {
   let cursor: Int64
 }
 private struct CloseParams: Encodable, Sendable { let sessionId: SessionID }
+private struct RenameHostParams: Encodable, Sendable {
+  let hostId: String
+  let name: String
+}
+private struct HostRenamed: Decodable, Sendable { let label: String }
 private struct CommandParams<Params: Encodable & Sendable>: Encodable, Sendable {
   let hostId: String
   let method: String

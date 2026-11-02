@@ -416,6 +416,7 @@ struct WorkbenchView: View {
         workbench.select(host: host.hostId, session: nil)
         show(.conversation)
       },
+      rename: { host, name in await workbench.renameHost(host.hostId, to: name) },
       pair: { showingPairing = true },
       showSettings: { showingSettings = true },
       refresh: { await workbench.refresh() })
@@ -593,9 +594,16 @@ private struct HostsPanel: View {
   let openHost: UUID?
   let chatsOf: (RemoteHost) -> Int
   let newChat: (RemoteHost) -> Void
+  /// Names a Mac for the account; says why it could not, or nil once saved.
+  let rename: (RemoteHost, String) async -> String?
   let pair: () -> Void
   let showSettings: () -> Void
   let refresh: () async -> Void
+
+  /// The Mac being named, and the name typed so far.
+  @State private var renaming: RemoteHost?
+  @State private var newName = ""
+  @State private var renameFailure: String?
 
   var body: some View {
     ScrollView {
@@ -614,11 +622,27 @@ private struct HostsPanel: View {
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
         ForEach(hosts.hosts, id: \.hostId) { host in
-          Button { newChat(host) } label: { HostRow(host: host, chats: chatsOf(host), isOpen: host.hostId == openHost) }
-            .buttonStyle(.layerRow)
-            .disabled(host.status != .online)
-            .padding(.horizontal, MenuLayout.rowInset)
-            .accessibilityHint(host.status == .online ? "Starts a new chat on this Mac" : "")
+          HStack(spacing: 0) {
+            Button { newChat(host) } label: { HostRow(host: host, chats: chatsOf(host), isOpen: host.hostId == openHost) }
+              .buttonStyle(.layerRow)
+              .disabled(host.status != .online)
+              .accessibilityHint(host.status == .online ? "Starts a new chat on this Mac" : "")
+            // The network's name for a Mac is rarely what anyone calls it. An offline Mac can be
+            // named too: the name is the account's, not the Mac's.
+            Button {
+              newName = host.label
+              renaming = host
+            } label: {
+              Image(systemName: "pencil")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 52)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Rename \(host.label)")
+          }
+          .padding(.horizontal, MenuLayout.rowInset)
         }
       }
       .padding(.bottom, 12)
@@ -626,6 +650,29 @@ private struct HostsPanel: View {
     .scrollIndicators(.hidden)
     .softLayerEdges()
     .refreshable { await Task { await refresh() }.value }
+    .alert(
+      "Rename Mac",
+      isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
+      presenting: renaming
+    ) { host in
+      TextField("Name", text: $newName)
+        .accessibilityIdentifier("mac-name")
+      Button("Save") {
+        let name = String(newName.prefix(64))
+        Task { renameFailure = await rename(host, name) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: { _ in
+      Text("Shown on every device of this account. Leave it empty for the Mac's own name.")
+    }
+    .alert(
+      "Could not rename",
+      isPresented: Binding(get: { renameFailure != nil }, set: { if !$0 { renameFailure = nil } })
+    ) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text(renameFailure ?? "")
+    }
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(ChatColors.background.ignoresSafeArea())
     .layerBar(edge: .top) {
@@ -771,6 +818,12 @@ extension ClientID {
       let result: String? =
         switch method {
         case "axo.client.hello", "axo.client.refresh": PreviewFixture.listing
+        case "axo.client.host.rename":
+          // The name as asked for; an empty one goes back to the Mac's own.
+          (params?["name"] as? String).map { name in
+            let label = name.isEmpty ? "Mac-Studio.local" : name
+            return String(data: try! JSONSerialization.data(withJSONObject: ["label": label]), encoding: .utf8)!
+          }
         case "axo.client.session.open":
           (params?["sessionId"] as? String).flatMap(SessionID.init(rawValue:)).map(PreviewFixture.opened(_:))
         case "axo.client.command":

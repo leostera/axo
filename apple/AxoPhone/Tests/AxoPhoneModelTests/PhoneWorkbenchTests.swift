@@ -97,6 +97,11 @@ final class PhoneWorld {
         creations.record(prompt: request.params["text"] as? String ?? "")
         return .result(#"{"accepted":true}"#)
       case "axo.remote.session.key": return .result(#"{"accepted":true}"#)
+      case "axo.client.host.rename":
+        // An empty name goes back to the Mac's own, which these Macs call "Own name".
+        let name = request.params["name"] as? String ?? ""
+        if name == "refuse" { return .error(-32602, "Invalid params") }
+        return .result(#"{"label":"\#(name.isEmpty ? "Own name" : name)"}"#)
       default: return nil
       }
     }
@@ -286,6 +291,28 @@ final class PhoneWorkbenchTests: XCTestCase {
     let alone = PhoneWorld([Mac("Only", online: true)])
     try await alone.start()
     XCTAssertFalse(alone.workbench.canChooseHost, "with one Mac there is nothing to choose")
+  }
+
+  func testAMacIsRenamedForTheAccountAndShownByItsNewNameAtOnce() async throws {
+    let studio = Mac("MacBook-Pro-7.local", online: true, sessions: [1])
+    let world = PhoneWorld([studio])
+    try await world.start()
+    let workbench = world.workbench!
+    XCTAssertEqual(workbench.current?.hostLabel, "MacBook-Pro-7.local")
+
+    let failure = await workbench.renameHost(studio.id, to: "  Studio  ")
+    XCTAssertNil(failure)
+    // The relay echoes the name it was sent: sent trimmed.
+    XCTAssertEqual(workbench.hosts.hosts.map(\.label), ["Studio"], "the listing shows it before the account's notice")
+    XCTAssertEqual(workbench.current?.hostLabel, "Studio", "and so does the open Mac")
+
+    let reset = await workbench.renameHost(studio.id, to: "")
+    XCTAssertNil(reset)
+    XCTAssertEqual(workbench.current?.hostLabel, "Own name", "an empty name goes back to the Mac's own")
+
+    let refused = await workbench.renameHost(studio.id, to: "refuse")
+    XCTAssertNotNil(refused)
+    XCTAssertEqual(workbench.current?.hostLabel, "Own name", "a refusal changes nothing")
   }
 
   func testNoChatCanStartWhenEveryMacIsOffline() async throws {

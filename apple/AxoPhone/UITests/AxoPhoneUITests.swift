@@ -18,7 +18,12 @@ final class AxoPhoneUITests: XCTestCase {
     app.launch()
     let title = app.staticTexts["conversation-title"]
     XCTAssertTrue(title.waitForExistence(timeout: 15))
-    // A preview opens its chat a moment after launch; a tap before that is lost.
+    // A preview opens its chat a moment after launch; a tap before that is lost. One asked for
+    // is open once the title is no longer the blank chat's.
+    if app.launchEnvironment["AXO_PHONE_PREVIEW_CHAT"] != nil {
+      let opened = NSPredicate(format: "label != %@", "New chat")
+      _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: opened, object: title)], timeout: 10)
+    }
     var label = title.label
     for _ in 0..<20 {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
@@ -144,6 +149,23 @@ final class AxoPhoneUITests: XCTestCase {
     app.buttons["Studio"].tapWhereItIs()
     XCTAssertTrue(menuClosed(app))
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
+  }
+
+  @MainActor
+  func testAMacIsRenamedFromTheAccountPanel() {
+    let app = launch(["AXO_PHONE_PREVIEW_HOSTS": "1"])
+    XCTAssertTrue(accountShowing(app))
+    app.buttons["Rename Studio"].tapWhereItIs()
+    let alert = app.alerts["Rename Mac"]
+    XCTAssertTrue(alert.waitForExistence(timeout: 5))
+    let field = alert.textFields.firstMatch
+    field.tap()
+    // The current name is there to edit; clear it and type another.
+    XCTAssertEqual(field.value as? String, "Studio")
+    field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 10) + "Leo's Studio")
+    alert.buttons["Save"].tap()
+    XCTAssertTrue(app.buttons["Leo's Studio"].waitForExistence(timeout: 5), "the row shows the new name at once")
+    XCTAssertTrue(app.buttons["Rename Leo's Studio"].exists)
   }
 
   @MainActor

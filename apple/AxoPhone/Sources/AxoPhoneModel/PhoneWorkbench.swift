@@ -10,6 +10,7 @@ public protocol AccountFeed: ChatFeed {
   func connect() async throws
   func disconnect() async
   func refresh() async throws -> ClientHello
+  func renameHost(_ host: UUID, to name: String) async throws -> String
 }
 
 extension AccountConnection: AccountFeed {}
@@ -205,6 +206,21 @@ public final class PhoneWorkbench {
       if selection == nil { beginNewChat() }
     } catch {
       account.noteFailure(error)
+    }
+  }
+
+  /// Names a Mac for the whole account: the network's name for it is rarely what anyone calls it.
+  /// An empty name goes back to that. Returns why it could not, or nil once it is saved.
+  public func renameHost(_ hostID: UUID, to name: String) async -> String? {
+    guard link == .connected else { return "Not connected; try again in a moment." }
+    do {
+      let label = try await feed.renameHost(hostID, to: name.trimmingCharacters(in: .whitespacesAndNewlines))
+      hosts.renamed(hostID, to: label)
+      listingChanged()
+      return nil
+    } catch {
+      account.noteFailure(error)
+      return "Could not rename the Mac: \(error.localizedDescription)"
     }
   }
 
