@@ -192,6 +192,32 @@ test("a command reaches the host, and fails at once when the host is offline", a
   assert.equal(offline.error.code, -32005, "nothing is queued for an offline host");
 });
 
+test("a client's commandId and a stop naming its turn reach the host as sent (RFD0024)", async (t) => {
+  const { h, session, daemon, transcript, host } = await fixture(t);
+  const { client } = await connectClient(h, session);
+  t.after(() => client.close());
+  const target = { hostId: host.hostId, hostGeneration: host.hostGeneration };
+  const promptParams = { target, sessionId: transcript.sessionId, text: "yes", commandId: crypto.randomUUID() };
+  const prompt = client.call("axo.client.command", { hostId: host.hostId, method: "axo.remote.session.prompt", params: promptParams });
+  const forwardedPrompt = (await daemon.next()) as { id: string; method: string; params: unknown };
+  assert.deepEqual(forwardedPrompt.params, promptParams);
+  daemon.send({ jsonrpc: "2.0", id: forwardedPrompt.id, result: { accepted: true } });
+  assert.ok("result" in (await prompt));
+
+  const stopParams = { target, sessionId: transcript.sessionId, turnId: "a1b2c3d4" };
+  const stop = client.call("axo.client.command", { hostId: host.hostId, method: "axo.remote.session.stop", params: stopParams });
+  const forwardedStop = (await daemon.next()) as { id: string; method: string; params: unknown };
+  assert.equal(forwardedStop.method, "axo.remote.session.stop");
+  assert.deepEqual(forwardedStop.params, stopParams);
+  daemon.send({ jsonrpc: "2.0", id: forwardedStop.id, result: { stopped: false } });
+  const stopped = await stop;
+  assert.ok("result" in stopped);
+  assert.deepEqual(stopped.result, { stopped: false }, "the turn it named had ended");
+
+  const malformed = await client.call("axo.client.command", { hostId: host.hostId, method: "axo.remote.session.stop", params: { ...stopParams, turnId: "two words" } });
+  assert.ok("error" in malformed);
+});
+
 test("a Session the host stops listing is archived, never deleted, and metadata only moves forward", async (t) => {
   const { h, session, daemon, transcript, host } = await fixture(t);
   const { client } = await connectClient(h, session);

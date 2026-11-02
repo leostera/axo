@@ -272,7 +272,11 @@ export class AxoClientDO extends DurableObject<Env> {
         case CLIENT_METHODS.command: {
           const params = clientCommandParamsSchema.safeParse(call.params);
           if (!params.success || !this.host(params.data.hostId)) return failure(id, -32602, "Invalid params");
-          const outcome = await this.hostStub(params.data.hostId).command(params.data.method, params.data.params);
+          // A call that throws may have reached the host: its outcome is unknown, not an
+          // invitation to try again with a new commandId (RFD0024).
+          const outcome = await this.hostStub(params.data.hostId)
+            .command(params.data.method, params.data.params)
+            .catch(() => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
           return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
         }
         case CLIENT_METHODS.renameHost: {

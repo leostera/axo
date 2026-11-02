@@ -16,6 +16,10 @@ export const hostCapabilitiesSchema = z.array(hostCapabilitySchema).max(32).supe
 });
 /** A Session ID: a UUID in canonical lowercase form (RFD0017). */
 export const sessionIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, "Session IDs are lowercase UUIDs");
+/** A client's id for one command (RFD0024). */
+export const commandIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, "commandIds are lowercase UUIDs");
+/** The entry id of a user record in a Session's Pi log, naming its turn. */
+export const turnIdSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/, "turnIds are entry ids of the Session's log");
 export type SessionId = z.infer<typeof sessionIdSchema>;
 export const shellIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const hostRefSchema = z.object({
@@ -190,8 +194,11 @@ export const hostV1Methods = {
     sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     data: z.base64().min(4).max(65_536),
   }).strict(),
-  "axo.remote.session.prompt": sessionTargetSchema.extend({ text: z.string().min(1).max(16_000) }).strict(),
+  // With a commandId the Session's Pi takes the prompt at most once, after a receipt (RFD0024).
+  "axo.remote.session.prompt": sessionTargetSchema.extend({ text: z.string().min(1).max(16_000), commandId: commandIdSchema.optional() }).strict(),
   "axo.remote.session.key": sessionTargetSchema.extend({ key: z.enum(["escape", "enter"]) }).strict(),
+  // Stops the turn the client showed running, named by one of its user records, and no other.
+  "axo.remote.session.stop": sessionTargetSchema.extend({ turnId: turnIdSchema }).strict(),
   "axo.remote.terminal.resize": shellTargetSchema.extend({
     rows: z.number().int().min(1).max(65_535),
     columns: z.number().int().min(1).max(65_535),
@@ -215,6 +222,7 @@ export const hostMutationMethods = [
   "axo.remote.terminal.input",
   "axo.remote.session.prompt",
   "axo.remote.session.key",
+  "axo.remote.session.stop",
   "axo.remote.terminal.resize",
 ] as const;
 
@@ -259,6 +267,8 @@ export const remoteTerminalInputResultSchema = z.object({
   sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
 }).strict();
 export const remotePromptResultSchema = z.object({ accepted: z.literal(true) }).strict();
+/** Whether the turn the stop named was running, and is stopping. */
+export const remoteStopResultSchema = z.object({ stopped: z.boolean() }).strict();
 export const remoteTerminalResizeResultSchema = z.object({
   accepted: z.literal(true),
   rows: z.number().int().min(1).max(65_535),
@@ -284,6 +294,7 @@ export const hostV1Results = {
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
   "axo.remote.session.prompt": remotePromptResultSchema,
   "axo.remote.session.key": remotePromptResultSchema,
+  "axo.remote.session.stop": remoteStopResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;
 

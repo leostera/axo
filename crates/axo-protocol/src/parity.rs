@@ -209,6 +209,8 @@ pub const PARITY: &[Parity] = &[
 pub const REMOTE_ONLY: &[&str] = &[
     // Presses Escape or Enter in the Session's Pi: stops a reply, or answers Pi's question.
     "axo.remote.session.key",
+    // Stops the turn a client showed running, and no other (RFD0024).
+    "axo.remote.session.stop",
 ];
 
 /// The remote methods that must exist now: every [`Remote::Call`] and [`Remote::Events`] name,

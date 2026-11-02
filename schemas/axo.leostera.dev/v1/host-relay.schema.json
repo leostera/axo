@@ -60,6 +60,9 @@
           "$ref": "#/$defs/RemoteKeyCall"
         },
         {
+          "$ref": "#/$defs/RemoteStopCall"
+        },
+        {
           "$ref": "#/$defs/RemoteTerminalResizeCall"
         }
       ]
@@ -587,6 +590,50 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 16000
+                },
+                "commandId": {
+                  "description": "The Session's Pi takes the prompt at most once, after a receipt (RFD0024).",
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteStopCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.stop"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "turnId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "turnId": {
+                  "description": "The entry id of a user record of the turn the client showed running (RFD0024).",
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$"
                 }
               }
             }

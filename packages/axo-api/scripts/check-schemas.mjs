@@ -320,6 +320,17 @@ validateWith(hostCallSchema, await fixture("host-register.call.json"));
 validateWith(hostCallSchema, await fixture("terminal-input.call.json"));
 validateWith(hostCallSchema, await fixture("session-prompt.call.json"));
 validateWith(hostCallSchema, await fixture("session-key.call.json"));
+// A client's prompt with its commandId, and a stop naming its turn (RFD0024), match in both.
+const promptWithCommand = await fixture("session-prompt.call.json");
+promptWithCommand.params.commandId = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
+validateWith(hostCallSchema, promptWithCommand);
+assert.equal(hostV1Methods["axo.remote.session.prompt"].safeParse(promptWithCommand.params).success, true);
+const stopCall = await fixture("session-stop.call.json");
+validateWith(hostCallSchema, stopCall);
+assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(stopCall.params).success, true);
+stopCall.params.turnId = "two words";
+assert.equal(ajv.getSchema(hostCallSchema)(stopCall), false, "a turnId is an entry id");
+assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(stopCall.params).success, false);
 const validateHostCall = ajv.getSchema(hostCallSchema);
 remoteCreate.params.target.hostId = "not-a-uuid";
 assert.equal(validateHostCall(remoteCreate), false, "malformed host identities must be rejected");
