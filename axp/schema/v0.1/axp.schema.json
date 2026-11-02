@@ -27,7 +27,7 @@
       "additionalProperties": { "$ref": "#/$defs/version" }
     },
     "ext": {
-      "description": "Extension data, keyed by extension identifier (SPEC §14).",
+      "description": "Extension data, keyed by extension identifier (SPEC §15).",
       "type": "object",
       "propertyNames": { "$ref": "#/$defs/extensionId" }
     },
@@ -91,7 +91,7 @@
       "additionalProperties": false
     },
     "offer": {
-      "description": "What a copy of a log holds: the values an ATXF seal would carry after its last record (SPEC §8.1).",
+      "description": "What a copy of a log holds: the values an ATXF seal would carry after its last record (SPEC §9.1).",
       "type": "object",
       "properties": {
         "count": { "$ref": "#/$defs/count" },
@@ -175,7 +175,7 @@
       "additionalProperties": false
     },
     "pairingCode": {
-      "description": "Crockford base32, two groups of four. Receivers normalize case and O/I/L before matching (SPEC §5.3).",
+      "description": "Crockford base32, two groups of four. Receivers normalize case and O/I/L before matching (SPEC §6.3).",
       "type": "string",
       "pattern": "^[0-9A-Za-z]{4}-[0-9A-Za-z]{4}$"
     },
@@ -530,7 +530,7 @@
     },
 
     "receipt": {
-      "description": "The result of a command (SPEC §9.2). Extensions add fields to it with `allOf`.",
+      "description": "The result of a command (SPEC §10.2). Extensions add fields to it with `allOf`.",
       "type": "object",
       "properties": {
         "receipt": { "const": "accepted" },
@@ -539,7 +539,7 @@
       "required": ["receipt"]
     },
     "routed": {
-      "description": "The params every routed call carries (SPEC §9.1). `from` is added by a hub.",
+      "description": "The params every routed call carries (SPEC §10.1). `from` is added by a hub.",
       "type": "object",
       "properties": {
         "hostId": { "$ref": "#/$defs/uuid" },
@@ -554,7 +554,7 @@
       "required": ["hostId"]
     },
     "command": {
-      "description": "The params every command carries (SPEC §9.2).",
+      "description": "The params every command carries (SPEC §10.2).",
       "allOf": [
         { "$ref": "#/$defs/routed" },
         { "properties": { "commandId": { "$ref": "#/$defs/commandId" } }, "required": ["commandId"] }

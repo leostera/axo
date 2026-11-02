@@ -238,7 +238,7 @@ Out of scope:
 
 `axp/` (SPEC.md, extensions/, schema/v0.1, examples/) and `sites/axp.leostera.dev` implement rollout step 1 and the documents of step 3. Where writing the spec changed this RFD's design:
 
-- **No `axp.command` envelope.** A hub forwards any extension method whose params carry `hostId` to that host without understanding it (SPEC §9.1). A routed call that carries a `commandId` is a command (SPEC §9.2). `pi.prompt` is sent as itself, not wrapped.
-- **One exchange for replication.** The hub reads each log from its host with the same `axp.log.open`/`records`/`ack` a client uses to read from the hub (SPEC §8.2, §8.3). There is no separate upload method set.
-- **Recovery, not epochs.** Logs are append-only and never truncated. A host that lost records a replica holds reads them back and rebuilds its log as the common prefix, the replica's records, then its own; ATXF record hashes do not depend on position (SPEC §8.4).
+- **No `axp.command` envelope.** A hub forwards any extension method whose params carry `hostId` to that host without understanding it (SPEC §10.1). A routed call that carries a `commandId` is a command (SPEC §10.2). `pi.prompt` is sent as itself, not wrapped.
+- **One exchange for replication.** The hub reads each log from its host with the same `axp.log.open`/`records`/`ack` a client uses to read from the hub (SPEC §9.2, §9.3). There is no separate upload method set.
+- **Recovery, not epochs.** Logs are append-only and never truncated. A host that lost records a replica holds reads them back and rebuilds its log as the common prefix, the replica's records, then its own; ATXF record hashes do not depend on position (SPEC §9.4).
 - **A `sessions` extension** for creating, renaming and archiving Sessions remotely, which the core leaves out; `local` keeps only health, configuration, the hub link and the viewport.

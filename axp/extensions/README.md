@@ -1,6 +1,6 @@
 # AXP extension registry
 
-Extensions add methods, slots, record conventions and fields to AXP without changing the core ([SPEC §14](../SPEC.md#14-extensions)). Each one is negotiated per connection in `axp.hello`.
+Extensions add methods, slots, record conventions and fields to AXP without changing the core ([SPEC §15](../SPEC.md#15-extensions)). Each one is negotiated per connection in `axp.hello`.
 
 | Identifier | Version | Status | Roles | Error codes | Document |
 | --- | --- | --- | --- | --- | --- |
@@ -26,4 +26,4 @@ Requires:   <identifiers, or "core only">
 Roles:      <which roles implement it>
 ```
 
-The document says, as it applies: what the extension models, its methods and notifications with who sends them, whether each is routed (SPEC §9.1) and whether it is a command (SPEC §9.2), its slots, its log record conventions, its fields under `ext.<identifier>`, its errors, limits and security considerations.
+The document says, as it applies: what the extension models, its methods and notifications with who sends them, whether each is routed (SPEC §10.1) and whether it is a command (SPEC §10.2), its slots, its log record conventions, its fields under `ext.<identifier>`, its errors, limits and security considerations.

@@ -1,4 +1,4 @@
-// The documents in axp/ link to each other as files (`SPEC.md#8-logs`, `pi.md`, `../examples/`) so
+// The documents in axp/ link to each other as files (`SPEC.md#9-logs`, `pi.md`, `../examples/`) so
 // they read well on GitHub. On the site each document is a page; this remark plugin rewrites those
 // links to the pages, and any other relative link to the file on GitHub.
 

@@ -20,7 +20,7 @@ A **workspace** is a folder on the host that Sessions run in. It has a `workspac
 
 ## 2. Methods
 
-Every method is routed (SPEC §9.1). The ones with a `commandId` are commands (SPEC §9.2).
+Every method is routed (SPEC §10.1). The ones with a `commandId` are commands (SPEC §10.2).
 
 | Method | Params | Result |
 | --- | --- | --- |

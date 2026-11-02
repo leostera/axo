@@ -2,15 +2,20 @@
 
 Specification: **https://axp.leostera.dev**
 
-**AXP** is a protocol for moving live coding-agent Sessions between the machine that runs them and the people and programs that watch and steer them: a phone, a browser, another computer. Logs are [ATXF](https://atxf.leostera.dev) transcripts.
+Coding agents run in isolation: a session lives in one process on one machine, and only the person at that terminal can see or steer it. Transcript files, such as [ATXF](https://atxf.leostera.dev), are fine for sharing a session once it is over, but they are a record of the past. **AXP** is for sessions that are still running: watching them from a phone, a browser or another computer, steering them safely over networks that drop, and keeping every copy of them in sync.
 
 > Status: **v0.1 draft**. Expect breaking changes until v1.
 
-## Why
+## The problem
 
-Running an agent on one machine and steering it from another needs the same few things every time: knowing which machines and Sessions exist, keeping a copy of each Session that can resume after any disconnect, sending a prompt that runs exactly once even when the network drops at the wrong moment, and letting a new device in without passwords. Each tool that does this today invents its own wire format, tied to one agent and one product.
+- **Controlling a remote session is hard.** A prompt sent from a phone needs a path to the machine running the agent, and an answer to "did it run?" when the connection drops mid-request. Resending can run it twice; not resending can lose it.
+- **Replicating a live session is hard.** Every viewer needs the same log in the same order as it is written, resumable after any disconnect, and safe from a relay that drops or alters records.
+- **Knowing what runs where is hard.** Which machines exist, which sessions each runs, which are working and which wait for a person.
+- **Machines cannot reach each other.** Laptops sit behind NAT and phones change networks, so something has to relay, without being able to forge what an agent said.
+- **Letting a device in is hard to do safely.** Pairing a phone should take a short code, not a password or a secret sent on every connection.
+- **Every tool solves this alone,** with its own wire format tied to one agent and one product.
 
-AXP specifies those things once, with a small core and extensions, so that any host, relay and client can work together, whatever agent the host runs.
+AXP specifies the answers once, with a small core and extensions, so that any host, relay and client can work together, whatever agent the host runs.
 
 ## Design in one screen
 

@@ -17,11 +17,11 @@ A Pi Session's log is the ATXF conversion of Pi's session file, as described in 
 - The header's `source.agent` is `pi` and its `id` is the Session's `sessionId`.
 - The host converts each Pi entry as Pi appends it, and MUST carry it in `native` (with `native.raw` when re-serializing would not reproduce it), so that `fidelity.native` is `all`. A client that draws Pi's own interface recovers Pi's entries from `native` in order, byte for byte.
 - ATXF record ids are Pi entry ids (`fidelity.ids: "stable"`).
-- The user message a `pi.prompt` produces carries `ext.axp.commandId` (SPEC §9.2). A host that cannot attach it to the user message itself, because Pi writes that entry, writes a Pi custom entry of type `axp.command` with `{ "commandId" }` immediately before it, and the converter moves the id onto the next user message.
+- The user message a `pi.prompt` produces carries `ext.axp.commandId` (SPEC §10.2). A host that cannot attach it to the user message itself, because Pi writes that entry, writes a Pi custom entry of type `axp.command` with `{ "commandId" }` immediately before it, and the converter moves the id onto the next user message.
 
 ## 2. Commands
 
-Every method is routed (SPEC §9.1) and a command (SPEC §9.2). All take `hostId`, `sessionId` and `commandId`.
+Every method is routed (SPEC §10.1) and a command (SPEC §10.2). All take `hostId`, `sessionId` and `commandId`.
 
 | Method | Further params | Effect |
 | --- | --- | --- |

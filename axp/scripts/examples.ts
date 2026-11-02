@@ -41,7 +41,7 @@ const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
 const hostKey = keyFromSeed(0x11);
 const phoneKey = keyFromSeed(0x22);
 
-/** The signature SPEC §5.2 asks for. */
+/** The signature SPEC §6.2 asks for. */
 function authSignature(key: ReturnType<typeof keyFromSeed>, challenge: Buffer, device: string): string {
   const message = Buffer.concat([
     Buffer.from("axp/0.1/auth\n"),

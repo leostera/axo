@@ -12,7 +12,7 @@ const toc = headings.filter((h) => h.depth === 2).map(({ slug, text }) => ({ slu
 
 <Document
   title="AXP: Agent Xchange Protocol"
-  description="A protocol for moving live coding-agent Sessions between the machine that runs them and the phones, browsers and computers that watch and steer them. Logs are ATXF transcripts."
+  description="Coding agents run in isolation. AXP lets phones, browsers and other computers watch and steer running agent sessions, keeps every copy in sync, and makes remote commands run exactly once. Logs are ATXF transcripts."
   current="/"
   headings={toc}
 >
@@ -32,7 +32,10 @@ const toc = headings.filter((h) => h.depth === 2).map(({ slug, text }) => ({ slu
     ]}
   >
     <p>
-      AXP moves live coding-agent Sessions between the machine that runs them and the people and programs that watch and steer them. A <strong>host</strong> runs Sessions and is the only writer of each one's log, a <strong>hub</strong> connects hosts and clients that cannot reach each other, and a <strong>client</strong> shows Sessions and sends commands. This document is the core: transports, connections, pairing, the directory, log replication, commands and ephemeral state. Everything else is an <a href="/extensions/">extension</a>.
+      Coding agents run in isolation, each session on one machine and steerable only from the terminal it runs in. Sharing a finished transcript is solved by files such as <a href="https://atxf.leostera.dev">ATXF</a>. Working with a session that is still running, from a phone, a browser or another computer, is not: every tool invents its own way to send it commands, keep copies in sync, and know whether a prompt actually ran.
+    </p>
+    <p class="mt-4">
+      AXP solves them once, for any agent. A <strong>host</strong> runs Sessions and is the only writer of each one's log, a <strong>hub</strong> connects hosts and clients that cannot reach each other, and a <strong>client</strong> shows Sessions and sends commands. This document is the core; everything specific to an agent or a terminal is an <a href="/extensions/">extension</a>.
     </p>
   </RfcHeader>
   <Content />
