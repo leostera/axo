@@ -206,10 +206,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
             <PendingView
               key={prompt.id}
               prompt={prompt}
-              onEditAgain={() => {
-                workbench.setDraft(prompt.text);
-                workbench.dismissPending(session.sessionId, prompt.id);
-              }}
               onDismiss={() => workbench.dismissPending(session.sessionId, prompt.id)}
             />
           ))}

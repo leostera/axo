@@ -218,13 +218,15 @@ final class HostWorkbenchModelTests: XCTestCase {
     XCTAssertNil(world.model.chats[4], "the agent's own record brings the prompt back; nothing is invented here")
   }
 
-  /// Sends `text` and has the host accept it.
-  private func sendAccepted(_ text: String, in world: HostWorld) async throws {
+  /// Sends `text` and has the host accept it; returns its commandId.
+  @discardableResult
+  private func sendAccepted(_ text: String, in world: HostWorld) async throws -> String {
     let sending = Task { await world.model.sendPrompt(text) }
     let channel = try await world.channel()
     let request = try await channel.nextRequest()
     channel.reply(to: request.id, result: #"{"accepted":true}"#)
     _ = await sending.value
+    return try XCTUnwrap(request.params["commandId"] as? String)
   }
 
   func testASentMessageShowsAsPendingUntilTheAgentRecordsItThenOnlyTheRecordRemains() async throws {
@@ -234,37 +236,40 @@ final class HostWorkbenchModelTests: XCTestCase {
     let channel = try await world.channel()
     let request = try await channel.nextRequest()
     XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.state), [.sending], "shown at once, before the Mac answers")
+    let commandId = try XCTUnwrap(request.params["commandId"] as? String)
+    XCTAssertEqual(commandId, world.model.pendingPrompts[1]?.first?.id.uuidString.lowercased())
     channel.reply(to: request.id, result: #"{"accepted":true}"#)
     _ = await sending.value
     XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.text), ["run the tests"])
     XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.state), [.sent])
 
-    world.model.receive(records: [said(1, "someone else", role: "assistant")], epoch: 1, cursor: 1, in: 1)
-    XCTAssertEqual(world.model.pendingPrompts[1]?.count, 1, "a reply is not the message")
-    world.model.receive(records: [said(2, "run the tests")], epoch: 1, cursor: 2, in: 1)
+    world.model.receive(records: [said(1, "run the tests")], epoch: 1, cursor: 1, in: 1)
+    XCTAssertEqual(world.model.pendingPrompts[1]?.count, 1, "the same words typed on the Mac are not this message")
+    world.model.receive(records: [receipt(2, commandId)], epoch: 1, cursor: 2, in: 1)
+    XCTAssertEqual(world.model.pendingPrompts[1]?.count, 1, "its receipt alone does not show it yet")
+    world.model.receive(records: [said(3, "run the tests")], epoch: 1, cursor: 3, in: 1)
     XCTAssertNil(world.model.pendingPrompts[1])
-    XCTAssertEqual(world.model.chats[1]?.messages.filter { $0.role == .user }.map(\.text), ["run the tests"], "shown once")
+    XCTAssertEqual(world.model.chats[1]?.messages.filter { $0.role == .user }.count, 2, "each shown once")
   }
 
-  func testAMessageSentWhileTheAgentWorksIsQueuedAndRecordsRetireTheirOwnWordsFirst() async throws {
+  func testAMessageSentWhileTheAgentWorksIsQueuedAndEachIsRetiredByItsOwnReceipt() async throws {
     let world = HostWorld()
     _ = try await world.open(1, answering: Wire.opened([]))
     world.model.update([RemoteSession(ClientSession(
       hostId: world.host.hostId, sessionId: 1, metadata: SessionMetadata(name: "One", createdAt: 1), status: .working))])
-    try await sendAccepted("first", in: world)
-    try await sendAccepted("second", in: world)
+    let first = try await sendAccepted("same", in: world)
+    let second = try await sendAccepted("same", in: world)
     XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.state), [.queued, .queued])
-    world.model.receive(records: [said(1, "second")], epoch: 1, cursor: 1, in: 1)
-    XCTAssertEqual(world.model.pendingPrompts[1]?.map(\.text), ["first"], "matched by its words, not by order")
-    // The agent wrote it down differently: the oldest one the Mac took is the one it means.
-    world.model.receive(records: [said(2, "First!")], epoch: 1, cursor: 2, in: 1)
+    world.model.receive(records: [receipt(1, second), said(2, "same")], epoch: 1, cursor: 2, in: 1)
+    XCTAssertEqual(world.model.pendingPrompts[1]?.map { $0.id.uuidString.lowercased() }, [first])
+    world.model.receive(records: [receipt(3, first), said(4, "same")], epoch: 1, cursor: 4, in: 1)
     XCTAssertNil(world.model.pendingPrompts[1])
   }
 
   func testOlderHistoryArrivingDoesNotRetireAPendingMessage() async throws {
     let world = HostWorld()
-    try await sendAccepted("ask", in: world)
-    _ = try await world.open(1, answering: Wire.opened([said(2, "ask")], older: 2))
+    let asked = try await sendAccepted("ask", in: world)
+    _ = try await world.open(1, answering: Wire.opened([receipt(2, asked), said(3, "ask")], older: 2))
     XCTAssertNil(world.model.pendingPrompts[1], "the newest window is news: it has the message")
     try await sendAccepted("ask", in: world)
     let loading = Task { await world.model.loadOlderHistory(of: 1) }

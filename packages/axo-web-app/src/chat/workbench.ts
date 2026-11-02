@@ -74,8 +74,9 @@ export interface AccountLink {
   command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
-  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string }): Promise<unknown>;
+  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string }): Promise<unknown>;
   command(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
+  command(method: "axo.remote.session.stop", params: { target: HostRef; sessionId: string; turnId: string }): Promise<unknown>;
   close(): void;
 }
 
@@ -99,14 +100,19 @@ export type PendingState =
   | "sent"
   /** Taken while the agent was busy: answered after the current reply. */
   | "queued"
-  /** The connection ended before the Mac answered: it may or may not have arrived. */
+  /** The Mac did not say whether it took it: it is sent again, with its commandId, until it does. */
   | "uncertain";
 
 export interface PendingPrompt {
+  /** Its commandId: the Mac takes it at most once, and its receipt in the log retires it. */
   readonly id: string;
   readonly text: string;
   state: PendingState;
 }
+
+/** How long an uncertain message waits before it is sent again, and how often it is. */
+export const RETRY_DELAY_MS = 3_000;
+export const MAX_RETRIES = 40;
 
 export type HistoryState =
   | { kind: "none" }
@@ -203,6 +209,10 @@ function deliveryUncertain(error: unknown): boolean {
   return /timed out|closed|WebSocket/i.test(error.message);
 }
 
+function hostOffline(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === -32005;
+}
+
 function describe(error: unknown): string {
   if (error instanceof Error && "status" in error && error.status === 401) return "Your sign-in expired. Sign in again.";
   return error instanceof Error ? error.message : String(error);
@@ -266,17 +276,21 @@ export class ChatWorkbench {
   private readonly identity: ClientIdentity;
   private readonly reconnectDelays: readonly number[];
   private readonly newId: () => string;
+  private readonly retryDelay: number;
+  private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     backend: ChatBackend,
     identity: ClientIdentity = tabClientIdentity(),
     reconnectDelays: readonly number[] = defaultReconnectDelays,
     newId: () => string = () => crypto.randomUUID(),
+    retryDelay: number = RETRY_DELAY_MS,
   ) {
     this.backend = backend;
     this.identity = identity;
     this.reconnectDelays = reconnectDelays;
     this.newId = newId;
+    this.retryDelay = retryDelay;
   }
 
   // MARK: - Observing
@@ -394,6 +408,8 @@ export class ChatWorkbench {
   dispose(): void {
     this.generation += 1;
     this.clearReconnect();
+    for (const timer of this.retries.values()) clearTimeout(timer);
+    this.retries.clear();
     this.connection?.close();
     this.connection = null;
     this.link = "idle";
@@ -564,26 +580,20 @@ export class ChatWorkbench {
   }
 
   /**
-   * Changes a chat, then retires the pending messages its newest user messages account for: the
-   * one with the same words, or else the oldest the Mac has taken (the agent records them in order).
+   * Changes a chat, then retires the pending messages the log now holds: the ones whose receipt,
+   * written by the Mac just before their user message, carries their commandId (RFD0024).
    */
   private changeChat(sessionId: string, change: (transcript: ChatTranscript) => void): void {
     const chat = this.chat(sessionId);
-    const before = chat.pending.length ? new Set(chat.transcript?.messages.map(message => message.id) ?? []) : new Set<string>();
     chat.transcript ??= new ChatTranscript();
     change(chat.transcript);
     if (!chat.transcript.working) chat.stopping = false;
     if (!chat.pending.length) return;
-    const pending = [...chat.pending];
-    for (const message of chat.transcript.messages) {
-      if (message.role !== "user" || before.has(message.id)) continue;
-      const words = message.text.trim();
-      const match = pending.findIndex(prompt => prompt.text === words);
-      const oldest = pending.findIndex(prompt => prompt.state !== "sending");
-      if (match >= 0) pending.splice(match, 1);
-      else if (oldest >= 0) pending.splice(oldest, 1);
-    }
-    chat.pending = pending;
+    const delivered = chat.transcript.delivered;
+    const landed = chat.pending.filter(prompt => delivered.has(prompt.id));
+    if (!landed.length) return;
+    for (const prompt of landed) this.cancelRetry(prompt.id);
+    chat.pending = chat.pending.filter(prompt => !delivered.has(prompt.id));
   }
 
   // MARK: - History
@@ -793,7 +803,11 @@ export class ChatWorkbench {
     return { kind: "failed" };
   }
 
-  /** Sends a message to a chat. It shows as pending until the agent's own record of it arrives. */
+  /**
+   * Sends a message to a chat, with its commandId. It shows as pending until its receipt arrives
+   * in the log; one whose fate is unknown is sent again with the same id, which the Mac takes at
+   * most once.
+   */
   private async prompt(selection: Selection & { kind: "chat" }): Promise<SendOutcome> {
     const host = this.openHost;
     const text = this.draft(selection).trim();
@@ -802,47 +816,80 @@ export class ChatWorkbench {
     const pending: PendingPrompt = { id: this.newId(), text, state: "sending" };
     chat.pending = [...chat.pending, pending];
     this.setDraft("", selection);
-    let outcome: SendOutcome;
-    try {
-      await this.connection!.command("axo.remote.session.prompt", { target: this.reference(host), sessionId: selection.sessionId, text });
-      this.failure = null;
-      outcome = { kind: "sent" };
-    } catch (error) {
-      outcome = deliveryUncertain(error) ? { kind: "uncertain" } : { kind: "failed" };
-      this.failure = outcome.kind === "uncertain"
-        ? `The connection to ${host.label} dropped while sending. Check the chat before sending again.`
-        : `Not sent: ${describe(error)}`;
-    }
-    const index = chat.pending.findIndex(candidate => candidate.id === pending.id);
-    if (index >= 0) {
-      if (outcome.kind === "sent") chat.pending[index]!.state = chat.transcript?.working ? "queued" : "sent";
-      else if (outcome.kind === "uncertain") chat.pending[index]!.state = "uncertain";
-      else {
-        chat.pending = chat.pending.filter(candidate => candidate.id !== pending.id);
-        if (!this.draft(selection)) this.setDraft(text, selection);
-      }
+    const outcome = await this.deliver(host, selection.sessionId, pending);
+    if (outcome.kind === "failed") {
+      // Refused on its first try: nothing ran, so the words come back to the box.
+      chat.pending = chat.pending.filter(candidate => candidate.id !== pending.id);
+      if (!this.draft(selection)) this.setDraft(text, selection);
     }
     this.changed();
     return outcome;
+  }
+
+  /** One try at sending a pending message; an unknown outcome schedules the next. */
+  private async deliver(host: Host, sessionId: string, pending: PendingPrompt, attempt = 0): Promise<SendOutcome> {
+    let outcome: SendOutcome;
+    try {
+      await this.connection!.command("axo.remote.session.prompt", { target: this.reference(host), sessionId, text: pending.text, commandId: pending.id });
+      this.failure = null;
+      outcome = { kind: "sent" };
+    } catch (error) {
+      // A refusal after an unknown outcome proves nothing: the first try may still land.
+      const unknown = deliveryUncertain(error) || (attempt > 0 && hostOffline(error));
+      outcome = unknown ? { kind: "uncertain" } : { kind: "failed" };
+      this.failure = unknown
+        ? `${host.label} has not said whether it got your message; trying again.`
+        : `Not sent: ${describe(error)}`;
+    }
+    const current = this.chats.get(sessionId)?.pending.find(candidate => candidate.id === pending.id);
+    if (!current) return outcome;
+    if (outcome.kind === "sent") current.state = this.chats.get(sessionId)?.transcript?.working ? "queued" : "sent";
+    else if (outcome.kind === "uncertain") {
+      current.state = "uncertain";
+      if (attempt < MAX_RETRIES) this.scheduleRetry(host, sessionId, current, attempt + 1);
+    }
+    return outcome;
+  }
+
+  private scheduleRetry(host: Host, sessionId: string, pending: PendingPrompt, attempt: number): void {
+    this.cancelRetry(pending.id);
+    this.retries.set(pending.id, setTimeout(() => {
+      this.retries.delete(pending.id);
+      const still = this.chats.get(sessionId)?.pending.some(candidate => candidate.id === pending.id);
+      if (!still) return;
+      if (!this.ready()) return this.scheduleRetry(host, sessionId, pending, attempt);
+      void this.deliver(host, sessionId, pending, attempt).then(() => this.changed());
+    }, this.retryDelay));
+  }
+
+  private cancelRetry(pendingId: string): void {
+    const timer = this.retries.get(pendingId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.retries.delete(pendingId);
   }
 
   /** Takes a message marked uncertain off the screen, once the person has checked. */
   dismissPending(sessionId: string, pendingId: string): void {
     const chat = this.chats.get(sessionId);
     if (!chat) return;
+    this.cancelRetry(pendingId);
     chat.pending = chat.pending.filter(prompt => prompt.id !== pendingId);
     this.changed();
   }
 
-  /** Stops the reply in progress, as Escape does on the Mac. */
+  /**
+   * Stops the turn the chat shows running, named by its newest user message: a turn that started
+   * after it, by the time the stop arrives, carries on (RFD0024).
+   */
   async stop(sessionId: string): Promise<void> {
     const host = this.openHost;
     const chat = this.chat(sessionId);
-    if (!host || !chat.transcript?.working || chat.stopping || !this.ready()) return;
+    const turnId = chat.transcript?.lastUserEntry;
+    if (!host || !chat.transcript?.working || !turnId || chat.stopping || !this.ready()) return;
     chat.stopping = true;
     this.changed();
     try {
-      await this.connection!.command("axo.remote.session.key", { target: this.reference(host), sessionId, key: "escape" });
+      await this.connection!.command("axo.remote.session.stop", { target: this.reference(host), sessionId, turnId });
     } catch (error) {
       chat.stopping = false;
       this.failure = describe(error);
@@ -856,7 +903,7 @@ export class ChatWorkbench {
     if (!host || !this.chats.get(sessionId)?.transcript?.question || !this.ready()) return;
     const target = this.reference(host);
     try {
-      if (answer.kind === "text") await this.connection!.command("axo.remote.session.prompt", { target, sessionId, text: answer.text });
+      if (answer.kind === "text") await this.connection!.command("axo.remote.session.prompt", { target, sessionId, text: answer.text, commandId: this.newId() });
       else await this.connection!.command("axo.remote.session.key", { target, sessionId, key: answer.kind === "yes" ? "enter" : "escape" });
       this.failure = null;
     } catch (error) {

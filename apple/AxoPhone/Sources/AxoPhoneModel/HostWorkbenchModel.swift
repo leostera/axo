@@ -87,11 +87,12 @@ public final class HostWorkbenchModel {
       case sent
       /// The Mac took it while the agent was busy; it is answered after the current reply.
       case queued
-      /// The connection ended before the Mac answered: it may or may not have arrived. It is not
-      /// sent again on its own (that could send it twice); the person checks the chat first.
+      /// The Mac has not said whether it took it. It is sent again with the same commandId, which
+      /// the Mac takes at most once, until it says (RFD0024).
       case uncertain
     }
 
+    /// Its commandId: its receipt in the log retires it.
     public let id: UUID
     public let text: String
     public fileprivate(set) var state: State
@@ -124,6 +125,12 @@ public final class HostWorkbenchModel {
   private var opened: SessionID?
   /// Chats started here that the host has not listed yet: kept until it does.
   private var created: [SessionID: RemoteSession] = [:]
+  /// The next try of each uncertain message, by its commandId.
+  @ObservationIgnored private var retries: [UUID: Task<Void, Never>] = [:]
+  /// How long an uncertain message waits before it is sent again, and how often it is.
+  nonisolated static let retryDelay: Duration = .seconds(3)
+  nonisolated static let maxRetries = 40
+  @ObservationIgnored var retryDelay: Duration = HostWorkbenchModel.retryDelay
 
   public init(host: RemoteHost, connection: HostConnection, feed: any ChatFeed, account: AccountSession) {
     hostLabel = host.label
@@ -371,43 +378,66 @@ public final class HostWorkbenchModel {
     case accepted
     /// Not sent (or refused): nothing reached Pi, so the words can go back in the box.
     case notSent
-    /// The connection ended before the Mac answered; the message stays, marked uncertain.
+    /// The Mac has not said whether it took it; the message stays and is sent again.
     case uncertain
   }
 
-  /// Sends a message to the selected chat. It shows as pending until the agent's own record of it
-  /// arrives; one that was not sent disappears.
+  /// Sends a message to the selected chat, with its commandId. It shows as pending until its
+  /// receipt arrives in the log; one refused on its first try disappears.
   public func sendPrompt(_ text: String) async -> PromptOutcome {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let session = selectedSession, !prompt.isEmpty else { return .notSent }
     let id = session.sessionId
     let pending = PendingPrompt(id: UUID(), text: prompt, state: .sending)
-    let chat = chat(id)
-    chat.pending.append(pending)
+    chat(id).pending.append(pending)
+    let outcome = await deliver(pending, in: id, attempt: 0)
+    if outcome == .notSent { removePending(pending.id, in: id) }
+    return outcome
+  }
+
+  /// One try at sending a pending message; an unknown outcome schedules the next.
+  private func deliver(_ pending: PendingPrompt, in id: SessionID, attempt: Int) async -> PromptOutcome {
     let outcome: PromptOutcome
     do {
-      try await connection.promptPi(in: id, text: prompt)
+      try await connection.promptPi(in: id, text: pending.text, commandId: pending.id)
       failure = nil
       outcome = .accepted
     } catch is CancellationError {
-      outcome = .notSent
+      outcome = attempt == 0 ? .notSent : .uncertain
     } catch {
       account.noteFailure(error)
-      outcome = Self.deliveryUncertain(error) ? .uncertain : .notSent
-      failure = outcome == .uncertain
-        ? "The connection to \(hostLabel) dropped while sending. Check the chat before sending again."
+      // A refusal after an unknown outcome proves nothing: the first try may still land.
+      let unknown = Self.deliveryUncertain(error) || (attempt > 0 && Self.isHostOffline(error))
+      outcome = unknown ? .uncertain : .notSent
+      failure = unknown
+        ? "\(hostLabel) has not said whether it got your message; trying again."
         : Self.notSentReason(error, host: hostLabel)
     }
-    guard let index = chat.pending.firstIndex(where: { $0.id == pending.id }) else { return outcome }
+    guard let chat = chatStore[id], let index = chat.pending.firstIndex(where: { $0.id == pending.id })
+    else { return outcome }
     switch outcome {
     case .accepted:
       chat.pending[index].state = chat.transcript?.activity == .working ? .queued : .sent
     case .uncertain:
       chat.pending[index].state = .uncertain
+      if attempt < Self.maxRetries { scheduleRetry(of: pending, in: id, attempt: attempt + 1) }
     case .notSent:
-      removePending(pending.id, in: id)
+      // A later try refused for another reason: shown, and left for the person to remove.
+      if attempt > 0 { chat.pending[index].state = .uncertain }
     }
     return outcome
+  }
+
+  private func scheduleRetry(of pending: PendingPrompt, in id: SessionID, attempt: Int) {
+    retries[pending.id]?.cancel()
+    let delay = retryDelay
+    retries[pending.id] = Task { [weak self] in
+      try? await Task.sleep(for: delay)
+      guard let self, !Task.isCancelled else { return }
+      self.retries[pending.id] = nil
+      guard self.chatStore[id]?.pending.contains(where: { $0.id == pending.id }) == true else { return }
+      _ = await self.deliver(pending, in: id, attempt: attempt)
+    }
   }
 
   /// Takes a message marked uncertain off the screen, once the person has checked.
@@ -416,7 +446,13 @@ public final class HostWorkbenchModel {
   }
 
   private func removePending(_ pendingID: UUID, in id: SessionID) {
+    retries.removeValue(forKey: pendingID)?.cancel()
     chatStore[id]?.pending.removeAll { $0.id == pendingID }
+  }
+
+  static func isHostOffline(_ error: Error) -> Bool {
+    if case .serverRejected(Self.hostOffline, _) = error as? AxoClientError { return true }
+    return false
   }
 
   /// Whether the request may have reached the Mac although no answer came back: it was written
@@ -446,17 +482,19 @@ public final class HostWorkbenchModel {
     }
   }
 
-  /// Stops the reply in progress in `id`, as Escape does on the Mac.
+  /// Stops the turn the chat shows running, named by its newest user message: a turn that started
+  /// after it, by the time the stop arrives, carries on (RFD0024).
   public func stopReply(in id: SessionID) async {
     let chat = chat(id)
-    guard chat.transcript?.activity == .working, !chat.isStopping else { return }
+    guard chat.transcript?.activity == .working, let turnId = chat.transcript?.lastUserEntry, !chat.isStopping
+    else { return }
     chat.isStopping = true
-    var pressed = false
+    var sent = false
     await attempt {
-      try await connection.pressPiKey(.escape, in: id)
-      pressed = true
+      try await connection.stopPiTurn(in: id, turnId: turnId)
+      sent = true
     }
-    if !pressed { chat.isStopping = false }
+    if !sent { chat.isStopping = false }
   }
 
   /// An answer to what Pi is asking.
@@ -474,34 +512,24 @@ public final class HostWorkbenchModel {
       switch answer {
       case .yes: try await connection.pressPiKey(.enter, in: id)
       case .no: try await connection.pressPiKey(.escape, in: id)
-      case .text(let words): try await connection.promptPi(in: id, text: words)
+      case .text(let words): try await connection.promptPi(in: id, text: words, commandId: UUID())
       }
     }
   }
 
-  /// Changes a chat, then retires the pending messages its newest user messages account for: the one
-  /// with the same words, or else the oldest the Mac has taken (the agent records them in order).
+  /// Changes a chat, then retires the pending messages the log now holds: the ones whose receipt,
+  /// written by the Mac just before their user message, carries their commandId (RFD0024).
   private func changeChat(_ id: SessionID, _ change: (inout ChatTranscript) -> Void) {
     let chat = chat(id)
-    // Only needed to retire pending messages; most events (a reply growing) have none to retire.
-    let before = chat.pending.isEmpty ? [] : Set(chat.transcript?.messages.map(\.id) ?? [])
     // Changed where it is: a copy taken out and put back would copy every message, every event.
     if chat.transcript == nil { chat.transcript = ChatTranscript() }
     change(&chat.transcript!)
     if chat.transcript?.activity == .idle, chat.isStopping { chat.isStopping = false }
-    var pending = chat.pending
-    guard !pending.isEmpty, let messages = chat.transcript?.messages else { return }
-    // Only what came after everything already shown: an older page of history is not news.
-    let start = messages.lastIndex { before.contains($0.id) }.map { $0 + 1 } ?? 0
-    for message in messages[start...] where message.role == .user {
-      let words = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let match = pending.firstIndex(where: { $0.text == words }) {
-        pending.remove(at: match)
-      } else if let oldest = pending.firstIndex(where: { $0.state != .sending }) {
-        pending.remove(at: oldest)
-      }
-    }
-    if pending != chat.pending { chat.pending = pending }
+    guard !chat.pending.isEmpty, let delivered = chat.transcript?.delivered, !delivered.isEmpty else { return }
+    let landed = chat.pending.filter { delivered.contains($0.id.uuidString.lowercased()) }
+    guard !landed.isEmpty else { return }
+    for prompt in landed { retries.removeValue(forKey: prompt.id)?.cancel() }
+    chat.pending.removeAll { delivered.contains($0.id.uuidString.lowercased()) }
   }
 
   /// Shows `message` where failures are shown.

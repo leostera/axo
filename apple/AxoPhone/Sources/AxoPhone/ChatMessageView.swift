@@ -76,7 +76,7 @@ struct PendingPromptView: View {
     case .sending: "Sending…"
     case .sent: "Sent"
     case .queued: "Queued · answered after the current reply"
-    case .uncertain: "Delivery uncertain · check the chat before sending again"
+    case .uncertain: "Not confirmed yet · trying again"
     }
   }
 

@@ -116,6 +116,15 @@ public struct ChatTranscript: Equatable, Sendable {
   private var recordedReplies: Set<Int64> = []
   /// Running tools' output so far, by call id.
   private var toolOutput: [String: String] = [:]
+  /// The clients' prompts whose user message the log holds, by commandId (RFD0024).
+  public private(set) var delivered: Set<String> = []
+  /// The entry id of the newest user message: the turn a stop names while the agent works.
+  public private(set) var lastUserEntry: String?
+  /// A receipt whose user message has not been read yet.
+  private var receipt: String?
+
+  /// The custom entry the Session's Pi writes just before a client's prompt: its commandId.
+  static let receiptEntry = "axo.command"
 
   public init() {}
 
@@ -152,6 +161,8 @@ public struct ChatTranscript: Equatable, Sendable {
     records.insert(contentsOf: page.records, at: 0)
     results.merge(page.results) { newer, _ in newer }
     recordedReplies.formUnion(page.recordedReplies)
+    delivered.formUnion(page.delivered)
+    if lastUserEntry == nil { lastUserEntry = page.lastUserEntry }
   }
 
   /// The host's copy was cut back: everything after `keep` goes.
@@ -162,6 +173,9 @@ public struct ChatTranscript: Equatable, Sendable {
     records = []
     results = [:]
     recordedReplies = []
+    delivered = []
+    lastUserEntry = nil
+    receipt = nil
     append(kept)
   }
 
@@ -214,8 +228,18 @@ public struct ChatTranscript: Equatable, Sendable {
   }
 
   private mutating func apply(_ record: ClientRecord) {
-    guard case .message(let id, let message) = Self.entry(of: record), let role = message["role"]?.stringValue else {
+    let entry = Self.entry(of: record)
+    if case .receipt(let commandId) = entry {
+      receipt = commandId
       return
+    }
+    guard case .message(let id, let message) = entry, let role = message["role"]?.stringValue else {
+      return
+    }
+    if role == "user" {
+      lastUserEntry = id
+      if let receipt { delivered.insert(receipt) }
+      receipt = nil
     }
     if role == "toolResult" {
       recordResult(of: message)
@@ -244,16 +268,22 @@ public struct ChatTranscript: Equatable, Sendable {
     message["timestamp"]?.numberValue.map { Int64($0) }
   }
 
-  /// A record as the conversation sees it: a message, or nothing to show.
+  /// A record as the conversation sees it: a message, a client's receipt, or nothing to show.
   private enum Entry {
     case message(id: String, JSONValue)
+    case receipt(commandId: String)
     case other
   }
 
   /// The format adapter for `pi/3`: Pi's session file entries.
   private static func entry(of record: ClientRecord) -> Entry {
-    guard record.format == "pi/3", let value = try? JSONDecoder().decode(JSONValue.self, from: Data(record.line.utf8)),
-      value["type"]?.stringValue == "message", let message = value["message"], case .object = message
+    guard record.format == "pi/3", let value = try? JSONDecoder().decode(JSONValue.self, from: Data(record.line.utf8))
+    else { return .other }
+    if value["type"]?.stringValue == "custom", value["customType"]?.stringValue == receiptEntry {
+      guard let commandId = value["data"]?["commandId"]?.stringValue else { return .other }
+      return .receipt(commandId: commandId)
+    }
+    guard value["type"]?.stringValue == "message", let message = value["message"], case .object = message
     else { return .other }
     return .message(id: value["id"]?.stringValue ?? "#\(record.cursor)", message)
   }

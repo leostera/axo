@@ -277,11 +277,11 @@ const pendingLabels: Record<PendingPrompt["state"], string> = {
   sending: "Sending…",
   sent: "Sent",
   queued: "Queued · answered after the current reply",
-  uncertain: "Delivery uncertain · check the chat before sending again",
+  uncertain: "Not confirmed yet · trying again",
 };
 
 /** A message sent from here that the agent has not recorded yet. */
-export function PendingView({ prompt, onEditAgain, onDismiss }: { prompt: PendingPrompt; onEditAgain: () => void; onDismiss: () => void }) {
+export function PendingView({ prompt, onDismiss }: { prompt: PendingPrompt; onDismiss: () => void }) {
   return (
     <div className={`message user-message pending pending-${prompt.state}`} data-testid="pending-prompt">
       <div className="user-bubble">{prompt.text}</div>
@@ -291,7 +291,6 @@ export function PendingView({ prompt, onEditAgain, onDismiss }: { prompt: Pendin
       </div>
       {prompt.state === "uncertain" ? (
         <div className="pending-actions">
-          <button onClick={onEditAgain}>Edit and send again</button>
           <button onClick={onDismiss}>Remove</button>
         </div>
       ) : null}

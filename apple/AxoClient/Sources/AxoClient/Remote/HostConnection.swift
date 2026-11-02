@@ -72,14 +72,25 @@ public struct HostConnection: Sendable {
     else { throw AxoClientError.invalidResponse("the host did not close that terminal") }
   }
 
-  /// Sends a prompt to the Session's Pi, as if typed and submitted in its pane. The host refuses it
-  /// when the Session has no Pi running.
-  public func promptPi(in id: SessionID, text: String) async throws {
+  /// Sends a prompt to the Session's Pi. `commandId` makes it one command however often it is sent:
+  /// the Session's Pi takes it at most once and writes a receipt carrying the id just before it
+  /// (RFD0024). The host refuses it when the Session has no Pi running.
+  public func promptPi(in id: SessionID, text: String, commandId: UUID) async throws {
     let accepted: PromptAccepted = try await call(
-      "axo.remote.session.prompt", PromptTarget(target: host, sessionId: id, text: text))
+      "axo.remote.session.prompt",
+      PromptTarget(target: host, sessionId: id, text: text, commandId: commandId.uuidString.lowercased()))
     guard accepted.accepted else {
       throw AxoClientError.invalidResponse("the host did not accept that prompt")
     }
+  }
+
+  /// Stops the Session's running turn, if it is still the one `turnId` (the entry id of its user
+  /// message) names; a turn that started since carries on. Says whether one stopped.
+  @discardableResult
+  public func stopPiTurn(in id: SessionID, turnId: String) async throws -> Bool {
+    let result: StopResult = try await call(
+      "axo.remote.session.stop", StopTarget(target: host, sessionId: id, turnId: turnId))
+    return result.stopped
   }
 
   /// A key pressed in the Session's Pi, as a person at the Mac would press it.
@@ -177,6 +188,15 @@ private struct PromptTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let sessionId: SessionID
   let text: String
+  let commandId: String
+}
+private struct StopTarget: Encodable, Sendable {
+  let target: RemoteHostRef
+  let sessionId: SessionID
+  let turnId: String
+}
+private struct StopResult: Decodable, Sendable {
+  let stopped: Bool
 }
 private struct KeyTarget: Encodable, Sendable {
   let target: RemoteHostRef

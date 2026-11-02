@@ -59,10 +59,12 @@ const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toStri
 /** A line of Pi's session file, as the cloud holds it at `cursor`. */
 function record(cursor, message) {
   const id = `entry-${cursor}`;
-  return {
-    cursor, id, format: "pi/3", hash: `sha256:${cursor.toString(16).padStart(64, "0")}`,
-    line: JSON.stringify({ type: "message", id, parentId: cursor > 1 ? `entry-${cursor - 1}` : null, timestamp: now, message }),
-  };
+  const parentId = cursor > 1 ? `entry-${cursor - 1}` : null;
+  // A client's receipt is a custom entry, as the Session's Pi writes it (RFD0024).
+  const entry = message.receipt
+    ? { type: "custom", id, parentId, timestamp: now, customType: "axo.command", data: { commandId: message.receipt } }
+    : { type: "message", id, parentId, timestamp: now, message };
+  return { cursor, id, format: "pi/3", hash: `sha256:${cursor.toString(16).padStart(64, "0")}`, line: JSON.stringify(entry) };
 }
 
 async function failWithContext(page, error, context) {
@@ -111,6 +113,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const methods = [];
   const prompts = [];
   const keys = [];
+  const stops = [];
   let sessionCreateCount = 0;
   let authenticated = false;
   let pairingRequestCount = 0;
@@ -399,6 +402,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         // Pi stamps the reply when it starts; its progress and its record carry the stamp.
         const replyAt = Date.now();
         setTimeout(() => {
+          write(sessionId, { receipt: params.commandId });
           write(sessionId, { role: "user", content: [{ type: "text", text: params.text }] });
           status(sessionId, "working");
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", content: [{ type: "text", text: "Wor" }] } } });
@@ -410,10 +414,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
           write(sessionId, { role: "assistant", timestamp: replyAt, content: [{ type: "text", text: `Done with: ${params.text}` }] });
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: null });
           status(sessionId, "ready");
-        }, params.text === "Ship it" ? 3_000 : 400);
+        }, params.text === "Ship it" ? 6_000 : 400);
       } else if (method === "axo.remote.session.key") {
         keys.push(params.key);
         reply({ accepted: true });
+      } else if (method === "axo.remote.session.stop") {
+        stops.push(params.turnId);
+        reply({ stopped: true });
       } else {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32601, message: "unknown method" } }));
       }
@@ -625,11 +632,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await activity.getByRole("button", { name: "Stop the reply" }).click();
     const confirmStop = page.getByRole("alertdialog", { name: "Stop the reply?" });
     await confirmStop.getByRole("button", { name: "Keep going" }).click();
-    assert.equal(keys.length, 0, "keeping going stops nothing");
+    assert.equal(stops.length, 0, "keeping going stops nothing");
     await box.press("Escape");
     await confirmStop.getByRole("button", { name: "Stop" }).click();
     await expect(activity.getByText("Stopping…"));
-    assert.deepEqual(keys, ["escape"]);
+    assert.equal(stops.length, 1, "the stop names the turn the chat shows running");
+    assert.match(stops[0], /^entry-\d+$/);
+    assert.deepEqual(keys, [], "a stop is not a key press");
     await expect(page.getByText("Done with: Ship it", { exact: true }));
     assert.ok(await writing.evaluate(element => element.isConnected && element.textContent.includes("Done with: Ship it")), "the recorded reply is the one that was being written");
     assert.deepEqual(prompts[0], { sessionId: sid(1), text: "Ship it" });

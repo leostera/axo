@@ -18,19 +18,44 @@ final class HostWorkbenchLiveTests: XCTestCase {
   func testAMessageWhoseConnectionDroppedIsKeptAsUncertainNotPutBack() async throws {
     let world = HostWorld()
     let model = world.model
+    model.retryDelay = .seconds(60)
     _ = try await world.open(1, answering: Wire.opened([]))
     let sending = Task { await model.sendPrompt("deploy it") }
     let channel = try await world.channel()
-    _ = try await channel.nextRequest()
+    let request = try await channel.nextRequest()
     channel.close()
     let outcome = await sending.value
     XCTAssertEqual(outcome, .uncertain)
     XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.uncertain])
-    XCTAssertEqual(model.failure, "The connection to Studio dropped while sending. Check the chat before sending again.")
+    XCTAssertEqual(model.failure, "Studio has not said whether it got your message; trying again.")
 
-    // Pi's record of it, when it did arrive, retires it like any other.
-    model.receive(records: [said(1, "deploy it")], epoch: 1, cursor: 1, in: 1)
+    // Its receipt, when it did arrive, retires it like any other.
+    let commandId = try XCTUnwrap(request.params["commandId"] as? String)
+    model.receive(records: [receipt(1, commandId), said(2, "deploy it")], epoch: 1, cursor: 2, in: 1)
     XCTAssertNil(model.pendingPrompts[1])
+  }
+
+  func testAnUncertainMessageIsSentAgainWithTheSameCommandAndAnOfflineAnswerKeepsIt() async throws {
+    let world = HostWorld()
+    let model = world.model
+    model.retryDelay = .milliseconds(1)
+    _ = try await world.open(1, answering: Wire.opened([]))
+    let sending = Task { await model.sendPrompt("yes") }
+    let first = try await world.channel()
+    let sent = try await first.nextRequest()
+    first.reply(to: sent.id, error: -32004, message: "Outcome unknown; reconcile commandId")
+    let outcome = await sending.value
+    XCTAssertEqual(outcome, .uncertain)
+    // The retry finds the Mac offline: the first try may still land, so it stays pending.
+    let again = try await first.nextRequest()
+    XCTAssertEqual(again.params["commandId"] as? String, sent.params["commandId"] as? String)
+    first.reply(to: again.id, error: -32005, message: "Host offline")
+    let third = try await first.nextRequest()
+    XCTAssertEqual(third.params["commandId"] as? String, sent.params["commandId"] as? String)
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.uncertain])
+    first.reply(to: third.id, result: #"{"accepted":true}"#)
+    for _ in 0..<100 where model.pendingPrompts[1]?.first?.state != .sent { try await Task.sleep(for: .milliseconds(2)) }
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.sent])
   }
 
   func testTheRelaysUnknownOutcomeIsUncertainButAMissingPiIsNotSent() {
@@ -51,6 +76,7 @@ final class HostWorkbenchLiveTests: XCTestCase {
   func testAnUncertainMessageCanBeDismissed() async throws {
     let world = HostWorld()
     let model = world.model
+    model.retryDelay = .seconds(60)
     let sending = Task { await model.sendPrompt("x") }
     let channel = try await world.channel()
     _ = try await channel.nextRequest()
@@ -63,10 +89,10 @@ final class HostWorkbenchLiveTests: XCTestCase {
 
   // MARK: - Stopping and answering
 
-  func testStoppingAReplyPressesEscapeOnceAndEndsWhenPiIsIdle() async throws {
+  func testStoppingAReplyNamesItsTurnOnceAndEndsWhenPiIsIdle() async throws {
     let world = HostWorld()
     let model = world.model
-    _ = try await world.open(1, answering: Wire.opened([]))
+    _ = try await world.open(1, answering: Wire.opened([said(1, "go"), said(2, "on it", role: "assistant")]))
     await model.stopReply(in: 1)
     let channel = try await world.channel()
     XCTAssertFalse(channel.hasRequest, "nothing to stop while the agent is idle")
@@ -74,11 +100,11 @@ final class HostWorkbenchLiveTests: XCTestCase {
     listed(.working, in: world)
     let stopping = Task { await model.stopReply(in: 1) }
     let request = try await channel.nextRequest()
-    XCTAssertEqual(request.method, "axo.remote.session.key")
-    XCTAssertEqual(request.params["key"] as? String, "escape")
+    XCTAssertEqual(request.method, "axo.remote.session.stop")
+    XCTAssertEqual(request.params["turnId"] as? String, "e1", "the newest user message names the turn")
     XCTAssertEqual(request.params["sessionId"] as? String, SessionID.fixture(1).rawValue)
     XCTAssertTrue(model.stopping.contains(1))
-    channel.reply(to: request.id, result: #"{"accepted":true}"#)
+    channel.reply(to: request.id, result: #"{"stopped":true}"#)
     await stopping.value
     await model.stopReply(in: 1)  // a second tap while stopping sends nothing more
     XCTAssertTrue(model.stopping.contains(1))
@@ -90,7 +116,7 @@ final class HostWorkbenchLiveTests: XCTestCase {
   func testAStopTheMacRefusesIsNotLeftStopping() async throws {
     let world = HostWorld()
     let model = world.model
-    _ = try await world.open(1, answering: Wire.opened([]))
+    _ = try await world.open(1, answering: Wire.opened([said(1, "go")]))
     listed(.working, in: world)
     let stopping = Task { await model.stopReply(in: 1) }
     let channel = try await world.channel()

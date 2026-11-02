@@ -557,10 +557,12 @@ final class AccountConnectionTests: XCTestCase {
   func testAPromptMustBeAcceptedAndAnOfflineHostFailsAtOnce() async throws {
     let (account, channel) = try await connect()
     let connection = HostConnection(account: account, host: host)
-    async let refused: Void = connection.promptPi(in: 3, text: "run the tests")
+    let commandId = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF")!
+    async let refused: Void = connection.promptPi(in: 3, text: "run the tests", commandId: commandId)
     let first = try await request(channel, 0)
     let inner = try XCTUnwrap((first["params"] as? [String: Any])?["params"] as? [String: Any])
     XCTAssertEqual(inner["text"] as? String, "run the tests")
+    XCTAssertEqual(inner["commandId"] as? String, "6f9619ff-8b86-d011-b42d-00c04fc964ff", "lowercased, as the relay keys it")
     XCTAssertEqual(inner["sessionId"] as? String, SessionID.fixture(3).rawValue)
     channel.reply(to: try XCTUnwrap(first["id"] as? Int), result: #"{"accepted":false}"#)
     do {
@@ -570,7 +572,7 @@ final class AccountConnectionTests: XCTestCase {
       guard case .invalidResponse = error as? AxoClientError else { return XCTFail("\(error)") }
     }
 
-    async let offline: Void = connection.promptPi(in: 3, text: "again")
+    async let offline: Void = connection.promptPi(in: 3, text: "again", commandId: UUID())
     let second = try await request(channel, 1)
     channel.send(raw: #"{"jsonrpc":"2.0","id":\#(try XCTUnwrap(second["id"] as? Int)),"error":{"code":-32005,"message":"Host offline; nothing queued"}}"#)
     do {

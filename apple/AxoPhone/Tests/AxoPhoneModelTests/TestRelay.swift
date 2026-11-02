@@ -243,6 +243,13 @@ enum Wire {
   }
 }
 
+/// The receipt the Session's Pi writes just before a client's prompt (RFD0024).
+func receipt(_ cursor: Int64, _ commandId: String) -> ClientRecord {
+  ClientRecord(
+    cursor: cursor, id: "e\(cursor)",
+    line: #"{"type":"custom","id":"e\#(cursor)","customType":"axo.command","data":{"commandId":"\#(commandId)"}}"#)
+}
+
 /// A user or assistant message record.
 func said(_ cursor: Int64, _ text: String, role: String = "user") -> ClientRecord {
   piRecord(cursor, message: #"{"role":"\#(role)","content":[{"type":"text","text":"\#(text)"}]}"#)

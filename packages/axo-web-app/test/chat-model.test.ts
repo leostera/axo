@@ -18,6 +18,10 @@ function said(cursor: number, role: string, content: unknown, extra: Record<stri
   const id = `e${cursor}`;
   return { cursor, id, format: "pi/3", hash, line: JSON.stringify({ type: "message", id, parentId: cursor > 1 ? `e${cursor - 1}` : null, timestamp: "2026-10-16T12:00:00.000Z", message: { role, content, ...extra } }) };
 }
+/** The receipt the Session's Pi writes just before a client's prompt (RFD0024). */
+function receipt(cursor: number, commandId: string): ClientRecord {
+  return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "custom", id: `e${cursor}`, parentId: null, timestamp: "2026-10-16T12:00:00.000Z", customType: "axo.command", data: { commandId } }) };
+}
 function other(cursor: number): ClientRecord {
   return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "model_change", id: `e${cursor}`, parentId: null, provider: "x", modelId: "y" }) };
 }
@@ -339,6 +343,8 @@ class FakeAccount implements AccountLink {
   opens: OpenRequest[] = [];
   closed: string[] = [];
   failNext: Error | null = null;
+  /** The commands' failures after `failNext`, in turn. */
+  failAfter: Error[] = [];
   workspaces = [{ workspaceId, name: "Axo" }];
   /** Each Session's records in the cloud. */
   records = new Map<string, ClientRecord[]>();
@@ -376,7 +382,7 @@ class FakeAccount implements AccountLink {
     this.commands.push({ method, params });
     if (this.failNext) {
       const error = this.failNext;
-      this.failNext = null;
+      this.failNext = this.failAfter.shift() ?? null;
       throw error;
     }
     if (method === "axo.remote.workspace.list") return { workspaces: this.workspaces } as never;
@@ -395,7 +401,7 @@ class FakeAccount implements AccountLink {
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-async function workbenchWith(account = new FakeAccount()) {
+async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000) {
   let connects = 0;
   const backend: ChatBackend = {
     connect: async (_clientId, events) => {
@@ -406,7 +412,7 @@ async function workbenchWith(account = new FakeAccount()) {
     },
   };
   let id = 0;
-  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`);
+  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay);
   workbench.start();
   await tick();
   return { workbench, account, connects: () => connects };
@@ -524,29 +530,58 @@ test("a refused message comes back to the box; one whose delivery is uncertain s
   workbench.dispose();
 });
 
-test("a pending message is retired when the agent records it", async () => {
-  const { workbench, account } = await workbenchWith();
+test("an uncertain message is sent again with its commandId, and an offline answer then keeps it (RFD0024)", async () => {
+  const { workbench, account } = await workbenchWith(new FakeAccount(), 0);
   workbench.selectChat(hostId, sid(1));
   await tick();
-  workbench.setDraft("hello there");
-  await workbench.send();
+  workbench.setDraft("yes");
+  account.failNext = Object.assign(new Error("Outcome unknown; reconcile commandId"), { code: -32004 });
+  // The retry finds the Mac offline: the first try may still land, so the words stay pending.
+  account.failAfter = [Object.assign(new Error("Host offline; nothing queued"), { code: -32005 })];
+  assert.deepEqual(await workbench.send(), { kind: "uncertain" });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(workbench.draft(), "", "the words never come back to the box");
   assert.equal(workbench.chat(sid(1)).pending.length, 1);
-  account.push(sid(1), [said(1, "user", "hello there")]);
-  assert.equal(workbench.chat(sid(1)).pending.length, 0);
-  assert.equal(workbench.chat(sid(1)).transcript?.messages[0]?.text, "hello there");
+  const prompts = account.commands.filter(call => call.method === "axo.remote.session.prompt");
+  assert.ok(prompts.length >= 3);
+  assert.deepEqual(new Set(prompts.map(call => call.params.commandId)), new Set(["pending-1"]), "every try is the same command");
+  assert.equal(workbench.chat(sid(1)).pending[0]?.state, "sent");
   workbench.dispose();
 });
 
-test("stop presses Escape once, only while the agent works", async () => {
+test("a pending message is retired by its receipt, never by its words (RFD0024)", async () => {
   const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));
   await tick();
+  workbench.setDraft("yes");
+  await workbench.send();
+  const commandId = account.commands.find(call => call.method === "axo.remote.session.prompt")!.params.commandId as string;
+  assert.equal(commandId, "pending-1");
+  // Someone types the same words on the Mac: that is not this message.
+  account.push(sid(1), [said(1, "user", "yes")]);
+  assert.equal(workbench.chat(sid(1)).pending.length, 1);
+  // Its receipt alone does not show it yet; the user message after it does.
+  account.push(sid(1), [receipt(2, commandId)]);
+  assert.equal(workbench.chat(sid(1)).pending.length, 1);
+  account.push(sid(1), [said(3, "user", "yes")]);
+  assert.equal(workbench.chat(sid(1)).pending.length, 0);
+  assert.deepEqual(workbench.chat(sid(1)).transcript?.messages.map(message => message.text), ["yes", "yes"]);
+  workbench.dispose();
+});
+
+test("stop names the turn the chat shows running, once, only while the agent works (RFD0024)", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "go"), said(2, "assistant", "on it")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
   await workbench.stop(sid(1));
-  assert.equal(account.commands.filter(call => call.method === "axo.remote.session.key").length, 0);
+  assert.equal(account.commands.filter(call => call.method === "axo.remote.session.stop").length, 0);
   account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
   await Promise.all([workbench.stop(sid(1)), workbench.stop(sid(1))]);
-  const keys = account.commands.filter(call => call.method === "axo.remote.session.key");
-  assert.deepEqual(keys.map(call => call.params.key), ["escape"]);
+  const stops = account.commands.filter(call => call.method === "axo.remote.session.stop");
+  assert.deepEqual(stops.map(call => call.params.turnId), ["e1"]);
+  assert.equal(account.commands.filter(call => call.method === "axo.remote.session.key").length, 0);
   workbench.dispose();
 });
 

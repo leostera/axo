@@ -80,8 +80,17 @@ export interface TranscriptRecord {
   readonly line: string;
 }
 
-/** A record as the conversation sees it: a message, or nothing to show. */
-type Entry = { kind: "message"; id: string; message: Record<string, unknown> } | { kind: "other" };
+/**
+ * The custom entry the Session's Pi writes just before a client's prompt (RFD0024): its
+ * `commandId`, which says which pending message the user message after it is.
+ */
+export const RECEIPT_ENTRY = "axo.command";
+
+/** A record as the conversation sees it: a message, a client's receipt, or nothing to show. */
+type Entry =
+  | { kind: "message"; id: string; message: Record<string, unknown> }
+  | { kind: "receipt"; commandId: string }
+  | { kind: "other" };
 
 /** The format adapter for `pi/3`: Pi's session file entries. */
 export function entryOf(record: TranscriptRecord): Entry {
@@ -93,6 +102,10 @@ export function entryOf(record: TranscriptRecord): Entry {
     return { kind: "other" };
   }
   const entry = asObject(value);
+  if (entry?.type === "custom" && entry.customType === RECEIPT_ENTRY) {
+    const commandId = asObject(entry.data)?.commandId;
+    return typeof commandId === "string" ? { kind: "receipt", commandId } : { kind: "other" };
+  }
   const message = asObject(entry?.message);
   if (entry?.type !== "message" || !message) return { kind: "other" };
   return { kind: "message", id: typeof entry.id === "string" ? entry.id : `#${record.cursor}`, message };
@@ -107,6 +120,12 @@ export class ChatTranscript {
   question: ChatQuestion | null = null;
   /** The records held, oldest first, without gaps. */
   records: TranscriptRecord[] = [];
+  /** The clients' prompts whose user message the log holds, by commandId (RFD0024). */
+  delivered = new Set<string>();
+  /** The entry id of the newest user message: the turn a stop names while Pi works. */
+  lastUserEntry: string | null = null;
+  /** A receipt whose user message has not been read yet. */
+  private receipt: string | null = null;
   private results = new Map<string, ToolResult>();
   /**
    * When each recorded reply was started, as Pi stamps it. A reply's progress carries the same
@@ -201,15 +220,27 @@ export class ChatTranscript {
     this.messages = [];
     this.results = new Map();
     this.recordedReplies = new Set();
+    this.delivered = new Set();
+    this.lastUserEntry = null;
+    this.receipt = null;
     for (const record of this.records) this.applyRecord(record);
   }
 
   private applyRecord(record: TranscriptRecord): void {
     const entry = entryOf(record);
+    if (entry.kind === "receipt") {
+      this.receipt = entry.commandId;
+      return;
+    }
     if (entry.kind !== "message") return;
     const { id, message } = entry;
     const role = message.role;
     if (typeof role !== "string") return;
+    if (role === "user") {
+      this.lastUserEntry = id;
+      if (this.receipt !== null) this.delivered.add(this.receipt);
+      this.receipt = null;
+    }
     if (role === "toolResult") {
       this.recordResult(message);
       return;
