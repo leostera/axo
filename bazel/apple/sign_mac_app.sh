@@ -20,6 +20,10 @@ rm -rf "$app"
 mkdir -p "$(dirname "$app")"
 /usr/bin/ditto "$stage/Axo.app" "$app"
 chmod -R u+w "$app"
+# rules_apple's zip dates every entry 1980 for reproducible archives, and ditto keeps that, so
+# Finder would show the app's files as decades old. Date them now, when this app is built; times
+# are not part of the signature.
+find "$app" -exec touch -h {} +
 # axod's signing identifier must stay "axod". Background Task Management records it when Axo
 # registers the LaunchAgent, and launchd then refuses any other one with a Launch Constraint
 # Violation (OS_REASON_CODESIGNING), so axod never starts. Changing it needs Axo to unregister
