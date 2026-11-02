@@ -86,7 +86,7 @@ struct SessionSidebarRow: View {
         .font(.system(size: 8, weight: .semibold))
         .foregroundStyle(status.color)
         .frame(width: 9)
-      sessionGlyph(for: session, size: 12)
+      sessionGlyph(for: session, size: sessionGlyphSize)
         .frame(width: 14)
       Text(session.displayName)
         .font(.system(size: 12))
@@ -130,6 +130,9 @@ func sidebarStatus(
   if session.shells.contains(where: { attention.contains($0.id) }) { return .needsAttention }
   return session.status ?? (session.shells.contains(where: { $0.isPi }) ? .starting : .ready)
 }
+
+/// A Session's emoji or icon is one size in the sidebar, expanded or collapsed.
+let sessionGlyphSize: CGFloat = 12
 
 @ViewBuilder
 func sessionGlyph(for session: TerminalSession, size: CGFloat) -> some View {
@@ -184,7 +187,7 @@ struct CollapsedSessionButton: View {
     let status = sidebarStatus(for: session, attention: ghostty.attentionShellIDs)
     Button(action: onSelect) {
       ZStack(alignment: .bottomTrailing) {
-        sessionGlyph(for: session, size: 15)
+        sessionGlyph(for: session, size: sessionGlyphSize)
         Image(systemName: status.symbolName)
           .font(.system(size: 8, weight: .bold))
           .foregroundStyle(status.color)
