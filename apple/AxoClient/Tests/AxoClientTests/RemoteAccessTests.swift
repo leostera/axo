@@ -170,6 +170,104 @@ final class AccountClientTests: XCTestCase {
 
 }
 
+/// Settings › Apps over HTTPS: each route, signed in with the session token, and Axo's refusals.
+final class ConnectionsClientTests: XCTestCase {
+  private func client(_ loader: StubLoader) -> ConnectionsClient {
+    ConnectionsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
+  }
+
+  private func body(_ request: URLRequest) throws -> [String: Any] {
+    try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+  }
+
+  func testTheListingIsReadWithTheSessionToken() async throws {
+    let loader = StubLoader(status: 200, body: #"{"connections":[{"kind":"host","name":"studio","hostId":"18355f00-95fd-4c93-8586-a71a8a52bf73","state":"online"}]}"#)
+    let connections = try await client(loader).list()
+    XCTAssertEqual(connections.count, 1)
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.httpMethod, "GET")
+    XCTAssertEqual(request.url?.absoluteString, "https://axo.leostera.dev/api/v1/account/connections")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(SessionToken.fixture().value)")
+    XCTAssertFalse(request.httpShouldHandleCookies, "no cookie: a bearer token needs no Origin to change things")
+  }
+
+  func testOneServicesLogIsAskedForByName() async throws {
+    let loader = StubLoader(status: 200, body: #"{"records":[]}"#)
+    _ = try await client(loader).log(service: "apps.gmail", limit: 20, before: nil)
+    let url = try XCTUnwrap(loader.requests.first?.url)
+    XCTAssertEqual(url.path, "/api/v1/account/connections/log")
+    let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    XCTAssertEqual(query.first { $0.name == "service" }?.value, "apps.gmail")
+    XCTAssertEqual(query.first { $0.name == "limit" }?.value, "20")
+  }
+
+  func testATokenIsSentOnceWithTheAccountNameAndOnlyItsNameComesBack() async throws {
+    let loader = StubLoader(status: 200, body: #"{"account":"personal"}"#)
+    let added = try await client(loader).addToken(app: "apps.hetzner", account: "personal", fields: ["token": "s3cret"])
+    XCTAssertEqual(added, "personal")
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.httpMethod, "POST")
+    XCTAssertEqual(request.url?.path, "/api/v1/account/connections/apps.hetzner/token")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+    let sent = try body(request)
+    XCTAssertEqual(sent["account"] as? String, "personal")
+    XCTAssertEqual(sent["fields"] as? [String: String], ["token": "s3cret"])
+
+    let unnamed = StubLoader(status: 200, body: #"{"account":"a@b.c"}"#)
+    _ = try await client(unnamed).addToken(app: "apps.wise", account: nil, fields: ["token": "x"])
+    XCTAssertNil(try body(try XCTUnwrap(unnamed.requests.first))["account"], "an unnamed account sends no name at all")
+  }
+
+  func testAxosRefusalIsItsOwnWords() async {
+    do {
+      _ = try await client(StubLoader(status: 400, body: #"{"error":"Hetzner refused that token."}"#))
+        .addToken(app: "apps.hetzner", account: nil, fields: ["token": "bad"])
+      XCTFail("a refusal must not pass")
+    } catch {
+      XCTAssertEqual(error as? ConnectionsRefusal, ConnectionsRefusal(status: 400, message: "Hetzner refused that token."))
+      XCTAssertEqual(error.localizedDescription, "Hetzner refused that token.")
+    }
+    do {
+      _ = try await client(StubLoader(status: 401, body: "{}")).list()
+      XCTFail()
+    } catch {
+      XCTAssertEqual(error as? RelayError, .signInRequired)
+    }
+  }
+
+  func testADeviceSignInStartsWithItsFlowAndCode() async throws {
+    let loader = StubLoader(
+      status: 200,
+      body: #"{"flow":"5c1b3c2e-0f7a-4c0e-9b4f-2d1f7e0a9c11","state":"pending","userCode":"WDJB-MJHT","verificationUrl":"https://auth.openai.com/codex/device","intervalSeconds":5,"expiresAt":"2026-11-02T10:00:00Z"}"#)
+    let (flow, state) = try await client(loader).startDeviceSignIn(app: "apps.chatgpt")
+    XCTAssertEqual(flow, "5c1b3c2e-0f7a-4c0e-9b4f-2d1f7e0a9c11")
+    guard case .pending(let code, _, 5, _) = state else { return XCTFail("\(state)") }
+    XCTAssertEqual(code, "WDJB-MJHT")
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.url?.path, "/api/v1/account/connections/apps.chatgpt/device")
+    XCTAssertEqual(request.httpBody, Data("{}".utf8), "a POST with nothing to say still sends JSON")
+  }
+
+  func testSigningAnAccountOutNamesItAndRemovingAServerNamesNone() async throws {
+    let loader = StubLoader(status: 200, body: #"{"removed":true}"#)
+    try await client(loader).remove("apps.gmail", account: "a@b.c")
+    try await client(loader).remove("emdash_leostera_com", account: nil)
+    XCTAssertEqual(loader.requests.map { $0.url?.path }, [
+      "/api/v1/account/connections/apps.gmail/remove", "/api/v1/account/connections/emdash_leostera_com/remove",
+    ])
+    XCTAssertEqual(try body(loader.requests[0])["account"] as? String, "a@b.c")
+    XCTAssertTrue(try body(loader.requests[1]).isEmpty)
+  }
+
+  func testABrowserSignInOpensTheAppsPageOnTheWeb() {
+    let client = client(StubLoader(status: 200, body: "{}"))
+    XCTAssertEqual(
+      client.webPage(for: AppConnection(name: "apps.gmail", title: "Gmail")).absoluteString,
+      "https://axo.leostera.dev/app/settings/apps/gmail")
+    XCTAssertEqual(client.webPage(for: nil).absoluteString, "https://axo.leostera.dev/app/settings/apps/mcp")
+  }
+}
+
 private final class StubLoader: HTTPDataLoading, @unchecked Sendable {
   private let lock = NSLock()
   private var seen: [URLRequest] = []

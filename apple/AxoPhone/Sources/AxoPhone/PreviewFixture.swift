@@ -12,7 +12,9 @@ enum PreviewFixture {
     static var menuOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_MENU"] == "1" }
     /// Open this chat (1 is the first in the menu) instead of a blank one.
     static var chatOpen: Int? { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_CHAT"].flatMap(Int.init) }
-    static var settingsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_SETTINGS"] == "1" }
+    static var settingsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_SETTINGS"] == "1" || appsOpen }
+    /// Open Settings › Apps (`AXO_PHONE_PREVIEW_APPS=1`).
+    static var appsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_APPS"] == "1" }
     /// Open the Macs and account panel (`AXO_PHONE_PREVIEW_HOSTS=1`).
     static var hostsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_HOSTS"] == "1" }
     /// Play a reply being written, a running tool and a question in the open chat
@@ -141,6 +143,7 @@ enum PreviewFixture {
     static var menuOpen: Bool { false }
     static var chatOpen: Int? { nil }
     static var settingsOpen: Bool { false }
+    static var appsOpen: Bool { false }
     static var hostsOpen: Bool { false }
     static var live: String? { nil }
     static let motionLog: LayerMotionLog? = nil

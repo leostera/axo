@@ -169,6 +169,49 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testAppsOpenFromTheAccountPanelAndATokenAccountIsAddedAfterARefusal() {
+    let app = launch(["AXO_PHONE_PREVIEW_HOSTS": "1"])
+    XCTAssertTrue(accountShowing(app))
+    app.buttons["Apps"].tapWhereItIs()
+    let gmail = app.buttons["Gmail"]
+    XCTAssertTrue(gmail.waitForExistence(timeout: 10))
+    XCTAssertEqual(gmail.value as? String, "Connected, 1 account", "connected apps come first")
+
+    app.buttons["Hetzner"].tap()
+    XCTAssertTrue(app.staticTexts["Needs a new token"].waitForExistence(timeout: 5) || app.staticTexts["Hetzner refused the token."].exists)
+    app.buttons["Add account"].tap()
+    let name = app.textFields["account-name"]
+    XCTAssertTrue(name.waitForExistence(timeout: 5))
+    name.tap()
+    name.typeText("work")
+    let token = app.secureTextFields["token-field-token"]
+    token.tap()
+    token.typeText("bad")
+    app.buttons["add-account"].tap()
+    XCTAssertTrue(app.staticTexts["Hetzner refused that token."].waitForExistence(timeout: 5), "the service's own words")
+
+    token.tap()
+    token.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 3) + "good-token")
+    app.buttons["add-account"].tap()
+    XCTAssertTrue(app.staticTexts["work"].waitForExistence(timeout: 5), "the new account is listed")
+    XCTAssertFalse(app.buttons["add-account"].exists, "the form is gone")
+  }
+
+  @MainActor
+  func testADeviceSignInShowsItsCodeAndFinishesByItself() {
+    let app = launch(["AXO_PHONE_PREVIEW_APPS": "1"])
+    let chatgpt = app.buttons["ChatGPT"]
+    XCTAssertTrue(chatgpt.waitForExistence(timeout: 10))
+    chatgpt.tap()
+    app.buttons["Add account"].tap()
+    let code = app.staticTexts["device-code"]
+    XCTAssertTrue(code.waitForExistence(timeout: 5))
+    XCTAssertEqual(code.label, "Sign-in code WDJB-MJHT")
+    XCTAssertTrue(app.staticTexts["leandro@example.com"].waitForExistence(timeout: 10), "signed in once the provider said so")
+    XCTAssertFalse(code.exists)
+  }
+
+  @MainActor
   func testTheMenuGroupsChatsByWorkspaceShowsEmptyOnesAndWhoIsWorking() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

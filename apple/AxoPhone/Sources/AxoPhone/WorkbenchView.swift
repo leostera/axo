@@ -40,7 +40,11 @@ struct WorkbenchView: View {
   @State private var workbench: PhoneWorkbench
   @State private var layer: Layer = PreviewFixture.hostsOpen ? .account : PreviewFixture.menuOpen ? .chats : .conversation
   @Environment(\.scenePhase) private var scenePhase
-  @State private var showingSettings = PreviewFixture.settingsOpen
+  /// Settings, open on its first page or on Apps (the account panel's Apps row).
+  @State private var settings: SettingsView.Opening? =
+    PreviewFixture.appsOpen ? .apps : PreviewFixture.settingsOpen ? .settings : nil
+  /// Settings › Apps: what the account's Sessions can use.
+  @State private var apps: AppsModel
   @State private var showingSearch = false
   @State private var showingPairing = false
   /// Asks the relay for codes that link a Mac (the preview's stand-in in the simulator preview).
@@ -70,6 +74,7 @@ struct WorkbenchView: View {
     #if DEBUG && targetEnvironment(simulator)
       if PreviewFixture.requested {
         pairingIssuer = PreviewPairing()
+        _apps = State(initialValue: AppsModel(service: PreviewConnections()))
         let feed = AccountConnection(transport: PreviewTransport(), clientID: .random())
         _workbench = State(initialValue: PhoneWorkbench(
           hosts: HostsModel(profile: PreviewPairing()), feed: feed, account: account,
@@ -81,6 +86,7 @@ struct WorkbenchView: View {
       }
     #endif
     pairingIssuer = client
+    _apps = State(initialValue: AppsModel(service: ConnectionsClient(endpoint: endpoint, tokens: account.tokens)))
     // One socket for the whole account, as this install's client (RFD0018).
     let feed = AccountConnection(endpoint: endpoint, clientID: .installed(), tokens: account.tokens)
     _workbench = State(initialValue: PhoneWorkbench(
@@ -177,8 +183,8 @@ struct WorkbenchView: View {
     .sheet(isPresented: $showingPairing) {
       PairMacSheet(issuer: pairingIssuer, hosts: workbench.hosts, refresh: { await workbench.refresh() })
     }
-    .sheet(isPresented: $showingSettings) {
-      SettingsView(account: environment.account) {
+    .sheet(item: $settings) { opening in
+      SettingsView(account: environment.account, apps: apps, opening: opening) {
         Task {
           // End it at the relay too, so a copied token stops working; then forget it here.
           try? await AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens).signOut()
@@ -418,7 +424,8 @@ struct WorkbenchView: View {
       },
       rename: { host, name in await workbench.renameHost(host.hostId, to: name) },
       pair: { showingPairing = true },
-      showSettings: { showingSettings = true },
+      showApps: { settings = .apps },
+      showSettings: { settings = .settings },
       refresh: { await workbench.refresh() })
   }
 
@@ -483,7 +490,7 @@ struct WorkbenchView: View {
       Spacer(minLength: 0)
 
       Button {
-        showingSettings = true
+        settings = .settings
       } label: {
         Image(systemName: "gearshape")
           .font(.system(size: 19, weight: .medium))
@@ -597,6 +604,7 @@ private struct HostsPanel: View {
   /// Names a Mac for the account; says why it could not, or nil once saved.
   let rename: (RemoteHost, String) async -> String?
   let pair: () -> Void
+  let showApps: () -> Void
   let showSettings: () -> Void
   let refresh: () async -> Void
 
@@ -644,6 +652,29 @@ private struct HostsPanel: View {
           }
           .padding(.horizontal, MenuLayout.rowInset)
         }
+        Text("Apps")
+          .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+          .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
+          .padding(.top, 22).padding(.bottom, 4)
+          .accessibilityAddTraits(.isHeader)
+        Button(action: showApps) {
+          HStack(spacing: 12) {
+            Image(systemName: "powerplug").font(.system(size: 17)).frame(width: 26)
+            VStack(alignment: .leading, spacing: 1) {
+              Text("Apps").font(.callout)
+              Text("Gmail, GitHub, MCP servers and more").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+          }
+          .padding(.horizontal, MenuLayout.rowTextInset - 8)
+          .frame(height: 52)
+          .contentShape(Rectangle())
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("Apps")
+        }
+        .buttonStyle(.layerRow)
+        .padding(.horizontal, MenuLayout.rowInset)
       }
       .padding(.bottom, 12)
     }

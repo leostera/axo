@@ -98,9 +98,16 @@ ios_application(
     families = ["iphone"],
     infoplists = ["Info.plist"],
     minimum_os_version = AXO["apple"]["ios_min"],
-    resources = ["//assets:mascot", "//assets:fonts"],
+    resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
     version = ":build_version",
     deps = [":AxoPhoneMain"],
+)
+
+# The makers' logos Settings › Apps shows, the web app's own SVGs
+# (packages/axo-web-app/src/chat/logos), as vectors in an asset catalog.
+filegroup(
+    name = "app_logos",
+    srcs = glob(["Resources/AppLogos.xcassets/**"]),
 )
 
 # The app driven as a person would, against its simulator preview:
@@ -163,7 +170,7 @@ ios_application(
     families = ["iphone"],
     infoplists = ["Info.plist"],
     minimum_os_version = AXO["apple"]["ios_min"],
-    resources = ["//assets:mascot", "//assets:fonts"],
+    resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
     version = ":build_version",
     provisioning_profile = ":AxoPhoneProfile",
     # Built through :AxoPhone_ipa, which picks the phone's CPU.
