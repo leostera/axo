@@ -231,7 +231,7 @@ struct WorkbenchSidebar: View {
       WindowDragStrip()
         .frame(height: WindowDragStrip.height)
       ScrollView {
-        VStack(spacing: 4) {
+        VStack(spacing: 0) {
           ForEach(sessions.sidebarOrderedSessions) { session in
             CollapsedSessionButton(
               session: session,
@@ -243,7 +243,7 @@ struct WorkbenchSidebar: View {
             }
           }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 4)
       }
 
       if let sidebarActionError {

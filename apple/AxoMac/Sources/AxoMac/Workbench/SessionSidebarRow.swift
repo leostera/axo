@@ -100,12 +100,7 @@ struct SessionSidebarRow: View {
           .lineLimit(1)
       }
       if showsAge {
-        // Ages only need to move once a minute.
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-          Text(SessionActivityOrder.age(of: SessionActivityOrder.lastActivity(of: session), now: context.date))
-            .font(.system(size: 10).monospacedDigit())
-            .foregroundStyle(.tertiary)
-        }
+        SessionAge(session: session)
       }
     }
     .padding(.leading, 6)
@@ -177,6 +172,23 @@ private extension TerminalSessionStatus {
 }
 
 /// One Session in the collapsed sidebar: its glyph with a status badge.
+/// How long ago a Session was last active ("now", "5m", "3h", "2d", "1w"), in the sidebar's rows.
+struct SessionAge: View {
+  let session: TerminalSession
+
+  var body: some View {
+    // Ages only need to move once a minute.
+    TimelineView(.periodic(from: .now, by: 60)) { context in
+      Text(SessionActivityOrder.age(of: SessionActivityOrder.lastActivity(of: session), now: context.date))
+        .font(.system(size: 10).monospacedDigit())
+        .foregroundStyle(.tertiary)
+        .lineLimit(1)
+    }
+  }
+}
+
+/// A Session in the collapsed sidebar: its expanded row without the name,
+/// [status][emoji][age], which fits the strip the window's buttons need anyway.
 struct CollapsedSessionButton: View {
   let session: TerminalSession
   let isSelected: Bool
@@ -186,18 +198,23 @@ struct CollapsedSessionButton: View {
   var body: some View {
     let status = sidebarStatus(for: session, attention: ghostty.attentionShellIDs)
     Button(action: onSelect) {
-      ZStack(alignment: .bottomTrailing) {
-        sessionGlyph(for: session, size: sessionGlyphSize)
+      HStack(spacing: 4) {
         Image(systemName: status.symbolName)
-          .font(.system(size: 8, weight: .bold))
+          .font(.system(size: 8, weight: .semibold))
           .foregroundStyle(status.color)
-          .background(Color(nsColor: .windowBackgroundColor), in: Circle())
+          .frame(width: 9)
+        sessionGlyph(for: session, size: sessionGlyphSize)
+          .frame(width: 14)
+        SessionAge(session: session)
+          .frame(width: 22, alignment: .trailing)
       }
-      .frame(width: 36, height: 36)
+      .padding(.horizontal, 5)
+      .frame(minHeight: 22)
       .background(
-        isSelected ? Color.accentColor.opacity(0.18) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 8)
+        isSelected ? Color.accentColor.opacity(0.16) : Color.clear,
+        in: RoundedRectangle(cornerRadius: 4)
       )
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .help(session.displayName)
