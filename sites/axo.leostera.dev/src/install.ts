@@ -106,6 +106,7 @@ AXO_PAIRING_CODE=${shellQuote(code?.value ?? "")}
 AXO_TEAM_ID=${shellQuote(SIGNING_TEAM)}
 AXO_BUNDLE_ID='dev.leostera.axo'
 AXO_AGENT_LABEL='dev.leostera.axo.axod'
+AXO_APP_LABEL='dev.leostera.axo.app'
 
 say() { printf '\\033[1m==>\\033[0m %s\\n' "$*"; }
 warn() { printf '\\033[33mwarning:\\033[0m %s\\n' "$*" >&2; }
@@ -155,16 +156,35 @@ build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$new_app/Contents/I
 # A quarantined app is translocated to a read-only copy that cannot register axod.
 xattr -dr com.apple.quarantine "$new_app" 2>/dev/null || true
 
-if [ "$(osascript -e "application id \\"$AXO_BUNDLE_ID\\" is running" 2>/dev/null || echo false)" = true ]; then
-  say "Quitting the running Axo"
-  osascript -e "tell application id \\"$AXO_BUNDLE_ID\\" to quit" >/dev/null 2>&1 || true
-  waited=0
-  while [ "$(osascript -e "application id \\"$AXO_BUNDLE_ID\\" is running" 2>/dev/null || echo false)" = true ]; do
-    [ "$waited" -lt 30 ] || fail "Axo did not quit; quit it and run this again"
-    sleep 1
-    waited=$((waited + 1))
-  done
-fi
+# Axo only closes its windows when asked to quit, and launchd brings it back if it dies, so stop
+# it as Axo replaces itself: take launchd's job away, ask each running Axo to quit for good
+# (dev.leostera.axo.quitForReplacement with its pid), and force any still there after 5s.
+say "Quitting the running Axo"
+launchctl bootout "gui/$(id -u)/$AXO_APP_LABEL" >/dev/null 2>&1 || true
+AXO_BUNDLE_ID=$AXO_BUNDLE_ID osascript -l JavaScript >/dev/null 2>&1 <<'JXA' || fail "Axo did not quit; quit it from its menu bar icon (Quit Axo) and run this again"
+ObjC.import("AppKit");
+const id = $.NSProcessInfo.processInfo.environment.objectForKey("AXO_BUNDLE_ID").js;
+const running = () => {
+  const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(id);
+  const list = [];
+  for (let i = 0; i < apps.count; i++) if (!apps.objectAtIndex(i).terminated) list.push(apps.objectAtIndex(i));
+  return list;
+};
+const waitGone = (seconds) => {
+  for (let i = 0; i < seconds * 10 && running().length > 0; i++) delay(0.1);
+  return running().length === 0;
+};
+if (!waitGone(2)) {
+  const pids = $.NSMutableArray.array;
+  running().forEach((app) => pids.addObject($.NSNumber.numberWithInt(app.processIdentifier)));
+  $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately(
+    "dev.leostera.axo.quitForReplacement", $(), $.NSDictionary.dictionaryWithObjectForKey(pids, "pids"), true);
+  if (!waitGone(5)) {
+    running().forEach((app) => app.forceTerminate);
+    if (!waitGone(5)) throw new Error("Axo is still running");
+  }
+}
+JXA
 
 say "Installing Axo build $build in $install_dir"
 if [ -e "$app" ]; then
