@@ -17,39 +17,6 @@ struct RecentSessions: Equatable {
   }
 }
 
-/// How the sidebar groups Sessions. Every open Session appears exactly once: under its
-/// Workspace when that Workspace is listed, otherwise with the standalone Sessions. A Session
-/// can arrive before its Workspace does (the Workspace list is refetched after
-/// `workspace.changed`), and it must stay visible and navigable meanwhile.
-struct SidebarSections: Equatable {
-  /// Sessions of each listed Workspace, in catalog order.
-  let sessionsByWorkspace: [String: [TerminalSession]]
-  /// Standalone Sessions and those whose Workspace is not listed, in catalog order.
-  let ungrouped: [TerminalSession]
-  /// Workspace groups in Workspace order, then the ungrouped Sessions.
-  let ordered: [TerminalSession]
-
-  init(sessions: [TerminalSession], workspaces: [WorkspaceRecord]) {
-    let listed = Set(workspaces.map(\.workspaceId))
-    var byWorkspace: [String: [TerminalSession]] = [:]
-    var ungrouped: [TerminalSession] = []
-    for session in sessions {
-      if let workspaceID = session.workspaceId, listed.contains(workspaceID) {
-        byWorkspace[workspaceID, default: []].append(session)
-      } else {
-        ungrouped.append(session)
-      }
-    }
-    sessionsByWorkspace = byWorkspace
-    self.ungrouped = ungrouped
-    ordered = workspaces.flatMap { byWorkspace[$0.workspaceId] ?? [] } + ungrouped
-  }
-
-  func sessions(in workspaceID: String) -> [TerminalSession] {
-    sessionsByWorkspace[workspaceID] ?? []
-  }
-}
-
 /// Pure ordering and selection policy for the sidebar and keyboard navigation.
 enum SessionNavigation {
 
@@ -82,11 +49,39 @@ enum SessionNavigation {
   }
 }
 
-/// How the sidebar lists Sessions: grouped under their Workspaces, or one flat list by recent
-/// activity.
-enum SidebarMode: String, CaseIterable, Sendable {
-  case workspaces
-  case recent
+/// Which Macs' Sessions the sidebar lists, latest activity first (RFD0024).
+enum SidebarMacs: Equatable, Hashable, Sendable {
+  case thisMac
+  /// One other Mac, by host id.
+  case mac(String)
+  case all
+
+  init?(rawValue: String) {
+    switch rawValue {
+    case "this": self = .thisMac
+    case "all": self = .all
+    default:
+      guard rawValue.hasPrefix("mac:") else { return nil }
+      self = .mac(String(rawValue.dropFirst(4)))
+    }
+  }
+
+  var rawValue: String {
+    switch self {
+    case .thisMac: "this"
+    case .all: "all"
+    case .mac(let hostID): "mac:\(hostID)"
+    }
+  }
+
+  /// Whether a Session of `hostID` (nil for this Mac) is listed.
+  func includes(hostID: String?) -> Bool {
+    switch self {
+    case .thisMac: hostID == nil
+    case .mac(let shown): hostID == shown
+    case .all: true
+    }
+  }
 }
 
 /// The recent-activity order: the Session whose agent or user last finished a message first.

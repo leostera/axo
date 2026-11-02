@@ -65,10 +65,10 @@ A Session's log is written only by the Pi of the Mac that runs it, called its **
 
 ### The remote pane
 
-`axo.peer.session.open { hostId, sessionId }` asks this Mac's axod for a pane on another Mac's Session. Axod owns the pane's PTY like any other. It starts `pi --no-session` with pi-axo in remote mode, given `AXO_REMOTE_HOST_ID`, `AXO_REMOTE_SESSION_ID` and the bridge socket in the environment.
+`axo.peer.session.open { hostId, sessionId }` asks this Mac's axod for a pane on another Mac's Session. Axod owns the pane's PTY like any other. It starts `pi --no-session` with pi-axo in remote mode, given `AXO_REMOTE_HOST_ID`, `AXO_REMOTE_HOST_LABEL`, `AXO_REMOTE_SESSION_ID` and `AXO_SOCKET` in the environment. `axo.peer.session.close` stops it.
 
-- **Not a Session of this Mac.** It is not a row in `axo.db` and is never uploaded or mirrored. The working directory is the Workspace matching the Session's `workspaceState` (RFD0022), or else Home.
-- **The list.** Axod lists other Macs' Sessions from `peers.json` (`axo.peer.sessions.list`) and tells the Mac app when the list changes (a `peer.sessions.changed` event).
+- **Not a Session of this Mac.** It is not a row in `axo.db` and is never uploaded or mirrored. Its shell id comes from a range the database never reaches (2^48 and up), and it is kept apart from this Mac's panes, so nothing that lists, reaps or uploads this Mac's Sessions sees it. The working directory is the Session's `workspaceState.path` (RFD0022) when this Mac has that folder, or else Home.
+- **The list.** Axod lists other Macs' Sessions from `peers.json` (`axo.peer.sessions.list`), each a Session record with its `hostId`, and tells the Mac app when the list changes or a pane opens or closes (a `peer.sessions.changed` event).
 
 ### pi-axo in remote mode
 
@@ -77,9 +77,9 @@ A Session's log is written only by the Pi of the Mac that runs it, called its **
   - No tools are active.
   - `before_agent_start` and `tool_call` refuse anything that slips through.
   - With `--no-session`, Pi writes no file.
-- **It draws the copy.** At start it reads the copy under `~/.axo/sessions/<host>/`. After that it follows `peer.session.copy { epoch, cursor, records }` events from axod, and ignores a copy older than the one on screen (a smaller cursor or epoch). Records are drawn with message renderers that look like Pi's own user, assistant and tool messages; see Unresolved questions. Progress (the reply being written) arrives as `peer.session.progress` from the peers socket's `axo.client.session.progress` and is drawn in a widget.
-- **A cut restarts the pane.** When the copy's epoch changes, the Session was cut back (RFD0018). pi-axo cannot remove what it has drawn, so axod restarts the pane's Pi, which draws the copy again, and the editor's text is carried over. Adding the lines after the ones on screen would keep records the owner deleted (rule `restartOnCut`).
-- **It sends what is typed.** `axo.peer.command { hostId, method, params }` goes to this Mac's axod.
+- **It draws the copy.** It long-polls `axo.peer.session.watch { hostId, sessionId, epoch, cursor, version }`. Axod answers once something has changed since `version` (records, progress, the listing, the socket), with the records of the copy under `~/.axo/sessions/<host>/` after the pane's cursor, or with `reset` and the newest records when the pane's epoch or cursor is not in the copy. Only records the copy's state file counts are read, so a line being appended is never half drawn. Each record becomes a custom entry drawn with Pi's own `UserMessageComponent` and `AssistantMessageComponent`, and look-alike boxes for tool calls and results. Progress (the reply being written) comes in the same answer, from the peers socket's `axo.client.session.progress`, and is drawn in a widget.
+- **A cut restarts the pane.** When the copy's epoch changes, the Session was cut back (RFD0018). pi-axo cannot remove what it has drawn, so it exits with code 75 and the pane's shell loop starts Pi again, which draws the copy afresh. The editor's text and the pending prompts are carried over in a file. Adding the lines after the ones on screen would keep records the owner deleted (rule `restartOnCut`).
+- **It sends what is typed.** `axo.peer.command { hostId, method, params }` goes to this Mac's axod: prompts, stops (Escape while the other Mac works) and answers (`/yes`, `/no`). Axod sends nothing else to another Mac.
   - Pending prompts show in a widget until their receipt appears in the copy.
   - With no peers socket, axod answers `offline` and sends nothing.
 
@@ -136,7 +136,7 @@ All five steps ship together, to every Mac at once.
 
 1. **Commands on the owner:** receipts, the `commandId` check, pi-axo's queue, and stops and answers that name their target. Plus the ClientDO's `-32004` for failed calls. This fixes the phone and the web app first.
 2. **Clients match receipts:** the web app and the phone retire pending prompts by `commandId`, and retry unknown outcomes.
-3. **axod:** `axo.peer.session.open`, `axo.peer.sessions.list`, `axo.peer.command`, and the copy and progress events.
+3. **axod:** `axo.peer.sessions.list`, `axo.peer.session.open` and `.close`, `axo.peer.session.watch`, `axo.peer.command`, and the `peer.sessions.changed` event.
 4. **pi-axo remote mode.**
 5. **The Mac app's sidebar.**
 

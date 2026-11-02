@@ -67,8 +67,12 @@ final class TerminalSessionsModel {
   private(set) var pendingShellCloseConfirmation: ShellCloseConfirmation?
   private(set) var pendingTerminalSplit: PendingTerminalSplit?
   private(set) var automaticallyRestartUnavailablePi: Bool
-  /// How the sidebar lists Sessions; Previous/Next Session follow the same order.
-  private(set) var sidebarMode: SidebarMode
+  /// Which Macs' Sessions the sidebar lists; Previous/Next Session follow the same list.
+  private(set) var sidebarMacs: SidebarMacs
+  /// The account's other Macs, as this Mac follows them (RFD0024).
+  private(set) var peerHosts: [PeerHost] = []
+  /// The Mac each other Mac's Session runs on; this Mac's Sessions are not in it.
+  private(set) var peerHostBySession: [SessionID: String] = [:]
   /// The recent list's order frozen while the pointer is over the sidebar, so rows don't move
   /// under a click and Previous/Next Session step through the rows as shown.
   private(set) var heldRecentOrder: [SessionID]?
@@ -87,6 +91,10 @@ final class TerminalSessionsModel {
   private let viewportReporter: ViewportReporter
   /// What the connected Axod offers; `nil` without a client.
   private let capabilities: AxodCapabilities?
+  /// Other Macs' Sessions as last listed; also in `catalog`, so they select and show like any.
+  @ObservationIgnored private var peerSessions: [SessionID: PeerSession] = [:]
+  /// Panes on other Macs' Sessions being opened, so a Session is opened once.
+  @ObservationIgnored private var openingPeers: Set<SessionID> = []
   /// The open Sessions: the single source of truth for `sessions` and its projections.
   @ObservationIgnored private var catalog = SessionCatalog() {
     didSet { projectCatalog() }
@@ -158,14 +166,17 @@ final class TerminalSessionsModel {
     selection = WorkbenchSelection(selectedSessionID: storedSelection)
     selectedSessionID = storedSelection
     automaticallyRestartUnavailablePi = restartsAutomatically
-    sidebarMode =
-      preferenceDefaults.string(forKey: AxoPreferenceKey.sidebarMode).flatMap(SidebarMode.init)
-      ?? .workspaces
+    sidebarMacs =
+      preferenceDefaults.string(forKey: AxoPreferenceKey.sidebarMacs).flatMap(SidebarMacs.init)
+      ?? .thisMac
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
 
-    layoutWriter.isSessionOpen = { [weak self] in self?.session(for: $0) != nil }
+    // Another Mac's Session has no layout here to keep.
+    layoutWriter.isSessionOpen = { [weak self] in
+      self?.session(for: $0) != nil && self?.peerSessions[$0] == nil
+    }
     layoutWriter.onError = { [weak self] in self?.errorMessage = $0.localizedDescription }
     piRestarter.needsRestart = { [weak self] shellID in
       guard let shell = self?.shell(for: shellID) else { return false }
@@ -195,16 +206,29 @@ final class TerminalSessionsModel {
 
   // MARK: - Queries
 
-  var sidebarSections: SidebarSections {
-    SidebarSections(sessions: sessions, workspaces: workspaces)
+  /// The Sessions the sidebar lists, latest activity first: this Mac's, one other Mac's, or all.
+  var sidebarOrderedSessions: [TerminalSession] {
+    let listed = sessions.filter { sidebarMacs.includes(hostID: peerHostBySession[$0.id]) }
+    return SessionActivityOrder.holding(heldRecentOrder, live: SessionActivityOrder.sorted(listed))
   }
 
-  /// Every open Session in the order the sidebar lists it.
-  var sidebarOrderedSessions: [TerminalSession] {
-    switch sidebarMode {
-    case .workspaces: sidebarSections.ordered
-    case .recent:
-      SessionActivityOrder.holding(heldRecentOrder, live: SessionActivityOrder.sorted(sessions))
+  /// Whether `sessionID` runs on another Mac.
+  func isPeerSession(_ sessionID: SessionID) -> Bool {
+    peerHostBySession[sessionID] != nil
+  }
+
+  /// The name of the Mac another Mac's Session runs on; nil for this Mac's.
+  func hostLabel(for sessionID: SessionID) -> String? {
+    guard let hostID = peerHostBySession[sessionID] else { return nil }
+    return peerHosts.first { $0.hostId == hostID }?.label ?? "Another Mac"
+  }
+
+  /// What the sidebar's Mac menu calls the Macs listed now.
+  var sidebarMacsTitle: String {
+    switch sidebarMacs {
+    case .thisMac: "This Mac"
+    case .all: "All Macs"
+    case .mac(let hostID): peerHosts.first { $0.hostId == hostID }?.label ?? "Another Mac"
     }
   }
 
@@ -260,7 +284,6 @@ final class TerminalSessionsModel {
       \.commandAvailability,
       TerminalCommandAvailability(
         canNavigatePanes: (layout?.orderedShellIDs.count ?? 0) >= 2,
-        // Every open Session is listed in the sidebar (see `SidebarSections`).
         canNavigateSessions: sessions.count >= 2,
         hasFocusedShell: focusedShellID != nil,
         hasSelectedSession: selectedSessionID != nil))
@@ -302,8 +325,70 @@ final class TerminalSessionsModel {
     async let workspacesTask = client.listWorkspaces()
     let snapshot = try await snapshotTask
     assign(\.workspaces, try await workspacesTask)
-    applyCatalog(SessionCatalog(snapshot.sessions), focusing: snapshot.resumeSessionId)
+    // This Mac's Sessions as listed, beside the other Macs' as last listed.
+    applyCatalog(
+      SessionCatalog(snapshot.sessions + peerSessions.values.map(\.session)),
+      focusing: snapshot.resumeSessionId)
     assign(\.errorMessage, nil)
+    await refreshPeerSessions()
+  }
+
+  /// Reads the other Macs' Sessions again; an Axod that does not follow them lists none.
+  func refreshPeerSessions() async {
+    guard let client, let capabilities,
+      (try? await capabilities.supports(.peerSessionsList)) == true
+    else { return }
+    do {
+      applyPeerSessions(try await client.listPeerSessions())
+    } catch {
+      // The local catalog stands on its own; the next change notice reads them again.
+    }
+  }
+
+  private func applyPeerSessions(_ list: PeerSessionList) {
+    let next = Dictionary(
+      list.sessions.map { ($0.session.id, $0) }, uniquingKeysWith: { _, last in last })
+    let local = catalog.sessions.filter { peerSessions[$0.id] == nil && next[$0.id] == nil }
+    peerSessions = next
+    assign(\.peerHosts, list.hosts)
+    assign(\.peerHostBySession, next.mapValues(\.hostId))
+    if case .mac(let hostID) = sidebarMacs, !list.hosts.contains(where: { $0.hostId == hostID }),
+      !list.hosts.isEmpty
+    {
+      setSidebarMacs(.thisMac)
+    }
+    applyCatalog(SessionCatalog(local + next.values.map(\.session)), focusing: nil)
+    if let selected = selectedSessionID { openPeerPaneIfNeeded(selected) }
+  }
+
+  /// Another Mac's Session has no pane here until it is shown: then this Mac starts one.
+  private func openPeerPaneIfNeeded(_ sessionID: SessionID) {
+    guard let peer = peerSessions[sessionID], peer.session.shells.isEmpty,
+      !openingPeers.contains(sessionID), let client
+    else { return }
+    openingPeers.insert(sessionID)
+    Task {
+      defer { openingPeers.remove(sessionID) }
+      do {
+        let opened = try await client.openPeerSession(sessionID, on: peer.hostId)
+        guard peerSessions[sessionID] != nil else { return }
+        peerSessions[sessionID] = opened
+        upsert(opened.session)
+      } catch {
+        report(error)
+      }
+    }
+  }
+
+  /// Stops this Mac's pane on another Mac's Session; the Session carries on there.
+  func closePeerPane(_ sessionID: SessionID) async {
+    guard let peer = peerSessions[sessionID], let client else { return }
+    do {
+      try await client.closePeerSession(sessionID, on: peer.hostId)
+      await refreshPeerSessions()
+    } catch {
+      report(error)
+    }
   }
 
   /// Applies one catalog event. Returns `false` when the stream lagged and the caller must
@@ -325,6 +410,8 @@ final class TerminalSessionsModel {
       }
     case .sessionFocus(let sessionID):
       showSession(sessionID)
+    case .peerSessionsChanged:
+      await refreshPeerSessions()
     case .subscriptionLagged:
       return false
     case .shellActivity, .terminalOutput, .relayStatus, .unknown:
@@ -350,11 +437,11 @@ final class TerminalSessionsModel {
 
   // MARK: - Preferences
 
-  func setSidebarMode(_ mode: SidebarMode) {
-    guard sidebarMode != mode else { return }
-    sidebarMode = mode
+  func setSidebarMacs(_ macs: SidebarMacs) {
+    guard sidebarMacs != macs else { return }
+    sidebarMacs = macs
     heldRecentOrder = nil
-    preferenceDefaults.set(mode.rawValue, forKey: AxoPreferenceKey.sidebarMode)
+    preferenceDefaults.set(macs.rawValue, forKey: AxoPreferenceKey.sidebarMacs)
   }
 
   func setAutomaticPiRestartEnabled(_ enabled: Bool) {
@@ -458,6 +545,8 @@ final class TerminalSessionsModel {
   /// (closing it archives the Workspace).
   func requestCloseSession(_ sessionID: SessionID) async {
     guard let closingSession = session(for: sessionID) else { return }
+    // Another Mac's Session is only shown here: closing it closes this Mac's pane.
+    if isPeerSession(sessionID) { return await closePeerPane(sessionID) }
     errorMessage = nil
     switch SessionClosePlan(closing: closingSession, sessions: sessions, workspaces: workspaces) {
     case .close:
@@ -498,6 +587,9 @@ final class TerminalSessionsModel {
   }
 
   func renameSession(_ sessionID: SessionID, to name: String) async throws {
+    if let host = hostLabel(for: sessionID) {
+      throw SessionCommandError("This Session runs on \(host); rename it there.")
+    }
     let client = try requireClient()
     try await requireCapabilities().require(.sessionRename)
     let renamed = try await client.renameSession(sessionID, to: name)
@@ -550,6 +642,10 @@ final class TerminalSessionsModel {
       let anchorShellID = selection.splitAnchor(in: sessionID)
     else {
       errorMessage = "Select a session before splitting the terminal."
+      return
+    }
+    if let host = hostLabel(for: sessionID) {
+      errorMessage = "This Session runs on \(host); its terminals are there."
       return
     }
 
@@ -740,6 +836,7 @@ final class TerminalSessionsModel {
     guard session(for: sessionID) != nil else { return }
     select(sessionID)
     assign(\.errorMessage, nil)
+    openPeerPaneIfNeeded(sessionID)
   }
 
   func showPreviousSession() { showAdjacentSession(.previous) }

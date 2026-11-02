@@ -432,7 +432,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
-  func testSessionNavigationFollowsSidebarWorkspaceOrder() async throws {
+  func testSessionNavigationFollowsTheSidebarsOrder() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("axo-sidebar-order-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -452,15 +452,10 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       await model.createSession()
       let secondHomeID = try XCTUnwrap(model.selectedSessionID)
 
-      // Home is listed first, although "A Project" sorts before it by name.
-      XCTAssertEqual(model.workspaces.map(\.isHome), [true, false])
-      XCTAssertEqual(
-        Set(model.sidebarOrderedSessions.prefix(2).map(\.id)), [firstHomeID, secondHomeID])
-      XCTAssertEqual(
-        Set(model.sidebarOrderedSessions.suffix(2).map(\.id)),
-        [firstWorkspaceSessionID, secondWorkspaceSessionID])
-
+      // One list, latest activity first, whatever Workspace each Session is in.
       let ordered = model.sidebarOrderedSessions.map(\.id)
+      XCTAssertEqual(
+        Set(ordered), [firstHomeID, secondHomeID, firstWorkspaceSessionID, secondWorkspaceSessionID])
       model.showSession(ordered[0])
       model.showNextSession()
       XCTAssertEqual(model.selectedSessionID, ordered[1])

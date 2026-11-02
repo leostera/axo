@@ -35,6 +35,11 @@ protocol AxodClient: AnyObject {
 
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
+
+  /// Other Macs' Sessions (RFD0024).
+  func listPeerSessions() async throws -> PeerSessionList
+  func openPeerSession(_ sessionID: SessionID, on hostID: String) async throws -> PeerSession
+  func closePeerSession(_ sessionID: SessionID, on hostID: String) async throws
 }
 
 /// The daemon operations Settings depends on, separate from the catalog so settings views never

@@ -18,6 +18,9 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case sessionFocus(sessionID: SessionID)
   /// Remote-access connection state changed.
   case relayStatus(RemoteAccessStatus)
+  /// The other Macs or their Sessions changed, or a pane on one opened or closed: read
+  /// `axo.peer.sessions.list` again (RFD0024).
+  case peerSessionsChanged
   /// Earlier events were discarded; the consumer must resynchronize from a fresh listing.
   case subscriptionLagged
   /// An event type this client does not understand. Ignored for forward compatibility.
@@ -56,6 +59,8 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
       self = .workspaceChanged(workspaceID: try container.decode(String.self, forKey: .workspaceId))
     case "session.focus":
       self = .sessionFocus(sessionID: try container.decode(SessionID.self, forKey: .sessionId))
+    case "peer.sessions.changed":
+      self = .peerSessionsChanged
     case "subscription.lagged":
       self = .subscriptionLagged
     case let type:

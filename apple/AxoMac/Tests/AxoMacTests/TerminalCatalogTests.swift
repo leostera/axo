@@ -11,6 +11,10 @@ final class FakeAxodClient: AxodClient {
   var sessions: [TerminalSession] = []
   var workspaces: [WorkspaceRecord] = []
   var resumeSessionID: SessionID?
+  /// Other Macs' Sessions, listed when `methods` offers them.
+  var peers = PeerSessionList(connected: true, hosts: [], sessions: [])
+  private(set) var openedPeers: [SessionID] = []
+  private(set) var closedPeers: [SessionID] = []
   var methods: [String] = (AxodCapabilities.requiredMethods.union([
     .sessionRename, .sessionReopen, .workspaceRename, .workspaceArchive, .shellBusy,
   ])).map(\.rawValue)
@@ -120,6 +124,28 @@ final class FakeAxodClient: AxodClient {
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
   { throw Unsupported() }
+
+  func listPeerSessions() async throws -> PeerSessionList { peers }
+
+  /// Opens a pane: the listed Session, now with `pane` as its shell.
+  var pane = TerminalShell(
+    id: 281_474_976_710_656, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s",
+    role: .pi)
+  func openPeerSession(_ sessionID: SessionID, on hostID: String) async throws -> PeerSession {
+    openedPeers.append(sessionID)
+    guard let listed = peers.sessions.first(where: { $0.session.id == sessionID }) else {
+      throw Unsupported()
+    }
+    let opened = PeerSession(hostId: hostID, session: listed.session.replacing(shells: [pane]))
+    peers = PeerSessionList(
+      connected: peers.connected, hosts: peers.hosts,
+      sessions: peers.sessions.map { $0.session.id == sessionID ? opened : $0 })
+    return opened
+  }
+
+  func closePeerSession(_ sessionID: SessionID, on hostID: String) async throws {
+    closedPeers.append(sessionID)
+  }
 
   struct Unsupported: Error {}
 }
@@ -310,7 +336,7 @@ final class TerminalCatalogTests: XCTestCase {
     let model = makeModel(client)
     await model.refresh()
 
-    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2])
+    XCTAssertEqual(Set(model.sidebarOrderedSessions.map(\.id)), [1, 2])
     XCTAssertTrue(model.commandAvailability.canNavigateSessions)
   }
 

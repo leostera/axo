@@ -114,6 +114,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const prompts = [];
   const keys = [];
   const stops = [];
+  let finishOnStop = null;
   let sessionCreateCount = 0;
   let authenticated = false;
   let pairingRequestCount = 0;
@@ -410,17 +411,27 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         setTimeout(() => {
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", timestamp: replyAt, content: [{ type: "text", text: "Working on it now" }] } } });
         }, 200);
-        setTimeout(() => {
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
           write(sessionId, { role: "assistant", timestamp: replyAt, content: [{ type: "text", text: `Done with: ${params.text}` }] });
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: null });
           status(sessionId, "ready");
-        }, params.text === "Ship it" ? 6_000 : 400);
+        };
+        // "Ship it" works until it is stopped, however slowly the page gets there.
+        if (params.text === "Ship it") {
+          finishOnStop = () => setTimeout(finish, 300);
+          setTimeout(finish, 20_000);
+        } else setTimeout(finish, 400);
       } else if (method === "axo.remote.session.key") {
         keys.push(params.key);
         reply({ accepted: true });
       } else if (method === "axo.remote.session.stop") {
         stops.push(params.turnId);
         reply({ stopped: true });
+        finishOnStop?.();
+        finishOnStop = null;
       } else {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32601, message: "unknown method" } }));
       }

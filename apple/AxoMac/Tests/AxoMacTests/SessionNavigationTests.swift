@@ -53,27 +53,6 @@ final class SessionNavigationTests: XCTestCase {
       ["now", "now", "2m", "2h", "2d", "2w"])
   }
 
-  func testSidebarOrderGroupsByWorkspaceOrderThenStandalone() {
-    let workspaces = [
-      WorkspaceRecord(workspaceId: "b", name: "B", directoryPath: "/"),
-      WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/"),
-    ]
-    let sessions = [session(1), session(2, workspace: "a"), session(3, workspace: "b")]
-    let sections = SidebarSections(sessions: sessions, workspaces: workspaces)
-    XCTAssertEqual(sections.ordered.map(\.id), [3, 2, 1])
-    XCTAssertEqual(sections.sessions(in: "a").map(\.id), [2])
-    XCTAssertEqual(sections.ungrouped.map(\.id), [1])
-  }
-
-  func testSidebarListsSessionsOfUnlistedWorkspacesWithTheStandaloneOnes() {
-    let workspaces = [WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/")]
-    let sessions = [session(1, workspace: "gone"), session(2, workspace: "a"), session(3)]
-    let sections = SidebarSections(sessions: sessions, workspaces: workspaces)
-    XCTAssertEqual(sections.ordered.map(\.id), [2, 1, 3])
-    XCTAssertEqual(sections.ungrouped.map(\.id), [1, 3])
-    XCTAssertEqual(sections.sessions(in: "gone").map(\.id), [])
-  }
-
   func testAdjacentIndexWrapsAndStartsAtEnds() {
     XCTAssertEqual(SessionNavigation.adjacentIndex(from: 2, count: 3, direction: .next), 0)
     XCTAssertEqual(SessionNavigation.adjacentIndex(from: 0, count: 3, direction: .previous), 2)
@@ -148,11 +127,8 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     ]
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await model.refresh()
-    XCTAssertEqual(model.sidebarMode, .workspaces)
-    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3])
-
-    model.setSidebarMode(.recent)
-    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1])
+    XCTAssertEqual(model.sidebarMacs, .thisMac)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1], "latest activity first")
     model.showSession(2)
     model.showNextSession()
     XCTAssertEqual(model.selectedSessionID, 3)
@@ -170,8 +146,62 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     model.showNextSession()
     XCTAssertEqual(model.selectedSessionID, 2)
 
+    model.setSidebarMacs(.all)
     let reopened = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
-    XCTAssertEqual(reopened.sidebarMode, .recent)
+    XCTAssertEqual(reopened.sidebarMacs, .all)
+  }
+
+  func testOtherMacsSessionsAreListedByMacAndShowingOneOpensAPaneOnIt() async throws {
+    let suiteName = "axo-sidebar-macs-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let client = FakeAxodClient()
+    client.methods.append(AxodMethodName.peerSessionsList.rawValue)
+    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100)]
+    let studio = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7"
+    client.peers = PeerSessionList(
+      connected: true, hosts: [PeerHost(hostId: studio, label: "Mac Studio", online: true)],
+      sessions: [
+        PeerSession(
+          hostId: studio,
+          session: TerminalSession(id: 9, initialPwd: "/", shells: [], name: "Fix it", lastMessageAt: 200))
+      ])
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1], "this Mac's, at first")
+    model.setSidebarMacs(.mac(studio))
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [9])
+    XCTAssertEqual(model.sidebarMacsTitle, "Mac Studio")
+    model.setSidebarMacs(.all)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [9, 1])
+    XCTAssertEqual(model.hostLabel(for: 9), "Mac Studio")
+    XCTAssertNil(model.hostLabel(for: 1))
+
+    // Shown, it gets a pane on this Mac, which selects and attaches like any.
+    model.showSession(9)
+    for _ in 0..<100 where model.session(for: 9)?.shells.isEmpty != false {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    XCTAssertEqual(client.openedPeers, [9])
+    XCTAssertEqual(model.session(for: 9)?.shells.map(\.id), [client.pane.id])
+    XCTAssertEqual(model.selectedSessionID, 9)
+
+    // It is not this Mac's to rename or archive: closing it closes only the pane here.
+    do {
+      try await model.renameSession(9, to: "Mine")
+      XCTFail("another Mac's Session was renamed here")
+    } catch {}
+    await model.requestCloseSession(9)
+    XCTAssertEqual(client.closedPeers, [9])
+
+    // A list that no longer has the Mac shown goes back to this Mac.
+    client.peers = PeerSessionList(
+      connected: true, hosts: [PeerHost(hostId: "8f8f8f8f-0000-4000-8000-000000000009", label: "Air", online: false)],
+      sessions: [])
+    model.setSidebarMacs(.mac(studio))
+    _ = await model.apply(.peerSessionsChanged)
+    XCTAssertEqual(model.sidebarMacs, .thisMac)
+    XCTAssertNil(model.session(for: 9))
   }
 
   func testUnchangedCatalogEventDoesNotRepublish() async {

@@ -140,6 +140,21 @@ public final class AxodConnection: Sendable {
     try await call(AxodMethods.sessionClose, CloseTerminalSessionRequest(sessionId: sessionID))
   }
 
+  /// The other Macs' Sessions, as this Mac follows them (RFD0024).
+  public func listPeerSessions() async throws -> PeerSessionList {
+    try await call(AxodMethods.peerSessionsList)
+  }
+
+  /// Opens a pane on another Mac's Session here, or returns the one already open.
+  public func openPeerSession(_ sessionID: SessionID, on hostID: String) async throws -> PeerSession {
+    try await call(AxodMethods.peerSessionOpen, PeerSessionRequest(hostId: hostID, sessionId: sessionID))
+  }
+
+  /// Stops this Mac's pane on another Mac's Session; the Session itself carries on there.
+  public func closePeerSession(_ sessionID: SessionID, on hostID: String) async throws {
+    _ = try await call(AxodMethods.peerSessionClose, PeerSessionRequest(hostId: hostID, sessionId: sessionID))
+  }
+
   /// Reopens the Session most recently closed on this Mac. Axod rejects it with
   /// `sessionNotReopenedCode` when no closed Session can be reopened.
   public func reopenClosedSession() async throws -> TerminalSession {

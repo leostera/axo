@@ -28,4 +28,8 @@ public enum AxodMethodName: String, CaseIterable, Sendable {
   case shellClose = "axo.shell.close"
   case shellBusy = "axo.shell.busy"
   case clientViewportSet = "axo.client.viewport.set"
+  /// Other Macs' Sessions, opened here in a pane (RFD0024).
+  case peerSessionsList = "axo.peer.sessions.list"
+  case peerSessionOpen = "axo.peer.session.open"
+  case peerSessionClose = "axo.peer.session.close"
 }

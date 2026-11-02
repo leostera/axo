@@ -58,6 +58,15 @@ struct CloseTerminalSessionRequest: Encodable {
   let sessionId: SessionID
 }
 
+struct PeerSessionRequest: Encodable {
+  let hostId: String
+  let sessionId: SessionID
+}
+
+struct PeerSessionClosed: Decodable {
+  let closed: Bool
+}
+
 struct RestartPiSessionRequest: Encodable {
   let sessionId: SessionID
   let shellId: ShellID
@@ -141,6 +150,10 @@ enum AxodMethods {
   static let sessionCreate = AxodMethod<NoParams, TerminalSession>(.sessionCreate)
   static let sessionClose = AxodMethod<CloseTerminalSessionRequest, ClosedTerminalSession>(.sessionClose)
   static let sessionRename = AxodMethod<SessionRenameRequest, TerminalSession>(.sessionRename)
+  static let peerSessionsList = AxodMethod<NoParams, PeerSessionList>(.peerSessionsList)
+  /// Starts Pi in remote mode for the Session before answering.
+  static let peerSessionOpen = AxodMethod<PeerSessionRequest, PeerSession>(.peerSessionOpen, timeout: .seconds(20))
+  static let peerSessionClose = AxodMethod<PeerSessionRequest, PeerSessionClosed>(.peerSessionClose, timeout: .seconds(10))
   /// Starts the Session's terminals and resumes its Pi before answering.
   static let sessionReopen = AxodMethod<NoParams, TerminalSession>(.sessionReopen, timeout: .seconds(20))
   static let sessionLayoutSet = AxodMethod<SetSessionLayoutRequest, SessionLayoutAcknowledgement>(.sessionLayoutSet)

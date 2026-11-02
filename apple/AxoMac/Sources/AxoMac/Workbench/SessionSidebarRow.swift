@@ -1,48 +1,72 @@
 import AxoProtocol
 import SwiftUI
 
-/// The sidebar's header: what it lists, a switch between the Workspace tree and the recent
-/// list, and in the tree a button to create a Workspace.
+/// The sidebar's header: a menu of which Macs' Sessions it lists (this Mac, each other Mac,
+/// or all of them), and a button to create a Workspace.
 struct SidebarHeader: View {
-  let mode: SidebarMode
+  let title: String
+  let selection: SidebarMacs
+  let hosts: [PeerHost]
   let topPadding: CGFloat
-  let onSelectMode: (SidebarMode) -> Void
+  let onSelect: (SidebarMacs) -> Void
   let onNewWorkspace: () -> Void
 
   var body: some View {
     HStack(spacing: 2) {
-      Text(mode == .workspaces ? "Workspaces" : "Recent")
-        .font(.system(size: 12, weight: .semibold))
+      Menu {
+        choice("This Mac", .thisMac)
+        if !hosts.isEmpty {
+          Divider()
+          ForEach(hosts) { host in
+            choice(host.online ? host.label : "\(host.label) (offline)", .mac(host.hostId))
+          }
+          Divider()
+          choice("All Macs", .all)
+        }
+      } label: {
+        HStack(spacing: 3) {
+          Text(title)
+            .font(.system(size: 12, weight: .semibold))
+          Image(systemName: "chevron.down")
+            .font(.system(size: 8, weight: .semibold))
+        }
         .foregroundStyle(.secondary)
+      }
+      .menuStyle(.button)
+      .buttonStyle(.plain)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .help("Choose which Macs' Sessions to list")
+      .accessibilityLabel("Sessions on \(title)")
+      .accessibilityIdentifier("sidebar-macs-menu")
       Spacer(minLength: 0)
-      let other: SidebarMode = mode == .workspaces ? .recent : .workspaces
-      Button { onSelectMode(other) } label: {
-        Image(systemName: mode == .workspaces ? "clock" : "list.bullet.indent")
+      Button(action: onNewWorkspace) {
+        Image(systemName: "plus")
           .font(.system(size: 11, weight: .semibold))
           .frame(width: 18, height: 18)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help(other == .recent ? "List Sessions by recent activity" : "Group Sessions by Workspace")
-      .accessibilityLabel(other == .recent ? "Show recent Sessions" : "Show Workspaces")
-      .accessibilityIdentifier("sidebar-mode-button")
-      if mode == .workspaces {
-        Button(action: onNewWorkspace) {
-          Image(systemName: "plus")
-            .font(.system(size: 11, weight: .semibold))
-            .frame(width: 18, height: 18)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Create a Workspace (⌘N)")
-        .accessibilityLabel("New Workspace")
-        .accessibilityIdentifier("new-workspace-button")
-      }
+      .help("Create a Workspace (⌘N)")
+      .accessibilityLabel("New Workspace")
+      .accessibilityIdentifier("new-workspace-button")
     }
     .padding(.horizontal, 8)
     .padding(.top, topPadding)
     .padding(.bottom, 2)
     .frame(height: 22 + topPadding)
+  }
+
+  private func choice(_ label: String, _ macs: SidebarMacs) -> some View {
+    Button {
+      onSelect(macs)
+    } label: {
+      if selection == macs {
+        Label(label, systemImage: "checkmark")
+      } else {
+        Text(label)
+      }
+    }
   }
 }
 
@@ -51,6 +75,8 @@ struct SessionSidebarRow: View {
   let isSelected: Bool
   /// Shows how long ago the Session was last active, as the recent list does.
   var showsAge = false
+  /// The other Mac the Session runs on, shown when the list mixes Macs.
+  var hostLabel: String? = nil
   @Environment(GhosttyRuntime.self) private var ghostty
 
   var body: some View {
@@ -67,6 +93,12 @@ struct SessionSidebarRow: View {
         .lineLimit(1)
         .truncationMode(.tail)
       Spacer(minLength: 0)
+      if let hostLabel {
+        Text(hostLabel)
+          .font(.system(size: 10))
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+      }
       if showsAge {
         // Ages only need to move once a minute.
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -85,7 +117,9 @@ struct SessionSidebarRow: View {
     )
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(session.displayName), \(status.accessibilityDescription)")
+    .accessibilityLabel(
+      [session.displayName, hostLabel.map { "on \($0)" }, status.accessibilityDescription]
+        .compactMap { $0 }.joined(separator: ", "))
   }
 }
 

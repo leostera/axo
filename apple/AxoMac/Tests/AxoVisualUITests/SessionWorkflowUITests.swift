@@ -187,22 +187,10 @@ extension AxoVisualUITests {
     )
     XCTAssertTrue(
       app.descendants(matching: .any)
-        .matching(identifier: "workspace-row-\(workspaceID)").firstMatch
-        .waitForExistence(timeout: 3),
-      "The new Workspace should appear in the sidebar."
-    )
-    XCTAssertTrue(
-      app.descendants(matching: .any)
         .matching(identifier: "session-row-\(original.id)").firstMatch
         .waitForExistence(timeout: 3),
       "The Workspace's first Session should appear in the sidebar immediately."
     )
-    let workspaceRow = app.descendants(matching: .any)
-      .matching(identifier: "workspace-row-\(workspaceID)").firstMatch
-    workspaceRow.rightClick()
-    XCTAssertTrue(app.menuItems["Rename Workspace"].waitForExistence(timeout: 3))
-    XCTAssertTrue(app.menuItems["Archive Workspace and Sessions"].exists)
-    app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
 
     let originalShell = try XCTUnwrap(original.shells.first)
     let transcriptPath = try XCTUnwrap(original.piSessionFile)
