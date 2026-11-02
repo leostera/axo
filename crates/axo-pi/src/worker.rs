@@ -48,12 +48,38 @@ pub trait BridgeHost {
 }
 
 /// A command for the Pi a worker follows, and where its answer goes.
-enum WorkerCommand {
+struct WorkerCommand {
+    action: OwnedAction,
+    reply: mpsc::Sender<io::Result<CommandResult>>,
+}
+
+/// An [`Action`] that owns its strings, to cross to the worker's thread.
+enum OwnedAction {
     Send {
         text: String,
         delivery: Option<QueuedDelivery>,
-        reply: mpsc::Sender<io::Result<CommandResult>>,
+        command_id: Option<String>,
     },
+    Stop {
+        turn_id: String,
+    },
+}
+
+impl OwnedAction {
+    fn borrowed(&self) -> Action<'_> {
+        match self {
+            Self::Send {
+                text,
+                delivery,
+                command_id,
+            } => Action::Send {
+                text,
+                delivery: *delivery,
+                command_id: command_id.as_deref(),
+            },
+            Self::Stop { turn_id } => Action::Stop { turn_id },
+        }
+    }
 }
 
 /// Sends commands to a running Pi over its worker's bridge connection. Pi's bridge serves one
@@ -82,21 +108,37 @@ impl CommandSender {
         &self,
         text: &str,
         delivery: Option<QueuedDelivery>,
+        command_id: Option<&str>,
         timeout: Duration,
     ) -> io::Result<CommandResult> {
-        let (reply, answer) = mpsc::channel();
-        self.0
-            .send(WorkerCommand::Send {
+        self.command(
+            OwnedAction::Send {
                 text: text.to_owned(),
                 delivery,
-                reply,
-            })
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    "Pi's bridge worker has stopped",
-                )
-            })?;
+                command_id: command_id.map(str::to_owned),
+            },
+            timeout,
+        )
+    }
+
+    /// Stops the running turn if `turn_id` is one of its user records; see [`Action::Stop`].
+    pub fn stop_turn(&self, turn_id: &str, timeout: Duration) -> io::Result<CommandResult> {
+        self.command(
+            OwnedAction::Stop {
+                turn_id: turn_id.to_owned(),
+            },
+            timeout,
+        )
+    }
+
+    fn command(&self, action: OwnedAction, timeout: Duration) -> io::Result<CommandResult> {
+        let (reply, answer) = mpsc::channel();
+        self.0.send(WorkerCommand { action, reply }).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "Pi's bridge worker has stopped",
+            )
+        })?;
         answer.recv_timeout(timeout).unwrap_or_else(|_| {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -109,7 +151,7 @@ impl CommandSender {
 impl CommandReceiver {
     /// Refuses every command waiting now: there is no bound connection to send it on.
     fn refuse_waiting(&self) {
-        while let Ok(WorkerCommand::Send { reply, .. }) = self.0.try_recv() {
+        while let Ok(WorkerCommand { reply, .. }) = self.0.try_recv() {
             let _ = reply.send(Err(not_bound()));
         }
     }
@@ -252,12 +294,7 @@ fn send_waiting(
         commands.refuse_waiting();
         return true;
     }
-    while let Ok(WorkerCommand::Send {
-        text,
-        delivery,
-        reply,
-    }) = commands.0.try_recv()
-    {
+    while let Ok(WorkerCommand { action, reply }) = commands.0.try_recv() {
         let request_id = match axo_protocol::new_uuid_v4() {
             Ok(uuid) => format!("axod-{uuid}"),
             Err(error) => {
@@ -268,10 +305,7 @@ fn send_waiting(
         let command = Outgoing::Command {
             request_id: &request_id,
             axo_session_id: session_uuid,
-            action: Action::Send {
-                text: &text,
-                delivery,
-            },
+            action: action.borrowed(),
         };
         if let Err(error) = bridge::write_record(stream, &command) {
             let _ = reply.send(Err(error));

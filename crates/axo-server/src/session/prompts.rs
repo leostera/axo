@@ -20,6 +20,7 @@ use axo_pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
 use axo_pi::worker::CommandSender;
 use axo_protocol::rpc::{PromptAccepted, PromptDelivery, PromptSession};
 use axo_protocol::{PaneRole, SessionId, ShellId};
+use axo_relay::{CommandId, TurnId};
 
 pub(super) const MAX_PI_PROMPT_BYTES: usize = 16_000;
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
@@ -33,6 +34,7 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 pub(super) struct QueuedPrompt {
     text: String,
     delivery: PromptDelivery,
+    command_id: Option<CommandId>,
 }
 
 /// What each Session's agent has sent, for rate limits.
@@ -122,18 +124,50 @@ const PROMPT_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 struct PiBridge(CommandSender);
 
 impl PiBridge {
-    fn send(&self, text: &str, delivery: PromptDelivery) -> Result<(), PromptError> {
+    /// With a `command_id`, pi-axo takes the prompt at most once, with a receipt (RFD0024). A Pi
+    /// still running an older pi-axo refuses the field as invalid: it gets the prompt without it.
+    fn send(
+        &self,
+        text: &str,
+        delivery: PromptDelivery,
+        command_id: Option<&CommandId>,
+    ) -> Result<(), PromptError> {
         let delivery_on_bridge = match delivery {
             PromptDelivery::Steer => Some(QueuedDelivery::Steer),
             PromptDelivery::FollowUp => Some(QueuedDelivery::FollowUp),
             PromptDelivery::Turn => None,
         };
-        match self
-            .0
-            .send_message(text, delivery_on_bridge, PROMPT_ANSWER_TIMEOUT)
+        let mut answer = self.0.send_message(
+            text,
+            delivery_on_bridge,
+            command_id.map(CommandId::as_str),
+            PROMPT_ANSWER_TIMEOUT,
+        );
+        if command_id.is_some()
+            && matches!(answer, Ok(CommandResult::Rejected(RejectReason::Invalid)))
         {
+            log::warn!("event=session.pi_prompt_without_receipt reason=older_pi_axo");
+            answer = self
+                .0
+                .send_message(text, delivery_on_bridge, None, PROMPT_ANSWER_TIMEOUT);
+        }
+        match answer {
             Ok(CommandResult::Accepted) => Ok(()),
             Ok(CommandResult::Rejected(RejectReason::Busy)) => Err(PromptError::Busy),
+            Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(
+                format!("{reason:?}").to_lowercase(),
+            )),
+            Err(error) => Err(PromptError::Unavailable(error.to_string())),
+        }
+    }
+
+    /// Whether the turn `turn_id` names was running and is stopping; `None` from an older pi-axo,
+    /// which cannot stop a named turn.
+    fn stop(&self, turn_id: &TurnId) -> Result<Option<bool>, PromptError> {
+        match self.0.stop_turn(turn_id.as_str(), PROMPT_ANSWER_TIMEOUT) {
+            Ok(CommandResult::Accepted) => Ok(Some(true)),
+            Ok(CommandResult::Rejected(RejectReason::Idle)) => Ok(Some(false)),
+            Ok(CommandResult::Rejected(RejectReason::Invalid)) => Ok(None),
             Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(
                 format!("{reason:?}").to_lowercase(),
             )),
@@ -170,6 +204,15 @@ impl SessionManager {
         &self,
         request: &PromptSession,
     ) -> Result<PromptAccepted, PromptError> {
+        self.prompt_session_as(request, None)
+    }
+
+    /// [`Self::prompt_session`], for a client's prompt that carries its `command_id`.
+    fn prompt_session_as(
+        &self,
+        request: &PromptSession,
+        command_id: Option<&CommandId>,
+    ) -> Result<PromptAccepted, PromptError> {
         let PromptSession {
             session_id: target,
             ref text,
@@ -181,7 +224,7 @@ impl SessionManager {
                 "a prompt must contain 1 to 16000 bytes of text",
             ));
         }
-        let (bridge, text) = match self.admit_prompt(target, text, delivery, from) {
+        let (bridge, text) = match self.admit_prompt(target, text, delivery, from, command_id) {
             Ok(Admitted::Queued) => {
                 log_prompt(target, from, delivery, "queued");
                 return Ok(PromptAccepted {
@@ -195,7 +238,7 @@ impl SessionManager {
                 return Err(error);
             }
         };
-        let sent = bridge.send(&text, delivery);
+        let sent = bridge.send(&text, delivery, command_id);
         log_prompt(
             target,
             from,
@@ -217,6 +260,7 @@ impl SessionManager {
         text: &str,
         delivery: PromptDelivery,
         from: Option<SessionId>,
+        command_id: Option<&CommandId>,
     ) -> Result<Admitted, PromptError> {
         let mut state = self
             .lock_state()
@@ -251,7 +295,11 @@ impl SessionManager {
             if queue.len() >= MAX_QUEUED_PI_PROMPTS {
                 return Err(PromptError::QueueFull);
             }
-            queue.push(QueuedPrompt { text, delivery });
+            queue.push(QueuedPrompt {
+                text,
+                delivery,
+                command_id: command_id.cloned(),
+            });
             return Ok(Admitted::Queued);
         }
         let bridge = pi_bridge(&state, target)
@@ -259,17 +307,52 @@ impl SessionManager {
         Ok(Admitted::Send { bridge, text })
     }
 
-    /// A person away from the Mac prompts the Session's Pi. Arriving while Pi works, it steers,
-    /// as Enter in Pi's editor would.
-    pub(super) fn prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()> {
-        self.prompt_session(&PromptSession {
-            session_id,
-            text: text.to_owned(),
-            delivery: PromptDelivery::Steer,
-            from_session_id: None,
-        })
+    /// A person away from the Mac prompts the Session's Pi. With a `command_id`, pi-axo holds it
+    /// while Pi works (RFD0024); without one, or for an older pi-axo, it steers, as Enter in Pi's
+    /// editor would.
+    pub(super) fn prompt_pi(
+        &self,
+        session_id: SessionId,
+        text: &str,
+        command_id: Option<&CommandId>,
+    ) -> io::Result<()> {
+        self.prompt_session_as(
+            &PromptSession {
+                session_id,
+                text: text.to_owned(),
+                delivery: PromptDelivery::Steer,
+                from_session_id: None,
+            },
+            command_id,
+        )
         .map(drop)
         .map_err(io::Error::from)
+    }
+
+    /// Stops the Session's running turn if it is the one `turn_id` names, and says whether it
+    /// did. An older pi-axo cannot tell turns apart: it gets Escape, as before.
+    pub(super) fn stop_pi_turn(&self, session_id: SessionId, turn_id: &TurnId) -> io::Result<bool> {
+        let bridge = {
+            let state = self.lock_state()?;
+            pi_bridge(&state, session_id)?
+        };
+        match bridge.stop(turn_id).map_err(io::Error::from)? {
+            Some(stopped) => {
+                log::info!(
+                    "event=session.pi_turn_stop session_id={} stopped={stopped}",
+                    session_id
+                );
+                Ok(stopped)
+            }
+            None => {
+                log::warn!(
+                    "event=session.pi_turn_stop session_id={} outcome=escape reason=older_pi_axo",
+                    session_id
+                );
+                self.press_pi_key(session_id, axo_relay::PiKey::Escape)
+                    .map(|()| true)
+            }
+        }
     }
 
     /// Sends the prompts that waited for the Session's Pi to finish starting, oldest first, on a
@@ -291,7 +374,9 @@ impl SessionManager {
             .name(format!("axo-pi-prompts-{}", session_id))
             .spawn(move || {
                 for prompt in queue {
-                    if let Err(error) = bridge.send(&prompt.text, prompt.delivery) {
+                    if let Err(error) =
+                        bridge.send(&prompt.text, prompt.delivery, prompt.command_id.as_ref())
+                    {
                         log::warn!(
                             "event=session.pi_prompt_lost session_id={} reason={}",
                             session_id,

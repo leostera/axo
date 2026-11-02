@@ -5,6 +5,8 @@ export const MAX_BRIDGE_RECORD_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT_BYTES = 64 * 1024;
 const ID_PATTERN = /^[a-zA-Z0-9._:-]{1,128}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+/** A client's commandId: any hyphenated hexadecimal UUID, as axod checks it. */
+const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 export interface PiSessionIdentity {
   axoSessionId: string;
@@ -16,8 +18,14 @@ export interface PiSessionIdentity {
 }
 
 export type PiControlAction =
-  | { kind: "send"; text: string; delivery?: "steer" | "followUp" }
+  /**
+   * A prompt. With a `commandId` (a client's, RFD0024) it is taken at most once, recorded in the
+   * log with a receipt, and held by pi-axo while Pi works, whatever `delivery` says.
+   */
+  | { kind: "send"; text: string; delivery?: "steer" | "followUp"; commandId?: string }
   | { kind: "cancel" }
+  /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
+  | { kind: "stop"; turnId: string }
   | { kind: "shutdown" }
   | { kind: "shutdownIfIdle" };
 
@@ -89,12 +97,21 @@ function parseAction(value: unknown): PiControlAction | null {
   if (!isRecord(value) || typeof value.kind !== "string") return null;
 
   if (value.kind === "send") {
-    if (!hasOnlyKeys(value, ["kind", "text", "delivery"]) || typeof value.text !== "string") return null;
+    if (!hasOnlyKeys(value, ["kind", "text", "delivery", "commandId"]) || typeof value.text !== "string") return null;
     if (new TextEncoder().encode(value.text).byteLength > MAX_TEXT_BYTES || value.text.length === 0) return null;
     if (value.delivery !== undefined && value.delivery !== "steer" && value.delivery !== "followUp") return null;
-    return value.delivery === undefined
-      ? { kind: "send", text: value.text }
-      : { kind: "send", text: value.text, delivery: value.delivery };
+    if (value.commandId !== undefined && (typeof value.commandId !== "string" || !COMMAND_ID_PATTERN.test(value.commandId))) return null;
+    return {
+      kind: "send",
+      text: value.text,
+      ...(value.delivery === undefined ? {} : { delivery: value.delivery }),
+      ...(value.commandId === undefined ? {} : { commandId: value.commandId.toLowerCase() }),
+    };
+  }
+
+  if (value.kind === "stop") {
+    if (!hasOnlyKeys(value, ["kind", "turnId"]) || !isRequestId(value.turnId)) return null;
+    return { kind: "stop", turnId: value.turnId };
   }
 
   if (value.kind === "cancel" && hasOnlyKeys(value, ["kind"])) {

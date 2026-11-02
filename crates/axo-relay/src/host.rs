@@ -9,6 +9,55 @@ use axo_protocol::{
 
 use crate::sync::{StoredSyncState, SyncSession};
 
+/// A client's id for one command (RFD0024): a hyphenated hexadecimal UUID, kept lowercase. The
+/// Pi that owns the Session takes a prompt with a given id at most once.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(try_from = "String")]
+pub struct CommandId(String);
+
+impl CommandId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CommandId {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if axo_protocol::is_uuid(&value) {
+            Ok(Self(value.to_ascii_lowercase()))
+        } else {
+            Err("a commandId is a UUID")
+        }
+    }
+}
+
+/// The entry id of a user record in a Session's Pi log, naming the turn it belongs to: 1 to 128
+/// letters, digits or `._:-`, as pi-axo checks it.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(try_from = "String")]
+pub struct TurnId(String);
+
+impl TurnId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TurnId {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let allowed = |byte: u8| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte);
+        if (1..=128).contains(&value.len()) && value.bytes().all(allowed) {
+            Ok(Self(value))
+        } else {
+            Err("a turnId is an entry id of the Session's log")
+        }
+    }
+}
+
 /// A key a remote person presses in a Session's Pi: what answering it on the Mac would take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,7 +137,17 @@ pub trait RelayHost: Send + Sync {
     ) -> io::Result<()>;
     /// Sends `text` to the Session's Pi as a prompt, as if typed and submitted in its pane.
     /// Fails with `InvalidInput` for empty or oversized text, and `NotFound` if Pi is not running.
-    fn remote_prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()>;
+    /// With a `command_id`, the prompt is taken at most once and written after a receipt
+    /// (RFD0024).
+    fn remote_prompt_pi(
+        &self,
+        session_id: SessionId,
+        text: &str,
+        command_id: Option<&CommandId>,
+    ) -> io::Result<()>;
+    /// Stops the Session's running turn if it is the one `turn_id` names; says whether it did.
+    /// Fails with `NotFound` if Pi is not running.
+    fn remote_stop_pi_turn(&self, session_id: SessionId, turn_id: &TurnId) -> io::Result<bool>;
     /// Presses `key` in the Session's Pi pane. Fails with `NotFound` if Pi is not running.
     fn remote_press_pi_key(&self, session_id: SessionId, key: PiKey) -> io::Result<()>;
     fn remote_terminal_resize(
@@ -98,4 +157,32 @@ pub trait RelayHost: Send + Sync {
         rows: u32,
         columns: u32,
     ) -> io::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_command_id_is_a_uuid_kept_lowercase() {
+        let id: CommandId =
+            serde_json::from_value(serde_json::json!("6F1D2C3B-4A5E-4F60-8A7B-9C0D1E2F3A4B"))
+                .unwrap();
+        assert_eq!(id.as_str(), "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b");
+        for bad in ["", "not-a-uuid", "6f1d2c3b4a5e4f608a7b9c0d1e2f3a4b"] {
+            assert!(serde_json::from_value::<CommandId>(serde_json::json!(bad)).is_err());
+        }
+    }
+
+    #[test]
+    fn a_turn_id_is_an_entry_id() {
+        for good in ["a1b2c3d4", "turn-1", "x:y.z_w"] {
+            let id: TurnId = serde_json::from_value(serde_json::json!(good)).unwrap();
+            assert_eq!(id.as_str(), good);
+        }
+        let long = "a".repeat(129);
+        for bad in ["", "two words", "slash/no", long.as_str()] {
+            assert!(serde_json::from_value::<TurnId>(serde_json::json!(bad)).is_err());
+        }
+    }
 }

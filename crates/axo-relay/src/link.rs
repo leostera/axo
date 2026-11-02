@@ -336,7 +336,19 @@ pub(crate) mod testing {
         ) -> std::io::Result<()> {
             unreachable!()
         }
-        fn remote_prompt_pi(&self, _: axo_protocol::SessionId, _: &str) -> std::io::Result<()> {
+        fn remote_prompt_pi(
+            &self,
+            _: axo_protocol::SessionId,
+            _: &str,
+            _: Option<&crate::CommandId>,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_stop_pi_turn(
+            &self,
+            _: axo_protocol::SessionId,
+            _: &crate::TurnId,
+        ) -> std::io::Result<bool> {
             unreachable!()
         }
         fn remote_press_pi_key(

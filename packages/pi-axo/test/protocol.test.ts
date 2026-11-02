@@ -102,3 +102,33 @@ test("accepts a complete local Pi binding and rejects malformed identity fields"
   assert.equal(parsePiSessionIdentity({ ...identity, sessionFile: "relative/session.jsonl" }), null);
   assert.equal(parsePiSessionIdentity({ ...identity, cwd: "/projects/axo\0private" }), null);
 });
+
+test("parses a client's prompt with its commandId, and a stop naming its turn (RFD0024)", () => {
+  const commandId = "6F1D2C3B-4A5E-4F60-8A7B-9C0D1E2F3A4B";
+  assert.deepEqual(parsePiControlCommand({
+    type: "command",
+    requestId: "prompt-1",
+    axoSessionId: sessionId,
+    action: { kind: "send", text: "yes", delivery: "steer", commandId },
+  }, sessionId), {
+    ok: true,
+    command: { requestId: "prompt-1", axoSessionId: sessionId, action: { kind: "send", text: "yes", delivery: "steer", commandId: commandId.toLowerCase() } },
+  });
+  assert.deepEqual(parsePiControlCommand({
+    type: "command",
+    requestId: "stop-1",
+    axoSessionId: sessionId,
+    action: { kind: "stop", turnId: "a1b2c3d4" },
+  }, sessionId), {
+    ok: true,
+    command: { requestId: "stop-1", axoSessionId: sessionId, action: { kind: "stop", turnId: "a1b2c3d4" } },
+  });
+  for (const action of [
+    { kind: "send", text: "yes", commandId: "not-a-uuid" },
+    { kind: "stop" },
+    { kind: "stop", turnId: "has spaces" },
+    { kind: "stop", turnId: "a1", extra: true },
+  ]) {
+    assert.deepEqual(parsePiControlCommand({ type: "command", requestId: "bad-1", axoSessionId: sessionId, action }, sessionId), { ok: false, reason: "invalid" });
+  }
+});

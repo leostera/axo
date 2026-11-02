@@ -1050,6 +1050,10 @@ enum RemoteResult {
     KeyAccepted {
         accepted: bool,
     },
+    /// Whether the turn the stop named was running, and is now stopping.
+    Stopped {
+        stopped: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -1066,6 +1070,16 @@ struct PromptParams {
     target: HostRef,
     session_id: SessionId,
     text: String,
+    #[serde(default)]
+    command_id: Option<crate::CommandId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StopParams {
+    target: HostRef,
+    session_id: SessionId,
+    turn_id: crate::TurnId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1280,9 +1294,21 @@ fn dispatch_remote_call(
             let request = parsed!(PromptParams);
             target_ok!(request.target);
             sessions
-                .remote_prompt_pi(request.session_id, &request.text)
+                .remote_prompt_pi(
+                    request.session_id,
+                    &request.text,
+                    request.command_id.as_ref(),
+                )
                 .map_err(map_operation_error)?;
             Ok(RemoteResult::PromptAccepted { accepted: true })
+        }
+        "axo.remote.session.stop" => {
+            let request = parsed!(StopParams);
+            target_ok!(request.target);
+            let stopped = sessions
+                .remote_stop_pi_turn(request.session_id, &request.turn_id)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::Stopped { stopped })
         }
         "axo.remote.session.key" => {
             let request = parsed!(KeyParams);

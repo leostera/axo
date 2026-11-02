@@ -77,6 +77,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       getSessionFile: () => "/private/axo/pi-session-1.jsonl",
       getSessionName: () => undefined,
       getBranch: () => [],
+      getEntries: () => [],
     },
   } as unknown as ExtensionContext;
 

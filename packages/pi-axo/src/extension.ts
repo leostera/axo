@@ -5,6 +5,7 @@ import { parsePiSessionIdentity, type PiControlCommand, type PiSessionIdentity }
 import { installAxoSessionNaming } from "./title.js";
 import { registerShareCommand } from "./share-command.js";
 import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
+import { RECEIPT_ENTRY, RemoteCommands } from "./remote-commands.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -49,6 +50,14 @@ function errorCode(error: unknown): string {
 export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExtensionConfig): Promise<void> {
   let context: ExtensionContext | undefined;
   let identity: PiSessionIdentity | undefined;
+  const remote = new RemoteCommands({
+    isIdle: () => context?.isIdle() ?? true,
+    entries: () => context?.sessionManager.getEntries() ?? [],
+    appendReceipt: receipt => pi.appendEntry(RECEIPT_ENTRY, receipt),
+    prompt: text => pi.sendUserMessage(text),
+    abort: () => context?.abort(),
+    now: () => Date.now(),
+  });
   const handleCommand = async (command: PiControlCommand) => {
     const activeContext = context;
     if (activeContext === undefined || identity?.axoSessionId !== command.axoSessionId) {
@@ -67,6 +76,19 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       if (!activeContext.isIdle()) activeContext.abort();
       setImmediate(() => activeContext.shutdown());
       return { accepted: true as const };
+    }
+
+    if (command.action.kind === "stop") {
+      return remote.stop(command.action.turnId) === "stopped"
+        ? { accepted: true as const }
+        : { accepted: false as const, reason: "idle" as const };
+    }
+
+    // A client's prompt (RFD0024): taken at most once, with a receipt, held while Pi works.
+    if (command.action.kind === "send" && command.action.commandId !== undefined) {
+      return remote.prompt(command.action.commandId, command.action.text) === "busy"
+        ? { accepted: false as const, reason: "busy" as const }
+        : { accepted: true as const };
     }
 
     if (command.action.kind === "cancel") {
@@ -134,6 +156,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       return;
     }
     identity = nextIdentity;
+    remote.restore();
 
     if (!bridgeAvailable) {
       notifyBridgeFailure(sessionContext, "socket listener did not start");
@@ -192,13 +215,19 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   });
   pi.on("turn_start", event => publish("turn.start", event));
   pi.on("turn_end", event => publish("turn.end", turnEndEvent(event)));
-  pi.on("agent_start", () => publish("agent.start", {}));
+  pi.on("agent_start", () => {
+    remote.runStarted();
+    return publish("agent.start", {});
+  });
   // The run's messages already went out one by one; repeating them could exceed the wire's limit.
   pi.on("agent_end", () => {
     progress.finishAll();
     return publish("agent.end", {});
   });
-  pi.on("agent_settled", event => publish("agent.settled", event));
+  pi.on("agent_settled", event => {
+    remote.settled();
+    return publish("agent.settled", event);
+  });
   pi.on("tool_execution_start", event => publish("tool.start", toolEvent(event)));
   pi.on("tool_execution_update", event => progress.offer("tool.update", event.toolCallId, toolEvent(event)));
   pi.on("tool_execution_end", event => {

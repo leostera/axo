@@ -225,8 +225,21 @@ impl axo_relay::RelayHost for RelayHostAdapter {
             .write_terminal_input(session_id, shell_id, sequence, data)
     }
 
-    fn remote_prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()> {
-        self.0.prompt_pi(session_id, text)
+    fn remote_prompt_pi(
+        &self,
+        session_id: SessionId,
+        text: &str,
+        command_id: Option<&axo_relay::CommandId>,
+    ) -> io::Result<()> {
+        self.0.prompt_pi(session_id, text, command_id)
+    }
+
+    fn remote_stop_pi_turn(
+        &self,
+        session_id: SessionId,
+        turn_id: &axo_relay::TurnId,
+    ) -> io::Result<bool> {
+        self.0.stop_pi_turn(session_id, turn_id)
     }
 
     fn remote_press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {

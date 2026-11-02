@@ -56,7 +56,11 @@ pub enum Outgoing<'a> {
 
 /// What a command asks Pi to do.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Action<'a> {
     /// Exit now, aborting any turn in progress.
     Shutdown,
@@ -68,7 +72,15 @@ pub enum Action<'a> {
         text: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         delivery: Option<QueuedDelivery>,
+        /// A client's prompt (RFD0024): Pi takes it at most once, writes a receipt before it, and
+        /// holds it while working, whatever `delivery` says. A pi-axo older than this answers
+        /// `invalid`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        command_id: Option<&'a str>,
     },
+    /// Stops the running turn if `turn_id`, the entry id of one of its user records, belongs to
+    /// it; otherwise answers `idle`. A pi-axo older than this answers `invalid`.
+    Stop { turn_id: &'a str },
 }
 
 /// How a working Pi takes a message: `steer` after the current tool calls, `followUp` once the
@@ -214,7 +226,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Action::Send {
                 text: "hi",
-                delivery: Some(QueuedDelivery::FollowUp)
+                delivery: Some(QueuedDelivery::FollowUp),
+                command_id: None,
             })
             .unwrap(),
             json!({ "kind": "send", "text": "hi", "delivery": "followUp" })
@@ -222,10 +235,27 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Action::Send {
                 text: "hi",
-                delivery: None
+                delivery: None,
+                command_id: None,
             })
             .unwrap(),
             json!({ "kind": "send", "text": "hi" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::Send {
+                text: "yes",
+                delivery: Some(QueuedDelivery::Steer),
+                command_id: Some("6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"),
+            })
+            .unwrap(),
+            json!({ "kind": "send", "text": "yes", "delivery": "steer", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::Stop {
+                turn_id: "a1b2c3d4"
+            })
+            .unwrap(),
+            json!({ "kind": "stop", "turnId": "a1b2c3d4" })
         );
     }
 

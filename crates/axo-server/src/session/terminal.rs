@@ -800,6 +800,19 @@ mod tests {
         manager: &SessionManager,
         session: &axo_protocol::SessionRecord,
     ) -> mpsc::Receiver<serde_json::Value> {
+        fake_pi_bridge_answering(
+            manager,
+            session,
+            |_| serde_json::json!({ "accepted": true }),
+        )
+    }
+
+    /// [`fake_pi_bridge`], answering each action with what `answer` says.
+    fn fake_pi_bridge_answering(
+        manager: &SessionManager,
+        session: &axo_protocol::SessionRecord,
+        answer: fn(&serde_json::Value) -> serde_json::Value,
+    ) -> mpsc::Receiver<serde_json::Value> {
         use std::io::{BufRead, BufReader};
         let (socket, identity) = {
             let state = manager.lock_state().unwrap();
@@ -850,7 +863,7 @@ mod tests {
                         let answer = serde_json::json!({
                             "type": "commandResult",
                             "requestId": command["requestId"],
-                            "result": { "accepted": true },
+                            "result": answer(&command["action"]),
                         });
                         let _ = writeln!(writer, "{answer}");
                         let _ = actions.send(command["action"].clone());
@@ -890,7 +903,7 @@ mod tests {
             .running_mut(shell_id)
             .unwrap()
             .role = PaneRole::Terminal;
-        let refused = manager.prompt_pi(session.id, "hello").unwrap_err();
+        let refused = manager.prompt_pi(session.id, "hello", None).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 
         manager
@@ -901,12 +914,12 @@ mod tests {
             .unwrap()
             .role = PaneRole::Pi;
         for bad in ["", "   \n", &"x".repeat(MAX_PI_PROMPT_BYTES + 1)] {
-            let error = manager.prompt_pi(session.id, bad).unwrap_err();
+            let error = manager.prompt_pi(session.id, bad, None).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
         // Pi is still starting (its bridge has not bound): the prompt waits.
         manager
-            .prompt_pi(session.id, "fix the build\nthen run tests")
+            .prompt_pi(session.id, "fix the build\nthen run tests", None)
             .unwrap();
         assert_eq!(
             manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(),
@@ -1026,6 +1039,113 @@ mod tests {
         };
         // Escape as itself; Enter as a carriage return (the terminal makes it a newline for `cat`).
         assert_eq!(typed, "\u{1b}\n");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Waits until the Session's Pi bridge is bound, so prompts go straight to it.
+    fn wait_for_bridge(manager: &SessionManager, session_id: SessionId) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !manager
+            .lock_state()
+            .unwrap()
+            .pi_activity
+            .get(&session_id)
+            .is_some_and(|activity| activity.connected)
+        {
+            assert!(Instant::now() < deadline, "the Pi bridge never bound");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_clients_prompt_carries_its_command_id_and_a_stop_names_its_turn() {
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "axo-commands-{}",
+            axo_protocol::new_uuid_v4().unwrap()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (manager, _log) = manager_recording_input(&directory);
+        let session = manager.list_sessions().unwrap().remove(0);
+        // pi-axo stops only the turn "turn-running"; any other is not running.
+        let actions = fake_pi_bridge_answering(&manager, &session, |action| {
+            if action["kind"] == "stop" && action["turnId"] != "turn-running" {
+                serde_json::json!({ "accepted": false, "reason": "idle" })
+            } else {
+                serde_json::json!({ "accepted": true })
+            }
+        });
+        wait_for_bridge(&manager, session.id);
+
+        let command_id =
+            axo_relay::CommandId::try_from("6F1D2C3B-4A5E-4F60-8A7B-9C0D1E2F3A4B".to_owned())
+                .unwrap();
+        manager
+            .prompt_pi(session.id, "yes", Some(&command_id))
+            .unwrap();
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            serde_json::json!({ "kind": "send", "text": "yes", "delivery": "steer", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" })
+        );
+
+        let running = axo_relay::TurnId::try_from("turn-running".to_owned()).unwrap();
+        let ended = axo_relay::TurnId::try_from("turn-ended".to_owned()).unwrap();
+        assert!(manager.stop_pi_turn(session.id, &running).unwrap());
+        assert!(!manager.stop_pi_turn(session.id, &ended).unwrap());
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            serde_json::json!({ "kind": "stop", "turnId": "turn-running" })
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_pi_with_an_older_pi_axo_still_takes_prompts_and_stops() {
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "axo-old-pi-axo-{}",
+            axo_protocol::new_uuid_v4().unwrap()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (manager, log) = manager_recording_input(&directory);
+        let session = manager.list_sessions().unwrap().remove(0);
+        // An older pi-axo refuses the fields and actions it does not know as invalid.
+        let actions = fake_pi_bridge_answering(&manager, &session, |action| {
+            if action.get("commandId").is_some() || action["kind"] == "stop" {
+                serde_json::json!({ "accepted": false, "reason": "invalid" })
+            } else {
+                serde_json::json!({ "accepted": true })
+            }
+        });
+        wait_for_bridge(&manager, session.id);
+
+        let command_id =
+            axo_relay::CommandId::try_from("6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b".to_owned())
+                .unwrap();
+        manager
+            .prompt_pi(session.id, "yes", Some(&command_id))
+            .unwrap();
+        let first = actions.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first["commandId"], "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b");
+        // Sent again without the commandId, as before RFD0024: it steers.
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            serde_json::json!({ "kind": "send", "text": "yes", "delivery": "steer" })
+        );
+
+        // A stop it cannot take becomes Escape in the Pi pane, as before.
+        let turn = axo_relay::TurnId::try_from("turn-running".to_owned()).unwrap();
+        assert!(manager.stop_pi_turn(session.id, &turn).unwrap());
+        // Enter ends the line, so the terminal passes what was typed on to the pane.
+        manager
+            .press_pi_key(session.id, axo_relay::PiKey::Enter)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while std::fs::read_to_string(&log).unwrap_or_default() != "\u{1b}\n" {
+            assert!(
+                Instant::now() < deadline,
+                "Escape never reached the Pi pane"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
         let _ = std::fs::remove_dir_all(&directory);
     }
 }
