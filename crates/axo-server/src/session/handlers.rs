@@ -231,7 +231,17 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         text: &str,
         command_id: Option<&axo_relay::CommandId>,
     ) -> io::Result<()> {
-        self.0.prompt_pi(session_id, text, command_id)
+        // A client that sends no commandId still gets one, so pi-axo holds its prompt while Pi
+        // works rather than steering it into a queue a stop would empty (RFD0024).
+        let generated = match command_id {
+            Some(_) => None,
+            None => Some(
+                axo_relay::CommandId::try_from(axo_protocol::new_uuid_v4()?)
+                    .map_err(io::Error::other)?,
+            ),
+        };
+        self.0
+            .prompt_pi(session_id, text, command_id.or(generated.as_ref()))
     }
 
     fn remote_stop_pi_turn(
