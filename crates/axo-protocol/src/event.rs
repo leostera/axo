@@ -57,6 +57,10 @@ pub enum Event {
     WorkspaceChanged { workspace_id: String },
     #[serde(rename = "relay.status")]
     RelayStatus { status: RelayStatus },
+    /// The other Macs or their Sessions changed, or a remote pane opened or closed: read
+    /// `axo.peer.sessions.list` again (RFD0024).
+    #[serde(rename = "peer.sessions.changed")]
+    PeerSessionsChanged,
     /// The subscriber fell behind and events were dropped; resynchronize from a fresh list.
     #[serde(rename = "subscription.lagged")]
     SubscriptionLagged,
@@ -80,6 +84,7 @@ impl Event {
             | Event::PiEvent { session_id, .. } => Some(*session_id),
             Event::WorkspaceChanged { .. }
             | Event::RelayStatus { .. }
+            | Event::PeerSessionsChanged
             | Event::SubscriptionLagged => None,
         }
     }

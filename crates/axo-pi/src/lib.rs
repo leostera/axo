@@ -21,7 +21,10 @@ pub mod worker;
 pub use activity::Activity;
 pub use command::AgentCommand;
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
-pub use launch::{PiLaunch, PiProcess, STOP_GRACE, spawn};
+pub use launch::{
+    PiLaunch, PiProcess, REMOTE_VIEW_REDRAW_EXIT, RemoteViewLaunch, STOP_GRACE, spawn,
+    spawn_remote_view,
+};
 pub use lock::WriterLock;
 pub use socket::{BridgeSocketPath, MAX_SOCKET_PATH_BYTES, SocketCleanup};
 

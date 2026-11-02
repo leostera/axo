@@ -542,6 +542,66 @@ impl SessionManager {
 
         let manager = Arc::clone(self);
         handler.add_typed(
+            method::PEER_SESSIONS_LIST,
+            "expected no parameters",
+            move |_: rpc::NoParams| manager.peer_sessions().map_err(internal_rpc_error),
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::PEER_SESSION_OPEN,
+            "expected {hostId, sessionId}",
+            move |request: rpc::PeerSessionRef| {
+                manager
+                    .open_peer_session(&request.host_id, request.session_id)
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::NotFound => invalid_params(&error.to_string()),
+                        _ => internal_rpc_error(error),
+                    })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::PEER_SESSION_CLOSE,
+            "expected {hostId, sessionId}",
+            move |request: rpc::PeerSessionRef| {
+                manager
+                    .close_peer_session(request.session_id)
+                    .map(|closed| serde_json::json!({ "closed": closed }))
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::PEER_SESSION_WATCH,
+            "expected {hostId, sessionId, epoch?, cursor?, version?, timeoutMs?, window?}",
+            move |request: rpc::WatchPeerSession| {
+                manager
+                    .watch_peer_session(&request)
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::NotFound => invalid_params(&error.to_string()),
+                        _ => internal_rpc_error(error),
+                    })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::PEER_COMMAND,
+            "expected {hostId, method, params}",
+            move |request: rpc::PeerCommand| {
+                manager.peer_command(request).map_err(|error| RpcError {
+                    code: ErrorCode::from(error.code),
+                    message: error.message,
+                    data: None,
+                })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
             method::SESSION_CATALOG,
             "expected no parameters",
             move |_: rpc::NoParams| manager.session_catalog().map_err(internal_rpc_error),

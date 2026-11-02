@@ -368,9 +368,11 @@ impl SessionManager {
             ));
         }
         let mut state = self.lock_state()?;
+        let state = &mut *state;
         let running = state
             .panes
             .running_in_mut(session_id, shell_id)
+            .or_else(|| state.peer_views.running_in_mut(session_id, shell_id))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         if running.last_input_sequence == Some(sequence) {
             return Ok(());
@@ -480,6 +482,7 @@ impl SessionManager {
             let running = state
                 .panes
                 .running_in(session_id, shell_id)
+                .or_else(|| state.peer_views.running_in(session_id, shell_id))
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
             Arc::clone(&running.output)
         };
@@ -501,6 +504,7 @@ impl SessionManager {
         let running = state
             .panes
             .running_in(session_id, shell_id)
+            .or_else(|| state.peer_views.running_in(session_id, shell_id))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         process::resize(&running.master, &running.child, size)
     }
@@ -511,6 +515,13 @@ impl SessionManager {
         shell_id: ShellId,
     ) -> io::Result<rpc::ShellBusy> {
         let state = self.lock_state()?;
+        if state.peer_views.running_in(session_id, shell_id).is_some() {
+            // A remote pane runs nothing here: closing it stops nothing.
+            return Ok(rpc::ShellBusy {
+                busy: false,
+                foreground_process: None,
+            });
+        }
         let running = state
             .panes
             .running_in(session_id, shell_id)
@@ -547,9 +558,11 @@ impl SessionManager {
     /// termios/foreground queries. Output comes from `TerminalOutput`, never from this descriptor.
     pub(super) fn attach_shell(&self, id: ShellId) -> io::Result<ShellAttachment> {
         let mut state = self.lock_state()?;
+        let state = &mut *state;
         let running = state
             .panes
             .running_mut(id)
+            .or_else(|| state.peer_views.running_mut(id))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         // SAFETY: fcntl duplicates the live PTY master; the result is owned below.
         let fd = unsafe { libc::fcntl(running.master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
@@ -572,7 +585,12 @@ impl SessionManager {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
-            let Some(running) = state.panes.running_mut(id) else {
+            let state = &mut *state;
+            let Some(running) = state
+                .panes
+                .running_mut(id)
+                .or_else(|| state.peer_views.running_mut(id))
+            else {
                 return;
             };
             if running.runtime_id != runtime_id {

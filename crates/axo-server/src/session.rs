@@ -25,6 +25,7 @@ mod catalog;
 mod events;
 mod handlers;
 mod lifecycle;
+mod peer_views;
 mod pi_bridge;
 mod pi_recovery;
 mod prompts;
@@ -127,6 +128,8 @@ struct SessionState {
     viewport: Option<Viewport>,
     /// How long an explicit Pi restart waits before escalating; shortened by tests.
     takeover_grace: TakeoverGrace,
+    /// Remote panes on other Macs' Sessions (RFD0024): never in `panes`, never in the database.
+    peer_views: peer_views::PeerViews,
 }
 
 pub struct SessionManager {
@@ -149,6 +152,10 @@ pub struct SessionManager {
     workspace_states: workspace_state::WorkspaceStates,
     /// When each Workspace last failed to get a Session; see `ensure_open_workspace_sessions`.
     workspace_session_failures: Mutex<HashMap<String, Instant>>,
+    /// Every Mac's transcripts by host (RFD0022); other Macs' are copies.
+    sessions_directory: PathBuf,
+    /// The other Macs, once the relay follows them (RFD0024).
+    peers: peer_views::PeerSlot,
 }
 
 impl SessionManager {
@@ -199,6 +206,7 @@ impl SessionManager {
                 events: subscribers.clone(),
                 viewport,
                 takeover_grace: TakeoverGrace::default(),
+                peer_views: Default::default(),
             }),
             attach_socket_path,
             pi_directories,
@@ -214,6 +222,8 @@ impl SessionManager {
             home_workspace_id,
             workspace_session_failures: Mutex::new(HashMap::new()),
             workspace_states: Default::default(),
+            sessions_directory: sessions_directory.to_path_buf(),
+            peers: Default::default(),
         });
 
         manager.restore_open_sessions()?;
@@ -241,7 +251,11 @@ impl SessionManager {
         let shells = self
             .state
             .lock()
-            .map(|mut state| state.panes.drain())
+            .map(|mut state| {
+                let mut shells = state.panes.drain();
+                shells.extend(state.peer_views.drain());
+                shells
+            })
             .unwrap_or_default();
         stop_panes(shells);
     }

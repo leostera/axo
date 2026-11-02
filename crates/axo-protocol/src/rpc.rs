@@ -52,6 +52,12 @@ pub mod method {
     pub const CONNECTIONS_LOG: &str = "axo.connections.log";
     pub const CONNECTIONS_ADD: &str = "axo.connections.add";
     pub const CONNECTIONS_REMOVE: &str = "axo.connections.remove";
+    /// Other Macs' Sessions, opened here in a pane (RFD0024).
+    pub const PEER_SESSIONS_LIST: &str = "axo.peer.sessions.list";
+    pub const PEER_SESSION_OPEN: &str = "axo.peer.session.open";
+    pub const PEER_SESSION_CLOSE: &str = "axo.peer.session.close";
+    pub const PEER_SESSION_WATCH: &str = "axo.peer.session.watch";
+    pub const PEER_COMMAND: &str = "axo.peer.command";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -94,6 +100,11 @@ pub mod method {
         CONNECTIONS_LOG,
         CONNECTIONS_ADD,
         CONNECTIONS_REMOVE,
+        PEER_SESSIONS_LIST,
+        PEER_SESSION_OPEN,
+        PEER_SESSION_CLOSE,
+        PEER_SESSION_WATCH,
+        PEER_COMMAND,
     ];
 }
 
@@ -378,6 +389,105 @@ pub struct Unsubscribed {
 }
 
 /// Every Session on this Mac: open ones as `axo.session.list` reports them, and archived ones.
+/// Another Mac of the account, as this Mac follows it (RFD0024).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerHost {
+    pub host_id: String,
+    pub label: String,
+    pub online: bool,
+}
+
+/// Another Mac's Session: its record as a local one would be, with the Mac it runs on. Its
+/// shells are this Mac's remote pane on it, if one is open; `piSessionFile` is this Mac's copy.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSession {
+    pub host_id: String,
+    #[serde(flatten)]
+    pub session: SessionRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSessionList {
+    /// Whether this Mac follows the account now; the list is the last one it had otherwise.
+    pub connected: bool,
+    pub hosts: Vec<PeerHost>,
+    pub sessions: Vec<PeerSession>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PeerSessionRef {
+    pub host_id: String,
+    pub session_id: SessionId,
+}
+
+/// What a remote pane has drawn: the copy's epoch and cursor, and the live state's version.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WatchPeerSession {
+    pub host_id: String,
+    pub session_id: SessionId,
+    #[serde(default)]
+    pub epoch: Option<u64>,
+    #[serde(default)]
+    pub cursor: u64,
+    /// The `version` of the last answer; 0 the first time, which answers at once.
+    #[serde(default)]
+    pub version: u64,
+    /// How long to wait for something new, at most `MAX_EVENTS_TIMEOUT_MS`.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// How many records to read when starting over, newest last.
+    #[serde(default)]
+    pub window: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerRecord {
+    pub cursor: u64,
+    pub line: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerProgress {
+    pub slot: String,
+    pub snapshot: serde_json::Value,
+}
+
+/// A remote pane's next view of the copy. With `reset`, it drops what it drew and draws
+/// `records` afresh (a cut, another epoch, or its first look); otherwise `records` follow its
+/// cursor. `more` asks it to call again at once.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSessionView {
+    pub version: u64,
+    pub epoch: Option<u64>,
+    pub cursor: u64,
+    pub reset: bool,
+    pub records: Vec<PeerRecord>,
+    pub more: bool,
+    pub progress: Vec<PeerProgress>,
+    pub status: Option<crate::SessionStatus>,
+    pub host_label: String,
+    pub host_online: bool,
+    /// Whether this Mac follows the account now.
+    pub connected: bool,
+}
+
+/// A command for another Mac's Session, sent as a client would (`axo.remote.*`).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PeerCommand {
+    pub host_id: String,
+    pub method: String,
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Unlike `axo.session.list`, this has no side effects.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

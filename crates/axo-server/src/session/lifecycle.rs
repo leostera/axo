@@ -326,6 +326,9 @@ impl SessionManager {
                     if let Err(error) = manager.reap_exited_sessions() {
                         log::error!("event=session.reap_failed reason={error}");
                     }
+                    if let Err(error) = manager.reap_exited_peer_views() {
+                        log::error!("event=peer.reap_failed reason={error}");
+                    }
                 }
             });
         if let Ok(worker) = worker

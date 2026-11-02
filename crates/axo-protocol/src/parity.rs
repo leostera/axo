@@ -203,6 +203,26 @@ pub const PARITY: &[Parity] = &[
             "a Session on this Mac reaches its account's connections; the cloud already holds them",
         ),
     ),
+    row(
+        method::PEER_SESSIONS_LIST,
+        Remote::LocalOnly("the other Macs' Sessions, as this Mac follows them"),
+    ),
+    row(
+        method::PEER_SESSION_OPEN,
+        Remote::LocalOnly("a pane on this Mac for another Mac's Session"),
+    ),
+    row(
+        method::PEER_SESSION_CLOSE,
+        Remote::LocalOnly("a pane on this Mac for another Mac's Session"),
+    ),
+    row(
+        method::PEER_SESSION_WATCH,
+        Remote::LocalOnly("a remote pane follows this Mac's copy"),
+    ),
+    row(
+        method::PEER_COMMAND,
+        Remote::LocalOnly("this Mac's own client call to another Mac"),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

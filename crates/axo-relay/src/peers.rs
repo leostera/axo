@@ -14,6 +14,10 @@
 //! - Copies are never uploaded: the uploader lists only the Sessions this Mac owns.
 //! - This Mac's own folder is never written here, and every path segment is an id, so a copy
 //!   can neither replace one of this Mac's transcripts nor land outside `sessions/`.
+//!
+//! The same socket carries this Mac's commands to the others (RFD0024): a remote pane's prompt
+//! or stop goes out as `axo.client.command`, and the copies, progress and listing it follows are
+//! shared with axod through [`PeerLive`].
 
 use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
@@ -25,12 +29,12 @@ use crate::relay::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tungstenite::Message;
@@ -325,15 +329,266 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(temporary, path)
 }
 
+/// Records of a copy, read while the peers worker may be writing it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyRead {
+    pub state: CopyState,
+    /// Records after the cursor asked for, as `(cursor, line)`, oldest first.
+    pub records: Vec<(u64, String)>,
+}
+
+/// Reads the records of a copy after `after`, at most the last `limit` of them; None if there
+/// is no copy. Only records the state file counts are read, so lines being appended are not.
+/// `after` beyond the copy (another epoch, or a cut) reads nothing; the caller compares epochs.
+pub fn read_copy(
+    sessions_directory: &Path,
+    place: &Place,
+    after: u64,
+    limit: usize,
+) -> io::Result<Option<CopyRead>> {
+    let mirror = Mirror::new(sessions_directory.to_path_buf());
+    let Ok(text) = fs::read_to_string(mirror.state_file(place)) else {
+        return Ok(None);
+    };
+    let Ok(state) = serde_json::from_str::<CopyState>(&text) else {
+        return Ok(None);
+    };
+    let file = match File::open(mirror.file(place)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let first = after.max(state.cursor.saturating_sub(limit as u64)) + 1;
+    let mut records = Vec::new();
+    // Line 0 is Pi's header; line n is record n.
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let cursor = index as u64;
+        if cursor > state.cursor {
+            break;
+        }
+        let line = line?;
+        if cursor >= first {
+            records.push((cursor, line));
+        }
+    }
+    Ok(Some(CopyRead { state, records }))
+}
+
+// ─── Live state, shared with axod ──────────────────────────────────────────
+
+/// A command the cloud refused or could not settle, as JSON-RPC reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerCommandError {
+    pub code: i64,
+    pub message: String,
+}
+
+impl PeerCommandError {
+    /// Nothing was sent: the next try may go ahead (RFD0018's `-32005`).
+    pub fn offline() -> Self {
+        Self {
+            code: -32005,
+            message: "Host offline; nothing queued".to_owned(),
+        }
+    }
+
+    /// It may have reached the Mac: try again with the same commandId (RFD0024).
+    pub fn unknown() -> Self {
+        Self {
+            code: -32004,
+            message: "Outcome unknown; reconcile commandId".to_owned(),
+        }
+    }
+}
+
+struct PeerCommand {
+    host_id: String,
+    method: String,
+    params: Value,
+    reply: mpsc::Sender<Result<Value, PeerCommandError>>,
+}
+
+#[derive(Default)]
+struct LiveState {
+    /// Bumped by every change a remote pane may show: records, progress, listing, the socket.
+    version: u64,
+    /// The newest snapshot of each progress slot, by Session.
+    progress: HashMap<String, BTreeMap<String, Value>>,
+    /// Commands waiting for the socket to send them.
+    outbox: VecDeque<PeerCommand>,
+    connected: bool,
+}
+
+type Observer = Box<dyn Fn() + Send + Sync>;
+
+/// What the peers socket knows that axod's remote panes follow, and the way their commands go
+/// out. Shared between the peers worker, which fills it, and axod's handlers, which read it.
+#[derive(Default)]
+pub struct PeerLive {
+    state: Mutex<LiveState>,
+    changed: Condvar,
+    listing_observer: Mutex<Option<Observer>>,
+}
+
+impl PeerLive {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Called whenever the listing of the other Macs or their Sessions changes.
+    pub fn observe_listing(&self, observer: impl Fn() + Send + Sync + 'static) {
+        if let Ok(mut slot) = self.listing_observer.lock() {
+            *slot = Some(Box::new(observer));
+        }
+    }
+
+    pub fn version(&self) -> u64 {
+        self.state.lock().map_or(0, |state| state.version)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.connected)
+    }
+
+    /// Waits until something changes after `since`, or `timeout` passes; returns the version.
+    pub fn wait_for_change(&self, since: u64, timeout: Duration) -> u64 {
+        let Ok(state) = self.state.lock() else {
+            return since;
+        };
+        match self
+            .changed
+            .wait_timeout_while(state, timeout, |state| state.version <= since)
+        {
+            Ok((state, _)) => state.version,
+            Err(_) => since,
+        }
+    }
+
+    /// The newest snapshot of each progress slot of a Session, by slot.
+    pub fn progress(&self, session_id: &str) -> Vec<(String, Value)> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.progress.get(session_id).cloned())
+            .map(|slots| slots.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// Sends `method` to the Mac `host_id` names, as a client would, and waits for its answer.
+    /// With no socket nothing is sent (`offline`); a reply that does not come in time, or a socket
+    /// that ends first, leaves the outcome unknown.
+    pub fn command(
+        &self,
+        host_id: &str,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, PeerCommandError> {
+        let (reply, answer) = mpsc::channel();
+        {
+            let mut state = self.state.lock().map_err(|_| PeerCommandError::offline())?;
+            if !state.connected {
+                return Err(PeerCommandError::offline());
+            }
+            state.outbox.push_back(PeerCommand {
+                host_id: host_id.to_owned(),
+                method: method.to_owned(),
+                params,
+                reply,
+            });
+        }
+        match answer.recv_timeout(timeout) {
+            Ok(outcome) => outcome,
+            Err(_) => Err(PeerCommandError::unknown()),
+        }
+    }
+
+    fn update(&self, change: impl FnOnce(&mut LiveState)) {
+        if let Ok(mut state) = self.state.lock() {
+            change(&mut state);
+            state.version += 1;
+        }
+        self.changed.notify_all();
+    }
+
+    fn touch(&self) {
+        self.update(|_| {});
+    }
+
+    fn listing_changed(&self) {
+        self.touch();
+        if let Ok(observer) = self.listing_observer.lock()
+            && let Some(observer) = observer.as_ref()
+        {
+            observer();
+        }
+    }
+
+    fn set_progress(&self, session_id: &str, slot: &str, snapshot: Value) {
+        self.update(|state| {
+            let slots = state.progress.entry(session_id.to_owned()).or_default();
+            if snapshot.is_null() {
+                slots.remove(slot);
+            } else {
+                slots.insert(slot.to_owned(), snapshot);
+            }
+        });
+    }
+
+    fn replace_progress(&self, session_id: &str, entries: &[Value]) {
+        self.update(|state| {
+            let slots = state.progress.entry(session_id.to_owned()).or_default();
+            slots.clear();
+            for entry in entries {
+                if let Some(slot) = entry["slot"].as_str()
+                    && !entry["snapshot"].is_null()
+                {
+                    slots.insert(slot.to_owned(), entry["snapshot"].clone());
+                }
+            }
+        });
+    }
+
+    fn connected(&self) {
+        self.update(|state| state.connected = true);
+    }
+
+    /// The socket ended: what it never sent was not sent, and what it sent is unknown. Progress
+    /// is forgotten, since nothing keeps it current now.
+    fn disconnected(&self, in_flight: Vec<mpsc::Sender<Result<Value, PeerCommandError>>>) {
+        let mut unsent = Vec::new();
+        self.update(|state| {
+            state.connected = false;
+            state.progress.clear();
+            unsent.extend(state.outbox.drain(..));
+        });
+        for command in unsent {
+            let _ = command.reply.send(Err(PeerCommandError::offline()));
+        }
+        for reply in in_flight {
+            let _ = reply.send(Err(PeerCommandError::unknown()));
+        }
+    }
+
+    fn take_commands(&self) -> Vec<PeerCommand> {
+        self.state
+            .lock()
+            .map(|mut state| state.outbox.drain(..).collect())
+            .unwrap_or_default()
+    }
+}
+
 // ─── The socket ─────────────────────────────────────────────────────────────
 
 /// Where following the account writes: every Mac's transcripts, and this Mac's index of them.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PeersPaths {
     /// `~/.axo/sessions`.
     pub sessions_directory: PathBuf,
     /// `~/.axo/server/peers.json`.
     pub index: PathBuf,
+    /// What axod's remote panes follow, and their way out.
+    pub live: Arc<PeerLive>,
 }
 
 /// What following the account needs from axod.
@@ -346,6 +601,7 @@ pub struct PeersDependencies {
     pub sessions_directory: PathBuf,
     /// `~/.axo/server/peers.json`: what the account lists.
     pub index: PathBuf,
+    pub live: Arc<PeerLive>,
 }
 
 pub struct PeersWorker {
@@ -423,7 +679,13 @@ fn sleep_unless_stopped(stop: &AtomicBool, delay: Duration) {
 
 enum Pending {
     Hello,
-    Open { place: Place, from_nothing: bool },
+    Open {
+        place: Place,
+        from_nothing: bool,
+    },
+    Command {
+        reply: mpsc::Sender<Result<Value, PeerCommandError>>,
+    },
 }
 
 /// One socket's life: hello, then open every Session, then keep the copies current.
@@ -433,6 +695,7 @@ struct Follower<'a> {
     mirror: &'a mut Mirror,
     own_host_id: &'a str,
     index_path: &'a Path,
+    live: &'a PeerLive,
     stop: &'a AtomicBool,
     next_id: u64,
     pending: HashMap<u64, Pending>,
@@ -459,6 +722,7 @@ impl<'a> Follower<'a> {
             mirror,
             own_host_id: &dependencies.host_id,
             index_path: &dependencies.index,
+            live: &dependencies.live,
             stop,
             next_id: 1,
             pending: HashMap::new(),
@@ -471,6 +735,21 @@ impl<'a> Follower<'a> {
     }
 
     fn run(mut self) -> io::Result<()> {
+        self.live.connected();
+        let outcome = self.follow();
+        let in_flight = self
+            .pending
+            .drain()
+            .filter_map(|(_, pending)| match pending {
+                Pending::Command { reply } => Some(reply),
+                _ => None,
+            })
+            .collect();
+        self.live.disconnected(in_flight);
+        outcome
+    }
+
+    fn follow(&mut self) -> io::Result<()> {
         let opened = Instant::now();
         let mut pinged = Instant::now();
         let client_id = format!("host-{}", self.own_host_id);
@@ -481,6 +760,9 @@ impl<'a> Follower<'a> {
         )?;
         while !self.stop.load(Ordering::Relaxed) && opened.elapsed() < SOCKET_LIFETIME {
             self.open_more()?;
+            for command in self.live.take_commands() {
+                self.forward(command)?;
+            }
             if pinged.elapsed() >= PING_INTERVAL {
                 self.socket
                     .send(Message::Ping(Vec::new().into()))
@@ -515,6 +797,16 @@ impl<'a> Follower<'a> {
                         self.open.remove(&place.session_id);
                         Ok(())
                     }
+                    Pending::Command { reply } => {
+                        let _ = reply.send(Err(PeerCommandError {
+                            code: error["code"].as_i64().unwrap_or(-32603),
+                            message: error["message"]
+                                .as_str()
+                                .unwrap_or("The Mac refused the command")
+                                .to_owned(),
+                        }));
+                        Ok(())
+                    }
                 };
             }
             let result = &message["result"];
@@ -529,6 +821,10 @@ impl<'a> Follower<'a> {
                     place,
                     from_nothing,
                 } => self.opened(&place, from_nothing, result),
+                Pending::Command { reply } => {
+                    let _ = reply.send(Ok(result.clone()));
+                    Ok(())
+                }
             };
         }
         let params = &message["params"];
@@ -543,6 +839,15 @@ impl<'a> Follower<'a> {
             }
             Some("axo.client.session.records") => self.records(params),
             Some("axo.client.session.reset") => self.reset(params),
+            Some("axo.client.session.progress") => {
+                if let (Some(session_id), Some(slot)) =
+                    (params["sessionId"].as_str(), params["slot"].as_str())
+                {
+                    self.live
+                        .set_progress(session_id, slot, params["snapshot"].clone());
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -560,7 +865,9 @@ impl<'a> Follower<'a> {
             }
         }
         self.index.hosts = hosts;
-        self.index.write(self.index_path)
+        self.index.write(self.index_path)?;
+        self.live.listing_changed();
+        Ok(())
     }
 
     /// Lists Sessions, and opens those with records this Mac has not opened yet.
@@ -572,6 +879,7 @@ impl<'a> Follower<'a> {
             .collect();
         self.index.merge(&theirs);
         self.index.write(self.index_path)?;
+        self.live.listing_changed();
         for session in &theirs {
             let (Some(host_id), Some(session_id), Some(epoch)) = (
                 session["hostId"].as_str(),
@@ -633,6 +941,9 @@ impl<'a> Follower<'a> {
     }
 
     fn opened(&mut self, place: &Place, from_nothing: bool, result: &Value) -> io::Result<()> {
+        if let Some(progress) = result["progress"].as_array() {
+            self.live.replace_progress(&place.session_id, progress);
+        }
         let Some(epoch) = result["epoch"].as_u64() else {
             return Ok(());
         };
@@ -650,7 +961,9 @@ impl<'a> Follower<'a> {
         } else {
             self.mirror.append(place, epoch, &records)
         };
-        self.copied(place, copied).map(|_| ())
+        self.copied(place, copied).map(|_| ())?;
+        self.live.touch();
+        Ok(())
     }
 
     fn records(&mut self, params: &Value) -> io::Result<()> {
@@ -671,6 +984,7 @@ impl<'a> Follower<'a> {
                 "axo.client.session.ack",
                 json!({ "sessionId": session_id, "cursor": state.cursor }),
             )?;
+            self.live.touch();
         }
         Ok(())
     }
@@ -687,7 +1001,36 @@ impl<'a> Follower<'a> {
             return Ok(());
         };
         let reset = self.mirror.reset(&place, epoch, keep);
-        self.copied(&place, reset).map(|_| ())
+        self.copied(&place, reset).map(|_| ())?;
+        self.live.touch();
+        Ok(())
+    }
+
+    /// Sends a remote pane's command to the Mac it names, addressed to that Mac's current
+    /// generation as the account lists it.
+    fn forward(&mut self, command: PeerCommand) -> io::Result<()> {
+        let generation = self
+            .index
+            .hosts
+            .iter()
+            .find(|host| host["hostId"].as_str() == Some(command.host_id.as_str()))
+            .and_then(|host| host["hostGeneration"].as_str())
+            .map(str::to_owned);
+        let (Some(generation), Value::Object(mut params)) = (generation, command.params) else {
+            let _ = command.reply.send(Err(PeerCommandError::offline()));
+            return Ok(());
+        };
+        params.insert(
+            "target".to_owned(),
+            json!({ "hostId": command.host_id, "hostGeneration": generation }),
+        );
+        self.call(
+            Pending::Command {
+                reply: command.reply,
+            },
+            "axo.client.command",
+            json!({ "hostId": command.host_id, "method": command.method, "params": params }),
+        )
     }
 
     /// A copy that could not take the records is opened again from where it is.
@@ -914,6 +1257,105 @@ mod tests {
             Mirror::new(scratch.0.clone()).state(&place()).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_pane_reads_only_the_records_the_state_counts_after_its_cursor() {
+        let scratch = Scratch::new();
+        let mut mirror = Mirror::new(scratch.0.clone());
+        mirror.start(&place(), 3, HEADER, &records(1..=4)).unwrap();
+        // A line appended but not yet counted is not read.
+        let mut out = OpenOptions::new()
+            .append(true)
+            .open(mirror.file(&place()))
+            .unwrap();
+        writeln!(out, "{}", record(5).line).unwrap();
+        let read = read_copy(&scratch.0, &place(), 2, usize::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read.state,
+            CopyState {
+                epoch: 3,
+                cursor: 4
+            }
+        );
+        assert_eq!(
+            read.records
+                .iter()
+                .map(|(cursor, _)| *cursor)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(read.records[0].1, record(3).line);
+        let window = read_copy(&scratch.0, &place(), 0, 2).unwrap().unwrap();
+        assert_eq!(
+            window
+                .records
+                .iter()
+                .map(|(cursor, _)| *cursor)
+                .collect::<Vec<_>>(),
+            vec![3, 4],
+            "starting over reads the newest `limit`"
+        );
+        let elsewhere = Place::of(HOST, None, SESSION).unwrap();
+        assert!(read_copy(&scratch.0, &elsewhere, 0, 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_command_with_no_socket_is_not_sent_and_one_cut_off_is_unknown() {
+        let live = PeerLive::new();
+        let offline = live.command(
+            HOST,
+            "axo.remote.session.prompt",
+            json!({}),
+            Duration::from_secs(1),
+        );
+        assert_eq!(offline, Err(PeerCommandError::offline()));
+
+        live.connected();
+        let follower = Arc::clone(&live);
+        let sent = thread::spawn(move || {
+            follower.command(
+                HOST,
+                "axo.remote.session.prompt",
+                json!({ "text": "yes" }),
+                Duration::from_secs(5),
+            )
+        });
+        let command = loop {
+            if let Some(command) = live.take_commands().pop() {
+                break command;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(command.params["text"], "yes");
+        // The socket ends after sending it: it may have reached the Mac.
+        live.disconnected(vec![command.reply]);
+        assert_eq!(sent.join().unwrap(), Err(PeerCommandError::unknown()));
+        assert!(!live.is_connected());
+    }
+
+    #[test]
+    fn progress_is_kept_per_slot_and_a_change_wakes_a_waiting_pane() {
+        let live = PeerLive::new();
+        let before = live.version();
+        let waiter = Arc::clone(&live);
+        let woke = thread::spawn(move || waiter.wait_for_change(before, Duration::from_secs(5)));
+        live.set_progress(SESSION, "message", json!({ "text": "Wor" }));
+        assert!(woke.join().unwrap() > before);
+        live.set_progress(SESSION, "call-1", json!({ "toolCallId": "call-1" }));
+        live.set_progress(SESSION, "message", Value::Null);
+        assert_eq!(
+            live.progress(SESSION),
+            vec![("call-1".to_owned(), json!({ "toolCallId": "call-1" }))]
+        );
+        live.replace_progress(
+            SESSION,
+            &[json!({ "slot": "question", "snapshot": { "kind": "confirm" } })],
+        );
+        assert_eq!(live.progress(SESSION).len(), 1);
+        assert_eq!(live.progress(SESSION)[0].0, "question");
     }
 
     #[test]

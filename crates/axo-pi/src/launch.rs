@@ -77,6 +77,70 @@ pub fn spawn(
     })
 }
 
+/// Another Mac's Session, drawn by a Pi on this Mac that only shows it and sends what is typed
+/// (RFD0024): `pi --no-session` with pi-axo in remote mode. It writes nothing and runs no model.
+pub struct RemoteViewLaunch<'a> {
+    pub agent_command: &'a AgentCommand,
+    pub initial_pwd: &'a Path,
+    pub home: &'a Path,
+    pub host_id: &'a str,
+    pub host_label: &'a str,
+    pub session_id: &'a str,
+    /// Extra environment: the terminal resources and `AXO_SOCKET`, which pi-axo calls.
+    pub environment: &'a [(&'static str, PathBuf)],
+}
+
+/// pi-axo exits with this when the copy was cut back and it must draw it afresh: the pane
+/// starts Pi again, in the same terminal. Any other exit ends the pane.
+pub const REMOTE_VIEW_REDRAW_EXIT: i32 = 75;
+
+/// Starts a remote view on a PTY. A shell loop restarts Pi on `REMOTE_VIEW_REDRAW_EXIT`.
+pub fn spawn_remote_view(
+    launch: &RemoteViewLaunch<'_>,
+    size: WindowSize,
+) -> io::Result<PtyProcess> {
+    let extension = resolve_extension_path()?;
+    let command_line = launch.agent_command.command();
+    let executable = resolve_executable(&command_line.executable)?;
+    let script = format!(
+        "while :; do \"$0\" \"$@\"; status=$?; [ \"$status\" -eq {REMOTE_VIEW_REDRAW_EXIT} ] || exit \"$status\"; done"
+    );
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .arg(executable)
+        .args(&command_line.arguments)
+        // Nothing runs here: no file, no tools, and none of this Mac's extensions, MCP servers,
+        // skills or prompt templates. Only pi-axo, which draws the copy.
+        .args([
+            "--no-session",
+            "--no-tools",
+            "--no-extensions",
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+        ])
+        .arg("--extension")
+        .arg(extension)
+        .current_dir(launch.initial_pwd)
+        .env("HOME", launch.home)
+        .env("PWD", launch.initial_pwd)
+        .env("TERM", "xterm-ghostty")
+        // A pane that only shows another Mac's Session has no business checking for updates.
+        .env("PI_OFFLINE", "1")
+        .env("PI_SKIP_VERSION_CHECK", "1")
+        .env("AXO_REMOTE_HOST_ID", launch.host_id)
+        .env("AXO_REMOTE_HOST_LABEL", launch.host_label)
+        .env("AXO_REMOTE_SESSION_ID", launch.session_id)
+        .env_remove("AXO_SESSION_ID")
+        .env_remove("AXO_PI_BRIDGE_SOCKET");
+    for (name, value) in launch.environment {
+        command.env(name, value);
+    }
+    process::spawn(command, size, &[])
+}
+
 fn resolve_executable(program: &str) -> io::Result<PathBuf> {
     axo_pty::command::resolve_executable(program, Some("AXO_PI_EXECUTABLE"), "agent")
 }

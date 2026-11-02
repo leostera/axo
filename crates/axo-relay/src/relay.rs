@@ -176,6 +176,7 @@ impl RelayWorker {
                     credentials: Arc::clone(&dependencies.credentials),
                     sessions_directory: paths.sessions_directory,
                     index: paths.index,
+                    live: paths.live,
                 },
                 Arc::clone(&stop),
             )?),
@@ -877,7 +878,8 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
         | Event::TerminalOutput { .. }
         | Event::SessionFocus { .. }
         | Event::WorkspaceChanged { .. }
-        | Event::RelayStatus { .. } => {}
+        | Event::RelayStatus { .. }
+        | Event::PeerSessionsChanged => {}
     }
 }
 

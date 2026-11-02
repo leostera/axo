@@ -134,7 +134,7 @@ impl SessionState {
 
     /// Every way a process enters the catalog goes through here: binding its output stream to
     /// its pane identity starts `terminal.output` events.
-    fn bind_output(&self, shell_id: ShellId, running: &RunningShell) {
+    pub(super) fn bind_output(&self, shell_id: ShellId, running: &RunningShell) {
         let session_id = running.session_id;
         running.output.bind(
             format!("session_id={} shell_id={}", session_id, shell_id.get()),
