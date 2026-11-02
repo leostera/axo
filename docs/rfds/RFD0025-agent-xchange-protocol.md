@@ -1,7 +1,7 @@
 # RFD0025 - Axo: AXP, the Agent Xchange Protocol
 
 - Feature Name: `axp`
-- Status: Draft
+- Status: Accepted
 - Author: leostera
 - Start Date: 2026-11-02
 - Updated: 2026-11-02
