@@ -91,6 +91,9 @@ This amends RFD0018's Commands for every client.
 
 **Receipts.** When pi-axo on the owner hands a remote prompt to Pi, it first writes `appendEntry("axo.command", { commandId })`, and then the user message. Clients retire a pending prompt when they see its receipt, and never by matching text (rule `commandReceipts`). This applies to the phone and the web app too.
 
+- **Clients that send no `commandId`.** For a remote prompt without one, axod makes one up, so pi-axo still holds the prompt while Pi works. The client cannot retry such a prompt safely or match its receipt, but it is no longer lost to a stop.
+- **An older pi-axo.** A Pi started before this change refuses the new field as invalid. axod then sends the prompt again without the field, which steers as before. A stop it refuses becomes Escape in the Pi pane, as before.
+
 **At most once.** pi-axo on the owner remembers the `commandId`s it has taken: those whose receipts are in the log when it starts, and every one since. A `commandId` it has seen gets `accepted` back, and Pi is not prompted again (rule `dedupeCommands`).
 
 **Retries.** A client sends a prompt again, with the same `commandId`, while its outcome is unknown: after `-32004`, a timeout, a closed socket, or the ClientDO's `-32603` (rule `retryUnknown`). The ClientDO should answer a command whose call failed with `-32004`, not `-32603 "Unavailable; try again"`.
