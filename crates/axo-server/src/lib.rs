@@ -16,6 +16,7 @@ use jsonrpc_core::IoHandler;
 
 mod connections;
 pub mod mcp;
+pub mod permissions;
 mod session;
 mod workspace_access;
 
@@ -504,6 +505,7 @@ fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
                 version: daemon_version.to_owned(),
                 build_number: build_number(),
                 status: rpc::DaemonStatus::Running,
+                developer_tools: permissions::developer_tools(),
             })
         },
     );

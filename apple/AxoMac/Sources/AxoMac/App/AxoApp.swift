@@ -43,7 +43,10 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
     LaunchBoot.hold {
       ghostty.initialize()
       mascot.start(animatesDockIcon: true)
-      if startsDaemon { daemon.startIfNeeded() }
+      if startsDaemon {
+        daemon.startIfNeeded()
+        DeveloperToolsPrompt.offerWhenReady(daemon: daemon)
+      }
     }
     if !usesSplash { LaunchBoot.run() }
   }

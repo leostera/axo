@@ -10,9 +10,11 @@ enum AxoPreferenceKey {
   static let scrollSensitivity = "terminalScrollSensitivity"
   static let preventSystemSleep = "preventSystemSleep"
   static let sidebarMode = "sidebar.mode.v1"
+  /// The person asked not to be offered Developer Tools again.
+  static let developerToolsPromptDeclined = "permissions.developerToolsDeclined.v1"
 
   static let all = [
     sidebarIsCollapsed, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
-    preventSystemSleep, sidebarMode,
+    preventSystemSleep, sidebarMode, developerToolsPromptDeclined,
   ]
 }

@@ -135,6 +135,7 @@ fn main() {
         axo_server::build_number()
     );
     raise_open_file_limit();
+    axo_server::permissions::request_automation_if_launch_agent();
     if let Err(error) = axo_server::serve_ipc(
         cli.socket.as_deref(),
         &server_directory,

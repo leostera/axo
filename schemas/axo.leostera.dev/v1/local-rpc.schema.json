@@ -813,6 +813,13 @@
         },
         "status": {
           "const": "running"
+        },
+        "developerTools": {
+          "enum": [
+            "granted",
+            "denied",
+            "notAsked"
+          ]
         }
       }
     },

@@ -318,6 +318,19 @@ pub struct DaemonHealth {
     pub version: String,
     pub build_number: u64,
     pub status: DaemonStatus,
+    /// Whether macOS lets axod run as a developer tool, so the programs Sessions run skip the
+    /// scan before their first run; absent where macOS cannot say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub developer_tools: Option<PermissionState>,
+}
+
+/// How a process stands with one of macOS's privacy permissions.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionState {
+    Granted,
+    Denied,
+    NotAsked,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

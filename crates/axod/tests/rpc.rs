@@ -1464,6 +1464,15 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     assert_eq!(health["result"]["status"], "running");
     assert!(health["result"]["version"].as_str().is_some());
     assert!(health["result"]["buildNumber"].as_u64().is_some());
+    #[cfg(target_os = "macos")]
+    assert!(
+        ["granted", "denied", "notAsked"].contains(
+            &health["result"]["developerTools"]
+                .as_str()
+                .unwrap_or_default()
+        ),
+        "a Mac says whether axod may run as a developer tool: {health}"
+    );
 
     let home = std::env::var("HOME").unwrap();
     let sessions = active_sessions(&socket);

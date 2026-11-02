@@ -44,6 +44,8 @@ public final class DaemonController {
   }
 
   public private(set) var status: Status = .starting
+  /// What axod last said of itself, as it came up.
+  public private(set) var health: DaemonHealth?
 
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
   /// The plist's `Label`.
@@ -65,6 +67,11 @@ public final class DaemonController {
   /// Publishes only real transitions; observers (menu bar, workbench) re-render on each publish.
   private func setStatus(_ newStatus: Status) {
     if status != newStatus { status = newStatus }
+  }
+
+  private func setRunning(_ health: DaemonHealth, buildNumber: BuildNumber) {
+    if self.health != health { self.health = health }
+    setStatus(.running(version: health.version ?? "Unknown", buildNumber: buildNumber))
   }
 
   public static var appBuildNumberLabel: String {
@@ -127,7 +134,7 @@ public final class DaemonController {
         guard
           let daemon = try await restartDaemon(at: try makeSocketPath(), expectedBuild: daemonBuildNumber)
         else { return }
-        setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
+        setRunning(daemon, buildNumber: daemonBuildNumber)
       } catch {
         setStatus(.failed(error.localizedDescription))
       }
@@ -273,8 +280,7 @@ public final class DaemonController {
           try await restartDaemon(
             at: socketPath, expectedBuild: daemonBuildNumber, forceReregister: true)
       else { return }
-      setStatus(
-        .running(version: restartedDaemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
+      setRunning(restartedDaemon, buildNumber: daemonBuildNumber)
       return
     }
 
@@ -286,7 +292,7 @@ public final class DaemonController {
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != daemonBuildNumber.value else {
-      setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
+      setRunning(daemon, buildNumber: daemonBuildNumber)
       return
     }
 
@@ -295,7 +301,7 @@ public final class DaemonController {
       let restartedDaemon =
         try await restartDaemon(at: socketPath, expectedBuild: daemonBuildNumber)
     else { return }
-    setStatus(.running(version: restartedDaemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
+    setRunning(restartedDaemon, buildNumber: daemonBuildNumber)
   }
 
   private func restartDaemon(

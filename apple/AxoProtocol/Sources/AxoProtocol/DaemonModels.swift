@@ -27,6 +27,31 @@ public struct DaemonHealth: Decodable, Equatable, Sendable {
   public let version: String?
   public let buildNumber: UInt64
   public let status: String
+  /// Whether macOS lets axod run as a developer tool; nil from an axod that does not say.
+  public let developerTools: PermissionState?
+
+  public init(version: String?, buildNumber: UInt64, status: String, developerTools: PermissionState? = nil) {
+    self.version = version
+    self.buildNumber = buildNumber
+    self.status = status
+    self.developerTools = developerTools
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    version = try container.decodeIfPresent(String.self, forKey: .version)
+    buildNumber = try container.decode(UInt64.self, forKey: .buildNumber)
+    status = try container.decode(String.self, forKey: .status)
+    // A state a later axod adds is as good as not saying.
+    developerTools = (try? container.decodeIfPresent(String.self, forKey: .developerTools)).flatMap(PermissionState.init)
+  }
+
+  private enum CodingKeys: String, CodingKey { case version, buildNumber, status, developerTools }
+}
+
+/// How axod stands with one of macOS's privacy permissions.
+public enum PermissionState: String, Equatable, Sendable {
+  case granted, denied, notAsked
 }
 
 public struct ProtocolNegotiation: Decodable, Equatable, Sendable {
