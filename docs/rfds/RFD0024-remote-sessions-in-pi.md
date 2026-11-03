@@ -7,6 +7,7 @@
 - Updated: 2026-11-01
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0022](RFD0022-sessions-across-macs.md)
+- Amended By: [RFD0026](RFD0026-native-remote-panes.md)
 
 ## Summary
 
