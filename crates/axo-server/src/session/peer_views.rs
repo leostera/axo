@@ -127,11 +127,16 @@ struct Listed<'a> {
     value: &'a Value,
 }
 
+/// The other Macs' open Sessions: what the sidebar lists.
 fn listed_sessions(index: &PeerIndex) -> impl Iterator<Item = Listed<'_>> {
+    known_sessions(index)
+        .filter(|listed| listed.value["metadata"]["archived"].as_bool() != Some(true))
+}
+
+/// Every Session of the other Macs, archived ones too: a pane may show one (its copy is fetched
+/// for the pane), or show one that gets archived.
+fn known_sessions(index: &PeerIndex) -> impl Iterator<Item = Listed<'_>> {
     index.sessions.iter().filter_map(|value| {
-        if value["metadata"]["archived"].as_bool() == Some(true) {
-            return None;
-        }
         Some(Listed {
             host_id: value["hostId"].as_str()?,
             session_id: value["sessionId"].as_str()?.parse().ok()?,
@@ -297,11 +302,13 @@ impl SessionManager {
     ) -> io::Result<PeerSession> {
         let access = self.peer_access()?;
         let index = access.read_index();
-        let listed = listed_sessions(&index)
+        let listed = known_sessions(&index)
             .find(|listed| listed.host_id == host_id && listed.session_id == session_id)
             .ok_or_else(|| not_found("that Session is not listed"))?;
         let label = host_of(&index, host_id).map_or_else(|| "Mac".to_owned(), |host| host.label);
         let home = crate::current_user_home_directory()?;
+        // An archived Session has no copy here until a pane shows it: the peers socket fetches it.
+        access.live.want(&session_id.to_string());
         {
             let mut state = self.lock_state()?;
             if !state.peer_views.views.contains_key(&session_id) {
@@ -373,6 +380,9 @@ impl SessionManager {
             "event=peer.view_closed session_id={session_id} host_id={}",
             view.host_id
         );
+        if let Ok(access) = self.peer_access() {
+            access.live.unwant(&session_id.to_string());
+        }
         stop_panes(vec![view.running]);
         self.publish_event(Event::PeerSessionsChanged);
         Ok(true)
@@ -384,8 +394,12 @@ impl SessionManager {
         if exited.is_empty() {
             return Ok(());
         }
+        let access = self.peer_access().ok();
         for (session_id, _) in &exited {
             log::info!("event=peer.view_exited session_id={session_id}");
+            if let Some(access) = &access {
+                access.live.unwant(&session_id.to_string());
+            }
         }
         stop_panes(exited.into_iter().map(|(_, running)| running).collect());
         self.publish_event(Event::PeerSessionsChanged);
@@ -412,7 +426,7 @@ impl SessionManager {
         };
         let index = access.read_index();
         let session_id = request.session_id.to_string();
-        let listed = listed_sessions(&index).find(|listed| {
+        let listed = known_sessions(&index).find(|listed| {
             listed.host_id == request.host_id && listed.session_id == request.session_id
         });
         let host = host_of(&index, &request.host_id);

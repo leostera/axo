@@ -137,6 +137,21 @@ impl Mirror {
         )
     }
 
+    /// Deletes a copy: an archived Session no pane shows. The cloud holds it, and opening it
+    /// fetches it again.
+    pub fn forget(&mut self, place: &Place) -> io::Result<bool> {
+        self.checked.remove(place);
+        let mut removed = false;
+        for path in [self.file(place), self.state_file(place)] {
+            match fs::remove_file(&path) {
+                Ok(()) => removed = true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(removed)
+    }
+
     /// Where the copy is, or None if there is no usable copy.
     pub fn state(&mut self, place: &Place) -> io::Result<Option<CopyState>> {
         let Ok(text) = fs::read_to_string(self.state_file(place)) else {
@@ -417,6 +432,8 @@ struct LiveState {
     /// Commands waiting for the socket to send them.
     outbox: VecDeque<PeerCommand>,
     connected: bool,
+    /// Sessions a remote pane shows: copied even when archived.
+    wanted: HashSet<String>,
 }
 
 type Observer = Box<dyn Fn() + Send + Sync>;
@@ -462,6 +479,27 @@ impl PeerLive {
             Ok((state, _)) => state.version,
             Err(_) => since,
         }
+    }
+
+    /// A remote pane shows this Session: keep its copy, archived or not.
+    pub fn want(&self, session_id: &str) {
+        self.update(|state| {
+            state.wanted.insert(session_id.to_owned());
+        });
+    }
+
+    /// No pane shows it any more: an archived Session's copy may go.
+    pub fn unwant(&self, session_id: &str) {
+        self.update(|state| {
+            state.wanted.remove(session_id);
+        });
+    }
+
+    fn wanted(&self) -> HashSet<String> {
+        self.state
+            .lock()
+            .map(|state| state.wanted.clone())
+            .unwrap_or_default()
     }
 
     /// The newest snapshot of each progress slot of a Session, by slot.
@@ -704,6 +742,10 @@ struct Follower<'a> {
     open: HashMap<String, Place>,
     /// Every listed Session with records: where its copy goes, and its epoch.
     listed: HashMap<String, (Place, u64)>,
+    /// Listed Sessions that are archived: copied only while a pane shows them.
+    archived: HashSet<String>,
+    /// What panes showed when last checked.
+    kept: HashSet<String>,
     index: PeerIndex,
     sent: VecDeque<Instant>,
 }
@@ -729,6 +771,8 @@ impl<'a> Follower<'a> {
             to_open: VecDeque::new(),
             open: HashMap::new(),
             listed: HashMap::new(),
+            archived: HashSet::new(),
+            kept: HashSet::new(),
             index: PeerIndex::default(),
             sent: VecDeque::new(),
         })
@@ -759,6 +803,7 @@ impl<'a> Follower<'a> {
             json!({ "protocolVersion": axo_protocol::rpc::PROTOCOL_VERSION, "clientId": client_id }),
         )?;
         while !self.stop.load(Ordering::Relaxed) && opened.elapsed() < SOCKET_LIFETIME {
+            self.follow_panes()?;
             self.open_more()?;
             for command in self.live.take_commands() {
                 self.forward(command)?;
@@ -893,12 +938,66 @@ impl<'a> Follower<'a> {
                 log::warn!("event=peers.unsafe_place session_id={session_id}");
                 continue;
             };
-            self.listed.insert(session_id.to_owned(), (place, epoch));
+            self.listed
+                .insert(session_id.to_owned(), (place.clone(), epoch));
+            // Archived Sessions stay in the cloud; a copy is kept only while a pane shows one.
+            if session["metadata"]["archived"].as_bool() == Some(true) {
+                self.archived.insert(session_id.to_owned());
+                if !self.kept.contains(session_id) {
+                    self.drop_copy(session_id, &place)?;
+                    continue;
+                }
+            } else {
+                self.archived.remove(session_id);
+            }
             if !self.open.contains_key(session_id)
                 && !self.to_open.iter().any(|queued| queued == session_id)
             {
                 self.to_open.push_back(session_id.to_owned());
             }
+        }
+        Ok(())
+    }
+
+    /// Fetches the archived Sessions panes now show, and drops those no pane shows any more.
+    fn follow_panes(&mut self) -> io::Result<()> {
+        let wanted = self.live.wanted();
+        if wanted == self.kept {
+            return Ok(());
+        }
+        let shown: Vec<String> = wanted.difference(&self.kept).cloned().collect();
+        let hidden: Vec<String> = self.kept.difference(&wanted).cloned().collect();
+        self.kept = wanted;
+        for session_id in shown {
+            if self.archived.contains(&session_id)
+                && !self.open.contains_key(&session_id)
+                && !self.to_open.contains(&session_id)
+            {
+                self.to_open.push_back(session_id);
+            }
+        }
+        for session_id in hidden {
+            if self.archived.contains(&session_id)
+                && let Some((place, _)) = self.listed.get(&session_id).cloned()
+            {
+                self.drop_copy(&session_id, &place)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stops following an archived Session and deletes its copy.
+    fn drop_copy(&mut self, session_id: &str, place: &Place) -> io::Result<()> {
+        if self.open.remove(session_id).is_some() {
+            self.notify(
+                "axo.client.session.close",
+                json!({ "sessionId": session_id }),
+            )?;
+        }
+        self.to_open.retain(|queued| queued != session_id);
+        if self.mirror.forget(place)? {
+            log::info!("event=peers.copy_dropped session_id={session_id} reason=archived");
+            self.live.touch();
         }
         Ok(())
     }
@@ -1368,5 +1467,42 @@ mod tests {
         ]);
         assert_eq!(index.sessions.len(), 2);
         assert_eq!(index.sessions[0]["head"], 4);
+    }
+
+    #[test]
+    fn an_archived_copy_can_be_forgotten_and_copied_again_from_nothing() {
+        let scratch = Scratch::new();
+        let mut mirror = Mirror::new(scratch.0.clone());
+        mirror.start(&place(), 1, HEADER, &records(1..=2)).unwrap();
+        assert!(mirror.forget(&place()).unwrap());
+        assert!(!mirror.file(&place()).exists());
+        assert_eq!(
+            mirror.state(&place()).unwrap(),
+            None,
+            "the next open starts from nothing"
+        );
+        assert!(
+            !mirror.forget(&place()).unwrap(),
+            "forgetting twice is harmless"
+        );
+        mirror.start(&place(), 1, HEADER, &records(1..=2)).unwrap();
+        assert_eq!(
+            mirror.state(&place()).unwrap(),
+            Some(CopyState {
+                epoch: 1,
+                cursor: 2
+            })
+        );
+    }
+
+    #[test]
+    fn panes_mark_the_sessions_they_show_and_each_change_wakes_a_waiting_pane() {
+        let live = PeerLive::new();
+        let before = live.version();
+        live.want(SESSION);
+        assert!(live.wanted().contains(SESSION));
+        assert!(live.version() > before);
+        live.unwant(SESSION);
+        assert!(live.wanted().is_empty());
     }
 }

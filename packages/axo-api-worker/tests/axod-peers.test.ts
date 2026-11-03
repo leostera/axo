@@ -96,4 +96,18 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   const described = async (hostId: string) => JSON.parse(await readFile(join(sessions, hostId, "host.json"), "utf8")) as { hostId: string; label: string };
   assert.deepEqual(await described(studioHost.hostId), { hostId: studioHost.hostId, label: "Mac Studio" });
   assert.equal((await described(laptop.hostId)).hostId, laptop.hostId);
+
+  // Archived, the chat stays in the cloud: the copy goes.
+  const archived = await studio.call("axo.host.sync", {
+    hostId: studioHost.hostId, hostGeneration: studioHost.hostGeneration, round: 2,
+    sessions: [transcript.manifestRow(2, { archived: true })],
+  });
+  assert.ok("result" in archived, JSON.stringify(archived));
+  await waitFor("the archived chat's copy to go", 20_000, async () => (existsSync(copy) ? undefined : true), daemon);
+
+  // A pane on it fetches it again, and closing the pane lets it go.
+  await localCall(socketPath, "axo.peer.session.open", { hostId: studioHost.hostId, sessionId: transcript.sessionId });
+  await waitFor("the copy fetched for the pane", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
+  await localCall(socketPath, "axo.peer.session.close", { hostId: studioHost.hostId, sessionId: transcript.sessionId });
+  await waitFor("the copy to go with the pane", 20_000, async () => (existsSync(copy) ? undefined : true), daemon);
 });
