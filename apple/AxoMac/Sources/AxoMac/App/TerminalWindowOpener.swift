@@ -37,38 +37,70 @@ enum TerminalWindowOpener {
   }
 }
 
-/// Put on the terminal window's content: whenever the window shows while the splash is pending
-/// (at launch) or while Axod isn't running (starting, restarting, gone), it is hidden before it
-/// draws and the splash opens instead; the splash brings it back once Axod is up.
+/// Put on the terminal window's content: the terminal shows only a fully operational Axod
+/// (`LaunchSplashGate.terminalHold`). Whenever the window would show while the splash is pending
+/// (at launch) or Axod isn't operational (starting, updating, restarting, gone, its catalog
+/// down), it is hidden before it draws and the splash opens instead; the splash brings it back
+/// once Axod is operational again.
 struct TerminalSplashHold: NSViewRepresentable {
-  var daemonRunning: Bool
+  var hold: LaunchSplashGate.TerminalHold
   var openSplash: () -> Void
 
   func makeNSView(context: Context) -> HoldView {
     let view = HoldView()
     view.openSplash = openSplash
-    view.daemonRunning = daemonRunning
+    view.hold = hold
     return view
   }
 
   func updateNSView(_ nsView: HoldView, context: Context) {
     nsView.openSplash = openSplash
-    nsView.daemonRunning = daemonRunning
+    nsView.hold = hold
   }
 
   final class HoldView: NSView {
     var openSplash: (() -> Void)?
-    var daemonRunning = true {
-      didSet { if !daemonRunning, oldValue, let window { holdForSplash(window) } }
+    var hold = LaunchSplashGate.TerminalHold.show {
+      didSet { if hold != oldValue { apply() } }
     }
+    /// How long a catalog outage is waited out (`LaunchSplashGate.catalogOutageGrace`).
+    var grace = LaunchSplashGate.catalogOutageGrace
+    /// The hold waiting out `grace`.
+    private var pendingHold: DispatchWorkItem?
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
       super.viewWillMove(toWindow: newWindow)
-      guard let newWindow, TerminalWindowOpener.heldForSplash || !daemonRunning else { return }
-      holdForSplash(newWindow)
+      guard let newWindow else { return }
+      // Opened while Axod isn't operational, even within the grace: straight to the splash.
+      if TerminalWindowOpener.heldForSplash || hold != .show { holdForSplash(newWindow) }
+    }
+
+    private func apply() {
+      switch hold {
+      case .show:
+        pendingHold?.cancel()
+        pendingHold = nil
+      case .holdNow:
+        pendingHold?.cancel()
+        pendingHold = nil
+        if let window { holdForSplash(window) }
+      case .holdAfterGrace:
+        guard pendingHold == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+          guard let self else { return }
+          self.pendingHold = nil
+          if self.hold != .show, let window = self.window { self.holdForSplash(window) }
+        }
+        pendingHold = work
+        let seconds = Double(grace.components.seconds) + Double(grace.components.attoseconds) / 1e18
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+      }
     }
 
     private func holdForSplash(_ window: NSWindow) {
+      // Already given way to the splash.
+      guard !(TerminalWindowOpener.heldForSplash && TerminalWindowOpener.heldWindow === window)
+      else { return }
       TerminalWindowOpener.heldForSplash = true
       TerminalWindowOpener.heldWindow = window
       window.alphaValue = 0

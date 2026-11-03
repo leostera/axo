@@ -46,9 +46,12 @@ final class TerminalCatalogSync {
     task = Task { [weak self] in await self?.run() }
   }
 
+  /// Stops the stream. The catalog is no longer live: a `.live` left from this Axod must not
+  /// stand for the next one (the splash would reveal the terminal before it is connected).
   func stop() {
     task?.cancel()
     task = nil
+    sessions.setCatalogConnection(.connecting)
   }
 
   private func run() async {

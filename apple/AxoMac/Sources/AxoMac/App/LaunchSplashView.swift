@@ -30,7 +30,8 @@ struct LaunchSplashView: View {
   @State private var revealed = false
 
   private var ready: Bool {
-    daemonIsRunning() && sessions.catalogConnection == .live
+    LaunchSplashGate.isOperational(
+      daemonRunning: daemonIsRunning(), catalogLive: sessions.catalogConnection == .live)
   }
 
   private var progress: Double {
@@ -117,6 +118,12 @@ struct LaunchSplashView: View {
     if let puppet, !reduceMotion {
       puppet.react(.happy)
       try? await Task.sleep(for: Self.happyBeat)
+    }
+    // Axod may have gone again during the beat (an update restarting it): keep waiting.
+    guard ready else {
+      revealed = false
+      puppet?.setLoading(true)
+      return
     }
     revealTerminal()
   }

@@ -103,7 +103,9 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         isDaemonRunningOverride: environment.startsDaemon ? nil : true
       )
       .background {
-        if usesSplash { SplashHoldOpener(daemonIsRunning: environment.daemonIsRunning) }
+        if usesSplash {
+          SplashHoldOpener(daemonIsRunning: environment.daemonIsRunning, sessions: sessions)
+        }
       }
       .preferredColorScheme(appearanceTheme.colorScheme)
       .task { await environment.prepareTerminalWindow(sessions, ghostty) }
@@ -275,9 +277,13 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
 private struct SplashHoldOpener: View {
   @Environment(\.openWindow) private var openWindow
   var daemonIsRunning: @MainActor () -> Bool
+  var sessions: TerminalSessionsModel
 
   var body: some View {
-    TerminalSplashHold(daemonRunning: daemonIsRunning()) { openWindow(id: LaunchSplashView.windowID) }
+    TerminalSplashHold(
+      hold: LaunchSplashGate.terminalHold(
+        daemonRunning: daemonIsRunning(), catalogLive: sessions.catalogConnection == .live)
+    ) { openWindow(id: LaunchSplashView.windowID) }
   }
 }
 

@@ -436,6 +436,18 @@ final class TerminalCatalogTests: XCTestCase {
     try await waitUntil { model.catalogConnection == .live }
   }
 
+  func testStoppingTheStreamMeansTheCatalogIsNoLongerLive() async throws {
+    let client = FakeAxodClient()
+    let model = makeModel(client)
+    let sync = TerminalCatalogSync(sessions: model, client: client)
+    sync.start()
+    try await waitUntil { model.catalogConnection == .live }
+    // Axod stopping (an update restarting it): a `.live` from this Axod must not stand for the
+    // next one, or the splash would reveal the terminal before it is connected.
+    sync.stop()
+    XCTAssertEqual(model.catalogConnection, .connecting)
+  }
+
   func testBatchedEventsApplyInOrder() async throws {
     let client = FakeAxodClient()
     let model = makeModel(client)

@@ -1,14 +1,41 @@
 import AxoDaemonManager
 import Foundation
 
-/// When the launch splash gives way to the terminal window.
+/// When the launch splash and the terminal window trade places.
 ///
-/// The terminal window only ever shows a live Axod: the splash stays up until Axod is running
-/// and the Session catalog is live, however long that takes, and it stays up long enough not to
-/// flash. When Axod can't start without the person, the splash says why and offers the fix.
+/// The terminal window only ever shows a fully operational Axod: running, with this run's
+/// Session catalog live. Until then (launching, updating, restarting, or after Axod goes away)
+/// only the splash shows, however long that takes, and it stays up long enough not to flash.
+/// When Axod can't start without the person, the splash says why and offers the fix.
 enum LaunchSplashGate {
   /// Shorter than this reads as a flicker.
   static let minimumShown: Duration = .milliseconds(900)
+
+  /// How long the catalog may be down while Axod is still reported running before the terminal
+  /// gives way to the splash: long enough for one failed request to recover on its first retry
+  /// (`TerminalCatalogSync` retries after 250 ms), short of the restart that follows a real outage.
+  static let catalogOutageGrace: Duration = .milliseconds(1500)
+
+  /// Whether the terminal window may show.
+  static func isOperational(daemonRunning: Bool, catalogLive: Bool) -> Bool {
+    daemonRunning && catalogLive
+  }
+
+  /// What the terminal window does about Axod's state.
+  enum TerminalHold: Equatable {
+    /// Axod is operational: show it.
+    case show
+    /// Axod isn't running (starting, updating, restarting, failed): the splash, now.
+    case holdNow
+    /// Axod is reported running but its catalog is down: the splash, unless the catalog is back
+    /// within `catalogOutageGrace`.
+    case holdAfterGrace
+  }
+
+  static func terminalHold(daemonRunning: Bool, catalogLive: Bool) -> TerminalHold {
+    if !daemonRunning { return .holdNow }
+    return catalogLive ? .show : .holdAfterGrace
+  }
 
   /// How far along launch is, for the progress bar: Axod starting, Axod up, the catalog live.
   static func progress(daemonRunning: Bool, catalogLive: Bool) -> Double {
