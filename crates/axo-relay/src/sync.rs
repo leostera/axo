@@ -9,10 +9,14 @@
 //! backfill. Any failure (a gap, a conflict, a timeout) starts the handshake again, and its
 //! answer says what the cloud holds.
 //!
+//! An archived Session the cloud acknowledged whole is deleted here (RFD0027). From then on its
+//! manifest row has no upload, which leaves the cloud's copy as it is, until reopening it
+//! restores the file.
+//!
 //! This runs on its own thread and reaches the cloud through `RelayChannel`.
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -151,6 +155,8 @@ pub struct SyncSession {
     pub metadata: SessionMetadata,
     /// Open Sessions only: what the Mac shows.
     pub status: Option<SessionStatus>,
+    /// Deleted here and held by the cloud (RFD0027): nothing is uploaded, nor read.
+    pub transcript_in_cloud: bool,
 }
 
 /// What `axo.db` keeps per Session: the last position and chain the cloud acknowledged, and the
@@ -162,6 +168,7 @@ pub struct StoredSyncState {
     pub chain: Option<String>,
     pub metadata_json: Option<String>,
     pub metadata_version: u64,
+    pub in_cloud: bool,
 }
 
 /// Wakes the uploader early: a Session changed, or the socket reconnected.
@@ -312,6 +319,20 @@ impl LocalFile {
         Ok(changed)
     }
 
+    /// Every byte of the file is a record already hashed: nothing partial, nothing refused.
+    /// Returns its length then.
+    fn whole_length(&self) -> io::Result<Option<u64>> {
+        let Some(path) = &self.path else {
+            return Ok(None);
+        };
+        let length = match fs::metadata(path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok((!self.invalid && self.transcript.is_some() && length == self.hashed).then_some(length))
+    }
+
     fn mark_invalid(&mut self, path: &std::path::Path) {
         self.invalid = true;
         log::warn!(
@@ -366,6 +387,8 @@ struct SessionSync {
     status_sent: Option<SessionStatus>,
     /// Known after a handshake; `None` until then, or while it needs another.
     cloud: Option<Cloud>,
+    /// axod would not delete the transcript; not asked again until the Session changes.
+    eviction_refused: bool,
 }
 
 struct Uploader {
@@ -430,7 +453,12 @@ impl Uploader {
         self.send_metadata_and_status();
         match self.upload_next() {
             Ok(true) => Duration::ZERO,
-            Ok(false) => POLL_OPEN,
+            Ok(false) => {
+                if let Err(error) = self.evict_next() {
+                    log::warn!("event=sync.evict outcome=failed reason={error}");
+                }
+                POLL_OPEN
+            }
             Err(error) => {
                 log::warn!("event=sync.append outcome=failed reason={error}");
                 self.handshake_due = true;
@@ -475,6 +503,7 @@ impl Uploader {
                             status: None,
                             status_sent: None,
                             cloud: None,
+                            eviction_refused: false,
                         },
                     );
                 }
@@ -483,12 +512,17 @@ impl Uploader {
                     .get_mut(&session.session_id)
                     .expect("inserted above");
                 metadata.keep_workspace_state(&entry.metadata);
-                if entry.file.path != session.pi_session_file {
-                    entry.file = LocalFile::new(session.pi_session_file.clone());
+                // A transcript in the cloud is not read: a file there is one being restored.
+                let path = (!session.transcript_in_cloud)
+                    .then(|| session.pi_session_file.clone())
+                    .flatten();
+                if entry.file.path != path {
+                    entry.file = LocalFile::new(path);
                 }
                 if entry.metadata != metadata || entry.metadata_version == 0 {
                     entry.metadata = metadata;
                     entry.metadata_version += 1;
+                    entry.eviction_refused = false;
                     self.host.store_sync_metadata(
                         session.session_id,
                         &serde_json::to_string(&entry.metadata).map_err(io::Error::other)?,
@@ -765,6 +799,56 @@ impl Uploader {
         Ok(true)
     }
 
+    /// Deletes one archived Session's transcript the cloud holds whole (RFD0027). Its file is
+    /// read again first: a line written since then waits for its upload.
+    fn evict_next(&mut self) -> io::Result<()> {
+        let candidate = self.sessions.iter().find_map(|(id, session)| {
+            let count = session.file.count();
+            (session.metadata.archived
+                && !session.eviction_refused
+                && count > 0
+                && session.cloud.is_some_and(|cloud| cloud.count == count))
+            .then_some(*id)
+        });
+        let Some(session_id) = candidate else {
+            return Ok(());
+        };
+        let session = self.sessions.get_mut(&session_id).expect("found above");
+        if session.file.refresh()? {
+            return Ok(());
+        }
+        let count = session.file.count();
+        let (Some(length), Some(chain)) = (
+            session.file.whole_length()?,
+            session
+                .file
+                .transcript
+                .as_ref()
+                .and_then(|transcript| transcript.chain_at(count))
+                .map(str::to_owned),
+        ) else {
+            return Ok(());
+        };
+        if session.cloud.is_none_or(|cloud| cloud.count != count) {
+            return Ok(());
+        }
+        let evicted = self
+            .host
+            .evict_transcript(session_id, count, &chain, length)?;
+        log::info!(
+            "event=sync.evict session_id={session_id} records={count} bytes={length} outcome={}",
+            if evicted { "deleted" } else { "kept" }
+        );
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            if evicted {
+                session.file = LocalFile::new(None);
+            } else {
+                session.eviction_refused = true;
+            }
+        }
+        Ok(())
+    }
+
     /// Open Sessions first, the most recently active first, then archived ones.
     fn next_session(&self) -> Option<SessionId> {
         self.sessions
@@ -886,6 +970,22 @@ struct AppendReply {
     count: u64,
 }
 
+/// How many records a Pi transcript has and the chain at the last, if every line of it is a
+/// whole record (RFD0027: a restored transcript must be the one that was deleted).
+pub fn transcript_chain(path: &std::path::Path) -> io::Result<Option<(u64, String)>> {
+    let mut file = LocalFile::new(Some(path.to_owned()));
+    file.refresh()?;
+    if file.whole_length()?.is_none() {
+        return Ok(None);
+    }
+    let count = file.count();
+    Ok(file
+        .transcript
+        .as_ref()
+        .and_then(|transcript| transcript.chain_at(count))
+        .map(|chain| (count, chain.to_owned())))
+}
+
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -928,6 +1028,37 @@ mod tests {
     }
 
     const HEADER: &str = r#"{"type":"session","version":3,"id":"s"}"#;
+
+    #[test]
+    fn a_transcript_has_a_chain_only_when_every_line_is_a_whole_record() {
+        let whole = temp_file(&format!(
+            "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\":\"b\",\"parentId\":\"a\"}}\n"
+        ));
+        let mut expected = Transcript::start(HEADER);
+        expected.push(r#"{"id":"a","parentId":null}"#);
+        expected.push(r#"{"id":"b","parentId":"a"}"#);
+        assert_eq!(
+            transcript_chain(&whole).unwrap(),
+            Some((2, expected.chain().to_owned()))
+        );
+        let partial = temp_file(&format!(
+            "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\""
+        ));
+        assert_eq!(
+            transcript_chain(&partial).unwrap(),
+            None,
+            "a partial last line"
+        );
+        let refused = temp_file(&format!("{HEADER}\nnot a record\n"));
+        assert_eq!(
+            transcript_chain(&refused).unwrap(),
+            None,
+            "a line that is not a record"
+        );
+        for path in [whole, partial, refused] {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 
     #[test]
     fn a_file_is_hashed_line_by_line_and_a_partial_last_line_waits() {

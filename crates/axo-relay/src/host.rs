@@ -97,6 +97,16 @@ pub trait RelayHost: Send + Sync {
         metadata_json: &str,
         version: u64,
     ) -> io::Result<()>;
+    /// Deletes an archived Session's transcript, which the cloud acknowledged whole at
+    /// `position` and `chain` while the file was `length` bytes (RFD0027). Records it in `axo.db`
+    /// first; returns false, deleting nothing, if the Session no longer qualifies.
+    fn evict_transcript(
+        &self,
+        session_id: SessionId,
+        position: u64,
+        chain: &str,
+        length: u64,
+    ) -> io::Result<bool>;
     /// Raises and returns the handshake round, which outlives sockets and restarts.
     fn next_sync_round(&self) -> io::Result<u64>;
     /// Subscribes to local events (including terminal output); returns the subscription ID.

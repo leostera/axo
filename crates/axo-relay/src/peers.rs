@@ -416,6 +416,19 @@ impl PeerCommandError {
     }
 }
 
+/// This Mac's own Session to fetch back from the cloud whole (RFD0027).
+struct RestoreRequest {
+    place: Place,
+    count: u64,
+    reply: mpsc::Sender<io::Result<PathBuf>>,
+}
+
+/// A restore under way on the socket.
+struct Restoring {
+    count: u64,
+    reply: mpsc::Sender<io::Result<PathBuf>>,
+}
+
 struct PeerCommand {
     host_id: String,
     method: String,
@@ -434,6 +447,8 @@ struct LiveState {
     connected: bool,
     /// Sessions a remote pane shows: copied even when archived.
     wanted: HashSet<String>,
+    /// This Mac's transcripts to fetch back from the cloud.
+    restores: Vec<RestoreRequest>,
 }
 
 type Observer = Box<dyn Fn() + Send + Sync>;
@@ -493,6 +508,34 @@ impl PeerLive {
         self.update(|state| {
             state.wanted.remove(session_id);
         });
+    }
+
+    /// Fetches this Mac's own transcript at `place` back from the cloud, all `count` records
+    /// of it, into the restore folder (RFD0027). Returns where it is there; the caller checks
+    /// it and moves it into place.
+    pub fn restore(&self, place: Place, count: u64, timeout: Duration) -> io::Result<PathBuf> {
+        let (reply, answer) = mpsc::channel();
+        self.update(|state| {
+            state.restores.push(RestoreRequest {
+                place,
+                count,
+                reply,
+            })
+        });
+        match answer.recv_timeout(timeout) {
+            Ok(outcome) => outcome,
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the transcript could not be fetched from the cloud",
+            )),
+        }
+    }
+
+    fn take_restores(&self) -> Vec<RestoreRequest> {
+        self.state
+            .lock()
+            .map(|mut state| state.restores.drain(..).collect())
+            .unwrap_or_default()
     }
 
     fn wanted(&self) -> HashSet<String> {
@@ -708,6 +751,15 @@ fn run(dependencies: PeersDependencies, stop: Arc<AtomicBool>) {
     }
 }
 
+/// Where this Mac's own transcripts are fetched to before they are checked and moved into
+/// place: `server/restoring`, beside the index.
+pub fn restore_directory(index: &Path) -> PathBuf {
+    index.parent().map_or_else(
+        || PathBuf::from("restoring"),
+        |server| server.join("restoring"),
+    )
+}
+
 fn sleep_unless_stopped(stop: &AtomicBool, delay: Duration) {
     let until = Instant::now() + delay;
     while Instant::now() < until && !stop.load(Ordering::Relaxed) {
@@ -746,6 +798,11 @@ struct Follower<'a> {
     archived: HashSet<String>,
     /// What panes showed when last checked.
     kept: HashSet<String>,
+    /// This Mac's own Sessions being fetched back, and where (`server/restoring`).
+    restoring: HashMap<String, Restoring>,
+    restore_mirror: Mirror,
+    /// The epoch the cloud lists each of this Mac's own Sessions at.
+    own_epochs: HashMap<String, u64>,
     index: PeerIndex,
     sent: VecDeque<Instant>,
 }
@@ -773,6 +830,9 @@ impl<'a> Follower<'a> {
             listed: HashMap::new(),
             archived: HashSet::new(),
             kept: HashSet::new(),
+            restoring: HashMap::new(),
+            restore_mirror: Mirror::new(restore_directory(&dependencies.index)),
+            own_epochs: HashMap::new(),
             index: PeerIndex::default(),
             sent: VecDeque::new(),
         })
@@ -804,6 +864,7 @@ impl<'a> Follower<'a> {
         )?;
         while !self.stop.load(Ordering::Relaxed) && opened.elapsed() < SOCKET_LIFETIME {
             self.follow_panes()?;
+            self.start_restores()?;
             self.open_more()?;
             for command in self.live.take_commands() {
                 self.forward(command)?;
@@ -840,6 +901,7 @@ impl<'a> Follower<'a> {
                             place.session_id
                         );
                         self.open.remove(&place.session_id);
+                        self.fail_restore(&place.session_id, format!("the cloud refused: {error}"));
                         Ok(())
                     }
                     Pending::Command { reply } => {
@@ -917,6 +979,14 @@ impl<'a> Follower<'a> {
 
     /// Lists Sessions, and opens those with records this Mac has not opened yet.
     fn listed_sessions(&mut self, sessions: &[Value]) -> io::Result<()> {
+        for session in sessions {
+            if session["hostId"].as_str() == Some(self.own_host_id)
+                && let (Some(session_id), Some(epoch)) =
+                    (session["sessionId"].as_str(), session["epoch"].as_u64())
+            {
+                self.own_epochs.insert(session_id.to_owned(), epoch);
+            }
+        }
         let theirs: Vec<Value> = sessions
             .iter()
             .filter(|session| session["hostId"].as_str() != Some(self.own_host_id))
@@ -957,6 +1027,94 @@ impl<'a> Follower<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Opens this Mac's own Sessions that are to be fetched back, each from nothing.
+    fn start_restores(&mut self) -> io::Result<()> {
+        for request in self.live.take_restores() {
+            let session_id = request.place.session_id.clone();
+            if request.place.host_id != self.own_host_id || self.restoring.contains_key(&session_id)
+            {
+                let _ = request.reply.send(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "only one restore of this Mac's own Session at a time",
+                )));
+                continue;
+            }
+            if let Err(error) = self.restore_mirror.forget(&request.place) {
+                let _ = request.reply.send(Err(error));
+                continue;
+            }
+            let epoch = self.own_epochs.get(&session_id).copied().unwrap_or(1);
+            self.restoring.insert(
+                session_id.clone(),
+                Restoring {
+                    count: request.count,
+                    reply: request.reply,
+                },
+            );
+            self.open.insert(session_id.clone(), request.place.clone());
+            log::info!(
+                "event=peers.restore_started session_id={session_id} records={}",
+                request.count
+            );
+            self.call(
+                Pending::Open {
+                    place: request.place,
+                    from_nothing: true,
+                },
+                "axo.client.session.open",
+                json!({
+                    "hostId": self.own_host_id,
+                    "sessionId": session_id,
+                    "have": { "epoch": epoch, "cursor": 0 },
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A restore is done once its copy has every record; it is closed on the socket then.
+    fn restored(&mut self, place: &Place, state: CopyState) -> io::Result<()> {
+        let Some(restoring) = self.restoring.get(&place.session_id) else {
+            return Ok(());
+        };
+        if state.cursor < restoring.count {
+            return Ok(());
+        }
+        let restoring = self
+            .restoring
+            .remove(&place.session_id)
+            .expect("found above");
+        self.open.remove(&place.session_id);
+        self.notify(
+            "axo.client.session.close",
+            json!({ "sessionId": place.session_id }),
+        )?;
+        log::info!(
+            "event=peers.restored session_id={} records={}",
+            place.session_id,
+            state.cursor
+        );
+        let _ = restoring.reply.send(Ok(self.restore_mirror.file(place)));
+        Ok(())
+    }
+
+    fn fail_restore(&mut self, session_id: &str, reason: String) {
+        if let Some(restoring) = self.restoring.remove(session_id) {
+            log::warn!("event=peers.restore_failed session_id={session_id} reason={reason}");
+            self.open.remove(session_id);
+            let _ = restoring.reply.send(Err(io::Error::other(reason)));
+        }
+    }
+
+    /// This Mac's own Sessions are restored apart from the copies of other Macs'.
+    fn mirror_of(&mut self, place: &Place) -> &mut Mirror {
+        if place.host_id == self.own_host_id {
+            &mut self.restore_mirror
+        } else {
+            self.mirror
+        }
     }
 
     /// Fetches the archived Sessions panes now show, and drops those no pane shows any more.
@@ -1054,13 +1212,16 @@ impl<'a> Follower<'a> {
                     "event=peers.open_without_header session_id={}",
                     place.session_id
                 );
+                self.fail_restore(&place.session_id, "the cloud has no header".to_owned());
                 return Ok(());
             };
-            self.mirror.start(place, epoch, header, &records)
+            self.mirror_of(place).start(place, epoch, header, &records)
         } else {
-            self.mirror.append(place, epoch, &records)
+            self.mirror_of(place).append(place, epoch, &records)
         };
-        self.copied(place, copied).map(|_| ())?;
+        if let Some(state) = self.copied(place, copied)? {
+            self.restored(place, state)?;
+        }
         self.live.touch();
         Ok(())
     }
@@ -1076,13 +1237,14 @@ impl<'a> Follower<'a> {
         };
         let records: Vec<ClientRecord> =
             serde_json::from_value(params["records"].clone()).unwrap_or_default();
-        let copied = self.mirror.append(&place, epoch, &records);
+        let copied = self.mirror_of(&place).append(&place, epoch, &records);
         if let Some(state) = self.copied(&place, copied)? {
             // Only what is on disk is acknowledged; the next batch follows the acknowledgement.
             self.notify(
                 "axo.client.session.ack",
                 json!({ "sessionId": session_id, "cursor": state.cursor }),
             )?;
+            self.restored(&place, state)?;
             self.live.touch();
         }
         Ok(())
@@ -1099,7 +1261,11 @@ impl<'a> Follower<'a> {
         let Some(place) = self.open.get(session_id).cloned() else {
             return Ok(());
         };
-        let reset = self.mirror.reset(&place, epoch, keep);
+        // A restore told of another epoch before its first records has nothing to cut.
+        if self.restoring.contains_key(session_id) && self.restore_mirror.state(&place)?.is_none() {
+            return Ok(());
+        }
+        let reset = self.mirror_of(&place).reset(&place, epoch, keep);
         self.copied(&place, reset).map(|_| ())?;
         self.live.touch();
         Ok(())
@@ -1146,6 +1312,14 @@ impl<'a> Follower<'a> {
                     io::ErrorKind::InvalidData | io::ErrorKind::NotFound
                 ) =>
             {
+                if self.restoring.contains_key(&place.session_id) {
+                    self.notify(
+                        "axo.client.session.close",
+                        json!({ "sessionId": place.session_id }),
+                    )?;
+                    self.fail_restore(&place.session_id, error.to_string());
+                    return Ok(None);
+                }
                 log::warn!(
                     "event=peers.copy_reopened session_id={} reason={error}",
                     place.session_id

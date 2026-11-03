@@ -399,6 +399,10 @@ impl SessionManager {
             ));
         }
         let session_file = PathBuf::from(requested_session_file);
+        if !session_file.exists() {
+            // An archived Session's transcript may be in the cloud only (RFD0027).
+            self.restore_transcript(None, Some(requested_session_file))?;
+        }
         let canonical_directory = fs::canonicalize(self.pi_directories.home_of(&session_file))?;
         let canonical_file = fs::canonicalize(&session_file)?;
         if !canonical_file.starts_with(&canonical_directory)
@@ -526,6 +530,10 @@ impl SessionManager {
                 "archived Session does not have exactly one Pi pane",
             ));
         }
+        // Its transcript may be in the cloud only (RFD0027): it is fetched back first, and is
+        // not deleted again before the reopen commits.
+        let _reopening = super::cloud_transcripts::Reopening::begin(self, session_id)?;
+        self.restore_transcript(Some(session_id), None)?;
 
         let pi_shells = {
             let mut state = self.lock_state()?;
@@ -542,6 +550,7 @@ impl SessionManager {
                 ));
             }
 
+            super::cloud_transcripts::reopened_with_transcript(&state.database, session_id)?;
             reopen_archived_session(&mut state.database, session_id, workspace_id.as_deref())?;
             if let Some((workspace_id, access)) = workspace_access {
                 self.workspace_access

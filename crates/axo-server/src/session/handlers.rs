@@ -53,6 +53,13 @@ impl axo_relay::RelayHost for RelayHostAdapter {
 
     fn sync_catalog(&self) -> io::Result<Vec<axo_relay::SyncSession>> {
         let catalog = self.0.session_catalog()?;
+        let in_cloud: std::collections::HashSet<String> = self
+            .0
+            .sync_states()?
+            .into_iter()
+            .filter(|state| state.in_cloud)
+            .map(|state| state.session_id)
+            .collect();
         let open = catalog.sessions.into_iter().map(|session| {
             let workspace_state = self.0.workspace_states.get(session.id);
             if workspace_state.is_none() {
@@ -80,6 +87,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                     workspace_state,
                 },
                 status: Some(session.status),
+                transcript_in_cloud: in_cloud.contains(&session.id.to_string()),
                 pi_session_file: session.pi_session_file,
             }
         });
@@ -100,6 +108,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                     workspace_state: None,
                 },
                 status: None,
+                transcript_in_cloud: in_cloud.contains(&session.id.to_string()),
                 pi_session_file: session.pi_session_file,
             });
         Ok(open.chain(archived).collect())
@@ -116,6 +125,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                 chain: state.chain,
                 metadata_json: state.metadata_json,
                 metadata_version: state.metadata_version,
+                in_cloud: state.in_cloud,
             })
             .collect())
     }
@@ -137,6 +147,16 @@ impl axo_relay::RelayHost for RelayHostAdapter {
     ) -> io::Result<()> {
         self.0
             .store_sync_metadata(session_id, metadata_json, version)
+    }
+
+    fn evict_transcript(
+        &self,
+        session_id: SessionId,
+        position: u64,
+        chain: &str,
+        length: u64,
+    ) -> io::Result<bool> {
+        self.0.evict_transcript(session_id, position, chain, length)
     }
 
     fn next_sync_round(&self) -> io::Result<u64> {

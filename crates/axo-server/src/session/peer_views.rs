@@ -42,8 +42,8 @@ const PEER_COMMANDS: &[&str] = &[
 
 /// How this Mac follows the others, once the relay has started.
 pub(super) struct PeerAccess {
-    live: Arc<PeerLive>,
-    index: PathBuf,
+    pub(super) live: Arc<PeerLive>,
+    pub(super) index: PathBuf,
     sessions_directory: PathBuf,
 }
 
@@ -211,7 +211,7 @@ impl SessionManager {
         });
     }
 
-    fn peer_access(&self) -> io::Result<&PeerAccess> {
+    pub(super) fn peer_access(&self) -> io::Result<&PeerAccess> {
         self.peers
             .get()
             .ok_or_else(|| not_found("this Mac does not follow the account's other Macs"))

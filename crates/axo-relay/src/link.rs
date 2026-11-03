@@ -261,6 +261,15 @@ pub(crate) mod testing {
         ) -> std::io::Result<()> {
             unreachable!()
         }
+        fn evict_transcript(
+            &self,
+            _: axo_protocol::SessionId,
+            _: u64,
+            _: &str,
+            _: u64,
+        ) -> std::io::Result<bool> {
+            unreachable!()
+        }
         fn next_sync_round(&self) -> std::io::Result<u64> {
             unreachable!()
         }

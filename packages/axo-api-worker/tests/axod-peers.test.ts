@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { join, resolve } from "node:path";
-import { test } from "node:test";
-import { appendResultSchema } from "@axo/protocol";
+import { dirname, join, resolve } from "node:path";
+import { test, type TestContext } from "node:test";
+import { SYNC, appendResultSchema } from "@axo/protocol";
 import type { Peer } from "../testing/client";
 import { harness, signIn } from "./harness";
 import { listHosts, localCall, terminate, waitFor } from "./axod-support";
-import { FakeTranscript, connectHost, pairHost, userMessage } from "./account-support";
+import { FakeTranscript, assistantMessage, connectClient, connectHost, pairHost, userMessage } from "./account-support";
 
 async function append(daemon: Peer, transcript: FakeTranscript, from: number, header = false) {
   const reply = await daemon.call("axo.host.session.append", {
@@ -27,11 +27,13 @@ function piFile(transcript: FakeTranscript): string {
   return [transcript.transcript.header, ...transcript.records(1).map((record) => record.line)].map((line) => `${line}\n`).join("");
 }
 
-test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while it is written (RFD0022)", async (t) => {
+/** A real axod on a scratch home, against the Worker; stopped when the test ends. */
+async function startAxod(t: TestContext) {
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
   const api = await harness();
-  const root = await mkdtemp(join(tmpdir(), "axo-axod-peers-"));
+  // Resolved: a Session's folder must be inside its Workspace, as macOS names both.
+  const root = await realpath(await mkdtemp(join(tmpdir(), "axo-axod-peers-")));
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
@@ -56,11 +58,24 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
     },
   });
   await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
+  return { api, root, serverDirectory, socketPath, daemon, setStudio: (peer: Peer) => { studio = peer; } };
+}
+
+/** Pairs the axod with the account: pairing is all it takes (RFD0022). */
+async function link(api: Awaited<ReturnType<typeof harness>>, account: Awaited<ReturnType<typeof signIn>>, socketPath: string) {
+  const pairing = await fetch(new URL("api/v1/account/host-pairings", api.url), { method: "POST", headers: account.headers });
+  const { code } = (await pairing.json()) as { code: string };
+  assert.equal(((await localCall(socketPath, "axo.relay.link", { code })) as { linked: boolean }).linked, true);
+}
+
+test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while it is written (RFD0022)", async (t) => {
+  const { api, root, serverDirectory, socketPath, daemon, setStudio } = await startAxod(t);
 
   // The account has another Mac, the Studio, with a chat going.
   const account = await signIn(api);
   const studioHost = await pairHost(api, account, "Mac Studio");
-  studio = await connectHost(api, account, studioHost);
+  const studio = await connectHost(api, account, studioHost);
+  setStudio(studio);
   const transcript = await FakeTranscript.create();
   await transcript.write(userMessage("Fix the relay backoff"), userMessage("and test it"));
   const synced = await studio.call("axo.host.sync", { hostId: studioHost.hostId, hostGeneration: studioHost.hostGeneration, round: 1, sessions: [transcript.manifestRow()] });
@@ -68,9 +83,7 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   await append(studio, transcript, 1, true);
 
   // This Mac pairs; pairing is all it takes to follow the account.
-  const pairing = await fetch(new URL("api/v1/account/host-pairings", api.url), { method: "POST", headers: account.headers });
-  const { code } = (await pairing.json()) as { code: string };
-  assert.equal(((await localCall(socketPath, "axo.relay.link", { code })) as { linked: boolean }).linked, true);
+  await link(api, account, socketPath);
   const laptop = await waitFor("axod online", 20_000, async () =>
     (await listHosts(api.url, account)).find((host) => host.hostId !== studioHost.hostId && host.status === "online"), daemon);
 
@@ -110,4 +123,42 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   await waitFor("the copy fetched for the pane", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
   await localCall(socketPath, "axo.peer.session.close", { hostId: studioHost.hostId, sessionId: transcript.sessionId });
   await waitFor("the copy to go with the pane", 20_000, async () => (existsSync(copy) ? undefined : true), daemon);
+});
+
+test("this Mac's archived Session is deleted once the cloud holds it whole, and reopening it fetches it back (RFD0027)", async (t) => {
+  const { api, socketPath, daemon } = await startAxod(t);
+  const account = await signIn(api);
+  await link(api, account, socketPath);
+
+  // A Session with a conversation longer than one batch, uploaded as Pi writes it.
+  const created = (await localCall(socketPath, "axo.session.create")) as { id: string; piSessionFile: string };
+  const file = created.piSessionFile;
+  const transcript = await FakeTranscript.create(created.id);
+  for (let turn = 0; turn < 50; turn += 1) await transcript.write(userMessage(`Fix the relay backoff, take ${turn}`), assistantMessage("Done, and tested."));
+  const records = transcript.transcript.count;
+  assert.ok(records > SYNC.clientRecords);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, piFile(transcript));
+  const original = piFile(transcript);
+  const cloudCount = async () => {
+    const { client, hello } = await connectClient(api, account);
+    client.close();
+    return hello.sessions.find((session) => session.sessionId === created.id)?.head;
+  };
+  await waitFor("the upload", 20_000, async () => ((await cloudCount()) === records ? true : undefined), daemon);
+
+  // Archived, and held by the cloud whole: the file goes.
+  await localCall(socketPath, "axo.session.close", { sessionId: created.id });
+  await waitFor("the archived transcript to go", 20_000, async () => (existsSync(file) ? undefined : true), daemon);
+  assert.equal(await cloudCount(), records, "the cloud keeps it all");
+
+  // Reopening it puts it back as it was, before Pi starts.
+  const reopened = (await localCall(socketPath, "axo.session.reopen")) as { id: string };
+  assert.equal(reopened.id, created.id);
+  assert.equal(await readFile(file, "utf8"), original);
+
+  // Open again, it is read and uploaded as before: a new line reaches the cloud.
+  await transcript.write(userMessage("one more thing"));
+  await writeFile(file, piFile(transcript));
+  await waitFor("the next line", 20_000, async () => ((await cloudCount()) === records + 1 ? true : undefined), daemon);
 });

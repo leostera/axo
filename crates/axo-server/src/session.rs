@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
@@ -22,6 +22,7 @@ use axo_store::{
 };
 
 mod catalog;
+mod cloud_transcripts;
 mod events;
 mod handlers;
 mod lifecycle;
@@ -130,6 +131,8 @@ struct SessionState {
     takeover_grace: TakeoverGrace,
     /// Remote panes on other Macs' Sessions (RFD0024): never in `panes`, never in the database.
     peer_views: peer_views::PeerViews,
+    /// Archived Sessions being reopened: their transcripts are not deleted (RFD0027).
+    reopening: HashSet<SessionId>,
 }
 
 pub struct SessionManager {
@@ -207,6 +210,7 @@ impl SessionManager {
                 viewport,
                 takeover_grace: TakeoverGrace::default(),
                 peer_views: Default::default(),
+                reopening: HashSet::new(),
             }),
             attach_socket_path,
             pi_directories,
