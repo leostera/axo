@@ -78,7 +78,8 @@ pub fn spawn(
 }
 
 /// Another Mac's Session, drawn by a Pi on this Mac that only shows it and sends what is typed
-/// (RFD0024): `pi --no-session` with pi-axo in remote mode. It writes nothing and runs no model.
+/// (RFD0024, RFD0026): Pi with pi-axo in remote mode. pi-axo draws views of this Mac's copy and
+/// plays the other Mac's turns through its own provider; no tool runs and no model is called.
 pub struct RemoteViewLaunch<'a> {
     pub agent_command: &'a AgentCommand,
     pub initial_pwd: &'a Path,
@@ -90,11 +91,7 @@ pub struct RemoteViewLaunch<'a> {
     pub environment: &'a [(&'static str, PathBuf)],
 }
 
-/// pi-axo exits with this when the copy was cut back and it must draw it afresh: the pane
-/// starts Pi again, in the same terminal. Any other exit ends the pane.
-pub const REMOTE_VIEW_REDRAW_EXIT: i32 = 75;
-
-/// Starts a remote view on a PTY. A shell loop restarts Pi on `REMOTE_VIEW_REDRAW_EXIT`.
+/// Starts a remote view on a PTY. Pi's exit ends the pane.
 pub fn spawn_remote_view(
     launch: &RemoteViewLaunch<'_>,
     size: WindowSize,
@@ -102,20 +99,14 @@ pub fn spawn_remote_view(
     let extension = resolve_extension_path()?;
     let command_line = launch.agent_command.command();
     let executable = resolve_executable(&command_line.executable)?;
-    let script = format!(
-        "while :; do \"$0\" \"$@\"; status=$?; [ \"$status\" -eq {REMOTE_VIEW_REDRAW_EXIT} ] || exit \"$status\"; done"
-    );
-    let mut command = Command::new("/bin/sh");
+    let mut command = Command::new(executable);
     command
-        .arg("-c")
-        .arg(script)
-        .arg(executable)
         .args(&command_line.arguments)
-        // Nothing runs here: no file, no tools, and none of this Mac's extensions, MCP servers,
-        // skills or prompt templates. Only pi-axo, which draws the copy.
+        // None of this Mac's extensions, MCP servers, skills or prompt templates: only pi-axo,
+        // whose proxies replace Pi's tools by name and run nothing here. `--no-tools` would hide
+        // those proxies too. Pi starts on no file; pi-axo opens views of the copy.
         .args([
             "--no-session",
-            "--no-tools",
             "--no-extensions",
             "--no-mcp",
             "--no-skills",

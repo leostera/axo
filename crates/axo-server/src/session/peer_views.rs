@@ -693,7 +693,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         };
         assert!(
-            launched.starts_with("--no-session --no-tools --no-extensions --no-mcp --no-skills --no-prompt-templates --extension "),
+            launched.starts_with(
+                "--no-session --no-extensions --no-mcp --no-skills --no-prompt-templates --extension "
+            ),
             "{launched}"
         );
         assert!(
