@@ -1,36 +1,52 @@
 /**
- * Another Mac's Session, in a Pi on this Mac (RFD0024).
+ * Another Mac's Session, in a Pi on this Mac (RFD0024, RFD0026).
  *
- * Axod starts `pi --no-session` with this extension in remote mode for a Session that runs on
- * another Mac. This Pi runs no model and no tool, and writes no file: it draws this Mac's copy
- * of the Session as Axod's peers socket keeps it, and sends what is typed to the Mac that runs
- * the Session, which alone writes its log. A prompt is pending until its receipt, which that
- * Mac's pi-axo writes just before the prompt, shows in the copy; a prompt whose fate is unknown
- * is sent again with the same commandId, which that Mac takes at most once.
+ * Axod starts Pi with this extension in remote mode for a Session that runs on another Mac. Pi
+ * draws it with its own components:
  *
- * `RemoteSession` is the model, free of Pi; `installRemoteView` draws it with Pi's own message
- * components and wires Pi's input to it.
+ * - **History** is a session file built from this Mac's copy (a view), opened with Pi's
+ *   `switchSession`. Each redraw opens a fresh view; the editor's text stays.
+ * - **Live turns** play in this Pi: for each user message the other Mac writes, pi-axo starts a
+ *   turn, the `axo-remote` provider answers with that Mac's assistant messages as they are
+ *   written, and proxy tools wait for its tool results (see remote-mirror.ts). When the turn
+ *   ends here, a redraw replaces it with the records themselves.
+ *
+ * Nothing runs on this Mac: no tool executes, and no turn starts but a mirrored one. What is
+ * typed goes to the other Mac, which alone writes the log. A prompt is pending until its receipt,
+ * which that Mac's pi-axo writes just before the prompt, shows in the copy; a prompt whose fate is
+ * unknown is sent again with the same commandId, which that Mac takes at most once.
+ *
+ * `RemoteSession` is the model, free of Pi; `installRemoteView` wires it to Pi.
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessageEventStream, Model, Api, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { AxodCallError, callAxod } from "./axod-client.js";
 import { RECEIPT_ENTRY } from "./remote-commands.js";
+import { AssistantStream, MirrorTurn, type MirrorSource } from "./remote-mirror.js";
 
-/** pi-axo exits with this so the pane starts Pi again and draws the copy afresh. */
-export const REDRAW_EXIT_CODE = 75;
-/** The custom entry each drawn record is: never sent to a model, since none runs here. */
-export const REMOTE_RECORD_ENTRY = "axo.remote.record";
+/** The provider whose one model is the other Mac. */
+export const REMOTE_PROVIDER = "axo-remote";
+const REMOTE_API = "axo-remote-mirror";
+/** Opens a fresh view of the copy. Typed by hand, it redraws too. */
+export const REDRAW_COMMAND = "axo-redraw";
 
 const WATCH_TIMEOUT_MS = 15_000;
-const WATCH_WINDOW = 400;
+/** The whole copy, a page at a time: Pi draws all of it, as on the other Mac. */
+const WATCH_WINDOW = Number.MAX_SAFE_INTEGER;
 const COMMAND_TIMEOUT_MS = 40_000;
 const RETRY_DELAY_MS = 3_000;
 const MAX_RETRIES = 40;
+/** How long a turn here may outlive the other Mac's before it is given up. */
+const STALE_TURN_MS = 3_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+/** The tools Pi draws with their own renderers; any other name gets Pi's generic one. */
+const BUILTIN_TOOLS = ["bash", "read", "edit", "write", "grep", "find", "ls"] as const;
 
 export interface RemoteViewConfig {
   readonly socket: string;
@@ -49,6 +65,8 @@ export function parseRemoteViewConfig(environment: NodeJS.ProcessEnv): RemoteVie
 }
 
 // ─── The model ──────────────────────────────────────────────────────────────
+
+type Json = Record<string, unknown>;
 
 export interface PeerRecord {
   readonly cursor: number;
@@ -78,19 +96,11 @@ export interface PendingPrompt {
   state: PendingState;
 }
 
-/** A record worth drawing: Pi's own entry, parsed. */
-export type Drawable =
-  | { kind: "user"; id: string; text: string }
-  | { kind: "assistant"; id: string; message: Record<string, unknown> }
-  | { kind: "toolResult"; id: string; toolName: string; text: string; isError: boolean }
-  | { kind: "bash"; id: string; command: string; output: string }
-  | { kind: "note"; id: string; text: string };
-
-/** What applying a view asks of the screen. */
+/** What applying a view changed. */
 export interface ViewChange {
-  /** The copy was cut back or replaced, and this screen already drew it: start over. */
-  readonly redraw: boolean;
-  readonly draw: readonly Drawable[];
+  /** The copy was cut back or replaced: everything drawn of it is stale. */
+  readonly reset: boolean;
+  readonly added: number;
 }
 
 /** How a send ended, for the caller to show. */
@@ -105,8 +115,16 @@ export interface RemoteLink {
   command(method: string, params: Record<string, unknown>): Promise<unknown>;
 }
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+function asObject(value: unknown): Json | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Json : null;
+}
+
+function parseEntry(line: string): Json | null {
+  try {
+    return asObject(JSON.parse(line));
+  } catch {
+    return null;
+  }
 }
 
 function textOf(content: unknown): string {
@@ -114,61 +132,13 @@ function textOf(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content
     .map(block => asObject(block))
-    .filter((block): block is Record<string, unknown> => block?.type === "text" && typeof block.text === "string")
+    .filter((block): block is Json => block?.type === "text" && typeof block.text === "string")
     .map(block => block.text as string)
     .join("\n");
 }
 
-/** The receipt a record is, or a drawable, or nothing to show. */
-export function readRecord(line: string): { kind: "receipt"; commandId: string } | { kind: "draw"; drawable: Drawable } | { kind: "user"; id: string; drawable: Drawable } | null {
-  let entry: Record<string, unknown> | null;
-  try {
-    entry = asObject(JSON.parse(line));
-  } catch {
-    return null;
-  }
-  if (!entry) return null;
-  const id = typeof entry.id === "string" ? entry.id : randomUUID();
-  if (entry.type === "custom" && entry.customType === RECEIPT_ENTRY) {
-    const commandId = asObject(entry.data)?.commandId;
-    return typeof commandId === "string" ? { kind: "receipt", commandId } : null;
-  }
-  if (entry.type === "compaction") return { kind: "draw", drawable: { kind: "note", id, text: "Earlier messages were compacted." } };
-  if (entry.type === "custom_message" && entry.display === true) {
-    const text = textOf(entry.content);
-    return text ? { kind: "draw", drawable: { kind: "note", id, text } } : null;
-  }
-  if (entry.type !== "message") return null;
-  const message = asObject(entry.message);
-  if (!message) return null;
-  switch (message.role) {
-    case "user": {
-      const drawable: Drawable = { kind: "user", id, text: textOf(message.content) };
-      return { kind: "user", id, drawable };
-    }
-    case "assistant":
-      return { kind: "draw", drawable: { kind: "assistant", id, message } };
-    case "toolResult":
-      return {
-        kind: "draw",
-        drawable: {
-          kind: "toolResult", id,
-          toolName: typeof message.toolName === "string" ? message.toolName : "tool",
-          text: textOf(message.content), isError: message.isError === true,
-        },
-      };
-    case "bashExecution":
-      return {
-        kind: "draw",
-        drawable: { kind: "bash", id, command: String(message.command ?? ""), output: String(message.output ?? "") },
-      };
-    case "custom": {
-      const text = message.display === false ? "" : textOf(message.content);
-      return text ? { kind: "draw", drawable: { kind: "note", id, text } } : null;
-    }
-    default:
-      return null;
-  }
+function roleOf(entry: Json | null): unknown {
+  return entry?.type === "message" ? asObject(entry.message)?.role : undefined;
 }
 
 /** Errors that leave a command's outcome unknown: it may have reached the other Mac. */
@@ -185,8 +155,12 @@ export class RemoteSession {
   epoch: number | null = null;
   cursor = 0;
   version = 0;
-  /** Whether anything of the copy is on screen, so a reset must start the screen over. */
-  drawn = false;
+  /** The copy's records, in order: record n (cursor n) is `records[n - 1]`. */
+  records: string[] = [];
+  /** The same, parsed. */
+  entries: (Json | null)[] = [];
+  /** Whether the whole copy has been read; until then nothing is drawn. */
+  loaded = false;
   working = false;
   hostLabel: string;
   hostOnline = true;
@@ -219,27 +193,45 @@ export class RemoteSession {
     this.working = view.status === "working";
     if (!this.working) this.stopping = false;
     this.progress = new Map(view.progress.map(({ slot, snapshot }) => [slot, snapshot]));
-    if (view.reset && this.drawn) return { redraw: true, draw: [] };
+    if (view.reset) {
+      this.records = [];
+      this.entries = [];
+      this.receipt = null;
+      this.lastUserEntry = null;
+    }
     this.epoch = view.epoch;
     this.cursor = view.cursor;
-    const draw: Drawable[] = [];
+    let added = 0;
     for (const record of view.records) {
-      const read = readRecord(record.line);
-      if (!read) continue;
-      if (read.kind === "receipt") {
-        this.receipt = read.commandId;
-        continue;
-      }
-      if (read.kind === "user") {
-        this.lastUserEntry = read.id;
+      // Each record has its place; one already held, or past a gap, is not this copy's next.
+      if (record.cursor !== this.records.length + 1) continue;
+      const entry = parseEntry(record.line);
+      this.records.push(record.line);
+      this.entries.push(entry);
+      added += 1;
+      if (entry?.type === "custom" && entry.customType === RECEIPT_ENTRY) {
+        const commandId = asObject(entry.data)?.commandId;
+        if (typeof commandId === "string") this.receipt = commandId;
+      } else if (roleOf(entry) === "user") {
+        this.lastUserEntry = typeof entry?.id === "string" ? entry.id : null;
         if (this.receipt) this.delivered.add(this.receipt);
         this.receipt = null;
       }
-      draw.push(read.drawable);
     }
-    if (draw.length) this.drawn = true;
+    this.loaded = !view.more;
     this.retireDelivered();
-    return { redraw: false, draw };
+    return { reset: view.reset, added };
+  }
+
+  /** The newest user message whose turn the copy has not closed, or -1. */
+  openTurn(): number {
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const entry = this.entries[index] ?? null;
+      const role = roleOf(entry);
+      if (role === "assistant" && asObject(entry?.message)?.stopReason !== "toolUse") return -1;
+      if (role === "user") return index;
+    }
+    return -1;
   }
 
   private retireDelivered(): void {
@@ -323,67 +315,34 @@ export class RemoteSession {
   }
 }
 
-// ─── Drawing with Pi ────────────────────────────────────────────────────────
+// ─── Views ──────────────────────────────────────────────────────────────────
 
-const OUTPUT_LINES = 12;
-
-function lastLines(text: string, count: number): string {
-  const lines = text.replace(/\s+$/u, "").split("\n");
-  return lines.length > count ? [`… ${lines.length - count} earlier lines`, ...lines.slice(-count)].join("\n") : lines.join("\n");
+export interface ViewHeader {
+  /** The id Pi gives the view's session. */
+  readonly id: string;
+  /** This Mac's folder for the pane: Pi asks about a working directory it cannot find. */
+  readonly cwd: string;
+  /** The other Mac as a model: every turn here is answered by it, never by a real model. */
+  readonly model: { readonly provider: string; readonly modelId: string };
 }
 
-function toolCallSummary(block: Record<string, unknown>): string {
-  const name = typeof block.name === "string" ? block.name : "tool";
-  const args = asObject(block.arguments) ?? {};
-  const command = typeof args.command === "string" ? args.command : typeof args.path === "string" ? args.path : null;
-  const detail = command ?? JSON.stringify(args);
-  return `${name} ${detail.length > 200 ? `${detail.slice(0, 200)}…` : detail}`;
-}
-
-/** Pi's own terminal components, loaded inside Pi, which provides them to its extensions. */
-type Components = typeof import("@earendil-works/pi-coding-agent") & typeof import("@earendil-works/pi-tui");
-
-async function loadComponents(): Promise<Components> {
-  const [agent, tui] = await Promise.all([import("@earendil-works/pi-coding-agent"), import("@earendil-works/pi-tui")]);
-  return { ...agent, ...tui };
-}
-
-/** Draws one record as Pi draws its own: user and assistant messages with Pi's components. */
-export function renderDrawable(ui: Components, drawable: Drawable, expanded: boolean, theme: Theme): Component | undefined {
-  const { AssistantMessageComponent, Box, Container, getMarkdownTheme, Spacer, Text, UserMessageComponent } = ui;
-  switch (drawable.kind) {
-    case "user":
-      return new UserMessageComponent(drawable.text, getMarkdownTheme());
-    case "assistant": {
-      const container = new Container();
-      container.addChild(new AssistantMessageComponent(drawable.message as never, false, getMarkdownTheme()));
-      const content = Array.isArray(drawable.message.content) ? drawable.message.content : [];
-      for (const block of content.map(asObject)) {
-        if (block?.type !== "toolCall") continue;
-        const box = new Box(1, 0, text => theme.bg("toolPendingBg", text));
-        box.addChild(new Text(theme.fg("toolTitle", theme.bold(toolCallSummary(block))), 0, 0));
-        container.addChild(new Spacer(1));
-        container.addChild(box);
-      }
-      return container;
-    }
-    case "toolResult": {
-      if (!drawable.text.trim()) return undefined;
-      const box = new Box(1, 0, text => theme.bg(drawable.isError ? "toolErrorBg" : "toolSuccessBg", text));
-      const body = expanded ? drawable.text : lastLines(drawable.text, OUTPUT_LINES);
-      box.addChild(new Text(theme.fg("toolOutput", body), 0, 0));
-      return box;
-    }
-    case "bash": {
-      const box = new Box(1, 0, text => theme.bg("toolSuccessBg", text));
-      box.addChild(new Text(`${theme.fg("bashMode", "$")} ${theme.bold(drawable.command)}`, 0, 0));
-      if (drawable.output.trim()) box.addChild(new Text(theme.fg("toolOutput", expanded ? drawable.output : lastLines(drawable.output, OUTPUT_LINES)), 0, 0));
-      return box;
-    }
-    case "note":
-      return new Text(theme.fg("muted", drawable.text), 1, 0);
+/**
+ * The first `end` records of the copy as a Pi session file. Only the header and the model
+ * changes differ from the copy; every other entry is the other Mac's own line.
+ */
+export function buildView(records: readonly string[], end: number, header: ViewHeader, now = new Date()): string {
+  const lines = [JSON.stringify({ type: "session", version: 3, id: header.id, timestamp: now.toISOString(), cwd: header.cwd })];
+  for (const line of records.slice(0, end)) {
+    const entry = parseEntry(line);
+    if (!entry || entry.type === "session") continue;
+    lines.push(entry.type === "model_change"
+      ? JSON.stringify({ ...entry, provider: header.model.provider, modelId: header.model.modelId })
+      : line);
   }
+  return `${lines.join("\n")}\n`;
 }
+
+// ─── Wiring it to Pi ────────────────────────────────────────────────────────
 
 const pendingLabels: Record<PendingState, (host: string) => string> = {
   sending: host => `Sending to ${host}…`,
@@ -392,147 +351,426 @@ const pendingLabels: Record<PendingState, (host: string) => string> = {
   uncertain: host => `Not confirmed by ${host} yet · trying again`,
 };
 
-function draftFile(config: RemoteViewConfig): string {
-  return join(tmpdir(), `axo-remote-${config.sessionId}.json`);
+type Modules = {
+  agent: typeof import("@earendil-works/pi-coding-agent");
+  ai: typeof import("@earendil-works/pi-ai");
+};
+
+/** Pi's modules, loaded inside Pi, which provides them to its extensions. */
+async function loadModules(): Promise<Modules> {
+  const [agent, ai] = await Promise.all([import("@earendil-works/pi-coding-agent"), import("@earendil-works/pi-ai")]);
+  return { agent, ai };
 }
 
-/** What a restart carries over: the editor's words and the prompts still pending. */
-interface Carried {
-  draft: string;
-  pending: PendingPrompt[];
+/** What a redraw draws, and what runs once it is on screen. */
+interface Redraw {
+  readonly end: number;
+  readonly then?: () => void;
 }
 
-function takeCarried(config: RemoteViewConfig): Carried | null {
-  try {
-    const carried = JSON.parse(readFileSync(draftFile(config), "utf8")) as Carried;
-    rmSync(draftFile(config), { force: true });
-    return carried;
-  } catch {
-    return null;
+/**
+ * Lives as long as the pane's Pi: `switchSession` builds a new extension runtime for each view,
+ * and each one attaches to this controller (see `installRemoteView`).
+ */
+class RemoteController implements MirrorSource {
+  readonly session: RemoteSession;
+  private pi: ExtensionAPI | null = null;
+  private ctx: ExtensionContext | null = null;
+  private modules: Modules | null = null;
+  private watching = false;
+  private stopped = false;
+  /** The turn playing here, if any. */
+  private mirror: MirrorTurn | null = null;
+  /** The user message of the latest turn played here, so it is not played twice. */
+  private mirroredUser = -1;
+  private redrawing: Redraw | null = null;
+  /** How many records of the copy the screen shows, or -1 when it shows none of this copy. */
+  private shownEnd = -1;
+  private views = 0;
+  private viewPath: string | null = null;
+  /** When the other Mac was first seen idle while a turn plays here. */
+  private otherSince: number | null = null;
+  /** When the copy or its progress last changed. */
+  private lastChange = 0;
+  /** How many records the copy had when it was first read whole: later ones arrived live. */
+  private firstLoadEnd: number | null = null;
+  private readonly proxied = new Set<string>(BUILTIN_TOOLS);
+  private readonly failedTools = new Set<string>();
+  private readonly waiters = new Set<() => void>();
+  private readonly timer: ReturnType<typeof setInterval>;
+
+  constructor(private readonly config: RemoteViewConfig, link: RemoteLink) {
+    this.session = new RemoteSession(config, link, () => this.refresh());
+    this.timer = setInterval(() => this.tick(), 1_000);
+    this.timer.unref?.();
   }
-}
 
-export function installRemoteView(pi: ExtensionAPI, config: RemoteViewConfig, link?: RemoteLink): void {
-  const axod: RemoteLink = link ?? {
-    command: (method, params) => callAxod(config.socket, "axo.peer.command", { hostId: config.hostId, method, params }, COMMAND_TIMEOUT_MS),
-  };
-  let ui: ExtensionContext["ui"] | null = null;
-  let stopped = false;
-  let redrawing = false;
-  let refresh = () => {};
-  const session = new RemoteSession(config, axod, () => refresh());
-  const carried = takeCarried(config);
-  if (carried) {
-    // Sent before the restart: still pending, and sent again until the copy shows them.
-    for (const prompt of carried.pending) session.pending.push({ ...prompt, state: "uncertain" });
+  private get modelId(): string {
+    return this.config.hostLabel;
   }
 
-  let components: Components | null = null;
-  pi.registerEntryRenderer<Drawable>(REMOTE_RECORD_ENTRY, (entry, options, theme) =>
-    entry.data && components ? renderDrawable(components, entry.data, options.expanded, theme) : undefined);
+  private get viewDirectory(): string {
+    return join(tmpdir(), "axo-remote", this.config.sessionId);
+  }
 
-  refresh = () => {
-    if (!ui) return;
-    const host = session.hostLabel;
-    const live = session.progress.get("message");
-    const message = asObject(asObject(live)?.message);
-    const drawn = components;
-    ui.setWidget("axo-remote-live", message && drawn
-      ? () => new drawn.AssistantMessageComponent(message as never, false, drawn.getMarkdownTheme())
-      : undefined);
-    const tools = [...session.progress.entries()].filter(([slot]) => slot !== "message" && slot !== "question");
-    const question = asObject(session.progress.get("question"));
-    const lines: string[] = [];
-    for (const [, snapshot] of tools) {
-      const tool = asObject(snapshot);
-      const name = typeof tool?.toolName === "string" ? tool.toolName : "tool";
-      lines.push(`⚙ ${host} is running ${name}…`);
-    }
-    if (question) {
-      const title = typeof question.title === "string" ? question.title : "The agent is asking something";
-      lines.push(`? ${title}`, "  /yes or /no to answer, or type a reply");
-    }
-    for (const prompt of session.pending) lines.push(`↑ ${prompt.text.split("\n")[0]}  · ${pendingLabels[prompt.state](host)}`);
-    ui.setWidget("axo-remote-pending", lines.length ? lines : undefined);
-    const state = !session.connected ? "this Mac is offline"
-      : !session.hostOnline ? `${host} is offline`
-        : session.stopping ? "stopping…"
-          : session.working ? "working · Esc to stop" : "ready";
-    ui.setStatus("axo-remote", `On ${host} · ${state}`);
-    ui.setWorkingVisible?.(false);
-  };
+  // ── MirrorSource: the copy, for the turn playing here ──
 
-  const watch = async (ctx: ExtensionContext) => {
-    while (!stopped) {
+  get length(): number {
+    return this.session.entries.length;
+  }
+
+  entry(index: number): Json | null {
+    return this.session.entries[index] ?? null;
+  }
+
+  liveMessage(): Json | null {
+    return asObject(asObject(this.session.progress.get("message"))?.message);
+  }
+
+  toolProgress(toolCallId: string): Json | null {
+    return asObject(this.session.progress.get(toolCallId));
+  }
+
+  changed(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+      const done = () => {
+        clearTimeout(timeout);
+        this.waiters.delete(done);
+        signal?.removeEventListener("abort", done);
+        resolve();
+      };
+      const timeout = setTimeout(done, ms);
+      this.waiters.add(done);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  }
+
+  private wake(): void {
+    for (const waiter of [...this.waiters]) waiter();
+  }
+
+  // ── One extension runtime: the first, then one per view ──
+
+  async attach(pi: ExtensionAPI): Promise<void> {
+    this.pi = pi;
+    this.ctx = null;
+    this.modules ??= await loadModules();
+    const { ai } = this.modules;
+    const controller = this;
+
+    pi.registerProvider(REMOTE_PROVIDER, {
+      name: this.config.hostLabel,
+      baseUrl: "axo://remote",
+      apiKey: "axo",
+      api: REMOTE_API as Api,
+      models: [{
+        id: this.modelId, name: this.config.hostLabel, reasoning: true, input: ["text", "image"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        // Large enough that this Pi never compacts: the other Mac decides that.
+        contextWindow: 100_000_000, maxTokens: 1_000_000,
+      }],
+      streamSimple: (model: Model<Api>, _context: unknown, options?: SimpleStreamOptions): AssistantMessageEventStream => {
+        const stream = ai.createAssistantMessageEventStream();
+        const message = new AssistantStream(stream, { api: model.api, provider: model.provider, id: model.id });
+        void controller.answer(message, options?.signal).catch(error =>
+          message.stop(error instanceof Error ? error.message : String(error)));
+        return stream;
+      },
+    } as Parameters<ExtensionAPI["registerProvider"]>[1]);
+
+    for (const name of this.proxied) this.registerProxy(name);
+
+    pi.registerCommand(REDRAW_COMMAND, {
+      description: `Draw this Session again from ${this.config.hostLabel}'s copy`,
+      handler: async (_args, ctx) => { await this.openView(ctx); },
+    });
+    pi.registerCommand("yes", {
+      description: "Answer yes to the other Mac's question",
+      handler: async () => { await this.session.answer(true); },
+    });
+    pi.registerCommand("no", {
+      description: "Answer no to the other Mac's question",
+      handler: async () => { await this.session.answer(false); },
+    });
+
+    pi.on("session_start", async (_event, ctx) => {
+      this.ctx = ctx;
+      const model = ctx.modelRegistry.find(REMOTE_PROVIDER, this.modelId);
+      if (model) await pi.setModel(model);
+      pi.setActiveTools([...this.proxied]);
+      ctx.ui.setTitle(`${this.config.hostLabel} · Axo`);
+      // Escape asks the other Mac to stop; the turn here ends when its record says so.
+      ctx.ui.onTerminalInput(data => {
+        if (data !== "\u001b" || !this.session.working) return undefined;
+        void this.session.stop();
+        return { consume: true };
+      });
+      this.refresh();
+      if (!this.watching) void this.watch();
+    });
+
+    pi.on("input", async (event, ctx) => {
+      if (event.source === "extension") return { action: "continue" };
+      const text = event.text.trim();
+      if (!text) return { action: "handled" };
+      void this.session.send(text).then(outcome => {
+        if (outcome.kind !== "refused") return;
+        if (!ctx.ui.getEditorText()) ctx.ui.setEditorText(text);
+        ctx.ui.notify(outcome.offline ? `${this.session.hostLabel} is offline; nothing was sent.` : `Not sent: ${outcome.message}`, "warning");
+      });
+      return { action: "handled" };
+    });
+
+    // Only a turn the other Mac took runs here.
+    pi.on("before_agent_start", (_event, ctx) => {
+      if (!this.mirror) ctx.abort();
+    });
+    pi.on("tool_call", event => this.mirror && this.proxied.has(event.toolName)
+      ? undefined
+      : { block: true, reason: `This Session runs on ${this.session.hostLabel}; nothing runs here.` });
+    pi.on("tool_result", event => this.failedTools.delete(event.toolCallId) ? { isError: true } : undefined);
+    pi.on("agent_end", () => {
+      if (!this.mirror) return;
+      this.mirror = null;
+      this.reconcile();
+    });
+
+    pi.on("session_shutdown", event => {
+      // A new view replaces this runtime; only quitting ends the pane.
+      if (event.reason === "quit") this.dispose();
+    });
+  }
+
+  /** A tool here is the other Mac's: it waits for that Mac's result and draws it as Pi would. */
+  private registerProxy(name: string): void {
+    const pi = this.pi;
+    const agent = this.modules?.agent;
+    if (!pi || !agent) return;
+    const cwd = process.cwd();
+    const builtins: Record<string, (cwd: string) => unknown> = {
+      bash: agent.createBashToolDefinition, read: agent.createReadToolDefinition, edit: agent.createEditToolDefinition,
+      write: agent.createWriteToolDefinition, grep: agent.createGrepToolDefinition, find: agent.createFindToolDefinition,
+      ls: agent.createLsToolDefinition,
+    };
+    const base = (builtins[name]?.(cwd) ?? {
+      name, label: name, description: `${name}, on ${this.config.hostLabel}`,
+      parameters: Type.Object({}, { additionalProperties: true }),
+    }) as Json;
+    pi.registerTool({
+      ...base,
+      name,
+      execute: async (toolCallId: string, _params: unknown, signal?: AbortSignal, onUpdate?: (partial: never) => void) => {
+        const mirror = this.mirror;
+        if (!mirror) throw new Error(`This Session runs on ${this.session.hostLabel}; nothing runs here.`);
+        const result = await mirror.toolResult(toolCallId, signal, partial => onUpdate?.(partial as never));
+        if (!result) throw new Error(`Stopped on ${this.session.hostLabel}`);
+        if (result.isError) this.failedTools.add(toolCallId);
+        return { content: result.content, details: result.details };
+      },
+    } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
+  }
+
+  private ensureProxy(name: string): void {
+    if (this.proxied.has(name)) return;
+    this.proxied.add(name);
+    this.registerProxy(name);
+    this.pi?.setActiveTools([...this.proxied]);
+  }
+
+  /** The provider: the other Mac's next assistant message of the turn playing here. */
+  private async answer(message: AssistantStream, signal?: AbortSignal): Promise<void> {
+    const mirror = this.mirror;
+    if (!mirror) return message.stop(`This Session runs on ${this.session.hostLabel}; nothing runs here.`);
+    const step = await mirror.step(signal, live => message.follow(live));
+    if (step.kind === "assistant") {
+      for (const block of Array.isArray(step.message.content) ? step.message.content : []) {
+        const call = asObject(block);
+        if (call?.type === "toolCall" && typeof call.name === "string") this.ensureProxy(call.name);
+      }
+      return message.finish(step.message);
+    }
+    // A steer, another prompt or a stop: the turn here ends, and the redraw shows what was.
+    mirror.giveUp();
+    message.stop(step.kind === "desync" ? `${this.session.hostLabel} moved on` : `Stopped on ${this.session.hostLabel}`);
+  }
+
+  // ── Following the copy ──
+
+  private async watch(): Promise<void> {
+    this.watching = true;
+    while (!this.stopped) {
       try {
-        const view = await callAxod(config.socket, "axo.peer.session.watch", {
-          hostId: config.hostId, sessionId: config.sessionId,
-          epoch: session.epoch, cursor: session.cursor, version: session.version,
+        const view = await callAxod(this.config.socket, "axo.peer.session.watch", {
+          hostId: this.config.hostId, sessionId: this.config.sessionId,
+          epoch: this.session.epoch, cursor: this.session.cursor, version: this.session.version,
           timeoutMs: WATCH_TIMEOUT_MS, window: WATCH_WINDOW,
         }, WATCH_TIMEOUT_MS + 10_000) as PeerSessionView;
-        const change = session.apply(view);
-        if (change.redraw) {
-          redrawing = true;
-          writeFileSync(draftFile(config), JSON.stringify({ draft: ctx.ui.getEditorText(), pending: session.pending } satisfies Carried));
-          ctx.shutdown();
-          return;
+        const changedVersion = view.version !== this.session.version;
+        const change = this.session.apply(view);
+        if (changedVersion) this.lastChange = Date.now();
+        if (this.session.loaded) this.firstLoadEnd ??= this.session.records.length;
+        if (change.reset) {
+          // Everything drawn of the old copy is stale, the turn playing here included.
+          this.shownEnd = -1;
+          this.mirroredUser = -1;
+          this.firstLoadEnd = this.session.loaded ? this.session.records.length : null;
+          this.giveUpTurn();
         }
-        for (const drawable of change.draw) pi.appendEntry(REMOTE_RECORD_ENTRY, drawable);
-        refresh();
+        this.wake();
+        this.refresh();
+        this.reconcile();
         if (view.more) continue;
       } catch {
         await new Promise(resolve => setTimeout(resolve, 1_000));
       }
     }
-  };
+  }
 
-  pi.on("session_start", async (_event, ctx) => {
-    components = await loadComponents();
-    ui = ctx.ui;
-    // Nothing runs here: no tools, and no turn is ever started (see `input`).
-    pi.setActiveTools([]);
-    ctx.ui.setTitle(`${config.hostLabel} · Axo`);
-    if (carried?.draft) ctx.ui.setEditorText(carried.draft);
-    ctx.ui.onTerminalInput(data => {
-      if (data !== "\u001b" || !session.working) return undefined;
-      void session.stop();
-      return { consume: true };
-    });
-    refresh();
-    void watch(ctx);
-  });
+  /**
+   * Brings the screen up to the copy: plays the open turn, if the other Mac is in one, else
+   * draws every record. Runs whenever something changes; does nothing while a turn plays here.
+   */
+  private reconcile(): void {
+    const ctx = this.ctx;
+    if (this.stopped || !this.session.loaded || this.redrawing || this.mirror || !ctx) return;
+    if (!this.isIdle(ctx)) return;
+    const total = this.session.records.length;
+    const open = this.session.openTurn();
+    // A turn the copy leaves open plays if the other Mac is in it: its status says so, or its
+    // prompt arrived while this pane watched (the status can lag the records).
+    const live = open >= 0 && (this.session.working || open >= (this.firstLoadEnd ?? total));
+    if (live && open !== this.mirroredUser) {
+      // Draw up to its user message, then play the turn from there.
+      if (this.shownEnd === open) this.playTurn(open);
+      else this.redraw({ end: open, then: () => this.playTurn(open) });
+    } else if (this.shownEnd !== total) {
+      this.redraw({ end: total });
+    }
+  }
 
-  pi.on("input", async (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" };
-    const text = event.text.trim();
-    if (!text) return { action: "handled" };
-    void session.send(text).then(outcome => {
-      if (outcome.kind !== "refused") return;
-      if (!ctx.ui.getEditorText()) ctx.ui.setEditorText(text);
-      ctx.ui.notify(outcome.offline ? `${session.hostLabel} is offline; nothing was sent.` : `Not sent: ${outcome.message}`, "warning");
-    });
-    return { action: "handled" };
-  });
+  private isIdle(ctx: ExtensionContext): boolean {
+    try {
+      return ctx.isIdle();
+    } catch {
+      return false;
+    }
+  }
 
-  // Should anything start a turn here anyway, it does nothing.
-  pi.on("before_agent_start", (_event, ctx) => {
-    ctx.abort();
-  });
-  pi.on("tool_call", () => ({ block: true, reason: `This Session runs on ${session.hostLabel}; nothing runs here.` }));
+  private playTurn(userIndex: number): void {
+    const pi = this.pi;
+    const message = asObject(this.session.entries[userIndex]?.message);
+    if (!pi || !message) return;
+    this.mirror = new MirrorTurn(this, userIndex);
+    this.mirroredUser = userIndex;
+    this.otherSince = null;
+    const content = Array.isArray(message.content)
+      ? message.content.filter(block => asObject(block)?.type === "text" || asObject(block)?.type === "image")
+      : [{ type: "text", text: textOf(message.content) }];
+    pi.sendUserMessage(content.length ? content as never : " ");
+  }
 
-  pi.registerCommand("yes", {
-    description: "Answer yes to the other Mac's question",
-    handler: async () => { await session.answer(true); },
-  });
-  pi.registerCommand("no", {
-    description: "Answer no to the other Mac's question",
-    handler: async () => { await session.answer(false); },
-  });
+  /** Ends the turn playing here; the redraw that follows shows the records. */
+  private giveUpTurn(): void {
+    if (!this.mirror) return;
+    this.mirror.giveUp();
+    this.wake();
+    try {
+      this.ctx?.abort();
+    } catch {
+      // The runtime is being replaced; its turn ends with it.
+    }
+  }
 
-  pi.on("session_shutdown", () => {
-    stopped = true;
-    session.dispose();
-    // Pi exits 0 after this; the pane starts Pi again only on this exit code.
-    if (redrawing) process.exit(REDRAW_EXIT_CODE);
+  private redraw(redraw: Redraw): void {
+    this.redrawing = redraw;
+    this.pi?.sendUserMessage(`/${REDRAW_COMMAND}`, { expandPromptTemplates: true });
+  }
+
+  /** Opens a fresh view: what a redraw asked for, or the whole copy when typed by hand. */
+  private async openView(ctx: ExtensionCommandContext): Promise<void> {
+    const redraw = this.redrawing ?? { end: this.session.records.length };
+    this.redrawing = redraw;
+    const previous = this.viewPath;
+    this.views += 1;
+    const path = join(this.viewDirectory, `view-${this.views}.jsonl`);
+    try {
+      mkdirSync(this.viewDirectory, { recursive: true });
+      writeFileSync(path, buildView(this.session.records, redraw.end, {
+        id: this.config.sessionId, cwd: process.cwd(),
+        model: { provider: REMOTE_PROVIDER, modelId: this.modelId },
+      }));
+      const result = await ctx.switchSession(path, {
+        withSession: async () => {
+          this.viewPath = path;
+          this.shownEnd = redraw.end;
+          if (previous) rmSync(previous, { force: true });
+        },
+      });
+      if (result.cancelled) throw new Error("Pi kept the current view");
+    } catch (error) {
+      rmSync(path, { force: true });
+      try {
+        ctx.ui.notify(`Could not draw ${this.config.hostLabel}'s Session: ${error instanceof Error ? error.message : String(error)}`, "error");
+      } catch {
+        // The view was half replaced; the next change redraws.
+      }
+      this.redrawing = null;
+      return;
+    }
+    this.redrawing = null;
+    if (redraw.then) redraw.then();
+    else this.reconcile();
+  }
+
+  /** Every second: gives up a turn the other Mac has left, and retries what had to wait. */
+  private tick(): void {
+    if (this.mirror && !this.session.working) {
+      this.otherSince ??= Date.now();
+      if (Date.now() - Math.max(this.otherSince, this.lastChange) > STALE_TURN_MS) this.giveUpTurn();
+    } else {
+      this.otherSince = null;
+    }
+    this.reconcile();
+  }
+
+  private refresh(): void {
+    const ui = this.ctx?.ui;
+    if (!ui) return;
+    const host = this.session.hostLabel;
+    const question = asObject(this.session.progress.get("question"));
+    const lines: string[] = [];
+    if (question) {
+      const title = typeof question.title === "string" ? question.title : "The agent is asking something";
+      lines.push(`? ${title}`, "  /yes or /no to answer, or type a reply");
+    }
+    for (const prompt of this.session.pending) lines.push(`↑ ${prompt.text.split("\n")[0]}  · ${pendingLabels[prompt.state](host)}`);
+    ui.setWidget("axo-remote-pending", lines.length ? lines : undefined);
+    const state = !this.session.connected ? "this Mac is offline"
+      : !this.session.hostOnline ? `${host} is offline`
+        : this.session.stopping ? "stopping…"
+          : this.session.working ? "working · Esc to stop" : "ready";
+    ui.setStatus("axo-remote", `On ${host} · ${state}`);
+  }
+
+  private dispose(): void {
+    this.stopped = true;
+    clearInterval(this.timer);
+    this.session.dispose();
+    this.wake();
+    rmSync(this.viewDirectory, { recursive: true, force: true });
+  }
+}
+
+const CONTROLLER = Symbol.for("axo.pi-axo.remote-view");
+
+/**
+ * Remote mode. Called once per extension runtime: Pi builds a new one for every view, and each
+ * attaches to the pane's one controller.
+ */
+export async function installRemoteView(pi: ExtensionAPI, config: RemoteViewConfig, link?: RemoteLink): Promise<void> {
+  const global = globalThis as { [CONTROLLER]?: RemoteController };
+  const controller = global[CONTROLLER] ??= new RemoteController(config, link ?? {
+    command: (method, params) => callAxod(config.socket, "axo.peer.command", { hostId: config.hostId, method, params }, COMMAND_TIMEOUT_MS),
   });
+  await controller.attach(pi);
 }

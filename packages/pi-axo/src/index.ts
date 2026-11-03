@@ -37,13 +37,10 @@ export {
 export { parseAxoMcpConfig, registerAxoMcpServer, type AxoMcpConfig } from "./mcp.js";
 export { installRemoteView, parseRemoteViewConfig, RemoteSession, type RemoteViewConfig } from "./remote-view.js";
 
-export default function axoPiExtension(pi: ExtensionAPI): void {
+export default function axoPiExtension(pi: ExtensionAPI): void | Promise<void> {
   // Another Mac's Session (RFD0024): only drawn here, and only sent on.
   const remote = parseRemoteViewConfig(process.env);
-  if (remote !== null) {
-    installRemoteView(pi, remote);
-    return;
-  }
+  if (remote !== null) return installRemoteView(pi, remote);
   const mcp = parseAxoMcpConfig(process.env);
   if (mcp !== null) {
     try {

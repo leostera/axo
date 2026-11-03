@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AxodCallError } from "../src/axod-client.js";
-import { parseRemoteViewConfig, RemoteSession, type PeerSessionView, type RemoteLink } from "../src/remote-view.js";
+import { buildView, parseRemoteViewConfig, RemoteSession, type PeerSessionView, type RemoteLink } from "../src/remote-view.js";
 
 const hostId = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7";
 const sessionId = "8f8f8f8f-0000-4000-8000-000000000001";
@@ -44,24 +44,58 @@ test("remote mode needs Axod's socket and the other Mac's ids", () => {
   assert.equal(parseRemoteViewConfig({ AXO_REMOTE_HOST_ID: hostId, AXO_REMOTE_SESSION_ID: sessionId }), null, "a Session of this Mac");
 });
 
-test("the copy is drawn as Pi's messages, and what Pi does not show is skipped", () => {
+const assistant = (id: string, stopReason: string) =>
+  JSON.stringify({ type: "message", id, parentId: null, timestamp: "2026-11-01T12:00:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "…" }], stopReason } });
+
+test("the copy is kept record by record, and a cut replaces it", () => {
   const session = new RemoteSession(config, axod().link);
   const change = session.apply(view([
     message("e1", "user", "Fix the bug"),
     JSON.stringify({ type: "model_change", id: "e2", parentId: null, provider: "x", modelId: "y" }),
     message("e3", "assistant", "On it"),
-    JSON.stringify({ type: "message", id: "e4", message: { role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false } }),
   ]));
-  assert.equal(change.redraw, false);
-  assert.deepEqual(change.draw.map(drawable => drawable.kind), ["user", "assistant", "toolResult"]);
-  assert.deepEqual([session.epoch, session.cursor, session.lastUserEntry], [1, 4, "e1"]);
+  assert.deepEqual(change, { reset: false, added: 3 });
+  assert.deepEqual([session.epoch, session.cursor, session.lastUserEntry, session.records.length], [1, 3, "e1", 3]);
+  assert.equal(session.apply(view([message("e2", "user", "again")], {}, 2)).added, 0, "a record already held is not added twice");
+  assert.equal(session.apply(view([message("e9", "user", "later")], {}, 9)).added, 0, "nor one past a gap");
+  const cut = session.apply(view([message("f1", "user", "hi")], { reset: true, epoch: 2 }));
+  assert.deepEqual(cut, { reset: true, added: 1 });
+  assert.deepEqual(session.records, [message("f1", "user", "hi")]);
 });
 
-test("a cut after something is drawn starts the screen over; before, it just draws", () => {
+test("the copy is read whole before anything is drawn", () => {
   const session = new RemoteSession(config, axod().link);
-  assert.equal(session.apply(view([], { reset: true, epoch: 1, cursor: 0 })).redraw, false, "nothing drawn yet");
-  session.apply(view([message("e1", "user", "hi")]));
-  assert.equal(session.apply(view([message("e1", "user", "hi")], { reset: true, epoch: 2 })).redraw, true);
+  session.apply(view([message("e1", "user", "hi")], { reset: true, more: true }));
+  assert.equal(session.loaded, false);
+  session.apply(view([assistant("e2", "stop")], {}, 2));
+  assert.equal(session.loaded, true);
+});
+
+test("a turn is open from its user message until an assistant message ends it", () => {
+  const session = new RemoteSession(config, axod().link);
+  assert.equal(session.openTurn(), -1);
+  session.apply(view([message("e1", "user", "go"), assistant("e2", "toolUse")]));
+  assert.equal(session.openTurn(), 0, "a tool call keeps it open");
+  session.apply(view([JSON.stringify({ type: "message", id: "e3", message: { role: "toolResult", toolCallId: "c1", content: [] } }), assistant("e4", "stop")], {}, 3));
+  assert.equal(session.openTurn(), -1);
+  session.apply(view([message("e5", "user", "and this"), assistant("e6", "aborted")], {}, 5));
+  assert.equal(session.openTurn(), -1, "a stopped turn is closed too");
+  session.apply(view([message("e7", "user", "one more")], {}, 7));
+  assert.equal(session.openTurn(), 6);
+});
+
+test("a view is the copy as a Pi session: this Mac's folder, and the other Mac as its model", () => {
+  const records = [
+    JSON.stringify({ type: "model_change", id: "m1", parentId: null, provider: "openai-codex", modelId: "gpt-6.1-sol" }),
+    message("e1", "user", "hi"),
+    message("e2", "assistant", "hello"),
+  ];
+  const text = buildView(records, 2, { id: sessionId, cwd: "/Users/leo", model: { provider: "axo-remote", modelId: "Mac Studio" } }, new Date(0));
+  const lines = text.trimEnd().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(lines[0], { type: "session", version: 3, id: sessionId, timestamp: "1970-01-01T00:00:00.000Z", cwd: "/Users/leo" });
+  assert.deepEqual(lines[1], { type: "model_change", id: "m1", parentId: null, provider: "axo-remote", modelId: "Mac Studio" });
+  assert.equal(text.trimEnd().split("\n")[2], records[1], "every other entry is the other Mac's own line");
+  assert.equal(lines.length, 3, "only the first `end` records");
 });
 
 test("a prompt is pending until its receipt and its user message are in the copy, never by its words", async () => {
