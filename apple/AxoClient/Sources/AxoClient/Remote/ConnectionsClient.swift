@@ -111,6 +111,11 @@ public struct ConnectionsClient: Sendable {
     try await send("POST", path: "/\(app)/mac-sign-in/poll", body: FlowBody(flow: flow))
   }
 
+  /// One step of a phone app's sign-in (Telegram's): the number, the code, or the password.
+  public func phoneSignIn(app: String, step: PhoneSignInStep) async throws -> PhoneSignIn {
+    try await send("POST", path: "/\(app)/phone-sign-in", body: step.body)
+  }
+
   /// Sets an OAuth app's client (or a server's that registers none itself), once; the secret is
   /// never shown again. Returns the sign-in link that follows, which opens on the web.
   @discardableResult

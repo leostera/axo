@@ -13,6 +13,7 @@ public protocol ConnectionsService: Sendable {
   func pollDeviceSignIn(app: String, flow: String) async throws -> DeviceSignIn
   func startMacSignIn(app: String, mac: String, preset: String, account: String?) async throws -> String
   func pollMacSignIn(app: String, flow: String) async throws -> MacSignIn
+  func phoneSignIn(app: String, step: PhoneSignInStep) async throws -> PhoneSignIn
   @discardableResult func setClient(_ name: String, clientId: String, clientSecret: String?) async throws -> String
   func remove(_ name: String, account: String?) async throws
   func addServer(name: String, url: String) async throws -> (connection: Connection, signInUrl: String?)
@@ -219,6 +220,24 @@ public final class AppsModel {
         return
       }
     }
+  }
+
+  // MARK: - Phone sign-in
+
+  /// Takes one step of a phone app's sign-in and says where it stands, for the form to show the
+  /// next; nil when the step did not reach Axo (the notice says why). Done reads the listing again.
+  public func phoneSignIn(_ app: AppConnection, step: PhoneSignInStep) async -> PhoneSignIn? {
+    var answer: PhoneSignIn?
+    let reached = await act {
+      answer = try await service.phoneSignIn(app: app.name, step: step)
+    }
+    guard reached, let answer else { return nil }
+    switch answer {
+    case .done(let account): notice = Notice(kind: .done, text: "Added \(account).")
+    case .failed(let error): notice = Notice(kind: .problem, text: error)
+    case .code, .password: break
+    }
+    return answer
   }
 
   private func finishFlow(_ notice: Notice) {

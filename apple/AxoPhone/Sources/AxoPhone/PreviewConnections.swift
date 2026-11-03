@@ -19,7 +19,7 @@
       ServerConnection(name: "Cloudflare_Docs", title: "Cloudflare Docs", url: "https://docs.mcp.cloudflare.com/mcp", state: .ready, tools: 2),
       ServerConnection(name: "emdash_leostera_com", title: "emdash: leostera.com", url: "https://leostera.com/_emdash/mcp", state: .needsSignIn),
     ]
-    private var clientReady = ["apps.gmail": true, "apps.calendar": true, "apps.spotify": false]
+    private var clientReady = ["apps.gmail": true, "apps.calendar": true, "apps.spotify": false, "apps.telegram": true]
     private var polls = 0
 
     private func locked<T>(_ work: () -> T) -> T { lock.withLock(work) }
@@ -68,6 +68,13 @@
         AppConnection(
           name: "apps.chatgpt", title: "ChatGPT", description: "Asks OpenAI's models with your plan.", provider: "OpenAI",
           category: "productivity", signIn: .device, accounts: accounts["apps.chatgpt"] ?? []),
+        AppConnection(
+          name: "apps.telegram", title: "Telegram", description: "Your chats, as a new device of yours.", provider: "Telegram",
+          category: "communication", permissions: ["Read and send messages as you"],
+          signIn: .phone(PhoneSignInOffer(
+            consoleUrl: "https://my.telegram.org/apps", clientHelp: "At my.telegram.org, create an app under API development tools.",
+            clientReady: clientReady["apps.telegram"] ?? false)),
+          accounts: accounts["apps.telegram"] ?? []),
         AppConnection(
           name: "apps.onepassword", title: "1Password", description: "Items in every vault you can open.", provider: "1Password",
           category: "security",
@@ -143,6 +150,25 @@
         guard polls >= 2 else { return .pending(mac: "studio") }
         accounts[app, default: []].append(AppAccount(account: "trading"))
         return .done(account: "trading")
+      }
+    }
+
+    /// Telegram's sign-in: any number gets a code sent to the app; 00000 is not right; the
+    /// account has a password, which anything but "wrong" passes.
+    func phoneSignIn(app: String, step: PhoneSignInStep) async throws -> PhoneSignIn {
+      let flow = "preview-flow-0123456789"
+      switch step {
+      case .start: return .code(flow: flow, viaApp: true, error: nil)
+      case .code(_, let code):
+        return code == "00000"
+          ? .code(flow: flow, viaApp: true, error: "That code is not right. Enter the newest one.")
+          : .password(flow: flow, hint: "pet", error: nil)
+      case .password(_, let password):
+        if password == "wrong" { return .password(flow: flow, hint: "pet", error: "That password is not right.") }
+        return locked {
+          accounts[app, default: []].append(AppAccount(account: "leostera"))
+          return .done(account: "leostera")
+        }
       }
     }
 

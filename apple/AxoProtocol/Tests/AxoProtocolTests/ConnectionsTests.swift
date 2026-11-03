@@ -27,7 +27,7 @@ final class ConnectionsTests: XCTestCase {
       {"kind":"app","name":"apps.chatgpt","title":"ChatGPT","signIn":{"kind":"device"},"state":"needsSignIn","accounts":[],"tools":[],"lastError":null},
       {"kind":"app","name":"apps.onepassword","title":"1Password","signIn":{"kind":"mac","setup":"Install the CLI.","helpUrl":"https://developer.1password.com"},
        "state":"ready","accounts":[{"account":"studio","state":"ready","lastError":null}],"tools":[],"lastError":null},
-      {"kind":"app","name":"apps.telegram","title":"Telegram","signIn":{"kind":"phone","something":1},"state":"needsSignIn","accounts":[],"tools":[],"lastError":null},
+      {"kind":"app","name":"apps.signal","title":"Signal","signIn":{"kind":"qr","something":1},"state":"needsSignIn","accounts":[],"tools":[],"lastError":null},
       {"kind":"robot","name":"r2d2"}
       ]
       """
@@ -61,8 +61,8 @@ final class ConnectionsTests: XCTestCase {
     guard case .app(let onepassword) = connections[5] else { return XCTFail() }
     XCTAssertEqual(onepassword.signIn, .mac(setup: "Install the CLI.", helpUrl: "https://developer.1password.com"))
 
-    guard case .app(let telegram) = connections[6] else { return XCTFail() }
-    XCTAssertEqual(telegram.signIn, .unknown, "a sign-in this build does not know is added on the web")
+    guard case .app(let signal) = connections[6] else { return XCTFail() }
+    XCTAssertEqual(signal.signIn, .unknown, "a sign-in this build does not know is added on the web")
     XCTAssertEqual(connections[7], .unknown, "a kind this build does not know is left aside, not a failed listing")
   }
 
@@ -70,6 +70,23 @@ final class ConnectionsTests: XCTestCase {
     let app = try decode(AppConnection.self, #"{"kind":"app","name":"apps.gmail","title":"Gmail","state":"ready","accounts":[],"tools":[],"lastError":null}"#)
     XCTAssertEqual(app.signIn, .oauth(client: nil))
     XCTAssertFalse(app.needsClient)
+  }
+
+  func testTelegramSignsInByPhoneOnceItsAPIIDIsSetUp() throws {
+    let app = try decode(
+      AppConnection.self,
+      #"{"kind":"app","name":"apps.telegram","title":"Telegram","signIn":{"kind":"phone","consoleUrl":"https://my.telegram.org/apps","clientHelp":"Create an app.","clientReady":false},"state":"needsSignIn","accounts":[],"tools":[],"lastError":null}"#)
+    XCTAssertEqual(app.signIn, .phone(PhoneSignInOffer(consoleUrl: "https://my.telegram.org/apps", clientHelp: "Create an app.", clientReady: false)))
+    XCTAssertTrue(app.needsClient)
+
+    XCTAssertEqual(
+      try decode(PhoneSignIn.self, #"{"state":"code","flow":"0123456789abcdef0","via":"sms","error":"That code is not right."}"#),
+      .code(flow: "0123456789abcdef0", viaApp: false, error: "That code is not right."))
+    XCTAssertEqual(
+      try decode(PhoneSignIn.self, #"{"state":"password","flow":"0123456789abcdef0","hint":null}"#),
+      .password(flow: "0123456789abcdef0", hint: nil, error: nil))
+    XCTAssertEqual(try decode(PhoneSignIn.self, #"{"state":"done","account":"leostera"}"#), .done(account: "leostera"))
+    XCTAssertEqual(PhoneSignInStep.code(flow: "f", code: "12345").body, ["step": "code", "flow": "f", "code": "12345"])
   }
 
   func testDeviceAndMacSignInsDecodeEachState() throws {

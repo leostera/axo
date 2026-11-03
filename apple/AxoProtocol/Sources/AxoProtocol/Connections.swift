@@ -112,8 +112,11 @@ public struct AppConnection: Decodable, Equatable, Sendable, Identifiable {
   public var isConnected: Bool { accounts.contains { $0.state == .ready } }
   /// An OAuth app waiting for its provider's client to be set up.
   public var needsClient: Bool {
-    if case .oauth(let client?) = signIn { return !client.ready }
-    return false
+    switch signIn {
+    case .oauth(let client?): !client.ready
+    case .phone(let offer): !offer.clientReady
+    default: false
+    }
   }
 
   public init(
@@ -189,10 +192,13 @@ public enum AppSignIn: Decodable, Equatable, Sendable {
   case mac(setup: String, helpUrl: String)
   /// The person pastes what the service issued them; `named`: they name the account too.
   case token(TokenSignIn)
+  /// The person signs in with their phone number and the code the service sends, as a new device
+  /// of theirs (Telegram), with an API client they register at the service first.
+  case phone(PhoneSignInOffer)
   /// A kind this build does not know: added on the web.
   case unknown
 
-  private enum Keys: String, CodingKey { case kind, client, setup, helpUrl }
+  private enum Keys: String, CodingKey { case kind, client, setup, helpUrl, consoleUrl, clientHelp, clientReady }
 
   public init(from decoder: any Decoder) throws {
     let c = try decoder.container(keyedBy: Keys.self)
@@ -204,7 +210,73 @@ public enum AppSignIn: Decodable, Equatable, Sendable {
         setup: try c.decodeIfPresent(String.self, forKey: .setup) ?? "",
         helpUrl: try c.decodeIfPresent(String.self, forKey: .helpUrl) ?? "")
     case "token": self = .token(try TokenSignIn(from: decoder))
+    case "phone":
+      self = .phone(
+        PhoneSignInOffer(
+          consoleUrl: try c.decodeIfPresent(String.self, forKey: .consoleUrl) ?? "",
+          clientHelp: try c.decodeIfPresent(String.self, forKey: .clientHelp) ?? "",
+          clientReady: try c.decodeIfPresent(Bool.self, forKey: .clientReady) ?? false))
     default: self = .unknown
+    }
+  }
+}
+
+/// A phone app's sign-in (Telegram's): the API client the person registers at `consoleUrl`
+/// first, as `clientHelp` says, and whether it is set up.
+public struct PhoneSignInOffer: Equatable, Sendable {
+  public let consoleUrl: String
+  public let clientHelp: String
+  public let clientReady: Bool
+
+  public init(consoleUrl: String, clientHelp: String, clientReady: Bool) {
+    self.consoleUrl = consoleUrl
+    self.clientHelp = clientHelp
+    self.clientReady = clientReady
+  }
+}
+
+/// A step of a phone sign-in: the number, then the code the service sent, then the account's
+/// password if it has one. Axo keeps the service's state between steps; `flow` names it.
+public enum PhoneSignInStep: Equatable, Sendable {
+  case start(phone: String)
+  case code(flow: String, code: String)
+  case password(flow: String, password: String)
+
+  /// The request body, as the Worker takes it.
+  public var body: [String: String] {
+    switch self {
+    case .start(let phone): ["step": "start", "phone": phone]
+    case .code(let flow, let code): ["step": "code", "flow": flow, "code": code]
+    case .password(let flow, let password): ["step": "password", "flow": flow, "password": password]
+    }
+  }
+}
+
+/// Where a phone sign-in stands after a step. `error` on a step that goes on says what the person
+/// got wrong in the last one (a code that is not right).
+public enum PhoneSignIn: Decodable, Equatable, Sendable {
+  /// The code to enter, sent by the service's own app (`viaApp`) or by SMS.
+  case code(flow: String, viaApp: Bool, error: String?)
+  case password(flow: String, hint: String?, error: String?)
+  case done(account: String)
+  case failed(String)
+
+  private enum Keys: String, CodingKey { case state, flow, via, hint, error, account }
+
+  public init(from decoder: any Decoder) throws {
+    let c = try decoder.container(keyedBy: Keys.self)
+    switch try c.decode(String.self, forKey: .state) {
+    case "code":
+      self = .code(
+        flow: try c.decode(String.self, forKey: .flow),
+        viaApp: try c.decodeIfPresent(String.self, forKey: .via) != "sms",
+        error: try c.decodeIfPresent(String.self, forKey: .error))
+    case "password":
+      self = .password(
+        flow: try c.decode(String.self, forKey: .flow), hint: try c.decodeIfPresent(String.self, forKey: .hint),
+        error: try c.decodeIfPresent(String.self, forKey: .error))
+    case "done": self = .done(account: try c.decode(String.self, forKey: .account))
+    default: self = .failed(try c.decodeIfPresent(String.self, forKey: .error) ?? "The sign-in failed.")
     }
   }
 }

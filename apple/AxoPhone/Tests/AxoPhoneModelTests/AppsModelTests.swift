@@ -13,6 +13,7 @@ private final class FakeConnections: ConnectionsService, @unchecked Sendable {
   var deviceAnswers: [DeviceSignIn] = []
   var macAnswers: [MacSignIn] = []
   var addAnswer: (Connection, String?)?
+  var phoneAnswers: [PhoneSignIn] = []
   private(set) var calls: [String] = []
 
   private func note(_ call: String) { lock.withLock { calls.append(call) } }
@@ -47,6 +48,12 @@ private final class FakeConnections: ConnectionsService, @unchecked Sendable {
     lock.withLock {
       calls.append("macpoll \(flow)")
       return macAnswers.isEmpty ? .pending(mac: "studio") : macAnswers.removeFirst()
+    }
+  }
+  func phoneSignIn(app: String, step: PhoneSignInStep) async throws -> PhoneSignIn {
+    lock.withLock {
+      calls.append("phone \(app) \(step.body.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","))")
+      return phoneAnswers.isEmpty ? .failed("no answer") : phoneAnswers.removeFirst()
     }
   }
   func setClient(_ name: String, clientId: String, clientSecret: String?) async throws -> String {
@@ -178,6 +185,38 @@ final class AppsModelTests: XCTestCase {
     XCTAssertTrue(saved)
     XCTAssertTrue(fake.calls.contains("client apps.gmail id.apps.googleusercontent.com shh"))
     XCTAssertEqual(model.notice?.text, "Google is set up. Add an account.")
+  }
+
+  func testAPhoneSignInGoesFromNumberToCodeToPasswordAndSaysWhoWasAdded() async {
+    let telegram = AppConnection(
+      name: "apps.telegram", title: "Telegram", provider: "Telegram",
+      signIn: .phone(PhoneSignInOffer(consoleUrl: "https://my.telegram.org", clientHelp: "", clientReady: true)))
+    let (model, fake) = world([.app(telegram)])
+    fake.phoneAnswers = [
+      .code(flow: "flow-0123456789abcdef", viaApp: true, error: nil),
+      .password(flow: "flow-0123456789abcdef", hint: "pet", error: nil),
+      .done(account: "leostera"),
+    ]
+    let code = await model.phoneSignIn(telegram, step: .start(phone: "+44 7700 900123"))
+    XCTAssertEqual(code, .code(flow: "flow-0123456789abcdef", viaApp: true, error: nil))
+    XCTAssertNil(model.notice, "a step that goes on says nothing yet")
+    _ = await model.phoneSignIn(telegram, step: .code(flow: "flow-0123456789abcdef", code: "12345"))
+    let done = await model.phoneSignIn(telegram, step: .password(flow: "flow-0123456789abcdef", password: "hunter2"))
+    XCTAssertEqual(done, .done(account: "leostera"))
+    XCTAssertEqual(model.notice?.text, "Added leostera.")
+    XCTAssertEqual(fake.calls.filter { $0.hasPrefix("phone") }, [
+      "phone apps.telegram phone=+44 7700 900123,step=start",
+      "phone apps.telegram code=12345,flow=flow-0123456789abcdef,step=code",
+      "phone apps.telegram flow=flow-0123456789abcdef,password=hunter2,step=password",
+    ])
+  }
+
+  func testAPhoneAppWithoutItsAPIIDNeedsSettingUpFirst() {
+    let unset = AppConnection(
+      name: "apps.telegram", title: "Telegram",
+      signIn: .phone(PhoneSignInOffer(consoleUrl: "https://my.telegram.org", clientHelp: "", clientReady: false)))
+    XCTAssertTrue(unset.needsClient)
+    XCTAssertEqual(AppsCatalog.detail(of: unset), "Needs set-up")
   }
 
   // MARK: - What the pages show

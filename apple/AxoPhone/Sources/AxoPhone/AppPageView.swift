@@ -12,6 +12,7 @@ struct AppPageView: View {
   @State private var adding: AddingToken?
   @State private var changingClient = false
   @State private var removing: AppAccount?
+  @State private var signingInByPhone = false
 
   /// A token form for a new account, or for a new token for `account`.
   private struct AddingToken: Identifiable {
@@ -40,6 +41,9 @@ struct AppPageView: View {
       if case .oauth(let client?) = app.signIn, !client.ready || changingClient {
         ClientSetupSection(model: model, app: app, client: client, changing: client.ready) { changingClient = false }
       }
+      if case .phone(let offer) = app.signIn, !offer.clientReady || changingClient {
+        PhoneClientSection(model: model, app: app, offer: offer, changing: offer.clientReady) { changingClient = false }
+      }
 
       if !app.needsClient || !app.accounts.isEmpty {
         accounts(app)
@@ -65,6 +69,9 @@ struct AppPageView: View {
     .listStyle(.insetGrouped)
     .scrollContentBackground(.hidden)
     .background(ChatColors.background)
+    .sheet(isPresented: $signingInByPhone) {
+      PhoneSignInForm(model: model, app: app)
+    }
     .sheet(item: $adding) { adding in
       if case .token(let signIn) = app.signIn {
         TokenAccountForm(model: model, app: app, signIn: signIn, account: adding.account)
@@ -160,6 +167,13 @@ struct AppPageView: View {
             .font(.footnote)
         }
       }
+    case .phone:
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Axo signs in as a new device of yours, and shows in \(app.title) › Settings › Devices; ending it there signs Axo out.")
+        if !changingClient {
+          Button("Change API ID") { changingClient = true }.font(.footnote)
+        }
+      }
     case .unknown:
       Text("This version of the app cannot add \(app.title) accounts yet; Add account opens it on the web.")
     case .token, .device:
@@ -171,6 +185,7 @@ struct AppPageView: View {
     switch app.signIn {
     case .token: adding = AddingToken(account: account)
     case .device: Task { await model.startDeviceSignIn(for: app) }
+    case .phone: signingInByPhone = true
     case .oauth, .unknown: openURL(model.webPage(for: app))
     case .mac: break
     }
@@ -209,6 +224,7 @@ struct AppPageView: View {
         ? "Axo deletes a key it created at \(provider); one you pasted, delete there too."
         : "Axo forgets its token. To stop it working, delete it at \(provider) too."
     case .device: return "Axo signs out of \(provider)."
+    case .phone: return "Axo logs its device out of \(provider)."
     default: return "Axo's access is revoked at \(provider)."
     }
   }
@@ -475,6 +491,174 @@ private struct TokenAccountForm: View {
         await model.startMacSignIn(for: app, on: mac, preset: preset, account: account)
         if model.macFlow != nil { dismiss() }
       } else if await model.addToken(to: app, account: account, fields: fields) {
+        dismiss()
+      }
+    }
+  }
+}
+
+// MARK: - Phone apps
+
+/// Sets up a phone app's API client (Telegram's): created by the person at the service, its ID
+/// and hash entered here once and kept encrypted with the account.
+private struct PhoneClientSection: View {
+  let model: AppsModel
+  let app: AppConnection
+  let offer: PhoneSignInOffer
+  let changing: Bool
+  let done: () -> Void
+  @State private var apiId = ""
+  @State private var apiHash = ""
+
+  private var provider: String { app.provider.isEmpty ? app.title : app.provider }
+
+  var body: some View {
+    Section {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("1. Create an API ID for yourself").font(.callout.weight(.semibold))
+        if !offer.clientHelp.isEmpty {
+          Text(offer.clientHelp).font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      if let url = URL(string: offer.consoleUrl) {
+        Link(destination: url) { Label("Open \(provider)", systemImage: "safari") }
+      }
+      Text("2. Enter its api_id and api_hash").font(.callout.weight(.semibold))
+      TextField("api_id", text: $apiId)
+        .keyboardType(.numberPad)
+        .accessibilityIdentifier("api-id")
+      SecureField("api_hash", text: $apiHash)
+        .textInputAutocapitalization(.never).autocorrectionDisabled()
+        .accessibilityIdentifier("api-hash")
+      Button("Save") {
+        Task {
+          if await model.setClient(of: app, clientId: apiId, clientSecret: apiHash) {
+            apiId = ""
+            apiHash = ""
+            done()
+          }
+        }
+      }
+      .disabled(model.isBusy || apiId.trimmingCharacters(in: .whitespaces).isEmpty || apiHash.isEmpty)
+      if changing { Button("Cancel", role: .cancel, action: done) }
+    } header: {
+      Text(changing ? "Change \(provider) API ID" : "Set up \(provider)")
+    } footer: {
+      Text(
+        "Axo keeps them encrypted with your account and never shows the hash again."
+          + (changing ? " Accounts signed in with the old one may need to sign in again." : ""))
+    }
+  }
+}
+
+/// Signs in to a phone app (Telegram) as a new device of the person's: their number, the code the
+/// service sends, then their password if the account has one. Axo keeps the service's state
+/// between steps; this form only holds where it is.
+private struct PhoneSignInForm: View {
+  let model: AppsModel
+  let app: AppConnection
+  @Environment(\.dismiss) private var dismiss
+  @State private var stage: PhoneSignIn?
+  @State private var value = ""
+  @FocusState private var focused: Bool
+
+  private var provider: String { app.provider.isEmpty ? app.title : app.provider }
+
+  private var label: String {
+    switch stage {
+    case .code: "Code"
+    case .password: "Password"
+    default: "Phone number"
+    }
+  }
+
+  private var hint: String {
+    switch stage {
+    case .code(_, let viaApp, let error):
+      error ?? (viaApp ? "\(provider) sent a code to your \(provider) app on another device." : "\(provider) sent a code by SMS.")
+    case .password(_, let hint, let error):
+      error ?? "Your account has a password (two-step verification).\(hint.map { " Hint: \($0)." } ?? "")"
+    default:
+      "Your \(provider) number, with its country code. \(provider) sends a code to your \(provider) app."
+    }
+  }
+
+  private var isError: Bool {
+    switch stage {
+    case .code(_, _, let error?), .password(_, _, let error?): !error.isEmpty
+    default: false
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section {
+          field
+            .focused($focused)
+            .onSubmit(submit)
+            .accessibilityIdentifier("phone-sign-in-field")
+        } footer: {
+          Text(hint)
+            .foregroundStyle(isError ? Color.orange : Color.secondary)
+            .accessibilityIdentifier("phone-sign-in-hint")
+        }
+        Section {
+          Text("Axo appears in \(provider) › Settings › Devices; ending it there signs Axo out.")
+            .font(.footnote).foregroundStyle(.secondary)
+        }
+      }
+      .navigationTitle("Sign in to \(provider)")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+        ToolbarItem(placement: .confirmationAction) {
+          Button(stage == nil ? "Send code" : "Continue", action: submit)
+            .disabled(model.isBusy || value.trimmingCharacters(in: .whitespaces).isEmpty)
+            .accessibilityIdentifier("phone-sign-in-next")
+        }
+      }
+      .onAppear { focused = true }
+      .appsNotice(model)
+    }
+  }
+
+  @ViewBuilder private var field: some View {
+    switch stage {
+    case .code:
+      TextField("Code", text: $value)
+        .keyboardType(.numberPad)
+        .textContentType(.oneTimeCode)
+    case .password:
+      SecureField("Password", text: $value)
+        .textContentType(.password)
+    default:
+      TextField("+44 7700 900123", text: $value)
+        .keyboardType(.phonePad)
+        .textContentType(.telephoneNumber)
+    }
+  }
+
+  private func step() -> PhoneSignInStep? {
+    let trimmed = value.trimmingCharacters(in: .whitespaces)
+    switch stage {
+    case nil: return .start(phone: trimmed)
+    case .code(let flow, _, _): return .code(flow: flow, code: trimmed)
+    case .password(let flow, _, _): return .password(flow: flow, password: value)
+    case .done, .failed: return nil
+    }
+  }
+
+  private func submit() {
+    guard let step = step(), !value.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+    Task {
+      guard let answer = await model.phoneSignIn(app, step: step) else { return }
+      switch answer {
+      case .code, .password:
+        value = ""
+        stage = answer
+        focused = true
+      case .done, .failed:
         dismiss()
       }
     }

@@ -212,6 +212,42 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testTelegramSignsInWithANumberACodeAndThePassword() {
+    let app = launch(["AXO_PHONE_PREVIEW_APPS": "1"])
+    XCTAssertTrue(app.buttons["Gmail"].waitForExistence(timeout: 10))
+    // Below the fold: the list makes rows as they scroll in.
+    let telegram = app.buttons["Telegram"]
+    for _ in 0..<6 where !telegram.isHittable { app.swipeUp() }
+    telegram.tap()
+    app.buttons["Add account"].tap()
+    let field = app.textFields["phone-sign-in-field"]
+    XCTAssertTrue(field.waitForExistence(timeout: 5))
+    field.tap()
+    field.typeText("+44 7700 900123")
+    app.buttons["phone-sign-in-next"].tap()
+
+    let hint = app.staticTexts["phone-sign-in-hint"]
+    XCTAssertTrue(hint.waitForExistence(timeout: 5))
+    XCTAssertTrue(hint.label.contains("sent a code to your Telegram app"), hint.label)
+    app.textFields["phone-sign-in-field"].tap()
+    app.textFields["phone-sign-in-field"].typeText("00000")
+    app.buttons["phone-sign-in-next"].tap()
+    XCTAssertTrue(app.staticTexts["That code is not right. Enter the newest one."].waitForExistence(timeout: 5))
+    app.textFields["phone-sign-in-field"].tap()
+    app.textFields["phone-sign-in-field"].typeText("12345")
+    app.buttons["phone-sign-in-next"].tap()
+
+    let password = app.secureTextFields["phone-sign-in-field"]
+    XCTAssertTrue(password.waitForExistence(timeout: 5), "the account has a password")
+    XCTAssertTrue(hint.label.contains("Hint: pet."), hint.label)
+    password.tap()
+    password.typeText("hunter2")
+    app.buttons["phone-sign-in-next"].tap()
+    XCTAssertTrue(app.staticTexts["leostera"].waitForExistence(timeout: 5), "the account is listed")
+    XCTAssertFalse(app.buttons["phone-sign-in-next"].exists, "the form is gone")
+  }
+
+  @MainActor
   func testTheMenuGroupsChatsByWorkspaceShowsEmptyOnesAndWhoIsWorking() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()
