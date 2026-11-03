@@ -245,7 +245,9 @@ export class AxoClientDO extends DurableObject<Env> {
         }
         case CLIENT_METHODS.open: {
           const params = clientOpenParamsSchema.safeParse(call.params);
-          if (!params.success || !this.host(params.data.hostId)) return failure(id, -32602, "Invalid params");
+          // A Mac reads back its own Sessions too: the archived ones it deleted (RFD0027).
+          const ownSession = params.success && params.data.hostId === peerHostOf(this.identity()!.clientId);
+          if (!params.success || !(ownSession || this.host(params.data.hostId))) return failure(id, -32602, "Invalid params");
           return success(id, await this.openSession(socket, params.data));
         }
         case CLIENT_METHODS.ack: {
