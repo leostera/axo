@@ -1,0 +1,8 @@
+load("//bazel/rust:release.bzl", "release_binary")
+
+# The axod the Mac app ships, optimized and stripped, still named axod (tests use //crates/axod).
+release_binary(
+    name = "release",
+    binary = "//crates/axod",
+    visibility = ["//apple:__subpackages__"],
+)

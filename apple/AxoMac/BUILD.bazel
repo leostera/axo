@@ -231,7 +231,8 @@ macos_application(
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
         ":app_agent_plist": "Library/LaunchAgents",
-        "//crates/axod:axod": "Helpers",
+        # Optimized and stripped, as it ships; tests run the development build.
+        "//crates/axod/release": "Helpers",
         ":AxoPi": "Resources/AxoPi",
         "@ghostty//:resources": "Resources",
         "@ghostty//:terminfo": "Resources",
