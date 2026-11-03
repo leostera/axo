@@ -37,7 +37,9 @@ final class AxodInteropTests: XCTestCase {
         padding: .init(top: 10, bottom: 10, left: 2, right: 2), dividerThickness: 1))
     try await axod.setViewport(viewport)
     let health = try await axod.health()
-    XCTAssertEqual(health.version, "0.1.0")
+    // Axo's version rises with every publish (config.json); only its shape is stable.
+    let version = try XCTUnwrap(health.version)
+    XCTAssertNotNil(version.wholeMatch(of: /[0-9]+\.[0-9]+\.[0-9]+/), "version \(version)")
     XCTAssertGreaterThan(health.buildNumber, 0)
     XCTAssertEqual(health.status, "running")
 
