@@ -1,7 +1,7 @@
 {
-  "version": "0.2",
+  "version": "0.3",
   "builds": {
-    "mac": 269,
+    "mac": 270,
     "phone": 12,
     "axod": 29
   },
