@@ -98,9 +98,27 @@ final class AppUpgradeTests: XCTestCase {
     try plist.write(to: contents.appendingPathComponent("Info.plist"))
   }
 
-  func testTheMenuNamesAPublishedBuildByItsVersion() {
-    XCTAssertEqual(AppUpgrade.published(PublishedBuild(build: 270, version: "0.3")).title, "Axo 0.3 (Build 270)")
+  func testAnInstalledBuildIsNamedByItsBundlesVersion() throws {
+    let bundle = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-upgrade-\(UUID().uuidString)/Axo.app")
+    defer { try? FileManager.default.removeItem(at: bundle.deletingLastPathComponent()) }
+    try FileManager.default.createDirectory(
+      at: bundle.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+    try PropertyListSerialization.data(
+      fromPropertyList: ["CFBundleVersion": "271", "CFBundleShortVersionString": "0.4"],
+      format: .xml, options: 0
+    ).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+    let upgrade = AppUpgrade.choose(
+      running: 270, installed: AppUpgradeInstaller.bundleBuild(of: bundle), installedAxod: nil,
+      installedVersion: AppUpgradeInstaller.bundleVersion(of: bundle), published: nil,
+      canVerifyDownloads: true)
+    XCTAssertEqual(upgrade?.title, "Axo v0.4")
+  }
+
+  func testTheMenuNamesAnUpgradeByItsVersion() {
+    XCTAssertEqual(AppUpgrade.published(PublishedBuild(build: 270, version: "0.3")).title, "Axo v0.3")
     XCTAssertEqual(AppUpgrade.published(PublishedBuild(build: 270)).title, "Build 270")
+    XCTAssertEqual(AppUpgrade.installed(build: 271, axodBuild: nil, version: "0.4").title, "Axo v0.4")
     XCTAssertEqual(AppUpgrade.installed(build: 271, axodBuild: nil).title, "Build 271")
   }
 }

@@ -26,36 +26,36 @@ public struct PublishedBuild: Decodable, Equatable, Sendable {
   }
 }
 
-/// A newer Axo this one can become, from the menu's "Upgrade to Build N".
+/// A newer Axo this one can become, from the menu's "Upgrade to Axo v0.3".
 public enum AppUpgrade: Equatable, Sendable {
   /// Already on disk over the running bundle (a `bazel build` at dist/Axo.app): just restart.
-  case installed(build: Int, axodBuild: Int?)
+  case installed(build: Int, axodBuild: Int?, version: String? = nil)
   /// Published at axo.leostera.dev: download, check, swap in over this bundle, restart.
   case published(PublishedBuild)
 
   public var build: Int {
     switch self {
-    case .installed(let build, _): build
+    case .installed(let build, _, _): build
     case .published(let published): published.build
     }
   }
 
-  /// The semantic version, when the published manifest says it.
+  /// The semantic version: the installed bundle's, or what the published manifest says.
   public var version: String? {
     switch self {
-    case .installed: nil
+    case .installed(_, _, let version): version
     case .published(let published): published.version
     }
   }
 
-  /// How the menu names it: "Axo 0.3 (Build 270)", or "Build 270" when its version is unknown.
+  /// How the menu names it: "Axo v0.3", or "Build 270" when its version is unknown.
   public var title: String {
-    version.map { "Axo \($0) (Build \(build))" } ?? "Build \(build)"
+    version.map { "Axo v\($0)" } ?? "Build \(build)"
   }
 
   public var axodBuild: Int? {
     switch self {
-    case .installed(_, let axodBuild): axodBuild
+    case .installed(_, let axodBuild, _): axodBuild
     case .published(let published): published.axodBuild
     }
   }
@@ -64,11 +64,11 @@ public enum AppUpgrade: Equatable, Sendable {
   /// one is offered only when it is newer than both, and only to an Axo signed by a team, the
   /// one a download must be signed by too.
   public static func choose(
-    running: Int, installed: Int?, installedAxod: Int?, published: PublishedBuild?,
-    canVerifyDownloads: Bool
+    running: Int, installed: Int?, installedAxod: Int?, installedVersion: String? = nil,
+    published: PublishedBuild?, canVerifyDownloads: Bool
   ) -> AppUpgrade? {
     if let installed, installed > running {
-      return .installed(build: installed, axodBuild: installedAxod)
+      return .installed(build: installed, axodBuild: installedAxod, version: installedVersion)
     }
     if canVerifyDownloads, let published, published.build > max(running, installed ?? running) {
       return .published(published)
@@ -224,12 +224,19 @@ public enum AppUpgradeInstaller {
 
   /// `CFBundleVersion` of the bundle on disk, as a number.
   public static func bundleBuild(of bundle: URL, key: String = "CFBundleVersion") -> Int? {
+    let value = bundleInfo(of: bundle)?[key]
+    return (value as? String).flatMap(Int.init) ?? value as? Int
+  }
+
+  /// The semantic version of the bundle on disk (`CFBundleShortVersionString`).
+  public static func bundleVersion(of bundle: URL) -> String? {
+    bundleInfo(of: bundle)?["CFBundleShortVersionString"] as? String
+  }
+
+  private static func bundleInfo(of bundle: URL) -> [String: Any]? {
     let plist = bundle.appendingPathComponent("Contents/Info.plist")
-    guard let data = try? Data(contentsOf: plist),
-      let info = try? PropertyListSerialization.propertyList(from: data, format: nil)
-        as? [String: Any]
-    else { return nil }
-    return (info[key] as? String).flatMap(Int.init) ?? info[key] as? Int
+    guard let data = try? Data(contentsOf: plist) else { return nil }
+    return try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
   }
 
   private static func run(

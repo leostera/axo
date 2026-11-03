@@ -4,7 +4,7 @@ import AxoDaemonManager
 import Observation
 import OSLog
 
-/// The menu bar's "Check for Updates…", "Upgrade to Build N" once one is known: a newer build installed over this bundle (a `bazel build`
+/// The menu bar's "Check for Updates…", "Upgrade to Axo v0.3" once one is known: a newer build installed over this bundle (a `bazel build`
 /// at dist/Axo.app) is a restart; otherwise a newer build published at axo.leostera.dev is
 /// downloaded, checked against this app's signature and swapped in first. Either way the new
 /// Axo replaces this one through launchd (`AppLaunchHandover`), so it stays kept alive.
@@ -111,7 +111,7 @@ final class AppUpgradeModel {
     guard phase == .idle, let upgrade = available, let running else { return }
     guard confirm(upgrade, running: running) else { return }
     switch upgrade {
-    case .installed(let build, _):
+    case .installed(let build, _, _):
       restart(into: build)
     case .published(let published):
       guard let team, let bundleID = Bundle.main.bundleIdentifier else { return }
@@ -138,6 +138,7 @@ final class AppUpgradeModel {
       running: running,
       installed: AppUpgradeInstaller.bundleBuild(of: bundle),
       installedAxod: AppUpgradeInstaller.bundleBuild(of: bundle, key: "AXODBuildNumber"),
+      installedVersion: AppUpgradeInstaller.bundleVersion(of: bundle),
       published: published,
       canVerifyDownloads: team != nil)
   }

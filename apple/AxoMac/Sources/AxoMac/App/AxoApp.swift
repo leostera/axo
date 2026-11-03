@@ -517,7 +517,7 @@ private struct AxoMenu: View {
 
 }
 
-/// "Upgrade to Build N" while there is one; "Upgrading to Build N…" while it downloads and restarts.
+/// "Upgrade to Axo v0.3" while there is one; "Downloading Build N…" while it downloads and restarts.
 private struct AppUpgradeMenuItem: View {
   var upgrades: AppUpgradeModel
 
