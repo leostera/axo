@@ -26,6 +26,7 @@ rust_library(
     # Cargo versions are full semver: major.minor.0 from config.json's major.minor.
     version = AXO["version"] + ".0",
     deps = [
+        "//crates/axo-computer:axo_computer",
         "//crates/axo-ipc:axo_ipc",
         "//crates/axo-panes:axo_panes",
         "//crates/axo-pi:axo_pi",
@@ -54,6 +55,7 @@ rust_test(
     # Cargo versions are full semver: major.minor.0 from config.json's major.minor.
     version = AXO["version"] + ".0",
     deps = [
+        "//crates/axo-computer:axo_computer",
         "//crates/axo-ipc:axo_ipc",
         "//crates/axo-panes:axo_panes",
         "//crates/axo-pi:axo_pi",
