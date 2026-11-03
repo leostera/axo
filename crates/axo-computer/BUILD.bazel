@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Computer use on the Mac axod runs on, through Cua Driver's macOS runtime, embedded in-process
+# so its Accessibility and Screen Recording checks use Axo's grants. Empty elsewhere.
+rust_library(
+    name = "axo_computer",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = ["@crates//:serde_json"] + select({
+        "@platforms//os:macos": [
+            "@crates//:cua-driver-core",
+            "@crates//:cursor-overlay",
+            "@crates//:platform-macos",
+            "@crates//:tokio",
+        ],
+        "//conditions:default": [],
+    }),
+)
