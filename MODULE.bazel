@@ -47,6 +47,20 @@ crate.spec(package = "shlex", version = "2.0.1")
 crate.spec(package = "tokio", version = "1", features = ["io-util", "net", "rt-multi-thread", "sync", "time"])
 crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls", "url"])
 crate.spec(package = "url", version = "2.5.8")
+# Cua Driver (MIT), pinned: only its macOS runtime and core are linked into axod (axo-computer);
+# its daemon, MCP server, SDK bindings and telemetry are not.
+crate.spec(package = "platform-macos", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
+crate.spec(package = "cua-driver-core", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
+crate.spec(package = "cursor-overlay", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
+
+# cua-driver-core embeds its guides from outside its crate folder, which crate_universe does not
+# fetch; this patch carries them into the crate (regenerate it on every Cua bump).
+crate.annotation(
+    crate = "cua-driver-core",
+    patch_args = ["-p1"],
+    patches = ["//third_party/cua:cua-driver-core-skills.patch"],
+    repositories = ["crates"],
+)
 crate.from_specs(
     name = "crates",
     cargo_lockfile = "//bazel/rust:Cargo.lock",
