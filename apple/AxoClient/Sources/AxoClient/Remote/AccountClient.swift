@@ -51,6 +51,13 @@ public struct HostPairing: Equatable, Sendable {
 
   /// The link the Mac app opens to fill the code in (`axo://pair/<code>`).
   public var link: URL { URL(string: "axo://pair/\(code.value)")! }
+
+  /// The Terminal command that installs Axo on a Mac without it, from the relay at `origin`,
+  /// starts it and fills this code in (`sites/axo.leostera.dev/src/install.ts`).
+  public func installCommand(origin: URL) -> String {
+    let base = origin.absoluteString.hasSuffix("/") ? String(origin.absoluteString.dropLast()) : origin.absoluteString
+    return "curl -fsSL '\(base)/install?code=\(code.value)' | sh"
+  }
 }
 
 /// Who can ask the relay for a pairing code: `AccountClient`, or a stand-in.

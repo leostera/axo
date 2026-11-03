@@ -99,6 +99,9 @@ final class AccountClientTests: XCTestCase {
     XCTAssertEqual(pairing.expiresAt, try Date("2026-10-27T10:10:00Z", strategy: .iso8601))
     XCTAssertEqual(pairing.link.absoluteString, "axo://pair/7KQ2-M4XD")
     XCTAssertEqual(HostPairingCode.fromPairingURL(pairing.link), pairing.code, "the link the Mac opens")
+    XCTAssertEqual(
+      pairing.installCommand(origin: URL(string: "https://axo.leostera.dev")!),
+      "curl -fsSL 'https://axo.leostera.dev/install?code=7KQ2-M4XD' | sh", "what a Mac without Axo runs")
     let request = try XCTUnwrap(loader.requests.first)
     XCTAssertEqual(request.httpMethod, "POST")
     XCTAssertEqual(request.url?.path, "/api/v1/account/host-pairings")

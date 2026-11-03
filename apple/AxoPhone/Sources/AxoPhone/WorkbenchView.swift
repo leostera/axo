@@ -181,7 +181,9 @@ struct WorkbenchView: View {
       }
     }
     .sheet(isPresented: $showingPairing) {
-      PairMacSheet(issuer: pairingIssuer, hosts: workbench.hosts, refresh: { await workbench.refresh() })
+      PairMacSheet(
+        issuer: pairingIssuer, hosts: workbench.hosts, origin: environment.endpoint.origin,
+        refresh: { await workbench.refresh() })
     }
     .sheet(item: $settings) { opening in
       SettingsView(account: environment.account, apps: apps, opening: opening) {

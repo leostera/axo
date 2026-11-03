@@ -6,20 +6,28 @@ import SwiftUI
 /// Mac takes it. The sheet's task asks for the code; closing the sheet stops waiting.
 struct PairMacSheet: View {
   @State private var pairing: MacPairing
+  /// The relay's origin, which serves the install command.
+  let origin: URL
   @Environment(\.dismiss) private var dismiss
 
-  init(issuer: any HostPairingIssuing, hosts: HostsModel, refresh: @escaping @MainActor () async -> Void) {
+  init(
+    issuer: any HostPairingIssuing, hosts: HostsModel, origin: URL, refresh: @escaping @MainActor () async -> Void
+  ) {
     _pairing = State(initialValue: MacPairing(issuer: issuer, hosts: hosts, refresh: refresh))
+    self.origin = origin
   }
 
   var body: some View {
     NavigationStack {
-      VStack(spacing: 20) {
-        content
+      ScrollView {
+        VStack(spacing: 20) {
+          content
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 8)
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity, alignment: .top)
       }
-      .padding(.horizontal, 28)
-      .padding(.top, 8)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       .navigationTitle("Pair a Mac")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -48,6 +56,7 @@ struct PairMacSheet: View {
       Text("Getting a code…").foregroundStyle(.secondary)
     case .waiting(let code):
       CodeView(pairing: code)
+      InstallHelp(command: code.installCommand(origin: origin))
     case .linked(let label):
       OwnMascotView()
         .frame(width: 150)
@@ -120,5 +129,46 @@ private struct CodeView: View {
   private func remaining(at date: Date) -> String {
     let seconds = max(Int(pairing.expiresAt.timeIntervalSince(date)), 0)
     return String(format: "%d:%02d", seconds / 60, seconds % 60)
+  }
+}
+
+/// For a Mac without Axo yet: the Terminal command that installs it, starts it and fills this
+/// code in. A phone cannot run it, so it goes to the Mac: copied (Universal Clipboard pastes it
+/// there) or sent (AirDrop, Messages).
+private struct InstallHelp: View {
+  let command: String
+  @State private var copied = false
+
+  var body: some View {
+    VStack(spacing: 12) {
+      Divider().padding(.vertical, 4)
+      Text("No Axo on that Mac yet? Run this in its Terminal: it installs Axo, starts it and fills in this code.")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+      Text(command)
+        .font(.footnote.monospaced())
+        .textSelection(.enabled)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityIdentifier("install-command")
+      HStack(spacing: 12) {
+        Button {
+          UIPasteboard.general.string = command
+          copied = true
+        } label: {
+          Label(copied ? "Copied" : "Copy command", systemImage: copied ? "checkmark" : "terminal")
+            .frame(maxWidth: .infinity)
+        }
+        .accessibilityIdentifier("copy-install-command")
+        ShareLink(item: command) {
+          Label("Send to Mac", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+        }
+        .accessibilityLabel("Send install command to Mac")
+      }
+      .buttonStyle(.bordered)
+      .controlSize(.large)
+    }
   }
 }

@@ -125,6 +125,14 @@ final class AxoPhoneLayerTests: XCTestCase {
     XCTAssertEqual(code.label, "7 K Q 2 - M 4 X D", "read out one character at a time")
     XCTAssertTrue(app.staticTexts["Waiting for your Mac…"].exists)
     XCTAssertTrue(app.buttons["Send to Mac"].exists)
+    // For a Mac without Axo yet: the command that installs it with this code.
+    let install = app.staticTexts["install-command"]
+    XCTAssertTrue(install.exists)
+    XCTAssertTrue(install.label.hasPrefix("curl -fsSL 'https://"), install.label)
+    XCTAssertTrue(install.label.hasSuffix("/install?code=7KQ2-M4XD' | sh"), install.label)
+    XCTAssertTrue(app.buttons["Send install command to Mac"].exists)
+    app.buttons["copy-install-command"].tap()
+    XCTAssertTrue(app.buttons["Copied"].waitForExistence(timeout: 2))
     app.buttons["Cancel"].tap()
     XCTAssertFalse(code.waitForExistence(timeout: 2) && code.isHittable)
   }
