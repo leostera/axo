@@ -5,7 +5,8 @@
 # Every build is kept at mac/builds/<CFBundleVersion>/Axo.app.zip; mac/Axo.app.zip is the one served,
 # and mac/Axo.app.json says which build it is.
 # It refuses an app not signed by the team, and a checkout with changes: what is published must be
-# a commit.
+# a commit. Every publish raises the semantic version's minor (0.1, 0.2, …) and the build number:
+# it refuses an app whose version or build is not above the one published.
 set -euo pipefail
 
 app=$1 zip=$2 cf=$3 team=$4 bucket=$5 url=$6
@@ -48,6 +49,21 @@ plist=$app/Contents/Info.plist
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
 axod_build=$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$plist")
 commit=$(/usr/libexec/PlistBuddy -c 'Print :AXOGitCommit' "$plist")
+version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
+
+# What is live now. A manifest without a version is from before versions were raised: 0.1.
+published=$(curl -fsS "$url.json" 2>/dev/null || echo '{}')
+published_build=$(printf '%s' "$published" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("build", 0))')
+published_version=$(printf '%s' "$published" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version", "0.1" if "build" in d else "0.0"))')
+newer_version=$(/usr/bin/python3 -c 'import sys; a, b = (tuple(map(int, v.split("."))) for v in sys.argv[1:]); print("yes" if a > b else "no")' "$version" "$published_version")
+if [[ "$newer_version" != yes ]]; then
+  echo "Axo $version is not above the published $published_version: raise the minor in config.json's version (e.g. 0.$(( ${published_version#*.} + 1 ))) and commit it" >&2
+  exit 1
+fi
+if (( build <= published_build )); then
+  echo "Build $build is not above the published build $published_build: raise builds.mac in config.json and commit it" >&2
+  exit 1
+fi
 size=$(stat -L -f %z "$zip")
 
 upload() {
@@ -57,13 +73,13 @@ upload() {
 
 # What Axo.app reads to offer "Upgrade to Build N"; uploaded after the zip it describes.
 manifest=$work/Axo.app.json
-printf '{"build":%s,"axodBuild":%s,"commit":"%s"}\n' "$build" "$axod_build" "$commit" > "$manifest"
+printf '{"version":"%s","build":%s,"axodBuild":%s,"commit":"%s"}\n' "$version" "$build" "$axod_build" "$commit" > "$manifest"
 upload_manifest() {
   "$cf" r2 objects put mac/Axo.app.json --bucket-name "$bucket" --file "$manifest" \
     --content-type application/json --content-length "$(stat -f %z "$manifest")" --quiet >/dev/null
 }
 
-echo "Uploading Axo build $build (axod $axod_build, $commit, $((size / 1024 / 1024)) MiB)"
+echo "Uploading Axo $version, build $build (axod $axod_build, $commit, $((size / 1024 / 1024)) MiB)"
 upload "mac/builds/$build/Axo.app.zip"
 upload "mac/Axo.app.zip"
 upload_manifest

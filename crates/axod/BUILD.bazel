@@ -12,7 +12,8 @@ rust_binary(
     edition = "2024",
     # The macOS the Mac app requires, so axod's minimum matches the app's (RFD0021).
     rustc_env = {"MACOSX_DEPLOYMENT_TARGET": AXO["apple"]["macos_min"]},
-    version = AXO["version"],
+    # Cargo versions are full semver: major.minor.0 from config.json's major.minor.
+    version = AXO["version"] + ".0",
     deps = [
         "//crates/axo-pty:axo_pty",
         "//crates/axo-server:axo_server",

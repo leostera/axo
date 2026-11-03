@@ -34,6 +34,15 @@ final class AppUpgradeModel {
   private static let backgroundInterval: TimeInterval = 60 * 60
 
   private var bundle: URL { Bundle.main.bundleURL }
+
+  /// This Axo as the About pane shows it: "Axo 0.2 (abc1234, build 269)".
+  static var runningTitle: String {
+    let info = Bundle.main.infoDictionary
+    let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let commit = (info?["AXOGitCommit"] as? String).map { String($0.prefix(7)) } ?? "unknown"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    return "Axo \(version) (\(commit), build \(build))"
+  }
   private var running: Int? {
     (Bundle.main.infoDictionary?["CFBundleVersion"] as? String).flatMap(Int.init)
   }
@@ -94,7 +103,7 @@ final class AppUpgradeModel {
         team == nil ? "This Axo can’t update itself" : "Axo is up to date",
         team == nil
           ? "Build \(running) is not signed by a team, so it can’t check that a download is Axo’s. A newer build installed over it is still offered."
-          : "Build \(running) is the newest.")
+          : "\(Self.runningTitle) is the newest.")
     }
   }
 
@@ -137,7 +146,7 @@ final class AppUpgradeModel {
   private func confirm(_ upgrade: AppUpgrade, running: Int) -> Bool {
     guard let axod = upgrade.axodBuild, let runningAxod, axod != runningAxod else { return true }
     let alert = NSAlert()
-    alert.messageText = "Upgrade to Axo build \(upgrade.build)?"
+    alert.messageText = "Upgrade to \(upgrade.title)?"
     alert.informativeText =
       "It comes with axod build \(axod) (this is \(runningAxod)), so axod restarts: terminals restart and Pi sessions resume."
     alert.addButton(withTitle: "Upgrade")

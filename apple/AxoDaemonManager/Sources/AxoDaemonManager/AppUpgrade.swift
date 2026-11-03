@@ -7,11 +7,14 @@ public struct PublishedBuild: Decodable, Equatable, Sendable {
   public var build: Int
   public var axodBuild: Int?
   public var commit: String?
+  /// The semantic version (major.minor), which every publish raises.
+  public var version: String?
 
-  public init(build: Int, axodBuild: Int? = nil, commit: String? = nil) {
+  public init(build: Int, axodBuild: Int? = nil, commit: String? = nil, version: String? = nil) {
     self.build = build
     self.axodBuild = axodBuild
     self.commit = commit
+    self.version = version
   }
 
   public static func manifestURL(origin: URL) -> URL {
@@ -35,6 +38,19 @@ public enum AppUpgrade: Equatable, Sendable {
     case .installed(let build, _): build
     case .published(let published): published.build
     }
+  }
+
+  /// The semantic version, when the published manifest says it.
+  public var version: String? {
+    switch self {
+    case .installed: nil
+    case .published(let published): published.version
+    }
+  }
+
+  /// How the menu names it: "Axo 0.3 (Build 270)", or "Build 270" when its version is unknown.
+  public var title: String {
+    version.map { "Axo \($0) (Build \(build))" } ?? "Build \(build)"
   }
 
   public var axodBuild: Int? {

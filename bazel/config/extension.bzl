@@ -195,7 +195,7 @@ def _git_commit(rctx, workspace):
     ref = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "symbolic-ref", "-q", "HEAD"])
     if ref != None:
         rctx.watch(common_dir + "/" + ref.strip())
-    commit = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "rev-parse", "--short=8", "HEAD"])
+    commit = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "rev-parse", "--short=7", "HEAD"])
     return commit.strip() if commit != None else "unknown"
 
 def _starlark(value):
@@ -223,6 +223,11 @@ def _axo_config_impl(rctx):
     for key, value in config["builds"].items():
         if value < 1:
             fail("builds.%s must be a positive integer" % key)
+
+    # The app's semantic version is major.minor; every publish raises the minor (0.1, 0.2, …).
+    parts = config["version"].split(".")
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        fail("version must be major.minor, like 0.2, not %r" % config["version"])
 
     reasons = {}
 

@@ -97,4 +97,10 @@ final class AppUpgradeTests: XCTestCase {
       fromPropertyList: ["CFBundleVersion": build], format: .xml, options: 0)
     try plist.write(to: contents.appendingPathComponent("Info.plist"))
   }
+
+  func testTheMenuNamesAPublishedBuildByItsVersion() {
+    XCTAssertEqual(AppUpgrade.published(PublishedBuild(build: 270, version: "0.3")).title, "Axo 0.3 (Build 270)")
+    XCTAssertEqual(AppUpgrade.published(PublishedBuild(build: 270)).title, "Build 270")
+    XCTAssertEqual(AppUpgrade.installed(build: 271, axodBuild: nil).title, "Build 271")
+  }
 }

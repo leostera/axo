@@ -14,6 +14,7 @@ Resolve paths from the Axo root (`../../..`). **Every `bazel build` puts the sig
 - Minimum macOS is `apple.macos_min` in `config.json` (14.0) for both executables; `//apple/AxoMac:package_test` checks it, the build numbers, the team and the signature against config.
 - `DaemonController` registers the LaunchAgent through `SMAppService` and restarts axod when its build number differs from the app's.
 - **Bump `builds.axod` in `config.json` in its own commit every time anything axod runs changes (`crates/axod`, `axo-server`, `axo-relay` or any crate they use) before building the app.** Otherwise Axo keeps the running axod and the change never reaches the Mac. Bump `builds.mac` when a build should be told apart from the last one (always before publishing).
+- **Every publish raises the semantic version's minor** (`version` in `config.json`: 0.1 → 0.2 → 0.3), as well as `builds.mac`, in one commit before `bazel run //:publish`, which refuses an app whose version or build is not above the published one. The version is major.minor only. Every build keeps its own build number; About shows the semantic version, the commit hash and the build number.
 
 ## Build and verify
 

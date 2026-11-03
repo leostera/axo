@@ -531,7 +531,7 @@ private struct AppUpgradeMenuItem: View {
       Text("Checking for Updates…").disabled(true)
     case .idle:
       if let upgrade = upgrades.available {
-        Button("Upgrade to Build \(upgrade.build)") { upgrades.upgrade() }
+        Button("Upgrade to \(upgrade.title)") { upgrades.upgrade() }
       } else {
         Button("Check for Updates…") { upgrades.checkForUpdates() }
       }

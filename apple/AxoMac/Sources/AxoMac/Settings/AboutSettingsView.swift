@@ -12,7 +12,7 @@ struct AboutSettingsView: View {
   }
 
   private var appCommit: String {
-    Bundle.main.infoDictionary?["AXOGitCommit"] as? String ?? "Unknown"
+    (Bundle.main.infoDictionary?["AXOGitCommit"] as? String).map { String($0.prefix(7)) } ?? "Unknown"
   }
 
   private var daemonVersion: String {
@@ -56,9 +56,9 @@ struct AboutSettingsView: View {
       }
 
       VStack(spacing: 6) {
-        aboutRow("Version", appVersion)
-        aboutRow("Build", DaemonController.appBuildNumberLabel)
-        aboutRow("Commit", appCommit)
+        aboutRow("Semantic version", appVersion)
+        aboutRow("Commit hash", appCommit)
+        aboutRow("Build number", DaemonController.appBuildNumberLabel)
         Divider()
           .frame(width: 240)
           .padding(.vertical, 3)

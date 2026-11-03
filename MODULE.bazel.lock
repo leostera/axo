@@ -335,7 +335,7 @@
   "moduleExtensions": {
     "//bazel/config:extension.bzl%axo_config": {
       "general": {
-        "bzlTransitiveDigest": "h51Y9sYRquriJXUKbwcs7KlMD7LlqK/QW5Pgp6C3dMI=",
+        "bzlTransitiveDigest": "XiB58+B5+lhHru3AtMjxi7l8sSnDHO/exbADariTPtc=",
         "usagesDigest": "BzsNwjMt5WNPt7R5NfciSdgQxI5TjKoigINeUWZ1xOE=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
