@@ -76,6 +76,8 @@ final class TerminalSessionsModel {
   /// The recent list's order frozen while the pointer is over the sidebar, so rows don't move
   /// under a click and Previous/Next Session step through the rows as shown.
   private(set) var heldRecentOrder: [SessionID]?
+  /// Sessions pinned to the top of the sidebar, on this Mac only.
+  private(set) var sessionPins: SessionPins
 
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
@@ -169,6 +171,8 @@ final class TerminalSessionsModel {
     sidebarMacs =
       preferenceDefaults.string(forKey: AxoPreferenceKey.sidebarMacs).flatMap(SidebarMacs.init)
       ?? .thisMac
+    sessionPins = SessionPins(
+      storedValue: preferenceDefaults.stringArray(forKey: AxoPreferenceKey.pinnedSessions))
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
@@ -206,11 +210,16 @@ final class TerminalSessionsModel {
 
   // MARK: - Queries
 
-  /// The Sessions the sidebar lists, latest activity first: this Mac's, one other Mac's, or all.
+  /// The Sessions the sidebar lists, pinned ones first and otherwise latest activity first:
+  /// this Mac's, one other Mac's, or all. Pins apply on top of a held order, so a Session
+  /// pinned under the pointer moves up at once.
   var sidebarOrderedSessions: [TerminalSession] {
     let listed = sessions.filter { sidebarMacs.includes(hostID: peerHostBySession[$0.id]) }
-    return SessionActivityOrder.holding(heldRecentOrder, live: SessionActivityOrder.sorted(listed))
+    return sessionPins.pinnedFirst(
+      SessionActivityOrder.holding(heldRecentOrder, live: SessionActivityOrder.sorted(listed)))
   }
+
+  func isPinned(_ sessionID: SessionID) -> Bool { sessionPins.contains(sessionID) }
 
   /// Whether `sessionID` runs on another Mac.
   func isPeerSession(_ sessionID: SessionID) -> Bool {
@@ -442,6 +451,12 @@ final class TerminalSessionsModel {
     sidebarMacs = macs
     heldRecentOrder = nil
     preferenceDefaults.set(macs.rawValue, forKey: AxoPreferenceKey.sidebarMacs)
+  }
+
+  /// Pins `sessionID` to the top of the sidebar, or unpins it. Saved on this Mac only.
+  func togglePin(_ sessionID: SessionID) {
+    sessionPins.toggle(sessionID)
+    preferenceDefaults.set(sessionPins.storedValue, forKey: AxoPreferenceKey.pinnedSessions)
   }
 
   func setAutomaticPiRestartEnabled(_ enabled: Bool) {

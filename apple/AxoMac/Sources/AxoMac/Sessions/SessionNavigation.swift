@@ -127,3 +127,52 @@ enum SessionActivityOrder {
     }
   }
 }
+
+/// Sessions pinned to the top of the sidebar. Pins belong to this Mac alone: they live in its
+/// user defaults and never reach Axod, the cloud or another Mac.
+///
+/// A pin outlives its Session's absence, because absence is often temporary: another Mac's
+/// Session drops out while that Mac is offline, and a closed Session can be reopened (⌘⇧T).
+/// A pin whose Session isn't listed does nothing; once there are `capacity` pins the oldest go,
+/// so pins of Sessions that are gone for good can't pile up.
+struct SessionPins: Equatable {
+  static let capacity = 256
+  /// Oldest pin first, without duplicates, at most `capacity`.
+  private(set) var ids: [SessionID] = []
+
+  init(_ ids: [SessionID] = []) {
+    for id in ids where !self.ids.contains(id) { self.ids.append(id) }
+    trim()
+  }
+
+  /// Pins as stored; entries that aren't Session IDs are dropped.
+  init(storedValue: [String]?) {
+    self.init((storedValue ?? []).compactMap(SessionID.init(rawValue:)))
+  }
+
+  var storedValue: [String] { ids.map(\.rawValue) }
+
+  func contains(_ sessionID: SessionID) -> Bool { ids.contains(sessionID) }
+
+  /// Pins `sessionID`, or unpins it if it is pinned.
+  mutating func toggle(_ sessionID: SessionID) {
+    if let index = ids.firstIndex(of: sessionID) {
+      ids.remove(at: index)
+    } else {
+      ids.append(sessionID)
+      trim()
+    }
+  }
+
+  /// `sessions` with the pinned ones first. Each group keeps the order it had, so pinned
+  /// Sessions still follow recent activity among themselves.
+  func pinnedFirst(_ sessions: [TerminalSession]) -> [TerminalSession] {
+    guard !ids.isEmpty else { return sessions }
+    let pinned = Set(ids)
+    return sessions.filter { pinned.contains($0.id) } + sessions.filter { !pinned.contains($0.id) }
+  }
+
+  private mutating func trim() {
+    if ids.count > Self.capacity { ids.removeFirst(ids.count - Self.capacity) }
+  }
+}

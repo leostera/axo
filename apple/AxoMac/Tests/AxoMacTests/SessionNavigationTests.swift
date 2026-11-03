@@ -46,6 +46,38 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(SessionActivityOrder.holding([1, 2, 3], live: live).map(\.id), [4, 1, 2])
   }
 
+  func testPinnedSessionsLeadAndKeepTheirOrderAmongThemselves() {
+    let ordered = [active(5), active(4), active(3), active(2), active(1)]
+    XCTAssertEqual(SessionPins().pinnedFirst(ordered).map(\.id), [5, 4, 3, 2, 1])
+    // Pinned in the order 1, 3: they lead in the list's order, not the order they were pinned.
+    let pins = SessionPins([1, 3])
+    XCTAssertEqual(pins.pinnedFirst(ordered).map(\.id), [3, 1, 5, 4, 2])
+    // A pinned Session that isn't listed (closed, or on a Mac that is offline) does nothing.
+    XCTAssertEqual(SessionPins([9, 3]).pinnedFirst(ordered).map(\.id), [3, 5, 4, 2, 1])
+  }
+
+  func testPinsToggleDeduplicateParseAndStayBounded() {
+    var pins = SessionPins([2, 2, 3])
+    XCTAssertEqual(pins.ids, [2, 3])
+    pins.toggle(1)
+    pins.toggle(2)
+    XCTAssertEqual(pins.ids, [3, 1])
+    XCTAssertTrue(pins.contains(1))
+    XCTAssertFalse(pins.contains(2))
+
+    // Stored values that aren't Session IDs (an older format, a hand edit) are dropped.
+    let stored = SessionPins(storedValue: [SessionID(1).rawValue, "7", "", SessionID(4).rawValue])
+    XCTAssertEqual(stored.ids, [1, 4])
+    XCTAssertEqual(SessionPins(storedValue: stored.storedValue), stored)
+    XCTAssertEqual(SessionPins(storedValue: nil).ids, [])
+
+    // The oldest pins go first once there are too many.
+    var many = SessionPins()
+    for id in 0..<UInt32(SessionPins.capacity + 3) { many.toggle(.fixture(id)) }
+    XCTAssertEqual(many.ids.count, SessionPins.capacity)
+    XCTAssertEqual(many.ids.first, .fixture(3))
+  }
+
   func testAgesAreShort() {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let age = { SessionActivityOrder.age(of: 1_000_000 - $0, now: now) }
@@ -149,6 +181,62 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     model.setSidebarMacs(.all)
     let reopened = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     XCTAssertEqual(reopened.sidebarMacs, .all)
+  }
+
+  func testPinnedSessionsStayOnTopAreRememberedOnThisMacAndSurviveTheirAbsence() async throws {
+    let suiteName = "axo-sidebar-pins-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let client = FakeAxodClient()
+    client.sessions = [
+      TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100),
+      TerminalSession(id: 2, initialPwd: "/", shells: [], lastMessageAt: 300),
+      TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 200),
+    ]
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1])
+
+    model.togglePin(1)
+    XCTAssertTrue(model.isPinned(1))
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3], "pinned first")
+    // More activity elsewhere doesn't move anything above a pinned Session.
+    client.sessions[2] = TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 900)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 3, 2])
+
+    // Pinning under the pointer moves the row up even though the list is held still. Pinned
+    // Sessions keep recent activity among themselves: 2 (300) before 1 (100).
+    model.holdRecentOrder(true)
+    model.togglePin(2)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 1, 3])
+    model.holdRecentOrder(false)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 1, 3])
+
+    // Previous/Next Session follow the pinned order too.
+    model.showSession(1)
+    model.showNextSession()
+    XCTAssertEqual(model.selectedSessionID, 3)
+
+    // A pinned Session that goes away drops out of the list; the pin stays, harmlessly, and
+    // applies again if the Session comes back (reopened, or its Mac back online).
+    let closed = client.sessions.remove(at: 0)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3])
+    XCTAssertTrue(model.isPinned(1))
+
+    // Pins are this Mac's user defaults, read back by the next launch.
+    XCTAssertEqual(
+      defaults.stringArray(forKey: AxoPreferenceKey.pinnedSessions),
+      [SessionID(1).rawValue, SessionID(2).rawValue])
+    client.sessions.append(closed)
+    let relaunched = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await relaunched.refresh()
+    XCTAssertEqual(relaunched.sidebarOrderedSessions.map(\.id), [2, 1, 3])
+
+    relaunched.togglePin(1)
+    XCTAssertFalse(relaunched.isPinned(1))
+    XCTAssertEqual(relaunched.sidebarOrderedSessions.map(\.id), [2, 3, 1])
   }
 
   func testOtherMacsSessionsAreListedByMacAndShowingOneOpensAPaneOnIt() async throws {

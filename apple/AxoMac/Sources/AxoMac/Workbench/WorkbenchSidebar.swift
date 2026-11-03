@@ -132,6 +132,13 @@ struct WorkbenchSidebar: View {
           .buttonStyle(.plain)
           .accessibilityIdentifier("session-row-\(session.id)")
 
+          let isPinned = sessions.isPinned(session.id)
+          if isPinned || hoveredSessionID == session.id {
+            SessionPinButton(sessionID: session.id, isPinned: isPinned) {
+              withAnimation(.easeInOut(duration: 0.2)) { sessions.togglePin(session.id) }
+            }
+          }
+
           if hoveredSessionID == session.id, !sessions.isPeerSession(session.id) {
             Button { beginRenaming(.session(session)) } label: {
               Image(systemName: "pencil")
@@ -164,6 +171,10 @@ struct WorkbenchSidebar: View {
 
   @ViewBuilder
   private func sessionContextMenu(for session: TerminalSession) -> some View {
+    Button(sessions.isPinned(session.id) ? "Unpin Session" : "Pin Session") {
+      withAnimation(.easeInOut(duration: 0.2)) { sessions.togglePin(session.id) }
+    }
+    Divider()
     if let host = sessions.hostLabel(for: session.id) {
       // Another Mac's Session: only this Mac's pane on it is this Mac's to close.
       Text("Runs on \(host)")

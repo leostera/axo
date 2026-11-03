@@ -221,3 +221,26 @@ struct CollapsedSessionButton: View {
     .accessibilityLabel("\(session.displayName), \(status.accessibilityDescription)")
   }
 }
+
+/// Pins a Session to the top of the sidebar or unpins it. Shown while the row is hovered, and
+/// always on a pinned row so it reads as pinned.
+struct SessionPinButton: View {
+  let sessionID: SessionID
+  let isPinned: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: isPinned ? "pin.fill" : "pin")
+        .font(.system(size: 9, weight: .medium))
+        .rotationEffect(.degrees(45))
+        .foregroundStyle(isPinned ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+        .frame(width: 20, height: 22)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(isPinned ? "Unpin Session" : "Pin Session to the top")
+    .accessibilityLabel(isPinned ? "Unpin Session" : "Pin Session")
+    .accessibilityIdentifier("pin-session-button-\(sessionID)")
+  }
+}
