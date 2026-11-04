@@ -174,6 +174,9 @@ struct WorkbenchSidebar: View {
     Button(sessions.isPinned(session.id) ? "Unpin Session" : "Pin Session") {
       withAnimation(.easeInOut(duration: 0.2)) { sessions.togglePin(session.id) }
     }
+    Button("Copy Session Info") {
+      SessionInfo.copy(session, hostLabel: sessions.hostLabel(for: session.id))
+    }
     Divider()
     if let host = sessions.hostLabel(for: session.id) {
       // Another Mac's Session: only this Mac's pane on it is this Mac's to close.
