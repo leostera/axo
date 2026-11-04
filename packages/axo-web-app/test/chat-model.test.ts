@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
-import { ChatTranscript } from "../src/chat/transcript.ts";
+import { attachmentsIn, ChatTranscript } from "../src/chat/transcript.ts";
+import type { UploadAsset } from "../src/chat/assets.ts";
+import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { connectionsResults } from "@axo/protocol";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
@@ -401,7 +403,7 @@ class FakeAccount implements AccountLink {
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000) {
+async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, uploadAsset?: UploadAsset) {
   let connects = 0;
   const backend: ChatBackend = {
     connect: async (_clientId, events) => {
@@ -412,7 +414,7 @@ async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000) {
     },
   };
   let id = 0;
-  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay);
+  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay, uploadAsset);
   workbench.start();
   await tick();
   return { workbench, account, connects: () => connects };
@@ -610,4 +612,90 @@ test("a Mac is named by the person, and a name that could not be saved says so",
   assert.equal(await workbench.renameHost(hostId, "Other"), false);
   assert.equal(workbench.hosts[0]!.label, "Mac Studio", "unchanged");
   assert.match(workbench.failure ?? "", /Could not rename the Mac/);
+});
+
+// MARK: - Attachments (RFD0030)
+
+const photoHex = "ab".repeat(32);
+
+test("a file attached in the box uploads at once; the message waits for it and carries it", async () => {
+  let finish: (() => void) | null = null;
+  const uploads: string[] = [];
+  const upload: UploadAsset = (file, name) => {
+    uploads.push(name);
+    return new Promise(resolve => {
+      finish = () => resolve({ asset: `sha256:${photoHex}`, name, mimeType: "image/png", size: file.size });
+    });
+  };
+  const { workbench, account } = await workbenchWith(new FakeAccount(), 60_000, upload);
+  workbench.selectChat(hostId, sid(1));
+  workbench.attach([{ file: new Blob(["png"], { type: "image/png" }), name: "white/board.png" }]);
+  assert.deepEqual(uploads, ["white_board.png"], "a name with a slash is made safe before it leaves");
+  assert.equal(workbench.attachments()[0]!.state, "uploading");
+  assert.equal(workbench.canSendDraft, false, "not while a file is on its way");
+  assert.deepEqual(await workbench.send(), { kind: "failed" });
+  finish!();
+  await tick();
+  assert.equal(workbench.canSendDraft, true, "files alone are a message");
+  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  const prompt = account.commands.find(call => call.method === "axo.remote.session.prompt");
+  assert.deepEqual(prompt?.params.attachments, [{ asset: `sha256:${photoHex}`, name: "white_board.png", mimeType: "image/png", size: 3 }]);
+  assert.equal(prompt?.params.text, "");
+  assert.deepEqual(workbench.attachments(), []);
+  assert.equal(workbench.chat(sid(1)).pending[0]!.attachments.length, 1);
+  workbench.dispose();
+});
+
+test("a failed upload holds the message until the file is taken out; a refused message gets its files back", async () => {
+  const upload: UploadAsset = () => Promise.reject(new Error("The account's assets are full"));
+  const account = new FakeAccount();
+  const { workbench } = await workbenchWith(account, 60_000, upload);
+  workbench.selectChat(hostId, sid(1));
+  workbench.setDraft("see attached");
+  workbench.attach([{ file: new Blob(["x"]), name: "a.bin" }]);
+  await tick();
+  const [failed] = workbench.attachments();
+  assert.deepEqual([failed!.state, failed!.error], ["failed", "The account's assets are full"]);
+  assert.equal(workbench.canSendDraft, false);
+  workbench.detach(failed!.id);
+  assert.equal(workbench.canSendDraft, true);
+  workbench.dispose();
+
+  const ok: UploadAsset = async (file, name) => ({ asset: `sha256:${photoHex}`, name, mimeType: "application/octet-stream", size: file.size });
+  const refusing = new FakeAccount();
+  const second = await workbenchWith(refusing, 60_000, ok);
+  second.workbench.selectChat(hostId, sid(1));
+  second.workbench.attach([{ file: new Blob(["x"]), name: "a.bin" }]);
+  await tick();
+  refusing.failNext = Object.assign(new Error("an attachment is no longer in the account"), { code: -32010 });
+  assert.deepEqual(await second.workbench.send(), { kind: "failed" });
+  assert.equal(second.workbench.attachments().length, 1, "the file comes back to the box");
+  second.workbench.dispose();
+});
+
+test("at most eight files go in one message", async () => {
+  const ok: UploadAsset = async (file, name) => ({ asset: `sha256:${photoHex}`, name, mimeType: "text/plain", size: file.size });
+  const { workbench } = await workbenchWith(new FakeAccount(), 60_000, ok);
+  workbench.selectChat(hostId, sid(1));
+  workbench.attach(Array.from({ length: 10 }, (_, index) => ({ file: new Blob([String(index)]), name: `${index}.txt` })));
+  assert.equal(workbench.attachments().length, 8);
+  assert.match(workbench.failure ?? "", /at most 8 files/u);
+  workbench.dispose();
+});
+
+test("pi-axo's attachment lines leave what the person said: an image's goes, a file's becomes a download", () => {
+  const said = [
+    "what is in these?",
+    "",
+    `[Attached image: board.png at /Users/leo/.axo/assets/${photoHex}/board.png axo-asset:sha256:${photoHex}]`,
+    "",
+    `[Attached file: invoice (final).pdf (application/pdf, 3.0 MB) at /Users/leo/.axo/assets/${photoHex}/invoice (final).pdf axo-asset:sha256:${photoHex}]`,
+  ].join("\n");
+  assert.deepEqual(attachmentsIn(said), {
+    text: "what is in these?",
+    files: [{ name: "invoice (final).pdf", mimeType: "application/pdf", size: "3.0 MB", hex: photoHex }],
+  });
+  assert.deepEqual(attachmentsIn("[Attached file: not really]"), { text: "[Attached file: not really]", files: [] });
+  assert.equal(safeFileName("../.."), ".._..");
+  assert.equal(safeFileName(".."), "file");
 });

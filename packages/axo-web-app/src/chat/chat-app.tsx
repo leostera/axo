@@ -11,6 +11,7 @@ import {
   chatKey, chatTitle, ChatWorkbench, isChat, lastActivity, recentChatList, shortAge,
   type ChatBackend, type ChatMenuEntry, type Host,
 } from "./workbench.ts";
+import { assetUploader } from "./assets.ts";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
@@ -111,7 +112,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
   /** The app's own path: chats are at `<basePath>/<hostId>/<sessionId>`. */
   basePath?: string;
 }) {
-  const workbench = useMemo(() => new ChatWorkbench(backend ?? new RemoteAxoApi(apiBaseUrl)), [backend]);
+  const workbench = useMemo(() => new ChatWorkbench(backend ?? new RemoteAxoApi(apiBaseUrl), undefined, undefined, undefined, undefined, assetUploader(apiBaseUrl)), [backend]);
   useSyncExternalStore(workbench.subscribe, workbench.getVersion);
   const wide = useWide();
   const [layer, setLayer] = useState<Layer>("conversation");

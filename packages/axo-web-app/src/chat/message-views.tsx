@@ -204,6 +204,15 @@ export const MessageView = memo(function MessageView({ message, working, live = 
       return (
         <div className={`message user-message${entering}`}>
           {message.images.length ? <div className="message-images">{message.images.map((image, index) => <img key={index} src={image.src} alt="" />)}</div> : null}
+          {message.files?.length ? (
+            <div className="pending-files">
+              {message.files.map(file => (
+                <a key={file.hex} className="pending-file" href={`/api/v1/account/assets/${file.hex}`} download={file.name} title={`${file.mimeType} · ${file.size}`}>
+                  <Icon name="paperclip" size={13} />{file.name}
+                </a>
+              ))}
+            </div>
+          ) : null}
           {message.text ? <div className="user-bubble">{message.text}</div> : null}
           {message.timestamp ? <Timestamp milliseconds={message.timestamp} /> : null}
         </div>
@@ -284,7 +293,12 @@ const pendingLabels: Record<PendingPrompt["state"], string> = {
 export function PendingView({ prompt, onDismiss }: { prompt: PendingPrompt; onDismiss: () => void }) {
   return (
     <div className={`message user-message pending pending-${prompt.state}`} data-testid="pending-prompt">
-      <div className="user-bubble">{prompt.text}</div>
+      {prompt.attachments.length ? (
+        <div className="pending-files">
+          {prompt.attachments.map(file => <span key={file.asset} className="pending-file"><Icon name="paperclip" size={13} />{file.name}</span>)}
+        </div>
+      ) : null}
+      {prompt.text ? <div className="user-bubble">{prompt.text}</div> : null}
       <div className="pending-label">
         {prompt.state === "uncertain" ? <Icon name="warning" size={14} /> : null}
         {pendingLabels[prompt.state]}

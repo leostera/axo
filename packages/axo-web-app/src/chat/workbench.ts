@@ -9,6 +9,8 @@ import type {
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
+import { ASSET_LIMITS, assetTypeOf, type Attachment } from "@axo/protocol";
+import { safeFileName, type UploadAsset } from "./assets.ts";
 import { ChatTranscript, type TranscriptRecord } from "./transcript.ts";
 
 /**
@@ -74,7 +76,7 @@ export interface AccountLink {
   command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
-  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string }): Promise<unknown>;
+  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[] }): Promise<unknown>;
   command(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
   command(method: "axo.remote.session.stop", params: { target: HostRef; sessionId: string; turnId: string }): Promise<unknown>;
   close(): void;
@@ -107,7 +109,21 @@ export interface PendingPrompt {
   /** Its commandId: the Mac takes it at most once, and its receipt in the log retires it. */
   readonly id: string;
   readonly text: string;
+  /** Files already in the account's assets, fetched by the Mac before Pi gets the prompt (RFD0030). */
+  readonly attachments: readonly Attachment[];
   state: PendingState;
+}
+
+/** A file in the message box: uploading to the account, ready to send, or refused. */
+export interface DraftAttachment {
+  readonly id: string;
+  readonly file: Blob;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly size: number;
+  state: "uploading" | "ready" | "failed";
+  uploaded: Attachment | null;
+  error: string | null;
 }
 
 /** How long an uncertain message waits before it is sent again, and how often it is. */
@@ -260,6 +276,7 @@ export class ChatWorkbench {
 
   private readonly chats = new Map<string, Chat>();
   private readonly drafts = new Map<string, string>();
+  private readonly draftFiles = new Map<string, DraftAttachment[]>();
   private readonly listeners = new Set<() => void>();
   private connection: AccountLink | null = null;
   /** Each connection attempt's own number: what an older attempt finishes is ignored. */
@@ -278,6 +295,7 @@ export class ChatWorkbench {
   private readonly newId: () => string;
   private readonly retryDelay: number;
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly uploadAsset: UploadAsset;
 
   constructor(
     backend: ChatBackend,
@@ -285,7 +303,9 @@ export class ChatWorkbench {
     reconnectDelays: readonly number[] = defaultReconnectDelays,
     newId: () => string = () => crypto.randomUUID(),
     retryDelay: number = RETRY_DELAY_MS,
+    uploadAsset: UploadAsset = () => Promise.reject(new Error("Attachments are unavailable here.")),
   ) {
+    this.uploadAsset = uploadAsset;
     this.backend = backend;
     this.identity = identity;
     this.reconnectDelays = reconnectDelays;
@@ -690,9 +710,12 @@ export class ChatWorkbench {
     const selection = this.selection;
     if (selection?.kind !== "new" || hostId === this.openHostId || !this.hosts.some(host => host.hostId === hostId)) return;
     const text = this.draft(selection);
+    const files = this.attachments(selection);
     this.setDraft("", selection);
+    this.setAttachments([], selection);
     this.openMac(hostId);
     if (text) this.setDraft(text);
+    this.setAttachments(files);
     this.changed();
   }
 
@@ -719,13 +742,73 @@ export class ChatWorkbench {
     this.changed();
   }
 
+  /** The files in the message box. */
+  attachments(selection: Selection | null = this.selection): readonly DraftAttachment[] {
+    return selection ? this.draftFiles.get(this.draftKey(selection)) ?? [] : [];
+  }
+
+  private setAttachments(files: readonly DraftAttachment[], selection: Selection | null = this.selection): void {
+    if (!selection) return;
+    const key = this.draftKey(selection);
+    if (files.length) this.draftFiles.set(key, [...files]);
+    else this.draftFiles.delete(key);
+    this.changed();
+  }
+
+  /** Adds files to the message box and uploads each to the account at once. */
+  attach(files: readonly { file: Blob; name: string }[]): void {
+    const selection = this.selection;
+    if (!selection) return;
+    const room = ASSET_LIMITS.attachmentsPerPrompt - this.attachments(selection).length;
+    if (files.length > room) this.report(`A message can carry at most ${ASSET_LIMITS.attachmentsPerPrompt} files.`);
+    const added = files.slice(0, Math.max(0, room)).map(({ file, name }): DraftAttachment => {
+      const tooLarge = file.size > ASSET_LIMITS.assetBytes;
+      return {
+        id: this.newId(),
+        file,
+        name: safeFileName(name),
+        mimeType: assetTypeOf(file.type),
+        size: file.size,
+        state: tooLarge ? "failed" : "uploading",
+        uploaded: null,
+        error: tooLarge ? "Files can be at most 100 MB." : null,
+      };
+    });
+    if (!added.length) return;
+    this.setAttachments([...this.attachments(selection), ...added], selection);
+    for (const attachment of added) if (attachment.state === "uploading") void this.upload(attachment);
+  }
+
+  private async upload(attachment: DraftAttachment): Promise<void> {
+    try {
+      attachment.uploaded = await this.uploadAsset(attachment.file, attachment.name);
+      attachment.state = "ready";
+    } catch (error) {
+      attachment.state = "failed";
+      attachment.error = describe(error);
+    }
+    this.changed();
+  }
+
+  /** Takes a file out of the message box; an uploaded one stays in the account. */
+  detach(id: string): void {
+    this.setAttachments(this.attachments().filter(attachment => attachment.id !== id));
+  }
+
+  /** Whether what is in the box can go: words or files, and no file still on its way. */
+  get canSendDraft(): boolean {
+    const files = this.attachments();
+    if (files.some(file => file.state !== "ready")) return false;
+    return this.draft().trim().length > 0 || files.length > 0;
+  }
+
   /**
    * Sends what is typed. On a new chat the first message brings the chat into being: in the
    * Workspace chosen for it, or in the Mac's Home Workspace.
    */
   async send(): Promise<SendOutcome> {
     const selection = this.selection;
-    if (this.isSending || !selection || !this.draft(selection).trim()) return { kind: "failed" };
+    if (this.isSending || !selection || !this.canSendDraft) return { kind: "failed" };
     if (selection.kind === "chat") return this.sending(() => this.prompt(selection));
     return this.startChat(selection);
   }
@@ -766,6 +849,8 @@ export class ChatWorkbench {
       const chat: Selection = { kind: "chat", sessionId: created.sessionId };
       this.setDraft(this.draft(draft), chat);
       this.setDraft("", draft);
+      this.setAttachments(this.attachments(draft), chat);
+      this.setAttachments([], draft);
       this.selection = chat;
       void this.openChat(created.sessionId);
       return this.prompt(chat);
@@ -811,16 +896,20 @@ export class ChatWorkbench {
   private async prompt(selection: Selection & { kind: "chat" }): Promise<SendOutcome> {
     const host = this.openHost;
     const text = this.draft(selection).trim();
-    if (!host || !text || !this.ready()) return { kind: "failed" };
+    const files = this.attachments(selection);
+    if (!host || !this.canSendDraft || !this.ready()) return { kind: "failed" };
     const chat = this.chat(selection.sessionId);
-    const pending: PendingPrompt = { id: this.newId(), text, state: "sending" };
+    const attachments = files.flatMap(file => file.uploaded ? [file.uploaded] : []);
+    const pending: PendingPrompt = { id: this.newId(), text, attachments, state: "sending" };
     chat.pending = [...chat.pending, pending];
     this.setDraft("", selection);
+    this.setAttachments([], selection);
     const outcome = await this.deliver(host, selection.sessionId, pending);
     if (outcome.kind === "failed") {
-      // Refused on its first try: nothing ran, so the words come back to the box.
+      // Refused on its first try: nothing ran, so the words and files come back to the box.
       chat.pending = chat.pending.filter(candidate => candidate.id !== pending.id);
       if (!this.draft(selection)) this.setDraft(text, selection);
+      if (!this.attachments(selection).length) this.setAttachments(files, selection);
     }
     this.changed();
     return outcome;
@@ -830,7 +919,10 @@ export class ChatWorkbench {
   private async deliver(host: Host, sessionId: string, pending: PendingPrompt, attempt = 0): Promise<SendOutcome> {
     let outcome: SendOutcome;
     try {
-      await this.connection!.command("axo.remote.session.prompt", { target: this.reference(host), sessionId, text: pending.text, commandId: pending.id });
+      await this.connection!.command("axo.remote.session.prompt", {
+        target: this.reference(host), sessionId, text: pending.text, commandId: pending.id,
+        ...(pending.attachments.length ? { attachments: [...pending.attachments] } : {}),
+      });
       this.failure = null;
       outcome = { kind: "sent" };
     } catch (error) {

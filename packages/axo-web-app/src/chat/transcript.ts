@@ -28,6 +28,15 @@ export interface ChatImage {
   readonly src: string;
 }
 
+/** A file attached to a prompt (RFD0030), kept in the account's assets. */
+export interface ChatFile {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly size: string;
+  /** The asset's 64 hex digits: `/api/v1/account/assets/<hex>` downloads it. */
+  readonly hex: string;
+}
+
 export type ChatRole = "user" | "assistant" | "thinking" | "tool";
 
 export interface ChatMessage {
@@ -46,6 +55,8 @@ export interface ChatMessage {
   readonly timestamp: number | null;
   readonly tool: ToolActivity | null;
   readonly images: ChatImage[];
+  /** Files attached to a person's message that the model read as a path, not inline. */
+  readonly files?: ChatFile[];
 }
 
 export type QuestionKind = "confirm" | "input" | "select" | "editor" | "custom";
@@ -260,6 +271,7 @@ export class ChatTranscript {
         id: pieceId, key: (role === "assistant" ? replyKey(timestamp, index) : null) ?? pieceId,
         role: piece.role, text: piece.text,
         blocks: blocksFor(piece), timestamp, tool, images: piece.images,
+        ...(piece.files?.length ? { files: piece.files } : {}),
       });
     });
   }
@@ -295,6 +307,7 @@ interface Piece {
   text: string;
   tool: ToolActivity | null;
   images: ChatImage[];
+  files?: ChatFile[];
 }
 
 /** A reply's piece, by the stamp Pi gave the reply and the piece's place in it. */
@@ -309,9 +322,9 @@ function blocksFor(piece: Piece): MarkdownBlock[] {
 function pieces(message: Record<string, unknown>, role: string): Piece[] {
   const content = message.content;
   if (role === "user") {
-    const text = visibleText(content);
+    const { text, files } = attachmentsIn(visibleText(content));
     const images = imagesIn(content);
-    return text || images.length ? [{ role: "user", text, tool: null, images }] : [];
+    return text || images.length || files.length ? [{ role: "user", text, tool: null, images, ...(files.length ? { files } : {}) }] : [];
   }
   if (role !== "assistant") return [];
   const found = assistantBlocks(content);
@@ -397,6 +410,25 @@ function visibleText(content: unknown): string {
     if (block?.type === "image" && !imageFrom(block)) return ["[Image attachment]"];
     return [];
   }).join("\n").trim();
+}
+
+const ATTACHED_IMAGE = /^\[Attached image: .+ at .+ axo-asset:sha256:[0-9a-f]{64}\]$/u;
+const ATTACHED_FILE = /^\[Attached file: (.+) \(([^,()]+), ([^()]+)\) at .+ axo-asset:sha256:([0-9a-f]{64})\]$/u;
+
+/**
+ * The lines pi-axo adds for a prompt's attachments, taken out of what the person said: an image's
+ * line goes (the image shows itself), a file's becomes a download.
+ */
+export function attachmentsIn(text: string): { text: string; files: ChatFile[] } {
+  const files: ChatFile[] = [];
+  const kept = text.split("\n").filter(line => {
+    if (ATTACHED_IMAGE.test(line)) return false;
+    const file = ATTACHED_FILE.exec(line);
+    if (!file) return true;
+    files.push({ name: file[1]!, mimeType: file[2]!, size: file[3]!, hex: file[4]! });
+    return false;
+  });
+  return { text: kept.join("\n").trim(), files };
 }
 
 function imagesIn(content: unknown): ChatImage[] {

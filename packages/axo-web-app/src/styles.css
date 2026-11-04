@@ -359,6 +359,25 @@ button:disabled { cursor: default; }
 .host-menu-item:disabled { color: var(--tertiary); }
 .host-menu-item small { margin-left: auto; color: var(--tertiary); font-size: 12px; }
 .chat-row-host { flex: none; max-width: 40%; overflow: hidden; color: var(--tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+/* Files in the message box, above it: a thumbnail or a page, the name, and how the upload goes. */
+.composer-files { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.composer-file {
+  display: flex; max-width: 240px; align-items: center; gap: 8px; padding: 4px 6px 4px 4px;
+  border: 0.5px solid color-mix(in srgb, var(--text) 6%, transparent); border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6);
+}
+.composer-file img, .composer-file-icon { width: 40px; height: 40px; flex: none; border-radius: 10px; object-fit: cover; }
+.composer-file-icon { display: grid; place-items: center; color: var(--secondary); background: var(--fill); }
+.composer-file-text { display: flex; min-width: 0; flex-direction: column; font-size: 13px; }
+.composer-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-file small { display: inline-flex; align-items: center; gap: 5px; color: var(--tertiary); font-size: 11px; }
+.composer-file.failed small { color: var(--orange); }
+.composer-file.uploading img { opacity: 0.6; }
+.composer.dragging { outline: 2px dashed var(--secondary); outline-offset: 2px; }
+.attach-button { background: transparent; }
+.attach-button:hover:not(:disabled) { color: var(--text); background: var(--fill); }
+.pending-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
+.pending-file { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 12px; background: var(--fill); color: var(--secondary); font-size: 12px; }
 .composer-note { align-self: flex-start; margin: 0; padding: 6px 12px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6); color: var(--orange); font-size: 12px; }
 .round-button {
   display: grid; width: 36px; height: 36px; flex: none; place-items: center; padding: 0;

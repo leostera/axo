@@ -5,7 +5,7 @@ import { MessageView, PendingView, QuestionCard, type Reveal } from "./message-v
 import { Alert } from "./alert.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
-import { chatTitle, type ChatWorkbench } from "./workbench.ts";
+import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 
 /** How close to the bottom still counts as following the conversation. */
 const FOLLOW_SLACK_PX = 80;
@@ -293,11 +293,18 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
   onEscape: () => void;
 }) {
   const draft = workbench.draft();
+  const files = workbench.attachments();
   const field = useRef<HTMLTextAreaElement>(null);
-  const hasDraft = draft.trim().length > 0;
+  const picker = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const hasDraft = draft.trim().length > 0 || files.length > 0;
   const bytes = encoder.encode(draft).length;
   const tooLong = bytes > maxMessageBytes;
-  const ready = canSend && hasDraft && !tooLong && !workbench.isSending;
+  const ready = canSend && workbench.canSendDraft && !tooLong && !workbench.isSending;
+  const attach = (list: FileList | null) => {
+    if (!list?.length) return;
+    workbench.attach([...list].map(file => ({ file, name: file.name || "pasted image" })));
+  };
   /** Where the caret goes once a paste is in, after React has put the new words in the box. */
   const caret = useRef<number | null>(null);
   useSyncExternalStore(voice?.subscribe ?? noSubscribe, voice?.getVersion ?? zero);
@@ -342,8 +349,13 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     }
   };
 
-  // Pasted words go in as plain text where the caret is, whatever the clipboard also carries.
+  // Pasted files are attached; pasted words go in as plain text where the caret is.
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (event.clipboardData.files.length) {
+      event.preventDefault();
+      attach(event.clipboardData.files);
+      return;
+    }
     const text = event.clipboardData.getData("text/plain").replace(/\r\n?/g, "\n");
     if (!text) return;
     event.preventDefault();
@@ -359,12 +371,37 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
       {voice ? <VoiceStatusCard voice={voice} /> : null}
       {!wide ? <HostPicker workbench={workbench} floating /> : null}
       {tooLong ? <p className="composer-note" role="status">Too long to send: {bytes.toLocaleString()} of {maxMessageBytes.toLocaleString()} bytes.</p> : null}
+      {files.length ? (
+        <ul className="composer-files" aria-label="Attached files">
+          {files.map(file => <AttachmentChip key={file.id} file={file} onRemove={() => workbench.detach(file.id)} />)}
+        </ul>
+      ) : null}
       {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
-        <form className="composer" onSubmit={event => {
+        <form className={dragging ? "composer dragging" : "composer"} onSubmit={event => {
           event.preventDefault();
           if (ready) onSend();
+        }}
+        onDragOver={event => {
+          if (!canSend || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={event => {
+          if (!canSend) return;
+          event.preventDefault();
+          setDragging(false);
+          attach(event.dataTransfer.files);
         }}>
           {wide ? <HostPicker workbench={workbench} /> : null}
+          <input ref={picker} type="file" multiple hidden onChange={event => {
+            attach(event.target.files);
+            event.target.value = "";
+          }} />
+          <button type="button" className="round-button attach-button" disabled={!canSend}
+            onClick={() => picker.current?.click()} aria-label="Attach files" title="Attach photos or files">
+            <Icon name="paperclip" size={19} />
+          </button>
           <textarea
             ref={field}
             rows={1}
@@ -395,6 +432,40 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
 }
 
 const noSubscribe = () => () => {};
+
+/** A file in the message box: a thumbnail for an image, its name otherwise, and how it is going. */
+function AttachmentChip({ file, onRemove }: { file: DraftAttachment; onRemove: () => void }) {
+  const preview = useObjectUrl(file.mimeType.startsWith("image/") && file.mimeType !== "image/heic" ? file.file : null);
+  const status = file.state === "uploading" ? "Uploading…" : file.state === "failed" ? file.error ?? "Upload failed" : formatBytes(file.size);
+  return (
+    <li className={`composer-file ${file.state}`} title={`${file.name} · ${status}`}>
+      {preview ? <img src={preview} alt="" /> : <span className="composer-file-icon"><Icon name="doc" size={18} /></span>}
+      <span className="composer-file-text">
+        <span className="composer-file-name">{file.name}</span>
+        <small>{file.state === "uploading" ? <span className="spinner" aria-hidden="true" /> : null}{status}</small>
+      </span>
+      <button type="button" className="plain-icon-button" onClick={onRemove} aria-label={`Remove ${file.name}`}><Icon name="close" size={13} /></button>
+    </li>
+  );
+}
+
+/** An object URL for `blob` while the component shows it. */
+function useObjectUrl(blob: Blob | null): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) return;
+    const created = URL.createObjectURL(blob);
+    setUrl(created);
+    return () => URL.revokeObjectURL(created);
+  }, [blob]);
+  return blob ? url : null;
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 /**
  * Which Mac the chat is on. On a new chat it is the choice of where to start it: tap, pick a Mac,
