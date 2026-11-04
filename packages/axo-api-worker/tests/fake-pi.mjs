@@ -80,6 +80,8 @@ setTimeout(() => {
         buffer = buffer.slice(newline + 1);
         if (record.type === "command" && record.action?.kind === "send" && socket === bridge) {
           appendFileSync(log, `SENT:${record.action.text}\n`);
+          // A prompt's attachments (RFD0030): where axod put each file.
+          if (record.action.attachments) appendFileSync(log, `ATTACHED:${JSON.stringify(record.action.attachments)}\n`);
           socket.write(`${JSON.stringify({ type: "commandResult", requestId: record.requestId, result: { accepted: true } })}\n`);
           if (!replied) {
             replied = true;
