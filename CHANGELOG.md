@@ -14,6 +14,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 ### Changed
 
 - axod ships optimized and stripped: it is a quarter of the size and faster.
+- Axo.app is 86 MB, up from 46 MB in 0.3: axod-infer carries the model runtime. The model itself is downloaded only when computer use is first used.
 - The menu bar's upgrade item names the version, as in "Upgrade to Axo v0.4".
 
 ### Fixed
