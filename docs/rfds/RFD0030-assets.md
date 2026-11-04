@@ -1,7 +1,7 @@
 # RFD0030 - Axo: Assets
 
 - Feature Name: `axo-assets`
-- Status: Draft
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-11-04
 - Updated: 2026-11-04
@@ -104,14 +104,15 @@ flowchart LR
 
 ### Attachments on prompts
 
-- **Protocol:** `axo.remote.session.prompt` (RFD0024) and `axo.session.prompt` take `attachments?: Attachment[]`, where `Attachment = { asset: "sha256:<hex>", name: string, mimeType: string, size: number }`. Text may be empty when there are attachments.
+- **Protocol:** `axo.remote.session.prompt` (RFD0024) takes `attachments?: Attachment[]` (at most 8), where `Attachment = { asset: "sha256:<hex>", name: string, mimeType: string, size: number }`. Text may be empty when there are attachments. The Mac app's local `axo.session.prompt` doesn't take them in this change: on the Mac a file is already on disk.
 - **Clients:** a client sends the prompt only after every upload in it has answered `2xx`.
 - **axod**, before passing the prompt to Pi:
   - downloads each attachment it doesn't have to `~/.axo/assets/<hash>/<name>` (written to a temporary file and renamed into place), with the Mac's host credential, from the cached `GET`;
   - checks the SHA-256 of the bytes against the name, and refuses the prompt if any attachment is missing (`404`), too large, or doesn't match: the person sees *the attachment could not be fetched*, and Pi gets nothing. A prompt is never delivered with some of its attachments missing.
-- **pi-axo:** the bridge's `send` command takes `attachments: [{ path, mimeType, name, size }]`.
+  - does this on a thread of its own (at most 4 prompts fetching at once), answering the relay's request once Pi has the prompt or with why it was refused (`-32010`), so the relay socket never waits on a download.
+- **pi-axo:** the bridge's `send` command takes `attachments: [{ path, asset, mimeType, name, size }]`.
   - `image/png`, `image/jpeg`, `image/gif` and `image/webp` up to 5 MiB become image blocks in `sendUserMessage([{type:"text"}, {type:"image", data, mimeType}])`.
-  - Anything else, or a larger image, becomes a text line naming the file, its type, its size and its path, and `axo-asset:sha256:<hex>`, so clients can turn it into a download link.
+  - Anything else, or a larger image, becomes a text line naming the file, its type, its size and its path, and `axo-asset:sha256:<hex>`, so clients can turn it into a download link. An image sent inline gets a line too, with its path, so the agent can use the file in its tools; clients hide that one, since the image shows itself.
 - **Clients send model-friendly images:** iOS converts HEIC to JPEG before upload; the web uploads images as they are.
 
 ### Lifecycle
@@ -142,6 +143,8 @@ flowchart LR
 - **Worker tests (`packages/axo-api-worker/tests`):** upload, `exists`, hash mismatch, quota, name and type checks, delete and purge, per-account isolation, and the gateway's authentication for people and Macs.
 - **axod tests:** download with hash check, refusal on mismatch or missing, the files on disk, and the bridge's `send` with attachments.
 - **pi-axo tests:** images become image blocks; other files become the text line.
+- **End to end (`tests/attachments-e2e.test.ts`):** a phone signed in with a token uploads a photo and prompts with it through a real Worker (Miniflare) and a real axod; Pi gets the checked file, and an attachment the account doesn't have refuses the prompt.
+- **Clients:** the web's and the phone's models upload at once, hold the message until every file is uploaded, carry the files with it, and give them back to the box if the Mac refuses it.
 - **Live:** after deploy, upload from the web, send a prompt with a photo and a PDF to a Session on a real Mac, see Pi get the image, and see a second `GET` served by the cache (`Cf-Cache-Status: HIT`).
 
 ## Drawbacks
