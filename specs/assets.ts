@@ -211,6 +211,7 @@ export const Gateway = defineActor({
     put: {
       on: Put,
       description: "Reserves the upload in the account's AxoAssetsDO.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#upload"],
       sends: [Reserve_],
       run(s, m, ctx) {
         const upload = ctx.fresh("upload");
@@ -221,6 +222,7 @@ export const Gateway = defineActor({
     reserved: {
       on: Reserved,
       description: "Already there, over quota, or reserved: then streams the bytes to R2.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#upload"],
       sends: [Store, PutDone],
       run(s, m, ctx) {
         const u = s.uploads[m.upload];
@@ -235,6 +237,7 @@ export const Gateway = defineActor({
     stored: {
       on: Stored,
       description: "Commits the asset, or releases the reservation if R2 refused the bytes.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#upload"],
       sends: [Commit, PutDone],
       run(s, m, ctx) {
         const u = s.uploads[m.upload];
@@ -249,6 +252,7 @@ export const Gateway = defineActor({
     committed: {
       on: Committed,
       description: "Answers the upload with the asset's version.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#upload"],
       sends: [PutDone],
       run(s, m, ctx) {
         const u = s.uploads[m.upload];
@@ -260,6 +264,7 @@ export const Gateway = defineActor({
     get: {
       on: Get,
       description: "Authenticates, then asks AxoAssetCache with props { accountId }.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#read"],
       sends: [Lookup],
       run(s, m, ctx) {
         const read = ctx.fresh("read");
@@ -270,6 +275,7 @@ export const Gateway = defineActor({
     served: {
       on: Served,
       description: "Passes the response on, private to the caller.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#read"],
       sends: [Got],
       run(s, m, ctx) {
         const r = s.reads[m.read];
@@ -278,7 +284,7 @@ export const Gateway = defineActor({
         ctx.send(to(ctx, r.from), Got, { hash: r.hash, status: m.status, bytes: m.bytes, afterUpload: r.afterUpload, deletes: r.deletes });
       },
     },
-    delete: { on: Delete, description: "A person's delete goes to the account's AxoAssetsDO.", sends: [Delete], run: (_s, m, ctx) => ctx.send(ctx.the(AssetsDO), Delete, m) },
+    delete: { on: Delete, description: "A person's delete goes to the account's AxoAssetsDO.", sources: ["packages/axo-api-worker/src/http/assets.ts#serveAccountAssets"], sends: [Delete], run: (_s, m, ctx) => ctx.send(ctx.the(AssetsDO), Delete, m) },
   },
 });
 
@@ -339,8 +345,8 @@ export const AssetCache = defineActor({
   initialState: () => ({}),
   display: { icon: "gear", status: () => "fronts AxoAssetsDO" },
   transitions: {
-    fetch: { on: Fetch, description: "Asks the account's AxoAssetsDO.", sends: [Read], run: (_s, m, ctx) => ctx.send(ctx.the(AssetsDO), Read, m) },
-    readDone: { on: ReadDone, description: "Returns it to the cache, tagged.", sends: [Fill], run: (_s, m, ctx) => ctx.send(ctx.the(Cache), Fill, m) },
+    fetch: { on: Fetch, description: "Asks the account's AxoAssetsDO.", sources: ["packages/axo-api-worker/src/assets/cache.ts#AxoAssetCache.fetch"], sends: [Read], run: (_s, m, ctx) => ctx.send(ctx.the(AssetsDO), Read, m) },
+    readDone: { on: ReadDone, description: "Returns it to the cache, tagged.", sources: ["packages/axo-api-worker/src/assets/cache.ts#AxoAssetCache.fetch"], sends: [Fill], run: (_s, m, ctx) => ctx.send(ctx.the(Cache), Fill, m) },
   },
 });
 
@@ -362,6 +368,7 @@ export const AssetsDO = defineActor({
     reserve: {
       on: Reserve_,
       description: "Already there: exists. Over quota: refused. Otherwise reserved.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.reserve"],
       sends: [Reserved],
       run(s, m, ctx) {
         const index = s.index[m.account];
@@ -379,6 +386,7 @@ export const AssetsDO = defineActor({
     commit: {
       on: Commit,
       description: "Marks it ready and answers with its version, or releases the reservation.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.commit"],
       sends: [Committed],
       run(s, m, ctx) {
         const asset = s.index[m.account][m.hash];
@@ -391,6 +399,7 @@ export const AssetsDO = defineActor({
     read: {
       on: Read,
       description: "Serves it only if it is ready in this account's index, from this account's key.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.head"],
       sends: [ReadDone],
       run(s, m, ctx) {
         const bytes = ctx.the(R2).state.objects[key(m.account, m.hash)];
@@ -401,6 +410,7 @@ export const AssetsDO = defineActor({
     delete: {
       on: Delete,
       description: "Marks it deleted, deletes the R2 object, purges its tag, and sets the second purge.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.remove"],
       sends: [Unstore, Purge],
       starts: ["latePurge"],
       run(s, m, ctx) {
@@ -417,6 +427,7 @@ export const AssetsDO = defineActor({
     unstored: {
       on: Unstored,
       description: "R2 has deleted the object: the asset may be uploaded again.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.remove"],
       run(s, m) {
         const asset = s.index[m.account][m.hash];
         if (asset?.state === "deleting") asset.state = "deleted";
@@ -424,6 +435,7 @@ export const AssetsDO = defineActor({
     },
     latePurge: {
       description: "15 minutes after a delete: purges again, once reads that began before it are over.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.alarm"],
       after: "15 minutes",
       sends: [Purge],
       starts: ["latePurge"],
@@ -484,6 +496,7 @@ export const Axod = defineActor({
     prompt: {
       on: Prompt,
       description: "Fetches each attachment.",
+      sources: ["crates/axo-relay/src/assets.rs#fetch_all"],
       sends: [Get],
       run(s, m, ctx) {
         s.wanted = m.attachments.split(",") as Hash[];
@@ -493,6 +506,7 @@ export const Axod = defineActor({
     got: {
       on: Got,
       description: "Keeps it if its bytes match; delivers once all are here, or refuses on the first failure.",
+      sources: ["crates/axo-relay/src/assets.rs#fetch_all"],
       sends: [Delivered, Refused],
       run(s, m, ctx) {
         if (s.done) return;

@@ -65,10 +65,11 @@ export const Worker = defineActor({
   initialState: () => ({}),
   display: { icon: "server", status: () => "uploads" },
   transitions: {
-    put: { on: Put, description: "Asks AxoAssetsDO to reserve.", sends: [Reserve], run: (_s, m, ctx) => ctx.send(ctx.the(AssetsDO), Reserve, m) },
+    put: { on: Put, description: "Asks AxoAssetsDO to reserve.", sources: ["packages/axo-api-worker/src/http/assets.ts#upload"], sends: [Reserve], run: (_s, m, ctx) => ctx.send(ctx.the(AssetsDO), Reserve, m) },
     reserved: {
       on: Reserved,
       description: "Stores the bytes and commits, or answers at once.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#upload"],
       sends: [Commit, PutDone],
       run(_s, m, ctx) {
         if (m.answer === "reserved") return ctx.send(ctx.the(AssetsDO), Commit, { hash: m.hash });
@@ -78,6 +79,7 @@ export const Worker = defineActor({
     committed: {
       on: Committed,
       description: "Answers the upload only once it is committed; a commit too late fails it.",
+      sources: ["packages/axo-api-worker/src/http/assets.ts#upload"],
       sends: [PutDone],
       run: (_s, m, ctx) => ctx.send(ctx.the(Devices), PutDone, m),
     },
@@ -95,6 +97,7 @@ export const AssetsDO = defineActor({
     reserve: {
       on: Reserve,
       description: "Already there: exists. Over quota: refused. Otherwise reserved.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.reserve"],
       sends: [Reserved],
       starts: ["release"],
       run(s, m, ctx) {
@@ -110,6 +113,7 @@ export const AssetsDO = defineActor({
     commit: {
       on: Commit,
       description: "Marks it ready; a reservation already released can't be committed.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.commit"],
       sends: [Committed],
       run(s, m, ctx) {
         const ok = s.assets[m.hash] === "reserved";
@@ -119,6 +123,7 @@ export const AssetsDO = defineActor({
     },
     release: {
       description: "Releases reservations not committed in time.",
+      sources: ["packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.alarm"],
       after: "10 minutes",
       run(s) {
         if (!releaseAbandoned.on) return;
