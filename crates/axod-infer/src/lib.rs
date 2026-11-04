@@ -1,10 +1,11 @@
-//! Local decisions: asks a local model, such as Clef, typed questions about a state and gets a
-//! probability for every option, over llama.cpp's `POST /v1/systemone` on a Unix socket.
+//! Local inference: axod's side-car for running models on this Mac. Its first model is Clef,
+//! asked typed questions about a state over llama.cpp's `POST /v1/systemone` on a Unix socket,
+//! returning a probability for every option. Other models (speech, for one) are meant to join it.
 //!
-//! The model runs in `axo-decide`, our pinned `llama-server` build next to axod in
+//! The model runs in `axod-infer`, our pinned `llama-server` build next to axod in
 //! `Axo.app/Contents/Helpers`, as a side-car: a crash in Metal or the model cannot take axod and
 //! its Sessions down. Whichever process first needs it starts it, detached, holding an exclusive
-//! lock on `decide.lock`; the lock lives exactly as long as the side-car, so there is never more
+//! lock on `infer.lock`; the lock lives exactly as long as the side-car, so there is never more
 //! than one, and a crashed one is started again on the next question. The side-car unloads the
 //! model after ten idle minutes (`--sleep-idle-seconds`) and loads it again on demand.
 
@@ -51,7 +52,7 @@ while [ $# -gt 0 ]; do
   /usr/bin/curl -fL --retry 3 --silent --show-error -C - -o "$file.part" "$url"
   echo "$sha  $file.part" | /usr/bin/shasum -a 256 -c - >/dev/null || { rm -f "$file.part"; echo "$file: checksum mismatch" >&2; exit 1; }
   mv "$file.part" "$file"
-  echo "event=decide.model_downloaded file=$file"
+  echo "event=infer.model_downloaded file=$file"
 done
 "#;
 
@@ -63,24 +64,24 @@ const IDLE_SECONDS: &str = "600";
 
 /// Where the side-car, its model and its socket live.
 #[derive(Clone, Debug)]
-pub struct Decide {
-    /// The `axo-decide` executable.
+pub struct Infer {
+    /// The `axod-infer` executable.
     pub helper: PathBuf,
     /// Holds [`MODEL_FILE`] and [`VISION_FILE`].
     pub models: PathBuf,
-    /// Holds `decide.sock`, `decide.lock` and `decide.log`.
+    /// Holds `infer.sock`, `infer.lock` and `infer.log`.
     pub run: PathBuf,
 }
 
 #[derive(Debug)]
-pub enum DecideError {
+pub enum InferError {
     /// The helper or the model files are missing, so local checks are off.
     Unavailable(String),
     /// The side-car did not start or did not answer.
     Failed(String),
 }
 
-impl std::fmt::Display for DecideError {
+impl std::fmt::Display for InferError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable(why) => write!(f, "local checks are unavailable: {why}"),
@@ -89,31 +90,31 @@ impl std::fmt::Display for DecideError {
     }
 }
 
-impl Decide {
+impl Infer {
     /// The side-car next to this executable, Axo's models directory and axod's run directory.
     pub fn beside_current_exe(run: &Path) -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
         let home = std::env::var_os("HOME")?;
         Some(Self {
-            helper: exe.parent()?.join("axo-decide"),
+            helper: exe.parent()?.join("axod-infer"),
             models: PathBuf::from(home).join("Library/Application Support/Axo/models/clef-flash"),
             run: run.to_path_buf(),
         })
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.run.join("decide.sock")
+        self.run.join("infer.sock")
     }
 
     /// Whether the helper and the model files are on disk.
-    pub fn installed(&self) -> Result<(), DecideError> {
+    pub fn installed(&self) -> Result<(), InferError> {
         for path in [
             self.helper.clone(),
             self.models.join(MODEL_FILE),
             self.models.join(VISION_FILE),
         ] {
             if !path.exists() {
-                return Err(DecideError::Unavailable(format!(
+                return Err(InferError::Unavailable(format!(
                     "{} is missing",
                     path.display()
                 )));
@@ -169,20 +170,20 @@ impl Decide {
             .stderr(log);
         detach_holding(&mut command, lock.as_raw_fd());
         let child = command.spawn().map_err(|e| e.to_string())?;
-        log::info!("event=decide.model_download_started pid={}", child.id());
+        log::info!("event=infer.model_download_started pid={}", child.id());
         Ok(())
     }
 
     /// Asks a `systemone` request (`{ state, images?, questions }`) and returns its `answers`:
     /// for each question, `{ type, <type>: probability or choice probabilities }`.
-    pub fn ask(&self, request: &Value) -> Result<Value, DecideError> {
+    pub fn ask(&self, request: &Value) -> Result<Value, InferError> {
         self.installed()?;
         self.ensure_running()?;
-        let body = serde_json::to_vec(request).map_err(|e| DecideError::Failed(e.to_string()))?;
+        let body = serde_json::to_vec(request).map_err(|e| InferError::Failed(e.to_string()))?;
         let reply = http(&self.socket(), "POST", "/v1/systemone", &body, ASK_TIMEOUT)
-            .map_err(|e| DecideError::Failed(e.to_string()))?;
+            .map_err(|e| InferError::Failed(e.to_string()))?;
         if reply.status != 200 {
-            return Err(DecideError::Failed(format!(
+            return Err(InferError::Failed(format!(
                 "status {}: {}",
                 reply.status,
                 String::from_utf8_lossy(&reply.body)
@@ -192,22 +193,22 @@ impl Decide {
             )));
         }
         let reply: Value =
-            serde_json::from_slice(&reply.body).map_err(|e| DecideError::Failed(e.to_string()))?;
+            serde_json::from_slice(&reply.body).map_err(|e| InferError::Failed(e.to_string()))?;
         Ok(reply["answers"].clone())
     }
 
     /// Starts the side-car unless one is running, and waits until it answers.
-    fn ensure_running(&self) -> Result<(), DecideError> {
+    fn ensure_running(&self) -> Result<(), InferError> {
         if self.healthy() {
             return Ok(());
         }
-        std::fs::create_dir_all(&self.run).map_err(|e| DecideError::Failed(e.to_string()))?;
+        std::fs::create_dir_all(&self.run).map_err(|e| InferError::Failed(e.to_string()))?;
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(self.run.join("decide.lock"))
-            .map_err(|e| DecideError::Failed(e.to_string()))?;
+            .open(self.run.join("infer.lock"))
+            .map_err(|e| InferError::Failed(e.to_string()))?;
         if try_lock(&lock) {
             self.start(lock)?;
         }
@@ -218,15 +219,15 @@ impl Decide {
                 return Ok(());
             }
             if self.died_without_lock() {
-                return Err(DecideError::Failed(format!(
-                    "axo-decide exited; see {}",
-                    self.run.join("decide.log").display()
+                return Err(InferError::Failed(format!(
+                    "axod-infer exited; see {}",
+                    self.run.join("infer.log").display()
                 )));
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        Err(DecideError::Failed(
-            "axo-decide did not start in time".into(),
+        Err(InferError::Failed(
+            "axod-infer did not start in time".into(),
         ))
     }
 
@@ -234,7 +235,7 @@ impl Decide {
     fn died_without_lock(&self) -> bool {
         OpenOptions::new()
             .write(true)
-            .open(self.run.join("decide.lock"))
+            .open(self.run.join("infer.lock"))
             .map(|file| try_lock(&file))
             .unwrap_or(true)
     }
@@ -252,11 +253,11 @@ impl Decide {
 
     /// Spawns the side-car in its own session, handing it the locked file so the lock lasts as
     /// long as it does.
-    fn start(&self, lock: File) -> Result<(), DecideError> {
+    fn start(&self, lock: File) -> Result<(), InferError> {
         let socket = self.socket();
         let _ = std::fs::remove_file(&socket);
-        let log = File::create(self.run.join("decide.log"))
-            .map_err(|e| DecideError::Failed(e.to_string()))?;
+        let log = File::create(self.run.join("infer.log"))
+            .map_err(|e| InferError::Failed(e.to_string()))?;
         let lock_fd = lock.as_raw_fd();
         let mut command = Command::new(&self.helper);
         command
@@ -271,14 +272,14 @@ impl Decide {
             .stdin(Stdio::null())
             .stdout(
                 log.try_clone()
-                    .map_err(|e| DecideError::Failed(e.to_string()))?,
+                    .map_err(|e| InferError::Failed(e.to_string()))?,
             )
             .stderr(log);
         detach_holding(&mut command, lock_fd);
         let child = command
             .spawn()
-            .map_err(|e| DecideError::Failed(format!("could not start axo-decide: {e}")))?;
-        log::info!("event=decide.started pid={}", child.id());
+            .map_err(|e| InferError::Failed(format!("could not start axod-infer: {e}")))?;
+        log::info!("event=infer.started pid={}", child.id());
         // The child holds the lock now; closing ours does not release it.
         drop(lock);
         Ok(())
@@ -355,7 +356,7 @@ fn http(
     stream.set_write_timeout(Some(timeout))?;
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: axo-decide\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: axod-infer\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -423,15 +424,15 @@ mod tests {
 
     #[test]
     fn missing_model_files_turn_local_checks_off() {
-        let dir = std::env::temp_dir().join(format!("axo-decide-test-{}", std::process::id()));
-        let decide = Decide {
-            helper: dir.join("axo-decide"),
+        let dir = std::env::temp_dir().join(format!("axod-infer-test-{}", std::process::id()));
+        let infer = Infer {
+            helper: dir.join("axod-infer"),
             models: dir.join("models"),
             run: dir.join("run"),
         };
         assert!(matches!(
-            decide.ask(&serde_json::json!({})),
-            Err(DecideError::Unavailable(_))
+            infer.ask(&serde_json::json!({})),
+            Err(InferError::Unavailable(_))
         ));
     }
 
@@ -443,7 +444,7 @@ mod tests {
 
     #[test]
     fn one_lock_holder_at_a_time() {
-        let path = std::env::temp_dir().join(format!("axo-decide-lock-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("axod-infer-lock-{}", std::process::id()));
         let first = File::create(&path).unwrap();
         let second = OpenOptions::new().write(true).open(&path).unwrap();
         assert!(try_lock(&first));

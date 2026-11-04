@@ -63,14 +63,14 @@ The gate runs in `axod mcp` before every `computer` call.
 
 A refusal never reaches the app. Every call logs `event=mcp.computer_called tool=… outcome=ok|error|refused [confirmed=true]`.
 
-### Side-car (`crates/axo-decide`, `third_party/llama.cpp`)
+### Side-car (`crates/axod-infer`, `third_party/llama.cpp`)
 
-- **The binary:** `axo-decide` is llama.cpp's `llama-server` at a pinned commit.
+- **The binary:** `axod-infer` is llama.cpp's `llama-server` at a pinned commit.
   - Built by a Bazel repository rule: static, Metal with embedded shaders, no curl or OpenSSL.
-  - Shipped as `Axo.app/Contents/Helpers/axo-decide` and signed as `dev.leostera.axo.decide`.
-  - llama.cpp supports Clef natively and serves `POST /v1/systemone` on a Unix socket (`run/decide.sock`).
+  - Shipped as `Axo.app/Contents/Helpers/axod-infer` and signed as `dev.leostera.axo.infer`.
+  - llama.cpp supports Clef natively and serves `POST /v1/systemone` on a Unix socket (`run/infer.sock`).
 - **One instance, via a lock instead of a supervisor:**
-  - Whichever process first needs the side-car takes an exclusive `flock` on `run/decide.lock`, then starts the side-car detached (`setsid`), handing it the locked file across `exec`.
+  - Whichever process first needs the side-car takes an exclusive `flock` on `run/infer.lock`, then starts the side-car detached (`setsid`), handing it the locked file across `exec`.
   - The lock lives exactly as long as the side-car, so there is never more than one. Others wait for the socket.
   - A crashed side-car frees the lock and is started again on the next question.
 - **Memory:** the side-car unloads the model after ten idle minutes (`--sleep-idle-seconds 600`).
@@ -98,9 +98,9 @@ A refusal never reaches the app. Every call logs `event=mcp.computer_called tool
   - without a model, the word list alone refuses;
   - every `run_steps` step and every script is looked at;
   - the filter matches whole words.
-- `axo-decide` unit tests: HTTP replies (plain and chunked), missing files turn checks off, one lock holder at a time, and reading memory and disk.
+- `axod-infer` unit tests: HTTP replies (plain and chunked), missing files turn checks off, one lock holder at a time, and reading memory and disk.
 - `mcp` tests: computer use is offered only where it exists, and `computer_tools` lists only the allowlist.
-- `//apple/AxoMac:package_test`: `axo-decide`'s minimum macOS and signing team.
+- `//apple/AxoMac:package_test`: `axod-infer`'s minimum macOS and signing team.
 - Checked by hand on 2026-11-04 through the shipped `axod mcp`:
   - cold start, then refusals of "Delete account", "Send" and "ship it\n";
   - "Remove filter" flagged but passed by Clef, and "Settings" not flagged;
@@ -125,4 +125,5 @@ A refusal never reaches the app. Every call logs `event=mcp.computer_called tool
   - an injection warning on what `get_window_state` reads;
   - reading typed text back.
 - **Screenshots:** when Clef's answer is uncertain or the target has no label, should the gate add the window's screenshot (about 4 s)?
+- **More models in `axod-infer`:** the side-car is named for inference in general, not for Clef. Speech, such as NVIDIA's Parakeet for transcription, is next. llama.cpp can't run Parakeet, so `axod-infer` will need a second runtime: parakeet-mlx, sherpa-onnx or a Core ML conversion. The question is whether one process should hold both runtimes, or each runtime gets its own socket.
 - **Asking the person:** should Axo itself ask (a notification, or the Mac app), instead of only telling the agent to ask?

@@ -6,7 +6,7 @@
 //! 1. A word filter over what the action does: the target element's role and label (remembered
 //!    from the agent's last `get_window_state` of that window), the text it types, the keys it
 //!    presses, the script it runs. Nothing flagged, nothing checked.
-//! 2. A flagged action goes to Clef on this Mac ([`axo_decide`]), text only (about a second).
+//! 2. A flagged action goes to Clef on this Mac ([`axod_infer`]), text only (about a second).
 //!    If Clef is not installed or fails, the flag alone decides: the action is refused.
 //!
 //! A refused action never reaches the app. The agent is told why and to ask the person, then to
@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use axo_decide::{Decide, DecideError};
+use axod_infer::{Infer, InferError};
 use serde_json::{Value, json};
 
 /// hand's risk question (acoyfellow/hand `src/steer.ts`), for text instead of a screenshot.
@@ -103,18 +103,18 @@ pub enum Verdict {
 /// What decides a flagged action; Clef on this Mac in production.
 pub trait Judge: Send + Sync {
     /// The probability that `action` in `window` is destructive or hard to undo.
-    fn risky(&self, action: &str, window: &str) -> Result<f64, DecideError>;
+    fn risky(&self, action: &str, window: &str) -> Result<f64, InferError>;
 }
 
-impl Judge for Decide {
-    fn risky(&self, action: &str, window: &str) -> Result<f64, DecideError> {
+impl Judge for Infer {
+    fn risky(&self, action: &str, window: &str) -> Result<f64, InferError> {
         let answers = self.ask(&json!({
             "state": { "action": action, "window": window },
             "questions": { "risky": { "type": "noul", "instructions": RISK_QUESTION } },
         }))?;
         answers["risky"]["noul"]
             .as_f64()
-            .ok_or_else(|| DecideError::Failed(format!("no probability in {answers}")))
+            .ok_or_else(|| InferError::Failed(format!("no probability in {answers}")))
     }
 }
 
@@ -179,7 +179,7 @@ impl Gate {
         for (action, window) in flagged {
             let judged = match &self.judge {
                 Some(judge) => judge.risky(action, window),
-                None => Err(DecideError::Unavailable("no local model".into())),
+                None => Err(InferError::Unavailable("no local model".into())),
             };
             match judged {
                 Ok(p) if p < RISKY_AT => {
@@ -347,7 +347,7 @@ mod tests {
 
     struct Fixed(f64, Arc<AtomicUsize>);
     impl Judge for Fixed {
-        fn risky(&self, _: &str, _: &str) -> Result<f64, DecideError> {
+        fn risky(&self, _: &str, _: &str) -> Result<f64, InferError> {
             self.1.fetch_add(1, Ordering::SeqCst);
             Ok(self.0)
         }

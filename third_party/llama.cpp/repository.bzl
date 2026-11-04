@@ -2,7 +2,7 @@
 
 axod asks local models such as Clef "is this click destructive?" over `POST /v1/systemone` on a
 Unix socket. The binary is static, uses Metal with its shaders embedded, and has no curl or
-OpenSSL, so it links only system frameworks and ships as `Axo.app/Contents/Helpers/axo-decide`.
+OpenSSL, so it links only system frameworks and ships as `Axo.app/Contents/Helpers/axod-infer`.
 llama.cpp publishes no macOS binaries, so it is built here; CMake and Ninja come from the host.
 """
 
@@ -11,11 +11,11 @@ LLAMA_CPP_SHA256 = "1688a167a8edd9499cdd0c19b8bd044f0fa184b466981977bbf2222d8849
 
 def _llama_server_repository_impl(ctx):
     if ctx.os.name != "mac os x":
-        fail("axo-decide is built for macOS hosts only")
+        fail("axod-infer is built for macOS hosts only")
     cmake = ctx.which("cmake")
     ninja = ctx.which("ninja")
     if cmake == None or ninja == None:
-        fail("Building axo-decide needs cmake and ninja on PATH (brew install cmake ninja)")
+        fail("Building axod-infer needs cmake and ninja on PATH (brew install cmake ninja)")
     ctx.download_and_extract(
         url = "https://github.com/ggml-org/llama.cpp/archive/%s.tar.gz" % LLAMA_CPP_COMMIT,
         sha256 = LLAMA_CPP_SHA256,
@@ -55,11 +55,11 @@ def _llama_server_repository_impl(ctx):
     build = ctx.execute([str(cmake), "--build", "build", "--target", "llama-server"], timeout = 3600)
     if build.return_code != 0:
         fail("Building llama-server failed:\n%s\n%s" % (build.stdout[-4000:], build.stderr[-4000:]))
-    ctx.symlink("build/bin/llama-server", "axo-decide")
+    ctx.symlink("build/bin/llama-server", "axod-infer")
     ctx.delete("source")
     ctx.file("BUILD.bazel", """package(default_visibility = ["//visibility:public"])
 
-exports_files(["axo-decide"])
+exports_files(["axod-infer"])
 """)
 
 llama_server_repository = repository_rule(
