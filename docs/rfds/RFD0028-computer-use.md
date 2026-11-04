@@ -6,7 +6,7 @@
 - Start Date: 2026-10-31
 - Updated: 2026-11-04 (as built)
 - Document Type: Proposal
-- Amends: [RFD0015](RFD0015-axo-mcp-server.md)
+- Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md)
 
 ## Summary
 
