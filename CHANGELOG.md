@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.7 (Mac app build 278, axod 33)
+
+### New
+
+- **The sidebar groups Sessions by what needs you, not by the minute.** Pinned Sessions come first, in the order you pinned them. Then **Active**, A to Z: Sessions working or asking you, active in the last few minutes, or with activity you haven't seen (marked with a dot and a bolder name). Then **Earlier**, latest activity first. Busy Sessions no longer jump around: a row moves only when its Session joins or leaves a group, and groups are worked out every 30 seconds, so Sessions leave Active a few at a time. A Session is seen once you've had it selected with Axo in front; this is kept on each Mac.
+- **Settings → Sessions** sets how long a Session stays Active, whether unseen Sessions stay Active, how often Sessions move between groups, each group's order, how unseen activity is marked, and whether group titles show.
+
+### Changed
+
+- Attachments show in Pi's terminal as one short line each (🖼 and the name, or 📎 with the name and size); the agent still reads them whole.
+
 ## 0.6 (Mac app build 276, axod 33)
 
 ### New
