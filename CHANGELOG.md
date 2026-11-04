@@ -2,6 +2,24 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.4 (Mac app build 274, axod 32)
+
+### New
+
+- **Agents can use your Mac's apps** (RFD0028). Sessions get two tools, `computer` and `computer_tools`, that read a window's controls and text, click, type, scroll and press keys in other apps. They work in the background: the app being driven doesn't come to the front, and your pointer and keyboard stay yours. axod needs Accessibility and Screen Recording, granted in System Settings → Privacy & Security.
+- **Risky actions are refused until the agent asks you.** Before a click, keystroke or typed text that looks like deleting, sending, paying, publishing or submitting (Return in a field counts), the agent gets a refusal telling it to ask you, and must call again with `confirm: true` once you've said yes. Reading windows is never stopped.
+- **A local model double-checks those actions.** On a Mac with 16 GB of memory or more, the first computer-use call downloads Clef, a small model that judges whether a flagged action is really destructive, so harmless ones like "Remove filter" go through. The files are about 7.4 GB, are checked against their SHA-256, need 10 GB free, and go in `~/Library/Application Support/Axo/models/`. Until they're there, and on smaller Macs, the word list alone decides, which refuses more.
+- **axod-infer** runs that model beside axod, in `Axo.app/Contents/Helpers`: one copy shared by every Session, using about 7 GB of memory while loaded and unloading after 10 idle minutes. A crash in it can't take axod down.
+
+### Changed
+
+- axod ships optimized and stripped: it is a quarter of the size and faster.
+- The menu bar's upgrade item names the version, as in "Upgrade to Axo v0.4".
+
+### Fixed
+
+- After an update or a restart, only the loading screen shows until axod is fully running, instead of panes saying "Lost connection to axod".
+
 ## 0.3 (Mac app build 270, axod 29)
 
 ### New
