@@ -425,7 +425,14 @@ final class AxoPhoneUITests: XCTestCase {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "reply"])
     XCTAssertTrue(app.staticTexts["Using tools…"].waitForExistence(timeout: 10))
     XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Still waiting on the")).firstMatch.exists)
-    XCTAssertTrue(app.staticTexts["Latest output"].exists || app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "PhoneWorkbenchTests running")).firstMatch.exists)
+    // A tool's output starts folded, saying how much there is and that it is still coming.
+    let fold = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "Show output (", "still running")).firstMatch
+    XCTAssertTrue(fold.waitForExistence(timeout: 5))
+    fold.tap()
+    XCTAssertTrue(
+      app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "PhoneWorkbenchTests")).firstMatch.waitForExistence(timeout: 5),
+      "unfolded, the output shows")
+    XCTAssertTrue(app.buttons["Hide output"].exists)
   }
 
   @MainActor

@@ -1,7 +1,8 @@
 import AxoPhoneModel
 import SwiftUI
 
-/// A tool Pi used: a tinted card with what it ran and a short look at what came back; tap for all of it.
+/// A tool Pi used: a tinted card with what it ran; what came back stays folded until asked for,
+/// as on the web, so a run of many tools stays short to scroll.
 struct ToolTranscriptView: View {
   let tool: ToolActivity
   /// Pi is working now, so a tool that has not answered is still running.
@@ -49,29 +50,25 @@ struct ToolTranscriptView: View {
           .font(.callout.monospaced()).textSelection(.enabled)
           .lineLimit(expanded ? nil : 4)
       }
-      if !tool.output.isEmpty, isRunning, !expanded {
-        // While it runs, the newest lines are the news.
-        Text(tail)
-          .font(.caption.monospaced())
-          .foregroundStyle(.secondary)
-          .lineLimit(6)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityLabel("Latest output")
-      } else if !tool.output.isEmpty {
+      if !tool.output.isEmpty, expanded {
         Text(output)
           .font(.caption.monospaced())
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
-          .lineLimit(expanded ? nil : 6)
           .fixedSize(horizontal: false, vertical: true)
-        if lineCount > 6 {
-          Button(expanded ? "Collapse tool output" : "Expand tool output") { expanded.toggle() }
-            .font(.caption).foregroundStyle(.secondary)
-        }
         if tool.outputTruncated {
           Text("Output cut short here; the rest is on your Mac.")
             .font(.caption2).foregroundStyle(.secondary)
         }
+      }
+      if !tool.output.isEmpty {
+        Button {
+          expanded.toggle()
+        } label: {
+          Label(foldTitle, systemImage: expanded ? "chevron.up" : "chevron.down")
+            .labelStyle(.titleAndIcon)
+        }
+        .font(.caption).foregroundStyle(.secondary)
       }
     }
     .padding(14)
@@ -81,11 +78,14 @@ struct ToolTranscriptView: View {
     .accessibilityIdentifier("toolBlock")
   }
 
-  private var tail: String {
-    tool.output.split(separator: "\n", omittingEmptySubsequences: false).suffix(6).joined(separator: "\n")
-  }
-
   private var lineCount: Int { tool.output.split(separator: "\n", omittingEmptySubsequences: false).count }
+
+  /// "Show output (12 lines, still running)", or "Hide output".
+  private var foldTitle: String {
+    if expanded { return "Hide output" }
+    let lines = "\(lineCount) \(lineCount == 1 ? "line" : "lines")"
+    return "Show output (\(lines)\(isRunning ? ", still running" : ""))"
+  }
 
   /// An edit's result is often a diff; its added and removed lines keep their colours.
   private var output: AttributedString {
