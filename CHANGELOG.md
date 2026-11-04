@@ -2,6 +2,16 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.5 (Mac app build 275, axod 32)
+
+### New
+
+- **Copy Session Info.** Right-click a Session in the sidebar to copy its name, ID, Workspace, directory and transcript, with how an agent reaches it (`session_prompt` with its ID). Paste it into another Session to have that one talk to it. For another Mac's Session it names the Mac instead of the transcript.
+
+### Fixed
+
+- Previous and Next Session (⇧⌘[ and ⇧⌘]) step through the rows as they're shown, holding the list still while other Sessions move up.
+
 ## 0.4 (Mac app build 274, axod 32)
 
 ### New
