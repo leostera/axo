@@ -73,9 +73,16 @@ final class TerminalSessionsModel {
   private(set) var peerHosts: [PeerHost] = []
   /// The Mac each other Mac's Session runs on; this Mac's Sessions are not in it.
   private(set) var peerHostBySession: [SessionID: String] = [:]
-  /// The recent list's order frozen while the pointer is over the sidebar, so rows don't move
-  /// under a click and Previous/Next Session step through the rows as shown.
+  /// The recent list's order frozen while the pointer is over the sidebar or Previous/Next
+  /// Session are being pressed, so rows don't move under a click and the shortcuts step through
+  /// the rows as shown, even while Sessions working elsewhere would move up.
   private(set) var heldRecentOrder: [SessionID]?
+  /// Why the recent list holds still; it moves to the live order once nothing holds it.
+  @ObservationIgnored private var recentOrderHolds: Set<RecentOrderHold> = []
+  /// Ends the hold of a run of Previous/Next Session presses, a moment after the last one.
+  @ObservationIgnored private var sessionStepRelease: Task<Void, Never>?
+  /// How long after the last Previous/Next Session press the list holds still; tests shorten it.
+  @ObservationIgnored var sessionStepHold: Duration = .milliseconds(1500)
   /// Sessions pinned to the top of the sidebar, on this Mac only.
   private(set) var sessionPins: SessionPins
 
@@ -241,12 +248,38 @@ final class TerminalSessionsModel {
     }
   }
 
-  /// Freezes the recent list's current order, or releases it so rows move to their places.
+  /// Freezes the recent list's current order while the pointer is over it, or releases the
+  /// pointer's hold; rows move to their places once nothing else holds them.
   func holdRecentOrder(_ isHeld: Bool) {
-    if !isHeld {
-      assign(\.heldRecentOrder, nil)
-    } else if heldRecentOrder == nil {
-      heldRecentOrder = SessionActivityOrder.sorted(sessions).map(\.id)
+    setRecentOrderHold(.pointer, isHeld)
+  }
+
+  private func setRecentOrderHold(_ hold: RecentOrderHold, _ isHeld: Bool) {
+    if isHeld {
+      recentOrderHolds.insert(hold)
+      if heldRecentOrder == nil { heldRecentOrder = SessionActivityOrder.sorted(sessions).map(\.id) }
+    } else {
+      recentOrderHolds.remove(hold)
+      if recentOrderHolds.isEmpty { assign(\.heldRecentOrder, nil) }
+    }
+  }
+
+  /// Ends a run of Previous/Next Session presses now rather than a moment after the last one.
+  func endSessionSteps() {
+    sessionStepRelease?.cancel()
+    setRecentOrderHold(.sessionStep, false)
+  }
+
+  /// Holds the list still through a run of Previous/Next Session presses, until a moment after
+  /// the last one.
+  private func holdRecentOrderForSessionStep() {
+    setRecentOrderHold(.sessionStep, true)
+    sessionStepRelease?.cancel()
+    let hold = sessionStepHold
+    sessionStepRelease = Task { [weak self] in
+      try? await Task.sleep(for: hold)
+      guard !Task.isCancelled else { return }
+      self?.setRecentOrderHold(.sessionStep, false)
     }
   }
 
@@ -449,6 +482,8 @@ final class TerminalSessionsModel {
   func setSidebarMacs(_ macs: SidebarMacs) {
     guard sidebarMacs != macs else { return }
     sidebarMacs = macs
+    recentOrderHolds = []
+    sessionStepRelease?.cancel()
     heldRecentOrder = nil
     preferenceDefaults.set(macs.rawValue, forKey: AxoPreferenceKey.sidebarMacs)
   }
@@ -865,6 +900,7 @@ final class TerminalSessionsModel {
   }
 
   private func showAdjacentSession(_ direction: TerminalNavigationDirection) {
+    holdRecentOrderForSessionStep()
     let ordered = sidebarOrderedSessions
     let currentIndex = selectedSessionID.flatMap { id in ordered.firstIndex { $0.id == id } }
     guard
@@ -960,4 +996,12 @@ struct TerminalCommandAvailability: Equatable {
   var canNavigateSessions = false
   var hasFocusedShell = false
   var hasSelectedSession = false
+}
+
+/// What holds the sidebar's recent list still.
+private enum RecentOrderHold: Hashable {
+  /// The pointer is over the list.
+  case pointer
+  /// Previous/Next Session are being pressed, one after another.
+  case sessionStep
 }

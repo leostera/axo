@@ -174,6 +174,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     XCTAssertEqual(model.selectedSessionID, 1)
     // Released, the list takes the live order: 1 is now the most recent.
     model.holdRecentOrder(false)
+    model.endSessionSteps()
     XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3])
     model.showNextSession()
     XCTAssertEqual(model.selectedSessionID, 2)
@@ -181,6 +182,37 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     model.setSidebarMacs(.all)
     let reopened = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     XCTAssertEqual(reopened.sidebarMacs, .all)
+  }
+
+  func testPreviousAndNextSessionStepThroughTheRowsAsShownWhileOtherSessionsMoveUp() async throws {
+    let client = FakeAxodClient()
+    client.sessions = [
+      TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100),
+      TerminalSession(id: 2, initialPwd: "/", shells: [], lastMessageAt: 300),
+      TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 200),
+      TerminalSession(id: 4, initialPwd: "/", shells: [], lastMessageAt: 50),
+    ]
+    let model = TerminalSessionsModel(client: client)
+    model.sessionStepHold = .milliseconds(100)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1, 4])
+    model.showSession(2)
+    model.showNextSession()
+    XCTAssertEqual(model.selectedSessionID, 3)
+
+    // An agent writes in 1 between presses. The list holds still, so the next press goes to the
+    // row after 3 as shown, not to the row after 3's new place.
+    client.sessions[0] = TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 400)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1, 4])
+    model.showNextSession()
+    XCTAssertEqual(model.selectedSessionID, 1)
+    model.showPreviousSession()
+    XCTAssertEqual(model.selectedSessionID, 3)
+
+    // A moment after the last press, the rows move to their places.
+    try await Task.sleep(for: .milliseconds(400))
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3, 4])
   }
 
   func testPinnedSessionsStayOnTopAreRememberedOnThisMacAndSurviveTheirAbsence() async throws {
