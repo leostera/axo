@@ -421,6 +421,17 @@ final class AxoPhoneUITests: XCTestCase {
   // MARK: - Conversation
 
   @MainActor
+  func testReturnStartsANewLineAndOnlySendSends() {
+    let app = launch()
+    let composer = app.textFields["composer"]
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    composer.tap()
+    composer.typeText("First line\nSecond line")
+    XCTAssertEqual(composer.value as? String, "First line\nSecond line", "Return added a line and sent nothing")
+    XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
+  }
+
+  @MainActor
   func testAReplyBeingWrittenAndARunningToolShowAsTheyGrow() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "reply"])
     XCTAssertTrue(app.staticTexts["Using tools…"].waitForExistence(timeout: 10))

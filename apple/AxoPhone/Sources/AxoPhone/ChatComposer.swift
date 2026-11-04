@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The message box. It stays closed, saying why in its placeholder, when there is nobody to send
 /// to. Once a message runs past a couple of lines it can be opened full screen, as the original
-/// app did. With `voice`, a message can be said instead of typed: while listening the box
+/// app did. Return starts a new line and Send sends, as the web does on a touch screen. With `voice`, a message can be said instead of typed: while listening the box
 /// becomes the listening bar.
 struct ChatComposer: View {
   @Binding var draft: String
@@ -57,8 +57,7 @@ struct ChatComposer: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
         .disabled(!canSend)
         .accessibilityIdentifier("composer")
-        .submitLabel(.send)
-        .onSubmit { if canSend && hasDraft { send() } }
+        // Return starts a new line, as on the web on a touch screen; Send sends.
       // An empty box offers the microphone where Send goes; once something is typed, Send (the
       // keyboard has its own dictation for adding to what is typed).
       if let voice, !hasDraft {
