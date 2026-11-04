@@ -35,6 +35,8 @@ sign_all() {
   shift
   /usr/bin/codesign --force --sign "$id" --identifier "$axod_identifier" "$@" \
     "$app/Contents/Helpers/axod" &&
+    /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.decide "$@" \
+      "$app/Contents/Helpers/axo-decide" &&
     for framework in "$app"/Contents/Frameworks/*.framework; do
       [[ -e "$framework" ]] || continue
       # Vendor frameworks (RiveRuntime) come signed by their vendor; the hardened runtime's

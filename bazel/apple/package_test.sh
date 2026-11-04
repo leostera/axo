@@ -27,7 +27,7 @@ check() {
 check CFBundleVersion "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" "$build"
 check AXODBuildNumber "$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$plist")" "$axod_build"
 check LSMinimumSystemVersion "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" "$macos_min"
-for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod"; do
+for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod" "$app/Contents/Helpers/axo-decide"; do
   check "minos of ${executable##*/}" "$(xcrun vtool -show-build "$executable" | awk '/minos/ { print $2; exit }')" "$macos_min"
 done
 check "axod --version" "$("$app/Contents/Helpers/axod" --version | sed -n 's/.*(build \([0-9]*\)).*/\1/p')" "$axod_build"
@@ -55,5 +55,6 @@ check "axod's signing identifier" "$(codesign -dv "$app/Contents/Helpers/axod" 2
 if [[ "$team" != - ]]; then
   check "app's team" "$(codesign -dv --verbose=4 "$app" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
   check "axod's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axod" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
+  check "axo-decide's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axo-decide" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
 fi
 exit "$failures"
