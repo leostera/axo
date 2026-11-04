@@ -8,9 +8,39 @@ struct ChatMessageView: View {
   var piIsWorking = false
   /// Part of the reply being written: no actions until it is whole.
   var isLive = false
+  /// How it comes in, when it was written while the chat is on screen (`ConversationReveal`).
+  var entrance: Entrance?
   @State private var copied = false
 
+  /// A message written while its chat is on screen: its words let out, or a rise.
+  struct Entrance {
+    let reveal: ConversationReveal
+    let presentation: ConversationReveal.Presentation
+    /// All of a final reveal is out: what follows may show.
+    let finished: () -> Void
+  }
+
+  private var revealing: (reveal: ConversationReveal, final: Bool, hurry: Bool, finished: () -> Void)? {
+    guard let entrance, case .reveal(let final, let hurry) = entrance.presentation else { return nil }
+    return (entrance.reveal, final, hurry, entrance.finished)
+  }
+
+  @ViewBuilder private func prose(isThinking: Bool) -> some View {
+    if let revealing {
+      RevealedMarkdown(
+        key: message.key, text: message.text, isThinking: isThinking, final: revealing.final,
+        hurry: revealing.hurry, reveal: revealing.reveal, finished: revealing.finished)
+    } else {
+      ChatMarkdown(blocks: message.blocks, isThinking: isThinking)
+    }
+  }
+
   var body: some View {
+    content
+      .modifier(RiseIn(key: message.key, entrance: entrance))
+  }
+
+  @ViewBuilder private var content: some View {
     let _ = RenderCount.note("Message")
     switch message.role {
     case .user:
@@ -31,8 +61,8 @@ struct ChatMessageView: View {
     case .assistant:
       VStack(alignment: .leading, spacing: 16) {
         if !message.images.isEmpty { ChatImagesView(images: message.images, alignment: .leading) }
-        ChatMarkdown(blocks: message.blocks)
-        if !isLive {
+        prose(isThinking: false)
+        if !isLive && revealing == nil {
         HStack(spacing: 18) {
           copyButton
           ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
@@ -45,7 +75,7 @@ struct ChatMessageView: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     case .thinking:
-      ChatMarkdown(blocks: message.blocks, isThinking: true)
+      prose(isThinking: true)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("thinkingBlock")
     case .tool:
@@ -445,5 +475,66 @@ private struct FullScreenImage: View {
     .statusBarHidden()
     // The original bytes, for sharing; decoded once, away from the main actor.
     .task { image = await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value }
+  }
+}
+
+/// A reply or its thinking let out at an even pace, a word at a time: while it is written, and on
+/// after it is recorded until all of it is out (`RevealPace`). Made again (scrolled away and back),
+/// it goes on from where it was.
+private struct RevealedMarkdown: View {
+  let key: String
+  let text: String
+  let isThinking: Bool
+  let final: Bool
+  let hurry: Bool
+  let reveal: ConversationReveal
+  let finished: () -> Void
+  @State private var shown: Int?
+
+  var body: some View {
+    let count = min(shown ?? reveal.revealed(key), text.count)
+    ChatMarkdown(blocks: MarkdownBlocks.parse(String(text.prefix(count))), isThinking: isThinking)
+      .task(id: Pace(text: text, final: final, hurry: hurry)) { await letOut() }
+  }
+
+  private struct Pace: Equatable {
+    let text: String
+    let final: Bool
+    let hurry: Bool
+  }
+
+  private func letOut() async {
+    var at = shown ?? reveal.revealed(key)
+    var last = ContinuousClock.now
+    while at < text.count {
+      do { try await Task.sleep(for: RevealPace.frame) } catch { return }
+      let now = ContinuousClock.now
+      let elapsed = now - last
+      last = now
+      let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+      at = RevealPace.next(shown: at, of: text, after: seconds, hurry: hurry)
+      shown = at
+      reveal.reveal(key, upTo: at)
+    }
+    if final { finished() }
+  }
+}
+
+/// A message that arrived while its chat is on screen comes up from just below, once.
+private struct RiseIn: ViewModifier {
+  let key: String
+  let entrance: ChatMessageView.Entrance?
+  @State private var risen = false
+
+  private var rises: Bool { entrance?.presentation == .rise }
+
+  func body(content: Content) -> some View {
+    content
+      .opacity(rises && !risen ? 0 : 1)
+      .offset(y: rises && !risen ? 14 : 0)
+      .onAppear {
+        guard rises, let entrance else { return }
+        withAnimation(.easeOut(duration: 0.28)) { risen = true } completion: { entrance.reveal.rose(key) }
+      }
   }
 }

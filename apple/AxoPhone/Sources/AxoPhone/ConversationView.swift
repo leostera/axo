@@ -35,6 +35,11 @@ struct ConversationView: View {
   /// The screen's bottom inset: the home indicator's (at most a few dozen points), or the
   /// keyboard's while it is up (always far taller).
   @State private var bottomInset: CGFloat = 0
+  /// How what is written while the chat is on screen comes in. Held, never observed: rows ask it.
+  @State private var reveal = ConversationReveal()
+  /// Bumped when a reply's words are all out, so what waited behind it shows.
+  @State private var revealsFinished = 0
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private var keyboardIsUp: Bool { bottomInset > 100 }
 
   /// This chat's own state: what it reads is what redraws it, so other chats' events do not.
@@ -67,12 +72,11 @@ struct ConversationView: View {
         LazyVStack(alignment: .leading, spacing: 30) {
           olderHistory
           if transcript.messages.isEmpty { emptyState }
-          ForEach(transcript.messages) { message in
-            ChatMessageView(message: message, piIsWorking: transcript.activity == .working)
-          }
-          // The reply as far as it has got.
-          ForEach(transcript.live) { message in
-            ChatMessageView(message: message, piIsWorking: true, isLive: true)
+          // The records, then the reply as far as it has got.
+          ForEach(shownMessages) { shown in
+            ChatMessageView(
+              message: shown.message, piIsWorking: shown.isLive || transcript.activity == .working, isLive: shown.isLive,
+              entrance: entrance(of: shown))
           }
           ForEach(pending) { prompt in
             PendingPromptView(
@@ -154,6 +158,23 @@ struct ConversationView: View {
       .overlay(alignment: .top) {
         if !transcript.messages.isEmpty { SpinningPullMascotView(pull: pull) }
       }
+    }
+  }
+
+  private var shownMessages: [ConversationReveal.Shown] {
+    let _ = revealsFinished
+    guard !reduceMotion else {
+      return transcript.messages.map { .init(message: $0, isLive: false, presentation: .plain) }
+        + transcript.live.map { .init(message: $0, isLive: true, presentation: .plain) }
+    }
+    return reveal.shown(sessionId: session.map { "\($0.sessionId)" }, messages: transcript.messages, live: transcript.live)
+  }
+
+  private func entrance(of shown: ConversationReveal.Shown) -> ChatMessageView.Entrance? {
+    guard shown.presentation != .plain else { return nil }
+    return ChatMessageView.Entrance(reveal: reveal, presentation: shown.presentation) {
+      reveal.finished(shown.message.key)
+      revealsFinished += 1
     }
   }
 

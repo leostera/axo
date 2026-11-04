@@ -87,6 +87,16 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
   public let timestamp: Int64?
   public fileprivate(set) var tool: ToolActivity?
   public var images: [ChatImage] = []
+  /// A reply's pieces, by when Pi wrote it and their place in it: the same while the reply is
+  /// written and once it is recorded, so the conversation carries it from one to the other.
+  public var replyKey: String?
+
+  /// Who this message is to the conversation on screen: the reply it is part of, or its record.
+  public var key: String { replyKey ?? id }
+
+  static func replyKey(timestamp: Int64?, index: Int) -> String? {
+    timestamp.map { "reply:\($0)#\(index)" }
+  }
 }
 
 /// A conversation as the host's records tell it (RFD0018). The records are the lines of the
@@ -190,12 +200,14 @@ public struct ChatTranscript: Equatable, Sendable {
         live = []
         return
       }
+      let timestamp = Self.timestamp(of: message)
       live = Self.pieces(of: message, role: "assistant").enumerated().map { index, piece in
         ChatMessage(
           id: "live#\(index)", role: piece.role, text: piece.text,
           // Parsed as it grows: a reply is short enough that this keeps up.
           blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
-          timestamp: nil, tool: piece.tool, images: piece.images)
+          timestamp: nil, tool: piece.tool, images: piece.images,
+          replyKey: ChatMessage.replyKey(timestamp: timestamp, index: index))
       }
     case "question":
       guard snapshot != .null else {
@@ -259,7 +271,8 @@ public struct ChatTranscript: Equatable, Sendable {
         ChatMessage(
           id: index == 0 ? id : "\(id)#\(index)", role: piece.role, text: piece.text,
           blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
-          timestamp: timestamp, tool: tool, images: piece.images))
+          timestamp: timestamp, tool: tool, images: piece.images,
+          replyKey: role == "assistant" ? ChatMessage.replyKey(timestamp: timestamp, index: index) : nil))
     }
   }
 

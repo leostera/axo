@@ -59,7 +59,7 @@ final class AxoPhoneFollowTests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.3))
       edges.formUnion(columnEdges(app))
     }
-    XCTAssertTrue(waitUntil(10) { inView(reply(app, 30), app) }, "the last reply is in view")
+    XCTAssertTrue(waitUntil(30) { inView(reply(app, 30), app) }, "the last reply is in view")
     edges.formUnion(columnEdges(app))
     XCTAssertEqual(edges.count, 1, "the transcript stays in its column: \(edges.sorted())")
     XCTAssertFalse(app.buttons["Jump to new message"].exists, "following, nothing is waiting below")
@@ -75,7 +75,8 @@ final class AxoPhoneFollowTests: XCTestCase {
     XCTAssertFalse(inView(reply(app, 1), app), "and left where they were")
     jump.tap()
     // Replies keep landing after the jump: they stay in view, to the last one.
-    let followed = waitUntil(10) { inView(reply(app, 30), app) }
+    // Each reply's words are let out, hurried while more wait behind it.
+    let followed = waitUntil(30) { inView(reply(app, 30), app) }
     let trace = app.descendants(matching: .any).matching(identifier: "follow-trace").firstMatch
     print("FOLLOW TRACE:", trace.exists ? trace.label : "none")
     print("REPLY 30:", reply(app, 30).exists ? "\(reply(app, 30).frame)" : "absent", "composer:", app.textFields["composer"].frame)
