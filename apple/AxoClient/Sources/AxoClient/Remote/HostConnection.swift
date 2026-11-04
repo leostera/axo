@@ -74,11 +74,15 @@ public struct HostConnection: Sendable {
 
   /// Sends a prompt to the Session's Pi. `commandId` makes it one command however often it is sent:
   /// the Session's Pi takes it at most once and writes a receipt carrying the id just before it
-  /// (RFD0024). The host refuses it when the Session has no Pi running.
-  public func promptPi(in id: SessionID, text: String, commandId: UUID) async throws {
+  /// (RFD0024). The host refuses it when the Session has no Pi running. `attachments` are assets
+  /// already in the account (RFD0030): the Mac fetches them all before Pi gets the prompt, or
+  /// refuses it.
+  public func promptPi(in id: SessionID, text: String, commandId: UUID, attachments: [Attachment] = []) async throws {
     let accepted: PromptAccepted = try await call(
       "axo.remote.session.prompt",
-      PromptTarget(target: host, sessionId: id, text: text, commandId: commandId.uuidString.lowercased()))
+      PromptTarget(
+        target: host, sessionId: id, text: text, commandId: commandId.uuidString.lowercased(),
+        attachments: attachments.isEmpty ? nil : attachments))
     guard accepted.accepted else {
       throw AxoClientError.invalidResponse("the host did not accept that prompt")
     }
@@ -189,6 +193,18 @@ private struct PromptTarget: Encodable, Sendable {
   let sessionId: SessionID
   let text: String
   let commandId: String
+  let attachments: [Attachment]?
+
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(target, forKey: .target)
+    try container.encode(sessionId, forKey: .sessionId)
+    try container.encode(text, forKey: .text)
+    try container.encode(commandId, forKey: .commandId)
+    try container.encodeIfPresent(attachments, forKey: .attachments)
+  }
+
+  enum CodingKeys: String, CodingKey { case target, sessionId, text, commandId, attachments }
 }
 private struct StopTarget: Encodable, Sendable {
   let target: RemoteHostRef

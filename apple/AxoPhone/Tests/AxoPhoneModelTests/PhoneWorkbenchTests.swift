@@ -33,6 +33,10 @@ final class Creations: @unchecked Sendable {
   private let lock = NSLock()
   private var made: [NewChatPlace] = []
   private var said: [String] = []
+  private var files: [[String]] = []
+  /// The names of the files each prompt carried, in order.
+  var attached: [[String]] { lock.withLock { files } }
+  func record(attached names: [String]) { lock.withLock { files.append(names) } }
   /// Where chats were made, in order.
   var places: [NewChatPlace] { lock.withLock { made } }
   /// What was sent to chats, in order.
@@ -54,7 +58,10 @@ final class PhoneWorld {
 
   init(
     _ macs: [Mac], workspaces: [(UUID, String)] = [], createsSession: SessionID? = 99, refusesPrompts: Bool = false,
-    answers: Bool = true
+    answers: Bool = true,
+    uploadAsset: @escaping @Sendable (Data, String, String) async throws -> Attachment = { _, _, _ in
+      throw AxoClientError.invalidResponse("no uploads in this test")
+    }
   ) {
     transport = ScriptedTransport(listing: Mac.listing(macs))
     feed = AccountConnection(transport: transport, clientID: ClientID(rawValue: "test-client")!)
@@ -62,7 +69,8 @@ final class PhoneWorld {
     let feed = feed
     let account = account
     workbench = PhoneWorkbench(
-      hosts: HostsModel(profile: NoProfile()), feed: feed, account: account, reconnectDelays: [.milliseconds(10)]
+      hosts: HostsModel(profile: NoProfile()), feed: feed, account: account, reconnectDelays: [.milliseconds(10)],
+      uploadAsset: uploadAsset
     ) { [unowned self] remote in
       let model = HostWorkbenchModel(
         host: remote, connection: HostConnection(account: feed, host: remote.reference), feed: feed, account: account)
@@ -95,6 +103,8 @@ final class PhoneWorld {
       case "axo.remote.session.prompt":
         guard !refusesPrompts else { return .error(-32003, "Operation failed") }
         creations.record(prompt: request.params["text"] as? String ?? "")
+        let files = request.params["attachments"] as? [[String: Any]] ?? []
+        creations.record(attached: files.compactMap { $0["name"] as? String })
         return .result(#"{"accepted":true}"#)
       case "axo.remote.session.key": return .result(#"{"accepted":true}"#)
       case "axo.client.host.rename":
@@ -517,5 +527,94 @@ final class PhoneWorkbenchTests: XCTestCase {
     world.transport.refuse(RelayError.signInRequired)
     await world.workbench.start()
     XCTAssertEqual(world.account.state, .signedOut)
+  }
+
+  // MARK: - Attachments (RFD0030)
+
+  func testAPhotoUploadsAtOnceAndTheMessageWaitsForItThenCarriesIt() async throws {
+    let studio = Mac("Studio", online: true, sessions: [3])
+    let gate = AsyncGate()
+    let world = PhoneWorld([studio], uploadAsset: { data, name, mimeType in
+      await gate.wait()
+      return Attachment(asset: "sha256:" + String(repeating: "ab", count: 32), name: name, mimeType: mimeType, size: data.count)
+    })
+    try await world.start()
+    let workbench = world.workbench!
+    workbench.select(session: 3)
+    workbench.attach([(data: Data("jpeg".utf8), name: "IMG/0001.jpg", mimeType: "image/jpeg", thumbnail: nil)])
+    let selection = try XCTUnwrap(workbench.selection)
+    XCTAssertEqual(workbench.attachments(for: selection).map(\.name), ["IMG_0001.jpg"], "a slash never reaches the account")
+    XCTAssertFalse(workbench.canSendDraft, "not while the photo is on its way")
+    let refused = await workbench.send()
+    XCTAssertEqual(refused, .failed)
+    await gate.open()
+    try await eventually { workbench.canSendDraft }
+    let sent = await workbench.send()
+    XCTAssertEqual(sent, .sent)
+    try await eventually { world.creations.attached.count == 1 }
+    XCTAssertEqual(world.creations.attached, [["IMG_0001.jpg"]])
+    XCTAssertEqual(world.creations.prompts, [""], "a photo alone is a message")
+    XCTAssertTrue(workbench.attachments(for: selection).isEmpty)
+  }
+
+  func testAFailedUploadHoldsTheMessageUntilItIsTakenOut() async throws {
+    let studio = Mac("Studio", online: true, sessions: [3])
+    let world = PhoneWorld([studio], uploadAsset: { _, _, _ in
+      throw ConnectionsRefusal(status: 413, message: "The account's assets are full")
+    })
+    try await world.start()
+    let workbench = world.workbench!
+    workbench.select(session: 3)
+    try type("see attached", in: workbench)
+    workbench.attach([(data: Data("x".utf8), name: "a.bin", mimeType: "application/octet-stream", thumbnail: nil)])
+    let selection = try XCTUnwrap(workbench.selection)
+    try await eventually { workbench.attachments(for: selection).first?.state == .failed("The account's assets are full") }
+    XCTAssertFalse(workbench.canSendDraft)
+    workbench.detach(try XCTUnwrap(workbench.attachments(for: selection).first?.id))
+    XCTAssertTrue(workbench.canSendDraft)
+  }
+
+  func testAtMostEightFilesGoInOneMessage() async throws {
+    let studio = Mac("Studio", online: true, sessions: [3])
+    let world = PhoneWorld([studio], uploadAsset: { data, name, mimeType in
+      Attachment(asset: "sha256:" + String(repeating: "cd", count: 32), name: name, mimeType: mimeType, size: data.count)
+    })
+    try await world.start()
+    let workbench = world.workbench!
+    workbench.select(session: 3)
+    workbench.attach((0..<10).map { (data: Data("\($0)".utf8), name: "\($0).txt", mimeType: "text/plain", thumbnail: nil) })
+    XCTAssertEqual(workbench.attachments(for: try XCTUnwrap(workbench.selection)).count, 8)
+  }
+
+  func testAttachmentLinesAreShortInTheTranscript() {
+    let hex = String(repeating: "ab", count: 32)
+    let said = """
+      what is in these?
+
+      [Attached image: board.png at /Users/leo/.axo/assets/\(hex)/board.png axo-asset:sha256:\(hex)]
+
+      [Attached file: invoice (final).pdf (application/pdf, 3.0 MB) at /x/invoice (final).pdf axo-asset:sha256:\(hex)]
+      """
+    XCTAssertEqual(ChatTranscript.attachmentsShown(said), "what is in these?\n\n📎 invoice (final).pdf")
+    XCTAssertEqual(Attachment.safeName(".."), "file")
+    XCTAssertEqual(Attachment.storedType("image/svg+xml"), "application/octet-stream")
+    XCTAssertEqual(Attachment.storedType("text/plain; charset=utf-8"), "text/plain")
+  }
+}
+
+/// Holds an upload until the test lets it finish.
+actor AsyncGate {
+  private var opened = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    if opened { return }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+
+  func open() {
+    opened = true
+    for waiter in waiters { waiter.resume() }
+    waiters = []
   }
 }

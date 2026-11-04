@@ -321,11 +321,29 @@ public struct ChatTranscript: Equatable, Sendable {
     var images: [ChatImage] = []
   }
 
+  /// What the person said, with the lines pi-axo adds for a prompt's attachments (RFD0030) made
+  /// short: an image's goes (the image shows itself), a file's becomes "📎 name".
+  public static func attachmentsShown(_ text: String) -> String {
+    guard text.contains("axo-asset:sha256:") else { return text }
+    let image = /^\[Attached image: .+ at .+ axo-asset:sha256:[0-9a-f]{64}\]$/
+    let file = /^\[Attached file: (.+) \([^,()]+, [^()]+\) at .+ axo-asset:sha256:[0-9a-f]{64}\]$/
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).compactMap { line -> String? in
+      if line.wholeMatch(of: image) != nil { return nil }
+      if let match = line.wholeMatch(of: file) { return "📎 \(match.1)" }
+      return String(line)
+    }
+    // The blank lines between what was taken out fold into one.
+    return lines.enumerated().filter { index, line in !(line.isEmpty && index > 0 && lines[index - 1].isEmpty) }
+    .map(\.element)
+    .joined(separator: "\n")
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   private static func pieces(of message: JSONValue, role: String) -> [Piece] {
     let content = message["content"]
     switch role {
     case "user":
-      let text = visibleText(content)
+      let text = attachmentsShown(visibleText(content))
       let images = Self.images(in: content)
       return text.isEmpty && images.isEmpty ? [] : [Piece(role: .user, text: text, tool: nil, images: images)]
     case "assistant":

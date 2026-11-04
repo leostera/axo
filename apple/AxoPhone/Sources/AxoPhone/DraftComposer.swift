@@ -18,6 +18,10 @@ struct DraftComposer: View {
         set: { text in if let selection = phone.selection { phone.setDraft(text, for: selection) } }),
       placeholder: placeholder,
       canSend: canSend && !phone.isSending,
+      ready: phone.canSendDraft,
+      files: phone.selection.map(phone.attachments(for:)) ?? [],
+      attach: { phone.attach($0) },
+      detach: { phone.detach($0) },
       voice: voice,
       send: send)
     .onChange(of: voice?.transcript) { _, transcript in

@@ -66,6 +66,9 @@ public struct RelayEndpoint: Equatable, Sendable {
     return components.url!
   }
 
+  /// One of the account's assets (RFD0030), by the 64 hex digits of its SHA-256.
+  public func assetURL(hex: String) -> URL { url("/api/v1/account/assets/\(hex)") }
+
   /// A page of the web app, at this origin.
   public func webURL(_ path: String) -> URL { url(path) }
 

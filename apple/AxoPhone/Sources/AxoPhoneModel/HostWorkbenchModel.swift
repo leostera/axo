@@ -95,6 +95,8 @@ public final class HostWorkbenchModel {
     /// Its commandId: its receipt in the log retires it.
     public let id: UUID
     public let text: String
+    /// Files already in the account, fetched by the Mac before Pi gets the prompt (RFD0030).
+    public var attachments: [Attachment] = []
     public fileprivate(set) var state: State
   }
 
@@ -384,11 +386,11 @@ public final class HostWorkbenchModel {
 
   /// Sends a message to the selected chat, with its commandId. It shows as pending until its
   /// receipt arrives in the log; one refused on its first try disappears.
-  public func sendPrompt(_ text: String) async -> PromptOutcome {
+  public func sendPrompt(_ text: String, attachments: [Attachment] = []) async -> PromptOutcome {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let session = selectedSession, !prompt.isEmpty else { return .notSent }
+    guard let session = selectedSession, !prompt.isEmpty || !attachments.isEmpty else { return .notSent }
     let id = session.sessionId
-    let pending = PendingPrompt(id: UUID(), text: prompt, state: .sending)
+    let pending = PendingPrompt(id: UUID(), text: prompt, attachments: attachments, state: .sending)
     chat(id).pending.append(pending)
     let outcome = await deliver(pending, in: id, attempt: 0)
     if outcome == .notSent { removePending(pending.id, in: id) }
@@ -399,7 +401,7 @@ public final class HostWorkbenchModel {
   private func deliver(_ pending: PendingPrompt, in id: SessionID, attempt: Int) async -> PromptOutcome {
     let outcome: PromptOutcome
     do {
-      try await connection.promptPi(in: id, text: pending.text, commandId: pending.id)
+      try await connection.promptPi(in: id, text: pending.text, commandId: pending.id, attachments: pending.attachments)
       failure = nil
       outcome = .accepted
     } catch is CancellationError {

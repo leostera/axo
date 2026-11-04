@@ -89,8 +89,11 @@ struct WorkbenchView: View {
     _apps = State(initialValue: AppsModel(service: ConnectionsClient(endpoint: endpoint, tokens: account.tokens)))
     // One socket for the whole account, as this install's client (RFD0018).
     let feed = AccountConnection(endpoint: endpoint, clientID: .installed(), tokens: account.tokens)
+    // Photos and files go to the account's assets before the message that carries them (RFD0030).
+    let assets = AssetsClient(endpoint: endpoint, tokens: account.tokens)
     _workbench = State(initialValue: PhoneWorkbench(
       hosts: HostsModel(profile: client), feed: feed, account: account,
+      uploadAsset: { data, name, mimeType in try await assets.upload(data, name: name, mimeType: mimeType) },
       makeWorkbench: { host in
         HostWorkbenchModel(
           host: host, connection: HostConnection(account: feed, host: host.reference), feed: feed, account: account)

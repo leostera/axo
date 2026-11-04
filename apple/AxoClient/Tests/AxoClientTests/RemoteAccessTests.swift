@@ -183,6 +183,28 @@ final class ConnectionsClientTests: XCTestCase {
     try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
   }
 
+  func testAnUploadIsNamedByItsHashAndCarriesItsTypeAndASafeName() async throws {
+    let loader = StubLoader(status: 201, body: #"{"asset":"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824","name":"a_b.png","mimeType":"image/png","size":5,"createdAt":"2026-11-04T00:00:00.000Z","version":1}"#)
+    let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
+    let attachment = try await assets.upload(Data("hello".utf8), name: "a/b.png", mimeType: "image/png")
+    XCTAssertEqual(attachment, Attachment(asset: "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", name: "a_b.png", mimeType: "image/png", size: 5))
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.httpMethod, "PUT")
+    XCTAssertEqual(request.url?.absoluteString, "https://axo.leostera.dev/api/v1/account/assets/2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "image/png")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "X-Axo-Asset-Name"), "a_b.png")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(SessionToken.fixture().value)")
+    XCTAssertEqual(request.httpBody, Data("hello".utf8))
+
+    let full = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: StubLoader(status: 413, body: #"{"error":"The account's assets are full","code":"quota"}"#))
+    do {
+      _ = try await full.upload(Data("x".utf8), name: "x", mimeType: "image/svg+xml")
+      XCTFail("a refusal is an error")
+    } catch let refusal as ConnectionsRefusal {
+      XCTAssertEqual(refusal.message, "The account's assets are full")
+    }
+  }
+
   func testTheListingIsReadWithTheSessionToken() async throws {
     let loader = StubLoader(status: 200, body: #"{"connections":[{"kind":"host","name":"studio","hostId":"18355f00-95fd-4c93-8586-a71a8a52bf73","state":"online"}]}"#)
     let connections = try await client(loader).list()

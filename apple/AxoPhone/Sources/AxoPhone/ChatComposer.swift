@@ -1,5 +1,8 @@
+import AxoClient
 import AxoPhoneModel
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The message box. It stays closed, saying why in its placeholder, when there is nobody to send
 /// to. Once a message runs past a couple of lines it can be opened full screen, as the original
@@ -9,13 +12,21 @@ struct ChatComposer: View {
   @Binding var draft: String
   let placeholder: String
   let canSend: Bool
+  /// Words or files to send, and no file still uploading.
+  var ready = true
+  var files: [PhoneWorkbench.DraftAttachment] = []
+  var attach: ([(data: Data, name: String, mimeType: String, thumbnail: Data?)]) -> Void = { _ in }
+  var detach: (UUID) -> Void = { _ in }
   let voice: VoicePrompt?
   let send: () -> Void
 
   @State private var editorHeight: CGFloat = 0
   @State private var showingExpandedEditor = false
+  @State private var pickedPhotos: [PhotosPickerItem] = []
+  @State private var showingPhotos = false
+  @State private var showingFiles = false
 
-  private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+  private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty }
   /// Tall enough (about three lines) for the expand button to sit above Send inside the box: the
   /// button, the spacing and Send.
   private var isLong: Bool { editorHeight >= Self.expandSize + Self.expandSpacing + ComposerMetrics.control }
@@ -38,6 +49,7 @@ struct ChatComposer: View {
     let _ = RenderCount.note("Composer")
     VStack(spacing: 10) {
       if let voice { VoiceStatusCard(voice: voice) }
+      if !files.isEmpty { AttachmentStrip(files: files, detach: detach) }
       if let voice, isListening {
         VoiceListeningBar(voice: voice, canSend: canSend)
       } else {
@@ -50,6 +62,7 @@ struct ChatComposer: View {
 
   private var box: some View {
     HStack(alignment: .bottom, spacing: 6) {
+      attachMenu
       TextField(placeholder, text: $draft, axis: .vertical)
         .lineLimit(1...6)
         .padding(.leading, 14).padding(.vertical, ComposerMetrics.textInset)
@@ -77,6 +90,31 @@ struct ChatComposer: View {
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
     }
+    .photosPicker(isPresented: $showingPhotos, selection: $pickedPhotos, maxSelectionCount: Attachment.maxPerPrompt, matching: .images)
+    .onChange(of: pickedPhotos) { _, items in
+      guard !items.isEmpty else { return }
+      pickedPhotos = []
+      Task { attach(await AttachmentImport.photos(items)) }
+    }
+    .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+      guard case .success(let urls) = result else { return }
+      attach(AttachmentImport.files(urls))
+    }
+  }
+
+  /// Photos or files, from a small menu where the box starts.
+  private var attachMenu: some View {
+    Menu {
+      Button { showingPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
+      Button { showingFiles = true } label: { Label("Files", systemImage: "folder") }
+    } label: {
+      Image(systemName: "paperclip").font(.system(size: 17, weight: .medium))
+        .foregroundStyle(canSend ? Color.primary : Color.secondary)
+        .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
+    }
+    .disabled(!canSend)
+    .accessibilityLabel("Attach")
+    .accessibilityIdentifier("attach")
   }
 
   private var expandButton: some View {
@@ -93,13 +131,13 @@ struct ChatComposer: View {
   private var sendButton: some View {
     Button(action: send) {
       Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(canSend && hasDraft ? ChatColors.background : Color.secondary)
+        .foregroundStyle(canSend && hasDraft && ready ? ChatColors.background : Color.secondary)
         .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
-        .background(canSend && hasDraft ? Color.primary : ChatColors.disabledControl, in: Circle())
+        .background(canSend && hasDraft && ready ? Color.primary : ChatColors.disabledControl, in: Circle())
     }
     .accessibilityLabel("Send")
     .accessibilityIdentifier("send-message")
-    .disabled(!(canSend && hasDraft))
+    .disabled(!(canSend && hasDraft && ready))
   }
 }
 

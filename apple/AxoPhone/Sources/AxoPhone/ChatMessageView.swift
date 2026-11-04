@@ -1,3 +1,4 @@
+import AxoClient
 import AxoPhoneModel
 import ImageIO
 import SwiftUI
@@ -112,6 +113,11 @@ struct PendingPromptView: View {
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 12) {
+      if !prompt.attachments.isEmpty {
+        Text(prompt.attachments.map { "📎 \($0.name)" }.joined(separator: "\n"))
+          .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+      }
+      if !prompt.text.isEmpty {
       Text(prompt.text)
         .font(.body).textSelection(.enabled)
         .padding(.horizontal, 17).padding(.vertical, 13)
@@ -125,6 +131,7 @@ struct PendingPromptView: View {
             Button("Remove", systemImage: "trash", role: .destructive, action: dismiss)
           }
         }
+      }
       HStack(spacing: 4) {
         if prompt.state == .uncertain { Image(systemName: "exclamationmark.triangle.fill") }
         Text(label)

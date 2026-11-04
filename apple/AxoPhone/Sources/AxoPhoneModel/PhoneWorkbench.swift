@@ -47,6 +47,10 @@ public final class PhoneWorkbench {
   private var drafts: [Selection: String] = [:]
   /// A message is on its way; a second tap must not start a second chat.
   public private(set) var isSending = false
+  /// The files in each chat's box (RFD0030), uploading or ready, kept like the words.
+  private var draftFiles: [Selection: [DraftAttachment]] = [:]
+  /// Puts a file in the account's assets; what a prompt names it by.
+  private let uploadAsset: @Sendable (Data, String, String) async throws -> Attachment
 
   private let feed: any AccountFeed
   private let account: AccountSession
@@ -61,8 +65,12 @@ public final class PhoneWorkbench {
   public init(
     hosts: HostsModel, feed: any AccountFeed, account: AccountSession,
     reconnectDelays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2), .seconds(5), .seconds(15)],
+    uploadAsset: @escaping @Sendable (Data, String, String) async throws -> Attachment = { _, _, _ in
+      throw AxoClientError.invalidResponse("attachments are unavailable here")
+    },
     makeWorkbench: @escaping @MainActor (RemoteHost) -> HostWorkbenchModel
   ) {
+    self.uploadAsset = uploadAsset
     self.hosts = hosts
     self.feed = feed
     self.account = account
@@ -260,9 +268,12 @@ public final class PhoneWorkbench {
       hosts.hosts.contains(where: { $0.hostId == hostID && $0.status == .online })
     else { return }
     let text = self.draft(for: draft)
+    let files = attachments(for: draft)
     setDraft("", for: draft)
+    draftFiles[draft] = nil
     select(host: hostID, session: nil)
     if !text.isEmpty { setDraft(text, for: Selection(host: hostID, session: nil)) }
+    if !files.isEmpty { draftFiles[Selection(host: hostID, session: nil)] = files }
   }
 
   /// The Mac a new chat goes to: the open one if it is online, else the first Mac that is.
@@ -283,6 +294,71 @@ public final class PhoneWorkbench {
     drafts[selection] = text.isEmpty ? nil : text
   }
 
+  /// A file in a chat's box: uploading to the account, ready to send, or refused.
+  public struct DraftAttachment: Identifiable, Equatable, Sendable {
+    public enum State: Equatable, Sendable {
+      case uploading
+      case ready(Attachment)
+      case failed(String)
+    }
+
+    public let id: UUID
+    public let name: String
+    public let mimeType: String
+    public let size: Int
+    /// A small picture of it, for an image.
+    public let thumbnail: Data?
+    public fileprivate(set) var state: State
+  }
+
+  public func attachments(for selection: Selection) -> [DraftAttachment] { draftFiles[selection] ?? [] }
+
+  /// Puts files in the open chat's box and uploads each to the account at once.
+  public func attach(_ files: [(data: Data, name: String, mimeType: String, thumbnail: Data?)]) {
+    guard let selection else { return }
+    let room = Attachment.maxPerPrompt - attachments(for: selection).count
+    if files.count > room { current?.report("A message can carry at most \(Attachment.maxPerPrompt) files.") }
+    for file in files.prefix(max(0, room)) {
+      let tooLarge = file.data.count > Attachment.maxBytes
+      let draft = DraftAttachment(
+        id: UUID(), name: Attachment.safeName(file.name), mimeType: Attachment.storedType(file.mimeType),
+        size: file.data.count, thumbnail: file.thumbnail,
+        state: tooLarge ? .failed("Files can be at most 100 MB.") : .uploading)
+      draftFiles[selection, default: []].append(draft)
+      guard !tooLarge else { continue }
+      let upload = uploadAsset
+      Task { [weak self] in
+        let state: DraftAttachment.State
+        do {
+          state = .ready(try await upload(file.data, draft.name, draft.mimeType))
+        } catch {
+          state = .failed(error.localizedDescription)
+        }
+        self?.finishUpload(draft.id, in: selection, state: state)
+      }
+    }
+  }
+
+  private func finishUpload(_ id: UUID, in selection: Selection, state: DraftAttachment.State) {
+    guard let index = draftFiles[selection]?.firstIndex(where: { $0.id == id }) else { return }
+    draftFiles[selection]?[index].state = state
+  }
+
+  /// Takes a file out of the open chat's box; an uploaded one stays in the account.
+  public func detach(_ id: UUID) {
+    guard let selection else { return }
+    draftFiles[selection]?.removeAll { $0.id == id }
+    if draftFiles[selection]?.isEmpty == true { draftFiles[selection] = nil }
+  }
+
+  /// Whether the open chat's box can go: words or files, and every file uploaded.
+  public var canSendDraft: Bool {
+    guard let selection else { return false }
+    let files = attachments(for: selection)
+    guard files.allSatisfy({ if case .ready = $0.state { true } else { false } }) else { return false }
+    return !text(of: selection).isEmpty || !files.isEmpty
+  }
+
   /// How sending went.
   public enum SendOutcome: Equatable, Sendable {
     /// The Mac took the message (for a new chat: the chat exists, is open, and took it).
@@ -298,7 +374,7 @@ public final class PhoneWorkbench {
   /// being in the Mac's Home Workspace. The words leave the box as they go and come back if the
   /// Mac refuses them.
   public func send() async -> SendOutcome {
-    guard !isSending, let selection, !text(of: selection).isEmpty else { return .failed }
+    guard !isSending, let selection, canSendDraft else { return .failed }
     isSending = true
     defer { isSending = false }
     guard selection.session != nil else { return await startChat(in: .home, from: selection) }
@@ -308,7 +384,7 @@ public final class PhoneWorkbench {
   /// Starts the new chat in `place` with what is typed in it: how a chat starts somewhere other
   /// than Home.
   public func send(in place: NewChatPlace) async -> SendOutcome {
-    guard !isSending, let selection, selection.session == nil, !text(of: selection).isEmpty else { return .failed }
+    guard !isSending, let selection, selection.session == nil, canSendDraft else { return .failed }
     isSending = true
     defer { isSending = false }
     return await startChat(in: place, from: selection)
@@ -326,6 +402,8 @@ public final class PhoneWorkbench {
     let chat = Selection(host: draft.host, session: id)
     setDraft(self.draft(for: draft), for: chat)
     setDraft("", for: draft)
+    draftFiles[chat] = draftFiles[draft]
+    draftFiles[draft] = nil
     select(session: id)
     return await prompt(from: chat)
   }
@@ -333,12 +411,16 @@ public final class PhoneWorkbench {
   private func prompt(from selection: Selection) async -> SendOutcome {
     guard let workbench = current, workbench.reference.hostId == selection.host else { return .failed }
     let text = text(of: selection)
+    let files = attachments(for: selection)
     setDraft("", for: selection)
-    switch await workbench.sendPrompt(text) {
+    draftFiles[selection] = nil
+    switch await workbench.sendPrompt(text, attachments: files.compactMap { if case .ready(let a) = $0.state { a } else { nil } }) {
     case .accepted: return .sent
     case .uncertain: return .uncertain
     case .notSent:
+      // Refused on its first try: the words and the files come back to the box.
       if draft(for: selection).isEmpty { setDraft(text, for: selection) }
+      if attachments(for: selection).isEmpty, !files.isEmpty { draftFiles[selection] = files }
       return .failed
     }
   }
