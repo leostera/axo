@@ -247,6 +247,87 @@ test("a line too large for one SQLite value is stored in parts and read back who
   assert.equal(opened.records.at(-1)!.line, transcript.transcript.records[1]!.line);
 });
 
+/** The alarms set in the Durable Objects whose SQLite has `table`, read while the runtime is stopped. */
+async function alarmsOf(h: Harness, table: string): Promise<Array<string | null>> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const alarms: Array<string | null> = [];
+  await h.restart(async () => {
+    for (const file of (await readdir(h.storagePath, { recursive: true })).filter((f) => f.endsWith(".sqlite"))) {
+      const db = new DatabaseSync(join(h.storagePath, file));
+      const has = (name: string) => (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = ?").get(name) as { n: number }).n > 0;
+      if (has(table)) {
+        // The runtime keeps a Durable Object's alarm, in nanoseconds, as key 1 of `_cf_METADATA`.
+        const row = has("_cf_METADATA") ? db.prepare("SELECT CAST(value AS TEXT) AS at FROM _cf_METADATA WHERE key = 1").get() as { at: string | null } | undefined : undefined;
+        alarms.push(row?.at ?? null);
+      }
+      db.close();
+    }
+  });
+  return alarms;
+}
+
+test("a connected client's Durable Object never wakes itself, nor does the account (RFD0031)", async (t) => {
+  const { h, session, transcript, host } = await fixture(t);
+  const { client } = await connectClient(h, session);
+  await call(client, "axo.client.session.open", { hostId: host.hostId, sessionId: transcript.sessionId });
+  assert.deepEqual(await alarmsOf(h, "open_sessions"), [null], "the ClientDO set no alarm");
+  assert.deepEqual(await alarmsOf(h, "client_followers"), [null], "the account set no alarm");
+});
+
+test("progress goes only to the clients with the Session open (RFD0031)", async (t) => {
+  const { h, session, daemon, transcript, host } = await fixture(t, 1);
+  const watching = await connectClient(h, session);
+  const elsewhere = await connectClient(h, session);
+  t.after(() => { watching.client.close(); elsewhere.client.close(); });
+  await call(watching.client, "axo.client.session.open", { hostId: host.hostId, sessionId: transcript.sessionId });
+
+  daemon.send({ jsonrpc: "2.0", method: "axo.host.session.progress", params: { sessionId: transcript.sessionId, slot: "message", snapshot: { role: "assistant", content: [{ type: "text", text: "Wri" }] }, at: 1 } });
+  assert.equal((await until(watching.client, "axo.client.session.progress")).slot, "message");
+
+  await transcript.write(assistantMessage("Written."));
+  await append(daemon, transcript, 2);
+  // Everything the other client hears up to the new head: the index, and no progress.
+  const heard: string[] = [];
+  for (;;) {
+    const message = (await elsewhere.client.next()) as Notification;
+    heard.push(message.method ?? "reply");
+    if (message.method === "axo.client.sessions" && (message.params!.sessions as Array<{ head: number }>).some((s) => s.head === 2)) break;
+  }
+  assert.ok(!heard.includes("axo.client.session.progress"), `a client without the Session open hears no progress: ${heard}`);
+
+  // Its ClientDO is never called for progress: the HostDO sends it only to the one watching.
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  let tables: { followers: number; watchers: number } | undefined;
+  await h.restart(async () => {
+    for (const file of (await readdir(h.storagePath, { recursive: true })).filter((f) => f.endsWith(".sqlite"))) {
+      const db = new DatabaseSync(join(h.storagePath, file));
+      if ((db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'watchers'").get() as { n: number }).n)
+        tables = {
+          followers: (db.prepare("SELECT COUNT(*) AS n FROM followers").get() as { n: number }).n,
+          watchers: (db.prepare("SELECT COUNT(*) AS n FROM watchers").get() as { n: number }).n,
+        };
+      db.close();
+    }
+  });
+  assert.deepEqual(tables, { followers: 2, watchers: 1 });
+});
+
+test("a host paired after hello reaches connected clients without asking (RFD0031)", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const { client, hello } = await connectClient(h, session);
+  t.after(() => client.close());
+  assert.deepEqual(hello.hosts, []);
+  const host = await pairHost(h, session);
+  const listed = await until(client, "axo.client.hosts");
+  assert.deepEqual((listed.hosts as Array<{ hostId: string }>).map((h) => h.hostId), [host.hostId]);
+});
+
 test("a host paired after hello is listed when the client asks again", async (t) => {
   const h = await harness();
   t.after(() => h.close());

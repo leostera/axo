@@ -42,6 +42,7 @@ type HostStub = {
   presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }>;
   callHost(request: { method: string; params: unknown; deadlineMs: number }): Promise<CallOutcome>;
 };
+type ClientStub = { hostsChanged(): Promise<boolean> };
 
 /** A Mac is shown by the name a person gave it, or else by what it reports. */
 function shownLabel(row: AccountHostRow): string {
@@ -95,6 +96,8 @@ export class AxoAccountManager extends DurableObject<Env> {
       credential_verifier TEXT NOT NULL, label TEXT NOT NULL, host_kind TEXT NOT NULL, capabilities_json TEXT,
       linked_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER
     )`);
+    // The ClientDOs listing this account's hosts, told when a host is paired or revoked (RFD0031).
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS client_followers (client_do TEXT PRIMARY KEY)");
     const hostColumns = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(account_hosts)").toArray();
     if (!hostColumns.some(column => column.name === "capabilities_json")) {
       ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN capabilities_json TEXT");
@@ -198,6 +201,7 @@ export class AxoAccountManager extends DurableObject<Env> {
 
   redeemPairing(input: PairingRedemptionInput): PairingRedemption {
     let credentialRotated = false;
+    let hostAdded = false;
     const result = this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
       const pairing = sql.exec<PairingRow>(
@@ -247,6 +251,7 @@ export class AxoAccountManager extends DurableObject<Env> {
         if (activeHosts >= LIMITS.machines) return { status: "invalid" } as const;
       }
 
+      hostAdded = !sqlHost || sqlHost.revoked_at !== null;
       credentialRotated = Boolean(sqlHost && (
         sqlHost.credential_id !== input.credentialId ||
         sqlHost.credential_verifier !== input.credentialVerifier ||
@@ -276,6 +281,7 @@ export class AxoAccountManager extends DurableObject<Env> {
     });
 
     if (result.status === "linked" && credentialRotated) this.disconnectHost(input.hostId);
+    if (result.status === "linked" && hostAdded) this.hostsChanged();
     return result;
   }
 
@@ -284,14 +290,22 @@ export class AxoAccountManager extends DurableObject<Env> {
     return { hosts: await Promise.all(rows.map((row) => this.hostSnapshot(row))) };
   }
 
-  /** The hosts a client follows: every host the account still owns. Presence comes from each HostDO. */
-  async clientHosts(): Promise<Array<Omit<ClientHost, "online">>> {
+  /**
+   * The hosts a client follows: every host the account still owns. Presence comes from each
+   * HostDO. A ClientDO that names itself is told when that list changes, until it unfollows.
+   */
+  async clientHosts(clientDO?: string): Promise<Array<Omit<ClientHost, "online">>> {
+    if (clientDO) this.ctx.storage.sql.exec("INSERT OR IGNORE INTO client_followers (client_do) VALUES (?)", clientDO);
     return this.ctx.storage.sql.exec<AccountHostRow>(
       "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY host_id LIMIT ?", LIMITS.machines,
     ).toArray().map((row) => ({
       hostId: row.host_id, hostGeneration: row.host_generation, label: shownLabel(row), hostKind: row.host_kind,
       lastSeenAt: new Date(row.last_seen_at).toISOString(),
     }));
+  }
+
+  async unfollow(clientDO: string): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM client_followers WHERE client_do = ?", clientDO);
   }
 
   /**
@@ -310,6 +324,8 @@ export class AxoAccountManager extends DurableObject<Env> {
 
   revokeHost(hostId: string, now = Date.now()): void {
     this.ctx.storage.sql.exec("UPDATE account_hosts SET revoked_at = ? WHERE host_id = ? AND revoked_at IS NULL", now, hostId);
+    // Its clients see it go offline, its Sessions still listed; they stop listing it when they
+    // next say hello or refresh.
     this.disconnectHost(hostId);
   }
 
@@ -454,6 +470,17 @@ export class AxoAccountManager extends DurableObject<Env> {
   private hostDO(hostId: string): HostStub | null {
     const accountId = this.accountId();
     return accountId ? this.ctx.exports.AxoHostDO.getByName(hostDOName(accountId, hostId)) as unknown as HostStub : null;
+  }
+
+  /** Tells every following ClientDO the account's hosts changed; one that is gone is dropped. */
+  private hostsChanged(): void {
+    const sql = this.ctx.storage.sql;
+    const followers = sql.exec<{ client_do: string }>("SELECT client_do FROM client_followers").toArray();
+    this.ctx.waitUntil(Promise.all(followers.map(async ({ client_do }) => {
+      const client = this.ctx.exports.AxoClientDO.getByName(client_do) as unknown as ClientStub;
+      const following = await client.hostsChanged().catch(() => client.hostsChanged()).catch(() => false);
+      if (!following) sql.exec("DELETE FROM client_followers WHERE client_do = ?", client_do);
+    })));
   }
 
   private disconnectHost(hostId: string): void {

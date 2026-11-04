@@ -22,9 +22,13 @@ export const SYNC = {
   inflightTotal: 16,
   /** Every request Axod or a client sends has this long to be answered. */
   requestTimeoutMs: 10_000,
-  /** A ClientDO's subscription to a HostDO, renewed every `renewMs`. */
-  leaseMs: 60_000,
-  renewMs: 30_000,
+  /**
+   * A records batch a client has not acknowledged for this long is sent again, the next time
+   * anything wakes its ClientDO for that Session (RFD0031: nothing wakes it on a timer).
+   */
+  stallMs: 30_000,
+  /** How stale a host's last-seen time on the account may get while it is online (RFD0031). */
+  lastSeenMs: 600_000,
   /** How long a HostDO gathers notices before it sends them. */
   noticeMs: 75,
   /** Records and bytes in one batch to a client; a single larger record goes alone. */

@@ -34,8 +34,12 @@ import { recordApiEvent } from "./observability";
 /**
  * One connected client (RFD0018, ClientDO): a browser tab or an app instance, named by
  * (account, clientId). It holds that client's single socket, follows each of the account's hosts
- * with a lease on its HostDO, and serves the windows of the Sessions the client has open, one
- * batch at a time: the next batch goes only after the client acknowledges the last.
+ * on its HostDO for as long as the socket is open, and serves the windows of the Sessions the
+ * client has open, one batch at a time: the next batch goes only after the client acknowledges
+ * the last.
+ *
+ * It never wakes itself (RFD0031): it runs when its client sends a frame, or when a HostDO or the
+ * account calls it. A call that fails is made again at once, while it is awake.
  */
 
 export function clientDOName(accountId: string, clientId: string): string {
@@ -71,25 +75,39 @@ type Attachment = z.infer<typeof attachmentSchema>;
 type HostRow = { host_id: string; host_generation: string; label: string; host_kind: string; online: number; last_seen_at: string };
 /**
  * A Session the client has open. `acked` is the last cursor the client acknowledged, `sent` the
- * last one sent: a batch is outstanding while they differ. `read_id` names the latest read, so a
- * reply to a superseded one is ignored.
+ * last one sent: a batch is outstanding while they differ. `read_id` is no longer used: read ids
+ * live in memory (RFD0031).
  */
 type OpenRow = { session_id: string; host_id: string; epoch: number | null; sent: number; acked: number; read_id: number; sent_at: number };
 
 type AccountStub = {
-  clientHosts(): Promise<Array<Omit<ClientHost, "online">>>;
+  clientHosts(clientDO?: string): Promise<Array<Omit<ClientHost, "online">>>;
+  unfollow(clientDO: string): Promise<void>;
   renameHost(hostId: string, name: string): Promise<string | null>;
 };
 type HostStub = {
-  subscribe(clientDO: string, leaseMs: number): Promise<HostSubscription>;
+  subscribe(clientDO: string): Promise<HostSubscription>;
   unsubscribe(clientDO: string): Promise<void>;
-  sessionProgress(sessionId: string): Promise<Array<{ slot: string; snapshot: unknown }>>;
+  watch(clientDO: string, sessionId: string): Promise<Array<{ slot: string; snapshot: unknown }>>;
+  unwatch(clientDO: string, sessionId: string): Promise<void>;
   command(method: string, params: unknown): Promise<HostCommandOutcome>;
 };
+/** The head a Session's notices or reads last reported, in its epoch. */
+type KnownHead = { epoch: number | null; head: number };
 type SessionStub = { read(binding: SessionBinding, request: ReadRequest): Promise<ReadResult> };
 
 export class AxoClientDO extends DurableObject<Env> {
   private readonly partials = new MemoryPartialStore();
+  /**
+   * The latest read per open Session: a reply to an older one is ignored. In memory, since a read
+   * in flight keeps the object in memory, so no row is written before each read.
+   */
+  private readonly reads = new Map<string, number>();
+  /**
+   * Each open Session's head as last reported, so a notice that brings nothing new reads nothing.
+   * Lost on eviction, which only costs one read.
+   */
+  private readonly heads = new Map<string, KnownHead>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -165,20 +183,15 @@ export class AxoClientDO extends DurableObject<Env> {
     await this.webSocketClose(socket);
   }
 
-  /** Renews every lease while the socket is open, and resends batches nobody acknowledged. */
-  async alarm(): Promise<void> {
+  /**
+   * The account's hosts changed (a Mac paired or revoked): list them again and follow any new
+   * one. False tells the account this client is gone.
+   */
+  async hostsChanged(): Promise<boolean> {
     const socket = this.socket();
-    if (!socket) return void (await this.forget());
+    if (!socket || !this.identity()) return false;
     await this.followHosts(socket, false);
-    const stale = Date.now() - SYNC.renewMs;
-    for (const open of this.openRows()) {
-      if (open.sent !== open.acked && open.sent_at <= stale) {
-        this.ctx.storage.sql.exec("UPDATE open_sessions SET sent = acked WHERE session_id = ?", open.session_id);
-        recordApiEvent({ event: "client_stalled" });
-      }
-      await this.pump(open.session_id);
-    }
-    await this.ctx.storage.setAlarm(Date.now() + SYNC.renewMs);
+    return true;
   }
 
   // ─── Notices from HostDOs ──────────────────────────────────────────────────
@@ -198,12 +211,15 @@ export class AxoClientDO extends DurableObject<Env> {
           break;
         case "session":
           sessions.push(notice.session);
+          if (this.open(notice.session.sessionId)?.host_id === hostId)
+            this.heads.set(notice.session.sessionId, { epoch: notice.session.epoch, head: notice.session.head });
           break;
         case "progress":
           if (this.open(notice.sessionId)?.host_id === hostId)
             this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.progress, params: { sessionId: notice.sessionId, slot: notice.slot, snapshot: notice.snapshot } });
           break;
         case "epoch":
+          if (this.open(notice.sessionId)?.host_id === hostId) this.heads.set(notice.sessionId, { epoch: notice.epoch, head: notice.head });
           break;
         case "label":
           this.ctx.storage.sql.exec("UPDATE hosts SET label = ? WHERE host_id = ?", notice.label, hostId);
@@ -236,7 +252,6 @@ export class AxoClientDO extends DurableObject<Env> {
           if (!params.success) return failure(id, -32602, "Invalid params");
           if (params.data.clientId !== peer.clientId) return failure(id, -32602, "clientId does not match the socket");
           const sessions = await this.followHosts(socket, true);
-          await this.ctx.storage.setAlarm(Date.now() + SYNC.renewMs);
           return success(id, { hosts: this.hosts(), sessions });
         }
         case CLIENT_METHODS.refresh: {
@@ -268,7 +283,12 @@ export class AxoClientDO extends DurableObject<Env> {
         }
         case CLIENT_METHODS.close: {
           const params = clientCloseParamsSchema.safeParse(call.params);
-          if (params.success) this.ctx.storage.sql.exec("DELETE FROM open_sessions WHERE session_id = ?", params.data.sessionId);
+          const open = params.success ? this.open(params.data.sessionId) : undefined;
+          if (!open) return null;
+          this.ctx.storage.sql.exec("DELETE FROM open_sessions WHERE session_id = ?", open.session_id);
+          this.reads.delete(open.session_id);
+          this.heads.delete(open.session_id);
+          if (this.host(open.host_id)) await this.hostStub(open.host_id).unwatch(this.name(), open.session_id).catch(() => undefined);
           return null;
         }
         case CLIENT_METHODS.command: {
@@ -303,11 +323,13 @@ export class AxoClientDO extends DurableObject<Env> {
    */
   private async openSession(socket: WebSocket, params: z.infer<typeof clientOpenParamsSchema>): Promise<ClientOpenResult> {
     const sql = this.ctx.storage.sql;
-    const readId = (this.open(params.sessionId)?.read_id ?? 0) + 1;
-    sql.exec(`INSERT INTO open_sessions (session_id, host_id, epoch, sent, acked, read_id, sent_at) VALUES (?, ?, NULL, 0, 0, ?, 0)
-      ON CONFLICT(session_id) DO UPDATE SET host_id = excluded.host_id, read_id = excluded.read_id`, params.sessionId, params.hostId, readId);
+    const readId = this.nextRead(params.sessionId);
+    sql.exec(`INSERT INTO open_sessions (session_id, host_id, epoch, sent, acked, read_id, sent_at) VALUES (?, ?, NULL, 0, 0, 0, 0)
+      ON CONFLICT(session_id) DO UPDATE SET host_id = excluded.host_id`, params.sessionId, params.hostId);
     const open = this.open(params.sessionId)!;
-    const progress = this.hostStub(params.hostId).sessionProgress(params.sessionId).catch(() => []);
+    // Progress goes only to the clients watching a Session (RFD0031). A Mac reading back its own
+    // archived Session follows no HostDO for itself, and there is nothing in progress there.
+    const progress = this.host(params.hostId) ? this.watch(params.hostId, params.sessionId) : Promise.resolve([]);
     let read = params.have
       ? await this.read(open, { epoch: params.have.epoch, after: params.have.cursor, limit: SYNC.clientRecords })
       : await this.read(open, { epoch: null, last: params.window?.last ?? SYNC.defaultWindow, limit: SYNC.clientRecords });
@@ -316,9 +338,10 @@ export class AxoClientDO extends DurableObject<Env> {
       this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.reset, params: { sessionId: params.sessionId, epoch: read.epoch, keep: read.keep } });
       read = await this.read(open, { epoch: read.epoch, after: Math.min(params.have!.cursor, read.keep), limit: SYNC.clientRecords });
     }
-    if (read.kind === "reset" || this.open(params.sessionId)?.read_id !== readId) throw new Error("superseded");
+    if (read.kind === "reset" || this.reads.get(params.sessionId) !== readId) throw new Error("superseded");
     const cursor = read.records.at(-1)?.cursor ?? (params.have ? Math.min(params.have.cursor, read.count) : read.count);
     sql.exec("UPDATE open_sessions SET epoch = ?, sent = ?, acked = ?, sent_at = ? WHERE session_id = ?", read.epoch, cursor, cursor, Date.now(), params.sessionId);
+    this.heads.set(params.sessionId, { epoch: read.epoch, head: read.count });
     recordApiEvent({ event: "client_open", records: read.records.length });
     return {
       epoch: read.epoch,
@@ -339,22 +362,32 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   /**
-   * Sends the next batch of an open Session if none is outstanding. With `epochMoved` it reads at
-   * once, outstanding batch or not, to learn where the Session was cut.
+   * Sends the next batch of an open Session, reading only when there is something to send
+   * (RFD0031): no batch is outstanding and the Session's head is past what was sent, or the head
+   * is unknown. With `epochMoved` it reads at once, outstanding batch or not, to learn where the
+   * Session was cut. A batch outstanding for `SYNC.stallMs` is sent again.
    */
   private async pump(sessionId: string, epochMoved = false): Promise<void> {
     const socket = this.socket();
-    const open = this.open(sessionId);
-    if (!socket || !open || (open.sent !== open.acked && !epochMoved)) return;
-    const readId = open.read_id + 1;
-    this.ctx.storage.sql.exec("UPDATE open_sessions SET read_id = ? WHERE session_id = ?", readId, sessionId);
+    let open = this.open(sessionId);
+    if (!socket || !open) return;
+    if (!epochMoved && open.sent !== open.acked) {
+      if (Date.now() - open.sent_at < SYNC.stallMs) return;
+      // The client never acknowledged it; it ignores records it already holds.
+      this.ctx.storage.sql.exec("UPDATE open_sessions SET sent = acked WHERE session_id = ?", sessionId);
+      recordApiEvent({ event: "client_stalled" });
+      open = { ...open, sent: open.acked };
+    }
+    if (!epochMoved && !hasNews(open, this.heads.get(sessionId))) return;
+    const readId = this.nextRead(sessionId);
     const read = await this.read(open, { epoch: open.epoch, after: open.acked, limit: SYNC.clientRecords });
     const current = this.open(sessionId);
-    if (current?.read_id !== readId) return;
+    if (!current || this.reads.get(sessionId) !== readId) return;
     if (read.kind === "reset") {
       this.reset(socket, current, read);
       return this.pump(sessionId);
     }
+    this.heads.set(sessionId, { epoch: read.epoch, head: read.count });
     if (current.sent !== current.acked || read.records.length === 0) {
       if (current.epoch === null && read.epoch !== null) this.ctx.storage.sql.exec("UPDATE open_sessions SET epoch = ? WHERE session_id = ?", read.epoch, sessionId);
       return;
@@ -362,6 +395,12 @@ export class AxoClientDO extends DurableObject<Env> {
     const cursor = read.records.at(-1)!.cursor;
     this.ctx.storage.sql.exec("UPDATE open_sessions SET epoch = ?, sent = ?, sent_at = ? WHERE session_id = ?", read.epoch, cursor, Date.now(), sessionId);
     this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.records, params: { sessionId, epoch: read.epoch, records: read.records, cursor } });
+  }
+
+  private nextRead(sessionId: string): number {
+    const id = (this.reads.get(sessionId) ?? 0) + 1;
+    this.reads.set(sessionId, id);
+    return id;
   }
 
   /** Tells the client its copy was cut back, and continues in the new epoch from the cut. */
@@ -379,21 +418,23 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   /**
-   * Lists the account's hosts and takes or renews a lease on each. The renewal returns each
-   * host's index, which heals any notice that was lost.
+   * Lists the account's hosts and subscribes to each, which also returns each host's index. A
+   * host the account no longer lists is let go.
    */
   private async followHosts(socket: WebSocket, hello: boolean): Promise<ClientSession[]> {
-    const { accountId } = this.identity()!;
     const account = this.account();
     const self = peerHostOf(this.identity()!.clientId);
-    const listed = (await account.clientHosts()).filter((host) => host.hostId !== self);
-    const name = clientDOName(accountId, this.identity()!.clientId);
+    const name = this.name();
+    // The account remembers this client, and says when its hosts change (RFD0031).
+    const listed = (await account.clientHosts(name)).filter((host) => host.hostId !== self);
     const sql = this.ctx.storage.sql;
     const sessions: ClientSession[] = [];
     const followed = new Set<string>();
     await Promise.all(listed.map(async (host) => {
       try {
-        const subscription = await this.hostStub(host.hostId).subscribe(name, SYNC.leaseMs);
+        // Subscribed until the socket closes; a call that fails is made again at once (RFD0031).
+        const subscription = await this.hostStub(host.hostId).subscribe(name)
+          .catch(() => this.hostStub(host.hostId).subscribe(name));
         followed.add(host.hostId);
         sql.exec(`INSERT INTO hosts (host_id, host_generation, label, host_kind, online, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)
           ON CONFLICT(host_id) DO UPDATE SET host_generation = excluded.host_generation, label = excluded.label,
@@ -404,19 +445,29 @@ export class AxoClientDO extends DurableObject<Env> {
         recordApiEvent({ event: "client_follow_failed" });
       }
     }));
-    for (const row of sql.exec<{ host_id: string }>("SELECT host_id FROM hosts").toArray())
-      if (!listed.some((host) => host.hostId === row.host_id)) sql.exec("DELETE FROM hosts WHERE host_id = ?", row.host_id);
+    for (const row of sql.exec<{ host_id: string }>("SELECT host_id FROM hosts").toArray()) {
+      if (listed.some((host) => host.hostId === row.host_id)) continue;
+      sql.exec("DELETE FROM hosts WHERE host_id = ?", row.host_id);
+      await this.hostStub(row.host_id).unsubscribe(name).catch(() => undefined);
+    }
     if (!hello) {
       this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.hosts, params: { hosts: this.hosts() } });
       for (const hostId of followed) {
         const hostSessions = sessions.filter((session) => session.hostId === hostId);
         if (hostSessions.length) this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.sessions, params: { hostId, sessions: hostSessions } });
       }
+      // The index heals what a lost notice left behind: read whatever an open Session is missing.
+      for (const session of sessions) {
+        const open = this.open(session.sessionId);
+        if (!open || open.host_id !== session.hostId) continue;
+        this.heads.set(session.sessionId, { epoch: session.epoch, head: session.head });
+        await this.pump(session.sessionId, session.epoch !== null && open.epoch !== null && session.epoch !== open.epoch);
+      }
     }
     return sessions;
   }
 
-  /** The socket closed: let go of every lease and open Session. */
+  /** The socket closed: let go of every host, the account, and every open Session. */
   private async forget(): Promise<void> {
     const identity = this.identity();
     const sql = this.ctx.storage.sql;
@@ -424,10 +475,14 @@ export class AxoClientDO extends DurableObject<Env> {
     sql.exec("DELETE FROM hosts");
     sql.exec("DELETE FROM open_sessions");
     this.partials.clear();
-    await this.ctx.storage.deleteAlarm();
+    this.reads.clear();
+    this.heads.clear();
     if (!identity) return;
-    const name = clientDOName(identity.accountId, identity.clientId);
-    await Promise.allSettled(hosts.map((host) => this.hostStub(host.host_id).unsubscribe(name)));
+    const name = this.name();
+    await Promise.allSettled([
+      this.account().unfollow(name),
+      ...hosts.map((host) => this.hostStub(host.host_id).unsubscribe(name)),
+    ]);
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -465,6 +520,20 @@ export class AxoClientDO extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<OpenRow>("SELECT * FROM open_sessions").toArray();
   }
 
+  /** This ClientDO's name, as HostDOs and the account call it back. */
+  private name(): string {
+    const { accountId, clientId } = this.identity()!;
+    return clientDOName(accountId, clientId);
+  }
+
+  /** Watches an open Session on its host and returns its progress; a failed call is made again at once. */
+  private watch(hostId: string, sessionId: string): Promise<Array<{ slot: string; snapshot: unknown }>> {
+    const host = this.hostStub(hostId);
+    return host.watch(this.name(), sessionId)
+      .catch(() => host.watch(this.name(), sessionId))
+      .catch(() => []);
+  }
+
   private account(): AccountStub {
     return this.ctx.exports.AxoAccountDirectory.getByName(this.identity()!.accountId) as unknown as AccountStub;
   }
@@ -499,3 +568,7 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 }
 
+/** Whether an open Session may have records its client doesn't: its head is past what was sent, or unknown. */
+export function hasNews(open: Pick<OpenRow, "epoch" | "sent">, known: KnownHead | undefined): boolean {
+  return known === undefined || known.epoch !== open.epoch || known.head > open.sent;
+}

@@ -17,7 +17,7 @@ A Durable Object runs only when something asks it to: a frame on one of its sock
 3. **Notices go where they're needed.** A HostDO sends progress and epoch notices only to the ClientDOs that have that Session open. A failed notice is retried at once, then the full index is sent on the next one.
 4. **Heartbeats stay on the HostDO.** A HostDO answers a host's heartbeat itself, and tells the account at most every ten minutes.
 
-The account tells the ClientDOs following it when a Mac is paired or revoked, so the host list no longer depends on a renewal either.
+The account tells the ClientDOs following it when a Mac is paired, so the host list no longer depends on a renewal either.
 
 ## Motivation
 
@@ -36,7 +36,7 @@ The renewal was there to heal what a lost message could leave behind: a lost not
 
 - A call between Durable Objects either returns or throws. The caller sees the failure, so it can retry while it is still awake.
 - A WebSocket does not lose one frame and carry on. When a frame is lost, the socket is gone, both ends see it close, and the client reconnects and reopens what it holds.
-- The account knows when a Mac is paired or revoked. It can say so.
+- The account knows when a Mac is paired. It can say so.
 
 ## Guide-level explanation
 
@@ -107,7 +107,8 @@ The HostDO's route alarm already follows the rule. Every heartbeat moves the ala
 
 - `clientHosts(clientDO?)` records the caller in a `followers` table.
 - `unfollow(clientDO)` removes it.
-- When a host is paired for the first time, or revoked, the account calls `AxoClientDO.hostsChanged()` on each follower. The ClientDO lists the account's hosts again, exactly as `refresh` does, and tells its client. A follower that answers `false` or throws is removed.
+- When a host is paired for the first time, or paired again after it was revoked, the account calls `AxoClientDO.hostsChanged()` on each follower. The ClientDO lists the account's hosts again, exactly as `refresh` does, and tells its client. A follower that answers `false` or throws is removed.
+- Revoking a host does not call its followers. The HostDO's socket closes, so its clients see it go offline with its Sessions still listed, as before. They stop listing it at their next hello or refresh.
 
 ### Protocol constants
 
@@ -137,12 +138,14 @@ RFD0018's invariants hold. Two are added:
 ## Testing
 
 - `specs/client-delivery.ts`: the renewal and the lease timer are removed. Lost WebSocket frames are modelled as a dropped socket that the tab reconnects. Failed notices, reads and subscriptions are retried at once. Progress goes only to a watching ClientDO. The properties are unchanged, `catchesUp` included.
-- `specs/planned-restart.ts`: presence notices are calls that are retried, not renewed.
+- `specs/planned-restart.ts`: presence notices are calls that are retried, not renewed. A lost `axo.client.hosts` frame drops the socket, and the web app says hello again.
 - `packages/axo-api-worker/tests/session-sync.test.ts`:
-  - a connected client's ClientDO has no alarm;
-  - progress reaches only the client with the Session open;
-  - a Mac paired after hello reaches connected clients without `refresh`;
-  - a heartbeat doesn't move the account's `lastSeenAt` within ten minutes.
+  - a connected client's ClientDO, and the account, have no alarm;
+  - progress reaches only the client with the Session open, and the HostDO records one watcher;
+  - a Mac paired after hello reaches connected clients without `refresh`.
+
+  Not yet tested: that a notice at an unchanged head reads nothing, and the heartbeat throttle.
+  Both need a way to count calls between Durable Objects in the harness.
 
 ## Drawbacks
 

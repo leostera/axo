@@ -34,7 +34,12 @@ import { z } from "zod";
 /**
  * One paired host (RFD0018, HostDO): owns the host's socket and presence, runs the sync
  * handshake, keeps the host's index of Sessions, routes appends to SessionDOs, forwards commands
- * from ClientDOs, and sends change notices to the ClientDOs that hold a lease on it.
+ * from ClientDOs, and sends change notices to the ClientDOs following it.
+ *
+ * Nothing here wakes it on a timer (RFD0031): a ClientDO follows it from hello until its socket
+ * closes, progress goes only to the ClientDOs watching that Session, and a failed notice is sent
+ * again at once, then as the whole index with the next one. Its only alarm is the base class's:
+ * a host route whose heartbeats stopped.
  *
  * The socket transport (negotiation, registration, heartbeats, fragments, shares) is the daemon
  * side of AxoHostRelay. Account state lives in AxoAccountManager, reached by RPC.
@@ -105,6 +110,8 @@ export class AxoHostDO extends AxoHostRelay {
   private readonly statuses = new Map<string, SessionStatus>();
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When each connection's heartbeat last reached the account, and what it answered. */
+  private readonly lastTouch = new Map<string, { at: number; reply: { acknowledged: true; lastSeenAt: string } }>();
   /** Commands from ClientDOs waiting for the host's reply, by the id they were sent with. */
   private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `callHost` hops waiting for the daemon's reply, with the socket they were sent on. */
@@ -122,7 +129,11 @@ export class AxoHostDO extends AxoHostRelay {
       session_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, metadata_version INTEGER NOT NULL,
       missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
     sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
-    sql.exec("CREATE TABLE IF NOT EXISTS subscribers (client_do TEXT PRIMARY KEY, lease_until REAL NOT NULL)");
+    // RFD0031: followers stay until their socket closes; `behind` marks one a notice failed to reach.
+    sql.exec("DROP TABLE IF EXISTS subscribers");
+    sql.exec("CREATE TABLE IF NOT EXISTS followers (client_do TEXT PRIMARY KEY, behind INTEGER NOT NULL DEFAULT 0)");
+    sql.exec(`CREATE TABLE IF NOT EXISTS watchers (
+      client_do TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (client_do, session_id))`);
     const offline = offlineDuringConstruction.get(this);
     if (offline !== undefined) {
       offlineDuringConstruction.delete(this);
@@ -148,8 +159,15 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   protected override async storeHostHeartbeat(reference: unknown): Promise<{ acknowledged: true; lastSeenAt: string }> {
+    // The account's last-seen time only needs SYNC.lastSeenMs resolution; presence is here (RFD0031).
     const { hostId, hostGeneration } = reference as { hostId: string; hostGeneration: string };
-    return this.account().touchHost(hostId, hostGeneration, Date.now());
+    const key = `${hostId}:${hostGeneration}`;
+    const last = this.lastTouch.get(key);
+    if (last && Date.now() - last.at < SYNC.lastSeenMs) return last.reply;
+    const reply = await this.account().touchHost(hostId, hostGeneration, Date.now());
+    this.lastTouch.clear();
+    this.lastTouch.set(key, { at: Date.now(), reply });
+    return reply;
   }
 
   protected override async storeHostSessions(): Promise<{ storedAt: string }> {
@@ -348,12 +366,10 @@ export class AxoHostDO extends AxoHostRelay {
 
   // ─── Delivery: ClientDO ↔ HostDO ───────────────────────────────────────────
 
-  /** Takes or renews a ClientDO's lease, and returns the host's index and progress. */
-  async subscribe(clientDO: string, leaseMs: number = SYNC.leaseMs): Promise<HostSubscription> {
-    const until = Date.now() + Math.min(Math.max(leaseMs, 1_000), SYNC.leaseMs);
-    this.ctx.storage.sql.exec(`INSERT INTO subscribers (client_do, lease_until) VALUES (?, ?)
-      ON CONFLICT(client_do) DO UPDATE SET lease_until = excluded.lease_until`, clientDO, until);
-    await this.schedule();
+  /** Adds a ClientDO as a follower until its socket closes, and returns the host's index. */
+  async subscribe(clientDO: string): Promise<HostSubscription> {
+    this.ctx.storage.sql.exec(`INSERT INTO followers (client_do, behind) VALUES (?, 0)
+      ON CONFLICT(client_do) DO UPDATE SET behind = 0`, clientDO);
     const presence = this.presence();
     return {
       online: presence.online,
@@ -364,12 +380,22 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   async unsubscribe(clientDO: string): Promise<void> {
-    this.ctx.storage.sql.exec("DELETE FROM subscribers WHERE client_do = ?", clientDO);
+    this.forgetFollower(clientDO);
   }
 
-  /** The current progress snapshots of one Session, for a client opening it. */
-  async sessionProgress(sessionId: string): Promise<Array<{ slot: string; snapshot: unknown }>> {
+  /**
+   * A follower opened a Session: its progress goes to that ClientDO from now on. Returns the
+   * current snapshots.
+   */
+  async watch(clientDO: string, sessionId: string): Promise<Array<{ slot: string; snapshot: unknown }>> {
+    const sql = this.ctx.storage.sql;
+    if (sql.exec("SELECT 1 FROM followers WHERE client_do = ?", clientDO).toArray().length)
+      sql.exec("INSERT OR IGNORE INTO watchers (client_do, session_id) VALUES (?, ?)", clientDO, sessionId);
     return [...(this.progress.get(sessionId) ?? [])].map(([slot, snapshot]) => ({ slot, snapshot }));
+  }
+
+  async unwatch(clientDO: string, sessionId: string): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM watchers WHERE client_do = ? AND session_id = ?", clientDO, sessionId);
   }
 
   /**
@@ -526,11 +552,6 @@ export class AxoHostDO extends AxoHostRelay {
     return identity ? super.presence(identity.host_id) : { online: false, hostGeneration: null };
   }
 
-  override async alarm(): Promise<void> {
-    this.ctx.storage.sql.exec("DELETE FROM subscribers WHERE lease_until <= ?", Date.now());
-    await super.alarm();
-  }
-
   // ─── Notices ───────────────────────────────────────────────────────────────
 
   private queueSession(sessionId: string): void {
@@ -565,15 +586,47 @@ export class AxoHostDO extends AxoHostRelay {
     const notices = [...this.notices.values()];
     this.notices.clear();
     const sql = this.ctx.storage.sql;
-    const subscribers = sql.exec<{ client_do: string }>("SELECT client_do FROM subscribers WHERE lease_until > ?", Date.now()).toArray();
-    await Promise.all(subscribers.map(async ({ client_do }) => {
-      try {
-        if (!(await this.client(client_do).notify(identity.host_id, notices))) throw new Error("not following");
-      } catch {
-        sql.exec("DELETE FROM subscribers WHERE client_do = ?", client_do);
-      }
+    const followers = sql.exec<{ client_do: string; behind: number }>("SELECT client_do, behind FROM followers").toArray();
+    const watching = new Map<string, Set<string>>();
+    for (const row of sql.exec<{ client_do: string; session_id: string }>("SELECT client_do, session_id FROM watchers"))
+      watching.set(row.client_do, (watching.get(row.client_do) ?? new Set()).add(row.session_id));
+    let sent = 0;
+    await Promise.all(followers.map(async ({ client_do, behind }) => {
+      const watches = watching.get(client_do) ?? new Set<string>();
+      // Progress and epochs are for the ClientDOs with that Session open (RFD0031).
+      const batch = behind ? this.everything(watches) : notices.filter((notice) =>
+        notice.kind !== "progress" && notice.kind !== "epoch" ? true : watches.has(notice.sessionId));
+      if (behind) batch.push(...notices.filter((notice) => notice.kind === "epoch" && watches.has(notice.sessionId)));
+      if (batch.length === 0) return;
+      sent += 1;
+      const client = this.client(client_do);
+      // A notice that fails is sent again at once; if that fails too, the next one carries everything.
+      const following = await client.notify(identity.host_id, batch)
+        .catch(() => client.notify(identity.host_id, batch))
+        .catch(() => null);
+      if (following === false) this.forgetFollower(client_do);
+      else if (following === null) sql.exec("UPDATE followers SET behind = 1 WHERE client_do = ?", client_do);
+      else if (behind) sql.exec("UPDATE followers SET behind = 0 WHERE client_do = ?", client_do);
     }));
-    if (subscribers.length) recordApiEvent({ event: "notice_batch", subscribers: subscribers.length, notices: notices.length });
+    if (sent) recordApiEvent({ event: "notice_batch", subscribers: sent, notices: notices.length });
+  }
+
+  /** What a follower a notice failed to reach needs: the index, presence, and its Sessions' progress. */
+  private everything(watches: Set<string>): HostNotice[] {
+    const presence = this.presence();
+    return [
+      { kind: "presence", online: presence.online, hostGeneration: presence.hostGeneration },
+      ...this.ctx.storage.sql.exec<IndexRow>("SELECT * FROM session_index").toArray()
+        .map((row): HostNotice => ({ kind: "session", session: this.clientSession(row) })),
+      ...[...watches].flatMap((sessionId) => [...(this.progress.get(sessionId) ?? [])]
+        .map(([slot, snapshot]): HostNotice => ({ kind: "progress", sessionId, slot, snapshot }))),
+    ];
+  }
+
+  private forgetFollower(clientDO: string): void {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM followers WHERE client_do = ?", clientDO);
+    sql.exec("DELETE FROM watchers WHERE client_do = ?", clientDO);
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
