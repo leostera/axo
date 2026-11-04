@@ -7,6 +7,7 @@
 - Updated: 2026-11-04 (as built)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md)
+- Amended By: [RFD0029](RFD0029-ask-the-person.md)
 
 ## Summary
 
@@ -126,4 +127,4 @@ A refusal never reaches the app. Every call logs `event=mcp.computer_called tool
   - reading typed text back.
 - **Screenshots:** when Clef's answer is uncertain or the target has no label, should the gate add the window's screenshot (about 4 s)?
 - **More models in `axod-infer`:** the side-car is named for inference in general, not for Clef. Speech, such as NVIDIA's Parakeet for transcription, is next. llama.cpp can't run Parakeet, so `axod-infer` will need a second runtime: parakeet-mlx, sherpa-onnx or a Core ML conversion. The question is whether one process should hold both runtimes, or each runtime gets its own socket.
-- **Asking the person:** should Axo itself ask (a notification, or the Mac app), instead of only telling the agent to ask?
+- **Asking the person:** proposed in [RFD0029](RFD0029-ask-the-person.md). The gate asks the person on their own clients instead of refusing, `confirm: true` goes away, and values such as logins and cards go past the agent.

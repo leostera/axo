@@ -132,6 +132,8 @@
     "packages/axo-web-app/src/chat/connections.tsx#ServersPage": "fdf0d945501c",
     "packages/axo-web-app/src/chat/workbench.ts#ChatWorkbench.listHosts": "c41c83b639e8",
     "packages/axo-web-app/src/cloudflare-sign-in-app.tsx#CloudflareSignInApp": "fabd3c33b407",
-    "packages/pi-axo/src/extension.ts#installAxoPiExtension": "70c89a770061"
+    "packages/pi-axo/src/extension.ts#installAxoPiExtension": "70c89a770061",
+    "crates/axo-server/src/computer_gate.rs#Gate.check": "24aebea0691c",
+    "crates/axo-server/src/mcp.rs#call_computer": "797e81d44fb7"
   }
 }
