@@ -768,14 +768,22 @@ fn tool_declaration(tool: &Tool) -> Value {
 fn computer_gate(socket: &Path) -> &'static crate::computer_gate::Gate {
     static GATE: std::sync::OnceLock<crate::computer_gate::Gate> = std::sync::OnceLock::new();
     GATE.get_or_init(|| {
+        // Until the model files are downloaded, its answers are "unavailable" and the word list
+        // alone decides; the first process to find them missing starts the download.
         let judge = socket
             .parent()
             .and_then(axo_decide::Decide::beside_current_exe)
-            .filter(|decide| decide.installed().is_ok())
+            .filter(|decide| decide.helper.exists())
+            .inspect(|decide| {
+                if decide.installed().is_err() {
+                    let outcome = decide.install_in_background();
+                    eprintln!(
+                        "axod mcp: event=computer.gate_model_missing download={}",
+                        outcome.map_or_else(|why| why, |()| "started".into())
+                    );
+                }
+            })
             .map(|decide| Box::new(decide) as Box<dyn crate::computer_gate::Judge>);
-        if judge.is_none() {
-            eprintln!("axod mcp: event=computer.gate_without_model");
-        }
         crate::computer_gate::Gate::new(judge)
     })
 }

@@ -23,6 +23,38 @@ use serde_json::Value;
 pub const MODEL_FILE: &str = "Clef-Flash-Q4_K_M.gguf";
 pub const VISION_FILE: &str = "mmproj-Clef-Flash-Q8_0.gguf";
 
+/// Where the model files come from: ggml-org/Clef-Flash-GGUF (Apache-2.0) at a pinned revision,
+/// each checked against its SHA-256 before use. The small one first.
+const MODEL_SOURCE: &str = "https://huggingface.co/ggml-org/Clef-Flash-GGUF/resolve/a5a18a6e13bb36573a5f11385a1e7b9a0c868e9e";
+const MODEL_FILES: &[(&str, &str)] = &[
+    (
+        VISION_FILE,
+        "9dd8bc279f57d33b0697d4d0fe900fe751a24c9e3d30ab90969d4714ffc0722d",
+    ),
+    (
+        MODEL_FILE,
+        "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
+    ),
+];
+/// The model holds about 7 GB while loaded; macOS lets the GPU use about 70% of RAM.
+const MINIMUM_RAM: u64 = 16 << 30;
+/// The 7.4 GB of files, and room to spare.
+const MINIMUM_FREE_DISK: u64 = 10 << 30;
+
+/// Downloads the files one by one into `.part`, checks each, and only then renames it; exits
+/// non-zero on the first failure. `curl -C -` resumes a download a previous attempt left.
+const DOWNLOAD_SCRIPT: &str = r#"set -eu
+cd "$1"; shift
+while [ $# -gt 0 ]; do
+  file=$1 sha=$2 url=$3; shift 3
+  [ -f "$file" ] && continue
+  /usr/bin/curl -fL --retry 3 --silent --show-error -C - -o "$file.part" "$url"
+  echo "$sha  $file.part" | /usr/bin/shasum -a 256 -c - >/dev/null || { rm -f "$file.part"; echo "$file: checksum mismatch" >&2; exit 1; }
+  mv "$file.part" "$file"
+  echo "event=decide.model_downloaded file=$file"
+done
+"#;
+
 /// How long a cold start may take: the model loads in about 12 s on an M4 Pro.
 const START_TIMEOUT: Duration = Duration::from_secs(90);
 /// One question, including a reload after the model slept.
@@ -87,6 +119,57 @@ impl Decide {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Starts downloading the model files in the background, unless they are there, one
+    /// download is already running, or this Mac lacks the memory or disk for them. Returns why
+    /// not when it did not start one.
+    pub fn install_in_background(&self) -> Result<(), String> {
+        if self.models.join(MODEL_FILE).exists() && self.models.join(VISION_FILE).exists() {
+            return Err("already installed".into());
+        }
+        let ram = physical_memory();
+        if ram < MINIMUM_RAM {
+            return Err(format!(
+                "this Mac has {} GB of memory; Clef needs 16",
+                ram >> 30
+            ));
+        }
+        std::fs::create_dir_all(&self.models).map_err(|e| e.to_string())?;
+        let free = free_disk(&self.models);
+        if free < MINIMUM_FREE_DISK {
+            return Err(format!(
+                "only {} GB of disk is free; Clef needs 10",
+                free >> 30
+            ));
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.models.join(".download.lock"))
+            .map_err(|e| e.to_string())?;
+        if !try_lock(&lock) {
+            return Err("a download is already running".into());
+        }
+        let log = File::create(self.models.join("download.log")).map_err(|e| e.to_string())?;
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(DOWNLOAD_SCRIPT)
+            .arg("sh")
+            .arg(&self.models);
+        for (file, sha) in MODEL_FILES {
+            command.args([*file, *sha, &format!("{MODEL_SOURCE}/{file}")]);
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().map_err(|e| e.to_string())?)
+            .stderr(log);
+        detach_holding(&mut command, lock.as_raw_fd());
+        let child = command.spawn().map_err(|e| e.to_string())?;
+        log::info!("event=decide.model_download_started pid={}", child.id());
         Ok(())
     }
 
@@ -191,20 +274,7 @@ impl Decide {
                     .map_err(|e| DecideError::Failed(e.to_string()))?,
             )
             .stderr(log);
-        // SAFETY: between fork and exec this only calls async-signal-safe functions.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::setsid() < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                // Keep the locked file open across exec.
-                let flags = libc::fcntl(lock_fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(lock_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        detach_holding(&mut command, lock_fd);
         let child = command
             .spawn()
             .map_err(|e| DecideError::Failed(format!("could not start axo-decide: {e}")))?;
@@ -213,6 +283,53 @@ impl Decide {
         drop(lock);
         Ok(())
     }
+}
+
+/// Runs the command in its own session, so it outlives this process, and keeps `lock_fd` open in
+/// it, so the lock lasts as long as it does.
+fn detach_holding(command: &mut Command, lock_fd: std::os::fd::RawFd) {
+    // SAFETY: between fork and exec this only calls async-signal-safe functions.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(lock_fd, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(lock_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+fn physical_memory() -> u64 {
+    let mut bytes: u64 = 0;
+    let mut size = std::mem::size_of::<u64>();
+    // SAFETY: hw.memsize is a u64; the buffer and its size match.
+    let ok = unsafe {
+        libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&raw mut bytes).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    if ok { bytes } else { 0 }
+}
+
+fn free_disk(path: &Path) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid C string and a statvfs to fill.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
+        return 0;
+    }
+    stats.f_bavail as u64 * stats.f_frsize as u64
 }
 
 fn try_lock(file: &File) -> bool {
@@ -316,6 +433,12 @@ mod tests {
             decide.ask(&serde_json::json!({})),
             Err(DecideError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn reads_this_macs_memory_and_disk() {
+        assert!(physical_memory() > 1 << 30);
+        assert!(free_disk(&std::env::temp_dir()) > 0);
     }
 
     #[test]
