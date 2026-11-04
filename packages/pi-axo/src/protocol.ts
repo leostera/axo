@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { parseAttachments, type PromptAttachment } from "./attachments.js";
 
 export const AXO_PI_PROTOCOL_VERSION = 1;
 export const MAX_BRIDGE_RECORD_BYTES = 8 * 1024 * 1024;
@@ -22,7 +23,7 @@ export type PiControlAction =
    * A prompt. With a `commandId` (a client's, RFD0024) it is taken at most once, recorded in the
    * log with a receipt, and held by pi-axo while Pi works, whatever `delivery` says.
    */
-  | { kind: "send"; text: string; delivery?: "steer" | "followUp"; commandId?: string }
+  | { kind: "send"; text: string; delivery?: "steer" | "followUp"; commandId?: string; attachments?: PromptAttachment[] }
   | { kind: "cancel" }
   /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
   | { kind: "stop"; turnId: string }
@@ -97,8 +98,11 @@ function parseAction(value: unknown): PiControlAction | null {
   if (!isRecord(value) || typeof value.kind !== "string") return null;
 
   if (value.kind === "send") {
-    if (!hasOnlyKeys(value, ["kind", "text", "delivery", "commandId"]) || typeof value.text !== "string") return null;
-    if (new TextEncoder().encode(value.text).byteLength > MAX_TEXT_BYTES || value.text.length === 0) return null;
+    if (!hasOnlyKeys(value, ["kind", "text", "delivery", "commandId", "attachments"]) || typeof value.text !== "string") return null;
+    // Files axod fetched and checked (RFD0030); with any, the text may be empty.
+    const attachments = value.attachments === undefined ? [] : parseAttachments(value.attachments);
+    if (attachments === null) return null;
+    if (new TextEncoder().encode(value.text).byteLength > MAX_TEXT_BYTES || (value.text.length === 0 && attachments.length === 0)) return null;
     if (value.delivery !== undefined && value.delivery !== "steer" && value.delivery !== "followUp") return null;
     if (value.commandId !== undefined && (typeof value.commandId !== "string" || !COMMAND_ID_PATTERN.test(value.commandId))) return null;
     return {
@@ -106,6 +110,7 @@ function parseAction(value: unknown): PiControlAction | null {
       text: value.text,
       ...(value.delivery === undefined ? {} : { delivery: value.delivery }),
       ...(value.commandId === undefined ? {} : { commandId: value.commandId.toLowerCase() }),
+      ...(attachments.length === 0 ? {} : { attachments }),
     };
   }
 

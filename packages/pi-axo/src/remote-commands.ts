@@ -1,4 +1,5 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { PromptContent } from "./attachments.js";
 
 /**
  * Prompts and stops from Axo clients (the phone, the web app, other Macs), as the Pi that owns
@@ -33,7 +34,7 @@ export interface RemoteCommandPi {
   isIdle(): boolean;
   entries(): readonly SessionEntry[];
   appendReceipt(receipt: CommandReceipt): void;
-  prompt(text: string): void;
+  prompt(content: PromptContent): void;
   abort(): void;
   now(): number;
 }
@@ -43,7 +44,7 @@ export type StopOutcome = "stopped" | "ignored";
 
 interface HeldPrompt {
   commandId: string;
-  text: string;
+  content: PromptContent;
 }
 
 export class RemoteCommands {
@@ -64,11 +65,11 @@ export class RemoteCommands {
     }
   }
 
-  prompt(commandId: string, text: string): PromptOutcome {
+  prompt(commandId: string, content: PromptContent): PromptOutcome {
     if (this.seen.has(commandId)) return "taken";
     if (this.held.length >= MAX_HELD_PROMPTS) return "busy";
     this.seen.add(commandId);
-    this.held.push({ commandId, text });
+    this.held.push({ commandId, content });
     // An idle Pi takes the oldest held prompt now, which is this one unless a delivery failed.
     if (this.ready()) this.deliverNext();
     return this.held.some(prompt => prompt.commandId === commandId) ? "held" : "taken";
@@ -109,7 +110,7 @@ export class RemoteCommands {
     if (next === undefined) return;
     this.deliveredAt = this.pi.now();
     this.pi.appendReceipt({ commandId: next.commandId });
-    this.pi.prompt(next.text);
+    this.pi.prompt(next.content);
   }
 }
 

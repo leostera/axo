@@ -6,6 +6,7 @@ import { installAxoSessionNaming } from "./title.js";
 import { registerShareCommand } from "./share-command.js";
 import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
 import { RECEIPT_ENTRY, RemoteCommands } from "./remote-commands.js";
+import { promptContent, type PromptContent } from "./attachments.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -54,7 +55,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     isIdle: () => context?.isIdle() ?? true,
     entries: () => context?.sessionManager.getEntries() ?? [],
     appendReceipt: receipt => pi.appendEntry(RECEIPT_ENTRY, receipt),
-    prompt: text => pi.sendUserMessage(text),
+    prompt: content => pi.sendUserMessage(content),
     abort: () => context?.abort(),
     now: () => Date.now(),
   });
@@ -84,9 +85,19 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
         : { accepted: false as const, reason: "idle" as const };
     }
 
+    let content: PromptContent = "";
+    if (command.action.kind === "send") {
+      try {
+        content = promptContent(command.action.text, command.action.attachments ?? []);
+      } catch {
+        // axod fetched the files a moment ago; one gone now fails the prompt, never half of it.
+        return { accepted: false as const, reason: "unavailable" as const };
+      }
+    }
+
     // A client's prompt (RFD0024): taken at most once, with a receipt, held while Pi works.
     if (command.action.kind === "send" && command.action.commandId !== undefined) {
-      return remote.prompt(command.action.commandId, command.action.text) === "busy"
+      return remote.prompt(command.action.commandId, content) === "busy"
         ? { accepted: false as const, reason: "busy" as const }
         : { accepted: true as const };
     }
@@ -98,14 +109,14 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     }
 
     if (activeContext.isIdle()) {
-      pi.sendUserMessage(command.action.text);
+      pi.sendUserMessage(content);
       return { accepted: true as const };
     }
     if (command.action.delivery === undefined) {
       return { accepted: false as const, reason: "busy" as const };
     }
 
-    pi.sendUserMessage(command.action.text, { deliverAs: command.action.delivery });
+    pi.sendUserMessage(content, { deliverAs: command.action.delivery });
     return { accepted: true as const };
   };
 
