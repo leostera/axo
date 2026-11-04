@@ -6,7 +6,7 @@
 - Start Date: 2026-10-30
 - Updated: 2026-10-30
 - Document Type: Proposal
-- Amended By: [RFD0022](RFD0022-sessions-across-macs.md), [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md)
+- Amended By: [RFD0022](RFD0022-sessions-across-macs.md), [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md), [RFD0031](RFD0031-durable-objects-wake-on-demand.md)
 
 ## Summary
 

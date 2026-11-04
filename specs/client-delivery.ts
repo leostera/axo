@@ -1,4 +1,4 @@
-import { atMost, budget, defineActor, defineCall, defineLimit, defineMessage, defineProperty, defineScenario, defineSpec, defineZone, failed, listOf, lose, nullable, oneOf } from "@leostera/feynman";
+import { atMost, budget, defineActor, defineCall, defineLimit, defineMessage, defineProperty, defineRule, defineScenario, defineSpec, defineZone, failed, FAULT, listOf, lose, nullable, oneOf, spend } from "@leostera/feynman";
 
 // RFD0018, Delivery: a client holds one socket to its own ClientDO, which reads the Session from
 // the SessionDO at the client's pace and hears about new records through notices from the HostDO.
@@ -9,8 +9,17 @@ import { atMost, budget, defineActor, defineCall, defineLimit, defineMessage, de
 // is the last two. Records are named by epoch and position ("1.2"), so a record from before a
 // truncate can never pass for one after it.
 //
+// RFD0031: no Durable Object wakes itself. The ClientDO subscribes once, on hello, and stays
+// subscribed until the socket closes; a call that fails is retried at once, while the object is
+// awake. A WebSocket never loses one frame and carries on: a lost frame is the socket dropping,
+// which both ends see, and the tab reconnects. Progress goes only to a ClientDO watching the
+// Session. A notice here carries the whole state (head, epoch, progress), so a follower marked
+// behind, which gets the whole index in the code, is the same as any other here.
+//
 // Not modelled: several hosts, Sessions or tabs; the index of Sessions beyond the one head;
-// batching of notices (a notice here is sent at once); metadata and status.
+// batching of notices (a notice here is sent at once); metadata and status; resending a batch
+// outstanding past SYNC.stallMs, which only a socket that drops can cause, and that reconnecting
+// heals.
 
 const MAX_RECORDS = 3;
 const WINDOW = 2;
@@ -24,6 +33,9 @@ function line(epoch: number, cursor: number): string {
 
 /** Faults on one path: lost messages and crashes (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
+
+/** RFD0031: nothing renews; a call that fails is made again at once, while the object is awake. */
+const retryAtOnce = defineRule("retryAtOnce", { description: "A notice, subscription, watch or read that fails is made again at once by the object that saw it fail." });
 
 const Hello = defineMessage("Hello", {}, { name: "axo.client.hello", over: "websocket" });
 const Welcome = defineMessage("Welcome", {}, { name: "hosts and Sessions", over: "websocket", tone: "reply" });
@@ -43,6 +55,9 @@ const Bye = defineMessage("Bye", {}, { name: "socket closed", over: "websocket" 
 const Subscribe = defineCall("Subscribe", {}, { name: "HostDO.subscribe", over: "rpc" });
 const Subscribed = defineMessage("Subscribed", { head: Number, epoch: Number, progress: nullable(String) }, { name: "the host's index", over: "rpc", tone: "reply" });
 const Unsubscribe = defineMessage("Unsubscribe", {}, { name: "HostDO.unsubscribe", over: "rpc" });
+const Watch = defineCall("Watch", {}, { name: "HostDO.watch", over: "rpc" });
+const Watching = defineMessage("Watching", { progress: nullable(String) }, { name: "the Session's progress", over: "rpc", tone: "reply" });
+const Closed = defineMessage("Closed", {}, { name: "the socket dropped", over: "websocket", tone: "refused" });
 const Notify = defineCall("Notify", { head: Number, epoch: Number, progress: nullable(String) }, { name: "ClientDO.notify", over: "rpc" });
 const Noted = defineMessage("Noted", {}, { name: "noted", over: "rpc", tone: "reply" });
 const Read = defineCall("Read", { id: Number, kind: oneOf("open", "live", "older"), after: Number, before: Number, epoch: Number }, { name: "SessionDO.read", over: "rpc" });
@@ -63,8 +78,7 @@ const clientZone = defineZone({ name: "Client", description: "a browser tab", pl
 const edge = defineZone({ name: "Cloudflare", description: "one ClientDO per tab, one HostDO per host, one SessionDO per Session", place: { column: 1, region: true } });
 
 const limit1 = defineLimit({ name: "Records per batch to a client", value: 64, unit: "records" });
-const limit2 = defineLimit({ name: "Subscriber lease", value: 60, unit: "seconds" });
-const limit3 = defineLimit({ name: "Lease renewal", value: 30, unit: "seconds" });
+const limit2 = defineLimit({ name: "A batch counts as stalled after", value: 30, unit: "seconds" });
 const limit4 = defineLimit({ name: "Opening window", value: 20, unit: "records" });
 
 export const Tab = defineActor({
@@ -88,6 +102,8 @@ export const Tab = defineActor({
     /** A slow or backgrounded tab that stops acknowledging. */
     stalled: false,
     prompt: "none" as "none" | "sending" | "accepted" | "offline" | "unknown",
+    /** The network dropped the socket; the web app reconnects by itself. */
+    dropped: false,
   }),
   display: {
     icon: "browser",
@@ -108,9 +124,7 @@ export const Tab = defineActor({
       when: (s) => !s.connected,
       sends: [Hello],
       run(state, _i, ctx) {
-        state.connected = true;
-        state.welcomed = false;
-        ctx.send(ctx.the(ClientDO), Hello, {});
+        connect(state, ctx);
       },
     },
     open: {
@@ -243,18 +257,59 @@ export const Tab = defineActor({
       after: "10 seconds",
       run: (s) => void (s.prompt === "sending" && (s.prompt = "unknown")),
     },
-    // Faults: what the network and restarts may do here.
-    welcomeLost: lose(Welcome, { spend: faults }),
-    openedLost: lose(Opened, { spend: faults }),
-    recordsLost: lose(Records, { spend: faults }),
-    olderPageLost: lose(OlderPage, { spend: faults }),
-    progressLost: lose(Progress, { spend: faults }),
-    resetLost: lose(Reset, { spend: faults }),
-    acceptedLost: lose(Accepted, { spend: faults }),
-    offlineLost: lose(Offline, { spend: faults }),
-    mayHaveRunLost: lose(MayHaveRun, { spend: faults }),
+    closed: {
+      on: Closed,
+      description: "The socket dropped on the ClientDO's side: the tab sees it close.",
+      run: (state, _m, ctx) => dropped(state, ctx, false),
+    },
+    reconnect: {
+      description: "The socket dropped: the web app connects again by itself and says hello.",
+      when: (s) => s.dropped && !s.connected,
+      sends: [Hello],
+      run: (state, _m, ctx) => connect(state, ctx),
+    },
+    // Faults: a frame lost on its way to the tab is the socket dropping (RFD0031).
+    welcomeLost: drops(Welcome),
+    openedLost: drops(Opened),
+    recordsLost: drops(Records),
+    olderPageLost: drops(OlderPage),
+    progressLost: drops(Progress),
+    resetLost: drops(Reset),
+    acceptedLost: drops(Accepted),
+    offlineLost: drops(Offline),
+    mayHaveRunLost: drops(MayHaveRun),
   },
 });
+
+function connect(state: any, ctx: any): void {
+  state.connected = true;
+  state.welcomed = false;
+  state.dropped = false;
+  ctx.send(ctx.the(ClientDO), Hello, {});
+}
+/** The socket closed under the tab: what it holds stays in memory for the reconnect. */
+function dropped(state: any, ctx: any, tellClientDO: boolean): void {
+  if (!state.connected) return;
+  state.connected = false;
+  state.welcomed = false;
+  state.opened = false;
+  state.dropped = true;
+  if (state.prompt === "sending") state.prompt = "unknown";
+  ctx.cancel("commandTimeout");
+  if (tellClientDO) ctx.send(ctx.the(ClientDO), Bye, {});
+}
+/** A frame to the tab is lost: the socket drops, and both ends see it close. */
+function drops(message: any) {
+  return {
+    on: message,
+    fair: false as const,
+    tags: [FAULT],
+    with: [spend(faults)],
+    sends: [Bye],
+    description: `${message.name} is lost: the socket drops, and both ends see it close.`,
+    run: (state: any, _m: unknown, ctx: any) => dropped(state, ctx, true),
+  };
+}
 
 export const ClientDO = defineActor({
   name: "ClientDO",
@@ -288,15 +343,13 @@ export const ClientDO = defineActor({
   transitions: {
     hello: {
       on: Hello,
-      description: "Takes the socket, subscribes to the host, and starts renewing the lease.",
+      description: "Takes the socket and subscribes to the host, once: the subscription lasts as long as the socket.",
       sends: [Subscribe, Welcome],
-      starts: ["renew"],
       run(state, _msg, ctx) {
         state.socket = true;
         state.open = null;
         state.opening = false;
         ctx.send(ctx.the(HostDO), Subscribe, {});
-        ctx.start("renew");
         ctx.reply(Welcome, {});
       },
     },
@@ -312,27 +365,30 @@ export const ClientDO = defineActor({
     },
     subscribeFailed: {
       on: failed(Subscribe),
-      description: "The subscription call threw; the next renewal tries again.",
-      run: (state) => void (state.subscribed = false),
+      description: "The subscription call threw: it is tried again at once, while the ClientDO is awake.",
+      sends: [Subscribe],
+      run(state, _f, ctx) {
+        state.subscribed = false;
+        if (retryAtOnce.on && state.socket) ctx.send(ctx.the(HostDO), Subscribe, {});
+      },
     },
-    renew: {
-      description: "Renews the lease on the host while the socket is open; the answer also carries the current head. A batch still unacknowledged is sent again.",
-      after: "30 seconds",
-      routine: true,
-      sends: [Subscribe, Read],
-      starts: ["renew"],
-      run(state, _, ctx) {
-        if (!state.socket) return;
-        ctx.send(ctx.the(HostDO), Subscribe, {});
-        ctx.start("renew");
-        const open = state.open;
-        if (open && open.sent > open.acked && !state.reading) {
-          // The tab ignores records it already holds, so a resend is harmless.
-          open.sent = open.acked;
-          open.outstanding = 0;
-          deliver(state, ctx);
+    watching: {
+      on: Watching,
+      description: "The host has noted the open Session, and says what it is writing now.",
+      sends: [Progress],
+      run(state, msg, ctx) {
+        if (!state.socket || !state.open) return;
+        if (msg.progress !== state.progress) {
+          state.progress = msg.progress;
+          if (!state.opening) ctx.send(ctx.the(Tab), Progress, { snapshot: msg.progress });
         }
       },
+    },
+    watchFailed: {
+      on: failed(Watch),
+      description: "The watch call threw: it is tried again at once.",
+      sends: [Watch],
+      run: (state, _f, ctx) => void (retryAtOnce.on && state.socket && state.open && ctx.send(ctx.the(HostDO), Watch, {})),
     },
     notify: {
       on: Notify,
@@ -345,8 +401,8 @@ export const ClientDO = defineActor({
     },
     open: {
       on: Open,
-      description: "Opens the Session for the tab: reads what follows its cursor in the same epoch, or the last records.",
-      sends: [Read],
+      description: "Opens the Session for the tab: watches it on the host, and reads what follows its cursor in the same epoch, or the last records.",
+      sends: [Read, Watch],
       run(state, msg, ctx) {
         if (!state.socket) return;
         const have = msg.have && msg.have.epoch === state.epoch ? msg.have.cursor : null;
@@ -357,6 +413,7 @@ export const ClientDO = defineActor({
         state.reading = true;
         state.reads += 1;
         ctx.send(ctx.the(SessionDO), Read, { id: state.reads, kind: "open", after, before: 0, epoch: state.epoch });
+        ctx.send(ctx.the(HostDO), Watch, {});
       },
     },
     readResult: {
@@ -401,16 +458,18 @@ export const ClientDO = defineActor({
     },
     readFailed: {
       on: failed(Read),
-      description: "A read threw: the next notice, acknowledgement or renewal reads again.",
+      description: "A read threw: it is read again at once, while the ClientDO is awake.",
       sends: [Read],
       run(state, f, ctx) {
         if (f.payload.kind === "older" || f.payload.id !== state.reads) return;
         state.reading = false;
-        if (f.payload.kind === "open" && state.open) {
+        if (!retryAtOnce.on || !state.socket || !state.open) return;
+        if (f.payload.kind === "open") {
           state.reading = true;
           state.reads += 1;
           return ctx.send(ctx.the(SessionDO), Read, { ...f.payload, id: state.reads });
         }
+        deliver(state, ctx);
       },
     },
     ack: {
@@ -452,25 +511,47 @@ export const ClientDO = defineActor({
         state.subscribed = false;
         state.open = null;
         state.opening = false;
-        ctx.cancel("renew");
         ctx.send(ctx.the(HostDO), Unsubscribe, {});
       },
     },
     // Faults: what the network and restarts may do here.
-    helloLost: lose(Hello, { spend: faults }),
+    // A frame from the tab is lost: the socket drops (RFD0031).
+    helloLost: closes(Hello),
+    openLost: closes(Open),
+    ackLost: closes(Ack),
+    olderLost: closes(Older),
+    commandLost: closes(Command),
     subscribedLost: lose(Subscribed, { fails: Subscribe, spend: faults }),
+    watchingLost: lose(Watching, { fails: Watch, spend: faults }),
     notifyLost: lose(Notify, { spend: faults }),
-    openLost: lose(Open, { spend: faults }),
     readResultLost: lose(ReadResult, { fails: Read, spend: faults }),
     readResetLost: lose(ReadReset, { fails: Read, spend: faults }),
-    ackLost: lose(Ack, { spend: faults }),
-    olderLost: lose(Older, { spend: faults }),
-    commandLost: lose(Command, { spend: faults }),
     forwardedLost: lose(Forwarded, { spend: faults }),
     hostOfflineLost: lose(HostOffline, { spend: faults }),
     byeLost: lose(Bye, { spend: faults }),
   },
 });
+
+/** A frame from the tab is lost: the socket drops; the ClientDO lets go and the tab sees it close. */
+function closes(message: any) {
+  return {
+    on: message,
+    fair: false as const,
+    tags: [FAULT],
+    with: [spend(faults)],
+    sends: [Unsubscribe, Closed],
+    description: `${message.name} is lost: the socket drops, and both ends see it close.`,
+    run(state: any, _m: unknown, ctx: any) {
+      if (!state.socket) return;
+      state.socket = false;
+      state.subscribed = false;
+      state.open = null;
+      state.opening = false;
+      ctx.send(ctx.the(HostDO), Unsubscribe, {});
+      ctx.send(ctx.the(Tab), Closed, {});
+    },
+  };
+}
 
 /** Takes in what the host reports: a new epoch resets the tab, progress is passed on, and a new head is read. */
 function heard(state: any, msg: { head: number; epoch: number; progress: string | null }, ctx: any): void {
@@ -529,6 +610,8 @@ export const HostDO = defineActor({
     /** The snapshot of the reply being written, and the record it previews. */
     progress: null as { for: number; text: string } | null,
     subscriber: false,
+    /** The subscribed ClientDO has the Session open: only then does progress go to it. */
+    watching: false,
     /** A commit or truncate is waiting on the SessionDO. */
     busy: false,
     truncated: false,
@@ -562,7 +645,8 @@ export const HostDO = defineActor({
       sends: [Notify],
       run(state, _i, ctx) {
         state.progress = { for: state.head + 1, text: state.progress ? "more" : "partial" };
-        notify(state, ctx);
+        // Progress is for the ClientDOs watching the Session, not every follower.
+        if (state.watching) notify(state, ctx);
       },
     },
     truncate: {
@@ -592,28 +676,29 @@ export const HostDO = defineActor({
   transitions: {
     subscribe: {
       on: Subscribe,
-      description: "Adds or renews the ClientDO's lease and answers with the current head, epoch and progress.",
+      description: "Adds the ClientDO as a follower, until its socket closes, and answers with the current head and epoch.",
       sends: [Subscribed],
-      starts: ["leaseExpires"],
       run(state, _msg, ctx) {
         state.subscriber = true;
-        ctx.start("leaseExpires");
-        ctx.reply(Subscribed, { head: state.head, epoch: state.epoch, progress: state.progress?.text ?? null });
+        ctx.reply(Subscribed, { head: state.head, epoch: state.epoch, progress: state.watching ? state.progress?.text ?? null : null });
       },
     },
     unsubscribe: {
       on: Unsubscribe,
-      description: "The tab's socket closed: the lease ends.",
-      run(state, _msg, ctx) {
+      description: "The tab's socket closed: the ClientDO is no longer a follower, and watches nothing.",
+      run(state) {
         state.subscriber = false;
-        ctx.cancel("leaseExpires");
+        state.watching = false;
       },
     },
-    leaseExpires: {
-      description: "No renewal in time: the lease ends and no more notices go to that ClientDO.",
-      after: "60 seconds",
-      routine: true,
-      run: (state) => void (state.subscriber = false),
+    watch: {
+      on: Watch,
+      description: "The ClientDO opened the Session: progress goes to it from now on, starting with the current snapshot.",
+      sends: [Watching],
+      run(state, _msg, ctx) {
+        state.watching = true;
+        ctx.reply(Watching, { progress: state.progress?.text ?? null });
+      },
     },
     committed: {
       on: Committed,
@@ -667,12 +752,9 @@ export const HostDO = defineActor({
     noted: { on: Noted, description: "The ClientDO took the notice.", run: () => {} },
     notifyFailed: {
       on: failed(Notify),
-      description: "The notice failed: that ClientDO is dropped from the leases; its next renewal adds it back.",
-      run(state, _f, ctx) {
-        state.subscriber = false;
-        ctx.cancel("leaseExpires");
-      },
-      starts: [],
+      description: "The notice failed: it is sent again at once, with what the host knows now.",
+      sends: [Notify],
+      run: (state, _f, ctx) => void (retryAtOnce.on && notify(state, ctx)),
     },
     forward: {
       on: Forward,
@@ -684,6 +766,7 @@ export const HostDO = defineActor({
     },
     // Faults: what the network and restarts may do here.
     subscribeLost: lose(Subscribe, { spend: faults }),
+    watchLost: lose(Watch, { spend: faults }),
     unsubscribeLost: lose(Unsubscribe, { spend: faults }),
     committedLost: lose(Committed, { fails: Commit, spend: faults }),
     headIsLost: lose(HeadIs, { fails: Head, spend: faults }),
@@ -694,7 +777,7 @@ export const HostDO = defineActor({
 });
 
 function notify(state: any, ctx: any): void {
-  if (state.subscriber) ctx.send(ctx.the(ClientDO), Notify, { head: state.head, epoch: state.epoch, progress: state.progress?.text ?? null });
+  if (state.subscriber) ctx.send(ctx.the(ClientDO), Notify, { head: state.head, epoch: state.epoch, progress: state.watching ? state.progress?.text ?? null : null });
 }
 
 export const SessionDO = defineActor({
@@ -796,6 +879,7 @@ const promptsAreAnswered = defineProperty("promptsAreAnswered", {
   leadsTo: { whenever: (w) => w.the(Tab).state.prompt === "sending", then: (w) => w.the(Tab).state.prompt !== "sending" },
 });
 const catchesUp = defineProperty("catchesUp", {
+  needs: [retryAtOnce],
   description: "A connected tab that keeps acknowledging ends up holding every record up to the Session's head.",
   leadsTo: {
     whenever: (w) => {
@@ -914,7 +998,7 @@ export default defineSpec({
   description:
     "How a client follows a Session through its ClientDO: it opens a window, gets new records only as fast as it acknowledges them, sees replies stream in as snapshots, and resets cleanly when the Session is cut back.",
   actors: [Tab, ClientDO, HostDO, SessionDO],
-  limits: [limit1, limit2, limit3, limit4],
+  limits: [limit1, limit2, limit4],
   properties: [noGapsNoDuplicates, holdsWhatTheCloudHolds, oneBatchOutstanding, progressEndsWithItsRecord, promptsAreAnswered, catchesUp],
   scenarios: [openingTheWebApp, aReplyStreamsIn, aBackgroundedTab, reconnectingWithRecordsInHand, theSessionIsCutBack, aPromptWhileTheMacSleeps],
 });

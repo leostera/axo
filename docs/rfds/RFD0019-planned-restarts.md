@@ -6,6 +6,7 @@
 - Start Date: 2026-10-31
 - Updated: 2026-10-31
 - Document Type: Proposal
+- Amended By: [RFD0031](RFD0031-durable-objects-wake-on-demand.md)
 
 ## Summary
 

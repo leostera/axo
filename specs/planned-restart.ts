@@ -55,8 +55,10 @@ const Run = defineMessage("Run", { generation: Number }, { name: "axo.remote.ses
 const Ran = defineMessage("Ran", { generation: Number }, { name: "prompt accepted by Pi", over: "websocket", tone: "reply" });
 // HostDO <-> ClientDO (RPC), ClientDO <-> tab (WebSocket)
 const presenceSchema = { status: oneOf("online", "restarting", "offline"), generation: Number, build: Number, reason: nullable(oneOf("upgrade", "restart", "stop")), toBuild: nullable(Number), seq: Number };
-const Presence = defineMessage("Presence", presenceSchema, { name: "presence notice", over: "rpc" });
-const Subscribe = defineMessage("Subscribe", {}, { name: "HostDO.subscribe (lease renewal)", over: "rpc" });
+// RFD0031: a presence notice is a call, so a lost one fails and the HostDO sends it again at once;
+// the ClientDO subscribes once, on hello, and nothing renews.
+const Presence = defineCall("Presence", presenceSchema, { name: "presence notice (ClientDO.notify)", over: "rpc" });
+const Subscribe = defineCall("Subscribe", {}, { name: "HostDO.subscribe", over: "rpc" });
 const Subscribed = defineMessage("Subscribed", presenceSchema, { name: "subscription with presence", over: "rpc", tone: "reply" });
 const Hosts = defineMessage("Hosts", presenceSchema, { name: "axo.client.hosts", over: "websocket" });
 const Hello = defineMessage("Hello", {}, { name: "axo.client.hello", over: "websocket" });
@@ -75,7 +77,6 @@ const cloudflare = defineZone({ name: "Cloudflare", description: "RFD0018's Dura
 const mac = defineZone({ name: "Studio", description: "Axo.app, launchd and axod", place: { column: 2 } });
 
 const RESTART_GRACE = defineLimit({ name: "A restarting host is shown as restarting for at most", value: 60, unit: "seconds" });
-const LEASE_RENEWAL = defineLimit({ name: "A ClientDO renews its lease on a host every", value: 30, unit: "seconds" });
 
 const announceRestart = defineRule("announceRestart", {
   description: "Axo.app tells axod why it is about to restart it, and axod says goodbye on the socket before closing it.",
@@ -442,7 +443,7 @@ export const HostDO = defineActor({
     },
     subscribe: {
       on: Subscribe,
-      description: "A ClientDO renews its lease; the answer carries the current presence.",
+      description: "A ClientDO subscribes, once per socket; the answer carries the current presence.",
       sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.subscribe"],
       sends: [Subscribed],
       run: (s, _m, ctx) => ctx.reply(Subscribed, presenceOf(s)),
@@ -466,6 +467,12 @@ export const HostDO = defineActor({
     forwardLost: lose(Forward, { spend: faults }),
     ranLost: lose(Ran, { spend: faults }),
     subscribeLost: lose(Subscribe, { spend: faults }),
+    presenceFailed: {
+      on: failed(Presence),
+      description: "The notice failed: the HostDO sends what it knows now, at once (RFD0031).",
+      sends: [Presence],
+      run: (s, _f, ctx) => ctx.send(ctx.the(ClientDO), Presence, presenceOf(s)),
+    },
   },
 });
 
@@ -496,11 +503,9 @@ export const ClientDO = defineActor({
       description: "A tab connects: subscribe to the host.",
       sources: ["packages/axo-api-worker/src/client-do.ts#AxoClientDO.webSocketMessage"],
       sends: [Subscribe],
-      starts: ["renew"],
       run(s, _m, ctx) {
         s.open = true;
         ctx.send(ctx.the(HostDO), Subscribe, {});
-        ctx.start("renew");
       },
     },
     presence: {
@@ -512,21 +517,15 @@ export const ClientDO = defineActor({
     },
     subscribed: {
       on: Subscribed,
-      description: "The lease is renewed with the current presence.",
+      description: "Subscribed: the current presence.",
       sends: [Hosts],
       run: (s, m, ctx) => take(s, m, ctx),
     },
-    renew: {
-      after: "30 seconds",
-      routine: true,
-      description: "Renews the lease on the host, which also refreshes its presence.",
-      sources: ["packages/axo-api-worker/src/client-do.ts#AxoClientDO.alarm"],
+    subscribeFailed: {
+      on: failed(Subscribe),
+      description: "The subscription failed: it is made again at once (RFD0031).",
       sends: [Subscribe],
-      starts: ["renew"],
-      run(_s, _, ctx) {
-        ctx.send(ctx.the(HostDO), Subscribe, {});
-        ctx.start("renew");
-      },
+      run: (_s, _f, ctx) => ctx.send(ctx.the(HostDO), Subscribe, {}),
     },
     command: { on: Command, description: "Forwards a prompt to the host.", sends: [Forward], run: (_s, _m, ctx) => ctx.send(ctx.the(HostDO), Forward, {}) },
     accepted: { on: Accepted, description: "Tells the tab.", sends: [Accepted], run: (_s, _m, ctx) => ctx.send(ctx.the(Tab), Accepted, {}) },
@@ -535,7 +534,7 @@ export const ClientDO = defineActor({
     interrupted: { on: Interrupted, description: "Tells the tab.", sends: [Interrupted], run: (_s, m, ctx) => ctx.send(ctx.the(Tab), Interrupted, m) },
     mayHaveRun: { on: MayHaveRun, description: "Tells the tab.", sends: [MayHaveRun], run: (_s, _m, ctx) => ctx.send(ctx.the(Tab), MayHaveRun, {}) },
     presenceLost: lose(Presence, { spend: faults }),
-    subscribedLost: lose(Subscribed, { spend: faults }),
+    subscribedLost: lose(Subscribed, { fails: Subscribe, spend: faults }),
     commandLost: lose(Command, { spend: faults }),
     acceptedLost: lose(Accepted, { spend: faults }),
     offlineLost: lose(Offline, { spend: faults }),
@@ -600,7 +599,7 @@ export const Tab = defineActor({
       sources: ["packages/axo-web-app/src/chat/workbench.ts#ChatWorkbench.listHosts"],
       say: (s) => label(s.shown),
       run(s, m) {
-        // The tab keeps the newest notice too: the ClientDO's lease replies and notices come
+        // The tab keeps the newest notice too: the ClientDO's subscription replies and notices come
         // from different calls to it, so one may overtake the other on the way here.
         if (noticesInOrder.on && s.shown && m.seq < s.shown.seq) return;
         s.shown = { ...m };
@@ -616,7 +615,21 @@ export const Tab = defineActor({
       description: "No answer in time: the tab says it does not know yet, and the transcript will tell.",
       run: (s) => void (s.prompt === "sending" && (s.prompt = "timedOut")),
     },
-    hostsLost: lose(Hosts, { spend: faults }),
+    // A frame lost on the tab's socket is the socket dropping (RFD0031): the web app connects again
+    // and says hello, and the answer carries the current presence.
+    hostsLost: {
+      on: Hosts,
+      fair: false,
+      tags: [FAULT],
+      with: [spend(faults)],
+      description: "Axo.client.hosts is lost: the socket drops, and the web app connects again.",
+      sends: [Hello],
+      run(s, _m, ctx) {
+        if (s.prompt === "sending") s.prompt = "unknown";
+        ctx.cancel("commandTimeout");
+        ctx.send(ctx.the(ClientDO), Hello, {});
+      },
+    },
   },
 });
 
@@ -763,7 +776,7 @@ export default defineSpec({
     defineGroup({ name: "Axo cloud", actors: [ClientDO, HostDO], icon: "cloud", collapsed: false }),
     defineGroup({ name: "Studio", actors: [App, Launchd, Axod], icon: "laptop", collapsed: false }),
   ],
-  limits: [RESTART_GRACE, LEASE_RENEWAL],
+  limits: [RESTART_GRACE],
   properties: [plannedStopsLookPlanned, restartIsNeverShownOffline, promptsDuringARestartSayWhy, presenceNeverGoesBack, restartsEnd, tabCatchesUp],
   scenarios: [anUpgrade, aPromptDuringAnUpgrade, aCrash, theNewAxodNeverStarts, loggingOut],
 });
