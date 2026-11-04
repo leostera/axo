@@ -1,3 +1,4 @@
+import AppKit
 import AxoDaemonManager
 import AxoProtocol
 import AxoClient
@@ -76,7 +77,7 @@ final class TerminalSessionsModel {
   /// The recent list's order frozen while the pointer is over the sidebar or Previous/Next
   /// Session are being pressed, so rows don't move under a click and the shortcuts step through
   /// the rows as shown, even while Sessions working elsewhere would move up.
-  private(set) var heldRecentOrder: [SessionID]?
+  private(set) var heldSidebarSections: [SidebarSection]?
   /// Why the recent list holds still; it moves to the live order once nothing holds it.
   @ObservationIgnored private var recentOrderHolds: Set<RecentOrderHold> = []
   /// Ends the hold of a run of Previous/Next Session presses, a moment after the last one.
@@ -85,6 +86,13 @@ final class TerminalSessionsModel {
   @ObservationIgnored var sessionStepHold: Duration = .milliseconds(1500)
   /// Sessions pinned to the top of the sidebar, on this Mac only.
   private(set) var sessionPins: SessionPins
+  /// When this Mac last saw each Session, for the sidebar's Active group.
+  private(set) var sessionSeen: SessionSeen
+  /// The time the sidebar's groups are worked out at; it moves on a slow tick
+  /// (`advanceSidebarClock`) so Sessions leave the Active group in batches, not one by one.
+  private(set) var sidebarClock: Date = .now
+  /// Whether the person can see the selected Session now, which marks it seen; tests replace it.
+  @ObservationIgnored var isLookingAtSelection: @MainActor () -> Bool = { NSApplication.shared.isActive }
 
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
@@ -180,6 +188,7 @@ final class TerminalSessionsModel {
       ?? .thisMac
     sessionPins = SessionPins(
       storedValue: preferenceDefaults.stringArray(forKey: AxoPreferenceKey.pinnedSessions))
+    sessionSeen = Self.storedSessionSeen(in: preferenceDefaults)
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
@@ -217,13 +226,22 @@ final class TerminalSessionsModel {
 
   // MARK: - Queries
 
-  /// The Sessions the sidebar lists, pinned ones first and otherwise latest activity first:
-  /// this Mac's, one other Mac's, or all. Pins apply on top of a held order, so a Session
-  /// pinned under the pointer moves up at once.
-  var sidebarOrderedSessions: [TerminalSession] {
+  /// The Sessions the sidebar lists (this Mac's, one other Mac's, or all) in its groups:
+  /// pinned, active, then earlier. While the order is held, rows keep their places.
+  var sidebarSections: [SidebarSection] {
+    SessionGrouping.holding(heldSidebarSections, live: liveSidebarSections, pins: sessionPins)
+  }
+
+  /// The sidebar's rows top to bottom; Previous/Next Session step through them.
+  var sidebarOrderedSessions: [TerminalSession] { sidebarSections.flatMap(\.sessions) }
+
+  func isUnseen(_ session: TerminalSession) -> Bool { sessionSeen.isUnseen(session) }
+
+  private var liveSidebarSections: [SidebarSection] {
     let listed = sessions.filter { sidebarMacs.includes(hostID: peerHostBySession[$0.id]) }
-    return sessionPins.pinnedFirst(
-      SessionActivityOrder.holding(heldRecentOrder, live: SessionActivityOrder.sorted(listed)))
+    return SessionGrouping.sections(
+      listed, pins: sessionPins, seen: sessionSeen,
+      now: Int64(sidebarClock.timeIntervalSince1970))
   }
 
   func isPinned(_ sessionID: SessionID) -> Bool { sessionPins.contains(sessionID) }
@@ -274,10 +292,10 @@ final class TerminalSessionsModel {
   private func setRecentOrderHold(_ hold: RecentOrderHold, _ isHeld: Bool) {
     if isHeld {
       recentOrderHolds.insert(hold)
-      if heldRecentOrder == nil { heldRecentOrder = SessionActivityOrder.sorted(sessions).map(\.id) }
+      if heldSidebarSections == nil { heldSidebarSections = liveSidebarSections }
     } else {
       recentOrderHolds.remove(hold)
-      if recentOrderHolds.isEmpty { assign(\.heldRecentOrder, nil) }
+      if recentOrderHolds.isEmpty { assign(\.heldSidebarSections, nil) }
     }
   }
 
@@ -324,6 +342,7 @@ final class TerminalSessionsModel {
     assign(\.shellsByID, catalog.shellsByID)
     assign(\.hasSessions, !catalog.isEmpty)
     projectCommandAvailability()
+    markSelectionSeen()
   }
 
   /// Writes the observed selection, focus and layouts (only those that changed) and hands new
@@ -332,6 +351,7 @@ final class TerminalSessionsModel {
     for (sessionID, layout) in writes { layoutWriter.schedule(layout, for: sessionID) }
     assign(\.selectedSessionID, selection.selectedSessionID)
     assign(\.focusedShellID, selection.focusedShellID)
+    markSelectionSeen()
     assign(\.layout, selection.layout)
     assign(
       \.sessionLayouts, selection.layouts.sorted { $0.key.rawValue < $1.key.rawValue }.map(\.value.sessionLayout))
@@ -501,8 +521,35 @@ final class TerminalSessionsModel {
     sidebarMacs = macs
     recentOrderHolds = []
     sessionStepRelease?.cancel()
-    heldRecentOrder = nil
+    heldSidebarSections = nil
     preferenceDefaults.set(macs.rawValue, forKey: AxoPreferenceKey.sidebarMacs)
+  }
+
+  /// Moves the time the sidebar's groups are worked out at; the sidebar calls it on a slow tick.
+  func advanceSidebarClock(to date: Date = .now) {
+    assign(\.sidebarClock, date)
+  }
+
+  /// Marks the selected Session seen if the person can see it: when it is selected, when it
+  /// changes while selected, and when Axo comes to the front.
+  func markSelectionSeen() {
+    guard let id = selectedSessionID, let session = session(for: id), isLookingAtSelection()
+    else { return }
+    guard sessionSeen.markSeen(session, now: Int64(Date.now.timeIntervalSince1970)) else { return }
+    preferenceDefaults.set(sessionSeen.storedValue, forKey: AxoPreferenceKey.seenSessions)
+  }
+
+  private static func storedSessionSeen(in defaults: UserDefaults) -> SessionSeen {
+    let baseline: Int64
+    if let stored = defaults.object(forKey: AxoPreferenceKey.seenSessionsBaseline) as? NSNumber {
+      baseline = stored.int64Value
+    } else {
+      baseline = Int64(Date.now.timeIntervalSince1970)
+      defaults.set(baseline, forKey: AxoPreferenceKey.seenSessionsBaseline)
+    }
+    return SessionSeen(
+      baseline: baseline,
+      storedValue: defaults.dictionary(forKey: AxoPreferenceKey.seenSessions))
   }
 
   /// Pins `sessionID` to the top of the sidebar, or unpins it. Saved on this Mac only.

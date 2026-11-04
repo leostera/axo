@@ -92,18 +92,37 @@ struct WorkbenchSidebar: View {
     .background(Color(nsColor: .windowBackgroundColor))
   }
 
-  /// Every listed Session, latest activity first, without Workspaces: the project keyword at the
-  /// front of each title says what it is about. Rows hold still while the pointer is over
-  /// the list and move when it leaves.
+  /// Every listed Session in its group (pinned, active A to Z, then earlier), without
+  /// Workspaces: the project keyword at the front of each title says what it is about. Rows
+  /// hold still while the pointer is over the list and move when it leaves.
   private var recentList: some View {
-    let shown = sessions.sidebarOrderedSessions
+    let sections = sessions.sidebarSections
     return VStack(alignment: .leading, spacing: 0) {
-      ForEach(shown) { session in
-        sessionButton(for: session, showsAge: true)
+      ForEach(sections) { section in
+        Text(section.group.title)
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.tertiary)
+          .padding(.horizontal, 8)
+          .padding(.top, 8)
+          .padding(.bottom, 2)
+          .accessibilityAddTraits(.isHeader)
+        ForEach(section.sessions) { session in
+          sessionButton(for: session, showsAge: true)
+        }
       }
     }
-    .animation(.easeInOut(duration: 0.2), value: shown.map(\.id))
+    .animation(.easeInOut(duration: 0.2), value: sections.map { $0.sessions.map(\.id) })
     .onHover { sessions.holdRecentOrder($0) }
+    .task {
+      // Sessions leave the Active group on this tick, a few at a time, not one by one.
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(30))
+        sessions.advanceSidebarClock()
+      }
+    }
+    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+      sessions.markSelectionSeen()
+    }
   }
 
   private func sessionButton(for session: TerminalSession, showsAge: Bool = false) -> some View {
@@ -126,6 +145,7 @@ struct WorkbenchSidebar: View {
               session: session,
               isSelected: sessions.selectedSessionID == session.id,
               showsAge: showsAge,
+              isUnseen: sessions.isUnseen(session),
               hostLabel: sessions.sidebarMacs == .all ? sessions.hostLabel(for: session.id) : nil
             )
           }
@@ -247,6 +267,11 @@ struct WorkbenchSidebar: View {
       ScrollView {
         VStack(spacing: 0) {
           ForEach(sessions.sidebarOrderedSessions) { session in
+            if session.id != sessions.sidebarOrderedSessions.first?.id,
+              sessions.sidebarSections.contains(where: { $0.sessions.first?.id == session.id })
+            {
+              Divider().padding(.vertical, 3)
+            }
             CollapsedSessionButton(
               session: session,
               isSelected: sessions.selectedSessionID == session.id,

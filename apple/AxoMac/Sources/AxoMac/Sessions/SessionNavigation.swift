@@ -192,3 +192,173 @@ struct SessionPins: Equatable {
     if ids.count > Self.capacity { ids.removeFirst(ids.count - Self.capacity) }
   }
 }
+
+/// When this Mac last saw each Session, so the sidebar can tell which have activity nobody has
+/// looked at. Like pins, this lives in this Mac's user defaults alone.
+///
+/// A Session never marked counts as seen at `baseline`, the moment this Mac started keeping
+/// track: whatever happened before then isn't news. At most `capacity` marks are kept, dropping
+/// the oldest, which then fall back to `baseline` and so read as seen.
+struct SessionSeen: Equatable {
+  static let capacity = 1024
+  /// Unix seconds.
+  let baseline: Int64
+  private(set) var seenAt: [SessionID: Int64]
+
+  init(baseline: Int64, seenAt: [SessionID: Int64] = [:]) {
+    self.baseline = baseline
+    self.seenAt = seenAt
+    trim()
+  }
+
+  /// Marks as stored; entries that aren't Session IDs are dropped.
+  init(baseline: Int64, storedValue: [String: Any]?) {
+    var marks: [SessionID: Int64] = [:]
+    for (key, value) in storedValue ?? [:] {
+      guard let id = SessionID(rawValue: key), let seconds = (value as? NSNumber)?.int64Value
+      else { continue }
+      marks[id] = seconds
+    }
+    self.init(baseline: baseline, seenAt: marks)
+  }
+
+  var storedValue: [String: Int64] {
+    Dictionary(uniqueKeysWithValues: seenAt.map { ($0.key.rawValue, $0.value) })
+  }
+
+  /// Whether `session` has had activity since it was last seen.
+  func isUnseen(_ session: TerminalSession) -> Bool {
+    SessionActivityOrder.lastActivity(of: session) > (seenAt[session.id] ?? baseline)
+  }
+
+  /// Marks `session` seen at `now`, or at its last activity if that is later (another Mac's
+  /// clock may run ahead). Returns whether anything changed.
+  @discardableResult
+  mutating func markSeen(_ session: TerminalSession, now: Int64) -> Bool {
+    let mark = max(now, SessionActivityOrder.lastActivity(of: session))
+    guard isUnseen(session) || seenAt[session.id] == nil else { return false }
+    guard (seenAt[session.id] ?? .min) < mark else { return false }
+    seenAt[session.id] = mark
+    trim()
+    return true
+  }
+
+  private mutating func trim() {
+    guard seenAt.count > Self.capacity else { return }
+    for (id, _) in seenAt.sorted(by: { $0.value < $1.value }).prefix(seenAt.count - Self.capacity) {
+      seenAt[id] = nil
+    }
+  }
+}
+
+/// The sidebar's groups, top to bottom.
+enum SidebarGroup: Int, CaseIterable, Comparable {
+  /// Pinned Sessions, in the order they were pinned.
+  case pinned
+  /// Sessions working or waiting on you, active in the last few minutes, or with activity not
+  /// yet seen; A to Z, so they hold still however busy they are.
+  case active
+  /// Everything else, latest activity first. These are quiet, so they rarely move.
+  case earlier
+
+  static func < (left: SidebarGroup, right: SidebarGroup) -> Bool { left.rawValue < right.rawValue }
+
+  var title: String {
+    switch self {
+    case .pinned: "Pinned"
+    case .active: "Active"
+    case .earlier: "Earlier"
+    }
+  }
+}
+
+struct SidebarSection: Equatable, Identifiable {
+  let group: SidebarGroup
+  let sessions: [TerminalSession]
+  var id: SidebarGroup { group }
+}
+
+/// Sorts the sidebar into groups by what needs you rather than by the minute, so a row moves
+/// only when its Session joins or leaves a group, never because another one got busier.
+enum SessionGrouping {
+  /// How long a Session stays Active after its last activity, in seconds.
+  static let activeWindow: Int64 = 180
+
+  static func group(
+    of session: TerminalSession, pins: SessionPins, seen: SessionSeen, now: Int64
+  ) -> SidebarGroup {
+    if pins.contains(session.id) { return .pinned }
+    if session.status == .working || session.status == .needsAttention { return .active }
+    if seen.isUnseen(session) { return .active }
+    if now - SessionActivityOrder.lastActivity(of: session) < activeWindow { return .active }
+    return .earlier
+  }
+
+  /// `sessions` in their groups; groups without Sessions are left out.
+  static func sections(
+    _ sessions: [TerminalSession], pins: SessionPins, seen: SessionSeen, now: Int64
+  ) -> [SidebarSection] {
+    let byGroup = Dictionary(grouping: sessions) { group(of: $0, pins: pins, seen: seen, now: now) }
+    return SidebarGroup.allCases.compactMap { group in
+      guard let members = byGroup[group], !members.isEmpty else { return nil }
+      return SidebarSection(group: group, sessions: order(members, in: group, pins: pins))
+    }
+  }
+
+  /// `live` shown as `held` remembers it, so rows don't move under the pointer: each held
+  /// Session keeps its group and place, Sessions new since go first in their live group, and
+  /// closed ones drop out. Pins apply at once, so a Session pinned under the pointer moves up.
+  static func holding(
+    _ held: [SidebarSection]?, live: [SidebarSection], pins: SessionPins
+  ) -> [SidebarSection] {
+    guard let held else { return live }
+    let liveByID = Dictionary(
+      live.flatMap { section in section.sessions.map { ($0.id, ($0, section.group)) } },
+      uniquingKeysWith: { first, _ in first })
+    var heldGroup: [SessionID: SidebarGroup] = [:]
+    for section in held { for session in section.sessions { heldGroup[session.id] = section.group } }
+
+    func placement(_ id: SessionID) -> SidebarGroup? {
+      guard let (_, liveGroup) = liveByID[id] else { return nil }
+      if liveGroup == .pinned { return .pinned }
+      guard let group = heldGroup[id], group != .pinned else { return liveGroup }
+      return group
+    }
+
+    return SidebarGroup.allCases.compactMap { group in
+      let members: [TerminalSession]
+      if group == .pinned {
+        members = live.first { $0.group == .pinned }?.sessions ?? []
+      } else {
+        let fresh = live.first { $0.group == group }?.sessions.filter {
+          heldGroup[$0.id] == nil || heldGroup[$0.id] == .pinned
+        } ?? []
+        let kept = held.first { $0.group == group }?.sessions.compactMap { session in
+          placement(session.id) == group ? liveByID[session.id]?.0 : nil
+        } ?? []
+        members = fresh + kept
+      }
+      return members.isEmpty ? nil : SidebarSection(group: group, sessions: members)
+    }
+  }
+
+  private static func order(
+    _ sessions: [TerminalSession], in group: SidebarGroup, pins: SessionPins
+  ) -> [TerminalSession] {
+    switch group {
+    case .pinned:
+      let rank = Dictionary(uniqueKeysWithValues: pins.ids.enumerated().map { ($1, $0) })
+      return sessions.sorted { (rank[$0.id] ?? .max) < (rank[$1.id] ?? .max) }
+    case .active:
+      return sessions.sorted { left, right in
+        switch left.displayName.localizedStandardCompare(right.displayName) {
+        case .orderedAscending: true
+        case .orderedDescending: false
+        case .orderedSame: left.id.rawValue < right.id.rawValue
+        }
+      }
+    case .earlier:
+      return SessionActivityOrder.sorted(sessions)
+    }
+  }
+}

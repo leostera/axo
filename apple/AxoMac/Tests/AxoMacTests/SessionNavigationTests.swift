@@ -78,6 +78,106 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(many.ids.first, .fixture(3))
   }
 
+  func testSidebarGroupsArePinnedThenActiveAToZThenEarlierByActivity() {
+    let now: Int64 = 10_000
+    let seen = SessionSeen(baseline: 5_000)
+    let sessions = [
+      TerminalSession(id: 1, initialPwd: "/", shells: [], name: "zeta", lastMessageAt: now - 10),
+      TerminalSession(id: 2, initialPwd: "/", shells: [], name: "alpha", lastMessageAt: now - 5),
+      TerminalSession(id: 3, initialPwd: "/", shells: [], name: "old", lastMessageAt: 1_000),
+      TerminalSession(id: 4, initialPwd: "/", shells: [], name: "older", lastMessageAt: 900),
+      // Quiet for an hour but finished after this Mac last looked: still Active.
+      TerminalSession(id: 5, initialPwd: "/", shells: [], name: "mid", lastMessageAt: now - 3_600),
+      // Quiet but still working: Active.
+      TerminalSession(
+        id: 6, initialPwd: "/", shells: [], name: "busy", lastMessageAt: 800, status: .working),
+      TerminalSession(id: 7, initialPwd: "/", shells: [], name: "pinned", lastMessageAt: 100),
+    ]
+    let sections = SessionGrouping.sections(sessions, pins: SessionPins([7]), seen: seen, now: now)
+    XCTAssertEqual(sections.map(\.group), [.pinned, .active, .earlier])
+    XCTAssertEqual(sections.map { $0.sessions.map(\.id) }, [[7], [2, 6, 5, 1], [3, 4]])
+
+    // More activity in an Active Session moves nothing: A to Z doesn't care.
+    var busier = sessions
+    busier[0] = TerminalSession(id: 1, initialPwd: "/", shells: [], name: "zeta", lastMessageAt: now)
+    XCTAssertEqual(
+      SessionGrouping.sections(busier, pins: SessionPins([7]), seen: seen, now: now)[1].sessions.map(\.id),
+      [2, 6, 5, 1])
+
+    // Seen and quiet for the window, a Session falls to Earlier.
+    var looked = seen
+    looked.markSeen(sessions[4], now: now)
+    looked.markSeen(sessions[1], now: now)
+    let later = SessionGrouping.sections(
+      sessions, pins: SessionPins([7]), seen: looked, now: now + SessionGrouping.activeWindow)
+    XCTAssertEqual(later.map { $0.sessions.map(\.id) }, [[7], [6, 1], [2, 5, 3, 4]])
+  }
+
+  func testAHeldSidebarKeepsEachRowInItsGroupAndPlace() {
+    let session = { (id: SessionID, name: String, at: Int64) in
+      TerminalSession(id: id, initialPwd: "/", shells: [], name: name, lastMessageAt: at)
+    }
+    let held = [
+      SidebarSection(group: .active, sessions: [session(1, "a", 0), session(2, "b", 0)]),
+      SidebarSection(group: .earlier, sessions: [session(3, "c", 0)]),
+    ]
+    // Live, 2 fell to Earlier and 4 is new; held, 2 stays put and 4 goes first in its group.
+    let live = [
+      SidebarSection(group: .active, sessions: [session(1, "a", 0), session(4, "d", 0)]),
+      SidebarSection(group: .earlier, sessions: [session(2, "b", 0), session(3, "c", 0)]),
+    ]
+    let shown = SessionGrouping.holding(held, live: live, pins: SessionPins())
+    XCTAssertEqual(shown.map { $0.sessions.map(\.id) }, [[4, 1, 2], [3]])
+    // Pinned under the pointer, a row moves up at once.
+    let pinnedLive = [
+      SidebarSection(group: .pinned, sessions: [session(3, "c", 0)]),
+      SidebarSection(group: .active, sessions: [session(1, "a", 0), session(4, "d", 0)]),
+      SidebarSection(group: .earlier, sessions: [session(2, "b", 0)]),
+    ]
+    let pinned = SessionGrouping.holding(held, live: pinnedLive, pins: SessionPins([3]))
+    XCTAssertEqual(pinned.map(\.group), [.pinned, .active])
+    XCTAssertEqual(pinned.map { $0.sessions.map(\.id) }, [[3], [4, 1, 2]])
+  }
+
+  @MainActor func testSessionsSeenOnThisMacAreRememberedAndOnlyNewActivityIsUnseen() async throws {
+    let suiteName = "axo-sidebar-seen-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let now = Int64(Date.now.timeIntervalSince1970)
+    let client = FakeAxodClient()
+    client.sessions = [
+      TerminalSession(id: 1, initialPwd: "/", shells: [], name: "old", lastMessageAt: now - 7_200),
+      TerminalSession(id: 2, initialPwd: "/", shells: [], name: "other", lastMessageAt: now - 7_200),
+    ]
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    var looking = false
+    model.isLookingAtSelection = { looking }
+    await model.refresh()
+    // Activity from before this Mac kept track isn't news.
+    XCTAssertEqual(model.sidebarSections.map(\.group), [.earlier])
+
+    // New activity while nobody looks: unseen, so Active, and it stays Active past the window.
+    client.sessions[1] = TerminalSession(
+      id: 2, initialPwd: "/", shells: [], name: "other", lastMessageAt: now + 5)
+    await model.refresh()
+    model.advanceSidebarClock(to: .now.addingTimeInterval(3_600))
+    XCTAssertTrue(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
+    XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[2], [1]])
+
+    // Selected while Axo is in the background, it isn't seen; in front, it is.
+    model.showSession(2)
+    XCTAssertTrue(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
+    looking = true
+    model.markSelectionSeen()
+    XCTAssertFalse(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
+    XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[2, 1]])
+
+    // Remembered by the next launch.
+    let relaunched = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await relaunched.refresh()
+    XCTAssertFalse(relaunched.isUnseen(try XCTUnwrap(relaunched.session(for: 2))))
+  }
+
   func testMacStepsCycleThroughThisMacEachOtherMacAndAll() {
     let hosts = ["a", "b"]
     XCTAssertNil(SidebarMacs.thisMac.adjacent(.next, hostIDs: []), "no other Mac, nothing to step")
@@ -251,17 +351,17 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 3, 2])
 
     // Pinning under the pointer moves the row up even though the list is held still. Pinned
-    // Sessions keep recent activity among themselves: 2 (300) before 1 (100).
+    // Sessions keep the order they were pinned in, whatever their activity.
     model.holdRecentOrder(true)
     model.togglePin(2)
-    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 1, 3])
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3])
     model.holdRecentOrder(false)
-    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 1, 3])
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3])
 
     // Previous/Next Session follow the pinned order too.
     model.showSession(1)
     model.showNextSession()
-    XCTAssertEqual(model.selectedSessionID, 3)
+    XCTAssertEqual(model.selectedSessionID, 2)
 
     // A pinned Session that goes away drops out of the list; the pin stays, harmlessly, and
     // applies again if the Session comes back (reopened, or its Mac back online).
@@ -277,7 +377,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     client.sessions.append(closed)
     let relaunched = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await relaunched.refresh()
-    XCTAssertEqual(relaunched.sidebarOrderedSessions.map(\.id), [2, 1, 3])
+    XCTAssertEqual(relaunched.sidebarOrderedSessions.map(\.id), [1, 2, 3])
 
     relaunched.togglePin(1)
     XCTAssertFalse(relaunched.isPinned(1))

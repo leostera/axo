@@ -75,6 +75,8 @@ struct SessionSidebarRow: View {
   let isSelected: Bool
   /// Shows how long ago the Session was last active, as the recent list does.
   var showsAge = false
+  /// Has activity this Mac hasn't seen: a dot and a bolder name.
+  var isUnseen = false
   /// The other Mac the Session runs on, shown when the list mixes Macs.
   var hostLabel: String? = nil
   @Environment(GhosttyRuntime.self) private var ghostty
@@ -89,10 +91,15 @@ struct SessionSidebarRow: View {
       sessionGlyph(for: session, size: sessionGlyphSize)
         .frame(width: 14)
       Text(session.displayName)
-        .font(.system(size: 12))
+        .font(.system(size: 12, weight: isUnseen ? .semibold : .regular))
         .lineLimit(1)
         .truncationMode(.tail)
       Spacer(minLength: 0)
+      if isUnseen {
+        Circle()
+          .fill(Color.accentColor)
+          .frame(width: 6, height: 6)
+      }
       if let hostLabel {
         Text(hostLabel)
           .font(.system(size: 10))
@@ -113,7 +120,10 @@ struct SessionSidebarRow: View {
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
-      [session.displayName, hostLabel.map { "on \($0)" }, status.accessibilityDescription]
+      [
+        session.displayName, hostLabel.map { "on \($0)" }, status.accessibilityDescription,
+        isUnseen ? "unseen" : nil,
+      ]
         .compactMap { $0 }.joined(separator: ", "))
   }
 }

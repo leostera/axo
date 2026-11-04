@@ -13,11 +13,13 @@ enum AxoPreferenceKey {
   static let sidebarMacs = "sidebar.macs.v1"
   /// Sessions pinned to the top of the sidebar, on this Mac only (`SessionPins`).
   static let pinnedSessions = "sidebar.pinnedSessions.v1"
+  static let seenSessions = "sidebar.seenSessions.v1"
+  static let seenSessionsBaseline = "sidebar.seenSessionsBaseline.v1"
   /// The person asked not to be offered Developer Tools again.
   static let developerToolsPromptDeclined = "permissions.developerToolsDeclined.v1"
 
   static let all = [
     sidebarIsCollapsed, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
-    preventSystemSleep, sidebarMacs, pinnedSessions, developerToolsPromptDeclined,
+    preventSystemSleep, sidebarMacs, pinnedSessions, seenSessions, seenSessionsBaseline, developerToolsPromptDeclined,
   ]
 }
