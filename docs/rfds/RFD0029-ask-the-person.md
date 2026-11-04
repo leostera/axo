@@ -12,10 +12,11 @@
 
 When an agent needs the person, Axo asks the person directly, on their own clients, and only the person's answer counts. Agent and person stay separate parties, and the agent cannot answer for the person, whatever it is told or claims.
 
-There are three kinds of request:
+There are four kinds of request:
 
 - **Confirm:** an action the computer-use gate flags, such as *click "Pay now" in Safari — checkout.example.com*. The person answers Allow once, Always allow, or Deny.
 - **Input:** values the agent must not see, such as a login, a card or a one-time code. The person fills a small form, and the values go **past the agent**, straight into the app's fields on the Mac. The agent gets a receipt.
+- **Open a link:** a sign-in a terminal command started, such as `wrangler login`, `codex login` or `gh auth login`, that wants the person to open a link in a browser. The person does the sign-in on whatever device they have, and the command on the Mac finishes as if they had used the Mac's browser.
 - **Authenticate:** Face ID or Touch ID on the person's device unlocks an answer for steps that need more than a tap, such as paying, signing in, or anything the person marks.
 
 A request appears on every client the person has open:
@@ -158,7 +159,32 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
   - It blacks out those elements' frames in screenshots.
   - Secure text fields are already hidden by macOS.
 
-### Always allow
+### Opening a link for the person
+
+Command-line sign-ins print a link, or open it with `open`, and wait. Sitting at the Mac, the person clicks it. Away from the Mac, the agent can see the link but must not open it itself: the page may ask for a passkey, a password or consent that only the person can give.
+
+- **Catching the link:** two ways in, so neither the agent nor axod has to guess from terminal output:
+  - **The agent asks:** `request_link({ url, why, code? })`, for a link it read in a command's output. `code` is a device code the page will ask for, such as `gh`'s `ABCD-1234`.
+  - **The command opens it:** Session processes get `BROWSER=axod-open` and a `PATH` entry whose `open` is the same shim. A link opened that way becomes a request that names the process that opened it (`wrangler login`, pid, Session).
+- **Where it goes:**
+  - **The person is at the Mac** (unlocked, input in the last two minutes): the link opens in the default browser, as it does today. No request.
+  - **The person is away:** a request of kind `link`. The card shows the link's site in large type (`dash.cloudflare.com`), the command that asked, the device code if any, and *Open*.
+- **Opening it:**
+  - **Web:** *Open* opens the link in a new tab.
+  - **iOS:** *Open* slides up a browser sheet. The person signs in, and closes it, or it closes itself when the flow ends (below).
+  - **Mac app:** opens the default browser.
+- **Two kinds of sign-in flow:**
+  - **Device code** (`gh`, `codex login --device-auth`, most `--device` flags): the command polls the provider. Signing in anywhere is enough. Nothing comes back through Axo.
+  - **Loopback redirect** (`wrangler login`, `gcloud`, most OAuth CLIs): the provider sends the browser back to `http://localhost:<port>/callback?code=…&state=…`, where the command is listening. On the phone or another computer, that address is the wrong machine. So:
+    - axod reads the `redirect_uri` from the link when it creates the request, and records the loopback port and path.
+    - **iOS:** the sheet watches navigations. When it is sent to that loopback address, it does not load it: it seals the full callback URL to the Mac's request key (as for input), sends it, and closes.
+    - **Web:** a page in another tab can't be watched. When the tab ends on a "can't connect to localhost" page, the person copies its address into the card's *Paste the address you ended on* field, which seals it the same way.
+    - **axod** opens the sealed URL, checks that its host, port and path match the recorded `redirect_uri`, and that the port is still held by a process of that Session. Then it makes the GET to `127.0.0.1:<port>` itself. The command sees the callback it expected; PKCE and `state` work unchanged.
+- **Resolving:** `opened` when a loopback callback got a 2xx from the command, or when the person marks it done (device code). `expired` after 10 minutes, the length of most device codes. The agent's `request_link` returns the outcome, never the callback URL, which carries an authorization code.
+- **What it protects against:**
+  - **A link from the agent is untrusted.** A prompt-injected agent could ask the person to "sign in" to a look-alike site. The card leads with the site, says which command produced the link (or "the agent" for `request_link`), and marks links whose site doesn't match the command's known providers.
+  - **Callbacks go only where the command listens.** axod forwards a callback only to the port and path the original link named, held by the same Session's process, and only once. A sealed callback can't be turned into a request to another local service.
+
 
 - **Rules:** answering Always allow creates a rule in `axo.db` covering an app (bundle id), an action kind, a target label, an origin for browsers, and a scope (this Session or all).
 - **Effect:** a matching flagged action runs without a request, and is logged.
@@ -198,6 +224,8 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
 - **The first-seen key:** a first-seen fingerprint can be swapped by a compromised Worker, at first use only. After that, the pins hold.
 - **The gate's reach:** an agent can still drive apps through `osascript` or keystrokes in `bash`, outside the computer tool. This gate covers the computer tool, not every power an agent has over the Mac.
 - **Passkeys at a distance:** a website's passkey ceremony (WebAuthn) cannot be answered from afar. It needs the Mac's Touch ID, or the phone within Bluetooth range for the hybrid transport. Requests can only offer "Touch ID is needed at the Mac", or use one-time codes or tokens instead.
+- **Passkeys in the iOS sheet:** a sheet that can watch navigations (`WKWebView`) may not offer the person's passkeys for third-party sites; Apple's sign-in sheet (`ASWebAuthenticationSession`) offers them but can't catch a `http://localhost` redirect. To be settled with a spike; the fallback is Safari plus pasting the final address, as on the web.
+- **Loopback on the web is manual:** copying an address from a failed page is clumsy. Device-code flags avoid it where a command has one, and the agent should prefer them when the person is away.
 
 ## Unresolved questions
 
