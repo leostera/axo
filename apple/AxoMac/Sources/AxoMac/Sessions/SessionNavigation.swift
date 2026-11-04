@@ -278,30 +278,131 @@ struct SidebarSection: Equatable, Identifiable {
   var id: SidebarGroup { group }
 }
 
+/// How rows are ordered within one of the sidebar's groups.
+enum SidebarRowOrder: String, Codable, CaseIterable, Identifiable {
+  /// The order they were pinned in; only for Pinned.
+  case pinned
+  /// A to Z by name: holds still however busy the Sessions are.
+  case name
+  /// Newest Session first: holds still too, as creation never changes.
+  case created
+  /// Latest activity first: moves whenever another Session gets busier.
+  case activity
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .pinned: "Order pinned"
+    case .name: "Name (A to Z)"
+    case .created: "Newest first"
+    case .activity: "Latest activity"
+    }
+  }
+
+  static let forPinned: [SidebarRowOrder] = [.pinned, .name, .activity]
+  static let forGroups: [SidebarRowOrder] = [.name, .created, .activity]
+}
+
+/// How unseen activity shows in a sidebar row.
+enum UnseenMarker: String, Codable, CaseIterable, Identifiable {
+  case dotAndBold
+  case dot
+  case bold
+  case none
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .dotAndBold: "Dot and bold name"
+    case .dot: "Dot"
+    case .bold: "Bold name"
+    case .none: "Nothing"
+    }
+  }
+
+  var showsDot: Bool { self == .dotAndBold || self == .dot }
+  var showsBold: Bool { self == .dotAndBold || self == .bold }
+}
+
+/// The sidebar's grouping, as set in Settings → Sessions, saved on this Mac.
+struct SidebarGroupingSettings: Codable, Equatable {
+  static let activeWindowChoices = [1, 3, 5, 10, 15, 30, 60]
+  static let regroupIntervalChoices = [10, 30, 60, 300]
+
+  /// How long a Session stays Active after its last activity.
+  var activeWindowMinutes = 3
+  /// How often Sessions are moved between groups, in seconds.
+  var regroupIntervalSeconds = 30
+  /// Whether a Session with activity this Mac hasn't seen stays Active until it is seen.
+  var unseenStayActive = true
+  var unseenMarker = UnseenMarker.dotAndBold
+  var pinnedOrder = SidebarRowOrder.pinned
+  var activeOrder = SidebarRowOrder.name
+  var earlierOrder = SidebarRowOrder.activity
+  var showsGroupTitles = true
+
+  init() {}
+
+  /// Settings as stored; anything missing or out of range takes its default, so a newer or
+  /// older Axo's settings never fail to load.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let defaults = Self()
+    func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+      ((try? container.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+    }
+    activeWindowMinutes = min(max(value(.activeWindowMinutes, defaults.activeWindowMinutes), 1), 24 * 60)
+    regroupIntervalSeconds = min(max(value(.regroupIntervalSeconds, defaults.regroupIntervalSeconds), 5), 3_600)
+    unseenStayActive = value(.unseenStayActive, defaults.unseenStayActive)
+    unseenMarker = value(.unseenMarker, defaults.unseenMarker)
+    pinnedOrder = value(.pinnedOrder, defaults.pinnedOrder)
+    activeOrder = value(.activeOrder, defaults.activeOrder)
+    earlierOrder = value(.earlierOrder, defaults.earlierOrder)
+    showsGroupTitles = value(.showsGroupTitles, defaults.showsGroupTitles)
+  }
+
+  init(storedValue: Data?) {
+    self = storedValue.flatMap { try? JSONDecoder().decode(Self.self, from: $0) } ?? Self()
+  }
+
+  var storedValue: Data? { try? JSONEncoder().encode(self) }
+
+  var activeWindow: Int64 { Int64(activeWindowMinutes) * 60 }
+}
+
 /// Sorts the sidebar into groups by what needs you rather than by the minute, so a row moves
 /// only when its Session joins or leaves a group, never because another one got busier.
 enum SessionGrouping {
-  /// How long a Session stays Active after its last activity, in seconds.
-  static let activeWindow: Int64 = 180
-
   static func group(
-    of session: TerminalSession, pins: SessionPins, seen: SessionSeen, now: Int64
+    of session: TerminalSession, pins: SessionPins, seen: SessionSeen, now: Int64,
+    settings: SidebarGroupingSettings = .init()
   ) -> SidebarGroup {
     if pins.contains(session.id) { return .pinned }
     if session.status == .working || session.status == .needsAttention { return .active }
-    if seen.isUnseen(session) { return .active }
-    if now - SessionActivityOrder.lastActivity(of: session) < activeWindow { return .active }
+    if settings.unseenStayActive && seen.isUnseen(session) { return .active }
+    if now - SessionActivityOrder.lastActivity(of: session) < settings.activeWindow { return .active }
     return .earlier
   }
 
   /// `sessions` in their groups; groups without Sessions are left out.
   static func sections(
-    _ sessions: [TerminalSession], pins: SessionPins, seen: SessionSeen, now: Int64
+    _ sessions: [TerminalSession], pins: SessionPins, seen: SessionSeen, now: Int64,
+    settings: SidebarGroupingSettings = .init()
   ) -> [SidebarSection] {
-    let byGroup = Dictionary(grouping: sessions) { group(of: $0, pins: pins, seen: seen, now: now) }
+    let byGroup = Dictionary(grouping: sessions) {
+      group(of: $0, pins: pins, seen: seen, now: now, settings: settings)
+    }
     return SidebarGroup.allCases.compactMap { group in
       guard let members = byGroup[group], !members.isEmpty else { return nil }
-      return SidebarSection(group: group, sessions: order(members, in: group, pins: pins))
+      let rowOrder: SidebarRowOrder =
+        switch group {
+        case .pinned: settings.pinnedOrder
+        case .active: settings.activeOrder
+        case .earlier: settings.earlierOrder
+        }
+      return SidebarSection(group: group, sessions: order(members, by: rowOrder, pins: pins))
     }
   }
 
@@ -343,13 +444,13 @@ enum SessionGrouping {
   }
 
   private static func order(
-    _ sessions: [TerminalSession], in group: SidebarGroup, pins: SessionPins
+    _ sessions: [TerminalSession], by rowOrder: SidebarRowOrder, pins: SessionPins
   ) -> [TerminalSession] {
-    switch group {
+    switch rowOrder {
     case .pinned:
       let rank = Dictionary(uniqueKeysWithValues: pins.ids.enumerated().map { ($1, $0) })
       return sessions.sorted { (rank[$0.id] ?? .max) < (rank[$1.id] ?? .max) }
-    case .active:
+    case .name:
       return sessions.sorted { left, right in
         switch left.displayName.localizedStandardCompare(right.displayName) {
         case .orderedAscending: true
@@ -357,7 +458,13 @@ enum SessionGrouping {
         case .orderedSame: left.id.rawValue < right.id.rawValue
         }
       }
-    case .earlier:
+    case .created:
+      return sessions.sorted { left, right in
+        let (leftCreated, rightCreated) = (left.createdAt ?? 0, right.createdAt ?? 0)
+        if leftCreated != rightCreated { return leftCreated > rightCreated }
+        return left.id.rawValue > right.id.rawValue
+      }
+    case .activity:
       return SessionActivityOrder.sorted(sessions)
     }
   }

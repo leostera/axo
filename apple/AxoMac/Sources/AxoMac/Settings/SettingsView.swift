@@ -30,6 +30,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
 enum SettingsSection: String, CaseIterable, Identifiable {
   case general
   case appearance
+  case sessions
   case agent
   case remoteAccess
   case about
@@ -40,6 +41,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .general: "General"
     case .appearance: "Appearance"
+    case .sessions: "Sessions"
     case .agent: "Agent"
     case .remoteAccess: "Remote Access"
     case .about: "About"
@@ -50,6 +52,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .general: "gearshape"
     case .appearance: "paintbrush"
+    case .sessions: "sidebar.left"
     case .agent: "terminal"
     case .remoteAccess: "network"
     case .about: "info.circle"
@@ -97,6 +100,8 @@ struct SettingsView: View {
           )
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
+        case .sessions:
+          SessionsSettingsView(sessions: sessions)
         case .agent:
           AgentSettingsView(daemon: daemon, sessions: sessions, settingsClient: settingsClient)
         case .remoteAccess:

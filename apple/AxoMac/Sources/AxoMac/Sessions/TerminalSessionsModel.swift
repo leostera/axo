@@ -91,6 +91,8 @@ final class TerminalSessionsModel {
   /// The time the sidebar's groups are worked out at; it moves on a slow tick
   /// (`advanceSidebarClock`) so Sessions leave the Active group in batches, not one by one.
   private(set) var sidebarClock: Date = .now
+  /// How the sidebar groups Sessions, from Settings → Sessions.
+  private(set) var sidebarGrouping: SidebarGroupingSettings
   /// Whether the person can see the selected Session now, which marks it seen; tests replace it.
   @ObservationIgnored var isLookingAtSelection: @MainActor () -> Bool = { NSApplication.shared.isActive }
 
@@ -189,6 +191,8 @@ final class TerminalSessionsModel {
     sessionPins = SessionPins(
       storedValue: preferenceDefaults.stringArray(forKey: AxoPreferenceKey.pinnedSessions))
     sessionSeen = Self.storedSessionSeen(in: preferenceDefaults)
+    sidebarGrouping = SidebarGroupingSettings(
+      storedValue: preferenceDefaults.data(forKey: AxoPreferenceKey.sidebarGrouping))
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
@@ -241,7 +245,7 @@ final class TerminalSessionsModel {
     let listed = sessions.filter { sidebarMacs.includes(hostID: peerHostBySession[$0.id]) }
     return SessionGrouping.sections(
       listed, pins: sessionPins, seen: sessionSeen,
-      now: Int64(sidebarClock.timeIntervalSince1970))
+      now: Int64(sidebarClock.timeIntervalSince1970), settings: sidebarGrouping)
   }
 
   func isPinned(_ sessionID: SessionID) -> Bool { sessionPins.contains(sessionID) }
@@ -523,6 +527,15 @@ final class TerminalSessionsModel {
     sessionStepRelease?.cancel()
     heldSidebarSections = nil
     preferenceDefaults.set(macs.rawValue, forKey: AxoPreferenceKey.sidebarMacs)
+  }
+
+  /// Changes how the sidebar groups Sessions; saved on this Mac and applied at once.
+  func setSidebarGrouping(_ settings: SidebarGroupingSettings) {
+    guard sidebarGrouping != settings else { return }
+    sidebarGrouping = settings
+    heldSidebarSections = nil
+    sidebarClock = .now
+    preferenceDefaults.set(settings.storedValue, forKey: AxoPreferenceKey.sidebarGrouping)
   }
 
   /// Moves the time the sidebar's groups are worked out at; the sidebar calls it on a slow tick.

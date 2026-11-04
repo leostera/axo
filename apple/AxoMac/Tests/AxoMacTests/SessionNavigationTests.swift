@@ -109,8 +109,56 @@ final class SessionNavigationTests: XCTestCase {
     looked.markSeen(sessions[4], now: now)
     looked.markSeen(sessions[1], now: now)
     let later = SessionGrouping.sections(
-      sessions, pins: SessionPins([7]), seen: looked, now: now + SessionGrouping.activeWindow)
+      sessions, pins: SessionPins([7]), seen: looked, now: now + SidebarGroupingSettings().activeWindow)
     XCTAssertEqual(later.map { $0.sessions.map(\.id) }, [[7], [6, 1], [2, 5, 3, 4]])
+  }
+
+  func testGroupingSettingsChangeTheWindowUnseenRuleAndOrders() {
+    let now: Int64 = 10_000
+    let seen = SessionSeen(baseline: 5_000)
+    let sessions = [
+      TerminalSession(
+        id: 1, initialPwd: "/", shells: [], name: "b", lastMessageAt: now - 600, createdAt: 10),
+      TerminalSession(
+        id: 2, initialPwd: "/", shells: [], name: "a", lastMessageAt: now - 30, createdAt: 20),
+      TerminalSession(
+        id: 3, initialPwd: "/", shells: [], name: "c", lastMessageAt: 1_000, createdAt: 30),
+    ]
+    var settings = SidebarGroupingSettings()
+    let ids = { (settings: SidebarGroupingSettings) in
+      SessionGrouping.sections(sessions, pins: SessionPins(), seen: seen, now: now, settings: settings)
+        .map { $0.sessions.map(\.id) }
+    }
+    XCTAssertEqual(ids(settings), [[2, 1], [3]], "1 is unseen, so Active")
+    settings.unseenStayActive = false
+    XCTAssertEqual(ids(settings), [[2], [1, 3]])
+    settings.activeWindowMinutes = 15
+    XCTAssertEqual(ids(settings), [[2, 1], [3]], "1 is within 15 minutes")
+    settings.activeOrder = .activity
+    XCTAssertEqual(ids(settings), [[2, 1]] + [[3]])
+    settings.activeOrder = .created
+    XCTAssertEqual(ids(settings), [[2, 1], [3]])
+    settings.activeOrder = .name
+    settings.activeWindowMinutes = 60
+    settings.earlierOrder = .name
+    XCTAssertEqual(ids(settings), [[2, 1], [3]])
+  }
+
+  func testGroupingSettingsLoadWhateverIsStored() throws {
+    XCTAssertEqual(SidebarGroupingSettings(storedValue: nil), SidebarGroupingSettings())
+    XCTAssertEqual(SidebarGroupingSettings(storedValue: Data("junk".utf8)), SidebarGroupingSettings())
+    // Missing, unknown and out-of-range values take their defaults or are clamped.
+    let stored = Data(
+      #"{"activeWindowMinutes":0,"activeOrder":"sideways","unseenMarker":"dot","future":1}"#.utf8)
+    let settings = SidebarGroupingSettings(storedValue: stored)
+    XCTAssertEqual(settings.activeWindowMinutes, 1)
+    XCTAssertEqual(settings.activeOrder, .name)
+    XCTAssertEqual(settings.unseenMarker, .dot)
+    XCTAssertEqual(settings.regroupIntervalSeconds, 30)
+    var changed = SidebarGroupingSettings()
+    changed.earlierOrder = .created
+    changed.showsGroupTitles = false
+    XCTAssertEqual(SidebarGroupingSettings(storedValue: changed.storedValue), changed)
   }
 
   func testAHeldSidebarKeepsEachRowInItsGroupAndPlace() {
@@ -172,10 +220,16 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertFalse(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
     XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[2, 1]])
 
-    // Remembered by the next launch.
+    // Remembered by the next launch, as are the grouping settings.
+    var grouping = SidebarGroupingSettings()
+    grouping.earlierOrder = .name
+    model.setSidebarGrouping(grouping)
+    model.advanceSidebarClock(to: .now.addingTimeInterval(3_600))
+    XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[1, 2]], "old before other")
     let relaunched = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await relaunched.refresh()
     XCTAssertFalse(relaunched.isUnseen(try XCTUnwrap(relaunched.session(for: 2))))
+    XCTAssertEqual(relaunched.sidebarGrouping, grouping)
   }
 
   func testMacStepsCycleThroughThisMacEachOtherMacAndAll() {

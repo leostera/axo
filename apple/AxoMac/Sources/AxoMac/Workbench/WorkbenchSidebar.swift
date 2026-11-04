@@ -99,13 +99,17 @@ struct WorkbenchSidebar: View {
     let sections = sessions.sidebarSections
     return VStack(alignment: .leading, spacing: 0) {
       ForEach(sections) { section in
-        Text(section.group.title)
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(.tertiary)
-          .padding(.horizontal, 8)
-          .padding(.top, 8)
-          .padding(.bottom, 2)
-          .accessibilityAddTraits(.isHeader)
+        if sessions.sidebarGrouping.showsGroupTitles {
+          Text(section.group.title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+            .accessibilityAddTraits(.isHeader)
+        } else if section.id != sections.first?.id {
+          Divider().padding(.horizontal, 8).padding(.vertical, 4)
+        }
         ForEach(section.sessions) { session in
           sessionButton(for: session, showsAge: true)
         }
@@ -113,10 +117,12 @@ struct WorkbenchSidebar: View {
     }
     .animation(.easeInOut(duration: 0.2), value: sections.map { $0.sessions.map(\.id) })
     .onHover { sessions.holdRecentOrder($0) }
-    .task {
+    .task(id: sessions.sidebarGrouping.regroupIntervalSeconds) {
       // Sessions leave the Active group on this tick, a few at a time, not one by one.
+      let interval = sessions.sidebarGrouping.regroupIntervalSeconds
       while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(30))
+        try? await Task.sleep(for: .seconds(interval))
+        if Task.isCancelled { break }
         sessions.advanceSidebarClock()
       }
     }
@@ -145,7 +151,7 @@ struct WorkbenchSidebar: View {
               session: session,
               isSelected: sessions.selectedSessionID == session.id,
               showsAge: showsAge,
-              isUnseen: sessions.isUnseen(session),
+              unseenMarker: sessions.isUnseen(session) ? sessions.sidebarGrouping.unseenMarker : nil,
               hostLabel: sessions.sidebarMacs == .all ? sessions.hostLabel(for: session.id) : nil
             )
           }
