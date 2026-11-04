@@ -184,6 +184,12 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   /**
+   * An alarm a ClientDO set before RFD0031 fires once, does nothing, and is not set again. Kept
+   * so those alarms end cleanly instead of failing and being retried.
+   */
+  async alarm(): Promise<void> {}
+
+  /**
    * The account's hosts changed (a Mac paired or revoked): list them again and follow any new
    * one. False tells the account this client is gone.
    */
