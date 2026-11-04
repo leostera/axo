@@ -72,6 +72,11 @@ impl RelayEndpoint {
         url
     }
 
+    /// Where this host reads one of its account's assets (RFD0030).
+    pub(crate) fn asset_url(&self, account_id: &str, host_id: &str, hex: &str) -> Url {
+        self.at(&format!("/api/v1/accounts/{account_id}/hosts/{host_id}/assets/{hex}"))
+    }
+
     /// Where a pairing code is redeemed.
     pub(crate) fn redemption_url(&self) -> Url {
         self.at("/api/v1/host-pairings/redeem")

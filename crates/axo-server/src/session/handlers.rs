@@ -250,6 +250,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         session_id: SessionId,
         text: &str,
         command_id: Option<&axo_relay::CommandId>,
+        attachments: &[axo_protocol::asset::FetchedAttachment],
     ) -> io::Result<()> {
         // A client that sends no commandId still gets one, so pi-axo holds its prompt while Pi
         // works rather than steering it into a queue a stop would empty (RFD0024).
@@ -261,7 +262,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
             ),
         };
         self.0
-            .prompt_pi(session_id, text, command_id.or(generated.as_ref()))
+            .prompt_pi(session_id, text, command_id.or(generated.as_ref()), attachments)
     }
 
     fn remote_stop_pi_turn(

@@ -149,11 +149,13 @@ pub trait RelayHost: Send + Sync {
     /// Fails with `InvalidInput` for empty or oversized text, and `NotFound` if Pi is not running.
     /// With a `command_id`, the prompt is taken at most once and written after a receipt
     /// (RFD0024).
+    /// `attachments` are already fetched and checked (RFD0030); with any, `text` may be empty.
     fn remote_prompt_pi(
         &self,
         session_id: SessionId,
         text: &str,
         command_id: Option<&CommandId>,
+        attachments: &[axo_protocol::asset::FetchedAttachment],
     ) -> io::Result<()>;
     /// Stops the Session's running turn if it is the one `turn_id` names; says whether it did.
     /// Fails with `NotFound` if Pi is not running.

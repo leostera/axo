@@ -76,6 +76,10 @@ pub enum Action<'a> {
         /// holds it while working, whatever `delivery` says.
         #[serde(skip_serializing_if = "Option::is_none")]
         command_id: Option<&'a str>,
+        /// Files axod fetched and checked for this prompt (RFD0030); with any, `text` may be
+        /// empty.
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        attachments: &'a [axo_protocol::asset::FetchedAttachment],
     },
     /// Stops the running turn if `turn_id`, the entry id of one of its user records, belongs to
     /// it; otherwise answers `idle`.
@@ -227,6 +231,7 @@ mod tests {
                 text: "hi",
                 delivery: Some(QueuedDelivery::FollowUp),
                 command_id: None,
+                attachments: &[],
             })
             .unwrap(),
             json!({ "kind": "send", "text": "hi", "delivery": "followUp" })
@@ -236,6 +241,7 @@ mod tests {
                 text: "hi",
                 delivery: None,
                 command_id: None,
+                attachments: &[],
             })
             .unwrap(),
             json!({ "kind": "send", "text": "hi" })
@@ -245,6 +251,7 @@ mod tests {
                 text: "yes",
                 delivery: Some(QueuedDelivery::Steer),
                 command_id: Some("6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"),
+                attachments: &[],
             })
             .unwrap(),
             json!({ "kind": "send", "text": "yes", "delivery": "steer", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" })

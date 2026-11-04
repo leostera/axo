@@ -59,6 +59,7 @@ enum OwnedAction {
         text: String,
         delivery: Option<QueuedDelivery>,
         command_id: Option<String>,
+        attachments: Vec<axo_protocol::asset::FetchedAttachment>,
     },
     Stop {
         turn_id: String,
@@ -72,10 +73,12 @@ impl OwnedAction {
                 text,
                 delivery,
                 command_id,
+                attachments,
             } => Action::Send {
                 text,
                 delivery: *delivery,
                 command_id: command_id.as_deref(),
+                attachments,
             },
             Self::Stop { turn_id } => Action::Stop { turn_id },
         }
@@ -109,6 +112,7 @@ impl CommandSender {
         text: &str,
         delivery: Option<QueuedDelivery>,
         command_id: Option<&str>,
+        attachments: &[axo_protocol::asset::FetchedAttachment],
         timeout: Duration,
     ) -> io::Result<CommandResult> {
         self.command(
@@ -116,6 +120,7 @@ impl CommandSender {
                 text: text.to_owned(),
                 delivery,
                 command_id: command_id.map(str::to_owned),
+                attachments: attachments.to_vec(),
             },
             timeout,
         )

@@ -1,6 +1,7 @@
 //! Axo's cloud relay: pairs this host with an Axo account, then keeps an authenticated
 //! WebSocket to the relay service so remote clients can list, create and drive sessions.
 
+pub mod assets;
 pub mod bash;
 pub mod credential;
 mod endpoint;

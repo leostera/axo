@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use super::{SessionManager, SessionState};
 use axo_pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
 use axo_pi::worker::CommandSender;
+use axo_protocol::asset::FetchedAttachment;
 use axo_protocol::rpc::{PromptAccepted, PromptDelivery, PromptSession};
 use axo_protocol::{PaneRole, SessionId, ShellId};
 use axo_relay::{CommandId, TurnId};
@@ -35,6 +36,7 @@ pub(super) struct QueuedPrompt {
     text: String,
     delivery: PromptDelivery,
     command_id: Option<CommandId>,
+    attachments: Vec<FetchedAttachment>,
 }
 
 /// What each Session's agent has sent, for rate limits.
@@ -130,6 +132,7 @@ impl PiBridge {
         text: &str,
         delivery: PromptDelivery,
         command_id: Option<&CommandId>,
+        attachments: &[FetchedAttachment],
     ) -> Result<(), PromptError> {
         let delivery_on_bridge = match delivery {
             PromptDelivery::Steer => Some(QueuedDelivery::Steer),
@@ -140,6 +143,7 @@ impl PiBridge {
             text,
             delivery_on_bridge,
             command_id.map(CommandId::as_str),
+            attachments,
             PROMPT_ANSWER_TIMEOUT,
         ) {
             Ok(CommandResult::Accepted) => Ok(()),
@@ -192,7 +196,7 @@ impl SessionManager {
         &self,
         request: &PromptSession,
     ) -> Result<PromptAccepted, PromptError> {
-        self.prompt_session_as(request, None)
+        self.prompt_session_as(request, None, &[])
     }
 
     /// [`Self::prompt_session`], for a client's prompt that carries its `command_id`.
@@ -200,6 +204,7 @@ impl SessionManager {
         &self,
         request: &PromptSession,
         command_id: Option<&CommandId>,
+        attachments: &[FetchedAttachment],
     ) -> Result<PromptAccepted, PromptError> {
         let PromptSession {
             session_id: target,
@@ -207,26 +212,28 @@ impl SessionManager {
             delivery,
             from_session_id: from,
         } = *request;
-        if text.trim().is_empty() || text.len() > MAX_PI_PROMPT_BYTES {
+        // A prompt of attachments alone may have no text (RFD0030).
+        if (text.trim().is_empty() && attachments.is_empty()) || text.len() > MAX_PI_PROMPT_BYTES {
             return Err(PromptError::Invalid(
                 "a prompt must contain 1 to 16000 bytes of text",
             ));
         }
-        let (bridge, text) = match self.admit_prompt(target, text, delivery, from, command_id) {
-            Ok(Admitted::Queued) => {
-                log_prompt(target, from, delivery, "queued");
-                return Ok(PromptAccepted {
-                    accepted: true,
-                    queued: true,
-                });
-            }
-            Ok(Admitted::Send { bridge, text }) => (bridge, text),
-            Err(error) => {
-                log_prompt(target, from, delivery, refusal(&error));
-                return Err(error);
-            }
-        };
-        let sent = bridge.send(&text, delivery, command_id);
+        let (bridge, text) =
+            match self.admit_prompt(target, text, delivery, from, command_id, attachments) {
+                Ok(Admitted::Queued) => {
+                    log_prompt(target, from, delivery, "queued");
+                    return Ok(PromptAccepted {
+                        accepted: true,
+                        queued: true,
+                    });
+                }
+                Ok(Admitted::Send { bridge, text }) => (bridge, text),
+                Err(error) => {
+                    log_prompt(target, from, delivery, refusal(&error));
+                    return Err(error);
+                }
+            };
+        let sent = bridge.send(&text, delivery, command_id, attachments);
         log_prompt(
             target,
             from,
@@ -249,6 +256,7 @@ impl SessionManager {
         delivery: PromptDelivery,
         from: Option<SessionId>,
         command_id: Option<&CommandId>,
+        attachments: &[FetchedAttachment],
     ) -> Result<Admitted, PromptError> {
         let mut state = self
             .lock_state()
@@ -287,6 +295,7 @@ impl SessionManager {
                 text,
                 delivery,
                 command_id: command_id.cloned(),
+                attachments: attachments.to_vec(),
             });
             return Ok(Admitted::Queued);
         }
@@ -302,6 +311,7 @@ impl SessionManager {
         session_id: SessionId,
         text: &str,
         command_id: Option<&CommandId>,
+        attachments: &[FetchedAttachment],
     ) -> io::Result<()> {
         self.prompt_session_as(
             &PromptSession {
@@ -311,6 +321,7 @@ impl SessionManager {
                 from_session_id: None,
             },
             command_id,
+            attachments,
         )
         .map(drop)
         .map_err(io::Error::from)
@@ -350,9 +361,12 @@ impl SessionManager {
             .name(format!("axo-pi-prompts-{}", session_id))
             .spawn(move || {
                 for prompt in queue {
-                    if let Err(error) =
-                        bridge.send(&prompt.text, prompt.delivery, prompt.command_id.as_ref())
-                    {
+                    if let Err(error) = bridge.send(
+                        &prompt.text,
+                        prompt.delivery,
+                        prompt.command_id.as_ref(),
+                        &prompt.attachments,
+                    ) {
                         log::warn!(
                             "event=session.pi_prompt_lost session_id={} reason={}",
                             session_id,

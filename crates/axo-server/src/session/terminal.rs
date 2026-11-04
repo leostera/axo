@@ -921,7 +921,9 @@ mod tests {
             .running_mut(shell_id)
             .unwrap()
             .role = PaneRole::Terminal;
-        let refused = manager.prompt_pi(session.id, "hello", None).unwrap_err();
+        let refused = manager
+            .prompt_pi(session.id, "hello", None, &[])
+            .unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 
         manager
@@ -932,12 +934,12 @@ mod tests {
             .unwrap()
             .role = PaneRole::Pi;
         for bad in ["", "   \n", &"x".repeat(MAX_PI_PROMPT_BYTES + 1)] {
-            let error = manager.prompt_pi(session.id, bad, None).unwrap_err();
+            let error = manager.prompt_pi(session.id, bad, None, &[]).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
         // Pi is still starting (its bridge has not bound): the prompt waits.
         manager
-            .prompt_pi(session.id, "fix the build\nthen run tests", None)
+            .prompt_pi(session.id, "fix the build\nthen run tests", None, &[])
             .unwrap();
         assert_eq!(
             manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(),
@@ -1098,7 +1100,7 @@ mod tests {
             axo_relay::CommandId::try_from("6F1D2C3B-4A5E-4F60-8A7B-9C0D1E2F3A4B".to_owned())
                 .unwrap();
         manager
-            .prompt_pi(session.id, "yes", Some(&command_id))
+            .prompt_pi(session.id, "yes", Some(&command_id), &[])
             .unwrap();
         assert_eq!(
             actions.recv_timeout(Duration::from_secs(5)).unwrap(),

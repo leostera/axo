@@ -350,6 +350,7 @@ pub(crate) mod testing {
             _: axo_protocol::SessionId,
             _: &str,
             _: Option<&crate::CommandId>,
+            _: &[axo_protocol::asset::FetchedAttachment],
         ) -> std::io::Result<()> {
             unreachable!()
         }

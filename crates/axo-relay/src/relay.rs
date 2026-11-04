@@ -139,6 +139,9 @@ pub struct RelayDependencies {
     pub credentials: Arc<dyn HostCredentialStore>,
     /// Where the other Macs' Sessions are copied (RFD0022); None copies nothing.
     pub peers: Option<crate::peers::PeersPaths>,
+    /// Where prompts' attachments are fetched to, `~/.axo/assets` (RFD0030); None refuses
+    /// prompts that have any.
+    pub assets_directory: Option<std::path::PathBuf>,
 }
 
 impl RelayWorker {
@@ -395,6 +398,15 @@ fn run_connection(
             waker,
             socket_id: format!("axod-{}-{epoch}", std::process::id()),
             account_id: account.account_id().to_owned(),
+            assets: dependencies.assets_directory.as_ref().map(|directory| {
+                crate::assets::AssetSource {
+                    endpoint: dependencies.endpoint.clone(),
+                    account: account.clone(),
+                    host_id: host_id.clone(),
+                    credentials: Arc::clone(&dependencies.credentials),
+                    directory: directory.clone(),
+                }
+            }),
         },
     );
     channel.detach(epoch);
@@ -570,6 +582,8 @@ struct RelaySessionContext<'a> {
     socket_id: String,
     /// The account this Mac is linked to; a command for any other is refused.
     account_id: String,
+    /// Where a prompt's attachments come from (RFD0030).
+    assets: Option<crate::assets::AssetSource>,
 }
 
 /// Commands running at once on one Mac; more are refused until one ends.
@@ -606,6 +620,92 @@ fn start_bash(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
         });
     if spawned.is_err() {
         BASH_JOBS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Prompts fetching their attachments on one Mac at once; more are refused until one ends.
+const MAX_ATTACHMENT_FETCHES: usize = 4;
+static ATTACHMENT_FETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Fetches a prompt's attachments, all of them or none, then gives it to Pi; the reply goes back
+/// on this socket once Pi has it, or with why it was refused (RFD0030).
+fn start_prompt_with_attachments(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
+    let request = match serde_json::from_value::<PromptParams>(params.clone()) {
+        Ok(request) => request,
+        Err(_) => {
+            return context
+                .replies
+                .reply(&id, Err((-32602, "Invalid params".into())));
+        }
+    };
+    if request.target.host_id != context.host_id
+        || request.target.host_generation != context.host_generation
+    {
+        return context
+            .replies
+            .reply(&id, Err((-32002, "Stale host".into())));
+    }
+    if request.text.len() > 16_000 {
+        return context
+            .replies
+            .reply(&id, Err((-32602, "Invalid params".into())));
+    }
+    let Some(source) = context.assets.clone() else {
+        return context.replies.reply(
+            &id,
+            Err((-32003, "this Mac can't fetch attachments".into())),
+        );
+    };
+    if ATTACHMENT_FETCHES.fetch_add(1, Ordering::SeqCst) >= MAX_ATTACHMENT_FETCHES {
+        ATTACHMENT_FETCHES.fetch_sub(1, Ordering::SeqCst);
+        return context.replies.reply(
+            &id,
+            Err((
+                -32006,
+                "too many prompts are fetching attachments on this Mac".into(),
+            )),
+        );
+    }
+    let replies = context.replies.clone();
+    let sessions = Arc::clone(context.sessions);
+    let spawned = thread::Builder::new()
+        .name("axo-prompt-attachments".to_owned())
+        .spawn(move || {
+            let fetched = crate::assets::fetch_all(&source, &request.attachments);
+            ATTACHMENT_FETCHES.fetch_sub(1, Ordering::SeqCst);
+            let outcome = match fetched {
+                Err(error) => Err((
+                    -32010,
+                    match error {
+                        crate::assets::FetchError::NotFound => {
+                            "an attachment is no longer in the account"
+                        }
+                        crate::assets::FetchError::Mismatch => {
+                            "an attachment did not match its name"
+                        }
+                        crate::assets::FetchError::Failed(_) => {
+                            "an attachment could not be fetched"
+                        }
+                    }
+                    .to_owned(),
+                )),
+                Ok(fetched) => sessions
+                    .remote_prompt_pi(
+                        request.session_id,
+                        &request.text,
+                        request.command_id.as_ref(),
+                        &fetched,
+                    )
+                    .map(|()| serde_json::json!({ "accepted": true }))
+                    .map_err(|error| {
+                        let (code, message) = map_operation_error(error);
+                        (code, message.to_owned())
+                    }),
+            };
+            replies.reply(&id, outcome);
+        });
+    if spawned.is_err() {
+        ATTACHMENT_FETCHES.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -719,6 +819,18 @@ fn relay_session(
         if value.get("method").and_then(Value::as_str) == Some(crate::signin::METHOD) {
             if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
                 start_sign_in(id.clone(), &value["params"], &context);
+            }
+            continue;
+        }
+        // A prompt with attachments waits for them on a thread of its own (RFD0030).
+        if value.get("method").and_then(Value::as_str) == Some("axo.remote.session.prompt")
+            && value["params"]
+                .get("attachments")
+                .and_then(Value::as_array)
+                .is_some_and(|attachments| !attachments.is_empty())
+        {
+            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
+                start_prompt_with_attachments(id.clone(), &value["params"], &context);
             }
             continue;
         }
@@ -1074,6 +1186,8 @@ struct PromptParams {
     text: String,
     #[serde(default)]
     command_id: Option<crate::CommandId>,
+    #[serde(default)]
+    attachments: axo_protocol::asset::Attachments,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1300,6 +1414,7 @@ fn dispatch_remote_call(
                     request.session_id,
                     &request.text,
                     request.command_id.as_ref(),
+                    &[],
                 )
                 .map_err(map_operation_error)?;
             Ok(RemoteResult::PromptAccepted { accepted: true })

@@ -241,6 +241,8 @@ pub fn serve_ipc(
             index: server_directory.join("peers.json"),
             live: peer_live,
         }),
+        // Prompts' attachments, beside the Sessions (RFD0030).
+        assets_directory: sessions_directory.parent().map(|axo| axo.join("assets")),
     }) {
         Ok(worker) => Some(worker),
         Err(error) => {
