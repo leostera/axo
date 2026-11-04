@@ -9,3 +9,5 @@ export { AxoPairingIndex, AxoPairingRateLimit } from "./auth/pairing-directory";
 export { AxoSessionDO } from "./session-store";
 export { AxoHostDO } from "./host-do";
 export { AxoClientDO } from "./client-do";
+export { AxoAssetsDO } from "./assets/assets-do";
+export { AxoAssetCache } from "./assets/cache";

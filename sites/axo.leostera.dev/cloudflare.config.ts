@@ -26,6 +26,8 @@ export default defineConfig(({ isPreview }) => ({
       PUBLIC_SESSIONS: bindings.r2({ name: "axo-public-sessions" }),
       // The Mac app `/cdn/Axo.app` serves and `/install` downloads; `scripts/publish-mac.sh` uploads it.
       CDN: bindings.r2({ name: "axo-cdn" }),
+      // Assets (RFD0030): every account's files, under accounts/<accountId>/<sha256>.
+      AXO_ASSETS: bindings.r2({ name: "axo-assets" }),
       OAUTH_CLIENT_ID: bindings.secret(),
       OAUTH_CLIENT_SECRET: bindings.secret(),
       SESSION_SECRET: bindings.secret(),
@@ -45,6 +47,10 @@ export default defineConfig(({ isPreview }) => ({
       AxoSessionDO: exports.durableObject({ storage: "sqlite" }),
       AxoHostDO: exports.durableObject({ storage: "sqlite" }),
       AxoClientDO: exports.durableObject({ storage: "sqlite" }),
+      // One per account: the assets index and quota (RFD0030).
+      AxoAssetsDO: exports.durableObject({ storage: "sqlite" }),
+      // Workers Cache in front of the asset reads; the default entrypoint stays uncached.
+      AxoAssetCache: exports.worker({ cache: { enabled: true } }),
     },
   },
 }));

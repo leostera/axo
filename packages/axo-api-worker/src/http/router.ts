@@ -8,6 +8,7 @@ import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
 import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon, upgradeHostPeers } from "./account-hosts";
+import { serveAccountAssets, serveHostAssets, type AssetRoute } from "./assets";
 import { completeConnectionSignIn, serveConnections, startConnectionSignIn, type ConnectionsRoute } from "./connections";
 
 type Api = { Bindings: Env };
@@ -159,6 +160,29 @@ app.post("/api/v1/account/connections/:name/device/poll", connectionsRoute("devi
 app.post("/api/v1/account/connections/:name/mac-sign-in", connectionsRoute("macSignIn"));
 app.post("/api/v1/account/connections/:name/mac-sign-in/poll", connectionsRoute("macSignInPoll"));
 app.post("/api/v1/account/connections/:name/phone-sign-in", connectionsRoute("phoneSignIn"));
+// Assets (RFD0030): a person's, and a Mac's with its host credential.
+const assetsRoute = (route: AssetRoute) => (context: Context<Api>) =>
+  serveAccountAssets(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    context.executionCtx as ExecutionContext,
+    route,
+    context.req.param("hash"),
+  );
+app.all("/api/v1/account/assets", assetsRoute("list"));
+app.all("/api/v1/account/assets/:hash", assetsRoute("asset"));
+app.all("/api/v1/account/assets/:hash/delete", assetsRoute("delete"));
+app.all("/api/v1/accounts/:account/hosts/:host/assets/:hash", context =>
+  serveHostAssets(
+    context.req.raw,
+    context.env,
+    context.executionCtx as ExecutionContext,
+    context.req.param("account"),
+    context.req.param("host"),
+    context.req.param("hash"),
+  ),
+);
 app.all("/api/v1/connections/oauth/start", context =>
   startConnectionSignIn(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.executionCtx as ExecutionContext),
 );

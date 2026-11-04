@@ -3,6 +3,8 @@ import { installScriptResponse, macAppManifestResponse, macAppResponse } from ".
 
 export {
   AxoAccountDirectory,
+  AxoAssetCache,
+  AxoAssetsDO,
   AxoClientDO,
   AxoHostDirectory,
   AxoHostDO,

@@ -222,6 +222,7 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       AxoSessionDO: { type: "durable-object", storage: "sqlite" },
       AxoHostDO: { type: "durable-object", storage: "sqlite" },
       AxoClientDO: { type: "durable-object", storage: "sqlite" },
+      AxoAssetsDO: { type: "durable-object", storage: "sqlite" },
     },
     durableObjects: {
       TEST_DIRECTORY: { className: "AxoHostDirectory", useSQLite: true },
@@ -233,8 +234,9 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       TEST_SESSION_HISTORY: { className: "AxoSessionDO", useSQLite: true },
       TEST_HOST_DO: { className: "AxoHostDO", useSQLite: true },
       TEST_CLIENT_DO: { className: "AxoClientDO", useSQLite: true },
+      TEST_ASSETS: { className: "AxoAssetsDO", useSQLite: true },
     },
-    r2Buckets: ["PUBLIC_SESSIONS"],
+    r2Buckets: ["PUBLIC_SESSIONS", "AXO_ASSETS"],
     workerLoaders: { LOADER: {} },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,
