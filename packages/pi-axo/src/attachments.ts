@@ -62,6 +62,24 @@ export function attachmentLine(attachment: PromptAttachment): string {
   return `[Attached file: ${attachment.name} (${attachment.mimeType}, ${formatSize(attachment.size)}) at ${attachment.path} axo-asset:${attachment.asset}]`;
 }
 
+const IMAGE_LINE = /^\[Attached image: (.+) at (.+) axo-asset:sha256:[0-9a-f]{64}\]$/u;
+const FILE_LINE = /^\[Attached file: (.+) \(([^,()]+), ([^()]+)\) at (.+) axo-asset:sha256:[0-9a-f]{64}\]$/u;
+
+/**
+ * How a person's message shows in Pi's terminal: the lines above, written for the agent, become
+ * one short line each. The transcript, and what the model reads, keep them whole.
+ */
+export function showAttachmentLines(markdown: string): string {
+  if (!markdown.includes("axo-asset:sha256:")) return markdown;
+  return markdown.split("\n").map(line => {
+    const image = IMAGE_LINE.exec(line);
+    if (image) return `🖼  ${image[1]}`;
+    const file = FILE_LINE.exec(line);
+    if (file) return `📎 ${file[1]} · ${file[3]}`;
+    return line;
+  }).join("\n");
+}
+
 /**
  * The prompt as Pi takes it: the text alone when there are no attachments, else blocks. A file
  * that can't be read here fails the whole prompt, as a missing download does in axod.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachmentLine, MAX_INLINE_IMAGE_BYTES, parseAttachments, promptContent, type PromptAttachment } from "../src/attachments.js";
+import { attachmentLine, MAX_INLINE_IMAGE_BYTES, parseAttachments, promptContent, showAttachmentLines, type PromptAttachment } from "../src/attachments.js";
 import { parsePiControlCommand } from "../src/protocol.js";
 
 const sessionId = "82cfd1e8-1cc6-4473-a16d-6f0e77476311";
@@ -52,4 +52,11 @@ test("other files, and images too large to inline, become a line with their path
 
 test("an image that can't be read fails the whole prompt", () => {
   assert.throws(() => promptContent("x", [photo, pdf], () => { throw new Error("ENOENT"); }));
+});
+
+test("in the terminal each attachment line is one short line; everything else is left alone", () => {
+  const content = promptContent("look at these", [photo, pdf], () => Buffer.from("jpeg"));
+  const text = (content as Array<{ type: string; text?: string }>)[0]!.text!;
+  assert.equal(showAttachmentLines(text), "look at these\n\n🖼  whiteboard.jpg\n\n📎 invoice.pdf · 3.0 MB");
+  assert.equal(showAttachmentLines("[Attached image: not ours]"), "[Attached image: not ours]");
 });

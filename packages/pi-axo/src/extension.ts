@@ -6,7 +6,7 @@ import { installAxoSessionNaming } from "./title.js";
 import { registerShareCommand } from "./share-command.js";
 import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
 import { RECEIPT_ENTRY, RemoteCommands } from "./remote-commands.js";
-import { promptContent, type PromptContent } from "./attachments.js";
+import { promptContent, showAttachmentLines, type PromptContent } from "./attachments.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -119,6 +119,11 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     pi.sendUserMessage(content, { deliverAs: command.action.delivery });
     return { accepted: true as const };
   };
+
+  // Attachments (RFD0030) show as one short line each in the terminal; the model still reads them whole.
+  if (typeof pi.registerMarkdownTransformer === "function") {
+    pi.registerMarkdownTransformer((markdown, context) => context.messageType === "user" ? showAttachmentLines(markdown) : markdown);
+  }
 
   const bridge = new AxoPiBridgeServer(config.socketPath, config.axoSessionId, config.bridgeToken, handleCommand);
   let bridgeAvailable = false;
