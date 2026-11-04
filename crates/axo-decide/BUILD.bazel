@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Asks a local model (Clef, through the axo-decide side-car) typed questions.
+rust_library(
+    name = "axo_decide",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = [
+        "@crates//:libc",
+        "@crates//:log",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "axo_decide_tests",
+    crate = ":axo_decide",
+    edition = "2024",
+)

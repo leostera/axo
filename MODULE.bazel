@@ -81,6 +81,10 @@ use_repo(swift_deps, "swift_package", "swiftpkg_fuzzymatch", "swiftpkg_rive_ios"
 axo_config = use_extension("//bazel/config:extension.bzl", "axo_config")
 use_repo(axo_config, "axo_config", "axo_files")
 
+# The local decision side-car, llama.cpp's llama-server, pinned (see the file).
+llama_server_repository = use_repo_rule("//third_party/llama.cpp:repository.bzl", "llama_server_repository")
+llama_server_repository(name = "llama_server")
+
 ghostty_repository = use_repo_rule("//:ghostty_repository.bzl", "ghostty_repository")
 ghostty_repository(name = "ghostty")
 
