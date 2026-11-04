@@ -864,6 +864,7 @@ extension ClientID {
           case "axo.remote.workspace.list":
             #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
           case "axo.remote.session.key": #"{"accepted":true}"#
+          case "axo.remote.session.stop": #"{"stopped":true}"#
           default: nil
           }
         default: nil
