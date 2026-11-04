@@ -112,6 +112,11 @@ mod imp {
                     .as_str()
                     .is_some_and(|name| super::TOOLS.contains(&name))
             })
+            // The script tool is registered twice (by the registry and by register_script_tool).
+            .filter({
+                let mut seen = std::collections::HashSet::new();
+                move |tool| seen.insert(tool["name"].to_string())
+            })
             .map(|tool| {
                 json!({
                     "name": tool["name"],
