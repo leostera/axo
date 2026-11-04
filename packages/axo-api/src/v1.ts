@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { attachmentsSchema } from "./assets.ts";
 
 export const protocolVersion = 2 as const;
 export const hostIdSchema = z.uuid();
@@ -195,7 +196,12 @@ export const hostV1Methods = {
     data: z.base64().min(4).max(65_536),
   }).strict(),
   // With a commandId the Session's Pi takes the prompt at most once, after a receipt (RFD0024).
-  "axo.remote.session.prompt": sessionTargetSchema.extend({ text: z.string().min(1).max(16_000), commandId: commandIdSchema.optional() }).strict(),
+  // Attachments are assets (RFD0030) the Mac fetches before the prompt reaches Pi; with them, text may be empty.
+  "axo.remote.session.prompt": sessionTargetSchema.extend({
+    text: z.string().max(16_000),
+    commandId: commandIdSchema.optional(),
+    attachments: attachmentsSchema.optional(),
+  }).strict().refine((prompt) => prompt.text.length > 0 || (prompt.attachments?.length ?? 0) > 0, "a prompt has text or attachments"),
   "axo.remote.session.key": sessionTargetSchema.extend({ key: z.enum(["escape", "enter"]) }).strict(),
   // Stops the turn the client showed running, named by one of its user records, and no other.
   "axo.remote.session.stop": sessionTargetSchema.extend({ turnId: turnIdSchema }).strict(),

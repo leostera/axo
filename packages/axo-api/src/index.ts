@@ -20,3 +20,4 @@ export {
 export * from "./pi3.ts";
 export * from "./session-sync.ts";
 export * from "./connections.ts";
+export * from "./assets.ts";

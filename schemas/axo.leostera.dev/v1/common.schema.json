@@ -10,6 +10,20 @@
       ]
     },
     "HostId": { "type": "string", "format": "uuid" },
+    "Attachment": {
+      "description": "A file attached to a prompt: an asset named by the SHA-256 of its bytes (RFD0030).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "name", "mimeType", "size"],
+      "properties": {
+        "asset": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$" },
+        "mimeType": {
+          "enum": ["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "application/pdf", "text/plain", "text/markdown", "text/csv", "application/json", "application/zip", "application/octet-stream"]
+        },
+        "size": { "type": "integer", "minimum": 0, "maximum": 104857600 }
+      }
+    },
     "HostGeneration": { "type": "string", "format": "uuid" },
     "SessionId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
     "ShellId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },

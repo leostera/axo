@@ -587,15 +587,42 @@
                   "$ref": "common.schema.json#/$defs/SessionId"
                 },
                 "text": {
+                  "description": "May be empty when the prompt has attachments.",
                   "type": "string",
-                  "minLength": 1,
                   "maxLength": 16000
                 },
                 "commandId": {
                   "description": "The Session's Pi takes the prompt at most once, after a receipt (RFD0024).",
                   "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "attachments": {
+                  "description": "Assets (RFD0030) the Mac fetches and checks before the prompt reaches Pi.",
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "$ref": "common.schema.json#/$defs/Attachment"
+                  }
                 }
-              }
+              },
+              "anyOf": [
+                {
+                  "properties": {
+                    "text": {
+                      "minLength": 1
+                    }
+                  }
+                },
+                {
+                  "required": [
+                    "attachments"
+                  ],
+                  "properties": {
+                    "attachments": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              ]
             }
           }
         }
