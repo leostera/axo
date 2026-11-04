@@ -70,7 +70,11 @@ extension TerminalSessionsModel {
   /// What the palette lists, as of now.
   func commandPaletteContext(homeDirectory: String = NSHomeDirectory()) -> CommandPaletteContext {
     CommandPaletteContext(
-      sessions: sidebarOrderedSessions,
+      sessions: allOrderedSessions,
+      hostLabels: Dictionary(
+        uniqueKeysWithValues: peerHostBySession.keys.compactMap { id in
+          hostLabel(for: id).map { (id, $0) }
+        }),
       workspaces: workspaces,
       recentSessionIDs: recentSessionIDs,
       selectedSessionID: selectedSessionID,

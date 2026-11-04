@@ -78,6 +78,19 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(many.ids.first, .fixture(3))
   }
 
+  func testMacStepsCycleThroughThisMacEachOtherMacAndAll() {
+    let hosts = ["a", "b"]
+    XCTAssertNil(SidebarMacs.thisMac.adjacent(.next, hostIDs: []), "no other Mac, nothing to step")
+    XCTAssertEqual(SidebarMacs.thisMac.adjacent(.next, hostIDs: hosts), .mac("a"))
+    XCTAssertEqual(SidebarMacs.mac("b").adjacent(.next, hostIDs: hosts), .all)
+    XCTAssertEqual(SidebarMacs.all.adjacent(.next, hostIDs: hosts), .thisMac)
+    XCTAssertEqual(SidebarMacs.thisMac.adjacent(.previous, hostIDs: hosts), .all)
+    // A Mac that went away counts as This Mac.
+    XCTAssertEqual(SidebarMacs.mac("gone").adjacent(.next, hostIDs: hosts), .mac("a"))
+    XCTAssertEqual(SidebarMacs(hostID: nil), .thisMac)
+    XCTAssertEqual(SidebarMacs(hostID: "a"), .mac("a"))
+  }
+
   func testAgesAreShort() {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let age = { SessionActivityOrder.age(of: 1_000_000 - $0, now: now) }
@@ -269,6 +282,65 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     relaunched.togglePin(1)
     XCTAssertFalse(relaunched.isPinned(1))
     XCTAssertEqual(relaunched.sidebarOrderedSessions.map(\.id), [2, 3, 1])
+  }
+
+  func testMacShortcutsStepThroughThisMacEachOtherMacThenAllAndThePaletteSearchesEveryMac()
+    async throws
+  {
+    let suiteName = "axo-sidebar-mac-steps-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let client = FakeAxodClient()
+    client.methods.append(AxodMethodName.peerSessionsList.rawValue)
+    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100)]
+    let studio = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7"
+    let air = "8f8f8f8f-0000-4000-8000-000000000009"
+    client.peers = PeerSessionList(
+      connected: true,
+      hosts: [
+        PeerHost(hostId: studio, label: "Mac Studio", online: true),
+        PeerHost(hostId: air, label: "Air", online: true),
+      ],
+      sessions: [
+        PeerSession(
+          hostId: studio,
+          session: TerminalSession(id: 9, initialPwd: "/", shells: [], name: "Fix it", lastMessageAt: 200))
+      ])
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarMacs, .thisMac)
+
+    model.showNextMacs()
+    XCTAssertEqual(model.sidebarMacs, .mac(studio))
+    model.showNextMacs()
+    XCTAssertEqual(model.sidebarMacs, .mac(air))
+    model.showNextMacs()
+    XCTAssertEqual(model.sidebarMacs, .all)
+    model.showNextMacs()
+    XCTAssertEqual(model.sidebarMacs, .thisMac, "wraps around")
+    model.showPreviousMacs()
+    XCTAssertEqual(model.sidebarMacs, .all)
+
+    // The palette lists every Mac's Sessions whatever the sidebar shows, naming other Macs.
+    model.setSidebarMacs(.thisMac)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1])
+    let context = model.commandPaletteContext()
+    XCTAssertEqual(context.sessions.map(\.id), [9, 1])
+    XCTAssertEqual(context.hostLabels, [9: "Mac Studio"])
+    let studioItem = try XCTUnwrap(
+      CommandPaletteCatalog.items(context).first { $0.action == .showSession(9) })
+    XCTAssertTrue(studioItem.subtitle.hasPrefix("Mac Studio"), studioItem.subtitle)
+
+    // Choosing another Mac's Session lists its Mac, so the selection is in the sidebar.
+    model.showSession(9)
+    XCTAssertEqual(model.sidebarMacs, .mac(studio))
+    XCTAssertEqual(model.selectedSessionID, 9)
+    model.showSession(1)
+    XCTAssertEqual(model.sidebarMacs, .thisMac)
+    // A Session already listed leaves the sidebar alone.
+    model.setSidebarMacs(.all)
+    model.showSession(9)
+    XCTAssertEqual(model.sidebarMacs, .all)
   }
 
   func testOtherMacsSessionsAreListedByMacAndShowingOneOpensAPaneOnIt() async throws {

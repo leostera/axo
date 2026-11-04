@@ -228,6 +228,23 @@ final class TerminalSessionsModel {
 
   func isPinned(_ sessionID: SessionID) -> Bool { sessionPins.contains(sessionID) }
 
+  /// Every Session on every Mac, whatever the sidebar lists, pinned ones first and otherwise
+  /// latest activity first: what the command palette searches.
+  var allOrderedSessions: [TerminalSession] {
+    sessionPins.pinnedFirst(SessionActivityOrder.sorted(sessions))
+  }
+
+  /// The sidebar lists the previous or next Mac: This Mac, each other Mac, then All Macs.
+  func showPreviousMacs() { showAdjacentMacs(.previous) }
+  func showNextMacs() { showAdjacentMacs(.next) }
+
+  private func showAdjacentMacs(_ direction: TerminalNavigationDirection) {
+    guard let next = sidebarMacs.adjacent(direction, hostIDs: peerHosts.map(\.hostId)) else {
+      return
+    }
+    setSidebarMacs(next)
+  }
+
   /// Whether `sessionID` runs on another Mac.
   func isPeerSession(_ sessionID: SessionID) -> Bool {
     peerHostBySession[sessionID] != nil
@@ -884,6 +901,10 @@ final class TerminalSessionsModel {
     let interval = AxoTrace.beginInterval("command.session.show")
     defer { AxoTrace.endInterval(interval) }
     guard session(for: sessionID) != nil else { return }
+    // Shown from the palette or by Axod while the sidebar lists other Macs: list its Mac, so
+    // the selected Session is always in the sidebar.
+    let hostID = peerHostBySession[sessionID]
+    if !sidebarMacs.includes(hostID: hostID) { setSidebarMacs(SidebarMacs(hostID: hostID)) }
     select(sessionID)
     assign(\.errorMessage, nil)
     openPeerPaneIfNeeded(sessionID)

@@ -54,8 +54,10 @@ struct CommandPaletteItem: Identifiable, Equatable {
 
 /// What the palette is built from: a snapshot of the catalog and the current selection.
 struct CommandPaletteContext {
-  /// Every open Session, in sidebar order.
+  /// Every open Session on every Mac, whatever the sidebar lists.
   var sessions: [TerminalSession]
+  /// The Mac each other Mac's Session runs on, by name; this Mac's Sessions are not in it.
+  var hostLabels: [SessionID: String] = [:]
   var workspaces: [WorkspaceRecord]
   /// Most recently shown first.
   var recentSessionIDs: [SessionID]
@@ -93,8 +95,11 @@ enum CommandPaletteCatalog {
         id: "session:\(session.id.rawValue)",
         kind: .session,
         title: [session.emoji, session.displayName].compactMap { $0 }.joined(separator: " "),
-        subtitle: [session.workspaceName, lastMessage, status, abbreviated(session.initialPwd, context)]
-          .compactMap { $0 }.joined(separator: " · "),
+        subtitle: [
+          context.hostLabels[session.id], session.workspaceName, lastMessage, status,
+          abbreviated(session.initialPwd, context),
+        ]
+        .compactMap { $0 }.joined(separator: " · "),
         keywords: ["session"],
         shortcut: nil,
         isCurrent: session.id == context.selectedSessionID,

@@ -74,6 +74,22 @@ enum SidebarMacs: Equatable, Hashable, Sendable {
     }
   }
 
+  /// The Mac `hostID` names (nil for this Mac), as the sidebar lists it alone.
+  init(hostID: String?) {
+    self = hostID.map(SidebarMacs.mac) ?? .thisMac
+  }
+
+  /// One step through This Mac, each other Mac in `hostIDs` order, then All Macs, wrapping;
+  /// nil when there is no other Mac to step to. A Mac no longer known counts as This Mac.
+  func adjacent(_ direction: TerminalNavigationDirection, hostIDs: [String]) -> SidebarMacs? {
+    guard !hostIDs.isEmpty else { return nil }
+    let cycle = [SidebarMacs.thisMac] + hostIDs.map(SidebarMacs.mac) + [.all]
+    let current = cycle.firstIndex(of: self) ?? 0
+    return SessionNavigation.adjacentIndex(
+      from: current, count: cycle.count, direction: direction
+    ).map { cycle[$0] }
+  }
+
   /// Whether a Session of `hostID` (nil for this Mac) is listed.
   func includes(hostID: String?) -> Bool {
     switch self {

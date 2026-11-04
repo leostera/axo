@@ -233,6 +233,18 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         .keyboardShortcut("]", modifiers: [.command, .shift])
         .disabled(!sessions.commandAvailability.canNavigateSessions)
 
+        Button("Previous Mac") {
+          sessions.showPreviousMacs()
+        }
+        .keyboardShortcut("[", modifiers: [.command, .control, .shift])
+        .disabled(sessions.peerHosts.isEmpty)
+
+        Button("Next Mac") {
+          sessions.showNextMacs()
+        }
+        .keyboardShortcut("]", modifiers: [.command, .control, .shift])
+        .disabled(sessions.peerHosts.isEmpty)
+
         Divider()
 
         Button("Close Focused Shell", role: .destructive) {
