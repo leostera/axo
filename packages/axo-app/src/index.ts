@@ -24,6 +24,7 @@ import {
 } from "@axo/protocol";
 import {
   hostRefSchema,
+  type hostV1Results,
   remoteSessionCreateResultSchema,
   remoteSessionCloseResultSchema,
   remoteWorkspaceListResultSchema,
@@ -32,6 +33,7 @@ import {
   remoteShellCloseResultSchema,
   remoteTerminalInputResultSchema,
   remotePromptResultSchema,
+  remoteStopResultSchema,
   remoteTerminalResizeResultSchema,
   type HostMethodParams,
 } from "@axo/protocol/v1";
@@ -132,8 +134,10 @@ const appRemoteResults = {
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
   "axo.remote.session.prompt": remotePromptResultSchema,
   "axo.remote.session.key": remotePromptResultSchema,
+  "axo.remote.session.stop": remoteStopResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
-} as const;
+  // Every remote method the protocol has must be here: `command` parses its result by method.
+} as const satisfies Record<Extract<keyof typeof hostV1Results, `axo.remote.${string}`>, z.ZodType>;
 export type AppRemoteMethod = keyof typeof appRemoteResults;
 export type AppRemoteResult<Method extends AppRemoteMethod> = z.infer<(typeof appRemoteResults)[Method]>;
 

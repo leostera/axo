@@ -46,6 +46,9 @@ class FakeWebSocket {
         if (request.params.method === "axo.remote.session.prompt") {
           return queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: request.id, error: { code: -32005, message: "Host offline; nothing queued" } }));
         }
+        if (request.params.method === "axo.remote.session.stop") {
+          return queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: request.id, result: { stopped: true } }));
+        }
         return reply({ session: { hostId, sessionId: sid(3), shells: [], layout: null, updatedAt: timestamp } });
     }
   }
@@ -110,6 +113,14 @@ test("commands go to the named host, results are checked, and an offline host fa
     connection.command("axo.remote.session.prompt", { target: reference, sessionId: sid(1), text: "hi" }),
     (error) => error.code === -32005,
   );
+  connection.close();
+});
+
+test("stopping a turn reads the host's answer, as every remote method's is", async () => {
+  const { connection, socket } = await connect();
+  const stopped = await connection.command("axo.remote.session.stop", { target: reference, sessionId: sid(1), turnId: "e1" });
+  assert.deepEqual(stopped, { stopped: true });
+  assert.equal(socket().sent.at(-1).params.method, "axo.remote.session.stop");
   connection.close();
 });
 
