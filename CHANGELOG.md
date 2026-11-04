@@ -9,6 +9,8 @@ What changed in each published version of Axo. Every publish raises the minor ve
 - **Attach photos and files to a message, from the web or the phone** (RFD0030). Tap the paperclip (or paste, or drop files on the box on the web), and each file uploads to your account at once; the message goes when they're all up, with words or without. Your Mac fetches every file, checks it against its SHA-256, and only then gives the agent the message, with all of its files or none.
 - **The agent sees your photos.** PNG, JPEG, GIF and WebP up to 5 MB reach the model as images; anything else (PDFs, archives, larger images) is saved on the Mac in `~/.axo/assets/` and the agent is told where. The phone sends HEIC photos as JPEG, which models read.
 - **Files live in your account,** up to 100 MB each and 10 GB in all, and are served through Workers Cache. Only your account can read them; a Mac reads them with its own credential.
+- **Switch the sidebar between Macs with ⌃⇧⌘[ and ⌃⇧⌘].** They step through This Mac, each of your other Macs, then All Macs (Terminal → Previous Mac / Next Mac).
+- **The command palette (⇧⌘P) searches every Session on every Mac,** whatever the sidebar shows. Another Mac's Sessions start their second line with its name, so typing a Mac's name finds them. Choosing a Session the sidebar isn't listing switches the sidebar to its Mac.
 
 ## 0.5 (Mac app build 275, axod 32)
 
