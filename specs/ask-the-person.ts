@@ -227,9 +227,13 @@ export const Axod = defineActor({
       description: "Nobody answered in time; the request expires.",
       after: "5 minutes",
       sends: [Asked, Resolved, LocalResolved],
+      starts: ["expire"],
       run(state, _m, ctx) {
-        const open = Object.entries(state.requests).find(([, r]) => r.outcome === null && !r.claimed);
+        // One deadline per request in axod; here one timer, set again while another request waits.
+        const pending = Object.entries(state.requests).filter(([, r]) => r.outcome === null && !r.claimed);
+        const open = pending[0];
         if (open) resolve(state, ctx, open[0], "expired", null);
+        if (pending.length > 1) ctx.start("expire");
       },
     },
   },
@@ -243,7 +247,7 @@ function resolve(state: AxodState, ctx: any, id: string, outcome: NonNullable<Re
   if (!request || request.outcome !== null || (request.claimed && !completingClaim)) return ctx.note("Already answered.");
   request.outcome = outcome;
   request.answeredBy = by;
-  ctx.cancel("expire");
+  if (!Object.values(state.requests).some((r) => r.outcome === null && !r.claimed)) ctx.cancel("expire");
   ctx.send(ctx.the(HostDO), Resolved, { id });
   ctx.send(ctx.the(MacApp), LocalResolved, { id });
   // The receipt names the field's value only by a salted hash; axod mcp matches what it reads against it.

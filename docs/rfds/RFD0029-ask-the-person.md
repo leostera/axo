@@ -126,7 +126,9 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
    - Session-scoped credentials, such as the codemode sandbox of `connections_execute`, have no route to answering at all.
 3. **No method the agent can reach answers a request.** `axod mcp` offers `request_input` and the gate's confirm. It has no answer tool, and axod refuses `axo.ask.answer` from MCP and Session connections whatever their signature.
 
-**Authenticate:** an answer that requires authentication carries proof from the device. On iOS, Face ID unlocks a per-device signing key (Secure Enclave, `.biometryCurrentSet`), and the device signs `answer || requestId`. The Mac app does the same with Touch ID.
+**Every remote answer is signed.** Each phone and browser registers a device key (iOS: Secure Enclave; web: a non-extractable WebCrypto key in IndexedDB). It signs every answer over `requestId || reply`. axod refuses an answer whose signature is not for that request and that reply. So a relay that is compromised, or a bug in it, cannot replay an earlier answer for a new request, turn *Allow once* into *Always allow*, or bring back a revoked rule.
+
+**Authenticate:** an answer that requires authentication is signed by a second device key that only Face ID unlocks (Secure Enclave, `.biometryCurrentSet`). The Mac app does the same with Touch ID.
 - axod checks the signature against the device keys the person registered. Registering a key itself needs an authenticated answer from an already-registered device, or pairing at the Mac.
 - A confirm becomes authenticate when its `gate` category is money or sign-in, or when an always-rule says so.
 
@@ -164,7 +166,7 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
 Command-line sign-ins print a link, or open it with `open`, and wait. Sitting at the Mac, the person clicks it. Away from the Mac, the agent can see the link but must not open it itself: the page may ask for a passkey, a password or consent that only the person can give.
 
 - **Catching the link:** two ways in, so neither the agent nor axod has to guess from terminal output:
-  - **The agent asks:** `request_link({ url, why, code? })`, for a link it read in a command's output. `code` is a device code the page will ask for, such as `gh`'s `ABCD-1234`.
+  - **The agent asks:** `request_link({ url, why, code? })`, for a link it read in a command's output. `code` is a device code the page will ask for, such as `gh`'s `ABCD-1234`. axod accepts it only if the link appears in the output of a Session terminal axod runs, and the process that printed it is the one the callback may go to. Otherwise a listener the agent started could claim to be the command.
   - **The command opens it:** Session processes get `BROWSER=axod-open` and a `PATH` entry whose `open` is the same shim. A link opened that way becomes a request that names the process that opened it (`wrangler login`, pid, Session).
 - **Where it goes:**
   - **The person is at the Mac** (unlocked, input in the last two minutes): the link opens in the default browser, as it does today. No request.
@@ -179,19 +181,24 @@ Command-line sign-ins print a link, or open it with `open`, and wait. Sitting at
     - axod reads the `redirect_uri` from the link when it creates the request, and records the loopback port and path.
     - **iOS:** the sheet watches navigations. When it is sent to that loopback address, it does not load it: it seals the full callback URL to the Mac's request key (as for input), sends it, and closes.
     - **Web:** a page in another tab can't be watched. When the tab ends on a "can't connect to localhost" page, the person copies its address into the card's *Paste the address you ended on* field, which seals it the same way.
-    - **axod** opens the sealed URL, checks that its host, port and path match the recorded `redirect_uri`, and that the port is still held by a process of that Session. Then it makes the GET to `127.0.0.1:<port>` itself. The command sees the callback it expected; PKCE and `state` work unchanged.
+    - **axod** opens the sealed URL and checks that it is a loopback address. It connects to the port, and **on that connection** checks that the listener is the process that opened the link (by matching the connection's socket among that process's descriptors) before it sends a byte. A check made before connecting can be stale: the command may time out and the agent take its port in between. Then axod makes the GET itself. The command sees the callback it expected; PKCE and `state` work unchanged.
+    - axod records that a request's callback was sent, in `axo.db`, before sending it. A duplicated message, a second sign-in on another device, or a restart sends nothing twice.
+- **Restarts:** pending link requests nobody answered expire when axod starts again, since their deadlines were in memory.
 - **Resolving:** `opened` when a loopback callback got a 2xx from the command, or when the person marks it done (device code). `expired` after 10 minutes, the length of most device codes. The agent's `request_link` returns the outcome, never the callback URL, which carries an authorization code.
 - **What it protects against:**
   - **A link from the agent is untrusted.** A prompt-injected agent could ask the person to "sign in" to a look-alike site. The card leads with the site, says which command produced the link (or "the agent" for `request_link`), and marks links whose site doesn't match the command's known providers.
-  - **Callbacks go only where the command listens.** axod forwards a callback only to the port and path the original link named, held by the same Session's process, and only once. A sealed callback can't be turned into a request to another local service.
+  - **Callbacks go only where the command listens.** axod forwards a callback only to the process that opened the link, and only once. A sealed callback can't be turned into a request to another local service, or to a listener the agent puts on the port after the command exits.
+  - **What it does not hide.** The command stores the token it gets, such as wrangler's config file, where the agent's shell can read it. This flow gets the person's consent on the real site and routes the code to the right process; it does not keep credentials from an agent that runs as the person.
 
+### Always allow
 
 - **Rules:** answering Always allow creates a rule in `axo.db` covering an app (bundle id), an action kind, a target label, an origin for browsers, and a scope (this Session or all).
 - **Effect:** a matching flagged action runs without a request, and is logged.
 - **Limits:**
   - Rules never cover input; values are always asked for.
-  - Categories marked *always ask* (money, by default) offer no Always allow.
-  - Rules are listed and revocable in the Mac app's settings, and on the web.
+  - Categories marked *always ask* (money, by default) offer no Always allow, and axod creates no such rule whatever a client sends.
+  - Rules are listed and revocable in the Mac app's settings, on the web and on iOS.
+- **Revoking:** each rule has an id, and revocations and their confirmations name it. A client shows *Revoking…* until axod confirms that rule's revocation, and only then *Revoked*. Without the id, a late confirmation for an earlier revocation could mark a rule revoked while a newer rule for the same action is active.
 
 ### Logging
 
@@ -207,6 +214,13 @@ Command-line sign-ins print a link, or open it with `open`, and wait. Sitting at
   - **The checker found two flaws in the first draft**, now in this RFD:
     - a Deny arriving during a fill overrode the fill (fixed by claiming on the first answer);
     - a parallel read caught the value before its receipt (fixed by one call per window).
+- `specs/open-a-link.ts` models `wrangler login`, the agent, a local admin service, the loopback interface, axod, HostDO, the iPhone and the web app, with a lost or duplicated callback and an axod restart. Safety held on every path of up to 25 events (13.4M states): the code reaches only the command that opened the link, never the cloud in the clear, no other local service, and once per request. It found:
+  - a check of the port's owner made before connecting is stale if the command exits and the agent binds the port (fixed by checking on the connection);
+  - a link the agent passes on must name its opener by who printed it, not by who holds the port when it asks;
+  - pending requests had no deadline after a restart (fixed by expiring them at start).
+- `specs/ask-rules.ts` models Always allow, revocation and Face ID, with a relay that replays or rewrites answers. Every property held on every path of up to 30 events (612k states, exploration complete): no payment by rule, every run is the person's own answer to that request, Face ID for every payment, nothing runs by a rule the phone shows revoked. It found:
+  - a replayed unsigned *Always allow* brought back a revoked rule (fixed by signing every answer);
+  - two stale displays of revocation (fixed by rule ids and *Revoking…* until confirmed).
 - **axod tests:**
   - the peer code-signature check accepts Axo.app and rejects other peers (needs a signed fixture);
   - HPKE round trips between Rust and CryptoKit vectors, and between Rust and WebCrypto vectors;
