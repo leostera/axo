@@ -69,7 +69,7 @@ test("a photo attached on the phone reaches Pi on the Mac as a checked local fil
       body: photo as BodyInit,
     });
     assert.equal(uploaded.status, 201);
-    const attachment = { asset: `sha256:${hex}`, name: "whiteboard.png", mimeType: "image/png", size: photo.byteLength };
+    const attachment = { asset: `sha256:${hex}`, name: "whiteboard.png", mimeType: "image/png" as const, size: photo.byteLength };
 
     const accepted = await command("axo.remote.session.prompt", {
       target, sessionId: session.sessionId, text: "", commandId: crypto.randomUUID(), attachments: [attachment],
