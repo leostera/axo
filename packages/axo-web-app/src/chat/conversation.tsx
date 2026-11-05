@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Icon } from "./icons.tsx";
-import { MessageView, PendingView, QuestionCard, type Reveal } from "./message-views.tsx";
+import { ElicitationCard, MessageView, PendingView, QuestionCard, type Reveal } from "./message-views.tsx";
 import { Alert } from "./alert.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
@@ -207,6 +207,14 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
               key={prompt.id}
               prompt={prompt}
               onDismiss={() => workbench.dismissPending(session.sessionId, prompt.id)}
+            />
+          ))}
+          {session && workbench.questions(session.sessionId).map(question => (
+            <ElicitationCard
+              key={question.elicitation.id}
+              question={question}
+              canAnswer={online}
+              onAnswer={action => void workbench.answerQuestion(question.elicitation.id, action)}
             />
           ))}
           {session && transcript?.question ? (

@@ -4,12 +4,14 @@ import type {
   ClientHost,
   ClientOpenResult,
   ClientSession,
+  Elicitation,
+  ElicitationAnswer,
   HostRef,
   OlderPage,
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
-import { ASSET_LIMITS, assetTypeOf, type Attachment } from "@axo/protocol";
+import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 import { ChatTranscript, type TranscriptRecord } from "./transcript.ts";
 
@@ -73,6 +75,7 @@ export interface AccountLink {
   open(request: OpenRequest): Promise<ClientOpenResult>;
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
+  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer): Promise<void>;
   command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
@@ -94,6 +97,14 @@ export interface ClientIdentity {
 }
 
 export type Link = "connecting" | "connected" | "reconnecting" | "idle";
+
+/** What a Mac's agent asks the person (RFD0029), until it is resolved. */
+export interface AskedQuestion {
+  readonly hostId: string;
+  readonly elicitation: Elicitation;
+  /** This tab sent an answer and waits to hear it was taken. */
+  answering: ElicitationAnswer | null;
+}
 
 export type PendingState =
   /** On its way to the Mac. */
@@ -275,6 +286,8 @@ export class ChatWorkbench {
   version = 0;
 
   private readonly chats = new Map<string, Chat>();
+  /** What the Macs ask, by elicitation id, oldest first (RFD0029). */
+  private readonly asked = new Map<string, AskedQuestion>();
   private readonly drafts = new Map<string, string>();
   private readonly draftFiles = new Map<string, DraftAttachment[]>();
   private readonly listeners = new Set<() => void>();
@@ -367,6 +380,13 @@ export class ChatWorkbench {
       records: mine((sessionId, epoch, records) => this.receiveRecords(sessionId, epoch, records)),
       progress: mine((sessionId, slot, snapshot) => this.receiveProgress(sessionId, slot, snapshot)),
       reset: mine((sessionId, epoch, keep) => this.receiveReset(sessionId, epoch, keep)),
+      elicitationRequested: mine((hostId, elicitation) => {
+        if (!this.asked.has(elicitation.id)) this.asked.set(elicitation.id, { hostId, elicitation, answering: null });
+        this.changed();
+      }),
+      elicitationResolved: mine((_hostId, resolved) => {
+        if (this.asked.delete(resolved.id)) this.changed();
+      }),
       closed: mine(error => this.connectionLost(error)),
     }).then(connection => {
       if (generation !== this.generation) {
@@ -401,6 +421,8 @@ export class ChatWorkbench {
 
   private connectionLost(error: Error): void {
     this.connection = null;
+    // What is still asked comes again with the next hello.
+    this.asked.clear();
     // Another tab with this tab's id took the socket: this tab takes a new one.
     if (error.message === "Replaced") this.identity.renew();
     this.scheduleReconnect();
@@ -985,6 +1007,32 @@ export class ChatWorkbench {
     } catch (error) {
       chat.stopping = false;
       this.failure = describe(error);
+    }
+    this.changed();
+  }
+
+  /** What the Macs ask now, oldest first; with `sessionId`, only what that chat's agent asks. */
+  questions(sessionId?: string): AskedQuestion[] {
+    const all = [...this.asked.values()];
+    return sessionId === undefined ? all : all.filter(question => question.elicitation.sessionId === sessionId);
+  }
+
+  /**
+   * Answers what a Mac asks. The card stays until the Mac says it is settled; an answer that came
+   * too late (another device answered, or it expired) removes it.
+   */
+  async answerQuestion(elicitationId: string, action: ElicitationAnswer): Promise<void> {
+    const question = this.asked.get(elicitationId);
+    if (!question || question.answering || !this.connection) return;
+    question.answering = action;
+    this.changed();
+    try {
+      await this.connection.resolveElicitation(question.hostId, elicitationId, action);
+      this.failure = null;
+    } catch (error) {
+      question.answering = null;
+      if ((error as { code?: number }).code === ELICITATION_ERRORS.notPending) this.asked.delete(elicitationId);
+      else this.failure = describe(error);
     }
     this.changed();
   }

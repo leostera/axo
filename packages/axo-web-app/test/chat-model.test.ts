@@ -380,6 +380,13 @@ class FakeAccount implements AccountLink {
 
   closeSession(sessionId: string) { this.closed.push(sessionId); }
 
+  resolves: Array<{ hostId: string; elicitationId: string; action: string }> = [];
+  resolveFails: Error | null = null;
+  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline") {
+    this.resolves.push({ hostId, elicitationId, action });
+    if (this.resolveFails) throw this.resolveFails;
+  }
+
   async command(method: string, params: Record<string, unknown>): Promise<never> {
     this.commands.push({ method, params });
     if (this.failNext) {
@@ -698,4 +705,37 @@ test("pi-axo's attachment lines leave what the person said: an image's goes, a f
   assert.deepEqual(attachmentsIn("[Attached file: not really]"), { text: "[Attached file: not really]", files: [] });
   assert.equal(safeFileName("../.."), ".._..");
   assert.equal(safeFileName(".."), "file");
+});
+
+test("what a Mac asks shows in its chat until the Mac says it is settled, and only one answer goes", async () => {
+  const { workbench, account } = await workbenchWith();
+  const elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a", sessionId: sid(1), kind: "confirm" as const, message: "Delete the branch?", createdAt: 1, expiresAt: 2 };
+  account.events.elicitationRequested?.(hostId, elicitation);
+  account.events.elicitationRequested?.(hostId, elicitation);
+  assert.equal(workbench.questions().length, 1);
+  assert.equal(workbench.questions(sid(1))[0]!.elicitation.message, "Delete the branch?");
+  assert.equal(workbench.questions(sid(2)).length, 0);
+
+  const answering = workbench.answerQuestion(elicitation.id, "accept");
+  assert.equal(workbench.questions()[0]!.answering, "accept");
+  await workbench.answerQuestion(elicitation.id, "decline");
+  await answering;
+  assert.deepEqual(account.resolves, [{ hostId, elicitationId: elicitation.id, action: "accept" }]);
+  // The card goes when the Mac says so, wherever the answer came from.
+  assert.equal(workbench.questions().length, 1);
+  account.events.elicitationResolved?.(hostId, { id: elicitation.id, sessionId: sid(1), action: "accept" });
+  assert.equal(workbench.questions().length, 0);
+});
+
+test("an answer that came too late removes the card; another failure lets the person try again", async () => {
+  const { workbench, account } = await workbenchWith();
+  const elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5b", sessionId: sid(1), kind: "confirm" as const, message: "Go?", createdAt: 1, expiresAt: 2 };
+  account.events.elicitationRequested?.(hostId, elicitation);
+  account.resolveFails = Object.assign(new Error("Host offline"), { code: -32005 });
+  await workbench.answerQuestion(elicitation.id, "accept");
+  assert.equal(workbench.questions()[0]!.answering, null);
+  assert.equal(workbench.failure, "Host offline");
+  account.resolveFails = Object.assign(new Error("Already answered"), { code: -32011 });
+  await workbench.answerQuestion(elicitation.id, "decline");
+  assert.equal(workbench.questions().length, 0);
 });

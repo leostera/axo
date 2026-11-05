@@ -291,6 +291,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
         {entries.length > 0 ? (
           <RecentChats showHost={manyHosts}
             entries={entries}
+            asking={new Set(workbench.questions().map(question => question.elicitation.sessionId))}
             isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
             onSelect={onSelect}
           />
@@ -314,8 +315,10 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
 }
 
 /** Every chat, the most recently active at the top, each with how long ago. */
-function RecentChats({ entries, showHost, isSelected, onSelect }: {
+function RecentChats({ entries, showHost, asking, isSelected, onSelect }: {
   entries: ChatMenuEntry[];
+  /** The chats whose agent waits for the person's answer (RFD0029). */
+  asking: Set<string>;
   showHost: boolean;
   isSelected: (hostId: string, sessionId: string) => boolean;
   onSelect: (hostId: string, sessionId: string) => void;
@@ -337,7 +340,7 @@ function RecentChats({ entries, showHost, isSelected, onSelect }: {
             aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
             <span className="chat-row-name">{chatTitle(session)}</span>
             {showHost ? <span className="chat-row-host" title={`On ${host.label}`}>{host.label}</span> : null}
-            <StatusDot status={session.status} />
+            <StatusDot status={asking.has(session.sessionId) ? "needsAttention" : session.status} />
             <span className="chat-row-age">{active > 0 ? shortAge(active, now) : ""}</span>
           </button>
         );

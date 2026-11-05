@@ -1,7 +1,7 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
 import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
-import type { PendingPrompt } from "./workbench.ts";
+import type { AskedQuestion, PendingPrompt } from "./workbench.ts";
 import { Icon, type IconName } from "./icons.tsx";
 
 /** Bold, italics, links and `code` within a line. Remote images are never fetched. */
@@ -308,6 +308,29 @@ export function PendingView({ prompt, onDismiss }: { prompt: PendingPrompt; onDi
           <button onClick={onDismiss}>Remove</button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * What a Mac's agent asks the person (RFD0029). Only the person can answer: the agent waits for
+ * Yes or No, and an answer from any of their devices settles it everywhere.
+ */
+export function ElicitationCard({ question, canAnswer, onAnswer }: {
+  question: AskedQuestion;
+  canAnswer: boolean;
+  onAnswer: (action: "accept" | "decline") => void;
+}) {
+  const { elicitation, answering } = question;
+  const disabled = !canAnswer || answering !== null;
+  return (
+    <div className="question-card elicitation-card" role="group" aria-label="The agent asks you">
+      <p className="question-title"><Icon name="question" size={20} /><span>The agent asks you</span></p>
+      <p className="elicitation-message">{elicitation.message}</p>
+      <div className="question-buttons">
+        <button className="pill-button primary" disabled={disabled} onClick={() => onAnswer("accept")}>{answering === "accept" ? "Yes…" : "Yes"}</button>
+        <button className="pill-button" disabled={disabled} onClick={() => onAnswer("decline")}>{answering === "decline" ? "No…" : "No"}</button>
+      </div>
     </div>
   );
 }

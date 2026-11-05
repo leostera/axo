@@ -407,6 +407,7 @@ button:disabled { cursor: default; }
 .question-title { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
 .question-title .icon { margin-top: 1px; color: var(--blue); }
 .question-buttons { display: flex; gap: 12px; }
+.elicitation-message { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 .question-input { display: flex; width: 100%; gap: 10px; }
 .question-input input { min-width: 0; flex: 1; padding: 0 12px; border: 0.5px solid var(--separator); border-radius: 8px; background: var(--bg); font-size: 16px; }
 .question-elsewhere { margin: 0; color: var(--secondary); font-size: 15px; }
