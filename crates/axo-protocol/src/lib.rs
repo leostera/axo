@@ -7,6 +7,7 @@
 
 pub mod asset;
 pub mod base64;
+pub mod elicitation;
 mod event;
 mod ids;
 mod layout;

@@ -381,6 +381,14 @@ fn run_connection(
     let (epoch, outgoing, replies) = channel.attach();
     // A new socket needs a new handshake: the uploader starts it now.
     waker.wake();
+    // What agents are asking the person goes up again on every socket (RFD0029).
+    for elicitation in sessions.pending_elicitations() {
+        let _ = channel.notify(
+            ELICITATION_REQUESTED,
+            serde_json::to_value(&elicitation).expect("an elicitation serializes"),
+            Priority::Control,
+        );
+    }
     let result = relay_session(
         &mut socket,
         &mut reassembler,
@@ -584,6 +592,53 @@ struct RelaySessionContext<'a> {
     account_id: String,
     /// Where a prompt's attachments come from (RFD0030).
     assets: Option<crate::assets::AssetSource>,
+}
+
+/// Elicitations on the relay (RFD0029): axod tells the cloud what it asks and how each ended, and
+/// the cloud brings a person's answer, which it takes only from a signed-in person's client.
+const ELICITATION_REQUESTED: &str = "axo.elicitation.requested";
+const ELICITATION_RESOLVED: &str = "axo.elicitation.resolved";
+const ELICITATION_RESOLVE: &str = "axo.elicitation.resolve";
+/// Shared with `@axo/protocol`'s `ELICITATION_ERRORS.notPending`.
+const ELICITATION_NOT_PENDING: i64 = -32011;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResolveElicitation {
+    target: RemoteTarget,
+    elicitation_id: String,
+    action: axo_protocol::elicitation::ElicitationAnswer,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RemoteTarget {
+    host_id: String,
+    host_generation: String,
+}
+
+fn resolve_elicitation(
+    params: &Value,
+    context: &RelaySessionContext<'_>,
+) -> Result<(), (i64, String)> {
+    let request = serde_json::from_value::<ResolveElicitation>(params.clone())
+        .map_err(|_| (-32602, "Invalid params".to_owned()))?;
+    if request.target.host_id != context.host_id
+        || request.target.host_generation != context.host_generation
+    {
+        return Err((-32002, "Stale host".into()));
+    }
+    if context
+        .sessions
+        .resolve_elicitation(&request.elicitation_id, request.action)
+    {
+        Ok(())
+    } else {
+        Err((
+            ELICITATION_NOT_PENDING,
+            "Already answered, or no longer asked".into(),
+        ))
+    }
 }
 
 /// Commands running at once on one Mac; more are refused until one ends.
@@ -816,6 +871,19 @@ fn relay_session(
             }
             continue;
         }
+        if value.get("method").and_then(Value::as_str) == Some(ELICITATION_RESOLVE) {
+            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
+                let outcome = resolve_elicitation(&value["params"], &context);
+                send_json(
+                    socket,
+                    &match outcome {
+                        Ok(()) => serde_json::json!({ "jsonrpc": JSONRPC, "id": id, "result": { "resolved": true } }),
+                        Err((code, message)) => serde_json::json!({ "jsonrpc": JSONRPC, "id": id, "error": { "code": code, "message": message } }),
+                    },
+                )?;
+            }
+            continue;
+        }
         if value.get("method").and_then(Value::as_str) == Some(crate::signin::METHOD) {
             if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
                 start_sign_in(id.clone(), &value["params"], &context);
@@ -980,6 +1048,24 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
                     Priority::Ephemeral,
                 );
             }
+        }
+        Event::ElicitationRequested { elicitation } => {
+            let _ = context.channel.notify(
+                ELICITATION_REQUESTED,
+                serde_json::to_value(&elicitation).expect("an elicitation serializes"),
+                Priority::Control,
+            );
+        }
+        Event::ElicitationResolved {
+            id,
+            session_id,
+            action,
+        } => {
+            let _ = context.channel.notify(
+                ELICITATION_RESOLVED,
+                serde_json::json!({ "id": id, "sessionId": session_id, "action": action }),
+                Priority::Control,
+            );
         }
         Event::SessionSnapshot { .. }
         | Event::SessionRemoved { .. }

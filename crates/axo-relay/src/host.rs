@@ -118,6 +118,19 @@ pub trait RelayHost: Send + Sync {
     ) -> io::Result<Option<Event>>;
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()>;
 
+    /// What agents here are asking the person now (RFD0029), sent again on every connection.
+    fn pending_elicitations(&self) -> Vec<axo_protocol::elicitation::Elicitation> {
+        Vec::new()
+    }
+    /// A person's answer from the cloud; false when it no longer waits.
+    fn resolve_elicitation(
+        &self,
+        _id: &str,
+        _answer: axo_protocol::elicitation::ElicitationAnswer,
+    ) -> bool {
+        false
+    }
+
     /// The Workspaces a Session can be created in.
     fn remote_workspaces(&self) -> io::Result<Vec<RemoteWorkspace>>;
     fn remote_create_session(&self, updated_at: &str) -> io::Result<RemoteSessionSnapshot>;

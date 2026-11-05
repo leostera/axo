@@ -45,6 +45,18 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         &self.0.host_generation
     }
 
+    fn pending_elicitations(&self) -> Vec<axo_protocol::elicitation::Elicitation> {
+        self.0.pending_elicitations()
+    }
+
+    fn resolve_elicitation(
+        &self,
+        id: &str,
+        answer: axo_protocol::elicitation::ElicitationAnswer,
+    ) -> bool {
+        self.0.resolve_elicitation(id, answer)
+    }
+
     fn publish_relay_status(&self, status: &RelayStatus) {
         self.0.publish_event(Event::RelayStatus {
             status: status.clone(),
@@ -395,6 +407,7 @@ fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Err
 
 impl SessionManager {
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
+        super::elicitations::add_methods(self, handler);
         let manager = Arc::clone(self);
         handler.add_typed(
             method::SESSION_LIST,

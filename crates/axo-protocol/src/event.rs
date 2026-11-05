@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::elicitation::{Elicitation, ElicitationAction};
 use crate::{RelayStatus, SessionId, SessionRecord, ShellId};
 
 /// What happened to a pane's process or its attachments.
@@ -61,6 +62,16 @@ pub enum Event {
     /// `axo.peer.sessions.list` again (RFD0024).
     #[serde(rename = "peer.sessions.changed")]
     PeerSessionsChanged,
+    /// An agent asks the person (RFD0029); clients show a card until it is resolved.
+    #[serde(rename = "elicitation.requested")]
+    ElicitationRequested { elicitation: Elicitation },
+    /// The person answered, nobody did in time, or the asker went away: dismiss the card.
+    #[serde(rename = "elicitation.resolved")]
+    ElicitationResolved {
+        id: String,
+        session_id: SessionId,
+        action: ElicitationAction,
+    },
     /// The subscriber fell behind and events were dropped; resynchronize from a fresh list.
     #[serde(rename = "subscription.lagged")]
     SubscriptionLagged,
@@ -81,7 +92,9 @@ impl Event {
             | Event::SessionFocus { session_id }
             | Event::ShellActivity { session_id, .. }
             | Event::TerminalOutput { session_id, .. }
-            | Event::PiEvent { session_id, .. } => Some(*session_id),
+            | Event::PiEvent { session_id, .. }
+            | Event::ElicitationResolved { session_id, .. } => Some(*session_id),
+            Event::ElicitationRequested { elicitation } => Some(elicitation.session_id),
             Event::WorkspaceChanged { .. }
             | Event::RelayStatus { .. }
             | Event::PeerSessionsChanged

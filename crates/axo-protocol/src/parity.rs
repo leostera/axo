@@ -223,6 +223,12 @@ pub const PARITY: &[Parity] = &[
         method::PEER_COMMAND,
         Remote::LocalOnly("this Mac's own client call to another Mac"),
     ),
+    row(
+        method::ELICITATION_REQUEST,
+        Remote::LocalOnly(
+            "an agent on this Mac asks its person; the answer comes through the relay as axo.elicitation.resolve",
+        ),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

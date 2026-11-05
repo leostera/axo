@@ -264,6 +264,20 @@ const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "elicitation_request",
+        method: Some(method::ELICITATION_REQUEST),
+        description: "Asks the person a yes-or-no question and waits for their answer, up to 5 minutes. It shows on their phone, in the browser, and on every client they have open; only they can answer. Returns { action }: \"accept\" (yes), \"decline\" (no), or \"cancel\" (nobody answered in time). Ask before anything that sends, posts, pays or deletes, and act only on \"accept\".",
+        properties: || {
+            json!({
+                "message": { "type": "string", "description": "The question, as the person reads it, e.g. \"Delete the branch feat/old-ui? It has 3 unmerged commits.\" At most 1000 characters." }
+            })
+        },
+        required: &["message"],
+        output: Some(elicitation_output),
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
         name: COMPUTER_TOOLS,
         method: None,
         description: "The computer-use tools for this Mac, with their full descriptions and input schemas. Read the ones you need before calling `computer`; `get_guide` explains the approach.",
@@ -452,6 +466,10 @@ impl McpServer {
         if tool.method == Some(method::SESSION_PROMPT) {
             arguments.insert("fromSessionId".into(), json!(self.session_id));
         }
+        // An agent asks only for its own Session, whatever it passes.
+        if tool.method == Some(method::ELICITATION_REQUEST) {
+            arguments.insert("sessionId".into(), json!(self.session_id));
+        }
         // Connections calls name the Session that made them, for the account's call log.
         if tool
             .method
@@ -503,7 +521,11 @@ impl McpServer {
 
     /// One request to Axod on a connection of its own.
     fn call(&self, method: &str, params: Value) -> Result<Value, ToolError> {
-        let timeout = crate::connections::timeout_for(method).unwrap_or(AXOD_TIMEOUT);
+        let timeout = if method == method::ELICITATION_REQUEST {
+            Duration::from_millis(axo_protocol::elicitation::TIMEOUT_MS) + Duration::from_secs(10)
+        } else {
+            crate::connections::timeout_for(method).unwrap_or(AXOD_TIMEOUT)
+        };
         self.call_within(method, params, timeout)
     }
 
@@ -735,6 +757,16 @@ fn log_output() -> Value {
             "records": { "type": "array", "items": { "type": "object" }, "description": "Calls, newest first." }
         }),
         &["records"],
+    )
+}
+
+fn elicitation_output() -> Value {
+    object_schema(
+        json!({
+            "id": { "type": "string" },
+            "action": { "type": "string", "enum": ["accept", "decline", "cancel"] }
+        }),
+        &["id", "action"],
     )
 }
 

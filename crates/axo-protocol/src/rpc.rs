@@ -58,6 +58,8 @@ pub mod method {
     pub const PEER_SESSION_CLOSE: &str = "axo.peer.session.close";
     pub const PEER_SESSION_WATCH: &str = "axo.peer.session.watch";
     pub const PEER_COMMAND: &str = "axo.peer.command";
+    /// An agent asks its person and waits (RFD0029). The answer comes only through the relay.
+    pub const ELICITATION_REQUEST: &str = "axo.elicitation.request";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -105,6 +107,7 @@ pub mod method {
         PEER_SESSION_CLOSE,
         PEER_SESSION_WATCH,
         PEER_COMMAND,
+        ELICITATION_REQUEST,
     ];
 }
 

@@ -23,6 +23,7 @@ use axo_store::{
 
 mod catalog;
 mod cloud_transcripts;
+mod elicitations;
 mod events;
 mod handlers;
 mod lifecycle;
@@ -159,6 +160,8 @@ pub struct SessionManager {
     sessions_directory: PathBuf,
     /// The other Macs, once the relay follows them (RFD0024).
     peers: peer_views::PeerSlot,
+    /// What agents here are asking the person (RFD0029).
+    elicitations: elicitations::Elicitations,
 }
 
 impl SessionManager {
@@ -228,6 +231,7 @@ impl SessionManager {
             workspace_states: Default::default(),
             sessions_directory: sessions_directory.to_path_buf(),
             peers: Default::default(),
+            elicitations: Default::default(),
         });
 
         manager.restore_open_sessions()?;
