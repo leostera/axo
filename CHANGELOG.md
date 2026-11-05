@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.14 (Mac app build 285, axod 40)
+
+### New
+
+- **Drive any of your Macs from anywhere.** An agent on one Mac, including one you're chatting with from your phone, can now see and operate the apps on your other Macs, the way it already can on its own: `codemode.hosts.list()` shows your Macs and whether each can be driven, and `codemode.computer.run({ host, tool, args })` reads a window or clicks, types and scrolls there. Screenshots are saved to your account's files and the agent sees them.
+- **Risky actions on another Mac ask you first, in the chat that asked.** When something looks like it may send, pay or delete, you get "Axo asks before acting on your Mac" in that conversation on your phone and in the browser, saying which Mac asked; nothing happens unless you tap Yes.
+
+### Changed
+
+- **Running a command on another Mac is now `codemode.bash.run({ host, command })`**, instead of a separate name per Mac. Every call to another Mac is in your account's call log, shown as Terminal or Computer use (phone build 17).
+
 ## 0.13 (Mac app build 284, axod 39)
 
 ### Changed
