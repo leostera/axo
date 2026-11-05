@@ -285,3 +285,9 @@ body {
   font-size: 0.78rem !important;
   max-height: 22rem;
 }
+
+/* Method and field names in a table's first column stay on one line. */
+.rfc td:first-child > code {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}

@@ -7,7 +7,8 @@
 // writes the same bytes. tests/examples.test.mjs checks the files against the schemas and
 // recomputes every hash, chain and signature.
 
-import { createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +87,55 @@ push({ type: "message", id: "a2", parentId: "t1", time: "2026-11-02T09:00:09Z", 
 const COMMAND_ID = "cmd_q8ZpL2vR7sKx";
 push({ type: "message", id: "u2", parentId: "a2", time: "2026-11-02T09:01:00Z", role: "user", content: "Add a section on pairing.", ext: { axp: { commandId: COMMAND_ID } } });
 push({ type: "message", id: "a3", parentId: "u2", time: "2026-11-02T09:01:04Z", role: "assistant", content: [{ type: "text", text: "Added a Pairing section to README.md." }], stop: "end" });
+
+// A photo attached from the phone (attachments.axp.jsonl): a 40×40 PNG of fixed noise, so it
+// is not compressible and takes two chunks.
+const PHOTO = (() => {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (bytes: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of bytes) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc(body), 8 + data.length);
+    return out;
+  };
+  const size = 40;
+  let seed = 0x2545f491;
+  const raw = Buffer.alloc(size * (1 + size * 3));
+  for (let y = 0; y < size; y++) {
+    raw[y * (1 + size * 3)] = 0;
+    for (let x = 0; x < size * 3; x++) {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      raw[y * (1 + size * 3) + 1 + x] = seed >>> 24;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+})();
+const PHOTO_DIGEST = createHash("sha256").update(PHOTO).digest();
+const PHOTO_ASSET = `sha256:${PHOTO_DIGEST.toString("hex")}`;
+const PHOTO_URI = `ni:///sha-256;${PHOTO_DIGEST.toString("base64url")}`;
+const ATTACHMENT = { asset: PHOTO_ASSET, name: "whiteboard.png", mediaType: "image/png", size: PHOTO.length };
+const ATTACH_COMMAND_ID = "cmd_Hn4wT9bQe2Lm";
+push({ type: "message", id: "u3", parentId: "a3", time: "2026-11-02T09:05:00Z", role: "user", content: [{ type: "text", text: "Turn this into a TODO list." }, { type: "image", mediaType: "image/png", uri: PHOTO_URI }], ext: { axp: { commandId: ATTACH_COMMAND_ID } } });
 
 {
   const text = [header, ...records].map((r) => JSON.stringify(r)).join("\n") + "\n";
@@ -230,6 +280,37 @@ write("terminal", [
   { from: "host", to: "hub", note: "Output goes only to attached connections and is never stored.", message: notify("terminal.output", { hostId: HOST_ID, sessionId: SESSION, shellId: SHELL, seq: 4096, data: b64url(Buffer.from("git status\r\nOn branch main\r\n$ ")) }) },
   { from: "hub", to: "client", message: notify("terminal.output", { hostId: HOST_ID, sessionId: SESSION, shellId: SHELL, seq: 4096, data: b64url(Buffer.from("git status\r\nOn branch main\r\n$ ")) }) },
 ]);
+
+// A photo from the phone: uploaded in two chunks, attached to a prompt, fetched and checked by the host.
+{
+  const CHUNK = 4096;
+  const ASSET_RECORD = { ...ATTACHMENT, createdAt: "2026-11-02T09:04:58Z", version: 1 };
+  const prompt = { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: ATTACH_COMMAND_ID, text: "Turn this into a TODO list.", attachments: [ATTACHMENT] };
+  write("attachments", [
+    { from: "client", to: "hub", message: req(20, "assets.limits", {}) },
+    { from: "hub", to: "client", note: "This hub sends assets in 4 KiB chunks.", message: ok(20, { assetBytes: 104857600, accountBytes: 10737418240, accountAssets: 10000, chunkBytes: CHUNK, attachments: 8 }) },
+    { from: "client", to: "hub", note: "The phone hashed the photo; does the account already have it?", message: req(21, "assets.has", { assets: [PHOTO_ASSET] }) },
+    { from: "hub", to: "client", message: ok(21, { present: [] }) },
+    { from: "client", to: "hub", message: req(22, "assets.put", { asset: PHOTO_ASSET, name: "whiteboard.png", mediaType: "image/png", size: PHOTO.length }) },
+    { from: "hub", to: "client", note: "The size is reserved against the account's quota. This hub offers no upload URL, so the bytes go in band.", message: ok(22, { state: "reserved", upload: "up_7Fq2" }) },
+    { from: "client", to: "hub", message: req(23, "assets.chunk", { upload: "up_7Fq2", offset: 0, data: b64url(PHOTO.subarray(0, CHUNK)) }) },
+    { from: "hub", to: "client", message: ok(23, { received: CHUNK }) },
+    { from: "client", to: "hub", message: req(24, "assets.chunk", { upload: "up_7Fq2", offset: CHUNK, data: b64url(PHOTO.subarray(CHUNK)) }) },
+    { from: "hub", to: "client", message: ok(24, { received: PHOTO.length }) },
+    { from: "client", to: "hub", message: req(25, "assets.commit", { upload: "up_7Fq2" }) },
+    { from: "hub", to: "client", note: "The hub checked the bytes hash to the name, and made them durable.", message: ok(25, { asset: ASSET_RECORD }) },
+    { from: "client", to: "hub", note: "Only now does the phone send the prompt that names it.", message: req(26, "pi.prompt", prompt) },
+    { from: "hub", to: "host", message: req(80, "pi.prompt", { ...prompt, from: { device: PHONE_DEVICE } }) },
+    { from: "host", to: "hub", note: "Before Pi gets the prompt, the host fetches the photo from the hub.", message: req(30, "assets.get", { asset: PHOTO_ASSET }) },
+    { from: "hub", to: "host", message: ok(30, { asset: ASSET_RECORD, offset: 0, data: b64url(PHOTO.subarray(0, CHUNK)), done: false }) },
+    { from: "host", to: "hub", message: req(31, "assets.get", { asset: PHOTO_ASSET, offset: CHUNK }) },
+    { from: "hub", to: "host", message: ok(31, { asset: ASSET_RECORD, offset: CHUNK, data: b64url(PHOTO.subarray(CHUNK)), done: true }) },
+    { from: "host", to: "hub", note: "The bytes hash to the name, so Pi gets the prompt with the photo as an image.", message: ok(80, { receipt: "accepted" }) },
+    { from: "hub", to: "client", message: ok(26, { receipt: "accepted" }) },
+    { from: "host", to: "hub", note: "The user message refers to the photo by its ni: URI; its hash covers the URI, and the URI is the photo's hash.", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 7, records: records.slice(7, 8), have: offer(8) }) },
+    { from: "hub", to: "client", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 7, records: records.slice(7, 8), have: offer(8) }) },
+  ]);
+}
 
 // A batch too large for the hub's 64 KiB messages travels in fragments.
 {

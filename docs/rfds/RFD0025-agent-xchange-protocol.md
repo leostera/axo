@@ -242,3 +242,4 @@ Out of scope:
 - **One exchange for replication.** The hub reads each log from its host with the same `axp.log.open`/`records`/`ack` a client uses to read from the hub (SPEC §9.2, §9.3). There is no separate upload method set.
 - **Recovery, not epochs.** Logs are append-only and never truncated. A host that lost records a replica holds reads them back and rebuilds its log as the common prefix, the replica's records, then its own; ATXF record hashes do not depend on position (SPEC §9.4).
 - **A `sessions` extension** for creating, renaming and archiving Sessions remotely, which the core leaves out; `local` keeps only health, configuration, the hub link and the viewport.
+- **An `assets` extension**, from RFD0030: files named by the SHA-256 of their bytes, uploaded and read in band or through a URL the hub hands out, attached to commands such as `pi.prompt`, and referred to from logs by RFC 6920 `ni:` URIs.

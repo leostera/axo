@@ -10,6 +10,7 @@ const DESCRIPTIONS: Record<string, string> = {
   replication: "A host announces its Sessions; the hub opens each log from where its replica ends and keeps it open for new records.",
   reading: "A phone lists hosts and Sessions, opens a log from its last records, pages back, and follows the reply being written.",
   command: "A prompt whose connection drops before the receipt arrives, resent safely with the same commandId, and its effect arriving in the log.",
+  attachments: "A photo uploaded from a phone in two chunks, attached to a prompt, and fetched and checked by the host before the agent sees it. The log refers to it by its ni: URI.",
   terminal: "Attaching to a shell, typing into it, and its output, which goes only to attached clients and is never stored.",
   divergence: "A host restored from a backup lost two records the hub holds. It stops writing, finds where the copies agree, and reads them back.",
   fragments: "A log batch larger than the hub accepts travels in parts, and a response overtakes it.",

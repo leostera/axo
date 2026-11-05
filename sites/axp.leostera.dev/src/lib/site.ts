@@ -103,7 +103,7 @@ export interface Example {
 }
 
 // From the first connection to the corner cases.
-const EXAMPLE_ORDER = ["pairing", "replication", "reading", "command", "terminal", "divergence", "fragments", "session"];
+const EXAMPLE_ORDER = ["pairing", "replication", "reading", "command", "attachments", "terminal", "divergence", "fragments", "session"];
 const slugOf = (file: string) => file.replace(/\.(axp|atxf)\.jsonl$/, "");
 const order = (file: string) => {
   const index = EXAMPLE_ORDER.indexOf(slugOf(file));

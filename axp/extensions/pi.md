@@ -17,6 +17,7 @@ A Pi Session's log is the ATXF conversion of Pi's session file, as described in 
 - The header's `source.agent` is `pi` and its `id` is the Session's `sessionId`.
 - The host converts each Pi entry as Pi appends it, and MUST carry it in `native` (with `native.raw` when re-serializing would not reproduce it), so that `fidelity.native` is `all`. A client that draws Pi's own interface recovers Pi's entries from `native` in order, byte for byte.
 - ATXF record ids are Pi entry ids (`fidelity.ids: "stable"`).
+- A prompt's attachments appear in its user message as content blocks that refer to the assets by URI (assets §6): image blocks for images, resource blocks for other files. Pi's own entry, carried verbatim in `native`, may still hold an image inline.
 - The user message a `pi.prompt` produces carries `ext.axp.commandId` (SPEC §10.2). A host that cannot attach it to the user message itself, because Pi writes that entry, writes a Pi custom entry of type `axp.command` with `{ "commandId" }` immediately before it, and the converter moves the id onto the next user message.
 
 ## 2. Commands
@@ -25,14 +26,17 @@ Every method is routed (SPEC §10.1) and a command (SPEC §10.2). All take `host
 
 | Method | Further params | Effect |
 | --- | --- | --- |
-| `pi.prompt` | `text`, `images`? | A user message. |
+| `pi.prompt` | `text`, `attachments`? | A user message. |
 | `pi.stop` | `turn` | Stops the turn, if it is still running. |
 | `pi.answer` | `question`, `answer` | Answers a question Pi asked. |
 | `pi.restart` | `mode`: `auto` or `force` | Restarts the Pi process of the Session. |
 
 ### 2.1 `pi.prompt`
 
-- `text` is 1 to 100,000 characters. `images` is up to 8 objects `{ "mediaType", "data" }`, `data` being base64url of at most 5 MiB each.
+- `text` is up to 100,000 characters. It MAY be empty when the prompt has attachments.
+- `attachments` are files from the [`assets`](assets.md) extension (assets §5), and require it to be negotiated. The host fetches and checks all of them before Pi gets the prompt, and refuses the prompt with `-32348` if any cannot be fetched. It then gives them to Pi:
+  - images (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) of at most 5 MiB as image input;
+  - any other file, or a larger image, as a line of text naming the file, its media type, its size and the path where the host saved it, so the agent can read it with its own tools.
 - When Pi is idle the prompt starts a turn. When a turn is running the host holds the prompt and starts the next turn with it when the running one ends. Held prompts are not steering: a stop does not drop them.
 - A host holds at most 32 prompts per Session and refuses more with `-32220` (`busy`).
 

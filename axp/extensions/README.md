@@ -11,6 +11,7 @@ Extensions add methods, slots, record conventions and fields to AXP without chan
 | `share` | 0.1 | Draft | hub, host | -32280 to -32299 | [share.md](share.md) |
 | `upgrade` | 0.1 | Draft | host, hub, client | -32300 to -32319 | [upgrade.md](upgrade.md) |
 | `local` | 0.1 | Draft | host, client (local only) | -32320 to -32339 | [local.md](local.md) |
+| `assets` | 0.1 | Draft | hub, host, client | -32340 to -32359 | [assets.md](assets.md) |
 
 Each extension's schema is published at `https://axp.leostera.dev/schema/v0.1/ext/<identifier>/<version>/<identifier>.schema.json`.
 

@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/assets/0.1/assets.schema.json",
+  "title": "AXP extension `assets` 0.1",
+  "description": "Files an account keeps at its hub, named by the SHA-256 of their bytes. See extensions/assets.md.",
+  "$defs": {
+    "asset": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(?!\\.{1,2}$)[^/\\\\\\u0000-\\u001f\\u007f]+$",
+      "description": "1 to 255 bytes of UTF-8 (checked by receivers; JSON Schema counts characters)."
+    },
+    "mediaType": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
+    },
+    "assetRecord": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/asset"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "mediaType": {
+          "$ref": "#/$defs/mediaType"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/time"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "name",
+        "mediaType",
+        "size",
+        "createdAt",
+        "version"
+      ]
+    },
+    "attachment": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/asset"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "mediaType": {
+          "$ref": "#/$defs/mediaType"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "name",
+        "mediaType",
+        "size"
+      ]
+    },
+    "uri": {
+      "description": "RFC 6920 named-information URI of an asset's SHA-256.",
+      "type": "string",
+      "pattern": "^ni:///sha-256;[A-Za-z0-9_-]{43}$"
+    },
+    "assets.limits.params": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "assets.limits.result": {
+      "type": "object",
+      "properties": {
+        "assetBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "accountBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "accountAssets": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "chunkBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attachments": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "assetBytes",
+        "accountBytes",
+        "accountAssets",
+        "chunkBytes",
+        "attachments"
+      ]
+    },
+    "assets.has.params": {
+      "type": "object",
+      "properties": {
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "assets"
+      ]
+    },
+    "assets.has.result": {
+      "type": "object",
+      "properties": {
+        "present": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "present"
+      ]
+    },
+    "assets.put.params": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/asset"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "mediaType": {
+          "$ref": "#/$defs/mediaType"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "name",
+        "mediaType",
+        "size"
+      ]
+    },
+    "assets.put.result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "exists"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "reserved"
+            },
+            "upload": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "upload"
+          ]
+        }
+      ]
+    },
+    "assets.chunk.params": {
+      "type": "object",
+      "properties": {
+        "upload": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "data": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/base64url",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "upload",
+        "offset",
+        "data"
+      ]
+    },
+    "assets.chunk.result": {
+      "type": "object",
+      "properties": {
+        "received": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "received"
+      ]
+    },
+    "assets.commit.params": {
+      "type": "object",
+      "properties": {
+        "upload": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "upload"
+      ]
+    },
+    "assets.commit.result": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/assetRecord"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset"
+      ]
+    },
+    "assets.abort.params": {
+      "type": "object",
+      "properties": {
+        "upload": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "upload"
+      ]
+    },
+    "assets.abort.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "assets.get.params": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/asset"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset"
+      ]
+    },
+    "assets.get.result": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/assetRecord"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "data": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/base64url"
+        },
+        "done": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "offset",
+        "data",
+        "done"
+      ]
+    },
+    "assets.url.params": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/asset"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset"
+      ]
+    },
+    "assets.url.result": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "expiresAt": {
+          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "expiresAt"
+      ]
+    },
+    "assets.list.params": {
+      "type": "object",
+      "properties": {
+        "before": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    },
+    "assets.list.result": {
+      "type": "object",
+      "properties": {
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assetRecord"
+          }
+        },
+        "next": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "assets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "bytes",
+            "assets"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "assets",
+        "next",
+        "usage"
+      ]
+    },
+    "assets.delete.params": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/asset"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "version"
+      ]
+    },
+    "assets.delete.result": {
+      "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    }
+  }
+}

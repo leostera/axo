@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -156,6 +156,52 @@ test("the host's auth signature verifies with its paired key", () => {
   const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: redeem.publicKey }, format: "jwk" });
   const signed = Buffer.concat([Buffer.from("axp/0.1/auth\n"), challenge, Buffer.from(`\n${device}\nwss://hub.example`)]);
   assert.ok(verify(null, signed, key, signature));
+});
+
+test("asset bytes hash to their names, and ni: URIs in the log name assets the examples carry", () => {
+  const assets = new Map();
+  for (const file of EXAMPLES) {
+    const uploads = new Map();
+    const parts = new Map();
+    const add = (asset, offset, data) => {
+      const list = parts.get(asset) ?? [];
+      list.push({ offset, bytes: Buffer.from(data, "base64url") });
+      parts.set(asset, list);
+    };
+    const messages = walk(file);
+    for (const [index, { message, method }] of messages.entries()) {
+      if (method === "assets.put" && message.result?.upload) {
+        const request = messages.slice(0, index).reverse().find((m) => m.message.method === "assets.put" && m.message.id === message.id);
+        uploads.set(message.result.upload, request.message.params.asset);
+      }
+      if (message.method === "assets.chunk") add(uploads.get(message.params.upload), message.params.offset, message.params.data);
+      if (method === "assets.get" && message.result) add(message.result.asset.asset, message.result.offset, message.result.data);
+    }
+    for (const [asset, list] of parts) {
+      const seen = new Map();
+      for (const part of list) {
+        if (seen.has(part.offset)) assert.ok(seen.get(part.offset).equals(part.bytes), `${file}: two copies of ${asset} differ at ${part.offset}`);
+        seen.set(part.offset, part.bytes);
+      }
+      const ordered = [...seen.entries()].sort((a, b) => a[0] - b[0]);
+      let offset = 0;
+      for (const [start, bytes] of ordered) {
+        assert.equal(start, offset, `${file}: ${asset} has a gap at ${offset}`);
+        offset += bytes.length;
+      }
+      const bytes = Buffer.concat(ordered.map(([, b]) => b));
+      assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, asset, `${file}: bytes of ${asset}`);
+      assets.set(asset, bytes);
+    }
+  }
+  assert.ok(assets.size > 0, "no asset bytes in the examples");
+  const log = read("examples/session.atxf.jsonl");
+  const uris = [...log.matchAll(/ni:\/\/\/sha-256;([A-Za-z0-9_-]{43})/g)].map((match) => match[1]);
+  assert.ok(uris.length > 0, "the example log refers to no asset");
+  for (const digest of uris) {
+    const asset = `sha256:${Buffer.from(digest, "base64url").toString("hex")}`;
+    assert.ok(assets.has(asset), `the log refers to ${asset}, which no example carries`);
+  }
 });
 
 // ─── Documents and schemas agree ────────────────────────────────────────────

@@ -4,28 +4,6 @@
   "title": "AXP extension `pi` 0.1",
   "description": "Steering a Pi agent. See extensions/pi.md.",
   "$defs": {
-    "image": {
-      "type": "object",
-      "properties": {
-        "mediaType": {
-          "enum": [
-            "image/png",
-            "image/jpeg",
-            "image/gif",
-            "image/webp"
-          ]
-        },
-        "data": {
-          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/base64url",
-          "maxLength": 6990507
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "mediaType",
-        "data"
-      ]
-    },
     "pi.prompt.params": {
       "allOf": [
         {
@@ -43,13 +21,12 @@
         },
         "text": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 100000
         },
-        "images": {
+        "attachments": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/image"
+            "$ref": "https://axp.leostera.dev/schema/v0.1/ext/assets/0.1/assets.schema.json#/$defs/attachment"
           },
           "maxItems": 8
         }
@@ -58,7 +35,24 @@
       "required": [
         "sessionId",
         "text"
-      ]
+      ],
+      "if": {
+        "properties": {
+          "text": {
+            "maxLength": 0
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "attachments"
+        ],
+        "properties": {
+          "attachments": {
+            "minItems": 1
+          }
+        }
+      }
     },
     "pi.prompt.result": {
       "allOf": [
