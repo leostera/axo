@@ -114,6 +114,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const prompts = [];
   const keys = [];
   const stops = [];
+  const answers = [];
   let finishOnStop = null;
   let sessionCreateCount = 0;
   let authenticated = false;
@@ -377,6 +378,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         const lines = transcripts.get(call.params.sessionId) ?? [];
         const records = call.params.have ? lines.filter((line) => line.cursor > call.params.have.cursor) : lines.slice(-call.params.window.last);
         reply({ epoch: lines.length ? 1 : null, records, cursor: lines.length, older: null, progress: [] });
+        return;
+      }
+      if (call.method === "axo.elicitation.resolve") {
+        methods.push(call.method);
+        answers.push(call.params);
+        reply({ resolved: true });
+        setTimeout(() => notify(socket, "axo.elicitation.resolved", { hostId, id: call.params.elicitationId, sessionId: sid(1), action: call.params.action }), 50);
         return;
       }
       if (call.method !== "axo.client.command") {
@@ -655,6 +663,22 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(prompts[0], { sessionId: sid(1), text: "Ship it" });
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
     assert.equal(await box.inputValue(), "");
+
+    // The agent asks the person yes or no (RFD0029): a card in its chat, answered from here.
+    const elicitationId = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a";
+    for (const socket of sockets) notify(socket, "axo.elicitation.requested", { hostId, elicitation: {
+      id: elicitationId, sessionId: sid(1), kind: "confirm",
+      message: "Delete the branch feat/old-ui? It has 3 unmerged commits.", createdAt: Date.now(), expiresAt: Date.now() + 300_000,
+    } });
+    const card = page.getByRole("group", { name: "The agent asks you" });
+    await expect(card.getByText("Delete the branch feat/old-ui? It has 3 unmerged commits."));
+    await shot("elicitation");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await shot("elicitation-dark");
+    await page.emulateMedia({ colorScheme: "light" });
+    await card.getByRole("button", { name: "Yes" }).click();
+    await card.waitFor({ state: "detached", timeout: 10_000 }).catch((error) => failWithContext(page, error, context));
+    assert.deepEqual(answers, [{ hostId, elicitationId, action: "accept" }]);
 
     // A new chat: its first message starts it in the Mac's Home Workspace.
     await chats.getByRole("button", { name: "New chat", exact: true }).click();

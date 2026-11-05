@@ -324,12 +324,16 @@ export function ElicitationCard({ question, canAnswer, onAnswer }: {
   const { elicitation, answering } = question;
   const disabled = !canAnswer || answering !== null;
   return (
-    <div className="question-card elicitation-card" role="group" aria-label="The agent asks you">
-      <p className="question-title"><Icon name="question" size={20} /><span>The agent asks you</span></p>
+    <div className="tool-card elicitation-card" role="group" aria-label="The agent asks you">
+      <div className="tool-heading">
+        <Icon name="question" size={18} />
+        <span className="tool-name">The agent asks you</span>
+        {answering ? <span className="spinner" aria-hidden="true" /> : null}
+      </div>
       <p className="elicitation-message">{elicitation.message}</p>
-      <div className="question-buttons">
-        <button className="pill-button primary" disabled={disabled} onClick={() => onAnswer("accept")}>{answering === "accept" ? "Yes…" : "Yes"}</button>
-        <button className="pill-button" disabled={disabled} onClick={() => onAnswer("decline")}>{answering === "decline" ? "No…" : "No"}</button>
+      <div className="elicitation-actions">
+        <button className="elicitation-button primary" disabled={disabled} onClick={() => onAnswer("accept")}>Yes</button>
+        <button className="elicitation-button" disabled={disabled} onClick={() => onAnswer("decline")}>No</button>
       </div>
     </div>
   );
