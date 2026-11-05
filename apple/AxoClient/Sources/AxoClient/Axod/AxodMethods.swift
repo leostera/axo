@@ -172,4 +172,6 @@ enum AxodMethods {
   static let shellBusy = AxodMethod<ShellRequest, TerminalShellBusy>(.shellBusy)
   /// Older daemons do not offer this; check negotiation first.
   static let clientViewportSet = AxodMethod<ClientViewport, ViewportAcknowledgement>(.clientViewportSet)
+  static let elicitationList = AxodMethod<NoParams, PendingElicitations>(.elicitationList)
+  static let elicitationResolve = AxodMethod<LocalElicitationAnswer, ElicitationResolution>(.elicitationResolve)
 }

@@ -96,6 +96,9 @@ final class TerminalSessionsModel {
   /// Whether the person can see the selected Session now, which marks it seen; tests replace it.
   @ObservationIgnored var isLookingAtSelection: @MainActor () -> Bool = { NSApplication.shared.isActive }
 
+  /// What agents and Axo's tools ask the person on this Mac (RFD0029).
+  @ObservationIgnored let elicitations: ElicitationsModel
+
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
   /// The same daemon connection, for Settings (nil for in-memory test clients).
@@ -194,6 +197,10 @@ final class TerminalSessionsModel {
     sidebarGrouping = SidebarGroupingSettings(
       storedValue: preferenceDefaults.data(forKey: AxoPreferenceKey.sidebarGrouping))
     layoutWriter = TerminalLayoutWriter(client: client)
+    // Only the real daemon connection notifies: in-memory test clients have no app bundle.
+    let notifier: ElicitationNotifications? = client is AxodConnection ? .shared : nil
+    elicitations = ElicitationsModel(client: client as? AxodElicitationClient, notifier: notifier)
+    notifier?.model = elicitations
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
 
@@ -202,6 +209,8 @@ final class TerminalSessionsModel {
       self?.session(for: $0) != nil && self?.peerSessions[$0] == nil
     }
     layoutWriter.onError = { [weak self] in self?.errorMessage = $0.localizedDescription }
+    elicitations.sessionName = { [weak self] in self?.session(for: $0)?.displayName ?? "a Session" }
+    elicitations.showSession = { [weak self] in self?.showSession($0) }
     piRestarter.needsRestart = { [weak self] shellID in
       guard let shell = self?.shell(for: shellID) else { return false }
       return shell.isPi && !shell.isAvailable
@@ -497,8 +506,9 @@ final class TerminalSessionsModel {
       await refreshPeerSessions()
     case .subscriptionLagged:
       return false
-    case .shellActivity, .terminalOutput, .relayStatus, .unknown:
-      // Session snapshots carry the state the catalog presents; terminal bytes go to Ghostty.
+    case .shellActivity, .terminalOutput, .relayStatus, .elicitationRequested, .elicitationResolved, .unknown:
+      // Session snapshots carry the state the catalog presents; terminal bytes go to Ghostty;
+      // questions to the person go to `elicitations`.
       break
     }
     return true

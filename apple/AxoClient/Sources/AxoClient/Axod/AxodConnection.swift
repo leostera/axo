@@ -108,6 +108,23 @@ public final class AxodConnection: Sendable {
     return result
   }
 
+  // MARK: - Asking the person (RFD0029)
+
+  /// What waits for the person on this Mac, oldest first.
+  public func pendingElicitations() async throws -> [Elicitation] {
+    try await call(AxodMethods.elicitationList).elicitations
+  }
+
+  /// The person's answer, from this app. axod takes it only from Axo.app, by code signature;
+  /// a question answered already fails with `ElicitationError.notPending`.
+  public func resolveElicitation(_ id: String, action: ElicitationAnswer) async throws {
+    let result = try await call(
+      AxodMethods.elicitationResolve, LocalElicitationAnswer(elicitationId: id, action: action))
+    guard result.resolved else {
+      throw AxoClientError.invalidResponse("axod did not take the answer")
+    }
+  }
+
   // MARK: - Sessions and Workspaces
 
   public func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {

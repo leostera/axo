@@ -32,4 +32,7 @@ public enum AxodMethodName: String, CaseIterable, Sendable {
   case peerSessionsList = "axo.peer.sessions.list"
   case peerSessionOpen = "axo.peer.session.open"
   case peerSessionClose = "axo.peer.session.close"
+  /// What agents and tools ask the person (RFD0029). Only Axo.app answers on this Mac.
+  case elicitationList = "axo.elicitation.list"
+  case elicitationResolve = "axo.elicitation.resolve"
 }

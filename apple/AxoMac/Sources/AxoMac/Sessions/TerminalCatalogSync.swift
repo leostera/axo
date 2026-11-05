@@ -63,6 +63,7 @@ final class TerminalCatalogSync {
         let opened = try await client.subscribeToCatalog()
         subscription = opened
         try await sessions.resynchronize()
+        await sessions.elicitations.refresh()
         await remoteAccess?.refresh()
         sessions.setCatalogConnection(.live)
         backoff = minimumBackoff
@@ -71,6 +72,8 @@ final class TerminalCatalogSync {
           for event in try await client.nextEvents(for: opened) {
             if case .relayStatus(let status) = event {
               remoteAccess?.apply(status)
+            } else if sessions.elicitations.apply(event) {
+              continue
             } else if await !sessions.apply(event) {
               break streaming  // Lagged: resubscribe and relist.
             }

@@ -21,6 +21,10 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   /// The other Macs or their Sessions changed, or a pane on one opened or closed: read
   /// `axo.peer.sessions.list` again (RFD0024).
   case peerSessionsChanged
+  /// An agent or a tool asks the person (RFD0029): show it until it is resolved.
+  case elicitationRequested(Elicitation)
+  /// Answered here or elsewhere, nobody answered in time, or the asker went away.
+  case elicitationResolved(id: String, sessionID: SessionID, action: ElicitationAction)
   /// Earlier events were discarded; the consumer must resynchronize from a fresh listing.
   case subscriptionLagged
   /// An event type this client does not understand. Ignored for forward compatibility.
@@ -28,6 +32,7 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case type, session, sessionId, shellId, activity, sequence, data, workspaceId, status
+    case elicitation, id, action
   }
 
   public init(from decoder: Decoder) throws {
@@ -61,6 +66,13 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
       self = .sessionFocus(sessionID: try container.decode(SessionID.self, forKey: .sessionId))
     case "peer.sessions.changed":
       self = .peerSessionsChanged
+    case "elicitation.requested":
+      self = .elicitationRequested(try container.decode(Elicitation.self, forKey: .elicitation))
+    case "elicitation.resolved":
+      self = .elicitationResolved(
+        id: try container.decode(String.self, forKey: .id),
+        sessionID: try container.decode(SessionID.self, forKey: .sessionId),
+        action: try container.decode(ElicitationAction.self, forKey: .action))
     case "subscription.lagged":
       self = .subscriptionLagged
     case let type:

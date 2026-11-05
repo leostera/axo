@@ -7,23 +7,48 @@ public struct Elicitation: Decodable, Equatable, Hashable, Sendable, Identifiabl
     case confirm
   }
 
+  /// Who asks: the agent, in its own words, or Axo's computer-use gate, describing what it is about
+  /// to do. axod lets only its own tools ask as one.
+  public enum Asker: String, Decodable, Sendable {
+    case agent
+    case computerUse
+  }
+
   /// A lowercase UUID.
   public let id: String
   public let sessionId: SessionID
   public let kind: Kind
-  /// The agent's words, shown as the agent's.
+  public let askedBy: Asker
+  /// The asker's words, shown as theirs.
   public let message: String
   /// Unix milliseconds.
   public let createdAt: Int64
   public let expiresAt: Int64
 
-  public init(id: String, sessionId: SessionID, kind: Kind = .confirm, message: String, createdAt: Int64, expiresAt: Int64) {
+  public init(id: String, sessionId: SessionID, kind: Kind = .confirm, askedBy: Asker = .agent, message: String, createdAt: Int64, expiresAt: Int64) {
     self.id = id
     self.sessionId = sessionId
     self.kind = kind
+    self.askedBy = askedBy
     self.message = message
     self.createdAt = createdAt
     self.expiresAt = expiresAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, sessionId, kind, askedBy, message, createdAt, expiresAt
+  }
+
+  /// An older axod sends no `askedBy`: its questions are all the agent's.
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    sessionId = try container.decode(SessionID.self, forKey: .sessionId)
+    kind = try container.decode(Kind.self, forKey: .kind)
+    askedBy = try container.decodeIfPresent(Asker.self, forKey: .askedBy) ?? .agent
+    message = try container.decode(String.self, forKey: .message)
+    createdAt = try container.decode(Int64.self, forKey: .createdAt)
+    expiresAt = try container.decode(Int64.self, forKey: .expiresAt)
   }
 }
 
@@ -45,4 +70,27 @@ public enum ElicitationAction: String, Decodable, Sendable {
 public enum ElicitationError {
   /// Answered already, expired, or never asked.
   public static let notPending = -32011
+  /// Only the person answers: on a Mac, only Axo.app, by code signature.
+  public static let notAPerson = -32012
+}
+
+/// `axo.elicitation.list`: what waits for the person on this Mac, oldest first.
+public struct PendingElicitations: Decodable, Sendable {
+  public let elicitations: [Elicitation]
+}
+
+/// `axo.elicitation.resolve` on `axod.sock`, from Axo.app.
+public struct LocalElicitationAnswer: Encodable, Sendable {
+  public let elicitationId: String
+  public let action: ElicitationAnswer
+
+  public init(elicitationId: String, action: ElicitationAnswer) {
+    self.elicitationId = elicitationId
+    self.action = action
+  }
+}
+
+/// `axo.elicitation.resolve`'s result.
+public struct ElicitationResolution: Decodable, Sendable {
+  public let resolved: Bool
 }

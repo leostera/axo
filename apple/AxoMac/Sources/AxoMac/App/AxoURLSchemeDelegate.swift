@@ -10,6 +10,7 @@ final class AxoURLSchemeDelegate: NSObject, NSApplicationDelegate {
     StatusItemDrag.install()
     observeOtherAxos()
     AppUpgradeModel.shared.start()
+    ElicitationNotifications.shared.install()
   }
 
   func application(_ application: NSApplication, open urls: [URL]) {

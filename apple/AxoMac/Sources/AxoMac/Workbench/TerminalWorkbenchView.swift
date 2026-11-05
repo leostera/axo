@@ -29,6 +29,10 @@ struct TerminalWorkbenchView: View {
       terminalContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGSize.self, of: \.size) { terminalAreaSize = $0 }
+        // Over the panes, not beside them: a question must not resize the terminals.
+        .overlay(alignment: .bottomTrailing) {
+          ElicitationCards(model: sessions.elicitations, sessionID: sessions.selectedSessionID)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
           if daemonIsRunning, case .reconnecting(let reason) = sessions.catalogConnection {
             CatalogReconnectingBanner(reason: reason)
@@ -180,5 +184,78 @@ extension ShellCloseConfirmation.Reason {
     case .unknown:
       "Axo couldn’t check whether this pane is running something. Closing it will terminate anything still running."
     }
+  }
+}
+
+/// What the selected Session's agent, or Axo's computer-use gate, asks the person (RFD0029): one
+/// card per question, with Yes and No. An answer from any device settles it everywhere.
+struct ElicitationCards: View {
+  var model: ElicitationsModel
+  var sessionID: SessionID?
+
+  var body: some View {
+    let questions = model.questions(in: sessionID)
+    if !questions.isEmpty {
+      VStack(alignment: .trailing, spacing: 8) {
+        ForEach(questions) { question in
+          ElicitationCard(
+            question: question, answering: model.answering.contains(question.id),
+            failure: model.failure
+          ) { action in
+            Task { await model.answer(question.id, action) }
+          }
+        }
+      }
+      .padding(16)
+      .frame(maxWidth: 440)
+    }
+  }
+}
+
+struct ElicitationCard: View {
+  let question: Elicitation
+  let answering: Bool
+  var failure: String?
+  let answer: (ElicitationAnswer) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Group {
+          switch question.askedBy {
+          case .computerUse: Label("Axo asks before acting on your Mac", systemImage: "desktopcomputer")
+          case .agent: Label("The agent asks you", systemImage: "questionmark.bubble")
+          }
+        }
+        .font(.callout.weight(.semibold))
+        Spacer()
+        if answering { ProgressView().controlSize(.small) }
+      }
+      Text(question.message)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button("Yes") { answer(.accept) }
+          .buttonStyle(.borderedProminent)
+          .accessibilityIdentifier("elicitationYes")
+        Button("No") { answer(.decline) }
+          .buttonStyle(.bordered)
+          .accessibilityIdentifier("elicitationNo")
+      }
+      .controlSize(.small)
+      .buttonBorderShape(.capsule)
+      .disabled(answering)
+      if let failure {
+        Text(failure).font(.caption).foregroundStyle(.secondary)
+      }
+    }
+    .padding(14)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
+    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
+    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("elicitationCard")
   }
 }
