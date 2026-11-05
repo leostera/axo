@@ -2,6 +2,16 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.11 (Mac app build 282, axod 37)
+
+### New
+
+- **Answer on your Mac too.** When an agent or Axo's computer use asks you something, the Mac shows a card over that Session's panes and a notification with Yes and No (Yes needs your Mac unlocked); clicking the notification opens the Session. Answering anywhere (Mac, phone or browser) clears it everywhere.
+
+### Changed
+
+- **You can tell who's asking.** A question from Axo's computer-use check is titled "Axo asks before acting on your Mac"; a question the agent wrote is titled "The agent asks you". Only Axo itself can ask as Axo: a script on the Mac can't, and only the Axo app can answer on the Mac (phone build 16).
+
 ## 0.10 (Mac app build 281, axod 36)
 
 ### Changed
