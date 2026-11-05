@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.9 (Mac app build 280, axod 35)
+
+### Changed
+
+- **An agent waits the full 5 minutes for your answer.** In 0.8, Pi gave up on Axo's tools after 60 seconds, so an answer to `elicitation_request` given later never reached the agent; the same limit cut off `connections_execute` scripts, which may run for 5 minutes. Both now get 5½ minutes.
+- **The agent's question looks like the chat's other cards:** a blue card with the question and small Yes and No buttons, on the web and on the phone (phone build 15).
+
+### Fixed
+
+- Nothing visible: axod's relay and store code was reorganized into smaller modules, with no change in behavior.
+
 ## 0.8 (Mac app build 279, axod 34)
 
 ### New
