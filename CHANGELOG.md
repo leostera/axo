@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.12 (Mac app build 283, axod 38)
+
+### New
+
+- **Agents an update interrupts pick up where they were.** When axod stops (to update Axo, say), the Sessions whose agent was mid-turn get their Pi back first, and each is told "(the session was stopped to update Axo from 0.11 to 0.12, you may continue)", so it carries on instead of sitting idle. Other Sessions come back most recently active first. This starts with the stop after this update: the axod being replaced doesn't know to leave the note.
+
 ## 0.11 (Mac app build 282, axod 37)
 
 ### New
