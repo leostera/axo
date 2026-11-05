@@ -33,6 +33,8 @@ test("registers axod mcp for this Session, reachable from codemode", () => {
     args: ["mcp"],
     env: { AXO_SOCKET: environment.AXO_SOCKET, AXO_SESSION_ID: environment.AXO_SESSION_ID },
     exposure: "codemode",
+    // Long enough for a question to the person or a script, each up to 5 minutes.
+    timeout: 330,
     description: undefined,
   });
 });
