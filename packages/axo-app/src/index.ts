@@ -1,6 +1,10 @@
 import {
   CLIENT_METHODS,
+  ELICITATION_METHODS,
   FRAGMENT_METHOD,
+  clientElicitationRequestedParamsSchema,
+  clientElicitationResolvedParamsSchema,
+  elicitationResolveResultSchema,
   MemoryPartialStore,
   clientHelloResultSchema,
   clientHostRenameResultSchema,
@@ -18,6 +22,9 @@ import {
   type ClientOpenResult,
   type ClientRecord,
   type ClientSession,
+  type Elicitation,
+  type ElicitationAnswer,
+  type ElicitationResolved,
   type ProgressSnapshot,
   type SessionMetadata,
   type SessionStatus,
@@ -47,6 +54,7 @@ import { z } from "zod";
  */
 
 export type HostRef = z.infer<typeof hostRefSchema>;
+export type { Elicitation, ElicitationAnswer, ElicitationResolved };
 export type { ClientHello, ClientHost, ClientOpenResult, ClientRecord, ClientSession, ProgressSnapshot, SessionMetadata, SessionStatus };
 
 export class AxoApiError extends Error {
@@ -95,6 +103,10 @@ export interface AccountEvents {
   progress?(sessionId: string, slot: string, snapshot: unknown): void;
   /** The cloud copy was cut back: drop every record after `keep`; `epoch` follows. */
   reset?(sessionId: string, epoch: number, keep: number): void;
+  /** A Mac asks the person (RFD0029): show it until it is resolved. Sent again after each hello. */
+  elicitationRequested?(hostId: string, elicitation: Elicitation): void;
+  /** It was answered, here or elsewhere, or nobody answered in time: dismiss it. */
+  elicitationResolved?(hostId: string, resolved: ElicitationResolved): void;
   /** The socket ended; open again to go on. */
   closed?(error: Error): void;
 }
@@ -256,6 +268,14 @@ export class AccountConnection {
     return appRemoteResults[method].parse(result) as AppRemoteResult<Method>;
   }
 
+  /**
+   * Answers what a Mac asks (RFD0029). The Mac takes the first answer; a later one fails with
+   * `ELICITATION_ERRORS.notPending`.
+   */
+  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer): Promise<void> {
+    elicitationResolveResultSchema.parse(await this.request(ELICITATION_METHODS.resolve, { hostId, elicitationId, action }));
+  }
+
   close(): void {
     if (!this.closedError) this.closedError = new Error("Axo API WebSocket is closed");
     this.rejectPending(this.closedError);
@@ -389,6 +409,19 @@ export class AccountConnection {
       case CLIENT_METHODS.progress: {
         const parsed = clientProgressParamsSchema.safeParse(params);
         if (parsed.success) this.events.progress?.(parsed.data.sessionId, parsed.data.slot, parsed.data.snapshot ?? null);
+        return;
+      }
+      case ELICITATION_METHODS.requested: {
+        const parsed = clientElicitationRequestedParamsSchema.safeParse(params);
+        if (parsed.success) this.events.elicitationRequested?.(parsed.data.hostId, parsed.data.elicitation);
+        return;
+      }
+      case ELICITATION_METHODS.resolved: {
+        const parsed = clientElicitationResolvedParamsSchema.safeParse(params);
+        if (parsed.success) {
+          const { hostId, ...resolved } = parsed.data;
+          this.events.elicitationResolved?.(hostId, resolved);
+        }
         return;
       }
       case CLIENT_METHODS.reset: {
