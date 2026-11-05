@@ -1,7 +1,7 @@
 # RFD0029 - Axo: Ask the Person
 
 - Feature Name: `axo-ask-the-person`
-- Status: Partially implemented (step 1: yes-or-no questions, answered remotely; step 2: the computer-use gate asks)
+- Status: Partially implemented (steps 1 to 3: yes-or-no questions; the computer-use gate asks; the Mac app answers)
 - Author: leostera
 - Start Date: 2026-11-04
 - Updated: 2026-11-05
@@ -126,7 +126,7 @@ An agent must not be the one that says the person agreed, because whatever reach
 - **Apps and connections (planned):** an app tool that sends, pays or deletes (Gmail's send, a payment, removing files) is marked as needing consent, and the account asks before it runs it. The request is made by the account's runner, outside the agent's script, and is answered like any other.
 - **Shell commands:** not gated. An agent's `bash` is the person's own user; this RFD does not try to stop what it can do (see Drawbacks).
 
-**Labels are not proof.** The agent runs as the person, so a script can call `axo.elicitation.request` and word its question like a tool's. That can mislead the person about who is asking, but it cannot approve anything: the answer goes back to that script only (rule 3), and no tool takes it (rule 2). Once the gate runs in axod itself, where the agent cannot reach it, axod labels the requests it makes as Axo's own.
+**Labels are not proof.** The agent runs as the person, so a script can call `axo.elicitation.request` and word its question like a tool's. That can mislead the person about who is asking, but it cannot approve anything: the answer goes back to that script only (rule 3), and no tool takes it (rule 2). axod labels a request as a tool's only when the peer asking is its own signed binary (step 3), so a script's request always shows as the agent's. The agent can still start `axod mcp` itself and call `computer` with `confirm: true`; that request is truly the gate's, describes the real action, and runs only on the person's Yes.
 
 ### Delivery to clients
 
@@ -248,7 +248,13 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 - **ClientDO** takes `axo.elicitation.resolve` only from a person's client. A Mac following its peers (`host-…` clients) neither receives elicitations nor answers them (`-32012`).
 - **Clients:** the web and iOS show a card in the chat, with the agent's words, Yes and No, and mark the chat as needing the person in the chat list. The card stays until the Mac says it is settled.
 
-**Step 2, the gate asks (built):** the computer-use gate asks the person for every flagged action and for every call with `confirm: true`, as a yes-or-no request from `axod mcp` for the agent's Session, and runs the action only on Accept. `computer` refuses any argument but `tool`, `args` and `confirm`. The question lists each action with its window and why the gate stopped. Not yet: binding an Allow to the window it named, beyond element tokens dying with a newer read; Always allow; and labelling the gate's requests as Axo's own on clients. Modelled in `specs/elicitations/tools-ask.ts`.
+**Step 2, the gate asks (built):** the computer-use gate asks the person for every flagged action and for every call with `confirm: true`, as a yes-or-no request from `axod mcp` for the agent's Session, and runs the action only on Accept. `computer` refuses any argument but `tool`, `args` and `confirm`. The question lists each action with its window and why the gate stopped. Not yet: binding an Allow to the window it named, beyond element tokens dying with a newer read, and Always allow. Modelled in `specs/elicitations/tools-ask.ts`.
+
+**Step 3, who is asking and answering on the Mac (built):**
+- **Peers by code signature:** axod reads each `axod.sock` connection's audit token (`LOCAL_PEERTOKEN`) and, for the methods that care, checks the peer's running code against a requirement (`crates/axo-ipc/src/peer.rs`). *This binary* is axod's own designated requirement (same team and identifier; for an unsigned build, the same cdhash). *Axo.app* is the same certificate with Axo.app's identifier; an unsigned build has none.
+- **Asked as a tool:** a request carries `askedBy`: `agent` or `computerUse`. axod refuses `computerUse` (`-32013`) unless the peer is this binary, so only `axod mcp`'s gate asks as Axo. `elicitation_request` passes only the agent's message, so an agent cannot ask as a tool through it. Clients title a tool's card *Axo asks before acting on your Mac*, an agent's *The agent asks you*.
+- **Answered on the Mac:** `axo.elicitation.resolve` on `axod.sock` takes an answer only from Axo.app (`-32012` otherwise). `axo.elicitation.list` gives what is pending, for a client that just subscribed.
+- **The Mac app:** a card over the Session's panes with Yes and No, and a time-sensitive notification with Yes (needs the Mac unlocked), No, and a click that opens the Session. Settled questions withdraw their notification.
 
 Not yet built, in the order of this RFD: the gate's confirm requests, the Mac app's card and notification (with the code-signature check), push notifications, device-signed answers, input, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
 
@@ -284,7 +290,7 @@ Not yet built, in the order of this RFD: the gate's confirm requests, the Mac ap
 
 - **More pieces:** APNs infrastructure, a device-key registry, a Mac request key and three clients' UIs.
 - **The first-seen key:** a first-seen fingerprint can be swapped by a compromised Worker, at first use only. After that, the pins hold.
-- **Labels can be imitated:** until the gate runs in axod, a script on the Mac can word a question like a tool's. It approves nothing, but it can mislead (see Tools ask; agents cannot approve).
+- **Words can be imitated:** an agent's question can be worded like a tool's. Its card is titled as the agent's, but the words inside are the agent's choice.
 - **The gate's reach:** an agent can still drive apps through `osascript` or keystrokes in `bash`, outside the computer tool. This gate covers the computer tool, not every power an agent has over the Mac.
 - **Passkeys at a distance:** a website's passkey ceremony (WebAuthn) cannot be answered from afar. It needs the Mac's Touch ID, or the phone within Bluetooth range for the hybrid transport. Requests can only offer "Touch ID is needed at the Mac", or use one-time codes or tokens instead.
 - **Passkeys in the iOS sheet:** a sheet that can watch navigations (`WKWebView`) may not offer the person's passkeys for third-party sites; Apple's sign-in sheet (`ASWebAuthenticationSession`) offers them but can't catch a `http://localhost` redirect. To be settled with a spike; the fallback is Safari plus pasting the final address, as on the web.
