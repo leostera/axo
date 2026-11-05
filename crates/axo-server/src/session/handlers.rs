@@ -253,6 +253,10 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         sequence: u64,
         data: &str,
     ) -> io::Result<()> {
+        // Typing into a dormant Pi starts it; this keystroke is lost, as it has nowhere to go yet.
+        if self.0.wake_dormant_pane(session_id, shell_id)? {
+            return Ok(());
+        }
         self.0
             .write_terminal_input(session_id, shell_id, sequence, data)
     }
@@ -286,6 +290,9 @@ impl axo_relay::RelayHost for RelayHostAdapter {
     }
 
     fn remote_press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {
+        if self.0.wake_dormant_pi(session_id)? {
+            return Ok(());
+        }
         self.0.press_pi_key(session_id, key)
     }
 
@@ -302,6 +309,8 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                 "terminal dimensions are outside the supported range",
             )
         })?;
+        // A client sizing the pane is showing the Session: its Pi starts, at that size.
+        self.0.wake_dormant_pane(session_id, shell_id)?;
         self.0.resize_terminal(session_id, shell_id, size)
     }
 }

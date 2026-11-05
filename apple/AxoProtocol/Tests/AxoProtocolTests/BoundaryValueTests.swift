@@ -72,7 +72,21 @@ final class BoundaryValueTests: XCTestCase {
     XCTAssertEqual(available.availability, .available)
     XCTAssertEqual(available.role, .terminal)
 
+    // A dormant Pi carries a reason too, for clients that predate dormancy.
+    let dormant = try decoder.decode(
+      TerminalShell.self,
+      from: shell(#""role": "pi", "available": false, "availabilityReason": "later", "dormant": true"#))
+    XCTAssertEqual(dormant.availability, .dormant)
+    XCTAssertTrue(dormant.isDormant)
+    XCTAssertFalse(dormant.isAvailable)
+    let unavailable = try decoder.decode(
+      TerminalShell.self,
+      from: shell(#""role": "pi", "available": false, "availabilityReason": "gone", "dormant": false"#))
+    XCTAssertEqual(unavailable.availability, .unavailable(reason: "gone"))
+
     for invalid in [
+      #""role": "pi", "available": true, "availabilityReason": null, "dormant": true"#,
+      #""role": "pi", "available": false, "availabilityReason": null, "dormant": true"#,
       #""role": "terminal", "available": true, "availabilityReason": "why""#,
       #""role": "terminal", "available": false, "availabilityReason": null"#,
       #""role": "terminal", "available": false, "availabilityReason": """#,

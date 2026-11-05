@@ -187,6 +187,40 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(pinned.map { $0.sessions.map(\.id) }, [[3], [4, 1, 2]])
   }
 
+  @MainActor func testShowingASessionWakesItsDormantPiOnce() async throws {
+    let suiteName = "axo-dormant-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let dormantPi = TerminalShell(
+      id: 21, processId: 0, initialPwd: "/", ptyDevice: "", attachSocketPath: "/tmp/s", role: .pi,
+      availability: .dormant)
+    let client = FakeAxodClient()
+    client.methods.append(AxodMethodName.piRestartAuto.rawValue)
+    client.restartsPi = true
+    client.sessions = [
+      TerminalSession(id: 1, initialPwd: "/", shells: [dormantPi]),
+      TerminalSession(id: 2, initialPwd: "/", shells: []),
+    ]
+    defaults.set(SessionID(2).rawValue, forKey: AxoPreferenceKey.selectedSession)
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await model.refresh()
+    XCTAssertEqual(model.selectedSessionID, 2)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertTrue(client.restartedPis.isEmpty, "not shown, so left dormant")
+
+    model.showSession(1)
+    for _ in 0..<100 where model.shell(for: 21)?.isAvailable != true {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    XCTAssertEqual(client.restartedPis.map(\.shellID), [21])
+    XCTAssertEqual(client.restartedPis.map(\.automatically), [true])
+    XCTAssertTrue(try XCTUnwrap(model.shell(for: 21)).isAvailable)
+    model.showSession(2)
+    model.showSession(1)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(client.restartedPis.count, 1, "awake now, so not woken again")
+  }
+
   @MainActor func testSessionsSeenOnThisMacAreRememberedAndOnlyNewActivityIsUnseen() async throws {
     let suiteName = "axo-sidebar-seen-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

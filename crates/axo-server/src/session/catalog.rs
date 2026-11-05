@@ -222,13 +222,26 @@ pub(super) fn session_metadata(
         .map(|(shell_id, pane)| match pane {
             Pane::Running(running) => running_shell_record(shell_id, running, attach_socket_path),
             Pane::Unavailable(shell) => {
-                unavailable_pi_shell_record(shell_id, shell, attach_socket_path)
+                let mut record = unavailable_pi_shell_record(shell_id, shell, attach_socket_path);
+                if state.dormant_pis.contains(&shell_id) {
+                    record.availability = Availability::Dormant;
+                }
+                record
             }
         })
         .collect();
     shells.sort_by_key(|shell| shell.id.get());
-    let status = if shells.iter().any(|shell| !shell.is_available()) {
+    let status = if shells
+        .iter()
+        .any(|shell| matches!(shell.availability, Availability::Unavailable { .. }))
+    {
         SessionStatus::Unavailable
+    } else if shells
+        .iter()
+        .any(|shell| shell.availability == Availability::Dormant)
+    {
+        // Idle, and ready for a prompt, which starts its Pi.
+        SessionStatus::Ready
     } else if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
         state
             .pi_activity

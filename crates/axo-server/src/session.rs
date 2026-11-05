@@ -14,7 +14,7 @@ use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_panes::{PaneProcess, Panes, RuntimeId};
 use axo_pi::takeover::TakeoverGrace;
 use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
-use axo_protocol::{PaneRole, SessionId, Viewport, new_uuid_v4};
+use axo_protocol::{PaneRole, SessionId, ShellId, Viewport, new_uuid_v4};
 use axo_pty::TerminalOutput;
 use axo_pty::process;
 use axo_store::Connection;
@@ -44,6 +44,7 @@ mod workspace_state;
 mod workspaces;
 
 use self::events::{EventBus, LocalSubscription};
+use self::lifecycle::IdlePis;
 pub(crate) use self::handlers::RelayHostAdapter;
 use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
 use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};
@@ -122,6 +123,10 @@ struct SessionState {
     panes: Panes<RunningShell>,
     shutting_down: bool,
     pi_activity: HashMap<SessionId, axo_pi::Activity>,
+    /// Pi panes left unstarted because their Session wasn't active when Axod started; each is
+    /// also an unavailable pane in `panes`, and starts when the Session is wanted (see
+    /// `stop_notice`'s `wake_dormant_pi`).
+    dormant_pis: HashSet<ShellId>,
     /// Prompts for a Pi that is still starting, sent once its bridge binds; see `prompts`.
     queued_pi_prompts: HashMap<SessionId, Vec<prompts::QueuedPrompt>>,
     /// Who prompted whom, for agent loop limits; see `prompts`.
@@ -210,6 +215,7 @@ impl SessionManager {
                 panes: Panes::default(),
                 shutting_down: false,
                 pi_activity: HashMap::new(),
+                dormant_pis: HashSet::new(),
                 queued_pi_prompts: HashMap::new(),
                 prompt_provenance: prompts::PromptProvenance::default(),
                 events: subscribers.clone(),
@@ -240,7 +246,7 @@ impl SessionManager {
         // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see
         // `stop_notice`).
         let interrupted = previous_stop.as_ref().map_or(&[][..], |stop| &stop.interrupted[..]);
-        manager.restore_open_sessions_first(interrupted)?;
+        manager.restore_open_sessions_first(interrupted, IdlePis::StayDormant)?;
         if let Some(stop) = &previous_stop {
             manager.tell_interrupted_sessions(stop);
         }

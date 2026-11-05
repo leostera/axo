@@ -7,6 +7,7 @@
 //! someone notices. A stop that leaves no record (a crash, a kill) prompts no one.
 
 use std::io;
+use std::sync::Arc;
 
 use axo_protocol::SessionId;
 use axo_protocol::rpc::{PromptDelivery, PromptSession};
@@ -98,7 +99,7 @@ impl SessionManager {
     /// Prompts each Session `stop` interrupted with what happened. Pis restored moments ago
     /// are still starting, so the prompt waits for each to be up; a Session that is gone or
     /// has no Pi now is skipped.
-    pub(super) fn tell_interrupted_sessions(&self, stop: &DaemonStop) {
+    pub(super) fn tell_interrupted_sessions(self: &Arc<Self>, stop: &DaemonStop) {
         let notice = stop.notice(&this_daemon(Vec::new()));
         for &session_id in &stop.interrupted {
             let told = self.prompt_session(&PromptSession {

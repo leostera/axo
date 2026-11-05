@@ -117,7 +117,17 @@ struct TerminalPaneView: View {
 
   @ViewBuilder
   private var paneContent: some View {
-    if case .unavailable(let reason) = shell.availability {
+    if shell.isDormant {
+      // Shown, so it is starting (`TerminalSessionsModel.wakeSelectedPi`).
+      VStack(spacing: 8) {
+        ProgressView().controlSize(.small)
+        Text("Starting Pi…")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .accessibilityIdentifier("pi-pane-starting")
+    } else if case .unavailable(let reason) = shell.availability {
       VStack(spacing: 12) {
         ContentUnavailableView(
           "Pi Session Unavailable", systemImage: "exclamationmark.triangle",

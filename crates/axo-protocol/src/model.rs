@@ -29,28 +29,44 @@ pub enum SessionStatus {
 }
 
 /// Whether a pane has a live process. On the wire this is `available` plus a nullable
-/// `availabilityReason`; the reason is present exactly when the pane is unavailable.
+/// `availabilityReason`; the reason is present exactly when the pane is unavailable. A dormant
+/// pane is also `"dormant": true` (the key is left out otherwise), so clients that predate
+/// dormancy see an unavailable pane with a reason that says what is going on.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "AvailabilityWire", into = "AvailabilityWire")]
 pub enum Availability {
     Available,
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
+    /// A Pi Axod has deliberately not started, as its Session wasn't active when Axod did; it
+    /// starts as soon as anyone shows, prompts or types into the Session.
+    Dormant,
 }
+
+/// What a client that predates dormancy shows for a dormant pane.
+pub const DORMANT_PANE_REASON: &str = "Pi starts when this Session is opened or sent a message.";
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AvailabilityWire {
     available: bool,
     availability_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    dormant: bool,
 }
 
 impl TryFrom<AvailabilityWire> for Availability {
     type Error = &'static str;
 
     fn try_from(wire: AvailabilityWire) -> Result<Self, Self::Error> {
-        match (wire.available, wire.availability_reason) {
-            (true, None) => Ok(Availability::Available),
-            (false, Some(reason)) if !reason.is_empty() => Ok(Availability::Unavailable { reason }),
+        match (wire.available, wire.availability_reason, wire.dormant) {
+            (true, None, false) => Ok(Availability::Available),
+            (false, Some(reason), false) if !reason.is_empty() => {
+                Ok(Availability::Unavailable { reason })
+            }
+            (false, Some(reason), true) if !reason.is_empty() => Ok(Availability::Dormant),
+            (true, _, true) => Err("an available pane is not dormant"),
             _ => Err("availabilityReason must be present exactly when a pane is unavailable"),
         }
     }
@@ -62,10 +78,17 @@ impl From<Availability> for AvailabilityWire {
             Availability::Available => AvailabilityWire {
                 available: true,
                 availability_reason: None,
+                dormant: false,
             },
             Availability::Unavailable { reason } => AvailabilityWire {
                 available: false,
                 availability_reason: Some(reason),
+                dormant: false,
+            },
+            Availability::Dormant => AvailabilityWire {
+                available: false,
+                availability_reason: Some(DORMANT_PANE_REASON.to_owned()),
+                dormant: true,
             },
         }
     }
@@ -262,6 +285,30 @@ impl ConfigKey {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_dormant_pane_reads_as_unavailable_with_a_reason_to_older_clients() {
+        let wire = serde_json::to_value(Availability::Dormant).unwrap();
+        assert_eq!(
+            wire,
+            json!({ "available": false, "availabilityReason": DORMANT_PANE_REASON, "dormant": true })
+        );
+        assert_eq!(
+            serde_json::from_value::<Availability>(wire).unwrap(),
+            Availability::Dormant
+        );
+        // Only dormant panes carry the key.
+        assert_eq!(
+            serde_json::to_value(Availability::Available).unwrap(),
+            json!({ "available": true, "availabilityReason": null })
+        );
+        for bad in [
+            json!({ "available": true, "availabilityReason": null, "dormant": true }),
+            json!({ "available": false, "availabilityReason": null, "dormant": true }),
+        ] {
+            assert!(serde_json::from_value::<Availability>(bad).is_err());
+        }
+    }
 
     fn shell(id: i64, role: PaneRole) -> ShellRecord {
         ShellRecord {

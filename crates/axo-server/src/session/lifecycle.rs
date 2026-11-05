@@ -175,6 +175,18 @@ impl Drop for StopOnDrop {
     }
 }
 
+/// How long after its last activity a Session's Pi starts with Axod; older ones may stay
+/// dormant (see [`IdlePis`]).
+pub(super) const ACTIVE_ON_START: i64 = 60 * 60;
+
+/// What restoring does with the Pis of Sessions that weren't active.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IdlePis {
+    Start,
+    /// Leave them unstarted until the Session is shown, prompted or typed into.
+    StayDormant,
+}
+
 impl SessionManager {
     /// Creates a Session in the Home Workspace; `create_session_in_workspace` publishes it.
     pub(super) fn create_session_and_publish(self: &Arc<Self>) -> io::Result<SessionRecord> {
@@ -231,15 +243,18 @@ impl SessionManager {
         self.publish_session_snapshot(session_id)
     }
 
+    #[cfg(test)]
     pub(super) fn restore_open_sessions(self: &Arc<Self>) -> io::Result<()> {
-        self.restore_open_sessions_first(&[])
+        self.restore_open_sessions_first(&[], IdlePis::Start)
     }
 
-    /// Restores every open Session; Pis start with `first`'s, in that order, then the rest,
-    /// most recently active first.
+    /// Restores every open Session. Pis start with `first`'s, in that order, then those active
+    /// in the last [`ACTIVE_ON_START`] seconds, most recently active first; the rest start
+    /// too, or with [`IdlePis::StayDormant`] are left dormant until wanted.
     pub(super) fn restore_open_sessions_first(
         self: &Arc<Self>,
         first: &[SessionId],
+        idle: IdlePis,
     ) -> io::Result<()> {
         let mut state = self.lock_state()?;
         if state.shutting_down {
@@ -316,18 +331,38 @@ impl SessionManager {
                 )?;
             }
         }
-        let priority = |session_id: &SessionId| {
-            let rank = first
-                .iter()
-                .position(|id| id == session_id)
-                .unwrap_or(first.len());
-            let activity = axo_store::open_session_row(&state.database, *session_id)
-                .ok()
-                .and_then(|row| row.last_message_at)
-                .unwrap_or(0);
-            (rank, std::cmp::Reverse(activity))
+        let last_activity = |session_id: SessionId| {
+            axo_store::open_session_row(&state.database, session_id)
+                .map(|row| row.last_message_at.unwrap_or(0).max(row.created_at))
+                .unwrap_or(0)
         };
-        pi_shells.sort_by_cached_key(|(session_id, _)| priority(session_id));
+        let active_since = axo_store::unix_timestamp() - ACTIVE_ON_START;
+        let mut ranked: Vec<_> = pi_shells
+            .into_iter()
+            .map(|(session_id, shell_id)| {
+                let rank = first
+                    .iter()
+                    .position(|id| *id == session_id)
+                    .unwrap_or(first.len());
+                let activity = last_activity(session_id);
+                (rank, std::cmp::Reverse(activity), session_id, shell_id)
+            })
+            .collect();
+        ranked.sort();
+        let mut pi_shells = Vec::new();
+        for (rank, std::cmp::Reverse(activity), session_id, shell_id) in ranked {
+            let wanted = rank < first.len() || activity >= active_since;
+            if wanted || idle == IdlePis::Start {
+                pi_shells.push((session_id, shell_id));
+            } else {
+                state.dormant_pis.insert(shell_id);
+            }
+        }
+        log::info!(
+            "event=session.pis_restoring starting={} dormant={}",
+            pi_shells.len(),
+            state.dormant_pis.len()
+        );
         drop(state);
         self.recover_pi_shells(pi_shells);
         Ok(())

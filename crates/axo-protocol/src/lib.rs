@@ -24,7 +24,7 @@ pub use event::{Event, EventScope, ShellActivity};
 pub use ids::{InvalidId, InvalidSessionId, SessionId, ShellId, new_uuid_v4};
 pub use layout::{Layout, LayoutDirection, LayoutError, LayoutNode, is_uuid};
 pub use model::{
-    Availability, ConfigKey, PaneRole, RemoteSessionSnapshot, RemoteShell, RemoteWorkspace,
+    Availability, ConfigKey, DORMANT_PANE_REASON, PaneRole, RemoteSessionSnapshot, RemoteShell, RemoteWorkspace,
     SessionRecord, SessionStatus, ShellRecord, WorkspaceRecord, WorkspaceState,
 };
 pub use relay::{HostKind, RelayState, RelayStatus};

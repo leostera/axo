@@ -222,6 +222,85 @@ impl SessionManager {
         }
     }
 
+    /// Starts the Session's Pi if Axod left it dormant, for anyone who wants the Session: a
+    /// prompt, a client showing it, typing into it. Returns once the Pi is starting (or was
+    /// already being started by another caller); `false` when it wasn't dormant.
+    pub(super) fn wake_dormant_pi(self: &Arc<Self>, session_id: SessionId) -> io::Result<bool> {
+        self.wake_dormant(session_id, None)
+    }
+
+    /// [`Self::wake_dormant_pi`] for one pane: `false` unless `shell_id` is the dormant Pi.
+    pub(super) fn wake_dormant_pane(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        shell_id: ShellId,
+    ) -> io::Result<bool> {
+        self.wake_dormant(session_id, Some(shell_id))
+    }
+
+    fn wake_dormant(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        only: Option<ShellId>,
+    ) -> io::Result<bool> {
+        let dormant = {
+            let state = self.lock_state()?;
+            state
+                .panes
+                .in_session(session_id)
+                .map(|(shell_id, _)| shell_id)
+                .filter(|shell_id| only.is_none_or(|only| only == *shell_id))
+                .find(|shell_id| state.dormant_pis.contains(shell_id))
+        };
+        let Some(shell_id) = dormant else {
+            return Ok(false);
+        };
+        log::info!(
+            "event=session.pi_woken session_id={} shell_id={}",
+            session_id,
+            shell_id.get()
+        );
+        match self.restart_unavailable_pi(
+            session_id,
+            shell_id,
+            TakeoverPolicy::PreserveExistingProcess,
+        ) {
+            Ok(_) => Ok(true),
+            // Another caller woke it first; wait for that start rather than fail.
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                self.wait_until_pi_running(session_id, shell_id)?;
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn wait_until_pi_running(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            {
+                let state = self.lock_state()?;
+                if state.panes.running(shell_id).is_some() {
+                    return Ok(());
+                }
+                let recovering = state
+                    .panes
+                    .unavailable(shell_id)
+                    .is_some_and(|pane| pane.session_id == session_id && pane.is_recovering());
+                if !recovering {
+                    return Err(io::Error::other("Pi did not start"));
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Pi is still starting",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     pub(super) fn restart_unavailable_pi(
         self: &Arc<Self>,
         session_id: SessionId,
@@ -288,6 +367,8 @@ impl SessionManager {
                 .panes
                 .begin_recovery(session_id, shell_id)
                 .map_err(recovery_refused)?;
+            // Starting it, whoever asked: it is no longer waiting to be wanted.
+            state.dormant_pis.remove(&shell_id);
             let recovery = PiRecoveryLease {
                 manager: self,
                 session_id,
@@ -682,6 +763,7 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::lifecycle::ACTIVE_ON_START;
     use crate::session::{pi_bridge::*, test_support::*};
     use axo_panes::RuntimeId;
     use axo_pi::bridge;
@@ -969,6 +1051,81 @@ mod tests {
         // concurrent fixture forks can retain CLOEXEC copies briefly until exec.
         drop(WriterLock::wait(&fixture.file, Duration::from_secs(1), &|| Ok(())).unwrap());
         fixture.assert_preserved();
+    }
+
+    /// Through two Axods: a Session idle for longer than `ACTIVE_ON_START` keeps its Pi
+    /// unstarted until something wants it, while a recent one's starts with Axod.
+    #[test]
+    fn an_idle_sessions_pi_stays_dormant_until_a_prompt_wakes_it() {
+        let fixture = PiRecoveryFixture::new();
+        let directory = fixture.lifecycle.directory.clone();
+        let manager = &fixture.lifecycle.manager;
+        let long_ago = unix_timestamp() - ACTIVE_ON_START - 60;
+        manager
+            .lock_state()
+            .unwrap()
+            .database
+            .execute(
+                "UPDATE sessions SET created_at = ?1, last_message_at = ?1 WHERE id = ?2",
+                params![long_ago, fixture.session_id.to_string()],
+            )
+            .unwrap();
+        manager.shutdown();
+
+        let next = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
+        let pi_of = |manager: &SessionManager| {
+            let session = manager
+                .list_sessions()
+                .unwrap()
+                .into_iter()
+                .find(|session| session.id == fixture.session_id)
+                .unwrap();
+            let pi = session
+                .shells
+                .iter()
+                .find(|shell| shell.id == fixture.shell_id)
+                .unwrap()
+                .clone();
+            (session.status, pi.availability)
+        };
+        assert_eq!(pi_of(&next), (SessionStatus::Ready, Availability::Dormant));
+        // Sized or typed into, another pane of the Session leaves the Pi alone.
+        assert!(
+            !next
+                .wake_dormant_pane(fixture.session_id, ShellId::new(999_999).unwrap())
+                .unwrap()
+        );
+        assert_eq!(pi_of(&next).1, Availability::Dormant);
+
+        // A prompt starts it and waits for it, as for any Pi still starting.
+        let accepted = next
+            .prompt_session(&rpc::PromptSession {
+                session_id: fixture.session_id,
+                text: "carry on".to_owned(),
+                delivery: rpc::PromptDelivery::FollowUp,
+                from_session_id: None,
+            })
+            .unwrap();
+        assert!(accepted.queued);
+        assert_eq!(pi_of(&next).1, Availability::Available);
+        assert!(
+            !next.wake_dormant_pi(fixture.session_id).unwrap(),
+            "woken once"
+        );
+        next.shutdown();
+
+        // Active within the hour, it starts with Axod.
+        next.lock_state()
+            .unwrap()
+            .database
+            .execute(
+                "UPDATE sessions SET last_message_at = ?1 WHERE id = ?2",
+                params![unix_timestamp(), fixture.session_id.to_string()],
+            )
+            .unwrap();
+        let after = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
+        assert_eq!(pi_of(&after).1, Availability::Available);
+        after.shutdown();
     }
 
     #[test]

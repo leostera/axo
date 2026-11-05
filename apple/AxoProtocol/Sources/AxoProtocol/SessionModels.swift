@@ -85,6 +85,10 @@ public enum PaneRole: String, Decodable, Equatable, Sendable {
 public enum PaneAvailability: Equatable, Sendable {
   case available
   case unavailable(reason: String)
+  /// A Pi Axod hasn't started, as its Session wasn't active when Axod did. It starts when the
+  /// Session is shown, prompted or typed into. On the wire: unavailable with a reason, plus
+  /// `"dormant": true`.
+  case dormant
 }
 
 public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
@@ -98,6 +102,7 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
   public let availability: PaneAvailability
 
   public var isAvailable: Bool { availability == .available }
+  public var isDormant: Bool { availability == .dormant }
   public var isPi: Bool { role == .pi }
 
   public init(
@@ -122,7 +127,7 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, paneId, role, processId, initialPwd, ptyDevice, attachSocketPath, available,
-      availabilityReason
+      availabilityReason, dormant
   }
 
   public init(from decoder: Decoder) throws {
@@ -136,11 +141,12 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
     attachSocketPath = try container.decode(String.self, forKey: .attachSocketPath)
     let available = try container.decode(Bool.self, forKey: .available)
     let reason = try container.decodeIfPresent(String.self, forKey: .availabilityReason)
+    let dormant = try container.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
     switch (available, reason) {
-    case (true, nil):
+    case (true, nil) where !dormant:
       availability = .available
     case (false, let reason?) where !reason.isEmpty:
-      availability = .unavailable(reason: reason)
+      availability = dormant ? .dormant : .unavailable(reason: reason)
     default:
       throw DecodingError.dataCorruptedError(
         forKey: .availabilityReason, in: container,

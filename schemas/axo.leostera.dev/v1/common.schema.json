@@ -78,7 +78,8 @@
         "ptyDevice": { "type": "string" },
         "attachSocketPath": { "type": "string", "minLength": 1 },
         "available": { "type": "boolean" },
-        "availabilityReason": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
+        "availabilityReason": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "dormant": { "type": "boolean", "description": "A Pi Axod has not started yet, as its Session wasn't active; it starts when the Session is shown, prompted or typed into. Present (true) only then." }
       }
     },
     "LocalSession": {

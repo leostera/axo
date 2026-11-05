@@ -94,6 +94,8 @@ final class TerminalSessionsModel {
   /// How the sidebar groups Sessions, from Settings → Sessions.
   private(set) var sidebarGrouping: SidebarGroupingSettings
   /// Whether the person can see the selected Session now, which marks it seen; tests replace it.
+  /// Dormant Pi panes being started because their Session was shown.
+  @ObservationIgnored private var wakingPis: Set<ShellID> = []
   @ObservationIgnored var isLookingAtSelection: @MainActor () -> Bool = { NSApplication.shared.isActive }
 
   /// What agents and Axo's tools ask the person on this Mac (RFD0029).
@@ -213,7 +215,8 @@ final class TerminalSessionsModel {
     elicitations.showSession = { [weak self] in self?.showSession($0) }
     piRestarter.needsRestart = { [weak self] shellID in
       guard let shell = self?.shell(for: shellID) else { return false }
-      return shell.isPi && !shell.isAvailable
+      // A dormant Pi isn't broken: it starts when its Session is shown (`wakeSelectedPi`).
+      return shell.isPi && !shell.isAvailable && !shell.isDormant
     }
     viewportReporter.isSupported = { [weak self] in
       guard let capabilities = self?.capabilities else { return false }
@@ -356,6 +359,25 @@ final class TerminalSessionsModel {
     assign(\.hasSessions, !catalog.isEmpty)
     projectCommandAvailability()
     markSelectionSeen()
+    wakeSelectedPi()
+  }
+
+  /// Starts the selected Session's Pi if Axod left it dormant: being shown is what it waits
+  /// for. Each pane is asked once at a time; a failure leaves it as Axod reports it.
+  private func wakeSelectedPi() {
+    guard let id = selectedSessionID, let session = session(for: id) else { return }
+    for shell in session.shells where shell.isPi && shell.isDormant {
+      guard wakingPis.insert(shell.id).inserted else { continue }
+      Task { [weak self] in
+        defer { self?.wakingPis.remove(shell.id) }
+        do {
+          try await self?.restartPiSession(shell.id, automatically: true)
+        } catch {
+          AxoTrace.commands.error(
+            "event=pi.wake_failed shell_id=\(shell.id.rawValue) reason=\(error.localizedDescription, privacy: .public)")
+        }
+      }
+    }
   }
 
   /// Writes the observed selection, focus and layouts (only those that changed) and hands new
@@ -365,6 +387,7 @@ final class TerminalSessionsModel {
     assign(\.selectedSessionID, selection.selectedSessionID)
     assign(\.focusedShellID, selection.focusedShellID)
     markSelectionSeen()
+    wakeSelectedPi()
     assign(\.layout, selection.layout)
     assign(
       \.sessionLayouts, selection.layouts.sorted { $0.key.rawValue < $1.key.rawValue }.map(\.value.sessionLayout))

@@ -121,9 +121,26 @@ final class FakeAxodClient: AxodClient {
   func setViewport(_ viewport: ClientViewport) async throws {
     viewports.append(viewport)
   }
+  /// When set, restarting a Pi succeeds: the listed Session comes back with that pane available.
+  var restartsPi = false
+  private(set) var restartedPis: [(shellID: ShellID, automatically: Bool)] = []
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
-  { throw Unsupported() }
+  {
+    guard restartsPi, let index = sessions.firstIndex(where: { $0.id == sessionID }) else {
+      throw Unsupported()
+    }
+    restartedPis.append((shellID, automatically))
+    let shells = sessions[index].shells.map { shell in
+      shell.id == shellID
+        ? TerminalShell(
+          id: shell.id, processId: 7, initialPwd: shell.initialPwd, ptyDevice: "/dev/ttys009",
+          attachSocketPath: shell.attachSocketPath, paneId: shell.paneId, role: .pi)
+        : shell
+    }
+    sessions[index] = sessions[index].replacing(shells: shells)
+    return sessions[index]
+  }
 
   func listPeerSessions() async throws -> PeerSessionList { peers }
 

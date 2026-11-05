@@ -12,6 +12,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -200,7 +201,7 @@ impl SessionManager {
     /// Sends `request.text` to the Session's Pi. Returns whether it waits for Pi to finish
     /// starting.
     pub(super) fn prompt_session(
-        &self,
+        self: &Arc<Self>,
         request: &PromptSession,
     ) -> Result<PromptAccepted, PromptError> {
         self.prompt_session_as(request, None, &[])
@@ -208,7 +209,7 @@ impl SessionManager {
 
     /// [`Self::prompt_session`], for a client's prompt that carries its `command_id`.
     fn prompt_session_as(
-        &self,
+        self: &Arc<Self>,
         request: &PromptSession,
         command_id: Option<&CommandId>,
         attachments: &[FetchedAttachment],
@@ -219,6 +220,13 @@ impl SessionManager {
             delivery,
             from_session_id: from,
         } = *request;
+        // A dormant Pi starts for the prompt, which then waits for it like any starting Pi's.
+        if let Err(error) = self.wake_dormant_pi(target) {
+            log::warn!(
+                "event=session.pi_wake_failed session_id={} reason={error}",
+                target
+            );
+        }
         // A prompt of attachments alone may have no text (RFD0030).
         if (text.trim().is_empty() && attachments.is_empty()) || text.len() > MAX_PI_PROMPT_BYTES {
             return Err(PromptError::Invalid(
@@ -314,7 +322,7 @@ impl SessionManager {
     /// A person away from the Mac prompts the Session's Pi. With a `command_id`, pi-axo holds it
     /// while Pi works (RFD0024); without one it steers, as Enter in Pi's editor would.
     pub(super) fn prompt_pi(
-        &self,
+        self: &Arc<Self>,
         session_id: SessionId,
         text: &str,
         command_id: Option<&CommandId>,

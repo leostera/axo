@@ -106,6 +106,7 @@ fn produced_session_records_conform_to_the_schema() {
                 },
             ),
             shell(13, PaneRole::Terminal, Availability::Available),
+            shell(14, PaneRole::Pi, Availability::Dormant),
         ],
         layout: Some(Layout::single(ShellId::new(13).unwrap())),
     };
