@@ -128,7 +128,7 @@ export const Axod = defineActor({
     handshake: {
       description: "The uploader asks what the cloud holds.",
       when: (s) => s.known === null && !s.syncing,
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::handshake"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::handshake"],
       sends: [Sync],
       starts: ["requestTimeout"],
       run(state, _, ctx) {
@@ -142,7 +142,7 @@ export const Axod = defineActor({
     syncReply: {
       on: SyncReply,
       description: "The cloud's count is known; with the file read, axo.db's cursor follows it.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::handshake"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::handshake"],
       run(state, m, ctx) {
         if (m.round !== state.round) return;
         state.syncing = false;
@@ -154,7 +154,7 @@ export const Axod = defineActor({
     upload: {
       description: "Appends the next line the cloud is missing.",
       when: (s) => s.known !== null && !s.appending && readable(s) && s.known < s.file!.length,
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::upload_next"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::upload_next"],
       sends: [Append],
       starts: ["requestTimeout"],
       run(state, _, ctx) {
@@ -166,7 +166,7 @@ export const Axod = defineActor({
     appended: {
       on: Appended,
       description: "The cloud committed the line: axo.db's cursor moves.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::upload_next"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::upload_next"],
       run(state, m, ctx) {
         if (m.round !== state.round) return;
         state.appending = false;
@@ -179,7 +179,7 @@ export const Axod = defineActor({
       with: [atMost(2)],
       description: "No answer in time: the handshake runs again.",
       after: "10 seconds",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::turn"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::turn"],
       run(state) {
         state.known = null;
         state.syncing = false;
@@ -189,7 +189,7 @@ export const Axod = defineActor({
     evict: {
       description: "An archived Session the cloud acknowledged whole: axo.db records it is in the cloud.",
       when: (s) => s.archived && !s.pi && !s.evicting && !(keepWhileReopening.on && s.reopen !== "no") && readable(s) && s.file!.length > 0 && (!confirmedWhole.on || (s.cursor === s.file!.length && s.known === s.file!.length)),
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::evict_next", "crates/axo-store/src/lib.rs#mark_transcript_in_cloud"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::evict_next", "crates/axo-store/src/sync.rs#mark_transcript_in_cloud"],
       run(state) {
         state.evicting = true;
         if (recordBeforeDelete.on) state.inCloud = true;
@@ -209,7 +209,7 @@ export const Axod = defineActor({
     fetch: {
       on: Fetched,
       description: "The records came back into the restore folder: checked against axo.db, then moved into place.",
-      sources: ["crates/axo-relay/src/peers.rs#Follower::restored", "crates/axo-server/src/session/cloud_transcripts.rs#SessionManager::restore_transcript"],
+      sources: ["crates/axo-relay/src/peers/follower.rs#Follower::restored", "crates/axo-server/src/session/cloud_transcripts.rs#SessionManager::restore_transcript"],
       run(state, m, ctx) {
         if (state.reopen !== "fetching" || m.attempt !== state.attempt) return;
         ctx.cancel("fetchTimeout");
@@ -224,7 +224,7 @@ export const Axod = defineActor({
     fetchTimeout: {
       description: "The cloud did not answer in time: the reopen fails, and nothing changes.",
       after: "60 seconds",
-      sources: ["crates/axo-relay/src/peers.rs#PeerLive::restore"],
+      sources: ["crates/axo-relay/src/peers/live.rs#PeerLive::restore"],
       run(state) {
         if (state.reopen === "fetching") state.reopen = "no";
       },

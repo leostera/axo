@@ -109,7 +109,7 @@ const CODE_LIFETIME = defineLimit({ name: "Pairing code lifetime", value: 10 * M
 const INDEX_GRACE = defineLimit({ name: "The pairing index keeps a code this long after it expires", value: 24 * HOUR, sources: ["packages/axo-api-worker/src/auth/pairing.ts#createHostPairing"] });
 const PENDING_CODES = defineLimit({ name: "Unused codes an account may hold", value: 3, unit: "codes", sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.createPairing"] });
 const HTTP_TIMEOUT = defineLimit({ name: "axod waits this long for the pairing service", value: 10 * SEC, sources: ["crates/axo-relay/src/pairing.rs#HTTP_TIMEOUT"] });
-const CONNECT_TIMEOUT = defineLimit({ name: "axod waits this long to bring the relay connection up", value: 5 * SEC, sources: ["crates/axo-relay/src/relay.rs#CONNECT_TIMEOUT"] });
+const CONNECT_TIMEOUT = defineLimit({ name: "axod waits this long to bring the relay connection up", value: 5 * SEC, sources: ["crates/axo-relay/src/relay/socket.rs#CONNECT_TIMEOUT"] });
 const LEASE = defineLimit({ name: "The host's spot is kept for", value: 30 * SEC, sources: ["packages/axo-api/src/contracts.ts#LIMITS"] });
 const DEADLINE = defineLimit({ name: "The relay waits this long for a host to register or answer", value: 10 * SEC, sources: ["packages/axo-api/src/contracts.ts#LIMITS"] });
 const MAX_RETRY = defineLimit({ name: "Longest wait between reconnect attempts", value: 30 * SEC, sources: ["crates/axo-relay/src/relay.rs#MAX_RECONNECT_DELAY"] });
@@ -865,7 +865,7 @@ export const Axod = defineActor({
     linked: {
       on: Linked,
       description: "Saves the link, deletes the old credential, and asks the relay thread to reconnect.",
-      sources: ["crates/axo-relay/src/link.rs#link_host", "crates/axo-server/src/lib.rs:364-371", "crates/axo-relay/src/relay.rs#RelayControl::request_connect"],
+      sources: ["crates/axo-relay/src/link.rs#link_host", "crates/axo-server/src/lib.rs:364-371", "crates/axo-relay/src/relay/status.rs#RelayControl::request_connect"],
       sends: [HostLinked, Disconnect],
       say: (_s, m) => `Linked to ${who(m.account)}`,
       run(state, m, ctx) {
@@ -917,7 +917,7 @@ export const Axod = defineActor({
     dial: {
       description: "A linked axod opens its WebSocket to the relay with its credential.",
       when: (s) => s.link.account !== null && s.link.credentialId !== null && s.conn === "idle" && !s.backingOff,
-      sources: ["crates/axo-relay/src/relay.rs#run_reconnect_loop", "crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay.rs#relay_websocket_request"],
+      sources: ["crates/axo-relay/src/relay.rs#run_reconnect_loop", "crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay/socket.rs#relay_websocket_request"],
       sends: [Connect],
       run(state, _, ctx) {
         state.conn = "connecting";
@@ -928,7 +928,7 @@ export const Axod = defineActor({
     admitted: {
       on: Admitted,
       description: "The socket is up; axod registers the host.",
-      sources: ["crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay.rs#rpc_call"],
+      sources: ["crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay/session.rs#rpc_call"],
       sends: [RegisterHost],
       run(state, m, ctx) {
         if (state.conn !== "connecting" || state.connId !== m.conn) return;
@@ -939,7 +939,7 @@ export const Axod = defineActor({
     connectRefused: {
       on: ConnectRefused,
       description: "The relay refused the socket; axod waits and tries again, longer each time.",
-      sources: ["crates/axo-relay/src/relay.rs#connect_websocket", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
+      sources: ["crates/axo-relay/src/relay/socket.rs#connect_websocket", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
       run(state, m, ctx) {
         if (state.connId !== m.conn || state.conn === "idle") return;
         state.conn = "idle";
@@ -951,7 +951,7 @@ export const Axod = defineActor({
     hostRegistered: {
       on: HostRegistered,
       description: "The host is online.",
-      sources: ["crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay.rs#relay_session"],
+      sources: ["crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay/session.rs#relay_session"],
       say: () => "Online",
       run(state, m, ctx) {
         if (state.conn !== "registering" || state.connId !== m.conn) return;
@@ -961,7 +961,7 @@ export const Axod = defineActor({
     },
     connectTimeout: {
       description: "Bringing the socket up took too long; axod drops it and waits before trying again.",
-      sources: ["crates/axo-relay/src/relay.rs#CONNECT_TIMEOUT", "crates/axo-relay/src/relay.rs#connect_websocket"],
+      sources: ["crates/axo-relay/src/relay/socket.rs#CONNECT_TIMEOUT", "crates/axo-relay/src/relay/socket.rs#connect_websocket"],
       sends: [Disconnect],
       run(state, _, ctx) {
         if (state.conn !== "connecting" && state.conn !== "registering") return;
@@ -975,7 +975,7 @@ export const Axod = defineActor({
     socketClosed: {
       on: SocketClosed,
       description: "The relay hung up; axod waits and reconnects.",
-      sources: ["crates/axo-relay/src/relay.rs#read_text", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
+      sources: ["crates/axo-relay/src/relay/socket.rs#read_text", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
       run(state, m, ctx) {
         if (state.connId !== m.conn || state.conn === "idle") return;
         state.conn = "idle";
@@ -992,7 +992,7 @@ export const Axod = defineActor({
     forward: {
       on: Forward,
       description: "axod runs the command and answers over the same socket.",
-      sources: ["crates/axo-relay/src/relay.rs#remote_request_reply", "crates/axo-relay/src/relay.rs#dispatch_remote_call"],
+      sources: ["crates/axo-relay/src/relay/dispatch.rs#remote_request_reply", "crates/axo-relay/src/relay/dispatch.rs#dispatch_remote_call"],
       sends: [CallDone],
       run(state, m, ctx) {
         if (state.conn !== "connected" || !state.connId || !state.link.account) return;

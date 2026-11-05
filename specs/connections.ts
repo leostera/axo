@@ -671,7 +671,7 @@ export const Axod = defineActor({
     bash: {
       on: Bash,
       description: "Starts the command on a thread of its own as axod's user, so the relay keeps serving; one for another socket or account is dropped.",
-      sources: ["crates/axo-relay/src/relay.rs#start_bash"],
+      sources: ["crates/axo-relay/src/relay/jobs.rs#start_bash"],
       say: (s, m) => `Started \`${m.command}\` on ${cap(s.host)}`,
       run(state, m) {
         if (!state.connected || !state.account || m.epoch !== state.epoch || m.account !== state.account) return;
@@ -681,7 +681,7 @@ export const Axod = defineActor({
     },
     finish: {
       description: "A command exits; its output goes back on the socket it came on, or nowhere if that socket closed.",
-      sources: ["crates/axo-relay/src/relay.rs#start_bash"],
+      sources: ["crates/axo-relay/src/relay/jobs.rs#start_bash"],
       when: (s) => Object.keys(s.jobs).length > 0,
       sends: [BashDone],
       run(state, _, ctx) {
