@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.13 (Mac app build 284, axod 39)
+
+### Changed
+
+- **Agents you haven't used in the last hour don't start with axod.** After an update or restart, axod starts the agents an update interrupted, then those active in the last hour, most recent first. Older Sessions keep their agent asleep, so dozens of idle Pis don't all start at once. An asleep agent starts as soon as you open its Session ("Starting Pi…" for a moment), send it a message from anywhere, or another Session's agent prompts it. Its Session shows as ready meanwhile.
+
 ## 0.12 (Mac app build 283, axod 38)
 
 ### New
