@@ -2,6 +2,13 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.15 (Mac app build 286, axod 41)
+
+### New
+
+- **Agents can sign in for you without ever seeing your password.** When an agent reaches a sign-in page on one of your Macs, it asks you instead of asking in the chat: your phone, the browser and the Mac show "Axo asks you to sign in", with the site's real address read from the browser, and the fields it needs. Your password manager fills them in. What you type is encrypted on your device for that Mac alone, so neither the agent nor Axo's servers can read it; the Mac fills it into the page and presses Sign in, and the agent only hears that it was done. Later reads of the page show it as •••• (filled by you) (phone build 18).
+- **Screenshots of a whole screen** are now simply `screenshot`.
+
 ## 0.14 (Mac app build 285, axod 40)
 
 ### New
