@@ -1,7 +1,7 @@
 # RFD0029 - Axo: Ask the Person
 
 - Feature Name: `axo-ask-the-person`
-- Status: Draft
+- Status: Partially implemented (step 1: yes-or-no questions, answered remotely)
 - Author: leostera
 - Start Date: 2026-11-04
 - Updated: 2026-11-04
@@ -215,6 +215,19 @@ Command-line sign-ins print a link, or open it with `open`, and wait. Sitting at
 
 - Every request and its outcome goes in the computer-use log: who asked, what, where, the answer, which client answered, and whether it was authenticated. Values are never logged.
 - Over the relay, the cloud's call log (RFD0016) gets the same record.
+
+### Step 1: yes or no, answered remotely
+
+The first step built, ahead of the gate and the Mac app, is the channel itself: an agent asks a yes-or-no question and only the person answers.
+
+- **The agent's tool:** `axod mcp` offers `elicitation_request({ message })`. It calls `axo.elicitation.request` on `axod.sock` for its own Session, whatever the agent passes, and waits up to 5 minutes. It returns `{ id, action }`, where `action` is `accept`, `decline` or `cancel` (nobody answered in time).
+- **axod** keeps pending elicitations in memory (at most 32), publishes `elicitation.requested` and `elicitation.resolved` events, and sends them over the relay as `axo.elicitation.requested` and `axo.elicitation.resolved`. It sends every pending one again on each new relay connection. The first answer it takes removes the elicitation, so later answers find nothing (`-32011`).
+- **Answers come only through the relay.** `axod.sock` has no method that answers one. axod takes `axo.elicitation.resolve` only from HostDO, for its own host and generation.
+- **HostDO** keeps the pending ones in memory, sends them to the ClientDOs following it, including in the listing a client gets on hello, and dismisses them all (`cancel`) when the Mac goes offline. It forwards an answer only for a pending elicitation.
+- **ClientDO** takes `axo.elicitation.resolve` only from a person's client. A Mac following its peers (`host-…` clients) neither receives elicitations nor answers them (`-32012`).
+- **Clients:** the web and iOS show a card in the chat, with the agent's words, Yes and No, and mark the chat as needing the person in the chat list. The card stays until the Mac says it is settled.
+
+Not yet built, in the order of this RFD: the gate's confirm requests, the Mac app's card and notification (with the code-signature check), push notifications, device-signed answers, input, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
 
 ## Testing
 
