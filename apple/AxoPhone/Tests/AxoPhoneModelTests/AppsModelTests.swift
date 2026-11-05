@@ -227,6 +227,8 @@ final class AppsModelTests: XCTestCase {
       input: .object(["account": .string("a@b.c"), "query": .string("is:unread"), "limit": .number(10)]))
     XCTAssertEqual(AppsCatalog.callTitle(search, ofOne: true), "Search messages")
     XCTAssertEqual(AppsCatalog.callTitle(search, ofOne: false, titles: ["apps.gmail": "Gmail"]), "Gmail · Search messages")
+    let click = CallRecord(callId: "3", at: "", service: "computer", tool: "click", input: .object([:]))
+    XCTAssertEqual(AppsCatalog.callTitle(click, ofOne: false), "Computer use · Click")
     XCTAssertEqual(AppsCatalog.summary(search), "a@b.c · 10 · is:unread", "the account first, then the values")
 
     let bash = CallRecord(callId: "2", at: "", service: "studio", tool: "bash", error: "exit 1", input: .object(["command": .string("git  status\n --short")]))

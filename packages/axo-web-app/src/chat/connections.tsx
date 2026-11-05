@@ -1069,6 +1069,7 @@ function host(url: string): string {
 }
 
 const SERVICE_TITLES: Record<string, string> = {
+  bash: "Terminal", computer: "Computer use", hosts: "Macs",
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
   "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken", "apps.github": "GitHub", "apps.discord": "Discord", "apps.unifi": "UniFi", "apps.spotify": "Spotify", "apps.withings": "Withings",
 };

@@ -27,7 +27,7 @@ public enum Connection: Decodable, Equatable, Sendable {
   }
 }
 
-/// A paired Mac, as a connection: `codemode.<name>.bash`.
+/// A paired Mac, reached as `codemode.bash.run({ host: name })` and `codemode.computer.run({ host: name })`.
 public struct HostConnectionInfo: Decodable, Equatable, Sendable {
   public let name: String
   public let hostId: UUID

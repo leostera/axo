@@ -2,6 +2,16 @@ import { z } from "zod";
 import {
   APPS_NAMESPACE,
   BASH_METHOD,
+  BASH_NAMESPACE,
+  COMPUTER_METHOD,
+  COMPUTER_NAMESPACE,
+  COMPUTER_STATUS_METHOD,
+  HOSTS_NAMESPACE,
+  RESERVED_NAMES,
+  computerResultSchema,
+  computerStatusSchema,
+  type ComputerResult,
+  type ComputerStatus,
   SIGN_IN_METHOD,
   signInResultSchema,
   CONNECTIONS_ERRORS,
@@ -36,9 +46,10 @@ import type { GoogleClient } from "./apps/google";
  * lives inside the account's AxoAccountManager and keeps all connections state there; a Mac's
  * socket owner (its HostDO) only forwards calls here and carries `bash` to a Mac for it.
  *
- * Connections are the account's paired Macs, each with one tool, `bash`, the remote MCP
- * servers it added (third-party connections), and the apps Axo provides (`apps.<app>`), the
- * last two called from here with grants kept here.
+ * Connections are the account's paired Macs, reached with the Mac as an argument through
+ * `hosts.list`, `bash.run` and `computer.run` (RFD0028), the remote MCP servers it added
+ * (third-party connections), and the apps Axo provides (`apps.<app>`), the last two called from
+ * here with grants kept here.
  */
 
 /** What a HostDO forwards: the calling Mac, the boot it called from, and its request. */
@@ -68,11 +79,39 @@ export type ConnectionsDeps = {
 /** Extra time a `bash` call waits beyond the command's own timeout, for the round trip. */
 const BASH_GRACE_MS = 15_000;
 
+/** How long `hosts.list` waits for each online Mac to say whether it can do computer use. */
+const STATUS_DEADLINE_MS = 3_000;
+/** The longest a computer call waits on the Mac: the person may be asked, for up to 5 minutes. */
+const COMPUTER_MAX_MS = 5 * 60_000 + 30_000;
+/** Below this much script time left, a computer call is not started. */
+const COMPUTER_MIN_MS = 5_000;
+
+/** `"self"` names the Mac the script was started from. */
+const hostField = z.string().min(1).max(64).describe('A Mac\'s name from codemode.hosts.list(), or "self" for the Mac this script was started from.');
+
 const bashInputSchema = z.object({
+  host: hostField,
   command: z.string().min(1).max(CONNECTIONS_LIMITS.scriptBytes),
   cwd: z.string().regex(/^\//, "cwd must be an absolute path").max(4096).optional(),
   timeoutMs: z.number().int().min(1).max(CONNECTIONS_LIMITS.bashMaxTimeoutMs).optional(),
 }).strict();
+
+const computerInputSchema = z.object({
+  host: hostField,
+  tool: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/).describe("A computer-use tool, as the local `computer` tool takes it: get_window_state, click, type_text, run_steps, ..."),
+  args: z.record(z.string(), z.unknown()).optional().describe("The tool's input."),
+  confirm: z.boolean().optional().describe("true asks the person before this call runs, whatever the Mac's check says. It never approves: the call runs only if they allow it."),
+}).strict();
+
+/** What `hosts.list` answers for each Mac. */
+export type HostEntry = {
+  name: string;
+  label: string;
+  online: boolean;
+  kind: "macos";
+  self: boolean;
+  computerUse: ComputerStatus | null;
+};
 
 type Caller = { hostId: string; sessionId: string };
 
@@ -148,7 +187,6 @@ export class AccountConnections {
     }
   }
 
-  /** Adds a third-party connection; its name may not be taken by any connection, Mac or not, nor be `apps`. */
   /**
    * Adds a remote MCP server under what the person called it ("emdash: leostera.com"); scripts
    * reach it by that name's slug (emdash_leostera_com). The same server may be added again under
@@ -157,8 +195,8 @@ export class AccountConnections {
   async add(title: string, url: string): Promise<CallOutcome> {
     const name = connectionSlug(title);
     if (!name) return failure(-32602, "a name needs a letter or a digit");
-    if (name === APPS_NAMESPACE) return failure(CONNECTIONS_ERRORS.nameTaken, `${APPS_NAMESPACE} is reserved for the apps Axo provides`);
-    if (this.named().some((entry) => entry.name === name) || this.thirdParty.has(name))
+    if (RESERVED_NAMES.includes(name)) return failure(CONNECTIONS_ERRORS.nameTaken, `${name} is reserved for what Axo provides; choose another name`);
+    if (this.thirdParty.has(name))
       return failure(CONNECTIONS_ERRORS.nameTaken, name === title ? `a connection named ${name} already exists` : `a connection named ${name} already exists (the name of "${title}"); choose another name`);
     const { signInUrl } = await this.thirdParty.add(name, url, title.trim() === name ? null : title.trim());
     const connection = this.thirdParty.list().find((c) => c.name === name)!;
@@ -175,8 +213,6 @@ export class AccountConnections {
       const result: ConnectionsResult<typeof CONNECTIONS_METHODS.remove> = { removed: true };
       return { result };
     }
-    if (this.named().some((entry) => entry.name === name))
-      return failure(CONNECTIONS_ERRORS.notFound, `${name} is a Mac; unpair it to remove it`);
     if (!this.thirdParty.remove(name)) return failure(CONNECTIONS_ERRORS.notFound, `no connection named ${name}`);
     const result: ConnectionsResult<typeof CONNECTIONS_METHODS.remove> = { removed: true };
     return { result };
@@ -267,28 +303,54 @@ export class AccountConnections {
     return [...this.hostTools(), ...this.thirdParty.tools(), ...this.apps.tools()];
   }
 
+  /** The Macs' namespaces: one definition each, the Mac an argument (RFD0028). */
   private hostTools(): ToolDefinition[] {
-    return this.named().map(({ name, host }) => ({
-      service: name,
-      name: "bash",
-      title: "bash",
-      description:
-        `Runs one non-interactive command on the Mac "${host.label}" as the user axod runs as, with its login shell, ` +
-        "and returns { exitCode, signal, stdout, stderr, stdoutTruncated, stderrTruncated, timedOut, durationMs }. " +
-        `Each output stream keeps ${CONNECTIONS_LIMITS.bashOutputBytes} bytes, then is marked truncated. ` +
-        `timeoutMs defaults to ${CONNECTIONS_LIMITS.bashDefaultTimeoutMs} and may be at most ${CONNECTIONS_LIMITS.bashMaxTimeoutMs}.`,
-      inputSchema: z.toJSONSchema(bashInputSchema) as Record<string, unknown>,
-      call: `codemode.${name}.bash`,
-    }));
+    const macs = this.named().map((entry) => `${entry.name} ("${entry.host.label}")`).join(", ") || "none yet";
+    return [
+      {
+        service: HOSTS_NAMESPACE,
+        name: "list",
+        title: "List the account's Macs",
+        description:
+          `The account's Macs (${macs}): [{ name, label, online, kind, self, computerUse }]. name is what bash.run and computer.run take; ` +
+          "self is the Mac this script was started from; computerUse, for an online Mac, says whether it can be driven now " +
+          "({ available, accessibility, screenRecording }), or is null if the Mac did not say.",
+        inputSchema: z.toJSONSchema(z.object({}).strict()) as Record<string, unknown>,
+        call: `codemode.${HOSTS_NAMESPACE}.list`,
+      },
+      {
+        service: BASH_NAMESPACE,
+        name: "run",
+        title: "Run a command on a Mac",
+        description:
+          "Runs one non-interactive command on one of the account's Macs as the user axod runs as, with its login shell, " +
+          "and returns { exitCode, signal, stdout, stderr, stdoutTruncated, stderrTruncated, timedOut, durationMs }. " +
+          `Each output stream keeps ${CONNECTIONS_LIMITS.bashOutputBytes} bytes, then is marked truncated. ` +
+          `timeoutMs defaults to ${CONNECTIONS_LIMITS.bashDefaultTimeoutMs} and may be at most ${CONNECTIONS_LIMITS.bashMaxTimeoutMs}.`,
+        inputSchema: z.toJSONSchema(bashInputSchema) as Record<string, unknown>,
+        call: `codemode.${BASH_NAMESPACE}.run`,
+      },
+      {
+        service: COMPUTER_NAMESPACE,
+        name: "run",
+        title: "Drive a Mac's apps",
+        description:
+          "Runs one computer-use tool on one of the account's Macs, as the local `computer` tool does: read a window with get_window_state, " +
+          "act with click, type_text, run_steps, ... Returns the tool's { content, structuredContent, isError }; images (screenshots) come as " +
+          "{ type: \"image\", asset } in the account's assets, and the agent sees them when the script returns them. An action that may be " +
+          "destructive or hard to undo is checked on that Mac and, if flagged, the person is asked first (up to 5 minutes); it runs only if they allow it.",
+        inputSchema: z.toJSONSchema(computerInputSchema) as Record<string, unknown>,
+        call: `codemode.${COMPUTER_NAMESPACE}.run`,
+      },
+    ];
   }
 
   /**
-   * The Macs as services: each takes its label as a JavaScript-safe name, unique in the account.
-   * A third-party connection keeps the name it was added with; a Mac whose label collides with
-   * one gets a suffix.
+   * The Macs by name: each takes its label as a JavaScript-safe name, unique among the account's
+   * Macs. Reserved names get a suffix, so `self` and the namespaces never name a Mac.
    */
   private named(): Array<{ name: string; host: HostLink }> {
-    const taken = new Set<string>([APPS_NAMESPACE, ...this.thirdParty.names()]);
+    const taken = new Set<string>([...RESERVED_NAMES, "self"]);
     return this.deps.hosts().map((host) => {
       const base = serviceName(host.label);
       let name = base;
@@ -307,12 +369,24 @@ export class AccountConnections {
     return async (service, tool, input) => {
       const app = AppConnections.appOf(service);
       if (app) return this.callApp(from, app, tool, input);
-      const target = this.named().find((entry) => entry.name === service);
-      if (!target && this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input);
-      if (!target) throw new Error(`no connection named ${service}`);
-      if (tool !== "bash") throw new Error(`${service} has no tool named ${tool}; a Mac has only bash`);
+      if (service === HOSTS_NAMESPACE) {
+        if (tool !== "list") throw new Error(`hosts has no tool named ${tool}; it has list`);
+        return this.hostsList(from);
+      }
+      if (service === COMPUTER_NAMESPACE) {
+        if (tool !== "run") throw new Error(`computer has no tool named ${tool}; call computer.run({ host, tool, args })`);
+        return this.runComputer(from, input, deadline);
+      }
+      if (service !== BASH_NAMESPACE) {
+        if (this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input);
+        if (this.named().some((entry) => entry.name === service))
+          throw new Error(`${service} is a Mac: call codemode.bash.run({ host: "${service}", command }) or codemode.computer.run({ host: "${service}", tool, args })`);
+        throw new Error(`no connection named ${service}`);
+      }
+      if (tool !== "run") throw new Error(`bash has no tool named ${tool}; call bash.run({ host, command })`);
       const parsed = bashInputSchema.safeParse(input);
-      if (!parsed.success) throw new Error(`${service}.bash: ${z.prettifyError(parsed.error)}`);
+      if (!parsed.success) throw new Error(`bash.run: ${z.prettifyError(parsed.error)}`);
+      const target = await this.resolveHost(parsed.data.host, from);
       const remaining = deadline - Date.now();
       if (remaining <= 1_000) throw new LimitError("scriptWallMs", "the script has no time left for another command");
       const timeoutMs = Math.min(parsed.data.timeoutMs ?? CONNECTIONS_LIMITS.bashDefaultTimeoutMs, remaining);
@@ -324,22 +398,110 @@ export class AccountConnections {
         service,
         tool,
         targetHostId: target.host.hostId,
-        input: { command: parsed.data.command, cwd: parsed.data.cwd ?? null, timeoutMs },
+        input: { host: target.name, command: parsed.data.command, cwd: parsed.data.cwd ?? null, timeoutMs },
       });
-      const outcome = await this.sendBash(target.host, service, callId, parsed.data.command, parsed.data.cwd, timeoutMs);
+      const outcome = await this.sendBash(target.host, target.name, callId, parsed.data.command, parsed.data.cwd, timeoutMs);
       if ("error" in outcome) {
         const unknown = outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown;
         await this.log.finish(callId, unknown ? "unknown" : "error", outcome.error.message);
-        throw new Error(`${service}: ${outcome.error.message}`);
+        throw new Error(`bash.run on ${target.name}: ${outcome.error.message}`);
       }
       const result = bashResultSchema.safeParse(outcome.result);
       if (!result.success) {
         await this.log.finish(callId, "unknown", "the Mac's reply was not a bash result");
-        throw new Error(`${service}: the Mac's reply was not a bash result; the command may have run`);
+        throw new Error(`bash.run on ${target.name}: the Mac's reply was not a bash result; the command may have run`);
       }
       await this.log.finish(callId, "ok", null);
       return result.data satisfies BashResult;
     };
+  }
+
+  /**
+   * A Mac by the name `hosts.list` gives it, or `self`. Unknown fails listing the Macs; offline
+   * fails naming the online ones, before anything is logged or sent.
+   */
+  private async resolveHost(name: string, from: Caller): Promise<{ name: string; host: HostLink }> {
+    const named = this.named();
+    const target = name === "self" ? named.find((entry) => entry.host.hostId === from.hostId) : named.find((entry) => entry.name === name);
+    if (!target) throw new Error(`no Mac named ${name}; the account's Macs: ${named.map((entry) => entry.name).join(", ") || "none"}`);
+    if (!(await this.isOnline(target.host))) {
+      const online = (await Promise.all(named.map(async (entry) => ((await this.isOnline(entry.host)) ? entry.name : null)))).filter(Boolean);
+      throw new Error(`${target.name} is offline; online now: ${online.join(", ") || "none"}`);
+    }
+    return target;
+  }
+
+  private async isOnline(host: HostLink): Promise<boolean> {
+    const presence = await this.deps.presence(host.hostId).catch(() => null);
+    return Boolean(presence?.online && presence.hostGeneration === host.hostGeneration);
+  }
+
+  /** Every Mac with whether it is online and, if it is, whether it can do computer use now. */
+  private async hostsList(from: Caller): Promise<HostEntry[]> {
+    return Promise.all(this.named().map(async ({ name, host }): Promise<HostEntry> => {
+      const online = await this.isOnline(host);
+      return { name, label: host.label, online, kind: "macos", self: host.hostId === from.hostId, computerUse: online ? await this.computerStatus(host) : null };
+    }));
+  }
+
+  /** A Mac's computer-use grants; null when it did not say (an older Axo, or no answer in time). */
+  private async computerStatus(host: HostLink): Promise<ComputerStatus | null> {
+    try {
+      const outcome = await this.deps.callHost(host.hostId, {
+        method: COMPUTER_STATUS_METHOD,
+        params: { accountId: this.deps.accountId },
+        deadlineMs: STATUS_DEADLINE_MS,
+      });
+      if ("error" in outcome) return null;
+      const status = computerStatusSchema.safeParse(outcome.result);
+      return status.success ? status.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * One computer-use tool on a Mac. The Mac's gate decides whether to ask the person, and asks in
+   * the calling Session; logged before it is sent and never retried: it may have run.
+   */
+  private async runComputer(from: Caller, input: unknown, deadline: number): Promise<ComputerResult> {
+    const parsed = computerInputSchema.safeParse(input);
+    if (!parsed.success) throw new Error(`computer.run: ${z.prettifyError(parsed.error)}`);
+    const target = await this.resolveHost(parsed.data.host, from);
+    const remaining = deadline - Date.now() - BASH_GRACE_MS;
+    if (remaining < COMPUTER_MIN_MS) throw new LimitError("scriptWallMs", "the script has no time left for a computer call");
+    const timeoutMs = Math.min(COMPUTER_MAX_MS, remaining);
+    const callId = crypto.randomUUID();
+    const { tool, args = {}, confirm = false } = parsed.data;
+    await this.log.start({
+      callId, sessionId: from.sessionId, hostId: from.hostId, service: COMPUTER_NAMESPACE, tool,
+      targetHostId: target.host.hostId, input: { host: target.name, tool, args, confirm },
+    });
+    const caller = this.deps.hosts().find((host) => host.hostId === from.hostId);
+    let outcome: CallOutcome;
+    try {
+      outcome = await this.deps.callHost(target.host.hostId, {
+        method: COMPUTER_METHOD,
+        params: { accountId: this.deps.accountId, callId, tool, args, confirm, sessionId: from.sessionId, from: caller?.label ?? "another Mac", timeoutMs },
+        deadlineMs: timeoutMs + BASH_GRACE_MS,
+      });
+    } catch {
+      outcome = failure(CONNECTIONS_ERRORS.outcomeUnknown, "did not answer; the action may have run");
+    }
+    if ("error" in outcome) {
+      const old = outcome.error.code === -32601;
+      const unknown = outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown;
+      const message = old ? "runs an Axo too old for computer use from other Macs; update Axo there" : outcome.error.message;
+      await this.log.finish(callId, unknown ? "unknown" : "error", message);
+      throw new Error(`computer.run on ${target.name}: ${message}`);
+    }
+    const result = computerResultSchema.safeParse(outcome.result);
+    if (!result.success) {
+      await this.log.finish(callId, "unknown", "the Mac's reply was not a computer result");
+      throw new Error(`computer.run on ${target.name}: the Mac's reply was not a computer result; the action may have run`);
+    }
+    await this.log.finish(callId, result.data.isError ? "error" : "ok", result.data.isError ? "the tool answered an error" : null);
+    return result.data;
   }
 
   /** Sends one command down a Mac's socket and waits for its answer. Never retried: it may have run. */

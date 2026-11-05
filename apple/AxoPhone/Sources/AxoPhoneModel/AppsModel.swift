@@ -343,11 +343,14 @@ public enum AppsCatalog {
     return count(app.accounts.count, "account")
   }
 
+  /// What Axo itself provides on the account's Macs (RFD0028).
+  private static let builtIn = ["bash": "Terminal", "computer": "Computer use", "hosts": "Macs"]
+
   /// "Search messages", or with its app or server first: "Gmail · Search messages".
   public static func callTitle(_ record: CallRecord, ofOne: Bool, titles: [String: String] = [:]) -> String {
     let words = record.tool.replacingOccurrences(of: "_", with: " ")
     let tool = words.prefix(1).uppercased() + words.dropFirst()
-    return ofOne ? tool : "\(titles[record.service] ?? record.service) · \(tool)"
+    return ofOne ? tool : "\(titles[record.service] ?? builtIn[record.service] ?? record.service) · \(tool)"
   }
 
   /// What a call was about, in a line: the command a Mac ran, or an app call's account and values.

@@ -6,18 +6,20 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { harness, signIn } from "./harness";
-import { listHosts, localCall, terminate, waitFor } from "./axod-support";
+import type { Elicitation } from "@axo/protocol";
+import { accountApi, listHosts, localCall, terminate, waitFor } from "./axod-support";
 
 /**
  * RFD0016 end to end, with nothing faked but the sign-in provider: a Session's script, sent to a
  * real axod's local socket, runs in the account's Dynamic Worker and runs `bash` back on that
- * same Mac.
+ * same Mac; then drives that Mac's computer use (RFD0028), whose gate asks the person in the
+ * calling Session and runs nothing on a No.
  *
  *   Session ──axod.sock──▶ axod ──WSS──▶ HostDO ──RPC──▶ AxoAccountManager ──▶ script Worker
  *                           ▲                                   │
  *                           └──── axo.connections.bash ◀── HostDO.callHost
  */
-test("a Session's script runs bash on its own Mac through the account, and the call is logged", async () => {
+test("a Session's script runs bash and computer use on a Mac through the account, and the calls are logged", async () => {
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
   const axodBinary = resolve(process.cwd(), binary);
@@ -63,8 +65,8 @@ test("a Session's script runs bash on its own Mac through the account, and the c
     const executed = (await localCall(socketPath, "axo.connections.execute", {
       sessionId,
       code: `async () => {
-        const small = await codemode.${service}.bash({ command: "echo hello-$((40 + 2)); pwd", cwd: ${JSON.stringify(root)} });
-        const large = await codemode.${service}.bash({ command: "head -c 300000 /dev/zero | tr '\\\\0' a" });
+        const small = await codemode.bash.run({ host: ${JSON.stringify(service)}, command: "echo hello-$((40 + 2)); pwd", cwd: ${JSON.stringify(root)} });
+        const large = await codemode.bash.run({ host: "self", command: "head -c 300000 /dev/zero | tr '\\\\0' a" });
         console.log("ran", small.exitCode, large.exitCode);
         return { small: small.stdout, large: large.stdout.length, truncated: large.stdoutTruncated };
       }`,
@@ -78,10 +80,39 @@ test("a Session's script runs bash on its own Mac through the account, and the c
       records: Array<{ sessionId: string; hostId: string; targetHostId: string; tool: string; outcome: string; input: { command: string } }>;
     };
     assert.deepEqual(records.map((r) => [r.sessionId, r.hostId, r.targetHostId, r.tool, r.outcome]), [
-      [sessionId, host.hostId, host.hostId, "bash", "ok"],
-      [sessionId, host.hostId, host.hostId, "bash", "ok"],
+      [sessionId, host.hostId, host.hostId, "run", "ok"],
+      [sessionId, host.hostId, host.hostId, "run", "ok"],
     ]);
     assert.deepEqual(records.map((r) => r.input.command).sort(), ["echo hello-$((40 + 2)); pwd", "head -c 300000 /dev/zero | tr '\\0' a"]);
+
+    // The Mac lists itself, and says whether it can do computer use now.
+    const hosts = (await localCall(socketPath, "axo.connections.execute", { sessionId, code: `async () => codemode.hosts.list()` })) as {
+      result: Array<{ name: string; online: boolean; self: boolean; computerUse: { available: boolean } | null }>;
+    };
+    assert.deepEqual(hosts.result.map((h) => [h.name, h.online, h.self, typeof h.computerUse?.available]), [[service, true, true, "boolean"]]);
+
+    // computer.run with confirm asks the person in the calling Session, as Axo; a No runs nothing.
+    const asked: Elicitation[] = [];
+    const phone = await accountApi(api.url, account).connect(`phone-${crypto.randomUUID().slice(0, 8)}`, {
+      elicitationRequested: (_hostId, elicitation) => asked.push(elicitation),
+    });
+    try {
+      const pay = localCall(socketPath, "axo.connections.execute", {
+        sessionId,
+        code: `async () => codemode.computer.run({ host: "self", tool: "click", args: { role: "AXButton", name: "Pay now" }, confirm: true })`,
+      });
+      const question = await waitFor("the gate's question", 15_000, async () => asked[0], daemon);
+      assert.equal(question.askedBy, "computerUse");
+      assert.equal(question.sessionId, sessionId);
+      assert.match(question.message, /click AXButton "Pay now"/u);
+      assert.match(question.message, /Asked from .+'s Session\./u);
+      await phone.resolveElicitation(host.hostId, question.id, "decline");
+      await assert.rejects(pay, /computer\.run on .+: Not done: the person declined\./u);
+    } finally {
+      phone.close();
+    }
+    const after = (await localCall(socketPath, "axo.connections.log", { sessionId })) as { records: Array<{ service: string; tool: string; outcome: string }> };
+    assert.deepEqual(after.records.map((r) => [r.service, r.tool, r.outcome])[0], ["computer", "click", "error"]);
   } finally {
     if (daemon) await terminate(daemon);
     await api.close();

@@ -61,7 +61,9 @@ test("an agent adds a server that needs sign-in, the person signs in, and a scri
   // Tools are listed after sign-in; names become identifiers, and keep their upstream title.
   const found = await waitForTools(call);
   assert.deepEqual(found, [
-    { service: "studio", name: "bash" },
+    { service: "hosts", name: "list" },
+    { service: "bash", name: "run" },
+    { service: "computer", name: "run" },
     { service: "linear", name: "list_issues", title: "list-issues" },
     { service: "linear", name: "create_issue", title: "create_issue" },
   ]);
@@ -119,15 +121,17 @@ test("a grant about to expire is renewed before the call, and the rotated refres
   assert.equal(server.calls.length, 1);
 });
 
-test("a server that needs no sign-in is ready at once, and names are unique across Macs and servers", async (t) => {
+test("a server that needs no sign-in is ready at once; a Mac's name is free for a server, the namespaces are not", async (t) => {
   const { server, call } = await fixture(t);
   server.requireAuth = false;
   const added = result(await call("axo.connections.add", { name: "docs", url: server.url }));
   assert.deepEqual([added.connection.state, added.signInUrl, added.connection.tools], ["ready", null, 2]);
-  const taken = await call("axo.connections.add", { name: "studio", url: server.url });
+  const taken = await call("axo.connections.add", { name: "computer", url: server.url });
   assert.ok("error" in taken && taken.error.code === -32022, JSON.stringify(taken));
-  const mac = await call("axo.connections.remove", { name: "studio" });
-  assert.ok("error" in mac && /unpair/.test(mac.error.message));
+  // Macs are reached as bash.run({ host }), not by name, so a server may be called "studio".
+  const studio = result(await call("axo.connections.add", { name: "studio", url: server.url }));
+  assert.equal(studio.connection.name, "studio");
+  assert.deepEqual(result(await call("axo.connections.remove", { name: "studio" })), { removed: true });
   assert.deepEqual(result(await call("axo.connections.remove", { name: "docs" })), { removed: true });
   const gone = await call("axo.connections.execute", { code: `async () => codemode.docs.list_issues({})` });
   assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
@@ -179,9 +183,9 @@ async function waitForTools(call: (method: string, params?: Record<string, unkno
   for (let i = 0; i < 50; i++) {
     const found = result(await call("axo.connections.search", {
       // Apps that need no client of Axo's (Hetzner) are always listed; these tests are about servers.
-      code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service === "studio" ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
+      code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => ["hosts", "bash", "computer"].includes(t.service) ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
     })).result as Array<{ service: string }>;
-    if (found.some((t) => t.service !== "studio")) return found;
+    if (found.some((t) => !["hosts", "bash", "computer"].includes(t.service))) return found;
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error("the tool list never arrived");

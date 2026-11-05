@@ -10,6 +10,7 @@
  */
 import { z } from "zod";
 import { uuid } from "./identity.ts";
+import { attachmentSchema } from "./assets.ts";
 
 export const CONNECTIONS_METHODS = {
   list: "axo.connections.list",
@@ -23,6 +24,13 @@ export type ConnectionsMethod = (typeof CONNECTIONS_METHODS)[keyof typeof CONNEC
 
 /** Sent by the account to a Mac; never by a Mac. */
 export const BASH_METHOD = "axo.connections.bash";
+/**
+ * One computer-use tool on a Mac, from another Mac's script (RFD0028, Computer use from
+ * anywhere). The Mac's gate checks it and, if it must, asks the person in the calling Session.
+ */
+export const COMPUTER_METHOD = "axo.connections.computer";
+/** Whether a Mac can do computer use now, for `codemode.hosts.list()`. */
+export const COMPUTER_STATUS_METHOD = "axo.connections.computer.status";
 /**
  * A loopback sign-in on a Mac (axo-relay's signin.rs): axod opens the sign-in page in the
  * person's browser, waits for the redirect to `http://localhost:<port><path>`, and answers with
@@ -89,9 +97,18 @@ export function connectionSlug(title: string): string | null {
 
 /**
  * Apps are services Axo itself provides, each with its own sign-in and tools, reached as
- * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
+ * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection takes that name.
  */
 export const APPS_NAMESPACE = "apps";
+/**
+ * The account's Macs, reached with the Mac as an argument (RFD0028): `codemode.hosts.list()`,
+ * `codemode.computer.run({ host, ... })`, `codemode.bash.run({ host, ... })`.
+ */
+export const HOSTS_NAMESPACE = "hosts";
+export const COMPUTER_NAMESPACE = "computer";
+export const BASH_NAMESPACE = "bash";
+/** Names no connection may take. */
+export const RESERVED_NAMES: readonly string[] = [APPS_NAMESPACE, HOSTS_NAMESPACE, COMPUTER_NAMESPACE, BASH_NAMESPACE];
 export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise", "telegram", "kraken", "github", "discord", "unifi", "spotify", "withings"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
@@ -358,3 +375,25 @@ export const bashResultSchema = z.object({
   durationMs: z.number().int().nonnegative(),
 }).strict();
 export type BashResult = z.infer<typeof bashResultSchema>;
+
+/**
+ * An image a Mac uploaded to the account's assets (RFD0030) instead of sending its bytes, named
+ * by the same attachment a prompt's files are.
+ */
+export const imageAttachmentSchema = z.object({ type: z.literal("image"), attachment: attachmentSchema }).strict();
+
+/** A computer-use tool's answer from a Mac: its MCP content with images as attachments. */
+export const computerResultSchema = z.object({
+  content: z.array(z.union([imageAttachmentSchema, z.object({ type: z.literal("text"), text: z.string() }).strict()])).max(64),
+  structuredContent: z.unknown().optional(),
+  isError: z.boolean().optional(),
+}).strict();
+export type ComputerResult = z.infer<typeof computerResultSchema>;
+
+/** Whether a Mac can do computer use now: its Accessibility and Screen Recording grants. */
+export const computerStatusSchema = z.object({
+  available: z.boolean(),
+  accessibility: z.boolean(),
+  screenRecording: z.boolean(),
+}).strict();
+export type ComputerStatus = z.infer<typeof computerStatusSchema>;
