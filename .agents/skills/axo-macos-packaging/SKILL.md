@@ -1,6 +1,6 @@
 ---
 name: axo-macos-packaging
-description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use after any Mac app, bundled helper, or Pi extension change that affects the shipped development app, and when updating dist/Axo.app.
+description: Build, validate, publish and deliver Axo's Finder-launchable Mac app. Use after any Mac app, bundled helper, or Pi extension change that affects the shipped app, when updating dist/Axo.app, and when publishing.
 ---
 
 # Axo macOS packaging
@@ -32,11 +32,31 @@ cat bazel-bin/report.txt
 
 ## Publishing
 
-`bazel run //:publish` uploads the signed app from a checkout without changes to the `axo-cdn` bucket (`publish` in `config.json`), served at `https://axo.leostera.dev/cdn/Axo.app`; `curl -fsSL https://axo.leostera.dev/install | sh` installs it on another Mac (see `sites/axo.leostera.dev/README.md`). Publish only when Leo asks. Never copy the bundle to another Mac through a browser or AirDrop: it gets quarantined and translocated, and then it cannot register axod.
+`bazel run //:publish` uploads the signed app from a checkout without changes to the `axo-cdn` bucket (`publish` in `config.json`), served at `https://axo.leostera.dev/cdn/Axo.app`; `curl -fsSL https://axo.leostera.dev/install | sh` installs it on another Mac (see `sites/axo.leostera.dev/README.md`). Never copy the bundle to another Mac through a browser or AirDrop: it gets quarantined and translocated, and then it cannot register axod.
+
+### Always publish and deploy safe changes
+
+**Once a change is committed and validated, publish it and deploy everything else it touched, without waiting to be asked**, whenever it is safe. Leo uses the published app, so a change that is only in `dist/Axo.app` or only pushed hasn't been delivered. Don't stop at "Want me to publish?".
+
+A publish is safe when all of these hold:
+
+- The full lanes pass: `bazel test //apple/... //crates/... //packages/pi-axo/...`.
+- You are in the main clone on `main`, the tree is clean (stash another Session's untracked files for the publish, then check they come back unchanged), and `HEAD` equals `origin/main`, with your commits pushed.
+- No other Session is mid-publish or mid-way through a change that would ship half-done: look at `git log`, uncommitted files and recent transcripts. If one is, wait for it and say so, rather than shipping its work in progress.
+- Nothing irreversible ships unreviewed: no destructive data migration, no protocol change that clients already in use can't speak, nothing Leo said to hold back.
+
+Then:
+
+1. Raise `version`'s minor and `builds.mac` (and `builds.axod` in its own commit if axod changed), add a `CHANGELOG.md` entry that covers everything shipping since the last publish, including other Sessions' changes, then commit and push.
+2. Run `bazel build //:report` and check `bazel-bin/report.txt` shows the new commit, then `bazel run //:publish`, and confirm `https://axo.leostera.dev/cdn/Axo.app.json`.
+3. Deploy whatever else changed, following its own procedure: the phone app ([phone deploy](../axo-phone-deploy/SKILL.md)), and Workers or sites under the Cloudflare Access rules.
+4. In your reply, give the version, the builds and the commit. If axod's build changed, say that updating restarts axod: turns in progress and terminal processes are lost, and Pi Sessions resume, with interrupted ones told they may continue.
+
+If it isn't safe, don't publish: say what blocks it, and publish once it clears. Leo saying to hold a change, or only to try something locally first, overrides this until he says otherwise.
 
 ## Runtime safety
 
-- Packaging is disk delivery, not deployment: running Axo and axod keep their mapped code. Never close, restart or signal discovered Axo/Axod processes; a restart needs the user's direction.
+- Packaging and publishing are disk and CDN delivery: running Axo and axod keep their mapped code until Leo relaunches or updates. Never close, restart or signal discovered Axo/Axod processes yourself; a restart needs the user's direction.
 - Do not run axod as root, and never touch the user's Axod state (`axo_server::default_server_directory()`), Pi transcripts, clipboard or Application Support state while packaging or testing. Tests use isolated fixtures.
 - Do not run visual UI tests while the user's Axo is open; the runner refuses, and its safeguard must not be bypassed.
 - Isolated component or fixture success does not prove ServiceManagement handoff, Finder launch, physical IME or notification delivery.

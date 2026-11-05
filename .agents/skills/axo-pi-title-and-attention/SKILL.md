@@ -26,4 +26,4 @@ Resolve paths from the Axo root (`../../..`). Follow the [native app](../axo-mac
 - `bazel test //packages/pi-axo/...` covers the extension: title validation, guidance injection, bridge protocol and config.
 - `bazel test //crates/axod:rpc_tests //crates/axo-server:axo_server_tests` cover bridge activity, status derivation and session events with the inert Pi fixtures.
 - `bazel test //apple/AxoMac:AxoMacTests` covers catalog event application; the visual UI suite covers real sidebar rename and a Pi Session surviving app relaunch.
-- Package after extension changes (`bazel build //...` rebuilds it, embeds it and puts the app at `dist/Axo.app`). Never stop a Pi hosting an active assistant turn, and get the user's consent before live restarts or notification acceptance that needs interaction.
+- Package after extension changes (`bazel build //...` rebuilds it, embeds it and puts the app at `dist/Axo.app`), then publish when safe, as [packaging](../axo-macos-packaging/SKILL.md) describes. Never stop a Pi hosting an active assistant turn, and get the user's consent before live restarts or notification acceptance that needs interaction.

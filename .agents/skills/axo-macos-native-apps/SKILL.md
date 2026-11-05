@@ -5,7 +5,7 @@ description: Design, implement, or review Axo's native macOS scenes, windows, si
 
 # Axo native macOS app
 
-Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-macos-packaging/SKILL.md). Architecture rationale and the latest audit are in `docs/axo-app-architecture-audit.md`.
+Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-macos-packaging/SKILL.md): once a change is committed and validated, publish it and deploy it without waiting to be asked, whenever packaging's "Always publish and deploy safe changes" conditions hold. Architecture rationale and the latest audit are in `docs/axo-app-architecture-audit.md`.
 
 ## Ownership
 
