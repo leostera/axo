@@ -5,7 +5,7 @@ import type { Commit, Removal, Reservation, ReserveInput } from "../assets/asset
 import { assetKey, assetsDOName } from "../assets/keys";
 
 /**
- * Assets over HTTPS (RFD0030, specs/assets.ts). This is the gateway: it runs on every request,
+ * Assets over HTTPS (RFD0030, specs/assets/assets.ts). This is the gateway: it runs on every request,
  * authenticates the caller, and reads through the cached `AxoAssetCache` entrypoint with a
  * request that carries nothing of the caller's.
  *

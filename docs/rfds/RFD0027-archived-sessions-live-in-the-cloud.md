@@ -80,7 +80,7 @@ If the fetch fails or times out (60 seconds), the reopen fails with "This Sessio
 
 ## Testing
 
-- **Feynman:** `specs/archived-in-the-cloud.ts` models the following:
+- **Feynman:** `specs/sessions/archived-in-the-cloud.ts` models the following:
   - the Mac's file, its `axo.db` record, and the uploader;
   - the cloud and Pi;
   - lost replies, and crashes at every step.

@@ -25,9 +25,9 @@ import {
  * with grants that never leave this Durable Object.
  *
  * Grants carry a generation that goes up with every completed sign-in, and a refresh only lands
- * on the generation it renewed (specs/connection-sign-in.ts). Tool lists are cached; at most one
+ * on the generation it renewed (specs/connections/connection-sign-in.ts). Tool lists are cached; at most one
  * refresh per connection runs, and a change heard meanwhile queues exactly one more
- * (specs/tool-lists.ts). Searches never wait on a server.
+ * (specs/connections/tool-lists.ts). Searches never wait on a server.
  */
 
 /** A tool list older than this is refreshed in the background when a search reads it. */

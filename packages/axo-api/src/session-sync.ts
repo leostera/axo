@@ -1,6 +1,6 @@
 /**
- * Session sync and client delivery (RFD0018; modelled in specs/session-sync.ts and
- * specs/client-delivery.ts).
+ * Session sync and client delivery (RFD0018; modelled in specs/sessions/session-sync.ts and
+ * specs/sessions/client-delivery.ts).
  *
  * Upload: Axod → HostDO → SessionDO. On every connect Axod sends `axo.host.sync`, a manifest of
  * every Session it has, and the cloud answers with what it holds; Axod then appends the lines it

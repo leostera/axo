@@ -1,4 +1,4 @@
-//! Session sync (RFD0018, Upload; modelled in `specs/session-sync.ts`).
+//! Session sync (RFD0018, Upload; modelled in `specs/sessions/session-sync.ts`).
 //!
 //! Once paired, Axod uploads every Session's Pi transcript, open or archived, whether or not a
 //! client is watching. On every connect it sends `axo.host.sync`, a manifest of every Session

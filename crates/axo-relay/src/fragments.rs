@@ -1,5 +1,5 @@
 //! Relay messages larger than one frame (RFD0016, Transport; modelled in
-//! `specs/relay-fragments.ts`, implemented in TypeScript in `packages/axo-api/src/fragments.ts`).
+//! `specs/relay/relay-fragments.ts`, implemented in TypeScript in `packages/axo-api/src/fragments.ts`).
 //!
 //! A message that does not fit in one frame is cut into chunks of its UTF-8 bytes, each sent
 //! base64-encoded in an `axo.transport.fragment` notification. The receiver collects every chunk

@@ -2,7 +2,7 @@ import { atMost, budget, defineActor, defineMessage, defineProperty, defineRule,
 
 // RFD0030, the quota: an account holds at most QUOTA assets. Uploads run in parallel, from
 // several devices, and an upload may be abandoned between storing its bytes and committing them
-// (the Worker crashes, the client goes away). Reads, deletes and the cache are in specs/assets.ts.
+// (the Worker crashes, the client goes away). Reads, deletes and the cache are in specs/assets/assets.ts.
 //
 // Not built yet: no step has sources.
 

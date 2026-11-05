@@ -137,8 +137,8 @@ RFD0018's invariants hold. Two are added:
 
 ## Testing
 
-- `specs/client-delivery.ts`: the renewal and the lease timer are removed. Lost WebSocket frames are modelled as a dropped socket that the tab reconnects. Failed notices, reads and subscriptions are retried at once. Progress goes only to a watching ClientDO. The properties are unchanged, `catchesUp` included.
-- `specs/planned-restart.ts`: presence notices are calls that are retried, not renewed. A lost `axo.client.hosts` frame drops the socket, and the web app says hello again.
+- `specs/sessions/client-delivery.ts`: the renewal and the lease timer are removed. Lost WebSocket frames are modelled as a dropped socket that the tab reconnects. Failed notices, reads and subscriptions are retried at once. Progress goes only to a watching ClientDO. The properties are unchanged, `catchesUp` included.
+- `specs/relay/planned-restart.ts`: presence notices are calls that are retried, not renewed. A lost `axo.client.hosts` frame drops the socket, and the web app says hello again.
 - `packages/axo-api-worker/tests/session-sync.test.ts`:
   - a connected client's ClientDO, and the account, have no alarm;
   - progress reaches only the client with the Session open, and the HostDO records one watcher;

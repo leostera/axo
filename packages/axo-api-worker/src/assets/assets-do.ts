@@ -3,7 +3,7 @@ import { ASSET_LIMITS, assetListSchema, type Asset, type AssetList, type AssetTy
 import { assetCacheTag, assetKey } from "./keys";
 
 /**
- * One account's assets (RFD0030, specs/assets.ts, specs/asset-quota.ts): the index and the quota.
+ * One account's assets (RFD0030, specs/assets/assets.ts, specs/assets/asset-quota.ts): the index and the quota.
  * The bytes are in R2 under the account's prefix; the gateway streams uploads there itself.
  *
  * An asset is `reserved` while its bytes go to R2, `ready` once committed, `deleting` while R2

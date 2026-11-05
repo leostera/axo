@@ -367,5 +367,5 @@ export default defineSpec({
   groups: [studio],
   properties: [moneyNeverByRule, everyRunIsLeosAnswer, faceIdForEveryPayment, revokedMeansAsked],
   scenarios: [alwaysThenRevoke, payTwice],
-  finalState: { description: "Anything quiet: Leo may leave a card unanswered (expiry is in specs/ask-the-person.ts).", when: () => true },
+  finalState: { description: "Anything quiet: Leo may leave a card unanswered (expiry is in specs/elicitations/ask-the-person.ts).", when: () => true },
 });

@@ -1,5 +1,5 @@
 /**
- * Connections and tools (RFD0016; modelled in specs/connections.ts).
+ * Connections and tools (RFD0016; modelled in specs/connections/connections.ts).
  *
  * A Session reaches its account's connections through `axod mcp`: the local axod forwards each
  * `axo.connections.*` request on its relay socket, the host's HostDO hands it to the account's

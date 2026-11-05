@@ -4,7 +4,7 @@ import { pkceVerifier } from "@axo/apps";
 
 /**
  * The account as an OAuth client of a third-party MCP server (RFD0016, Third-party connection
- * sign-in; modelled in specs/connection-sign-in.ts). Discovery follows the MCP authorization
+ * sign-in; modelled in specs/connections/connection-sign-in.ts). Discovery follows the MCP authorization
  * spec: the server's protected resource metadata (RFC 9728) names its authorization server,
  * whose metadata (RFC 8414) names the endpoints. A client is registered dynamically (RFC 7591)
  * when the server allows it; otherwise the person enters one on the Connections page.

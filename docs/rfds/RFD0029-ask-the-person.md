@@ -231,18 +231,18 @@ Not yet built, in the order of this RFD: the gate's confirm requests, the Mac ap
 
 ## Testing
 
-- `specs/ask-the-person.ts` (Feynman) models a confirm and an input request across the agent, its shell, axod, HostDO, the iPhone, the Mac app and Safari. As of 2026-11-04:
+- `specs/elicitations/ask-the-person.ts` (Feynman) models a confirm and an input request across the agent, its shell, axod, HostDO, the iPhone, the Mac app and Safari. As of 2026-11-04:
   - **Safety holds** on every path within depth 14 (463k states, one fault): only the person answers, the first answer wins, the card never reaches the agent or the cloud in the clear, values go only into the page whose address the person was shown, and no client keeps a card for a resolved request.
   - **Liveness:** every waiting tool call returns. This held on every path of up to 20 events (11.9M states); longer paths were not checked.
   - **Every rule is needed:** without `peerCheck`, `sealedValues`, `receiptOnly`, `boundTarget`, `oneCallPerWindow` or `redaction`, a property breaks.
   - **The checker found two flaws in the first draft**, now in this RFD:
     - a Deny arriving during a fill overrode the fill (fixed by claiming on the first answer);
     - a parallel read caught the value before its receipt (fixed by one call per window).
-- `specs/open-a-link.ts` models `wrangler login`, the agent, a local admin service, the loopback interface, axod, HostDO, the iPhone and the web app, with a lost or duplicated callback and an axod restart. Safety held on every path of up to 25 events (13.4M states): the code reaches only the command that opened the link, never the cloud in the clear, no other local service, and once per request. It found:
+- `specs/elicitations/open-a-link.ts` models `wrangler login`, the agent, a local admin service, the loopback interface, axod, HostDO, the iPhone and the web app, with a lost or duplicated callback and an axod restart. Safety held on every path of up to 25 events (13.4M states): the code reaches only the command that opened the link, never the cloud in the clear, no other local service, and once per request. It found:
   - a check of the port's owner made before connecting is stale if the command exits and the agent binds the port (fixed by checking on the connection);
   - a link the agent passes on must name its opener by who printed it, not by who holds the port when it asks;
   - pending requests had no deadline after a restart (fixed by expiring them at start).
-- `specs/ask-rules.ts` models Always allow, revocation and Face ID, with a relay that replays or rewrites answers. Every property held on every path of up to 30 events (612k states, exploration complete): no payment by rule, every run is the person's own answer to that request, Face ID for every payment, nothing runs by a rule the phone shows revoked. It found:
+- `specs/elicitations/ask-rules.ts` models Always allow, revocation and Face ID, with a relay that replays or rewrites answers. Every property held on every path of up to 30 events (612k states, exploration complete): no payment by rule, every run is the person's own answer to that request, Face ID for every payment, nothing runs by a rule the phone shows revoked. It found:
   - a replayed unsigned *Always allow* brought back a revoked rule (fixed by signing every answer);
   - two stale displays of revocation (fixed by rule ids and *Revoking…* until confirmed).
 - **axod tests:**

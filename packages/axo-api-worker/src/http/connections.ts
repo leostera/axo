@@ -12,7 +12,7 @@ import { FLOW_LIFETIME_MS } from "../connections/third-party";
  * Connections over HTTPS (RFD0016): the web Connections page, and the browser side of a
  * third-party sign-in. A person signs in to a connection only in a browser signed in to the
  * account the connection belongs to, and the provider's answer is accepted only with the flow
- * cookie that browser was given (specs/connection-sign-in.ts).
+ * cookie that browser was given (specs/connections/connection-sign-in.ts).
  */
 
 const FLOW_COOKIE = "__Host-axo_connection";

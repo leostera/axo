@@ -171,7 +171,7 @@ Each extension document has front matter (identifier, version, status, requires,
 - **`axp-rs`**: the same API, depending on the `atxf` crate. Encodes the same values to the same bytes.
 - **`axp-swift`**: types, validators and a client, checked against the same fixtures.
 - **Conformance**: every implementation parses every fixture and rejects the invalid ones for the stated reason; the reference peers run every example exchange, mixing TypeScript and Rust peers.
-- **Models**: Feynman specs for replication (one writer, chain verification, a lost host), delivery to clients, commands (at most once across reconnects and hub restarts), fragments, pairing (a code redeemed once, a revoked device cut off). They start from today's `specs/session-sync.ts`, `client-delivery.ts`, `relay-fragments.ts` and `remote-sessions.ts`.
+- **Models**: Feynman specs for replication (one writer, chain verification, a lost host), delivery to clients, commands (at most once across reconnects and hub restarts), fragments, pairing (a code redeemed once, a revoked device cut off). They start from today's `specs/sessions/session-sync.ts`, `client-delivery.ts`, `relay-fragments.ts` and `remote-sessions.ts`.
 
 ### Bazel
 

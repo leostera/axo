@@ -11,7 +11,7 @@ import { atMost, defineActor, defineGroup, defineMessage, defineProperty, define
 // Leo owns account A. Mallory, account B, knows the hash of Leo's h1 but not its bytes.
 // Not built yet: no step has sources.
 
-// Quota and abandoned uploads are in specs/asset-quota.ts; here an account's quota is never reached.
+// Quota and abandoned uploads are in specs/assets/asset-quota.ts; here an account's quota is never reached.
 
 type Account = "A" | "B";
 type Hash = "h1" | "h2" | "h3";

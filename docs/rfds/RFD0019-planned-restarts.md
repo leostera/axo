@@ -19,7 +19,7 @@ Four changes make that happen:
 - **The HostDO keeps a third presence state.** A host is `online`, `restarting` or `offline`. `restarting` carries the reason and the build the host is moving to. It lasts until the next generation registers, or until a 60-second grace period runs out. Prompts sent meanwhile are told to wait, and a prompt that was in flight is reported as interrupted by the restart, not as "outcome unknown".
 - **Clients say so.** The web app shows "Studio is upgrading to build 250…" and then "Studio · build 250", keeps the chat open, and keeps the unsent text. The phone does the same.
 
-A Feynman spec, `specs/planned-restart.ts`, models the design. Its properties hold, and each of its three rules is needed: without any one of them, a property breaks.
+A Feynman spec, `specs/relay/planned-restart.ts`, models the design. Its properties hold, and each of its three rules is needed: without any one of them, a property breaks.
 
 ## Motivation
 
@@ -246,7 +246,7 @@ The spec checks the first four as safety properties, and the last two as livenes
 
 Axo's clients ship with axod, and the same person deploys the cloud, so this is a cutover in four steps:
 
-1. **Spec:** `specs/planned-restart.ts`, done (see Testing).
+1. **Spec:** `specs/relay/planned-restart.ts`, done (see Testing).
 2. **Cloud and web app, in one deploy:**
    - `axo-api` schemas: presence `status`, `restart`, `stopped`, `presenceSeq`, and the two error codes.
    - HostDO: `axo.host.leaving`, the `restarting` state, the grace alarm, generation fencing on `leaving`, and the stored `seq`.
@@ -259,7 +259,7 @@ Axo's clients ship with axod, and the same person deploys the cloud, so this is 
 
 ## Testing
 
-- **Feynman:** `specs/planned-restart.ts` models Axo.app, launchd, axod, the HostDO, the ClientDO and a tab, with these faults: lost messages (including a lost goodbye), an axod crash, and a new axod that fails to start. It has five scenarios: an upgrade, a prompt during an upgrade, a crash, an upgrade whose new axod never starts, and a logout.
+- **Feynman:** `specs/relay/planned-restart.ts` models Axo.app, launchd, axod, the HostDO, the ClientDO and a tab, with these faults: lost messages (including a lost goodbye), an axod crash, and a new axod that fails to start. It has five scenarios: an upgrade, a prompt during an upgrade, a crash, an upgrade whose new axod never starts, and a logout.
   - Without faults, the four safety invariants hold exhaustively to depth 14 (1.26M states).
   - With one fault, they hold on every path of up to 13 events (4M states). The spec's sequence number keeps states distinct, which limits the search.
   - The two liveness properties hold as far as the search reaches.

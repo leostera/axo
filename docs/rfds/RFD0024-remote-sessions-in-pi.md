@@ -18,7 +18,7 @@ I propose that a Session on another Mac opens in an ordinary terminal pane, with
 - **Commands with receipts.** Every prompt has a `commandId`, which is now carried into the log, so that a prompt can be retried safely and recognised for sure when it lands. A stop names the turn it stops.
 - **A Mac menu in the sidebar.** Workspaces mode goes away. Its button becomes a menu that chooses which Macs' Sessions the sidebar lists.
 
-A Feynman spec, `specs/remote-sessions.ts`, models the design. It found that each of its seven rules is needed, and six of them fix commands from the phone and the web app too.
+A Feynman spec, `specs/sessions/remote-sessions.ts`, models the design. It found that each of its seven rules is needed, and six of them fix commands from the phone and the web app too.
 
 ## Motivation
 
@@ -143,7 +143,7 @@ All five steps ship together, to every Mac at once.
 
 ## Testing
 
-- **Feynman:** `specs/remote-sessions.ts`.
+- **Feynman:** `specs/sessions/remote-sessions.ts`.
   - It models seven actors: the MacBook's remote pane and its axod, the ClientDO, the HostDO, the cloud's copy, and the Studio's axod and Pi.
   - Faults: a lost call to the HostDO, a lost command to the Studio, and a lost reply from it. Without spending a fault, the Studio can also sleep and the peers socket can close.
   - It has seven scenarios, including a prompt while the Studio sleeps, a lost reply, and a prompt during a turn followed by a stop.

@@ -5,7 +5,7 @@ import { assetListSchema, assetSchema } from "@axo/protocol";
 import { harness, signIn, signInNative, type AccountSession, type Harness } from "./harness";
 import { pairHost } from "./account-support";
 
-/** Assets (RFD0030, specs/assets.ts, specs/asset-quota.ts) over the Worker's HTTPS routes. */
+/** Assets (RFD0030, specs/assets/assets.ts, specs/assets/asset-quota.ts) over the Worker's HTTPS routes. */
 
 const hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const bytesOf = (text: string) => new TextEncoder().encode(text);

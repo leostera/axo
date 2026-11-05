@@ -127,7 +127,7 @@ flowchart LR
 
 ## Testing
 
-- **`specs/assets.ts` (Feynman):** two accounts, the gateway, Workers Cache, `AxoAssetCache`, `AxoAssetsDO`, R2 and the Mac. Every property held on every path of up to 14 events. They are:
+- **`specs/assets/assets.ts` (Feynman):** two accounts, the gateway, Workers Cache, `AxoAssetCache`, `AxoAssetsDO`, R2 and the Mac. Every property held on every path of up to 14 events. They are:
   - no account reads another's asset, from the cache or by uploading other bytes under its name;
   - an object's bytes always hash to its name;
   - an asset `ready` in an index always has its bytes;
@@ -139,7 +139,7 @@ flowchart LR
   - a re-upload while the R2 delete was still on its way lost its bytes (fixed by `deleting`);
   - a delete overtaken by a re-upload removed the file just attached (fixed by versioned deletes);
   - a read that outlives both purges would bring a deleted asset back; the design assumes reads end within 15 minutes, and the spec shows that assumption is needed.
-- **`specs/asset-quota.ts` (Feynman):** parallel and abandoned uploads. Exhaustive to depth 40: the quota holds, abandoned reservations are released, and an upload answered `200` is kept.
+- **`specs/assets/asset-quota.ts` (Feynman):** parallel and abandoned uploads. Exhaustive to depth 40: the quota holds, abandoned reservations are released, and an upload answered `200` is kept.
 - **Worker tests (`packages/axo-api-worker/tests`):** upload, `exists`, hash mismatch, quota, name and type checks, delete and purge, per-account isolation, and the gateway's authentication for people and Macs.
 - **axod tests:** download with hash check, refusal on mismatch or missing, the files on disk, and the bridge's `send` with attachments.
 - **pi-axo tests:** images become image blocks; other files become the text line.

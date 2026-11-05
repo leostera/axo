@@ -239,7 +239,7 @@ Rollback before step 5 is a revert. An account the new code moved has its state 
 
 ## Testing
 
-- **Spec.** `specs/account-gateway.ts` models the move and routing, checking every invariant above under lost messages and crashes.
+- **Spec.** `specs/relay/account-gateway.ts` models the move and routing, checking every invariant above under lost messages and crashes.
 - **Moving an account.** A test signs in Gmail, adds an MCP server, makes calls, then restarts the runtime with the new code. The first request moves the account, and the test checks that:
   - grants still work;
   - the log and its integrity check are unchanged (same head, verified);

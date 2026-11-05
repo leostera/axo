@@ -1,5 +1,5 @@
 /**
- * Relay messages larger than one frame (RFD0016, Transport; modelled in specs/relay-fragments.ts).
+ * Relay messages larger than one frame (RFD0016, Transport; modelled in specs/relay/relay-fragments.ts).
  *
  * The sender serializes a message as usual. If it does not fit in one frame, its UTF-8 bytes are
  * cut into chunks and each chunk travels, base64-encoded, in an `axo.transport.fragment`
