@@ -14,6 +14,9 @@ type ApiEvent =
   | { event: "client_open"; records: number }
   | { event: "client_stalled" }
   | { event: "client_follow_failed" }
+  /** What a Mac asked its person, and how it ended (RFD0029); never the words. */
+  | { event: "elicitation_requested"; kind: "confirm" }
+  | { event: "elicitation_resolved"; outcome: "accept" | "decline" | "cancel" }
   | { event: "host_connections_call"; outcome: "result" | "error" | "unknown" | "refused" }
   | { event: "host_call"; outcome: "result" | "error" | "offline" | "disconnected" | "timeout" }
   /** One `axo.connections.*` call the account answered; `outcome` is "result" or the error code. */

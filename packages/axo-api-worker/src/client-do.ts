@@ -1,6 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   CLIENT_METHODS,
+  ELICITATION_ERRORS,
+  ELICITATION_METHODS,
+  clientElicitationResolveParamsSchema,
   DISCARD_METHOD,
   FRAGMENT_METHOD,
   MemoryPartialStore,
@@ -24,6 +27,7 @@ import {
   type ClientHost,
   type ClientOpenResult,
   type ClientSession,
+  type Elicitation,
   type Reply,
 } from "@axo/protocol";
 import { z } from "zod";
@@ -91,6 +95,7 @@ type HostStub = {
   watch(clientDO: string, sessionId: string): Promise<Array<{ slot: string; snapshot: unknown }>>;
   unwatch(clientDO: string, sessionId: string): Promise<void>;
   command(method: string, params: unknown): Promise<HostCommandOutcome>;
+  resolveElicitation(params: unknown): Promise<HostCommandOutcome>;
 };
 /** The head a Session's notices or reads last reported, in its epoch. */
 type KnownHead = { epoch: number | null; head: number };
@@ -108,6 +113,8 @@ export class AxoClientDO extends DurableObject<Env> {
    * Lost on eviction, which only costs one read.
    */
   private readonly heads = new Map<string, KnownHead>();
+  /** What the Macs were asking when last followed, sent once the listing has gone (RFD0029). */
+  private asked: Array<{ hostId: string; elicitation: Elicitation }> = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -170,6 +177,9 @@ export class AxoClientDO extends DurableObject<Env> {
     if (!call.success) return void this.send(socket, failure(null, -32600, "Invalid Request"));
     const reply = await this.receive(socket, peer, call.data);
     if (reply && call.data.id !== undefined) this.send(socket, reply);
+    // What the Macs are asking now follows the listing, as if just asked (RFD0029).
+    if ((call.data.method === CLIENT_METHODS.hello || call.data.method === CLIENT_METHODS.refresh) && reply && "result" in reply)
+      this.sendElicitations(socket);
     // What the open did not return follows it, in batches.
     if (call.data.method === CLIENT_METHODS.open && reply && "result" in reply)
       await this.pump(clientOpenParamsSchema.parse(call.data.params).sessionId);
@@ -197,6 +207,7 @@ export class AxoClientDO extends DurableObject<Env> {
     const socket = this.socket();
     if (!socket || !this.identity()) return false;
     await this.followHosts(socket, false);
+    this.sendElicitations(socket);
     return true;
   }
 
@@ -230,6 +241,13 @@ export class AxoClientDO extends DurableObject<Env> {
         case "label":
           this.ctx.storage.sql.exec("UPDATE hosts SET label = ? WHERE host_id = ?", notice.label, hostId);
           this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.hosts, params: { hosts: this.hosts() } });
+          break;
+        // Only people see what a Mac asks: a Mac following its peers does not (RFD0029).
+        case "elicitationRequested":
+          if (this.isPerson()) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.requested, params: { hostId, elicitation: notice.elicitation } });
+          break;
+        case "elicitationResolved":
+          if (this.isPerson()) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.resolved, params: { hostId, ...notice.resolved } });
           break;
       }
     }
@@ -305,6 +323,18 @@ export class AxoClientDO extends DurableObject<Env> {
           const outcome = await this.hostStub(params.data.hostId)
             .command(params.data.method, params.data.params)
             .catch(() => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
+          return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
+        }
+        case ELICITATION_METHODS.resolve: {
+          // Only a person answers: a Mac's own credential cannot, for any Mac (RFD0029).
+          if (!this.isPerson()) return failure(id, ELICITATION_ERRORS.notAPerson, "Only a person answers");
+          const params = clientElicitationResolveParamsSchema.safeParse(call.params);
+          const host = params.success ? this.host(params.data.hostId) : undefined;
+          if (!params.success || !host) return failure(id, -32602, "Invalid params");
+          const { hostId, elicitationId, action } = params.data;
+          const outcome = await this.hostStub(hostId)
+            .resolveElicitation({ target: { hostId, hostGeneration: host.host_generation }, elicitationId, action })
+            .catch(() => ({ error: { code: -32004, message: "Outcome unknown" } }));
           return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
         }
         case CLIENT_METHODS.renameHost: {
@@ -436,6 +466,7 @@ export class AxoClientDO extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const sessions: ClientSession[] = [];
     const followed = new Set<string>();
+    this.asked = [];
     await Promise.all(listed.map(async (host) => {
       try {
         // Subscribed until the socket closes; a call that fails is made again at once (RFD0031).
@@ -447,6 +478,7 @@ export class AxoClientDO extends DurableObject<Env> {
           host_kind = excluded.host_kind, online = excluded.online, last_seen_at = excluded.last_seen_at`,
           host.hostId, subscription.hostGeneration ?? host.hostGeneration, host.label, host.hostKind, subscription.online ? 1 : 0, host.lastSeenAt);
         sessions.push(...subscription.sessions);
+        for (const elicitation of subscription.elicitations ?? []) this.asked.push({ hostId: host.hostId, elicitation });
       } catch {
         recordApiEvent({ event: "client_follow_failed" });
       }
@@ -492,6 +524,20 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /** A signed-in person's client, not a Mac following its peers. */
+  private isPerson(): boolean {
+    const identity = this.identity();
+    return Boolean(identity) && peerHostOf(identity!.clientId) === null;
+  }
+
+  private sendElicitations(socket: WebSocket): void {
+    const asked = this.asked;
+    this.asked = [];
+    if (!this.isPerson()) return;
+    for (const { hostId, elicitation } of asked)
+      this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.requested, params: { hostId, elicitation } });
+  }
 
   private send(socket: WebSocket, value: unknown): boolean {
     const frames = splitMessage(JSON.stringify(value), crypto.randomUUID().replaceAll("-", ""));

@@ -1,5 +1,12 @@
 import {
   CONNECTIONS_LIMITS,
+  ELICITATION_ERRORS,
+  ELICITATION_LIMITS,
+  ELICITATION_METHODS,
+  elicitationResolveResultSchema,
+  elicitationResolvedSchema,
+  elicitationSchema,
+  hostElicitationResolveParamsSchema,
   HOST_SYNC_METHODS,
   LIMITS,
   isConnectionsMethod,
@@ -18,6 +25,8 @@ import {
   type Call,
   type ClientSession,
   type CloudSessionState,
+  type Elicitation,
+  type ElicitationResolved,
   type HostSyncResult,
   type JSONRPCServer,
   type Reply,
@@ -56,13 +65,19 @@ export type HostNotice =
   | { kind: "epoch"; sessionId: string; epoch: number; head: number }
   | { kind: "presence"; online: boolean; hostGeneration: string | null }
   /** The Mac was named (RFD0022). */
-  | { kind: "label"; label: string };
+  | { kind: "label"; label: string }
+  /** The Mac asks the person (RFD0029); people's clients show a card. */
+  | { kind: "elicitationRequested"; elicitation: Elicitation }
+  /** It settled, or the Mac went offline: clients dismiss the card. */
+  | { kind: "elicitationResolved"; resolved: ElicitationResolved };
 
 export type HostSubscription = {
   online: boolean;
   hostGeneration: string | null;
   sessions: ClientSession[];
   progress: Array<{ sessionId: string; slot: string; snapshot: unknown }>;
+  /** What the Mac is asking now (RFD0029). */
+  elicitations: Elicitation[];
 };
 
 export type HostCommandOutcome = { result: unknown } | { error: { code: number; message: string } };
@@ -108,6 +123,11 @@ export class AxoHostDO extends AxoHostRelay {
   /** The newest progress snapshot per Session and slot; never stored (RFD0018, Ephemeral progress). */
   private readonly progress = new Map<string, Map<string, unknown>>();
   private readonly statuses = new Map<string, SessionStatus>();
+  /**
+   * What the Mac is asking the person now, by id (RFD0029); never stored. The Mac owns them and
+   * sends them again when it reconnects, so they are dropped with its socket.
+   */
+  private readonly elicitations = new Map<string, Elicitation>();
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /** When each connection's heartbeat last reached the account, and what it answered. */
@@ -187,6 +207,9 @@ export class AxoHostDO extends AxoHostRelay {
     if (status === "offline") {
       this.progress.clear();
       this.statuses.clear();
+      for (const elicitation of this.elicitations.values())
+        this.queue({ kind: "elicitationResolved", resolved: { id: elicitation.id, sessionId: elicitation.sessionId, action: "cancel" } });
+      this.elicitations.clear();
     }
     this.queue({ kind: "presence", online: status === "online", hostGeneration }, true);
   }
@@ -217,7 +240,7 @@ export class AxoHostDO extends AxoHostRelay {
   // ─── Upload: Axod → HostDO ─────────────────────────────────────────────────
 
   protected override hostMethodNames(): string[] {
-    return Object.values(HOST_SYNC_METHODS);
+    return [...Object.values(HOST_SYNC_METHODS), ELICITATION_METHODS.requested, ELICITATION_METHODS.resolved];
   }
 
   protected override addHostMethods(server: JSONRPCServer<CallerContext>): void {
@@ -238,6 +261,23 @@ export class AxoHostDO extends AxoHostRelay {
       else slots.set(slot, snapshot);
       this.progress.set(sessionId, slots);
       this.queue({ kind: "progress", sessionId, slot, snapshot: snapshot ?? null });
+      return true;
+    }
+    if (call.method === ELICITATION_METHODS.requested) {
+      const parsed = elicitationSchema.safeParse(call.params);
+      if (!parsed.success || !this.ready(peer)) return true;
+      if (!this.elicitations.has(parsed.data.id) && this.elicitations.size >= ELICITATION_LIMITS.pendingPerHost) return true;
+      this.elicitations.set(parsed.data.id, parsed.data);
+      recordApiEvent({ event: "elicitation_requested", kind: parsed.data.kind });
+      this.queue({ kind: "elicitationRequested", elicitation: parsed.data }, true);
+      return true;
+    }
+    if (call.method === ELICITATION_METHODS.resolved) {
+      const parsed = elicitationResolvedSchema.safeParse(call.params);
+      if (!parsed.success || !this.ready(peer)) return true;
+      this.elicitations.delete(parsed.data.id);
+      recordApiEvent({ event: "elicitation_resolved", outcome: parsed.data.action });
+      this.queue({ kind: "elicitationResolved", resolved: parsed.data }, true);
       return true;
     }
     if (call.method === HOST_SYNC_METHODS.status) {
@@ -376,7 +416,27 @@ export class AxoHostDO extends AxoHostRelay {
       hostGeneration: presence.hostGeneration,
       sessions: this.ctx.storage.sql.exec<IndexRow>("SELECT * FROM session_index").toArray().map((row) => this.clientSession(row)),
       progress: [...this.progress].flatMap(([sessionId, slots]) => [...slots].map(([slot, snapshot]) => ({ sessionId, slot, snapshot }))),
+      elicitations: [...this.elicitations.values()],
     };
+  }
+
+  /**
+   * A person's answer to what the Mac asked (RFD0029), from a ClientDO, which takes it only from
+   * a signed-in person's client. The Mac decides: the first answer it takes wins.
+   */
+  async resolveElicitation(params: unknown): Promise<HostCommandOutcome> {
+    const parsed = hostElicitationResolveParamsSchema.safeParse(params);
+    if (!parsed.success) return { error: { code: -32602, message: "Invalid params" } };
+    const presence = this.presence();
+    if (!presence.online) return { error: { code: -32005, message: "Host offline; nothing sent" } };
+    if (parsed.data.target.hostGeneration !== presence.hostGeneration) return { error: { code: -32002, message: "Stale host" } };
+    if (!this.elicitations.has(parsed.data.elicitationId))
+      return { error: { code: ELICITATION_ERRORS.notPending, message: "Already answered, or no longer asked" } };
+    const outcome = await this.callHost({ method: ELICITATION_METHODS.resolve, params: parsed.data, deadlineMs: 15_000 });
+    if ("error" in outcome) return outcome;
+    return elicitationResolveResultSchema.safeParse(outcome.result).success
+      ? outcome
+      : { error: { code: -32004, message: "Invalid host outcome" } };
   }
 
   async unsubscribe(clientDO: string): Promise<void> {
@@ -563,6 +623,8 @@ export class AxoHostDO extends AxoHostRelay {
   private queue(notice: HostNotice, now = false): void {
     const key = notice.kind === "presence" ? "presence"
       : notice.kind === "label" ? "label"
+      : notice.kind === "elicitationRequested" ? `elicitation:${notice.elicitation.id}`
+      : notice.kind === "elicitationResolved" ? `elicitation:${notice.resolved.id}`
       : notice.kind === "session" ? `session:${notice.session.sessionId}`
       : notice.kind === "epoch" ? `epoch:${notice.sessionId}`
       : `progress:${notice.sessionId}:${notice.slot}`;
@@ -620,6 +682,7 @@ export class AxoHostDO extends AxoHostRelay {
         .map((row): HostNotice => ({ kind: "session", session: this.clientSession(row) })),
       ...[...watches].flatMap((sessionId) => [...(this.progress.get(sessionId) ?? [])]
         .map(([slot, snapshot]): HostNotice => ({ kind: "progress", sessionId, slot, snapshot }))),
+      ...[...this.elicitations.values()].map((elicitation): HostNotice => ({ kind: "elicitationRequested", elicitation })),
     ];
   }
 
