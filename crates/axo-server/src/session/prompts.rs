@@ -39,6 +39,13 @@ pub(super) struct QueuedPrompt {
     attachments: Vec<FetchedAttachment>,
 }
 
+#[cfg(test)]
+impl QueuedPrompt {
+    pub(super) fn text(&self) -> &str {
+        &self.text
+    }
+}
+
 /// What each Session's agent has sent, for rate limits.
 #[derive(Default)]
 pub(super) struct PromptProvenance {

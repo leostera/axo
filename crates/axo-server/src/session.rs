@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ mod pi_recovery;
 mod prompts;
 mod settings;
 mod spawn;
+mod stop_notice;
 pub(crate) use spawn::set_agent_socket;
 mod terminal;
 #[cfg(test)]
@@ -196,6 +198,7 @@ impl SessionManager {
         )?;
         remove_abandoned_pi_bridge_sockets(&database)?;
 
+        let previous_stop = take_previous_stop(&database)?;
         let home_workspace_id = axo_store::ensure_home_workspace(&mut database, &initial_pwd)?;
         let workspace_access = restore_workspace_accesses(&database)?;
         let subscribers = EventBus::default();
@@ -234,7 +237,13 @@ impl SessionManager {
             elicitations: Default::default(),
         });
 
-        manager.restore_open_sessions()?;
+        // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see
+        // `stop_notice`).
+        let interrupted = previous_stop.as_ref().map_or(&[][..], |stop| &stop.interrupted[..]);
+        manager.restore_open_sessions_first(interrupted)?;
+        if let Some(stop) = &previous_stop {
+            manager.tell_interrupted_sessions(stop);
+        }
         manager.ensure_open_workspace_sessions()?;
         manager.start_attachment_listener()?;
         manager.start_reaper();
@@ -245,6 +254,10 @@ impl SessionManager {
         // Fence in-flight launches before joining workers or draining processes.
         // stop_workers alone is also used to quiesce background fixture workers.
         if let Ok(mut state) = self.state.lock() {
+            // First, before anything slow: launchd kills an Axod that takes too long to stop.
+            if !state.shutting_down {
+                record_stop(&state);
+            }
             state.shutting_down = true;
         }
         self.stop_workers.store(true, Ordering::Relaxed);
@@ -273,6 +286,48 @@ impl Drop for SessionManager {
     fn drop(&mut self) {
         self.shutdown();
         let _ = fs::remove_file(&self.attach_socket_path);
+    }
+}
+
+/// The record the previous Axod left of how it stopped, if it left one that reads.
+fn take_previous_stop(
+    database: &axo_store::Connection,
+) -> io::Result<Option<stop_notice::DaemonStop>> {
+    let Some(stored) = axo_store::take_daemon_stop(database)? else {
+        return Ok(None);
+    };
+    match stop_notice::DaemonStop::parse(&stored) {
+        Ok(stop) => Ok(Some(stop)),
+        Err(error) => {
+            log::warn!("event=daemon.stop_record_invalid reason={error}");
+            Ok(None)
+        }
+    }
+}
+
+/// Writes down this Axod's version and the Sessions whose Pi is mid-turn, most recently active
+/// first, for the next Axod to restore first and tell.
+fn record_stop(state: &SessionState) {
+    let mut interrupted: Vec<(SessionId, i64)> = state
+        .pi_activity
+        .iter()
+        .filter(|(_, activity)| activity.connected && activity.working)
+        .map(|(id, _)| {
+            let activity = axo_store::open_session_row(&state.database, *id)
+                .ok()
+                .and_then(|row| row.last_message_at)
+                .unwrap_or(0);
+            (*id, activity)
+        })
+        .collect();
+    interrupted.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+    let stop = stop_notice::this_daemon(interrupted.into_iter().map(|(id, _)| id).collect());
+    match axo_store::store_daemon_stop(&state.database, &stop.to_stored()) {
+        Ok(()) => log::info!(
+            "event=daemon.stop_recorded interrupted={}",
+            stop.interrupted.len()
+        ),
+        Err(error) => log::warn!("event=daemon.stop_record_failed reason={error}"),
     }
 }
 

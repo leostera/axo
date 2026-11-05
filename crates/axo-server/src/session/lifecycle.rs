@@ -232,6 +232,15 @@ impl SessionManager {
     }
 
     pub(super) fn restore_open_sessions(self: &Arc<Self>) -> io::Result<()> {
+        self.restore_open_sessions_first(&[])
+    }
+
+    /// Restores every open Session; Pis start with `first`'s, in that order, then the rest,
+    /// most recently active first.
+    pub(super) fn restore_open_sessions_first(
+        self: &Arc<Self>,
+        first: &[SessionId],
+    ) -> io::Result<()> {
         let mut state = self.lock_state()?;
         if state.shutting_down {
             return Err(io::Error::new(
@@ -307,6 +316,18 @@ impl SessionManager {
                 )?;
             }
         }
+        let priority = |session_id: &SessionId| {
+            let rank = first
+                .iter()
+                .position(|id| id == session_id)
+                .unwrap_or(first.len());
+            let activity = axo_store::open_session_row(&state.database, *session_id)
+                .ok()
+                .and_then(|row| row.last_message_at)
+                .unwrap_or(0);
+            (rank, std::cmp::Reverse(activity))
+        };
+        pi_shells.sort_by_cached_key(|(session_id, _)| priority(session_id));
         drop(state);
         self.recover_pi_shells(pi_shells);
         Ok(())

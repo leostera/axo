@@ -100,6 +100,34 @@ pub fn store_viewport(database: &Connection, viewport: &Viewport) -> io::Result<
     Ok(())
 }
 
+/// What the last Axod to stop left for the next one (see `axo-server`'s `stop_notice`).
+pub const DAEMON_STOP_METADATA_KEY: &str = "daemon_stop";
+
+/// Replaces the record of how the last Axod stopped.
+pub fn store_daemon_stop(database: &Connection, value: &str) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![DAEMON_STOP_METADATA_KEY, value],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// Reads and removes the record of how the last Axod stopped, so it is acted on once.
+pub fn take_daemon_stop(database: &Connection) -> io::Result<Option<String>> {
+    let value = database
+        .query_row(
+            "DELETE FROM daemon_metadata WHERE key = ?1 RETURNING value",
+            params![DAEMON_STOP_METADATA_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?;
+    Ok(value)
+}
+
 /// Where a setting lives in `daemon_metadata`.
 fn config_metadata_key(key: ConfigKey) -> &'static str {
     match key {
@@ -123,6 +151,19 @@ pub fn store_config_value(database: &Connection, key: ConfigKey, value: &str) ->
 mod tests {
     use super::*;
     use crate::test_support::database;
+
+    #[test]
+    fn the_daemon_stop_record_is_taken_once() {
+        let database = database();
+        assert_eq!(take_daemon_stop(&database).unwrap(), None);
+        store_daemon_stop(&database, "first").unwrap();
+        store_daemon_stop(&database, "second").unwrap();
+        assert_eq!(
+            take_daemon_stop(&database).unwrap().as_deref(),
+            Some("second")
+        );
+        assert_eq!(take_daemon_stop(&database).unwrap(), None);
+    }
 
     #[test]
     fn a_stored_setting_replaces_the_previous_value() {
