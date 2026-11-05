@@ -85,7 +85,7 @@ Every message has a **priority class**: `control` (responses, errors, connection
 A connection starts with `axp.hello` from the side that opened it. No other method MAY be sent before the hello response, except `axp.pair.redeem` (§6.3).
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"axp.hello","params":{"axp":"0.1","role":"client","device":"7a4c1f0e-2b1d-4c0a-9a55-0d2f6c8e1b3a","extensions":{"pi":"0.1","terminal":"0.1"},"limits":{"messageBytes":1048576}}}
+{"jsonrpc":"2.0","id":1,"method":"axp.hello","params":{"axp":"0.1","role":"client","device":"7a4c1f0e-2b1d-4c0a-9a55-0d2f6c8e1b3a","extensions":{"agent":"0.1","terminal":"0.1"},"limits":{"messageBytes":1048576}}}
 ```
 
 - `axp` is the protocol version the sender speaks. A receiver that does not speak it MUST answer with error `-32100` (§13) carrying the versions it does speak in `data.versions`, and close.
@@ -98,7 +98,7 @@ A connection starts with `axp.hello` from the side that opened it. No other meth
 The response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"axp":"0.1","role":"hub","challenge":"rK3nY0b8Q2m5vX1cT7hZ4uW9eA6sD0fG2jL8pN5qR1o","extensions":{"pi":"0.1"},"limits":{"messageBytes":65536}}}
+{"jsonrpc":"2.0","id":1,"result":{"axp":"0.1","role":"hub","challenge":"rK3nY0b8Q2m5vX1cT7hZ4uW9eA6sD0fG2jL8pN5qR1o","extensions":{"agent":"0.1"},"limits":{"messageBytes":65536}}}
 ```
 
 - `extensions` in the response is the **negotiated set**: each extension both sides implement, at a version both speak. A peer MUST NOT send a method, notification or field of an extension outside the negotiated set; the receiver MUST answer such a request with `-32601` (method not found).

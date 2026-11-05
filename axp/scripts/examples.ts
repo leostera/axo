@@ -157,7 +157,7 @@ function write(name: string, lines: Line[]) {
   writeFileSync(join(OUT, `${name}.axp.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
 }
 
-const EXTENSIONS = { sessions: "0.1", pi: "0.1", terminal: "0.1", upgrade: "0.1" };
+const EXTENSIONS = { sessions: "0.1", agent: "0.1", terminal: "0.1", upgrade: "0.1" };
 const metadata = (name: string | null, lastActivityAt: string | null) => ({
   name,
   createdAt: "2026-11-02T09:00:00Z",
@@ -187,8 +187,8 @@ function hostConnects(): Line[] {
 }
 function phoneConnects(): Line[] {
   return [
-    { from: "client", to: "hub", message: req(1, "axp.hello", { axp: "0.1", role: "client", device: PHONE_DEVICE, extensions: { sessions: "0.1", pi: "0.1", terminal: "0.1" } }) },
-    { from: "hub", to: "client", message: ok(1, { axp: "0.1", role: "hub", challenge: b64url(PHONE_CHALLENGE), extensions: { sessions: "0.1", pi: "0.1", terminal: "0.1" }, limits: { messageBytes: 65536 } }) },
+    { from: "client", to: "hub", message: req(1, "axp.hello", { axp: "0.1", role: "client", device: PHONE_DEVICE, extensions: { sessions: "0.1", agent: "0.1", terminal: "0.1" } }) },
+    { from: "hub", to: "client", message: ok(1, { axp: "0.1", role: "hub", challenge: b64url(PHONE_CHALLENGE), extensions: { sessions: "0.1", agent: "0.1", terminal: "0.1" }, limits: { messageBytes: 65536 } }) },
     { from: "client", to: "hub", message: req(2, "axp.auth", { signature: authSignature(phoneKey, PHONE_CHALLENGE, PHONE_DEVICE) }) },
     { from: "hub", to: "client", message: ok(2, { account: ACCOUNT, device: PHONE_DEVICE, role: "client" }) },
   ];
@@ -210,7 +210,7 @@ write("replication", [
   { from: "hub", to: "host", note: "The hub holds the first two records of this log.", message: ok(3, { sessions: [{ sessionId: SESSION, log: offer(2) }] }) },
   { from: "hub", to: "host", note: "So it opens the log on the host from there. The hub serves clients from its replica; the host serves the hub.", message: req(100, "axp.log.open", { hostId: HOST_ID, sessionId: SESSION, have: offer(2) }) },
   { from: "host", to: "hub", note: "The records after position 2. The hub checks every hash and that the chain ends at `have.chain`, then stores them.", message: ok(100, { header: null, from: 2, records: records.slice(2, 5), have: offer(5), older: null, slots: [] }) },
-  { from: "host", to: "hub", note: "Later, Pi writes two records. The log is still open, so the host pushes them.", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 5, records: records.slice(5, 7), have: offer(7) }) },
+  { from: "host", to: "hub", note: "Later, the agent writes two records. The log is still open, so the host pushes them.", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 5, records: records.slice(5, 7), have: offer(7) }) },
   { from: "hub", to: "host", note: "The hub acknowledges once the batch is durable.", message: notify("axp.log.ack", { hostId: HOST_ID, sessionId: SESSION, count: 7 }) },
   { from: "host", to: "hub", message: req(4, "axp.session.update", { sessionId: SESSION, status: "ready", log: offer(7) }) },
   { from: "hub", to: "host", message: ok(4, { applied: true }) },
@@ -238,12 +238,12 @@ write("reading", [
 ]);
 
 write("command", [
-  { from: "client", to: "hub", note: "The phone sends a prompt. It names the host, the Session and a fresh commandId.", message: req(8, "pi.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing." }) },
-  { from: "hub", to: "host", note: "The hub checks the account owns the host, then forwards the call with its own id and `from`.", message: req(57, "pi.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing.", from: { device: PHONE_DEVICE } }) },
+  { from: "client", to: "hub", note: "The phone sends a prompt. It names the host, the Session and a fresh commandId.", message: req(8, "agent.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing." }) },
+  { from: "hub", to: "host", note: "The hub checks the account owns the host, then forwards the call with its own id and `from`.", message: req(57, "agent.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing.", from: { device: PHONE_DEVICE } }) },
   { from: "host", to: "hub", note: "The connection drops before the receipt arrives.", message: notify("axp.bye", { reason: "network" }) },
   { from: "hub", to: "client", note: "So the outcome is unknown. The prompt may or may not have been taken.", message: fail(8, -32012, "Outcome unknown", { retry: "unknown" }) },
-  { from: "client", to: "hub", note: "Commands are safe to resend with the same commandId.", message: req(9, "pi.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing." }) },
-  { from: "hub", to: "host", note: "The host has reconnected; the hub forwards the resent prompt.", message: req(58, "pi.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing.", from: { device: PHONE_DEVICE } }) },
+  { from: "client", to: "hub", note: "Commands are safe to resend with the same commandId.", message: req(9, "agent.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing." }) },
+  { from: "hub", to: "host", note: "The host has reconnected; the hub forwards the resent prompt.", message: req(58, "agent.prompt", { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: COMMAND_ID, text: "Add a section on pairing.", from: { device: PHONE_DEVICE } }) },
   { from: "host", to: "hub", note: "The host had taken it the first time, so it does not prompt again.", message: ok(58, { receipt: "accepted", duplicate: true }) },
   { from: "hub", to: "client", message: ok(9, { receipt: "accepted", duplicate: true }) },
   { from: "hub", to: "client", note: "The effect arrives in the log: a user message carrying the commandId, covered by its hash.", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 5, records: records.slice(5, 6), have: offer(6) }) },
@@ -288,7 +288,7 @@ write("terminal", [
   const prompt = { hostId: HOST_ID, generation: GENERATION, sessionId: SESSION, commandId: ATTACH_COMMAND_ID, text: "Turn this into a TODO list.", attachments: [ATTACHMENT] };
   write("attachments", [
     { from: "client", to: "hub", message: req(20, "assets.limits", {}) },
-    { from: "hub", to: "client", note: "This hub sends assets in 4 KiB chunks.", message: ok(20, { assetBytes: 104857600, accountBytes: 10737418240, accountAssets: 10000, chunkBytes: CHUNK, attachments: 8 }) },
+    { from: "hub", to: "client", note: "This hub sends assets in 4 KiB chunks.", message: ok(20, { algorithms: ["sha256", "sha512", "sha3-256"], assetBytes: 104857600, accountBytes: 10737418240, accountAssets: 10000, chunkBytes: CHUNK, attachments: 8 }) },
     { from: "client", to: "hub", note: "The phone hashed the photo; does the account already have it?", message: req(21, "assets.has", { assets: [PHOTO_ASSET] }) },
     { from: "hub", to: "client", message: ok(21, { present: [] }) },
     { from: "client", to: "hub", message: req(22, "assets.put", { asset: PHOTO_ASSET, name: "whiteboard.png", mediaType: "image/png", size: PHOTO.length }) },
@@ -299,13 +299,13 @@ write("terminal", [
     { from: "hub", to: "client", message: ok(24, { received: PHOTO.length }) },
     { from: "client", to: "hub", message: req(25, "assets.commit", { upload: "up_7Fq2" }) },
     { from: "hub", to: "client", note: "The hub checked the bytes hash to the name, and made them durable.", message: ok(25, { asset: ASSET_RECORD }) },
-    { from: "client", to: "hub", note: "Only now does the phone send the prompt that names it.", message: req(26, "pi.prompt", prompt) },
-    { from: "hub", to: "host", message: req(80, "pi.prompt", { ...prompt, from: { device: PHONE_DEVICE } }) },
-    { from: "host", to: "hub", note: "Before Pi gets the prompt, the host fetches the photo from the hub.", message: req(30, "assets.get", { asset: PHOTO_ASSET }) },
+    { from: "client", to: "hub", note: "Only now does the phone send the prompt that names it.", message: req(26, "agent.prompt", prompt) },
+    { from: "hub", to: "host", message: req(80, "agent.prompt", { ...prompt, from: { device: PHONE_DEVICE } }) },
+    { from: "host", to: "hub", note: "Before the agent gets the prompt, the host fetches the photo from the hub.", message: req(30, "assets.get", { asset: PHOTO_ASSET }) },
     { from: "hub", to: "host", message: ok(30, { asset: ASSET_RECORD, offset: 0, data: b64url(PHOTO.subarray(0, CHUNK)), done: false }) },
     { from: "host", to: "hub", message: req(31, "assets.get", { asset: PHOTO_ASSET, offset: CHUNK }) },
     { from: "hub", to: "host", message: ok(31, { asset: ASSET_RECORD, offset: CHUNK, data: b64url(PHOTO.subarray(CHUNK)), done: true }) },
-    { from: "host", to: "hub", note: "The bytes hash to the name, so Pi gets the prompt with the photo as an image.", message: ok(80, { receipt: "accepted" }) },
+    { from: "host", to: "hub", note: "The bytes hash to the name, so the agent gets the prompt with the photo as an image.", message: ok(80, { receipt: "accepted" }) },
     { from: "hub", to: "client", message: ok(26, { receipt: "accepted" }) },
     { from: "host", to: "hub", note: "The user message refers to the photo by its ni: URI; its hash covers the URI, and the URI is the photo's hash.", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 7, records: records.slice(7, 8), have: offer(8) }) },
     { from: "hub", to: "client", message: notify("axp.log.records", { hostId: HOST_ID, sessionId: SESSION, from: 7, records: records.slice(7, 8), have: offer(8) }) },

@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://axp.leostera.dev/schema/v0.1/ext/assets/0.1/assets.schema.json",
   "title": "AXP extension `assets` 0.1",
-  "description": "Files an account keeps at its hub, named by the SHA-256 of their bytes. See extensions/assets.md.",
+  "description": "Files an account keeps at its hub, named by a hash of their bytes. See extensions/assets.md.",
   "$defs": {
     "asset": {
+      "description": "<algorithm>:<lowercase hex digest>. The digest length must match the algorithm.",
       "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
+      "pattern": "^(?:(?:sha256|sha3-256):[0-9a-f]{64}|sha384:[0-9a-f]{96}|(?:sha512|sha3-512):[0-9a-f]{128})$"
     },
     "name": {
       "type": "string",
@@ -81,9 +82,9 @@
       ]
     },
     "uri": {
-      "description": "RFC 6920 named-information URI of an asset's SHA-256.",
+      "description": "RFC 6920 named-information URI of an asset's digest.",
       "type": "string",
-      "pattern": "^ni:///sha-256;[A-Za-z0-9_-]{43}$"
+      "pattern": "^ni:///(?:(?:sha-256|sha3-256);[A-Za-z0-9_-]{43}|sha-384;[A-Za-z0-9_-]{64}|(?:sha-512|sha3-512);[A-Za-z0-9_-]{86})$"
     },
     "assets.limits.params": {
       "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
@@ -91,6 +92,17 @@
     "assets.limits.result": {
       "type": "object",
       "properties": {
+        "algorithms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/algorithm"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": {
+            "const": "sha256"
+          }
+        },
         "assetBytes": {
           "type": "integer",
           "minimum": 1
@@ -114,6 +126,7 @@
       },
       "additionalProperties": false,
       "required": [
+        "algorithms",
         "assetBytes",
         "accountBytes",
         "accountAssets",
@@ -458,6 +471,15 @@
     },
     "assets.delete.result": {
       "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
+    },
+    "algorithm": {
+      "enum": [
+        "sha256",
+        "sha384",
+        "sha512",
+        "sha3-256",
+        "sha3-512"
+      ]
     }
   }
 }

@@ -158,6 +158,25 @@ test("the host's auth signature verifies with its paired key", () => {
   assert.ok(verify(null, signed, key, signature));
 });
 
+// assets §1.1: asset algorithms, the Node digest that computes each, and their RFC 6920 names.
+const HASHES = { sha256: "sha256", sha384: "sha384", sha512: "sha512", "sha3-256": "sha3-256", "sha3-512": "sha3-512" };
+const NI_NAMES = { "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", "sha3-256": "sha3-256", "sha3-512": "sha3-512" };
+
+test("the asset algorithm table, the schema and the hashes agree", () => {
+  const schema = EXTENSIONS.assets;
+  assert.deepEqual(schema.$defs.algorithm.enum, Object.keys(HASHES));
+  const name = new RegExp(schema.$defs.asset.pattern);
+  const uri = new RegExp(schema.$defs.uri.pattern);
+  for (const [niName, algorithm] of Object.entries(NI_NAMES)) {
+    const digest = createHash(HASHES[algorithm]).update("axp").digest();
+    assert.match(`${algorithm}:${digest.toString("hex")}`, name);
+    assert.match(`ni:///${niName};${digest.toString("base64url")}`, uri);
+    assert.doesNotMatch(`${algorithm}:${digest.subarray(1).toString("hex")}`, name, `${algorithm} accepts a truncated digest`);
+    assert.doesNotMatch(`ni:///${niName};${digest.subarray(1).toString("base64url")}`, uri, `${niName} accepts a truncated digest`);
+  }
+  assert.doesNotMatch(`md5:${createHash("md5").update("axp").digest("hex")}`, name);
+});
+
 test("asset bytes hash to their names, and ni: URIs in the log name assets the examples carry", () => {
   const assets = new Map();
   for (const file of EXAMPLES) {
@@ -190,16 +209,19 @@ test("asset bytes hash to their names, and ni: URIs in the log name assets the e
         offset += bytes.length;
       }
       const bytes = Buffer.concat(ordered.map(([, b]) => b));
-      assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, asset, `${file}: bytes of ${asset}`);
+      const [algorithm] = asset.split(":");
+      assert.equal(`${algorithm}:${createHash(HASHES[algorithm]).update(bytes).digest("hex")}`, asset, `${file}: bytes of ${asset}`);
       assets.set(asset, bytes);
     }
   }
   assert.ok(assets.size > 0, "no asset bytes in the examples");
   const log = read("examples/session.atxf.jsonl");
-  const uris = [...log.matchAll(/ni:\/\/\/sha-256;([A-Za-z0-9_-]{43})/g)].map((match) => match[1]);
+  const uris = [...log.matchAll(/ni:\/\/\/([a-z0-9-]+);([A-Za-z0-9_-]+)/g)];
   assert.ok(uris.length > 0, "the example log refers to no asset");
-  for (const digest of uris) {
-    const asset = `sha256:${Buffer.from(digest, "base64url").toString("hex")}`;
+  for (const [, niName, digest] of uris) {
+    const algorithm = NI_NAMES[niName];
+    assert.ok(algorithm, `unknown ni algorithm ${niName}`);
+    const asset = `${algorithm}:${Buffer.from(digest, "base64url").toString("hex")}`;
     assert.ok(assets.has(asset), `the log refers to ${asset}, which no example carries`);
   }
 });
@@ -209,7 +231,7 @@ test("asset bytes hash to their names, and ni: URIs in the log name assets the e
 const DOCS = ["SPEC.md", ...readdirSync(join(ROOT, "extensions")).filter((f) => f !== "README.md").map((f) => `extensions/${f}`)];
 const NAMESPACES = ["axp", ...Object.keys(EXTENSIONS)].join("|");
 const METHOD = new RegExp(`\`((?:${NAMESPACES})\\.[a-z][a-zA-Z]*(?:\\.[a-z][a-zA-Z]*)*)\``, "g");
-const NOT_METHODS = new Set(["axp.command", "pi.md"]);
+const NOT_METHODS = new Set(["axp.command", "agent.md"]);
 
 test("every documented method has a schema, and every schema method is documented", () => {
   const documented = new Set();

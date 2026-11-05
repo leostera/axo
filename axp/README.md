@@ -26,11 +26,11 @@ AXP specifies the answers once, with a small core and extensions, so that any ho
 - **Logs are ATXF transcripts** with integrity. A copy describes what it holds with the values an ATXF seal would carry, `{count, chain}`, and receives exactly what it is missing. Every reader verifies every record's hash and the chain, so a hub cannot forge, reorder or drop records.
 - **Commands run at most once.** A command carries a `commandId`; the host never runs one twice, so a client can always resend after an unknown outcome. The records a command produces carry its id, covered by their hashes.
 - **Ephemeral state** (the reply being written, a tool's progress) travels in slots that hold only their latest value and are never stored.
-- **Extensions** for everything else: Sessions and workspaces, Pi, terminals, files attached by content hash, tools at the hub, public shares, planned restarts, local control.
+- **Extensions** for everything else: Sessions and workspaces, steering any coding agent, terminals, files attached by content hash, tools at the hub, public shares, planned restarts, local control.
 
 ```jsonl
 {"jsonrpc":"2.0","id":6,"method":"axp.log.open","params":{"hostId":"8d9c4a1b-…","sessionId":"5b7d9f1a-…","have":{"count":5,"chain":"sha256:…"}}}
-{"jsonrpc":"2.0","method":"pi.prompt","id":8,"params":{"hostId":"8d9c4a1b-…","sessionId":"5b7d9f1a-…","commandId":"cmd_q8ZpL2vR7sKx","text":"Add a section on pairing."}}
+{"jsonrpc":"2.0","method":"agent.prompt","id":8,"params":{"hostId":"8d9c4a1b-…","sessionId":"5b7d9f1a-…","commandId":"cmd_q8ZpL2vR7sKx","text":"Add a section on pairing."}}
 {"jsonrpc":"2.0","id":8,"result":{"receipt":"accepted"}}
 ```
 

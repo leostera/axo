@@ -5,7 +5,7 @@ Extensions add methods, slots, record conventions and fields to AXP without chan
 | Identifier | Version | Status | Roles | Error codes | Document |
 | --- | --- | --- | --- | --- | --- |
 | `sessions` | 0.1 | Draft | host, client | -32200 to -32219 | [sessions.md](sessions.md) |
-| `pi` | 0.1 | Draft | host, client | -32220 to -32239 | [pi.md](pi.md) |
+| `agent` | 0.1 | Draft | host, client | -32220 to -32239 | [agent.md](agent.md) |
 | `terminal` | 0.1 | Draft | host, client | -32240 to -32259 | [terminal.md](terminal.md) |
 | `connections` | 0.1 | Draft | hub, host, client | -32260 to -32279 | [connections.md](connections.md) |
 | `share` | 0.1 | Draft | hub, host | -32280 to -32299 | [share.md](share.md) |

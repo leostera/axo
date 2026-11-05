@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axp.leostera.dev/schema/v0.1/ext/pi/0.1/pi.schema.json",
-  "title": "AXP extension `pi` 0.1",
-  "description": "Steering a Pi agent. See extensions/pi.md.",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/agent/0.1/agent.schema.json",
+  "title": "AXP extension `agent` 0.1",
+  "description": "Steering the agent that runs in a Session. See extensions/agent.md.",
   "$defs": {
-    "pi.prompt.params": {
+    "agent.prompt.params": {
       "allOf": [
         {
           "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
@@ -54,7 +54,7 @@
         }
       }
     },
-    "pi.prompt.result": {
+    "agent.prompt.result": {
       "allOf": [
         {
           "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
@@ -67,7 +67,7 @@
       },
       "unevaluatedProperties": false
     },
-    "pi.stop.params": {
+    "agent.stop.params": {
       "allOf": [
         {
           "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
@@ -93,7 +93,7 @@
         "turn"
       ]
     },
-    "pi.stop.result": {
+    "agent.stop.result": {
       "allOf": [
         {
           "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
@@ -109,78 +109,7 @@
       },
       "unevaluatedProperties": false
     },
-    "pi.answer.params": {
-      "allOf": [
-        {
-          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
-        }
-      ],
-      "type": "object",
-      "properties": {
-        "hostId": true,
-        "generation": true,
-        "from": true,
-        "commandId": true,
-        "sessionId": {
-          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/uuid"
-        },
-        "question": {
-          "type": "string",
-          "minLength": 1
-        },
-        "answer": {
-          "oneOf": [
-            {
-              "type": "object",
-              "properties": {
-                "option": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "option"
-              ]
-            },
-            {
-              "type": "object",
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 100000
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "text"
-              ]
-            }
-          ]
-        }
-      },
-      "unevaluatedProperties": false,
-      "required": [
-        "sessionId",
-        "question",
-        "answer"
-      ]
-    },
-    "pi.answer.result": {
-      "allOf": [
-        {
-          "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
-        }
-      ],
-      "type": "object",
-      "properties": {
-        "receipt": true,
-        "duplicate": true
-      },
-      "unevaluatedProperties": false
-    },
-    "pi.restart.params": {
+    "agent.restart.params": {
       "allOf": [
         {
           "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/command"
@@ -208,7 +137,7 @@
         "mode"
       ]
     },
-    "pi.restart.result": {
+    "agent.restart.result": {
       "allOf": [
         {
           "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/receipt"
@@ -245,49 +174,6 @@
       "additionalProperties": false,
       "required": [
         "status"
-      ]
-    },
-    "slot.question": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "title": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 2000
-        },
-        "options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "label": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 500
-              }
-            },
-            "additionalProperties": false,
-            "required": [
-              "id",
-              "label"
-            ]
-          },
-          "maxItems": 8
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "title",
-        "options"
       ]
     }
   }
