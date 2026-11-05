@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.10 (Mac app build 281, axod 36)
+
+### Changed
+
+- **Computer use asks you before anything risky, and the agent can't approve for you** (RFD0029). When an agent's click, typing or script looks like it may send, pay, delete or be hard to undo, you get a card on your phone, in the browser and on every device you have open, listing what it will do and in which window. It runs only if you tap Yes; a No or no answer within 5 minutes means it doesn't happen, and the agent is told. Before, the agent could pass `confirm: true` to go ahead by itself; now `confirm: true` means "ask the person first", for actions the check would let through.
+
 ## 0.9 (Mac app build 280, axod 35)
 
 ### Changed
