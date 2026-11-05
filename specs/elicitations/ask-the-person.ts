@@ -8,8 +8,9 @@ import { atMost, budget, defineActor, defineGroup, defineLimit, defineMessage, d
 // Authenticate (Face ID) is an answer with a device signature; it changes no ordering here,
 // so it is left out.
 //
-// Built: the gate asks (step 2), and axod takes a local answer only from Axo.app by code
-// signature. Not built: input, sealed values, redaction, binding to the element.
+// Built: the gate asks (step 2), axod takes a local answer only from Axo.app by code signature
+// (step 3), and input (step 4): sealed values, binding to the elements axod read, hiding filled
+// values from reads. The card number here stands for any value `request_input` asks for.
 
 /** Faults on one path (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
@@ -44,10 +45,10 @@ const expiry = defineLimit({ name: "A request expires after", value: 5, unit: "m
 // The rules the design rests on; each property that depends on one says so.
 const peerCheck = defineRule("peerCheck", { description: "axod takes a local answer only from a peer whose code signature is Axo.app's." });
 const sealedValues = defineRule("sealedValues", { description: "The phone seals input values to the Mac's request key; the cloud relays only ciphertext." });
-const receiptOnly = defineRule("receiptOnly", { description: "The agent gets a receipt and salted hashes for an input, never its values." });
+const receiptOnly = defineRule("receiptOnly", { description: "The agent gets a receipt for an input, never its values." });
 const boundTarget = defineRule("boundTarget", { description: "axod fills the element the request named; if the page changed, that element is gone and nothing is filled." });
-const oneCallPerWindow = defineRule("oneCallPerWindow", { description: "axod mcp runs one computer call on a window at a time: a read waits while an input request for it is pending, and a request waits for reads under way." });
-const redaction = defineRule("redaction", { description: "axod mcp replaces filled values in later reads with \"•••• (filled by you)\"." });
+const hideBeforeFill = defineRule("hideBeforeFill", { description: "axod remembers a salted hash of each value before it fills it, and every read is redacted after it is taken, with the hashes axod has then (axo.computer.redactions)." });
+const redaction = defineRule("redaction", { description: "Computer results show values the person filled as \"•••• (filled by you)\"." });
 
 /** `claimed`: an answer has been taken and is being carried out (a fill); later answers lose. */
 type Request = { kind: "confirm" | "input"; origin: string; page: number; claimed: boolean; outcome: null | "allowed" | "denied" | "filled" | "expired" | "cancelled"; answeredBy: string | null };
@@ -86,7 +87,8 @@ export const Agent = defineActor({
       with: [atMost(1)],
       label: "Request the card number",
       description: "The agent asks for the card number for Safari's card field.",
-      when: (s) => !s.waiting && !(oneCallPerWindow.on && s.reading),
+      when: (s) => !s.waiting,
+      sources: ["crates/axo-server/src/session/input.rs#SessionManager.request_input", "crates/axo-computer/src/form.rs#Form.read"],
       sends: [Ask],
       run(state, _i, ctx) {
         state.waiting = true;
@@ -98,7 +100,7 @@ export const Agent = defineActor({
       with: [atMost(1)],
       label: "Read Safari's window",
       description: "The agent reads the checkout page again.",
-      when: (s) => !s.reading && !(oneCallPerWindow.on && s.asking === "input"),
+      when: (s) => !s.reading,
       sends: [Read],
       run(state, _i, ctx) {
         state.reading = true;
@@ -119,9 +121,11 @@ export const Agent = defineActor({
     },
     window: {
       on: Window,
-      description: "Sees the window, with values the person filled redacted.",
+      description: "Sees the window, with values the person filled redacted by the hashes axod has now.",
+      sources: ["crates/axo-server/src/mcp.rs#McpServer.redact", "crates/axo-computer/src/lib.rs#redact"],
       run(state, m, ctx) {
-        const matches = state.redact !== null && (state.redact === m.field || state.redact === ctx.hash(m.field));
+        const hidden = ctx.the(Axod).state.hidden;
+        const matches = hidden !== null && hidden === ctx.hash(m.field);
         const field = redaction.on && m.field && matches ? "•••• (filled by you)" : m.field;
         state.reading = false;
         state.seen.push(`${m.origin}: ${field || "empty"}`);
@@ -154,7 +158,7 @@ export const Axod = defineActor({
   description: "The daemon: it owns requests, fans them out, takes the first answer and fills fields.",
   zone: mac,
   singleton: true,
-  initialState: () => ({ requests: {} as Record<string, Request>, filling: null as string | null }),
+  initialState: (): AxodState => ({ requests: {}, filling: null, hidden: null }),
   display: {
     icon: "cpu",
     status: (s) => {
@@ -199,6 +203,7 @@ export const Axod = defineActor({
     forwardedAnswer: {
       on: ForwardedAnswer,
       description: "An answer from a signed-in client, through the cloud: opens a sealed value and fills it, or confirms.",
+      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.resolve_elicitation", "crates/axo-server/src/session/elicitations.rs#SessionManager.input_values", "crates/axo-server/src/session/input.rs#SessionManager.fill", "crates/axo-seal/src/lib.rs#InputKey.open"],
       sends: [Asked, Resolved, LocalResolved, Fill],
       run(state, m, ctx) {
         const request = state.requests[m.id];
@@ -208,6 +213,7 @@ export const Axod = defineActor({
           request.claimed = true;
           request.answeredBy = "Leo's iPhone";
           state.filling = m.id;
+          if (hideBeforeFill.on) state.hidden = ctx.hash(CARD);
           // Without boundTarget, it types into whatever page is there now.
           const page = boundTarget.on ? request.page : ctx.the(Safari).state.page;
           return ctx.send(ctx.the(Safari), Fill, { value: opens(m.id, m.value), page, shown: request.origin });
@@ -241,7 +247,7 @@ export const Axod = defineActor({
   },
 });
 
-type AxodState = { requests: Record<string, Request>; filling: string | null };
+type AxodState = { requests: Record<string, Request>; filling: string | null; hidden: string | null };
 
 /** The first answer wins: resolves once, tells every client, and answers the waiting tool call. */
 function resolve(state: AxodState, ctx: any, id: string, outcome: NonNullable<Request["outcome"]>, by: string | null, completingClaim = false) {
@@ -252,8 +258,10 @@ function resolve(state: AxodState, ctx: any, id: string, outcome: NonNullable<Re
   if (!Object.values(state.requests).some((r) => r.outcome === null && !r.claimed)) ctx.cancel("expire");
   ctx.send(ctx.the(HostDO), Resolved, { id });
   ctx.send(ctx.the(MacApp), LocalResolved, { id });
-  // The receipt names the field's value only by a salted hash; axod mcp matches what it reads against it.
-  const redact = outcome === "filled" ? (receiptOnly.on ? ctx.hash(CARD) : CARD) : null;
+  // Without hideBeforeFill, axod would learn to hide the value only once the fill is done.
+  if (outcome === "filled" && !hideBeforeFill.on) state.hidden = ctx.hash(CARD);
+  // The receipt says what was filled; without receiptOnly it would carry the value itself.
+  const redact = outcome === "filled" && !receiptOnly.on ? CARD : null;
   ctx.send(ctx.the(Agent), Asked, { outcome, redact });
 }
 
@@ -429,6 +437,7 @@ export const Safari = defineActor({
     fill: {
       on: Fill,
       description: "Sets the named element's value; an element of a page that is gone takes nothing.",
+      sources: ["crates/axo-computer/src/form.rs#Form.check_unchanged", "crates/axo-computer/src/form.rs#Form.fill"],
       sends: [FillDone],
       run(state, m, ctx) {
         if (m.page !== state.page) return ctx.reply(FillDone, { filled: false }, "The element is gone: the page changed.");
@@ -460,7 +469,7 @@ const firstAnswerWins = defineProperty("firstAnswerWins", {
 const cardNeverReachesTheAgent = defineProperty("cardNeverReachesTheAgent", {
   description: "The card number never appears in anything the agent receives or reads.",
   always: (w) => !w.the(Agent).state.seen.some((t) => t.includes(CARD)) && w.the(Agent).state.redact !== CARD,
-  needs: [receiptOnly, redaction, oneCallPerWindow],
+  needs: [receiptOnly, redaction, hideBeforeFill],
 });
 const cardNeverInTheCloud = defineProperty("cardNeverInTheCloud", {
   description: "The cloud relays the card number only sealed.",

@@ -28,6 +28,7 @@ mod computer;
 mod elicitations;
 mod events;
 mod handlers;
+mod input;
 mod lifecycle;
 mod peer_views;
 mod pi_bridge;
@@ -172,6 +173,12 @@ pub struct SessionManager {
     elicitations: elicitations::Elicitations,
     /// The account's assets while the relay is connected (RFD0028).
     asset_source: computer::AssetSlot,
+    /// This Mac's input key, which forms are sealed to (RFD0029): read or made on first use,
+    /// from where the host credential is kept.
+    input_key: std::sync::OnceLock<axo_seal::InputKey>,
+    input_key_store: std::sync::OnceLock<Arc<dyn axo_relay::credential::HostCredentialStore>>,
+    /// Salted hashes of values the person filled in, hidden from every later read (RFD0029).
+    redactions: input::Redactions,
 }
 
 impl SessionManager {
@@ -245,6 +252,9 @@ impl SessionManager {
             peers: Default::default(),
             elicitations: Default::default(),
             asset_source: Default::default(),
+            input_key: Default::default(),
+            input_key_store: Default::default(),
+            redactions: Default::default(),
         });
 
         // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see

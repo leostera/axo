@@ -90,7 +90,7 @@ const READ_ONLY: &[&str] = &[
     "list_windows",
     "get_accessibility_tree",
     "get_window_state",
-    "get_desktop_state",
+    "screenshot",
     "get_screen_size",
     "get_cursor_position",
     "get_guide",

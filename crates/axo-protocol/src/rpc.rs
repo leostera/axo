@@ -66,6 +66,10 @@ pub mod method {
     pub const ELICITATION_LIST: &str = "axo.elicitation.list";
     /// Fetches the account's assets into `~/.axo/assets`, for axod's own `axod mcp` (RFD0028).
     pub const ASSETS_FETCH: &str = "axo.assets.fetch";
+    /// `request_input` from axod's own `axod mcp`: axod asks for the values and fills them in.
+    pub const COMPUTER_INPUT: &str = "axo.computer.input";
+    /// Salted hashes of values the person filled in, which `axod mcp` hides from its reads.
+    pub const COMPUTER_REDACTIONS: &str = "axo.computer.redactions";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -117,6 +121,8 @@ pub mod method {
         ELICITATION_RESOLVE,
         ELICITATION_LIST,
         ASSETS_FETCH,
+        COMPUTER_INPUT,
+        COMPUTER_REDACTIONS,
     ];
 }
 

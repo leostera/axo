@@ -16,11 +16,69 @@ pub const MAX_PENDING: usize = 32;
 /// How long one waits for an answer before it is cancelled, in milliseconds.
 pub const TIMEOUT_MS: u64 = 5 * 60_000;
 
-/// What the person is asked. Only yes-or-no exists yet.
+/// What the person is asked: yes or no, or values for a form's fields.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ElicitationKind {
     Confirm,
+    /// Values the agent must not see (RFD0029, the side channel for input): a client seals them
+    /// to this Mac's input key, and axod fills them into the window itself.
+    Input,
+}
+
+/// The most fields one input request asks for.
+pub const MAX_INPUT_FIELDS: usize = 8;
+/// The longest value the person may enter in one field, in characters.
+pub const MAX_INPUT_CHARS: usize = 1_000;
+
+/// What a field is for: the person's form gives it the matching autofill hint and entry.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InputFieldKind {
+    Username,
+    Email,
+    Password,
+    /// A one-time code.
+    Code,
+    Text,
+}
+
+/// One field the person fills, as axod read it in the window.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputField {
+    /// `f0`, `f1`, …: the key of its value in the sealed answer.
+    pub id: String,
+    pub label: String,
+    pub kind: InputFieldKind,
+}
+
+/// Where an input request's values go, all of it axod's own reading of the window, never the
+/// agent's words.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputRequest {
+    pub app: String,
+    pub window: String,
+    /// The page's origin, from the browser's web area; absent outside a browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    pub fields: Vec<InputField>,
+    /// The button pressed after filling, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit: Option<String>,
+    /// This Mac's input key: base64 of an uncompressed P-256 point. Clients pin it per Mac and
+    /// seal the values to it.
+    pub key: String,
+}
+
+/// Values sealed to a Mac's input key (HPKE base mode; see `axo-seal`), as base64. The plaintext
+/// is `{ "values": { "<field id>": "<value>" } }`, bound to `requestId\norigin`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Sealed {
+    pub enc: String,
+    pub ciphertext: String,
 }
 
 /// Who asks. An agent's question is its own words; a tool's is the tool's reading of what it is
@@ -45,6 +103,9 @@ pub struct Elicitation {
     pub asked_by: Asker,
     /// The asker's words, shown as theirs.
     pub message: String,
+    /// For `Input`: the fields, where they go, and the key to seal them to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<InputRequest>,
     /// Unix milliseconds.
     pub created_at: u64,
     pub expires_at: u64,
@@ -93,6 +154,22 @@ pub struct RequestElicitation {
 pub struct ResolveElicitation {
     pub elicitation_id: String,
     pub action: ElicitationAnswer,
+    /// An input request's values by field id. Axo.app sends them in the clear on this socket,
+    /// which only it may answer on; remote clients seal them instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// What comes with a person's answer to an input request.
+#[derive(Debug, Default)]
+pub enum Reply {
+    /// A confirm's answer, or a Decline.
+    #[default]
+    Bare,
+    /// From the phone or the web, through the relay.
+    Sealed(Sealed),
+    /// From Axo.app on this Mac.
+    Values(std::collections::BTreeMap<String, String>),
 }
 
 /// `axo.elicitation.list`'s result: what waits for the person, oldest first.
@@ -113,6 +190,9 @@ pub const NOT_PENDING: i64 = -32011;
 pub const NOT_A_PERSON: i64 = -32012;
 /// Only axod's own tools ask as a tool.
 pub const NOT_A_TOOL: i64 = -32013;
+/// An input answer that is missing, did not open, or does not fit its fields: the request still
+/// waits for a good one.
+pub const BAD_INPUT: i64 = -32014;
 
 /// `axo.elicitation.request`'s result: how it ended.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -135,6 +215,7 @@ mod tests {
             kind: ElicitationKind::Confirm,
             asked_by: Asker::ComputerUse,
             message: "Delete the branch?".into(),
+            input: None,
             created_at: 1,
             expires_at: 2,
         };

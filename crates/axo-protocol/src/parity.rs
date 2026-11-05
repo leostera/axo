@@ -245,6 +245,14 @@ pub const PARITY: &[Parity] = &[
         method::ASSETS_FETCH,
         Remote::LocalOnly("axod mcp shows its agent images from the account's assets"),
     ),
+    row(
+        method::COMPUTER_INPUT,
+        Remote::LocalOnly("another Mac's script asks through axo.connections.computer"),
+    ),
+    row(
+        method::COMPUTER_REDACTIONS,
+        Remote::LocalOnly("axod hides filled values from remote reads itself"),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

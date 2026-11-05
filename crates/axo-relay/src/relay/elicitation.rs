@@ -11,8 +11,6 @@ use super::session::RelaySessionContext;
 pub(super) const ELICITATION_REQUESTED: &str = "axo.elicitation.requested";
 pub(super) const ELICITATION_RESOLVED: &str = "axo.elicitation.resolved";
 pub(super) const ELICITATION_RESOLVE: &str = "axo.elicitation.resolve";
-/// Shared with `@axo/protocol`'s `ELICITATION_ERRORS.notPending`.
-const ELICITATION_NOT_PENDING: i64 = -32011;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -20,6 +18,8 @@ struct ResolveElicitation {
     target: RemoteTarget,
     elicitation_id: String,
     action: axo_protocol::elicitation::ElicitationAnswer,
+    #[serde(default)]
+    sealed: Option<axo_protocol::elicitation::Sealed>,
 }
 
 #[derive(Deserialize)]
@@ -40,15 +40,7 @@ pub(super) fn resolve_elicitation(
     {
         return Err((-32002, "Stale host".into()));
     }
-    if context
+    context
         .sessions
-        .resolve_elicitation(&request.elicitation_id, request.action)
-    {
-        Ok(())
-    } else {
-        Err((
-            ELICITATION_NOT_PENDING,
-            "Already answered, or no longer asked".into(),
-        ))
-    }
+        .resolve_elicitation(&request.elicitation_id, request.action, request.sealed)
 }

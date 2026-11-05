@@ -16,24 +16,35 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axo_ipc::TypedMethods;
 use axo_ipc::peer::{self, Signer};
 use axo_protocol::elicitation::{
-    Asker, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind, ElicitationOutcome,
-    MAX_MESSAGE_CHARS, MAX_PENDING, NOT_A_PERSON, NOT_A_TOOL, NOT_PENDING, Pending as Listed,
-    RequestElicitation, ResolveElicitation, Resolved, TIMEOUT_MS,
+    Asker, BAD_INPUT, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind,
+    ElicitationOutcome, InputRequest, MAX_INPUT_CHARS, MAX_MESSAGE_CHARS, MAX_PENDING,
+    NOT_A_PERSON, NOT_A_TOOL, NOT_PENDING, Pending as Listed, Reply, RequestElicitation,
+    ResolveElicitation, Resolved, TIMEOUT_MS,
 };
 use axo_protocol::rpc::method;
 use axo_protocol::{Event, SessionId, new_uuid_v4};
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 use serde_json::Value;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 use super::SessionManager;
 
 /// Error codes shared with `@axo/protocol`'s `ELICITATION_ERRORS`, and the limit of the relay's.
 pub const TOO_MANY: i64 = -32006;
 
+/// An input request's values by field id, wiped when dropped.
+pub(crate) type Values = std::collections::BTreeMap<String, Zeroizing<String>>;
+
+/// How one ended, and the values for an accepted input request.
+pub(crate) struct Settled {
+    pub(crate) action: ElicitationAction,
+    pub(crate) values: Option<Values>,
+}
+
 struct Pending {
     elicitation: Elicitation,
-    answer: SyncSender<ElicitationAction>,
+    answer: SyncSender<Settled>,
 }
 
 /// The elicitations waiting for an answer, by id.
@@ -49,10 +60,7 @@ impl Elicitations {
             .map_err(|_| io::Error::other("elicitation lock was poisoned"))
     }
 
-    fn open(
-        &self,
-        elicitation: Elicitation,
-    ) -> io::Result<Option<mpsc::Receiver<ElicitationAction>>> {
+    fn open(&self, elicitation: Elicitation) -> io::Result<Option<mpsc::Receiver<Settled>>> {
         let mut pending = self.lock()?;
         if pending.len() >= MAX_PENDING {
             return Ok(None);
@@ -70,11 +78,28 @@ impl Elicitations {
 
     /// Ends one with `action` if it still waits; whoever gets it first wins.
     fn settle(&self, id: &str, action: ElicitationAction) -> io::Result<Option<Elicitation>> {
+        self.settle_with(
+            id,
+            Settled {
+                action,
+                values: None,
+            },
+        )
+    }
+
+    fn settle_with(&self, id: &str, settled: Settled) -> io::Result<Option<Elicitation>> {
         let Some(pending) = self.lock()?.remove(id) else {
             return Ok(None);
         };
-        let _ = pending.answer.try_send(action);
+        let _ = pending.answer.try_send(settled);
         Ok(Some(pending.elicitation))
+    }
+
+    fn get(&self, id: &str) -> Option<Elicitation> {
+        self.lock()
+            .ok()?
+            .get(id)
+            .map(|pending| pending.elicitation.clone())
     }
 
     pub(crate) fn pending(&self) -> Vec<Elicitation> {
@@ -116,6 +141,19 @@ impl SessionManager {
         asked_by: Asker,
         timeout: Duration,
     ) -> Result<ElicitationOutcome, RpcError> {
+        self.ask_with(session_id, message, asked_by, None, timeout)
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// Asks, for a form when `input` is given, and waits; an accepted form comes with its values.
+    pub(crate) fn ask_with(
+        &self,
+        session_id: SessionId,
+        message: &str,
+        asked_by: Asker,
+        input: Option<InputRequest>,
+        timeout: Duration,
+    ) -> Result<(ElicitationOutcome, Option<Values>), RpcError> {
         let message = message.trim();
         if message.is_empty() || message.chars().count() > MAX_MESSAGE_CHARS {
             return Err(invalid(format!(
@@ -131,9 +169,14 @@ impl SessionManager {
         let elicitation = Elicitation {
             id: new_uuid_v4().map_err(internal)?,
             session_id: request.session_id,
-            kind: ElicitationKind::Confirm,
+            kind: if input.is_some() {
+                ElicitationKind::Input
+            } else {
+                ElicitationKind::Confirm
+            },
             asked_by: request.asked_by,
             message: message.to_owned(),
+            input,
             created_at: now,
             expires_at: now + timeout.as_millis() as u64,
         };
@@ -152,15 +195,24 @@ impl SessionManager {
             });
         };
         log::info!(
-            "event=elicitation.requested id={id} kind=confirm asked_by={}",
+            "event=elicitation.requested id={id} kind={} asked_by={}",
+            if elicitation.input.is_some() {
+                "input"
+            } else {
+                "confirm"
+            },
             match request.asked_by {
                 Asker::Agent => "agent",
                 Asker::ComputerUse => "computer_use",
             }
         );
         self.publish_event(Event::ElicitationRequested { elicitation });
-        let action = match answer.recv_timeout(timeout) {
-            Ok(action) => action,
+        let cancelled = || Settled {
+            action: ElicitationAction::Cancel,
+            values: None,
+        };
+        let settled = match answer.recv_timeout(timeout) {
+            Ok(settled) => settled,
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                 match self
                     .elicitations
@@ -169,26 +221,117 @@ impl SessionManager {
                 {
                     Some(elicitation) => {
                         self.publish_resolved(&elicitation, ElicitationAction::Cancel);
-                        ElicitationAction::Cancel
+                        cancelled()
                     }
                     // An answer won the race with the timeout: it is already sent.
-                    None => answer.try_recv().unwrap_or(ElicitationAction::Cancel),
+                    None => answer.try_recv().unwrap_or_else(|_| cancelled()),
                 }
             }
         };
-        Ok(ElicitationOutcome { id, action })
+        Ok((
+            ElicitationOutcome {
+                id,
+                action: settled.action,
+            },
+            settled.values,
+        ))
     }
 
-    /// A person's answer, from the relay or Axo.app. False when it no longer waits: answered
-    /// already, expired, or never asked.
-    pub(crate) fn resolve_elicitation(&self, id: &str, answer: ElicitationAnswer) -> bool {
+    /// A person's answer, from the relay or Axo.app. `NOT_PENDING` when it no longer waits
+    /// (answered already, expired, or never asked); `BAD_INPUT`, and it still waits, when an
+    /// accepted form's values are missing, do not open, or do not fit its fields.
+    pub(crate) fn resolve_elicitation(
+        &self,
+        id: &str,
+        answer: ElicitationAnswer,
+        reply: Reply,
+    ) -> Result<(), (i64, String)> {
+        let not_pending = || {
+            (
+                NOT_PENDING,
+                "already answered, or no longer asked".to_owned(),
+            )
+        };
+        let asked = self.elicitations.get(id).ok_or_else(not_pending)?;
         let action = ElicitationAction::from(answer);
-        match self.elicitations.settle(id, action) {
+        let values = match (&asked.input, action, reply) {
+            (Some(input), ElicitationAction::Accept, reply) => {
+                Some(self.input_values(id, input, reply)?)
+            }
+            (None, _, Reply::Sealed(_) | Reply::Values(_)) => {
+                return Err((BAD_INPUT, "a yes-or-no answer carries no values".into()));
+            }
+            // A Decline needs nothing, and what came with it is dropped unread.
+            _ => None,
+        };
+        match self
+            .elicitations
+            .settle_with(id, Settled { action, values })
+        {
             Ok(Some(elicitation)) => {
                 self.publish_resolved(&elicitation, action);
-                true
+                Ok(())
             }
-            _ => false,
+            _ => Err(not_pending()),
+        }
+    }
+
+    /// An accepted form's values: opened with this Mac's input key when sealed, and exactly one
+    /// for each field.
+    fn input_values(
+        &self,
+        id: &str,
+        input: &InputRequest,
+        reply: Reply,
+    ) -> Result<Values, (i64, String)> {
+        let bad = |why: &str| (BAD_INPUT, why.to_owned());
+        let values: Values = match reply {
+            Reply::Bare => return Err(bad("an answer to a form carries its values")),
+            Reply::Values(values) => values
+                .into_iter()
+                .map(|(field, value)| (field, Zeroizing::new(value)))
+                .collect(),
+            Reply::Sealed(sealed) => {
+                let key = self
+                    .input_key()
+                    .ok_or_else(|| bad("this Mac has no input key"))?;
+                let opened = key
+                    .open(
+                        &sealed.enc,
+                        &sealed.ciphertext,
+                        &axo_seal::aad(id, input.origin.as_deref()),
+                    )
+                    .map_err(|_| {
+                        bad("the values did not open: sealed to another Mac, request or address")
+                    })?;
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Opened {
+                    values: std::collections::BTreeMap<String, String>,
+                }
+                let opened: Opened = serde_json::from_slice(&opened)
+                    .map_err(|_| bad("the values are not {values}"))?;
+                opened
+                    .values
+                    .into_iter()
+                    .map(|(field, value)| (field, Zeroizing::new(value)))
+                    .collect()
+            }
+        };
+        let fits = values.len() == input.fields.len()
+            && input
+                .fields
+                .iter()
+                .all(|field| values.contains_key(&field.id))
+            && values
+                .values()
+                .all(|value| value.chars().count() <= MAX_INPUT_CHARS);
+        if fits {
+            Ok(values)
+        } else {
+            Err(bad(
+                "the values must be one per field, each at most 1000 characters",
+            ))
         }
     }
 
@@ -260,14 +403,11 @@ pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler
                     "only the person answers: on this Mac, from Axo.app",
                 ));
             }
-            if answering.resolve_elicitation(&request.elicitation_id, request.action) {
-                Ok(Resolved { resolved: true })
-            } else {
-                Err(server_error(
-                    NOT_PENDING,
-                    "already answered, or no longer asked",
-                ))
-            }
+            let reply = request.values.map_or(Reply::Bare, Reply::Values);
+            answering
+                .resolve_elicitation(&request.elicitation_id, request.action, reply)
+                .map(|()| Resolved { resolved: true })
+                .map_err(|(code, message)| server_error(code, &message))
         },
     );
 }
@@ -314,6 +454,7 @@ mod tests {
             kind: ElicitationKind::Confirm,
             asked_by: Asker::Agent,
             message: "Go?".into(),
+            input: None,
             created_at: 1,
             expires_at: 2,
         }
@@ -336,9 +477,153 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(answer.try_recv().unwrap(), ElicitationAction::Decline);
+        assert_eq!(
+            answer.try_recv().unwrap().action,
+            ElicitationAction::Decline
+        );
         assert!(answer.try_recv().is_err());
         assert!(elicitations.pending().is_empty());
+    }
+
+    /// An accepted form's values reach the asker only when they open with this Mac's key, for
+    /// that request and address, one per field; a bad answer leaves the question waiting.
+    #[test]
+    fn a_form_s_values_open_only_for_its_request_and_address() {
+        use axo_protocol::elicitation::{InputField, InputFieldKind, Sealed};
+        let directory =
+            std::path::PathBuf::from("/tmp").join(format!("axo-input-{}", new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let manager = super::super::test_support::open_with_silent_shell(&directory);
+        manager.keep_input_key_in(Arc::new(axo_relay::credential::FileCredentialStore::new(
+            directory.join("keys"),
+        )));
+        let key = manager.input_key().unwrap().public_key();
+        assert_eq!(
+            manager.input_key().unwrap().public_key(),
+            key,
+            "the key is made once"
+        );
+        let input = InputRequest {
+            app: "Safari".into(),
+            window: "Sign in".into(),
+            origin: Some("https://github.com".into()),
+            fields: vec![InputField {
+                id: "f0".into(),
+                label: "Password".into(),
+                kind: InputFieldKind::Password,
+            }],
+            submit: None,
+            key: key.clone(),
+        };
+        let asking = Arc::clone(&manager);
+        let asked = std::thread::spawn(move || {
+            asking.ask_with(
+                SessionId::from_u128(9),
+                "Fill Password in Safari.",
+                Asker::ComputerUse,
+                Some(input),
+                Duration::from_secs(10),
+            )
+        });
+        let id = loop {
+            if let Some(pending) = manager.pending_elicitations().first() {
+                break pending.id.clone();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let sealed = |request: &str, origin: &str, plaintext: &str| {
+            let (enc, ciphertext) = axo_seal::seal(
+                &key,
+                plaintext.as_bytes(),
+                &axo_seal::aad(request, Some(origin)),
+            )
+            .unwrap();
+            Reply::Sealed(Sealed { enc, ciphertext })
+        };
+        let good = r#"{"values":{"f0":"hunter2"}}"#;
+        let code = |result: Result<(), (i64, String)>| result.unwrap_err().0;
+        assert_eq!(
+            code(manager.resolve_elicitation(&id, ElicitationAnswer::Accept, Reply::Bare)),
+            BAD_INPUT
+        );
+        assert_eq!(
+            code(manager.resolve_elicitation(
+                &id,
+                ElicitationAnswer::Accept,
+                sealed("another", "https://github.com", good)
+            )),
+            BAD_INPUT
+        );
+        assert_eq!(
+            code(manager.resolve_elicitation(
+                &id,
+                ElicitationAnswer::Accept,
+                sealed(&id, "https://github.co", good)
+            )),
+            BAD_INPUT
+        );
+        assert_eq!(
+            code(manager.resolve_elicitation(
+                &id,
+                ElicitationAnswer::Accept,
+                sealed(&id, "https://github.com", r#"{"values":{"f1":"x"}}"#)
+            )),
+            BAD_INPUT
+        );
+        manager
+            .resolve_elicitation(
+                &id,
+                ElicitationAnswer::Accept,
+                sealed(&id, "https://github.com", good),
+            )
+            .unwrap();
+        let (outcome, values) = asked.join().unwrap().unwrap();
+        assert_eq!(outcome.action, ElicitationAction::Accept);
+        assert_eq!(values.unwrap()["f0"].as_str(), "hunter2");
+        assert_eq!(
+            code(manager.resolve_elicitation(&id, ElicitationAnswer::Accept, Reply::Bare)),
+            NOT_PENDING
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_yes_or_no_carries_no_values() {
+        let directory = std::path::PathBuf::from("/tmp")
+            .join(format!("axo-confirm-{}", new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let manager = super::super::test_support::open_with_silent_shell(&directory);
+        let asking = Arc::clone(&manager);
+        let asked = std::thread::spawn(move || {
+            asking.ask(
+                SessionId::from_u128(9),
+                "Go?",
+                Asker::Agent,
+                Duration::from_secs(10),
+            )
+        });
+        let id = loop {
+            if let Some(pending) = manager.pending_elicitations().first() {
+                break pending.id.clone();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let values = Reply::Values([("f0".to_owned(), "x".to_owned())].into());
+        assert_eq!(
+            manager
+                .resolve_elicitation(&id, ElicitationAnswer::Accept, values)
+                .unwrap_err()
+                .0,
+            BAD_INPUT
+        );
+        manager
+            .resolve_elicitation(&id, ElicitationAnswer::Decline, Reply::Bare)
+            .unwrap();
+        assert_eq!(
+            asked.join().unwrap().unwrap().action,
+            ElicitationAction::Decline
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

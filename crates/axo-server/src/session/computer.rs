@@ -52,6 +52,21 @@ impl SessionManager {
         if !axo_computer::AVAILABLE {
             return Err((-32601, "this Mac has no computer use".into()));
         }
+        if request.tool == axo_computer::REQUEST_INPUT {
+            let timeout = Duration::from_millis(request.timeout_ms).saturating_sub(ANSWER_MARGIN);
+            if timeout < SHORTEST_QUESTION {
+                return Err((
+                    NOT_ALLOWED,
+                    "Not done: no time left to ask the person.".into(),
+                ));
+            }
+            return Ok(self.request_input(
+                request.session_id,
+                Some(&request.from),
+                request.args.clone(),
+                timeout,
+            ));
+        }
         let socket = super::spawn::agent_socket()
             .ok_or_else(|| (-32603, "axod has no socket yet".to_owned()))?;
         let gate = crate::computer_gate::for_socket(socket);
@@ -60,8 +75,9 @@ impl SessionManager {
         {
             self.ask_for_computer(request, &question)?;
         }
-        let result = axo_computer::call(&request.tool, request.args.clone());
+        let mut result = axo_computer::call(&request.tool, request.args.clone());
         gate.remember(&request.tool, &result);
+        self.redact(&mut result);
         log::info!(
             "event=computer.remote_called tool={} outcome={}",
             request.tool,

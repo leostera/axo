@@ -122,13 +122,18 @@ pub trait RelayHost: Send + Sync {
     fn pending_elicitations(&self) -> Vec<axo_protocol::elicitation::Elicitation> {
         Vec::new()
     }
-    /// A person's answer from the cloud; false when it no longer waits.
+    /// A person's answer from the cloud, with an input request's values sealed to this Mac.
+    /// `Err((code, message))` when it no longer waits, or its values are no good.
     fn resolve_elicitation(
         &self,
         _id: &str,
         _answer: axo_protocol::elicitation::ElicitationAnswer,
-    ) -> bool {
-        false
+        _sealed: Option<axo_protocol::elicitation::Sealed>,
+    ) -> Result<(), (i64, String)> {
+        Err((
+            axo_protocol::elicitation::NOT_PENDING,
+            "Already answered, or no longer asked".into(),
+        ))
     }
 
     /// One computer-use tool from another Mac's script (RFD0028): the gate, the person's answer

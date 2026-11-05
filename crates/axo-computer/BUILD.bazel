@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -10,6 +10,7 @@ rust_library(
     edition = "2024",
     deps = ["@crates//:serde_json"] + select({
         "@platforms//os:macos": [
+            "@crates//:core-foundation",
             "@crates//:cua-driver-core",
             "@crates//:cursor-overlay",
             "@crates//:platform-macos",
@@ -17,4 +18,10 @@ rust_library(
         ],
         "//conditions:default": [],
     }),
+)
+
+rust_test(
+    name = "axo_computer_tests",
+    crate = ":axo_computer",
+    edition = "2024",
 )

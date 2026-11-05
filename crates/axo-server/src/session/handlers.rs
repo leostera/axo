@@ -53,8 +53,13 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         &self,
         id: &str,
         answer: axo_protocol::elicitation::ElicitationAnswer,
-    ) -> bool {
-        self.0.resolve_elicitation(id, answer)
+        sealed: Option<axo_protocol::elicitation::Sealed>,
+    ) -> Result<(), (i64, String)> {
+        let reply = sealed.map_or(
+            axo_protocol::elicitation::Reply::Bare,
+            axo_protocol::elicitation::Reply::Sealed,
+        );
+        self.0.resolve_elicitation(id, answer, reply)
     }
 
     fn remote_computer(
@@ -437,6 +442,7 @@ impl SessionManager {
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
         super::elicitations::add_methods(self, handler);
         super::computer::add_methods(self, handler);
+        super::input::add_methods(self, handler);
         let manager = Arc::clone(self);
         handler.add_typed(
             method::SESSION_LIST,
