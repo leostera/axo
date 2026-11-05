@@ -9,6 +9,14 @@ rust_library(
     deps = [
         "@crates//:jsonrpc-core",
         "@crates//:log",
+    ] + select({
+        "@platforms//os:macos": [
+            "@crates//:core-foundation",
+            "@crates//:libc",
+            "@crates//:security-framework",
+        ],
+        "//conditions:default": [],
+    }) + [
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:tokio",

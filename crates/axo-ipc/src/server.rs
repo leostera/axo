@@ -125,10 +125,15 @@ impl BlockingMethods for IoHandler {
             async move {
                 // Outside a runtime (unit tests using `handle_request_sync`) run inline.
                 match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => runtime
-                        .spawn_blocking(move || method(params))
-                        .await
-                        .unwrap_or_else(|_| Err(handler_failed())),
+                    Ok(runtime) => {
+                        let peer = crate::peer::current();
+                        runtime
+                            .spawn_blocking(move || {
+                                crate::peer::on_this_thread(peer, || method(params))
+                            })
+                            .await
+                            .unwrap_or_else(|_| Err(handler_failed()))
+                    }
                     Err(_) => method(params),
                 }
             }
@@ -186,6 +191,7 @@ async fn accept_until_stopped(
 /// Reads newline-delimited requests and answers each as soon as it completes. Responses may be
 /// written out of order; JSON-RPC ids correlate them.
 async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
+    let peer = crate::peer::Peer::of(&stream);
     let (reader, mut writer) = stream.into_split();
     let (responses, mut outgoing) = mpsc::channel::<String>(MAX_IN_FLIGHT_PER_CONNECTION);
     let writer_task = tokio::spawn(async move {
@@ -235,7 +241,7 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
         tokio::spawn(async move {
             let _permit = permit;
             let started = std::time::Instant::now();
-            let response = handler.handle_request(&request).await;
+            let response = crate::peer::scope(peer, handler.handle_request(&request)).await;
             log_if_slow(&request, started.elapsed());
             if let Some(response) = response {
                 let _ = responses.send(response).await;

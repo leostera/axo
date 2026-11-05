@@ -2,6 +2,7 @@
 //! behind long-polled subscriptions.
 
 pub mod event_queue;
+pub mod peer;
 mod server;
 
 pub use event_queue::{EventQueue, PushOutcome};
