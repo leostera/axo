@@ -9,6 +9,9 @@ import { atMost, defineActor, defineGroup, defineLimit, defineMessage, definePro
 //
 // The cloud and the person's clients are in ask-the-person.ts; here the person answers on one
 // client, and what the request says is what the tool will do.
+//
+// Built: the gate asks, confirm only asks, and extra arguments are refused. Not built: binding an
+// Allow to the window it named (onceAndBound) beyond element tokens dying with a newer read.
 
 const Action = oneOf("pay", "scroll");
 const Confirm = oneOf("true", "false", "omitted");
@@ -97,6 +100,7 @@ export const Tool = defineActor({
     call: {
       on: Call,
       description: "Refuses approvals as arguments; asks when confirm is true or the gate flags the action; otherwise acts.",
+      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
       sends: [Returned, Ask, Act],
       run(state, m, ctx) {
         if (state.waiting) return ctx.reply(Returned, { action: m.action, result: "busy" });
@@ -131,6 +135,7 @@ export const Tool = defineActor({
     answered: {
       on: Answered,
       description: "An outcome for a request it made: runs the action it asked for, if the window is still the one shown.",
+      sources: ["crates/axo-server/src/mcp.rs#McpServer.ask_the_person"],
       sends: [OwnAnswer, Act, Returned],
       run(state, m, ctx) {
         const asker = ctx.the(Axod).state.requests[m.id]?.asker;

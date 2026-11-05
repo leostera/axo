@@ -1,17 +1,19 @@
-//! The risk gate in front of computer use: an action that may be destructive or hard to undo
-//! (deleting, sending, paying, publishing...) runs only if the agent says the person agreed
-//! (`confirm: true`), or a local check finds it harmless.
+//! The risk gate in front of computer use (RFD0029, Tools ask; agents cannot approve): an action
+//! that may be destructive or hard to undo (deleting, sending, paying, publishing...) runs only
+//! if a local check finds it harmless or the person allows it. The gate asks the person itself;
+//! the agent cannot approve. `confirm: true` from the agent only asks for more: the person is
+//! asked without the check.
 //!
 //! The check is two-stage, so most actions cost nothing:
 //! 1. A word filter over what the action does: the target element's role and label (remembered
 //!    from the agent's last `get_window_state` of that window), the text it types, the keys it
 //!    presses, the script it runs. Nothing flagged, nothing checked.
 //! 2. A flagged action goes to Clef on this Mac ([`axod_infer`]), text only (about a second).
-//!    If Clef is not installed or fails, the flag alone decides: the action is refused.
+//!    If Clef is not installed or fails, the flag alone decides: the person is asked.
 //!
-//! A refused action never reaches the app. The agent is told why and to ask the person, then to
-//! call again with `confirm: true`. Clicks at bare coordinates name no element, so only their
-//! window is known; they pass the filter unless their text says otherwise.
+//! A flagged action reaches the app only after the person allows it. Clicks at bare coordinates
+//! name no element, so only their window is known; they pass the filter unless their text says
+//! otherwise.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -22,7 +24,7 @@ use serde_json::{Value, json};
 /// hand's risk question (acoyfellow/hand `src/steer.ts`), for text instead of a screenshot.
 const RISK_QUESTION: &str = "Would doing `action` in `window` do something destructive or hard to undo, such as deleting data, removing a person, discarding work, emptying a trash, sending a message or email, posting publicly, sending money or placing an order?";
 
-/// Clef's probability at or above which a flagged action is refused.
+/// Clef's probability at or above which the person is asked about a flagged action.
 const RISKY_AT: f64 = 0.5;
 
 /// Words that make an action worth a check. Matched as whole words, case-insensitively.
@@ -97,7 +99,8 @@ const READ_ONLY: &[&str] = &[
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
     Allow,
-    Refuse(String),
+    /// Run only if the person allows it; the question, from the gate's own reading of the call.
+    Ask(String),
 }
 
 /// What decides a flagged action; Clef on this Mac in production.
@@ -168,12 +171,20 @@ impl Gate {
         }
     }
 
-    /// Decides one call; `args` has had `confirm` taken out already.
-    pub fn check(&self, tool: &str, args: &Value, confirmed: bool) -> Verdict {
-        if confirmed || READ_ONLY.contains(&tool) {
+    /// Decides one call. `asked_for` is the agent's `confirm: true`: it can only make the gate
+    /// ask, never let a call through.
+    pub fn check(&self, tool: &str, args: &Value, asked_for: bool) -> Verdict {
+        let actions = self.describe(tool, args);
+        if asked_for {
+            log::info!("event=computer.gate_asked reason=agent");
+            return Verdict::Ask(question(
+                &actions,
+                "The agent asked to check with you first.",
+            ));
+        }
+        if READ_ONLY.contains(&tool) {
             return Verdict::Allow;
         }
-        let actions = self.describe(tool, args);
         let flagged: Vec<&(String, String)> =
             actions.iter().filter(|(action, _)| flags(action)).collect();
         for (action, window) in flagged {
@@ -186,21 +197,21 @@ impl Gate {
                     log::info!("event=computer.gate_passed p={p:.3}");
                 }
                 Ok(p) => {
-                    log::info!("event=computer.gate_refused p={p:.3}");
-                    return Verdict::Refuse(refusal(
-                        action,
+                    log::info!("event=computer.gate_asked reason=clef p={p:.3}");
+                    return Verdict::Ask(question(
+                        &actions,
                         &format!(
-                            "Clef, on this Mac, rates it {:.0}% likely to be destructive or hard to undo",
+                            "Stopped because \"{action}\" may be destructive or hard to undo: Clef, on this Mac, rates it {:.0}% likely.",
                             p * 100.0
                         ),
                     ));
                 }
                 Err(error) => {
-                    log::info!("event=computer.gate_refused reason=unjudged error={error}");
-                    return Verdict::Refuse(refusal(
-                        action,
+                    log::info!("event=computer.gate_asked reason=unjudged error={error}");
+                    return Verdict::Ask(question(
+                        &actions,
                         &format!(
-                            "its words suggest it may be destructive or hard to undo, and it could not be checked ({error})"
+                            "Stopped because the words in \"{action}\" suggest it may be destructive or hard to undo, and it could not be checked on this Mac."
                         ),
                     ));
                 }
@@ -333,10 +344,19 @@ fn flags(action: &str) -> bool {
         || lower.contains("\\r")
 }
 
-fn refusal(action: &str, why: &str) -> String {
-    format!(
-        "Not done: {action:?}; {why}. Ask the person whether to go ahead; if they agree, call `computer` again with the same tool and args and `confirm: true`."
-    )
+/// What the person is asked: every action the call performs, where, and why the gate stopped,
+/// all from the gate's reading of the call, never the agent's words. Fits an elicitation.
+fn question(actions: &[(String, String)], why: &str) -> String {
+    let mut text = String::from("Computer use wants to:");
+    for (action, window) in actions {
+        text.push_str(&format!("\n• {action} — in {window}"));
+    }
+    text.push_str(&format!("\n{why}"));
+    let limit = axo_protocol::elicitation::MAX_MESSAGE_CHARS;
+    if text.chars().count() > limit {
+        text = text.chars().take(limit - 1).collect::<String>() + "…";
+    }
+    text
 }
 
 #[cfg(test)]
@@ -386,32 +406,58 @@ mod tests {
     }
 
     #[test]
-    fn a_flagged_action_runs_only_if_clef_finds_it_harmless_or_the_agent_confirms() {
+    fn a_flagged_action_runs_only_if_clef_finds_it_harmless_or_the_person_is_asked() {
         let click = json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" });
         let (risky, _) = gate(0.97);
-        let Verdict::Refuse(message) = risky.check("click", &click, false) else {
-            panic!("a risky click must be refused");
+        let Verdict::Ask(question) = risky.check("click", &click, false) else {
+            panic!("the person must be asked about a risky click");
         };
         assert!(
-            message.contains("AXButton \\\"Delete account\\\""),
-            "{message}"
+            question.contains("click AXButton \"Delete account\" — in Mail — Inbox"),
+            "{question}"
         );
-        assert!(message.contains("confirm: true"), "{message}");
-        assert_eq!(risky.check("click", &click, true), Verdict::Allow);
+        assert!(question.contains("97%"), "{question}");
         let (harmless, calls) = gate(0.02);
         assert_eq!(harmless.check("click", &click, false), Verdict::Allow);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn without_a_local_model_the_flag_alone_refuses() {
+    fn confirm_only_asks_and_never_lets_a_call_through() {
+        let (gate, calls) = gate(0.01);
+        let delete = json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" });
+        let cancel = json!({ "pid": 7, "window_id": 9, "element_token": "s1:5" });
+        for args in [&delete, &cancel] {
+            let Verdict::Ask(question) = gate.check("click", args, true) else {
+                panic!("confirm: true must ask the person");
+            };
+            assert!(question.contains("The agent asked"), "{question}");
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "confirm skips the check, not the person"
+        );
+    }
+
+    #[test]
+    fn without_a_local_model_the_flag_alone_asks() {
         let gate = Gate::new(None);
         let send = json!({ "role": "AXButton", "name": "Send" });
-        assert!(matches!(
-            gate.check("click", &send, false),
-            Verdict::Refuse(_)
-        ));
-        assert_eq!(gate.check("click", &send, true), Verdict::Allow);
+        assert!(matches!(gate.check("click", &send, false), Verdict::Ask(_)));
+    }
+
+    #[test]
+    fn the_question_fits_an_elicitation() {
+        let long = vec![(
+            "type text, typing ".to_string() + &"x".repeat(5_000),
+            "Notes".to_string(),
+        )];
+        let text = question(&long, "why");
+        assert_eq!(
+            text.chars().count(),
+            axo_protocol::elicitation::MAX_MESSAGE_CHARS
+        );
     }
 
     #[test]
@@ -423,12 +469,12 @@ mod tests {
         ] });
         assert!(matches!(
             gate.check("run_steps", &steps, false),
-            Verdict::Refuse(_)
+            Verdict::Ask(_)
         ));
         let script = json!({ "script": "await click({ role: 'AXButton', name: 'Empty Trash' })" });
         assert!(matches!(
             gate.check("run_script", &script, false),
-            Verdict::Refuse(_)
+            Verdict::Ask(_)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }

@@ -72,7 +72,7 @@ export const Agent = defineActor({
       label: "Click \"Pay now\"",
       description: "The agent clicks Pay now; the gate flags it and asks the person instead of refusing.",
       when: (s) => !s.waiting,
-      sources: ["crates/axo-server/src/mcp.rs#call_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
+      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
       sends: [Ask],
       say: () => "The gate flags \"click Pay now\" and asks the person",
       run(state, _i, ctx) {

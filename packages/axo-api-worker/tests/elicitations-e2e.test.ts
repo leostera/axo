@@ -18,7 +18,7 @@ import { accountApi, listHosts, localCall, terminate, waitFor } from "./axod-sup
  * back the same way, and the agent's call returns it. A second answer, from another device, is
  * refused, and `axod.sock` has no way to answer at all.
  */
-test("an agent's question reaches the person's phone, and their answer returns to the agent", async () => {
+test("an agent's question reaches the person's phone, their answer returns to the agent, and it approves no tool", async () => {
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
   const axodBinary = resolve(process.cwd(), binary);
@@ -118,6 +118,27 @@ test("an agent's question reaches the person's phone, and their answer returns t
       asked.find((entry) => entry.elicitation.message === "Push to main?"), daemon);
     await browser.resolveElicitation(host.hostId, next.elicitation.id, "decline");
     assert.equal((await second).result?.structuredContent?.action, "decline");
+
+    // Tools ask; agents cannot approve. The answer to the agent's own question approves nothing:
+    // computer refuses it as an argument, before anything runs.
+    type ToolResult = { result?: { isError?: boolean; content?: Array<{ text?: string }> } };
+    const text = (reply: ToolResult) => reply.result?.content?.[0]?.text ?? "";
+    const pay = { tool: "click", args: { role: "AXButton", name: "Pay now" } };
+    const presented = (await callMcp("tools/call", { name: "computer", arguments: { ...pay, elicitationId: elicitation.id } })) as ToolResult;
+    assert.equal(presented.result?.isError, true);
+    assert.match(text(presented), /takes no `elicitationId`/u);
+
+    // confirm: true asks the person instead of approving; the tool's own question names the
+    // action, and a No means nothing runs.
+    const confirmed = callMcp("tools/call", { name: "computer", arguments: { ...pay, confirm: true } }) as Promise<ToolResult>;
+    const gateQuestion = await waitFor("the gate's question", 15_000, async () =>
+      asked.find((entry) => entry.elicitation.message.startsWith("Computer use wants to:")), daemon);
+    assert.match(gateQuestion.elicitation.message, /click AXButton "Pay now"/u);
+    assert.match(gateQuestion.elicitation.message, /The agent asked to check with you first/u);
+    await phone.resolveElicitation(host.hostId, gateQuestion.elicitation.id, "decline");
+    const declined = await confirmed;
+    assert.equal(declined.result?.isError, true);
+    assert.equal(text(declined), "Not done: the person declined.");
   } finally {
     for (const connection of connections) connection.close();
     mcp?.kill();
