@@ -16,7 +16,7 @@ An **asset** is a file the account keeps in the cloud: a photo from the phone, a
 - **Reading:** every read goes through Workers Cache. A gateway entrypoint authenticates the caller, then asks a cached entrypoint, `AxoAssetCache`, with the account in `ctx.props`. On a hit, neither the cached entrypoint nor the Durable Object runs.
 - **First use, attachments:** a person attaches photos and files to a message on the web or iOS. The client uploads them, then sends the prompt naming them. The Mac downloads each one, checks its hash, and gives Pi the images as images and the other files as paths on disk.
 
-Later uses, each in its own change: screenshots from `codemode.<mac>.computerUse`, images in the confirmation cards of RFD0029, and moving the images inside transcripts out to assets.
+Later uses, each in its own change: screenshots from `codemode.computer.run` (RFD0028), images in the confirmation cards of RFD0029, and moving the images inside transcripts out to assets.
 
 ## Motivation
 

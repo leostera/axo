@@ -59,7 +59,7 @@ Every `axod mcp` tool answers JSON in `structuredContent` and declares its shape
 
 Tools are grouped by service: a script calls `codemode.<service>.<tool_name>(input)`, for example `codemode.linear.list_issues({ team: "AXO" })`. Both parts are JavaScript-safe identifiers; each tool also keeps the upstream server's original name for display.
 
-The service is the connection's name. A third-party connection's name is chosen when it is added; a host connection's name is its Mac's host name in Axo (for example `studio`), so a script runs a command on that Mac with `codemode.studio.bash({ command: "op item get github --fields token" })`. Names are unique within the account across both kinds: adding a third-party connection named like a Mac is refused.
+The service is the connection's name, chosen when it is added. The account's Macs are reached through namespaces that take the Mac as an argument (amended by [RFD0028](RFD0028-computer-use.md), Computer use from anywhere): `codemode.hosts.list()` lists them, and a script runs a command on one with `codemode.bash.run({ host: "studio", command: "op item get github --fields token" })`. A Mac's `name` is its label in Axo as a JavaScript-safe name, unique among the account's Macs.
 
 Every paired Mac is a host connection from the moment it is paired; there is no separate switch. Unpairing or revoking the host (RFD0013) removes the connection, and while the Mac is offline its `bash` calls fail with a host-offline error.
 
@@ -69,7 +69,7 @@ Scripts run in the cloud, not on the calling Mac. `axod mcp` forwards `connectio
 
 ### Apps
 
-An app is listed in the web app's Apps and by `connections_list` as `apps.<app>` (kind `app`, with its accounts and tool names) signed in or not. An OAuth app whose provider has no client set up yet is listed with `signIn.client.ready` false, and has no tools until one is. Its tools are in `codemode.tools()` with service `apps.<app>` and `call` saying how a script calls them: `codemode.apps.<app>.<tool>({ account, ... })`. `apps` is reserved: no connection is added under that name, and a Mac labelled "apps" gets a suffix.
+An app is listed in the web app's Apps and by `connections_list` as `apps.<app>` (kind `app`, with its accounts and tool names) signed in or not. An OAuth app whose provider has no client set up yet is listed with `signIn.client.ready` false, and has no tools until one is. Its tools are in `codemode.tools()` with service `apps.<app>` and `call` saying how a script calls them: `codemode.apps.<app>.<tool>({ account, ... })`. `apps`, `hosts`, `computer` and `bash` are reserved: no connection is added under those names.
 
 An app holds any number of provider accounts (at most 20), each named by its email; signing in again to one replaces its grant. **Every call names its account**, even when only one is signed in, so nothing is ever read or sent from a guessed account: `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call naming an account that is not signed in fails, listing the accounts that are. A call to an app with no account yet fails with a sign-in link, which the agent gives to the person, as with `connections_add`. An account whose grant was refused stays listed as needing sign-in until the person signs in to it again or removes it. `connections_remove({ name: "apps.gmail", account })` or Apps removes one account, deleting its grant and revoking it at the provider.
 

@@ -4,9 +4,9 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-10-31
-- Updated: 2026-11-05 (the gate asks the person, per RFD0029)
+- Updated: 2026-11-05 (computer use from anywhere)
 - Document Type: Proposal
-- Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md)
+- Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md), [RFD0016](RFD0016-connections-and-tools.md)
 - Amended By: [RFD0029](RFD0029-ask-the-person.md)
 
 ## Summary
@@ -21,7 +21,7 @@ Before an action runs, a risk gate checks it. For an action that looks destructi
 
 ## Motivation
 
-Agents in Axo can already reach this Mac's terminal, other Macs (`codemode.<mac>.bash`) and remote MCP servers. They can't reach the apps the person actually uses, such as Mail, Messages, Slack or System Settings. Leo wants computer use in Axo, with three constraints:
+Agents in Axo can already reach this Mac's terminal, other Macs (`codemode.bash.run`) and remote MCP servers. They can't reach the apps the person actually uses, such as Mail, Messages, Slack or System Settings. Leo wants computer use in Axo, with three constraints:
 - No separate "Axo Computer Use" app.
 - Screenshots never leave the Mac to decide whether a click is safe.
 - The agent, not Axo, is the first line of judgement: Axo steps in only when the agent didn't confirm.
@@ -88,6 +88,39 @@ An action reaches the app only if it passed or the person allowed it. Every call
   - a text question 1–3 s;
   - about 7 GB of RAM while the model is loaded.
 
+### Computer use from anywhere
+
+An agent on any of the account's Macs, including one the person chats with from the phone, drives another Mac through `connections_execute`:
+
+```js
+const macs = await codemode.hosts.list();
+// [{ name: "studio", label: "Studio", online: true, kind: "macos", self: false,
+//    computerUse: { available: true, accessibility: true, screenRecording: true } }, …]
+const shot = await codemode.computer.run({ host: "studio", tool: "get_window_state", args: { pid, window_id } });
+await codemode.computer.run({ host: "studio", tool: "click", args: { pid, window_id, element_token: "s3:12" } });
+await codemode.bash.run({ host: "studio", command: "ls ~/Desktop" });
+```
+
+**Names.** The account's Macs are no longer services. Three namespaces take the Mac as an argument instead, so a script finds every Mac with one call and no Mac's label can collide with a connection:
+- `codemode.hosts.list()`: every Mac of the account, with its `name` (the label as a JavaScript-safe name, unique among the account's Macs), `label`, `online`, `kind` (`macos`), `self` (the Mac the script was started from) and, for an online Mac, `computerUse`: whether this Mac can do it now (Accessibility and Screen Recording granted). Asked of each online Mac, at most 3 seconds; `null` when it did not answer.
+- `codemode.computer.run({ host, tool, args, confirm? })`: one computer-use tool, as the local `computer` tool takes it.
+- `codemode.bash.run({ host, command, cwd?, timeoutMs? })`: replaces `codemode.<mac>.bash`, which goes away. No external release depended on it.
+
+`host` is a name from `hosts.list()`, or `"self"`. An unknown host fails listing the account's Macs; an offline one fails as offline (`hostOffline`), naming the online ones. `hosts`, `computer`, `bash` and `apps` are reserved: no connection is added under those names. Mac apps (1Password) still name a Mac by the same `name`.
+
+**On the Mac.** The Worker sends `axo.connections.computer` down the target Mac's relay socket, like `bash`: `{ accountId, callId, tool, args, confirm, sessionId, from, timeoutMs }`, where `sessionId` is the calling Session and `from` the calling Mac's label. axod (the daemon, which holds the Accessibility and Screen Recording grants) runs it on a thread of its own:
+1. **The gate,** the same checks as the local tool: `confirm: true` asks; otherwise the word filter and Clef decide.
+2. **Asking** is an elicitation made by the target Mac's axod, `askedBy: computerUse`, in the *calling* Session: its card shows in that chat on the web and the phone (clients place cards by Session id, and answer the Mac that asked), and on the target Mac as a notification naming the calling Mac. The question says where it came from: *asked from Laptop's Session*. It expires before the script's time runs out.
+3. **Images** in the result (screenshots, window captures) are uploaded to the account's assets (RFD0030) with the Mac's credential and replaced by `{ type: "image", asset: { hash, type, size, name } }`, so a result stays small and the images show wherever assets do. The text and `structuredContent` come back as they are.
+
+`axo.connections.computer.status` answers `{ available, accessibility, screenRecording }` for `hosts.list()`.
+
+**Back to the agent.** `axod mcp`'s `connections_execute` returns the script's value as before; for image assets anywhere in it (at most 4, 5 MiB in all) it fetches each with its own Mac's credential and adds it to the tool result as an MCP image, so the model sees the screenshot. Images past the limit stay as references.
+
+**Logging.** Every `computer.run` and `bash.run` is in the account's call log (RFD0016) before it is sent, as service `computer` or `bash`, tool the computer tool's name or `run`, with the target Mac. Screenshots are not logged; typed text is, as commands are.
+
+**Not built here:** the target Mac's own Axo.app card for a Session it doesn't have (it gets the notification); binding an Allow to the window it named (RFD0029).
+
 ### Invariants
 
 - An unconfirmed action whose description is flagged runs only if Clef answers p < 0.5.
@@ -122,7 +155,7 @@ An action reaches the app only if it passed or the person allowed it. Every call
 
 ## Unresolved questions
 
-- **Cloud path:** computer use from the cloud (`codemode.<mac>.computer`), and logging computer calls in the account's call log.
+- **Cloud path:** settled in *Computer use from anywhere*.
 - **More from the hand review:**
   - delivery receipts;
   - a screen lease shared across agents;
