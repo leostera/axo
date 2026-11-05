@@ -58,18 +58,15 @@ Allow asks for Face ID, because the action involves money. Once allowed, the cli
 
 ```js
 computer({ tool: "request_input", args: {
-  why: "Sign in to GitHub to open the pull request",
-  fields: [
-    { label: "Email",    kind: "username", target: "s3:7" },
-    { label: "Password", kind: "password", target: "s3:8" },
-  ],
-  then: { click: "s3:9" },
+  pid: 7181, window_id: 7740,
+  fields: [{ kind: "email" }, { kind: "password" }],
+  submit: "Sign in",
 }})
 ```
 
 - **The request:** the person's phone shows *Sign in to github.com*, with the address taken from the browser itself, plus a form with an email field and a password field.
 - **Autofill:** the fields are marked as a username and a password, so the Passwords app or 1Password offers the person's login.
-- **Filling:** after a tap and Face ID, axod fills the two fields on the Mac and clicks "Sign in".
+- **Filling:** after a tap (and, later, Face ID), axod fills the two fields on the Mac and presses "Sign in".
 - **What the agent learns:** only *Filled Email and Password in Safari — github.com and clicked Sign in; the values are not shown to you*. Later reads of that window show the filled values as `•••• (filled by you)`.
 
 **When the answer comes from somewhere else:** the agent uses the same tool to ask for a card's number, expiry and security code, or for a six-digit code from an authenticator. For example, `npm publish --otp` takes a code the person's phone can autofill.
@@ -168,30 +165,30 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
 
 **Goal:** values typed on the phone reach the target app's fields on the Mac, and nothing else ever sees them in plain text. That rules out the agent, `axod mcp`, the transcript, the cloud and the push service.
 
-- **The Mac's request key:**
-  - On first pairing, axod generates a P-256 key pair.
-  - The private key lives in the login Keychain, with an access control list naming only axod's code signature. The public key is registered with the account, in HostDO, alongside the host.
-  - Each client fetches it with the host list, and pins its fingerprint per host the first time it sees it.
-  - If the key changes, the client says so and refuses input to that host until the person accepts the new key at the Mac. The Mac app shows the fingerprint.
+- **The Mac's input key:**
+  - On its first input request, axod generates a P-256 key pair (`crates/axo-seal`).
+  - The private key is kept where the host credential is (the login Keychain, created by axod so only axod reads it without asking; `0600` files in tests), under a fixed id. It does not change when the Mac is linked again.
+  - Each input request carries the public key. Each client pins it per Mac the first time it sees it (the web in `localStorage`, the phone in its defaults), and seals only to the pinned key.
+  - If the key changes, the client says so and sends nothing to that Mac. Accepting a new key at the Mac, with its fingerprint shown there, is not built yet.
 - **Sealing an answer:**
-  - The client encrypts `{ requestId, values }` with HPKE (RFC 9180; DHKEM(P-256), HKDF-SHA256, AES-128-GCM) to the request key.
-  - It uses `info = "axo-ask-input/v1"` and `aad = requestId || hostId || origin`.
-  - The web uses WebCrypto ECDH, HKDF and AES-GCM; iOS and the Mac app use CryptoKit's `HPKE`.
-  - HostDO and ClientDO only ever see `{ requestId, sealed }`.
-- **Opening it:** axod opens the sealed answer, and checks that `requestId` is pending and of kind input, and that the `aad` matches the request. A sealed answer for a different request, host or origin fails to open.
+  - The client encrypts `{ "values": { "<field id>": "<value>" } }` with HPKE (RFC 9180, base mode; DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM: CryptoKit pairs P-256 only with AES-256) to the input key.
+  - It uses `info = "axo-ask-input/v1"` and `aad = requestId "\n" origin`. The key is the Mac's own, so a ciphertext for another Mac does not open either.
+  - The web uses `@hpke/core` on WebCrypto (`@axo/app`'s `sealInput`); iOS uses CryptoKit's `HPKE` (`AxoProtocol`'s `InputSeal`). `crates/axo-seal/testdata/vectors.json` holds what each sealed, and axod's tests open both.
+  - HostDO and ClientDO only ever see `{ elicitationId, action, sealed: { enc, ciphertext } }`.
+  - Axo.app on the Mac sends the values in the clear on `axod.sock`, which takes answers only from Axo.app, by code signature.
+- **Opening it:** axod opens the sealed answer, and checks that the request is pending and of kind input, that the `aad` matches it, and that there is one value per field, each at most 1,000 characters. Otherwise it refuses with `BAD_INPUT` (`-32014`) and the request keeps waiting for a good answer.
+- **Which fields:** the agent names each field by what it is for (`kind`: username, email, password, code or text) and, when there is more than one candidate, by its `label` as its read shows it. Not by element token: Cua's tokens belong to the process that read the window, and axod reads the window again itself (`axo_computer::form`, on Cua's Accessibility bindings). A lone password field needs no label, nor does the entry just before it for a username or email; a password goes only into a secure text field.
 - **Filling:**
-  - **The address shown is axod's own reading:** when it creates a request, axod reads the window's origin from Accessibility itself. If the page has already moved to a look-alike, the person sees the look-alike's address.
-  - **A changed page gets nothing:** axod fills the exact elements the request named. If the page changes between the request and the answer, those elements are gone, so nothing is filled and the request resolves `cancelled: the page changed`. axod also checks the origin again just before filling.
-  - **Filling the fields:** it then fills each field's target with `set_value`, or `type_text` for fields that refuse `set_value`, and runs `then`, if given. It uses its own embedded computer runtime, so the values never enter `axod mcp`.
-  - **Clearing:** it overwrites the decrypted buffer and keeps only a salted hash of each value, per window, for the life of the request's Session.
-- **The receipt** the agent gets lists:
-  - which fields were filled, in which window, and whether `then` ran;
-  - `redact`: the salted hashes and the salt, which `axod mcp` uses to redact.
-- **One call per window:** `axod mcp` runs one computer call on a window at a time. A read of a window with a pending input request waits until the request resolves, and the request waits for reads already under way. Otherwise a read made in parallel could catch the filled value before the receipt that redacts it arrives.
+  - **The address shown is axod's own reading:** when it creates a request, axod reads the page's origin from the browser's web area (`AXURL`), never from the address bar, which the agent can type into. If the page has already moved to a look-alike, the person sees the look-alike's address. The app's name, the window's title, the fields' labels and the submit button's title are axod's reading too.
+  - **A changed page gets nothing:** axod keeps the exact Accessibility elements it found. Just before filling, it reads the window again: if the origin differs or those elements are gone, nothing is filled and the agent gets *Not filled: the page changed*.
+  - **Filling the fields:** it sets each field's value through Accessibility, and checks that a plain field kept it, then presses the `submit` button if asked. It does this in axod, so the values never enter `axod mcp`.
+  - **Clearing:** the opened values are wiped when dropped (`zeroize`); axod keeps only a salted hash of each value of at least 4 characters, at most 256 of them, for its lifetime.
+- **The receipt** the agent gets says which fields were filled, in which app and at which address, and whether the button was pressed, and that the values are not shown.
+- **Hidden before filled:** axod remembers the hashes before it fills, so no read, from any agent, can catch a value in between.
 - **Redaction of reads:**
-  - In `get_window_state` and every computer result, `axod mcp` replaces any element value, or substring of at least 4 characters, whose salted hash matches with `•••• (filled by you)`.
-  - It blacks out those elements' frames in screenshots.
-  - Secure text fields are already hidden by macOS.
+  - In every computer result, any string, quoted part or word whose salted hash matches becomes `•••• (filled by you)`. axod does it for other Macs' scripts; `axod mcp` asks axod for the hashes (`axo.computer.redactions`, for axod's own binary only) after each call and does it for its agent.
+  - Secure text fields are already hidden by macOS, in reads and in screenshots.
+  - Not yet: blacking out plain fields (a username) in screenshots.
 
 ### Opening a link for the person
 
@@ -256,17 +253,19 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 - **Answered on the Mac:** `axo.elicitation.resolve` on `axod.sock` takes an answer only from Axo.app (`-32012` otherwise). `axo.elicitation.list` gives what is pending, for a client that just subscribed.
 - **The Mac app:** a card over the Session's panes with Yes and No, and a time-sensitive notification with Yes (needs the Mac unlocked), No, and a click that opens the Session. Settled questions withdraw their notification.
 
-Not yet built, in the order of this RFD: the gate's confirm requests, the Mac app's card and notification (with the code-signature check), push notifications, device-signed answers, input, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
+**Step 4, input (built):** `request_input` as above, from this Mac's agents (`axod mcp` hands it to axod with `axo.computer.input`) and from other Macs' scripts (`codemode.computer.run`); input cards on the web, the phone and the Mac app, with autofill hints; HPKE sealing on the web and the phone, checked against axod's opening; pinning per Mac. `screenshot` is Cua's `get_desktop_state` under a clearer name. Not yet: accepting a changed key at the Mac, Face ID before filling, and blacking out plain fields in screenshots. Tested live by `packages/axo-api-worker/tests/input-live.test.ts` (`AXO_LIVE_COMPUTER=1`), which signs in to a page in Safari.
+
+Not yet built, in the order of this RFD: push notifications, device-signed answers, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
 
 ## Testing
 
 - `specs/elicitations/ask-the-person.ts` (Feynman) models a confirm and an input request across the agent, its shell, axod, HostDO, the iPhone, the Mac app and Safari. As of 2026-11-04:
   - **Safety holds** on every path within depth 14 (463k states, one fault): only the person answers, the first answer wins, the card never reaches the agent or the cloud in the clear, values go only into the page whose address the person was shown, and no client keeps a card for a resolved request.
   - **Liveness:** every waiting tool call returns. This held on every path of up to 20 events (11.9M states); longer paths were not checked.
-  - **Every rule is needed:** without `peerCheck`, `sealedValues`, `receiptOnly`, `boundTarget`, `oneCallPerWindow` or `redaction`, a property breaks.
+  - **Every rule is needed:** without `peerCheck`, `sealedValues`, `receiptOnly`, `boundTarget`, `hideBeforeFill` or `redaction`, a property breaks. (As built, `hideBeforeFill` replaces the first draft's one call per window: axod remembers a value's hash before filling it, and every read is redacted after it is taken, so a parallel read cannot catch the value; without it, `cardNeverReachesTheAgent` breaks in 11 events.)
   - **The checker found two flaws in the first draft**, now in this RFD:
     - a Deny arriving during a fill overrode the fill (fixed by claiming on the first answer);
-    - a parallel read caught the value before its receipt (fixed by one call per window).
+    - a parallel read caught the value before its receipt (fixed by one call per window, and as built by hiding before filling).
 - **To add to `specs/elicitations/ask-the-person.ts`** for *Tools ask; agents cannot approve*: an agent that passes `confirm: true` hoping to skip the check (it asks instead), presents the answer to its own question, or reuses an answer for another action. The property: every gated action runs only on the person's answer to the request its tool made for that action.
 - `specs/elicitations/open-a-link.ts` models `wrangler login`, the agent, a local admin service, the loopback interface, axod, HostDO, the iPhone and the web app, with a lost or duplicated callback and an axod restart. Safety held on every path of up to 25 events (13.4M states): the code reaches only the command that opened the link, never the cloud in the clear, no other local service, and once per request. It found:
   - a check of the port's owner made before connecting is stale if the command exits and the agent binds the port (fixed by checking on the connection);
