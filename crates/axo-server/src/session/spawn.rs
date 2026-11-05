@@ -53,6 +53,11 @@ pub(crate) fn set_agent_socket(path: &Path) {
     let _ = AGENT_SOCKET.set(path.to_path_buf());
 }
 
+/// Where axod listens, once it does.
+pub(crate) fn agent_socket() -> Option<&'static Path> {
+    AGENT_SOCKET.get().map(PathBuf::as_path)
+}
+
 /// A Pi's environment: the terminal resources, plus where Axod listens (`AXO_SOCKET`) and the
 /// `axod` executable (`AXOD`), so pi-axo can start `axod mcp` for its Session.
 pub(super) fn pi_environment() -> Vec<(&'static str, PathBuf)> {

@@ -241,6 +241,10 @@ pub const PARITY: &[Parity] = &[
             "the relay sends what is pending on every connection, as axo.elicitation.requested",
         ),
     ),
+    row(
+        method::ASSETS_FETCH,
+        Remote::LocalOnly("axod mcp shows its agent images from the account's assets"),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

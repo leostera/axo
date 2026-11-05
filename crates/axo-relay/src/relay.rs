@@ -309,6 +309,19 @@ fn run_connection(
             Priority::Control,
         );
     }
+    let assets =
+        dependencies
+            .assets_directory
+            .as_ref()
+            .map(|directory| crate::assets::AssetSource {
+                endpoint: dependencies.endpoint.clone(),
+                account: account.clone(),
+                host_id: host_id.clone(),
+                credentials: Arc::clone(&dependencies.credentials),
+                directory: directory.clone(),
+            });
+    // Local callers fetch the account's assets through this socket's account while it lives.
+    sessions.set_asset_source(assets.clone());
     let result = relay_session(
         &mut socket,
         &mut reassembler,
@@ -326,18 +339,11 @@ fn run_connection(
             waker,
             socket_id: format!("axod-{}-{epoch}", std::process::id()),
             account_id: account.account_id().to_owned(),
-            assets: dependencies.assets_directory.as_ref().map(|directory| {
-                crate::assets::AssetSource {
-                    endpoint: dependencies.endpoint.clone(),
-                    account: account.clone(),
-                    host_id: host_id.clone(),
-                    credentials: Arc::clone(&dependencies.credentials),
-                    directory: directory.clone(),
-                }
-            }),
+            assets,
         },
     );
     channel.detach(epoch);
+    sessions.set_asset_source(None);
     let _ = sessions.unsubscribe_remote_events(&subscription_id);
     result
 }

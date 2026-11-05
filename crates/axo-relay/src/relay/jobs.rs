@@ -48,6 +48,51 @@ pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContex
     }
 }
 
+/// Computer calls running at once on one Mac: they wait on the person, and drive one screen.
+const MAX_COMPUTER_JOBS: usize = 4;
+static COMPUTER_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Starts a computer call from another Mac on a thread of its own: the host runs it (asking the
+/// person if it must), then its images go to the account's assets. Replies on this socket only.
+pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
+    let params = match crate::computer::parse(params, &context.account_id) {
+        Ok(params) => params,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    if COMPUTER_JOBS.fetch_add(1, Ordering::SeqCst) >= MAX_COMPUTER_JOBS {
+        COMPUTER_JOBS.fetch_sub(1, Ordering::SeqCst);
+        return context.replies.reply(
+            &id,
+            Err((-32006, "too many computer calls running on this Mac".into())),
+        );
+    }
+    let replies = context.replies.clone();
+    let sessions = Arc::clone(context.sessions);
+    let assets = context.assets.clone();
+    let spawned = thread::Builder::new()
+        .name("axo-connections-computer".to_owned())
+        .spawn(move || {
+            log::info!(
+                "event=connections.computer_started call={} tool={}",
+                params.call_id,
+                params.tool
+            );
+            let outcome = sessions
+                .remote_computer(&params)
+                .map(|result| crate::computer::to_account(result, assets.as_ref(), &params.tool));
+            COMPUTER_JOBS.fetch_sub(1, Ordering::SeqCst);
+            log::info!(
+                "event=connections.computer_finished call={} outcome={}",
+                params.call_id,
+                if outcome.is_ok() { "ok" } else { "error" }
+            );
+            replies.reply(&id, outcome);
+        });
+    if spawned.is_err() {
+        COMPUTER_JOBS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Prompts fetching their attachments on one Mac at once; more are refused until one ends.
 const MAX_ATTACHMENT_FETCHES: usize = 4;
 static ATTACHMENT_FETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

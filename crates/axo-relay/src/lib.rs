@@ -3,6 +3,7 @@
 
 pub mod assets;
 pub mod bash;
+pub mod computer;
 pub mod credential;
 mod endpoint;
 pub mod fragments;

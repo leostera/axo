@@ -98,13 +98,35 @@ impl SessionManager {
         request: RequestElicitation,
         timeout: Duration,
     ) -> Result<ElicitationOutcome, RpcError> {
-        let message = request.message.trim();
+        self.ensure_session(request.session_id)?;
+        self.ask(
+            request.session_id,
+            &request.message,
+            request.asked_by,
+            timeout,
+        )
+    }
+
+    /// Asks in `session_id`, which may run on another Mac: the gate asks in the Session of the
+    /// script that called it (RFD0028). Clients place the card by Session id, and answer this Mac.
+    pub(crate) fn ask(
+        &self,
+        session_id: SessionId,
+        message: &str,
+        asked_by: Asker,
+        timeout: Duration,
+    ) -> Result<ElicitationOutcome, RpcError> {
+        let message = message.trim();
         if message.is_empty() || message.chars().count() > MAX_MESSAGE_CHARS {
             return Err(invalid(format!(
                 "message must be 1 to {MAX_MESSAGE_CHARS} characters"
             )));
         }
-        self.ensure_session(request.session_id)?;
+        let request = RequestElicitation {
+            session_id,
+            message: message.to_owned(),
+            asked_by,
+        };
         let now = unix_millis();
         let elicitation = Elicitation {
             id: new_uuid_v4().map_err(internal)?,

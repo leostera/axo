@@ -10,7 +10,8 @@ import { atMost, defineActor, defineGroup, defineLimit, defineMessage, definePro
 // The cloud and the person's clients are in ask-the-person.ts; here the person answers on one
 // client, and what the request says is what the tool will do.
 //
-// Built: the gate asks, confirm only asks, and extra arguments are refused. Not built: binding an
+// Built: the gate asks, confirm only asks, and extra arguments are refused, for the local
+// `computer` tool and for `codemode.computer.run` from another Mac (RFD0028). Not built: binding an
 // Allow to the window it named (onceAndBound) beyond element tokens dying with a newer read.
 
 const Action = oneOf("pay", "scroll");
@@ -100,7 +101,7 @@ export const Tool = defineActor({
     call: {
       on: Call,
       description: "Refuses approvals as arguments; asks when confirm is true or the gate flags the action; otherwise acts.",
-      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
+      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_computer", "crates/axo-server/src/session/computer.rs#SessionManager.remote_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
       sends: [Returned, Ask, Act],
       run(state, m, ctx) {
         if (state.waiting) return ctx.reply(Returned, { action: m.action, result: "busy" });

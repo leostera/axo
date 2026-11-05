@@ -16,7 +16,8 @@
 //! otherwise.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use axod_infer::{Infer, InferError};
 use serde_json::{Value, json};
@@ -101,6 +102,31 @@ pub enum Verdict {
     Allow,
     /// Run only if the person allows it; the question, from the gate's own reading of the call.
     Ask(String),
+}
+
+/// This process's gate, with Clef beside axod when installed: `axod mcp` for this Mac's agents,
+/// axod for other Macs' scripts (RFD0028). `socket` is axod's, beside which Clef's runs.
+pub fn for_socket(socket: &Path) -> &'static Gate {
+    static GATE: OnceLock<Gate> = OnceLock::new();
+    GATE.get_or_init(|| {
+        // Until the model files are downloaded, its answers are "unavailable" and the word list
+        // alone decides; the first process to find them missing starts the download.
+        let judge = socket
+            .parent()
+            .and_then(Infer::beside_current_exe)
+            .filter(|infer| infer.helper.exists())
+            .inspect(|infer| {
+                if infer.installed().is_err() {
+                    let outcome = infer.install_in_background();
+                    log::info!(
+                        "event=computer.gate_model_missing download={}",
+                        outcome.map_or_else(|why| why, |()| "started".into())
+                    );
+                }
+            })
+            .map(|infer| Box::new(infer) as Box<dyn Judge>);
+        Gate::new(judge)
+    })
 }
 
 /// What decides a flagged action; Clef on this Mac in production.

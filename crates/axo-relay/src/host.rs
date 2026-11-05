@@ -131,6 +131,23 @@ pub trait RelayHost: Send + Sync {
         false
     }
 
+    /// One computer-use tool from another Mac's script (RFD0028): the gate, the person's answer
+    /// in the calling Session if it must ask, then the tool's MCP answer with its images inline.
+    /// `Err` is a JSON-RPC error: refused, declined, or not answered.
+    fn remote_computer(
+        &self,
+        _request: &crate::computer::ComputerParams,
+    ) -> Result<serde_json::Value, (i64, String)> {
+        Err((-32601, "Method not found".into()))
+    }
+    /// Whether this Mac can do computer use now: `{ available, accessibility, screenRecording }`.
+    fn computer_status(&self) -> serde_json::Value {
+        serde_json::json!({ "available": false, "accessibility": false, "screenRecording": false })
+    }
+    /// Where the account's assets are reached from while the relay is connected, so local
+    /// callers (`axod mcp`) can fetch them; `None` once it disconnects.
+    fn set_asset_source(&self, _source: Option<crate::assets::AssetSource>) {}
+
     /// The Workspaces a Session can be created in.
     fn remote_workspaces(&self) -> io::Result<Vec<RemoteWorkspace>>;
     fn remote_create_session(&self, updated_at: &str) -> io::Result<RemoteSessionSnapshot>;

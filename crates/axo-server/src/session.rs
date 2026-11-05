@@ -24,6 +24,7 @@ use axo_store::{
 
 mod catalog;
 mod cloud_transcripts;
+mod computer;
 mod elicitations;
 mod events;
 mod handlers;
@@ -44,8 +45,8 @@ mod workspace_state;
 mod workspaces;
 
 use self::events::{EventBus, LocalSubscription};
-use self::lifecycle::IdlePis;
 pub(crate) use self::handlers::RelayHostAdapter;
+use self::lifecycle::IdlePis;
 use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
 use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};
 use self::transcripts::PiDirectories;
@@ -169,6 +170,8 @@ pub struct SessionManager {
     peers: peer_views::PeerSlot,
     /// What agents here are asking the person (RFD0029).
     elicitations: elicitations::Elicitations,
+    /// The account's assets while the relay is connected (RFD0028).
+    asset_source: computer::AssetSlot,
 }
 
 impl SessionManager {
@@ -241,11 +244,14 @@ impl SessionManager {
             sessions_directory: sessions_directory.to_path_buf(),
             peers: Default::default(),
             elicitations: Default::default(),
+            asset_source: Default::default(),
         });
 
         // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see
         // `stop_notice`).
-        let interrupted = previous_stop.as_ref().map_or(&[][..], |stop| &stop.interrupted[..]);
+        let interrupted = previous_stop
+            .as_ref()
+            .map_or(&[][..], |stop| &stop.interrupted[..]);
         manager.restore_open_sessions_first(interrupted, IdlePis::StayDormant)?;
         if let Some(stop) = &previous_stop {
             manager.tell_interrupted_sessions(stop);

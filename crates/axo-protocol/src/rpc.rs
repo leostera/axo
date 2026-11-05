@@ -64,6 +64,8 @@ pub mod method {
     pub const ELICITATION_RESOLVE: &str = "axo.elicitation.resolve";
     /// What waits for the person now, oldest first, for a client that just (re)subscribed.
     pub const ELICITATION_LIST: &str = "axo.elicitation.list";
+    /// Fetches the account's assets into `~/.axo/assets`, for axod's own `axod mcp` (RFD0028).
+    pub const ASSETS_FETCH: &str = "axo.assets.fetch";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -114,6 +116,7 @@ pub mod method {
         ELICITATION_REQUEST,
         ELICITATION_RESOLVE,
         ELICITATION_LIST,
+        ASSETS_FETCH,
     ];
 }
 

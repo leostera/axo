@@ -1,4 +1,5 @@
-//! Computer use on this Mac: seeing and operating its apps, embedded in `axod mcp`.
+//! Computer use on this Mac: seeing and operating its apps, embedded in `axod mcp` for this Mac's
+//! agents and in axod for other Macs' scripts (RFD0028).
 //!
 //! This wraps Cua Driver's macOS runtime (`platform-macos`) in-process, so its Accessibility
 //! and Screen Recording checks are answered with Axo's grants and it never prompts. Actions are
@@ -56,6 +57,12 @@ pub fn call(tool: &str, args: Value) -> Value {
         ));
     }
     imp::call(tool, args)
+}
+
+/// Whether this process holds the grants computer use needs: `(accessibility, screen_recording)`,
+/// from Cua's own probe, which its `check_permissions` tool answers with.
+pub fn permissions() -> (bool, bool) {
+    imp::permissions()
 }
 
 fn error(message: &str) -> Value {
@@ -127,6 +134,11 @@ mod imp {
             .collect()
     }
 
+    pub fn permissions() -> (bool, bool) {
+        let status = platform_macos::permissions::current_status();
+        (status.accessibility, status.screen_recording)
+    }
+
     pub fn call(tool: &str, args: Value) -> Value {
         let runtime = runtime();
         let result = runtime.tokio.block_on(runtime.registry.invoke(tool, args));
@@ -144,5 +156,9 @@ mod imp {
 
     pub fn call(_tool: &str, _args: Value) -> Value {
         super::error("computer use is only available on macOS")
+    }
+
+    pub fn permissions() -> (bool, bool) {
+        (false, false)
     }
 }

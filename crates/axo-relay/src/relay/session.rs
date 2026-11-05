@@ -16,7 +16,7 @@ use super::dispatch::remote_request_reply;
 use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
-use super::jobs::{start_bash, start_prompt_with_attachments, start_sign_in};
+use super::jobs::{start_bash, start_computer, start_prompt_with_attachments, start_sign_in};
 use super::socket::{RelaySocket, read_message, send_json};
 use super::status::RelayControl;
 use super::wire::{HostIdentity, IncomingMessage, JSONRPC, OutgoingRequest, RequestId};
@@ -145,6 +145,20 @@ pub(super) fn relay_session(
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
         // A reply to a request another thread sent.
         if value.get("method").is_none() && context.channel.resolve(&value) {
+            continue;
+        }
+        if value.get("method").and_then(Value::as_str) == Some(crate::computer::METHOD) {
+            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
+                start_computer(id.clone(), &value["params"], &context);
+            }
+            continue;
+        }
+        if value.get("method").and_then(Value::as_str) == Some(crate::computer::STATUS_METHOD) {
+            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
+                let outcome = crate::computer::parse_status(&value["params"], &context.account_id)
+                    .map(|()| context.sessions.computer_status());
+                context.replies.reply(id, outcome);
+            }
             continue;
         }
         if value.get("method").and_then(Value::as_str) == Some(crate::bash::METHOD) {

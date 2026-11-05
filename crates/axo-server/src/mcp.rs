@@ -29,7 +29,7 @@ const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi convers
 - `session_prompt` sends a message to a Session's agent, including this one ("self"). `delivery`: "followUp" (default; after its current turn), "steer" (after its current tool calls) or "turn" (only if idle). Prompts between agents are limited: at most 8 in a chain since a person last spoke, 30 a minute, 10 a minute to "self".
 - `terminal_write` types text into a pane: end a command with "\r" to run it; "\u0003" is Ctrl-C. `terminal_screen` reads a pane's screen and scrollback as plain text.
 - `workspace_session_create` starts a new Session (Pi plus a terminal) in a Workspace.
-- `connections_*` reach this person's Axo account, if this Mac is linked to one. Every Mac linked to the account is a connection with one tool, `bash`, that runs a command on that Mac; `connections_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `connections_execute` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.studio.bash({ command: "uptime" })).stdout`; `connections_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `connections_list` lists the connections and their accounts; `connections_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. A connections script may run for up to 5 minutes: when calling `connections_execute` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
+- `connections_*` reach this person's Axo account, if this Mac is linked to one. The account's Macs are reached by name: `codemode.hosts.list()` lists them (name, online, whether computer use works there), `codemode.bash.run({ host, command })` runs a command on one, and `codemode.computer.run({ host, tool, args, confirm? })` drives its apps like the `computer` tool, asking the person when an action needs them; screenshots come back as `{ type: "image", attachment }`, and returning them from the script shows them to you. `host` is a name from `hosts.list()` or "self". `connections_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `connections_execute` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.bash.run({ host: "studio", command: "uptime" })).stdout`; `connections_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `connections_list` lists the connections and their accounts; `connections_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. A connections script may run for up to 5 minutes: when calling `connections_execute` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
 - `computer` sees and operates this Mac's apps (computer use), in the background where possible: read a window with `get_window_state` (elements plus a screenshot), act with `run_steps` (it can report what changed), or run a JavaScript `run_script` for loops and checks. `computer_tools` gives each tool's schema; `get_guide` explains the approach. Prefer an app's own CLI, MCP server or connection when there is one. It acts as the person in their real apps: an action that may send, post, pay or delete is checked on this Mac, and the person is asked on their own devices before it runs; pass `confirm: true` to have them asked about any call. You cannot approve for them. Read back what you typed.
 - Every tool here answers JSON in `structuredContent`, typed by its output schema: in a codemode script, `(await tools.mcp__axo__connections_execute({ code })).structuredContent.result` is the script's return value as is. `content` repeats it as text for display: never `JSON.parse` it.
 
@@ -200,7 +200,7 @@ const TOOLS: &[Tool] = &[
         properties: || {
             json!({
                 "query": { "type": "string", "description": "Words to look for in each tool's app, name and description." },
-                "code": { "type": "string", "description": "An async function, e.g. async () => codemode.tools().filter((t) => t.service === \"studio\")" }
+                "code": { "type": "string", "description": "An async function, e.g. async () => codemode.tools().filter((t) => t.service === \"computer\")" }
             })
         },
         required: &[],
@@ -211,7 +211,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "connections_execute",
         method: Some(method::CONNECTIONS_EXECUTE),
-        description: "Runs a JavaScript async function in the account's cloud sandbox (no network of its own; at most 5 minutes and 100 tool calls) and returns { result, logs }. `codemode.<service>.<tool>(input)` calls a tool, e.g. await codemode.studio.bash({ command: \"git -C ~/src/app status\", cwd: \"/Users/me\", timeoutMs: 60000 }) returns { exitCode, stdout, stderr, ... }; an app's tools are `codemode.apps.<app>.<tool>({ account, ... })`, e.g. await codemode.apps.gmail.search_messages({ account: \"me@example.com\", query: \"is:unread\" }). Every call is logged.",
+        description: "Runs a JavaScript async function in the account's cloud sandbox (no network of its own; at most 5 minutes and 100 tool calls) and returns { result, logs }. `codemode.<service>.<tool>(input)` calls a tool, e.g. await codemode.bash.run({ host: \"studio\", command: \"git -C ~/src/app status\", cwd: \"/Users/me\", timeoutMs: 60000 }) returns { exitCode, stdout, stderr, ... }; codemode.hosts.list() names the account's Macs, and codemode.computer.run({ host, tool, args }) drives one's apps (images it returns are shown to you); an app's tools are `codemode.apps.<app>.<tool>({ account, ... })`, e.g. await codemode.apps.gmail.search_messages({ account: \"me@example.com\", query: \"is:unread\" }). Every call is logged.",
         properties: || json!({ "code": { "type": "string", "description": "An async function: async () => { ... }. Return what you need; console.log lines come back as logs." } }),
         required: &["code"],
         output: Some(execute_output),
@@ -439,10 +439,14 @@ impl McpServer {
             _ => outcome,
         };
         match outcome {
-            Ok(result) => json!({
-                "content": [{ "type": "text", "text": result.to_string() }],
-                "structuredContent": result,
-            }),
+            Ok(result) => {
+                let mut content = vec![json!({ "type": "text", "text": result.to_string() })];
+                // A script's screenshots (RFD0028) are shown to the model, not only named.
+                if tool.method == Some(method::CONNECTIONS_EXECUTE) {
+                    content.extend(self.images_in(&result));
+                }
+                json!({ "content": content, "structuredContent": result })
+            }
             Err(ToolError(message)) => tool_error(&message),
         }
     }
@@ -495,6 +499,43 @@ impl McpServer {
             }
         }
         Ok(arguments)
+    }
+
+    /// The images a script returned as `{ type: "image", attachment }`, as MCP images: fetched
+    /// through axod into `~/.axo/assets`, at most `MAX_SHOWN_IMAGES` and `MAX_SHOWN_BYTES` in all.
+    /// Anything that can't be fetched stays a reference in the text.
+    fn images_in(&self, result: &Value) -> Vec<Value> {
+        let mut attachments = Vec::new();
+        collect_image_attachments(result, &mut attachments);
+        let mut total = 0;
+        attachments.retain(|attachment| {
+            total += attachment["size"].as_u64().unwrap_or(u64::MAX);
+            total <= MAX_SHOWN_BYTES
+        });
+        attachments.truncate(MAX_SHOWN_IMAGES);
+        if attachments.is_empty() {
+            return Vec::new();
+        }
+        let fetched = match self.call(method::ASSETS_FETCH, json!({ "attachments": attachments })) {
+            Ok(fetched) => fetched,
+            Err(ToolError(why)) => {
+                eprintln!("axod mcp: event=mcp.images_unfetched error={why}");
+                return Vec::new();
+            }
+        };
+        fetched["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|file| {
+                let bytes = std::fs::read(file["path"].as_str()?).ok()?;
+                Some(json!({
+                    "type": "image",
+                    "data": axo_protocol::base64::encode(&bytes),
+                    "mimeType": file["mimeType"],
+                }))
+            })
+            .collect()
     }
 
     /// What the account reaches now, as one paragraph, or `None` when this Mac is not linked or
@@ -558,6 +599,37 @@ impl McpServer {
     }
 }
 
+/// Images a `connections_execute` result shows the model, at most.
+const MAX_SHOWN_IMAGES: usize = 4;
+const MAX_SHOWN_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Every `{ type: "image", attachment }` in a script's value, in order, once each.
+fn collect_image_attachments(value: &Value, found: &mut Vec<Value>) {
+    match value {
+        Value::Object(object) => {
+            if object.get("type") == Some(&json!("image"))
+                && let Some(attachment) = object.get("attachment").filter(|a| {
+                    a["mimeType"]
+                        .as_str()
+                        .is_some_and(|m| m.starts_with("image/"))
+                })
+            {
+                if !found.contains(attachment) {
+                    found.push(attachment.clone());
+                }
+                return;
+            }
+            object
+                .values()
+                .for_each(|value| collect_image_attachments(value, found));
+        }
+        Value::Array(items) => items
+            .iter()
+            .for_each(|value| collect_image_attachments(value, found)),
+        _ => {}
+    }
+}
+
 /// The tools whose descriptions carry what the account reaches now.
 const DESCRIBES_CONNECTIONS: &[&str] = &[
     "connections_execute",
@@ -579,7 +651,7 @@ fn summarize_connections(listed: &Value) -> Option<String> {
             let name = connection["name"].as_str()?;
             Some(match connection["kind"].as_str()? {
                 "host" => format!(
-                    "- `codemode.{name}.bash({{ command }})`: the Mac {name}, {}",
+                    "- the Mac `{name}`, {}: `codemode.bash.run({{ host: \"{name}\", command }})`, `codemode.computer.run({{ host: \"{name}\", tool, args }})`",
                     connection["state"].as_str().unwrap_or("offline")
                 ),
                 "thirdParty" => format!(
@@ -800,30 +872,6 @@ fn tool_declaration(tool: &Tool) -> Value {
     declaration
 }
 
-/// The risk gate for this process's computer-use calls, with Clef beside axod when installed.
-fn computer_gate(socket: &Path) -> &'static crate::computer_gate::Gate {
-    static GATE: std::sync::OnceLock<crate::computer_gate::Gate> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| {
-        // Until the model files are downloaded, its answers are "unavailable" and the word list
-        // alone decides; the first process to find them missing starts the download.
-        let judge = socket
-            .parent()
-            .and_then(axod_infer::Infer::beside_current_exe)
-            .filter(|infer| infer.helper.exists())
-            .inspect(|infer| {
-                if infer.installed().is_err() {
-                    let outcome = infer.install_in_background();
-                    eprintln!(
-                        "axod mcp: event=computer.gate_model_missing download={}",
-                        outcome.map_or_else(|why| why, |()| "started".into())
-                    );
-                }
-            })
-            .map(|infer| Box::new(infer) as Box<dyn crate::computer_gate::Judge>);
-        crate::computer_gate::Gate::new(judge)
-    })
-}
-
 /// The `computer` tool's arguments; anything else, such as a claimed approval, is refused.
 const COMPUTER_ARGUMENTS: &[&str] = &["tool", "args", "confirm"];
 
@@ -849,7 +897,7 @@ impl McpServer {
             Some(Value::Bool(true)) => true,
             Some(_) => return tool_error("confirm must be true or false"),
         };
-        let gate = computer_gate(&self.socket);
+        let gate = crate::computer_gate::for_socket(&self.socket);
         let asked = match gate.check(tool, &args, asked_for) {
             crate::computer_gate::Verdict::Allow => false,
             crate::computer_gate::Verdict::Ask(question) => {
@@ -949,6 +997,20 @@ mod tests {
     use super::*;
 
     const SID: SessionId = SessionId::from_u128(0x0b8f4e2a_7c1d_4e6b_9a3f_5d2c8e1b7a49);
+
+    #[test]
+    fn a_script_s_images_are_found_once_wherever_it_put_them() {
+        let image = json!({ "asset": format!("sha256:{}", "a".repeat(64)), "name": "click-1.png", "mimeType": "image/png", "size": 3 });
+        let file = json!({ "asset": format!("sha256:{}", "b".repeat(64)), "name": "a.pdf", "mimeType": "application/pdf", "size": 3 });
+        let result = json!({ "result": {
+            "shots": [{ "content": [{ "type": "text", "text": "ok" }, { "type": "image", "attachment": image }] }],
+            "again": { "type": "image", "attachment": image },
+            "pdf": { "type": "image", "attachment": file },
+        } });
+        let mut found = Vec::new();
+        collect_image_attachments(&result, &mut found);
+        assert_eq!(found, vec![image]);
+    }
 
     #[test]
     fn computer_use_is_offered_only_where_it_exists_and_lists_only_the_allowlist() {
@@ -1148,7 +1210,7 @@ mod tests {
         assert_eq!(
             summarize_connections(&listed).unwrap(),
             "This account's connections now (`connections_execute` calls them):\n\
-             - `codemode.studio.bash({ command })`: the Mac studio, online\n\
+             - the Mac `studio`, online: `codemode.bash.run({ host: \"studio\", command })`, `codemode.computer.run({ host: \"studio\", tool, args })`\n\
              - `codemode.linear.*`: the MCP server at https://mcp.linear.app/mcp (needs sign-in)\n\
              - `codemode.apps.gmail.<tool>({ account, ... })`: Gmail; pass `account` as one of a@x.test. Tools: search_messages, get_message\n\
              - `codemode.apps.calendar.<tool>({ account, ... })`: Google Calendar; no account signed in yet. Tools: list_events"

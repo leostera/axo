@@ -57,6 +57,21 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         self.0.resolve_elicitation(id, answer)
     }
 
+    fn remote_computer(
+        &self,
+        request: &axo_relay::computer::ComputerParams,
+    ) -> Result<serde_json::Value, (i64, String)> {
+        self.0.remote_computer(request)
+    }
+
+    fn computer_status(&self) -> serde_json::Value {
+        self.0.computer_status()
+    }
+
+    fn set_asset_source(&self, source: Option<axo_relay::assets::AssetSource>) {
+        self.0.set_asset_source(source);
+    }
+
     fn publish_relay_status(&self, status: &RelayStatus) {
         self.0.publish_event(Event::RelayStatus {
             status: status.clone(),
@@ -277,8 +292,12 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                     .map_err(io::Error::other)?,
             ),
         };
-        self.0
-            .prompt_pi(session_id, text, command_id.or(generated.as_ref()), attachments)
+        self.0.prompt_pi(
+            session_id,
+            text,
+            command_id.or(generated.as_ref()),
+            attachments,
+        )
     }
 
     fn remote_stop_pi_turn(
@@ -417,6 +436,7 @@ fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Err
 impl SessionManager {
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
         super::elicitations::add_methods(self, handler);
+        super::computer::add_methods(self, handler);
         let manager = Arc::clone(self);
         handler.add_typed(
             method::SESSION_LIST,
