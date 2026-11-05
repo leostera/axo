@@ -7,6 +7,7 @@
 - Updated: 2026-11-04
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0019](RFD0019-planned-restarts.md)
+- Amended By: [RFD0032](RFD0032-push-delivery.md)
 
 ## Summary
 

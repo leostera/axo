@@ -7,7 +7,7 @@
 - Updated: 2026-11-01 (the peers socket, as built)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md), [RFD0018](RFD0018-session-sync-and-client-delivery.md)
-- Amended By: [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md)
+- Amended By: [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md), [RFD0032](RFD0032-push-delivery.md)
 
 ## Summary
 
