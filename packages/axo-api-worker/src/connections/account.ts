@@ -336,9 +336,11 @@ export class AccountConnections {
         title: "Drive a Mac's apps",
         description:
           "Runs one computer-use tool on one of the account's Macs, as the local `computer` tool does: read a window with get_window_state, " +
-          "act with click, type_text, run_steps, ... Returns the tool's { content, structuredContent, isError }; images (screenshots) come as " +
-          "{ type: \"image\", asset } in the account's assets, and the agent sees them when the script returns them. An action that may be " +
-          "destructive or hard to undo is checked on that Mac and, if flagged, the person is asked first (up to 5 minutes); it runs only if they allow it.",
+          "take a screenshot, act with click, type_text, run_steps, ... Returns the tool's { content, structuredContent, isError }; images " +
+          "(screenshots) come as { type: \"image\", attachment } in the account's assets, and the agent sees them when the script returns them. " +
+          "An action that may be destructive or hard to undo is checked on that Mac and, if flagged, the person is asked first (up to 5 minutes); " +
+          "it runs only if they allow it. For a password, login or one-time code use request_input ({ pid, window_id, fields: [{ kind, label? }], " +
+          "submit? }): the person types it on their own device, it goes to that Mac encrypted, and you get only a receipt.",
         inputSchema: z.toJSONSchema(computerInputSchema) as Record<string, unknown>,
         call: `codemode.${COMPUTER_NAMESPACE}.run`,
       },

@@ -26,6 +26,8 @@ export const ELICITATION_LIMITS = {
 } as const;
 
 export const ELICITATION_ERRORS = {
+  /** An input answer that is missing, did not open, or does not fit its fields; it still waits. */
+  badInput: -32014,
   /** Answered already, expired, or never asked. */
   notPending: -32011,
   /** Only a person answers: a Mac's own credential, or anything else, cannot. */
@@ -34,11 +36,47 @@ export const ELICITATION_ERRORS = {
   notATool: -32013,
 } as const;
 
-/** What the person is asked. Only `confirm` (yes or no) exists yet. */
+/**
+ * Values sealed to a Mac's input key (RFD0029, the side channel for input): HPKE base mode with
+ * DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM. The plaintext is
+ * `{ "values": { "<field id>": "<value>" } }`, bound by `aad` to the request and the address shown.
+ */
+export const INPUT_SEAL = {
+  info: "axo-ask-input/v1",
+  aad: (requestId: string, origin: string | undefined) => `${requestId}\n${origin ?? ""}`,
+  /** Fields one request asks for at most, and characters in one value. */
+  maxFields: 8,
+  maxChars: 1_000,
+} as const;
+
+/** What a field is for: the form gives it the matching autofill hint and entry. */
+export const inputFieldKindSchema = z.enum(["username", "email", "password", "code", "text"]);
+export type InputFieldKind = z.infer<typeof inputFieldKindSchema>;
+
+/** Where an input request's values go, all of it the Mac's own reading of the window. */
+export const inputRequestSchema = z.object({
+  app: z.string().min(1).max(200),
+  window: z.string().max(500),
+  /** The page's origin, from the browser itself; absent outside a browser. */
+  origin: z.string().min(1).max(500).optional(),
+  fields: z.array(z.object({ id: z.string().regex(/^f[0-9]$/), label: z.string().max(200), kind: inputFieldKindSchema }).strict()).min(1).max(INPUT_SEAL.maxFields),
+  submit: z.string().min(1).max(200).optional(),
+  /** The Mac's input key: base64 of an uncompressed P-256 point. Pinned per Mac. */
+  key: z.base64().length(88),
+}).strict();
+export type InputRequest = z.infer<typeof inputRequestSchema>;
+
+export const sealedSchema = z.object({
+  enc: z.base64().length(88),
+  ciphertext: z.base64().min(4).max(16_384),
+}).strict();
+export type Sealed = z.infer<typeof sealedSchema>;
+
+/** What the person is asked: yes or no, or values for a form's fields. */
 export const elicitationSchema = z.object({
   id: z.uuid(),
   sessionId: sessionIdSchema,
-  kind: z.literal("confirm"),
+  kind: z.enum(["confirm", "input"]),
   /**
    * Who asks: the agent, in its own words, or Axo's computer-use gate, describing what it is
    * about to do. axod lets only its own `axod mcp` ask as a tool. Absent from an older axod.
@@ -46,6 +84,8 @@ export const elicitationSchema = z.object({
   askedBy: z.enum(["agent", "computerUse"]).default("agent"),
   /** The asker's words, shown as theirs. */
   message: z.string().min(1).max(ELICITATION_LIMITS.messageChars),
+  /** For `input`: the fields, where they go, and the key to seal them to. */
+  input: inputRequestSchema.optional(),
   /** Unix milliseconds. */
   createdAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().nonnegative(),
@@ -71,12 +111,15 @@ export const clientElicitationResolveParamsSchema = z.object({
   hostId: hostIdSchema,
   elicitationId: z.uuid(),
   action: elicitationAnswerSchema,
+  /** An accepted input request's values, sealed to the Mac: the cloud never reads them. */
+  sealed: sealedSchema.optional(),
 }).strict();
 /** The answer as HostDO hands it to the Mac. */
 export const hostElicitationResolveParamsSchema = z.object({
   target: hostRefSchema,
   elicitationId: z.uuid(),
   action: elicitationAnswerSchema,
+  sealed: sealedSchema.optional(),
 }).strict();
 export const elicitationResolveResultSchema = z.object({ resolved: z.literal(true) }).strict();
 

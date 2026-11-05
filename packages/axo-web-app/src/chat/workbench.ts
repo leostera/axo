@@ -11,7 +11,8 @@ import type {
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
-import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment } from "@axo/protocol";
+import { sealInput } from "@axo/app";
+import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type Sealed } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 import { ChatTranscript, type TranscriptRecord } from "./transcript.ts";
 
@@ -75,7 +76,7 @@ export interface AccountLink {
   open(request: OpenRequest): Promise<ClientOpenResult>;
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
-  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer): Promise<void>;
+  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, sealed?: Sealed): Promise<void>;
   command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
@@ -99,6 +100,25 @@ export interface ClientIdentity {
 export type Link = "connecting" | "connected" | "reconnecting" | "idle";
 
 /** What a Mac's agent asks the person (RFD0029), until it is resolved. */
+/**
+ * Each Mac's input key, as first seen (trust on first use, RFD0029): values are sealed only to
+ * that key, so a key the cloud swapped in gets nothing.
+ */
+export const inputKeyPins = {
+  memory: new Map<string, string>(),
+  check(hostId: string, key: string): "pinned" | "same" | "changed" {
+    const name = `axo.inputKey.${hostId}`;
+    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
+    const known = storage?.getItem(name) ?? this.memory.get(name);
+    if (known === undefined || known === null) {
+      storage?.setItem(name, key);
+      this.memory.set(name, key);
+      return "pinned";
+    }
+    return known === key ? "same" : "changed";
+  },
+};
+
 export interface AskedQuestion {
   readonly hostId: string;
   readonly elicitation: Elicitation;
@@ -1021,13 +1041,35 @@ export class ChatWorkbench {
    * Answers what a Mac asks. The card stays until the Mac says it is settled; an answer that came
    * too late (another device answered, or it expired) removes it.
    */
-  async answerQuestion(elicitationId: string, action: ElicitationAnswer): Promise<void> {
+  async answerQuestion(elicitationId: string, action: ElicitationAnswer, values?: Record<string, string>): Promise<void> {
     const question = this.asked.get(elicitationId);
     if (!question || question.answering || !this.connection) return;
+    const input = question.elicitation.input;
+    let sealed: Sealed | undefined;
+    if (input && action === "accept") {
+      // The values leave this tab only sealed to the Mac's key, and only to the key first seen
+      // for that Mac: a different one may be the cloud's, not the Mac's.
+      if (inputKeyPins.check(question.hostId, input.key) === "changed") {
+        this.failure = "This Mac's encryption key changed. Nothing was sent; check the key in Axo on that Mac.";
+        this.changed();
+        return;
+      }
+      if (!values) return;
+      question.answering = action;
+      this.changed();
+      try {
+        sealed = await sealInput(input.key, elicitationId, input.origin, values);
+      } catch (error) {
+        question.answering = null;
+        this.failure = describe(error);
+        this.changed();
+        return;
+      }
+    }
     question.answering = action;
     this.changed();
     try {
-      await this.connection.resolveElicitation(question.hostId, elicitationId, action);
+      await this.connection.resolveElicitation(question.hostId, elicitationId, action, sealed);
       this.failure = null;
     } catch (error) {
       question.answering = null;

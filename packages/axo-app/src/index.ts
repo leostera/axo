@@ -24,6 +24,7 @@ import {
   type ClientSession,
   type Elicitation,
   type ElicitationAnswer,
+  type Sealed,
   type ElicitationResolved,
   type ProgressSnapshot,
   type SessionMetadata,
@@ -55,6 +56,7 @@ import { z } from "zod";
 
 export type HostRef = z.infer<typeof hostRefSchema>;
 export type { Elicitation, ElicitationAnswer, ElicitationResolved };
+export { keyFingerprint, sealInput } from "./seal.ts";
 export type { ClientHello, ClientHost, ClientOpenResult, ClientRecord, ClientSession, ProgressSnapshot, SessionMetadata, SessionStatus };
 
 export class AxoApiError extends Error {
@@ -272,8 +274,8 @@ export class AccountConnection {
    * Answers what a Mac asks (RFD0029). The Mac takes the first answer; a later one fails with
    * `ELICITATION_ERRORS.notPending`.
    */
-  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer): Promise<void> {
-    elicitationResolveResultSchema.parse(await this.request(ELICITATION_METHODS.resolve, { hostId, elicitationId, action }));
+  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, sealed?: Sealed): Promise<void> {
+    elicitationResolveResultSchema.parse(await this.request(ELICITATION_METHODS.resolve, { hostId, elicitationId, action, ...(sealed ? { sealed } : {}) }));
   }
 
   close(): void {

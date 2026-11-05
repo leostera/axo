@@ -214,7 +214,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
               key={question.elicitation.id}
               question={question}
               canAnswer={online}
-              onAnswer={action => void workbench.answerQuestion(question.elicitation.id, action)}
+              onAnswer={(action, values) => void workbench.answerQuestion(question.elicitation.id, action, values)}
             />
           ))}
           {session && transcript?.question ? (

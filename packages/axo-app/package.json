@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@axo/protocol": "workspace:*",
+    "@hpke/core": "^1.10.0",
     "zod": "^4.5.0"
   },
   "devDependencies": {

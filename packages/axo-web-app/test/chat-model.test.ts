@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
@@ -8,7 +9,7 @@ import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { connectionsResults } from "@axo/protocol";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
-import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
+import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
@@ -380,10 +381,10 @@ class FakeAccount implements AccountLink {
 
   closeSession(sessionId: string) { this.closed.push(sessionId); }
 
-  resolves: Array<{ hostId: string; elicitationId: string; action: string }> = [];
+  resolves: Array<{ hostId: string; elicitationId: string; action: string; sealed?: { enc: string; ciphertext: string } }> = [];
   resolveFails: Error | null = null;
-  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline") {
-    this.resolves.push({ hostId, elicitationId, action });
+  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline", sealed?: { enc: string; ciphertext: string }) {
+    this.resolves.push(sealed ? { hostId, elicitationId, action, sealed } : { hostId, elicitationId, action });
     if (this.resolveFails) throw this.resolveFails;
   }
 
@@ -738,4 +739,27 @@ test("an answer that came too late removes the card; another failure lets the pe
   account.resolveFails = Object.assign(new Error("Already answered"), { code: -32011 });
   await workbench.answerQuestion(elicitation.id, "decline");
   assert.equal(workbench.questions().length, 0);
+});
+
+test("a form's values leave only sealed, and only to the key first seen for that Mac", async () => {
+  const { workbench, account } = await workbenchWith();
+  const vectors = JSON.parse(readFileSync(new URL("../../../crates/axo-seal/testdata/vectors.json", import.meta.url), "utf8"));
+  const input = { app: "Safari", window: "Sign in", origin: "https://github.com", fields: [{ id: "f0", label: "Password", kind: "password" as const }], key: vectors.publicKey };
+  const ask = (id: string, key = input.key) => account.events.elicitationRequested?.(hostId, { id, sessionId: sid(1), kind: "input" as const, askedBy: "computerUse" as const, message: "Fill Password in Safari.", input: { ...input, key }, createdAt: 1, expiresAt: 2 });
+  inputKeyPins.memory.clear();
+  ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60");
+  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60", "accept", { f0: "hunter2" });
+  const [sent] = account.resolves;
+  assert.equal(sent!.action, "accept");
+  assert.ok(sent!.sealed && !JSON.stringify(sent).includes("hunter2"));
+
+  // Another key for the same Mac gets nothing.
+  const other = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=";
+  ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", other);
+  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "accept", { f0: "hunter2" });
+  assert.equal(account.resolves.length, 1);
+  assert.match(workbench.failure ?? "", /key changed/);
+  // Cancelling needs no key.
+  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "decline");
+  assert.deepEqual(account.resolves[1], { hostId, elicitationId: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", action: "decline" });
 });

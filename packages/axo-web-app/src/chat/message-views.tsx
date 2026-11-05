@@ -3,6 +3,7 @@ import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from 
 import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
 import type { AskedQuestion, PendingPrompt } from "./workbench.ts";
 import { Icon, type IconName } from "./icons.tsx";
+import type { InputFieldKind } from "@axo/protocol";
 
 /** Bold, italics, links and `code` within a line. Remote images are never fetched. */
 function Inline({ text }: { text: string }) {
@@ -319,9 +320,10 @@ export function PendingView({ prompt, onDismiss }: { prompt: PendingPrompt; onDi
 export function ElicitationCard({ question, canAnswer, onAnswer }: {
   question: AskedQuestion;
   canAnswer: boolean;
-  onAnswer: (action: "accept" | "decline") => void;
+  onAnswer: (action: "accept" | "decline", values?: Record<string, string>) => void;
 }) {
   const { elicitation, answering } = question;
+  if (elicitation.kind === "input" && elicitation.input) return <InputCard question={question} canAnswer={canAnswer} onAnswer={onAnswer} />;
   const disabled = !canAnswer || answering !== null;
   // Axo's computer-use gate asks before an action it stopped; only axod's own tools can say so.
   const title = elicitation.askedBy === "computerUse" ? "Axo asks before acting on your Mac" : "The agent asks you";
@@ -338,6 +340,78 @@ export function ElicitationCard({ question, canAnswer, onAnswer }: {
         <button className="elicitation-button" disabled={disabled} onClick={() => onAnswer("decline")}>No</button>
       </div>
     </div>
+  );
+}
+
+const AUTOCOMPLETE: Record<InputFieldKind, { type: string; autoComplete: string; inputMode?: "numeric" }> = {
+  username: { type: "text", autoComplete: "username" },
+  email: { type: "email", autoComplete: "username" },
+  password: { type: "password", autoComplete: "current-password" },
+  code: { type: "text", autoComplete: "one-time-code", inputMode: "numeric" },
+  text: { type: "text", autoComplete: "off" },
+};
+
+/**
+ * Values the agent must not see, for a form on the person's Mac (RFD0029). What it shows is the
+ * Mac's own reading of the window; what the person types is sealed to that Mac before it leaves
+ * this tab, and the agent only learns that the fields were filled.
+ */
+function InputCard({ question, canAnswer, onAnswer }: {
+  question: AskedQuestion;
+  canAnswer: boolean;
+  onAnswer: (action: "accept" | "decline", values?: Record<string, string>) => void;
+}) {
+  const { elicitation, answering } = question;
+  const input = elicitation.input!;
+  const [values, setValues] = useState<Record<string, string>>({});
+  const disabled = !canAnswer || answering !== null;
+  const complete = input.fields.every(field => (values[field.id] ?? "") !== "");
+  const title = "Axo asks you to sign in on your Mac";
+  return (
+    <form
+      className="tool-card elicitation-card"
+      aria-label={title}
+      autoComplete="on"
+      onSubmit={event => {
+        event.preventDefault();
+        if (disabled || !complete) return;
+        onAnswer("accept", values);
+        setValues({});
+      }}
+    >
+      <div className="tool-heading">
+        <Icon name="laptop" size={18} />
+        <span className="tool-name">{title}</span>
+        {answering ? <span className="spinner" aria-hidden="true" /> : null}
+      </div>
+      <p className="elicitation-place">
+        <strong>{input.origin ?? input.window}</strong>
+        <span>in {input.app}{input.submit ? `, then “${input.submit}”` : ""}</span>
+      </p>
+      {input.fields.map(field => {
+        const hint = AUTOCOMPLETE[field.kind];
+        return (
+          <label key={field.id} className="elicitation-field">
+            <span>{field.label || field.kind}</span>
+            <input
+              name={field.id}
+              type={hint.type}
+              autoComplete={hint.autoComplete}
+              inputMode={hint.inputMode}
+              maxLength={1000}
+              disabled={disabled}
+              value={values[field.id] ?? ""}
+              onChange={event => setValues(current => ({ ...current, [field.id]: event.target.value }))}
+            />
+          </label>
+        );
+      })}
+      <p className="elicitation-note">Goes straight to your Mac, encrypted for it. The agent never sees it.</p>
+      <div className="elicitation-actions">
+        <button type="submit" className="elicitation-button primary" disabled={disabled || !complete}>Fill in</button>
+        <button type="button" className="elicitation-button" disabled={disabled} onClick={() => onAnswer("decline")}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
