@@ -4,7 +4,7 @@
 - Status: Partially implemented (step 1: yes-or-no questions, answered remotely)
 - Author: leostera
 - Start Date: 2026-11-04
-- Updated: 2026-11-04
+- Updated: 2026-11-05
 - Document Type: Proposal
 - Amends: [RFD0028](RFD0028-computer-use.md), [RFD0018](RFD0018-session-sync-and-client-delivery.md)
 
@@ -25,6 +25,8 @@ A request appears on every client the person has open:
 - as a push notification on iOS.
 
 The first answer wins, and the other clients dismiss their card. Only requests that block on the person notify; a new message never does.
+
+**Tools ask; agents cannot approve.** A tool that needs the person's consent asks for it itself, for the exact action it is about to take, and acts only on the answer to that request. No tool takes consent as an argument. An agent may ask questions of its own, but their answers authorize nothing.
 
 ## Motivation
 
@@ -99,13 +101,32 @@ axod, the daemon, owns every request. A request holds:
 - **for input:** its `fields` (`label`, `kind`, `target` element token) and an optional `then` action;
 - `state`: `pending`, then `allowed`, `denied`, `filled`, `expired` or `cancelled`.
 
-**Who creates them:**
-- The gate creates a confirm request for every flagged action, replacing RFD0028's refusal and its `confirm: true`. The agent no longer has a way to approve.
-- The agent creates input requests with `request_input`. It may *ask*, but nothing it sends can *answer*.
+**Who creates them:** tools, for consent (see the next section), and agents, for questions of their own.
+- The computer-use gate creates a confirm request for every flagged action, replacing RFD0028's refusal and its `confirm: true`.
+- `request_input` is the agent asking for values, but the request is made by the computer tool, which fills them; the agent may *ask*, but nothing it sends can *answer*.
+- `elicitation_request` is the agent's own question. Its answer is for the agent only.
 
 **How `axod mcp` waits:** it calls `axo.elicitation.request` on the daemon and blocks until the request resolves. The call returns `allowed` (and the action runs), `denied`, `expired` or `filled` (with a receipt).
 
 **Persistence:** requests live in `axo.db`. When axod restarts, pending requests expire, because the waiting tool call died with the old process.
+
+### Tools ask; agents cannot approve
+
+An agent must not be the one that says the person agreed, because whatever reaches the agent can be wrong, stale, or written by a web page. So consent is something tools get for themselves:
+
+1. **A tool that needs consent asks for it itself.** It decides what it is about to do first (the app, the window and element, the page's origin; for other tools, the exact command or call), then creates the request with that, and runs only on its answer. Whether an action needs consent is the tool's decision: the gate's checks, or what a tool declares about itself, never something the agent says.
+2. **Consent is never an argument.** No tool takes `confirm`, an elicitation id, an answer, or a claim that the person agreed. A tool's schema has no such field, and a call that passes one is refused rather than ignored, so an agent that tries learns it cannot.
+3. **An answer goes back only to the call that asked.** axod returns the outcome on the connection that made the request and nowhere else, and keeps no record a tool could look up later. A request made by anything else, including the agent's own question or one a script makes on `axod.sock`, cannot be presented to a tool: there is no way to present one.
+4. **An answer is for one action, once.** An *Allow once* runs the action it was asked for, a single time. If the action changed before it runs (the window changed, the element is gone, the arguments differ), the tool asks again. The only standing consent is an Always-allow rule, which only the person creates (see Always allow).
+5. **The agent's own questions authorize nothing.** `elicitation_request` is for the agent to check with the person ("delete the old branches?"). Its answer comes back to the agent as information. A later tool call that depends on it is gated like any other.
+6. **The person can tell them apart.** A tool's request shows what the tool will do and why it stopped, from the tool's own reading; an agent's question shows the agent's words, labelled as the agent's.
+
+**Which tools ask:**
+- **Computer use:** the gate, for flagged actions, and the computer tool, for `request_input`.
+- **Apps and connections (planned):** an app tool that sends, pays or deletes (Gmail's send, a payment, removing files) is marked as needing consent, and the account asks before it runs it. The request is made by the account's runner, outside the agent's script, and is answered like any other.
+- **Shell commands:** not gated. An agent's `bash` is the person's own user; this RFD does not try to stop what it can do (see Drawbacks).
+
+**Labels are not proof.** The agent runs as the person, so a script can call `axo.elicitation.request` and word its question like a tool's. That can mislead the person about who is asking, but it cannot approve anything: the answer goes back to that script only (rule 3), and no tool takes it (rule 2). Once the gate runs in axod itself, where the agent cannot reach it, axod labels the requests it makes as Axo's own.
 
 ### Delivery to clients
 
@@ -227,6 +248,8 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 - **ClientDO** takes `axo.elicitation.resolve` only from a person's client. A Mac following its peers (`host-…` clients) neither receives elicitations nor answers them (`-32012`).
 - **Clients:** the web and iOS show a card in the chat, with the agent's words, Yes and No, and mark the chat as needing the person in the chat list. The card stays until the Mac says it is settled.
 
+Until the gate asks, RFD0028's `computer` still takes `confirm: true`: an agent can approve a flagged action by itself. Removing it, with the gate asking instead, is the next step.
+
 Not yet built, in the order of this RFD: the gate's confirm requests, the Mac app's card and notification (with the code-signature check), push notifications, device-signed answers, input, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
 
 ## Testing
@@ -238,6 +261,7 @@ Not yet built, in the order of this RFD: the gate's confirm requests, the Mac ap
   - **The checker found two flaws in the first draft**, now in this RFD:
     - a Deny arriving during a fill overrode the fill (fixed by claiming on the first answer);
     - a parallel read caught the value before its receipt (fixed by one call per window).
+- **To add to `specs/elicitations/ask-the-person.ts`** for *Tools ask; agents cannot approve*: an agent that passes `confirm`, presents the answer to its own question, or reuses an answer for another action. The property: every gated action runs only on the person's answer to the request its tool made for that action.
 - `specs/elicitations/open-a-link.ts` models `wrangler login`, the agent, a local admin service, the loopback interface, axod, HostDO, the iPhone and the web app, with a lost or duplicated callback and an axod restart. Safety held on every path of up to 25 events (13.4M states): the code reaches only the command that opened the link, never the cloud in the clear, no other local service, and once per request. It found:
   - a check of the port's owner made before connecting is stale if the command exits and the agent binds the port (fixed by checking on the connection);
   - a link the agent passes on must name its opener by who printed it, not by who holds the port when it asks;
@@ -260,12 +284,15 @@ Not yet built, in the order of this RFD: the gate's confirm requests, the Mac ap
 
 - **More pieces:** APNs infrastructure, a device-key registry, a Mac request key and three clients' UIs.
 - **The first-seen key:** a first-seen fingerprint can be swapped by a compromised Worker, at first use only. After that, the pins hold.
+- **Labels can be imitated:** until the gate runs in axod, a script on the Mac can word a question like a tool's. It approves nothing, but it can mislead (see Tools ask; agents cannot approve).
 - **The gate's reach:** an agent can still drive apps through `osascript` or keystrokes in `bash`, outside the computer tool. This gate covers the computer tool, not every power an agent has over the Mac.
 - **Passkeys at a distance:** a website's passkey ceremony (WebAuthn) cannot be answered from afar. It needs the Mac's Touch ID, or the phone within Bluetooth range for the hybrid transport. Requests can only offer "Touch ID is needed at the Mac", or use one-time codes or tokens instead.
 - **Passkeys in the iOS sheet:** a sheet that can watch navigations (`WKWebView`) may not offer the person's passkeys for third-party sites; Apple's sign-in sheet (`ASWebAuthenticationSession`) offers them but can't catch a `http://localhost` redirect. To be settled with a spike; the fallback is Safari plus pasting the final address, as on the web.
 - **Loopback on the web is manual:** copying an address from a failed page is clumsy. Device-code flags avoid it where a command has one, and the agent should prefer them when the person is away.
 
 ## Unresolved questions
+
+- **Which app tools ask:** each app's tools that send, pay or delete need marking, and the account's runner needs a way to make a request outside a Mac. Is a list per app enough, or should a tool's annotations (MCP's `destructiveHint`) decide for third-party servers too?
 
 - **Saved values:** should axod keep values the person chooses to save, in its own Keychain items, so a second login needs only a confirm?
 - **Web Push:** should the web app get push too, or is it enough to show requests while it is open?
