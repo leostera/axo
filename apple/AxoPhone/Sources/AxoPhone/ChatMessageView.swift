@@ -1,4 +1,5 @@
 import AxoClient
+import AxoProtocol
 import AxoPhoneModel
 import ImageIO
 import SwiftUI
@@ -309,6 +310,44 @@ struct AgentActivityView: View {
     } message: {
       Text("This stops everything the agent is doing now, including the tools it is running.")
     }
+  }
+}
+
+/// What a Mac's agent asks the person (RFD0029). Only the person answers: the agent waits for Yes
+/// or No, and an answer from any of their devices settles it everywhere.
+struct ElicitationCard: View {
+  let question: AskedQuestion
+  let canAnswer: Bool
+  /// Why the last answer did not go.
+  var failure: String?
+  let answer: (ElicitationAnswer) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Label("The agent asks you", systemImage: "questionmark.bubble")
+        .font(.headline)
+      Text(question.elicitation.message)
+        .font(.body)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      HStack(spacing: 12) {
+        Button(question.answering == .accept ? "Yes…" : "Yes") { answer(.accept) }
+          .buttonStyle(.borderedProminent)
+          .accessibilityIdentifier("elicitationYes")
+        Button(question.answering == .decline ? "No…" : "No") { answer(.decline) }
+          .buttonStyle(.bordered)
+          .accessibilityIdentifier("elicitationNo")
+      }
+      .disabled(!canAnswer || question.answering != nil)
+      if let failure {
+        Text(failure).font(.footnote).foregroundStyle(.secondary)
+      }
+    }
+    .padding(18)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
+    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.orange.opacity(0.4), lineWidth: 1))
+    .accessibilityIdentifier("elicitationCard")
   }
 }
 

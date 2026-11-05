@@ -380,4 +380,9 @@ public enum AccountEvent: Equatable, Sendable {
   case progress(sessionID: SessionID, slot: String, snapshot: JSONValue)
   /// The cloud copy was cut back: drop every record after `keep`; `epoch` follows.
   case reset(sessionID: SessionID, epoch: Int64, keep: Int64)
+  /// A Mac's agent asks the person (RFD0029): show it until it is resolved. Sent again after
+  /// each hello.
+  case elicitationRequested(hostID: UUID, Elicitation)
+  /// It was answered, here or elsewhere, or nobody answered in time: dismiss it.
+  case elicitationResolved(hostID: UUID, id: String, action: ElicitationAction)
 }

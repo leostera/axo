@@ -430,6 +430,55 @@ final class PhoneWorkbenchTests: XCTestCase {
     try await eventually { workbench.current?.status == .offline }
   }
 
+  // MARK: - What the agents ask (RFD0029)
+
+  func testWhatAMacAsksShowsInItsChatUntilSettledAndOnlyOneAnswerGoes() async throws {
+    let a = Mac("A", online: true, sessions: [1])
+    let world = PhoneWorld([a], answers: false)
+    try await world.start()
+    let workbench = world.workbench!
+    let channel = try await world.transport.channel()
+    let id = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a"
+    let asked = #"{"hostId":"\#(a.id.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"confirm","message":"Delete the branch?","createdAt":1,"expiresAt":2}}"#
+    channel.notify("axo.elicitation.requested", asked)
+    channel.notify("axo.elicitation.requested", asked)
+    try await eventually { workbench.questions(in: 1).map(\.elicitation.message) == ["Delete the branch?"] }
+    XCTAssertEqual(workbench.questions.count, 1)
+    XCTAssertTrue(workbench.questions(in: 2).isEmpty)
+
+    let answering = Task { await workbench.answer(id, .accept) }
+    let request = try await channel.nextRequest("axo.elicitation.resolve")
+    XCTAssertEqual(request.params["elicitationId"] as? String, id)
+    XCTAssertEqual(request.params["action"] as? String, "accept")
+    XCTAssertEqual(request.hostID, a.id.uuidString.lowercased())
+    XCTAssertEqual(workbench.questions.first?.answering, .accept)
+    await workbench.answer(id, .decline)
+    channel.reply(to: request.id, result: #"{"resolved":true}"#)
+    await answering.value
+    XCTAssertFalse(channel.hasRequest, "a second answer never goes")
+
+    // The card goes when the Mac says so, wherever the answer came from.
+    XCTAssertEqual(workbench.questions.count, 1)
+    channel.notify("axo.elicitation.resolved", #"{"hostId":"\#(a.id.uuidString.lowercased())","id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","action":"accept"}"#)
+    try await eventually { workbench.questions.isEmpty }
+  }
+
+  func testAnAnswerThatCameTooLateRemovesTheCard() async throws {
+    let a = Mac("A", online: true, sessions: [1])
+    let world = PhoneWorld([a], answers: false)
+    try await world.start()
+    let workbench = world.workbench!
+    let channel = try await world.transport.channel()
+    let id = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5b"
+    channel.notify("axo.elicitation.requested", #"{"hostId":"\#(a.id.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"confirm","message":"Go?","createdAt":1,"expiresAt":2}}"#)
+    try await eventually { workbench.questions.count == 1 }
+    let answering = Task { await workbench.answer(id, .accept) }
+    let request = try await channel.nextRequest("axo.elicitation.resolve")
+    channel.reply(to: request.id, error: -32011, message: "Already answered, or no longer asked")
+    await answering.value
+    XCTAssertTrue(workbench.questions.isEmpty)
+  }
+
   func testAnArchivedChatLeavesTheList() async throws {
     let a = Mac("A", online: true, sessions: [1, 2])
     let world = PhoneWorld([a])

@@ -525,6 +525,11 @@ private struct SessionRow: View {
   // Read here, in the row's own body, so the row redraws when the open chat changes: a lazy
   // stack does not re-run its rows for a change only the menu's body saw.
   private var isSelected: Bool { workbench.selection == selection }
+  /// A chat whose agent waits for the person's answer needs them (RFD0029).
+  private var shownStatus: RemoteSessionStatus? {
+    if let session = selection.session, !workbench.questions(in: session).isEmpty { return .needsAttention }
+    return status
+  }
 
   var body: some View {
     HStack(spacing: 8) {
@@ -538,7 +543,7 @@ private struct SessionRow: View {
           .foregroundStyle(.tertiary)
           .lineLimit(1)
       }
-      SessionStatusDot(status: status)
+      SessionStatusDot(status: shownStatus)
       if let lastActive {
         // Ages only need to move once a minute.
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -567,7 +572,7 @@ private struct SessionRow: View {
   private var spokenValue: String {
     let age = lastActive.map { $0.formatted(.relative(presentation: .named)) }
     let host = hostLabel.map { "on \($0)" }
-    return [host ?? "", SessionStatusDot.spoken(status), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
+    return [host ?? "", SessionStatusDot.spoken(shownStatus), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
   }
 }
 

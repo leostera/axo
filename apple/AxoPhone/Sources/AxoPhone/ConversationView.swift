@@ -87,6 +87,13 @@ struct ConversationView: View {
               },
               dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
           }
+          if let id = session?.sessionId {
+            ForEach(phone.questions(in: id)) { question in
+              ElicitationCard(question: question, canAnswer: workbench?.status == .online, failure: phone.answerFailure) { action in
+                Task { await phone.answer(question.id, action) }
+              }
+            }
+          }
           if let question = transcript.question, let id = session?.sessionId {
             QuestionCard(question: question, canAnswer: canSend) { answer in
               Task { await workbench?.answer(answer, in: id) }

@@ -106,6 +106,14 @@ public final class AccountConnection: Sendable {
       timeout: .seconds(10))
   }
 
+  /// Answers what a Mac's agent asks (RFD0029). The Mac takes the first answer; a later one
+  /// fails with `ElicitationError.notPending`.
+  public func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer) async throws {
+    let _: Resolved = try await rpc.call(
+      "axo.elicitation.resolve", params: ResolveParams(hostId: host.uuidString.lowercased(), elicitationId: id, action: action),
+      timeout: .seconds(20))
+  }
+
   // MARK: - Notices
 
   private static func event(from notification: JSONRPCNotification) -> AccountEvent? {
@@ -121,6 +129,12 @@ public final class AccountConnection: Sendable {
     case "axo.client.session.progress":
       return (try? notification.params(as: ProgressNotice.self)).map {
         .progress(sessionID: $0.sessionId, slot: $0.slot, snapshot: $0.snapshot ?? .null)
+      }
+    case "axo.elicitation.requested":
+      return (try? notification.params(as: ElicitationRequestedNotice.self)).map { .elicitationRequested(hostID: $0.hostId, $0.elicitation) }
+    case "axo.elicitation.resolved":
+      return (try? notification.params(as: ElicitationResolvedNotice.self)).map {
+        .elicitationResolved(hostID: $0.hostId, id: $0.id, action: $0.action)
       }
     case "axo.client.session.reset":
       return (try? notification.params(as: ResetNotice.self)).map { .reset(sessionID: $0.sessionId, epoch: $0.epoch, keep: $0.keep) }
@@ -167,6 +181,21 @@ private struct CommandParams<Params: Encodable & Sendable>: Encodable, Sendable 
   let hostId: String
   let method: String
   let params: Params
+}
+private struct ResolveParams: Encodable, Sendable {
+  let hostId: String
+  let elicitationId: String
+  let action: ElicitationAnswer
+}
+private struct Resolved: Decodable, Sendable { let resolved: Bool }
+private struct ElicitationRequestedNotice: Decodable {
+  let hostId: UUID
+  let elicitation: Elicitation
+}
+private struct ElicitationResolvedNotice: Decodable {
+  let hostId: UUID
+  let id: String
+  let action: ElicitationAction
 }
 private struct HostsNotice: Decodable { let hosts: [ClientHost] }
 private struct SessionsNotice: Decodable {

@@ -11,6 +11,17 @@ public protocol AccountFeed: ChatFeed {
   func disconnect() async
   func refresh() async throws -> ClientHello
   func renameHost(_ host: UUID, to name: String) async throws -> String
+  func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer) async throws
+}
+
+/// What a Mac's agent asks the person (RFD0029), until the Mac says it is settled.
+public struct AskedQuestion: Identifiable, Equatable, Sendable {
+  public let hostID: UUID
+  public let elicitation: Elicitation
+  /// This phone sent an answer and waits to hear it was taken.
+  public internal(set) var answering: ElicitationAnswer?
+
+  public var id: String { elicitation.id }
 }
 
 extension AccountConnection: AccountFeed {}
@@ -45,6 +56,10 @@ public final class PhoneWorkbench {
   /// What is typed in each chat's box, kept while other chats are open. A new chat's is keyed by
   /// its Mac with no Session.
   private var drafts: [Selection: String] = [:]
+  /// What the Macs' agents ask now, oldest first (RFD0029).
+  public private(set) var questions: [AskedQuestion] = []
+  /// Why the last answer did not go, until the next one does.
+  public private(set) var answerFailure: String?
   /// A message is on its way; a second tap must not start a second chat.
   public private(set) var isSending = false
   /// The files in each chat's box (RFD0030), uploading or ready, kept like the words.
@@ -95,6 +110,8 @@ public final class PhoneWorkbench {
     lossTask = Task { [weak self] in
       for await _ in losses {
         guard let self else { return }
+        // What is still asked comes again with the next hello.
+        self.questions.removeAll()
         if self.link == .connected { self.reconnect() }
       }
     }
@@ -141,6 +158,38 @@ public final class PhoneWorkbench {
       current?.receive(progress: slot, snapshot: snapshot, in: id)
     case .reset(let id, let epoch, let keep):
       current?.receive(resetTo: keep, epoch: epoch, in: id)
+    case .elicitationRequested(let host, let elicitation):
+      if !questions.contains(where: { $0.id == elicitation.id }) {
+        questions.append(AskedQuestion(hostID: host, elicitation: elicitation))
+      }
+    case .elicitationResolved(_, let id, _):
+      questions.removeAll { $0.id == id }
+    }
+  }
+
+  // MARK: - What the agents ask
+
+  /// What the agent of `session` asks now.
+  public func questions(in session: SessionID) -> [AskedQuestion] {
+    questions.filter { $0.elicitation.sessionId == session }
+  }
+
+  /// Answers what a Mac's agent asks. The card stays until the Mac says it is settled; an answer
+  /// that came too late (another device answered, or it expired) removes it.
+  public func answer(_ id: String, _ action: ElicitationAnswer) async {
+    guard let index = questions.firstIndex(where: { $0.id == id }), questions[index].answering == nil else { return }
+    questions[index].answering = action
+    let host = questions[index].hostID
+    do {
+      try await feed.resolveElicitation(id, on: host, action: action)
+      answerFailure = nil
+    } catch {
+      if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notPending {
+        questions.removeAll { $0.id == id }
+      } else {
+        if let again = questions.firstIndex(where: { $0.id == id }) { questions[again].answering = nil }
+        answerFailure = error.localizedDescription
+      }
     }
   }
 
