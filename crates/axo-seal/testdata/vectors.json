@@ -1,0 +1,23 @@
+{
+  "cases" : [
+    {
+      "ciphertext" : "m4Sr0o34yj+xAjcxkl299UMaTrnUEn8o3sHGL0eQefiutYu7s+nv7Z0zCuO5pkuwWdCW55EPffXPA4U6GwhR3xbv4bba",
+      "enc" : "BFYp4aqm8f7euknCWm2jQMbvbtCDWRzSbvlGLZfvod6lxKM70apAht441SJoUTy4S2mjn7EmKfezlzqE1xQVjAE=",
+      "from" : "webcrypto",
+      "origin" : "https:\/\/github.com",
+      "plaintext" : "{\"values\":{\"f0\":\"me@example.com\",\"f1\":\"hunter2 ✓\"}}",
+      "requestId" : "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a"
+    },
+    {
+      "ciphertext" : "HsLcHj4b7NVhUNKH88\/2F72CBAE\/vLymBFnd\/xnzoKKIGd\/8Okbwnum7luprzMdwtc97d\/+2MFvDVc4+OW4a",
+      "enc" : "BDUDPmMxfb7ef3S\/SLsEhvP24H2XXvnWSjmkrIiGf9KSql+Kn\/zdp6w6TuH6l7J2YYNSBsUxt2vZRPAVcJJa4dI=",
+      "from" : "cryptokit",
+      "origin" : "http:\/\/localhost:8765",
+      "plaintext" : "{\"values\":{\"f0\":\"leo\",\"f1\":\"s3cret pässword\"}}",
+      "requestId" : "0b7f1d2e-3c4a-4b5d-9e6f-7a8b9c0d1e2f"
+    }
+  ],
+  "note" : "A test-only key: axod opens every case with it.",
+  "publicKey" : "BHqrq5Hrx+cmKBfkOIcZ3xOoJv\/ZXgByCTxXSyrJlfMYTncwZzfe0l65EoH589HM\/qM7xGsuqE53fQU94bdb8Bc=",
+  "secretKey" : "G0YVmlitVqMfyNNaOx8mu6yqyC6QDT8ArI2U1GuhYi4="
+}

@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "axo_seal",
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    deps = [
+        "//crates/axo-protocol:axo_protocol",
+        "@crates//:hpke",
+        "@crates//:rand_core",
+        "@crates//:zeroize",
+    ],
+)
+
+rust_test(
+    name = "axo_seal_tests",
+    crate = ":axo_seal",
+    # Cases sealed by the browser (@axo/app) and CryptoKit (the phone and the Mac app).
+    compile_data = ["testdata/vectors.json"],
+    edition = "2024",
+    deps = ["@crates//:serde_json"],
+)
