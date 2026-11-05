@@ -4,7 +4,7 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-10-31
-- Updated: 2026-11-04 (as built)
+- Updated: 2026-11-05 (the gate asks the person, per RFD0029)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md)
 - Amended By: [RFD0029](RFD0029-ask-the-person.md)
@@ -17,7 +17,7 @@ A Session's agent can see and operate this Mac's apps through two tools in `axod
 
 Most actions happen in the background: no focus change, no pointer movement.
 
-Before an action runs, a risk gate checks it. The gate refuses an action that looks destructive or hard to undo, unless the agent says the person agreed (`confirm: true`). The gate decides with Clef, Cloudflare's open decision model, running on this Mac in a side-car next to axod. If Clef isn't available, it decides with a word list.
+Before an action runs, a risk gate checks it. For an action that looks destructive or hard to undo, the gate asks the person on their own devices and runs it only if they allow it ([RFD0029](RFD0029-ask-the-person.md)); the agent cannot approve. `confirm: true` makes the gate ask whatever the check says. The gate decides with Clef, Cloudflare's open decision model, running on this Mac in a side-car next to axod. If Clef isn't available, it decides with a word list.
 
 ## Motivation
 
@@ -32,11 +32,13 @@ Research behind this: `ai-research/personal/axo/computer-use/` (the options and 
 
 An agent reads a window with `computer({ tool: "get_window_state", args: { pid, window_id } })`. It gets back the window's elements (`[N] AXButton "Send"`, addressed as element token `<snapshot>:N`) and a screenshot. It acts with `click`, `type_text`, `set_value`, `press_key`, `run_steps` (several actions with checks) or `run_script` (JavaScript over the same tools).
 
-If an action looks destructive, it doesn't run. The agent gets back:
+If an action looks destructive, it doesn't run yet. The gate asks the person, and the card on their phone, browser and Mac reads:
 
-> Not done: "click AXButton \"Delete account\""; Clef, on this Mac, rates it 91% likely to be destructive or hard to undo. Ask the person whether to go ahead; if they agree, call `computer` again with the same tool and args and `confirm: true`.
+> Computer use wants to:
+> • click AXButton "Delete account" — in Mail — Inbox
+> Stopped because "click AXButton "Delete account"" may be destructive or hard to undo: Clef, on this Mac, rates it 91% likely.
 
-The person answers in the conversation, and the agent calls again with `confirm: true`.
+The call waits, up to 5 minutes. If the person allows it, the click runs and the agent gets its result; otherwise the agent gets `Not done: the person declined.` or `Not done: nobody answered in time.`
 
 ## Reference-level explanation
 
@@ -53,16 +55,17 @@ The person answers in the conversation, and the agent calls again with `confirm:
 
 The gate runs in `axod mcp` before every `computer` call.
 
-1. **Confirmed or read-only:** `confirm: true` and read-only tools (`get_window_state`, `list_windows`, …) pass.
+1. **Asked for, or read-only:** `confirm: true` asks the person without the checks below; read-only tools (`get_window_state`, `list_windows`, …) pass. `computer` refuses any argument but `tool`, `args` and `confirm`, so nothing passed can approve.
 2. **Describe:** every action is described in words: its tool and target, plus its text, keys, value or script.
    - The target is the element's role and label, remembered from this process's last `get_window_state` of that window, or else `role`/`name` from the arguments.
    - `run_steps` contributes one action per step; `run_script` contributes its source.
 3. **Filter:** a description is *flagged* if it contains, as a whole word, one of a short list ("delete", "send", "pay", "publish", "merge", …) or a commit key (Return), or if the typed text contains a newline. Anything not flagged passes without a check.
 4. **Judge:** each flagged description goes to Clef, text only, with hand's risk question.
-   - p ≥ 0.5 refuses the action; below that, it runs.
-   - If Clef is unavailable or fails, the action is refused.
+   - p ≥ 0.5 asks the person; below that, it runs.
+   - If Clef is unavailable or fails, the person is asked.
+5. **Ask:** the gate's question lists every action with its window and why it stopped, all from its own reading. `axod mcp` sends it as `axo.elicitation.request` for the agent's Session and waits; the answer comes back only on that connection (RFD0029, Tools ask; agents cannot approve).
 
-A refusal never reaches the app. Every call logs `event=mcp.computer_called tool=… outcome=ok|error|refused [confirmed=true]`.
+An action reaches the app only if it passed or the person allowed it. Every call logs `event=mcp.computer_called tool=… outcome=ok|error|not_allowed [allowed_by=person]`, and the gate logs `event=computer.gate_asked reason=agent|clef|unjudged`.
 
 ### Side-car (`crates/axod-infer`, `third_party/llama.cpp`)
 
@@ -127,4 +130,4 @@ A refusal never reaches the app. Every call logs `event=mcp.computer_called tool
   - reading typed text back.
 - **Screenshots:** when Clef's answer is uncertain or the target has no label, should the gate add the window's screenshot (about 4 s)?
 - **More models in `axod-infer`:** the side-car is named for inference in general, not for Clef. Speech, such as NVIDIA's Parakeet for transcription, is next. llama.cpp can't run Parakeet, so `axod-infer` will need a second runtime: parakeet-mlx, sherpa-onnx or a Core ML conversion. The question is whether one process should hold both runtimes, or each runtime gets its own socket.
-- **Asking the person:** proposed in [RFD0029](RFD0029-ask-the-person.md). The gate asks the person on their own clients instead of refusing, `confirm: true` goes away, and values such as logins and cards go past the agent.
+- **Asking the person:** proposed in [RFD0029](RFD0029-ask-the-person.md). The gate asks the person on their own clients instead of refusing, and `confirm: true` only asks (built). Values such as logins and cards going past the agent is still to come.

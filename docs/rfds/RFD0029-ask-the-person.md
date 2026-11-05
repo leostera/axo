@@ -1,7 +1,7 @@
 # RFD0029 - Axo: Ask the Person
 
 - Feature Name: `axo-ask-the-person`
-- Status: Partially implemented (step 1: yes-or-no questions, answered remotely)
+- Status: Partially implemented (step 1: yes-or-no questions, answered remotely; step 2: the computer-use gate asks)
 - Author: leostera
 - Start Date: 2026-11-04
 - Updated: 2026-11-05
@@ -248,7 +248,7 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 - **ClientDO** takes `axo.elicitation.resolve` only from a person's client. A Mac following its peers (`host-…` clients) neither receives elicitations nor answers them (`-32012`).
 - **Clients:** the web and iOS show a card in the chat, with the agent's words, Yes and No, and mark the chat as needing the person in the chat list. The card stays until the Mac says it is settled.
 
-Until the gate asks, RFD0028's `computer` still treats `confirm: true` as approval: an agent can approve a flagged action by itself. Turning it into a request to ask, with the gate asking for flagged actions, is the next step.
+**Step 2, the gate asks (built):** the computer-use gate asks the person for every flagged action and for every call with `confirm: true`, as a yes-or-no request from `axod mcp` for the agent's Session, and runs the action only on Accept. `computer` refuses any argument but `tool`, `args` and `confirm`. The question lists each action with its window and why the gate stopped. Not yet: binding an Allow to the window it named, beyond element tokens dying with a newer read; Always allow; and labelling the gate's requests as Axo's own on clients. Modelled in `specs/elicitations/tools-ask.ts`.
 
 Not yet built, in the order of this RFD: the gate's confirm requests, the Mac app's card and notification (with the code-signature check), push notifications, device-signed answers, input, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
 
