@@ -325,8 +325,14 @@ struct ElicitationCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
-        Label("The agent asks you", systemImage: "questionmark.bubble")
-          .font(.callout.weight(.semibold))
+        // Axo's computer-use gate asks before an action it stopped; only axod's own tools can.
+        Group {
+          switch question.elicitation.askedBy {
+          case .computerUse: Label("Axo asks before acting on your Mac", systemImage: "desktopcomputer")
+          case .agent: Label("The agent asks you", systemImage: "questionmark.bubble")
+          }
+        }
+        .font(.callout.weight(.semibold))
         Spacer()
         if question.answering != nil { ProgressView().controlSize(.small) }
       }

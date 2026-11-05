@@ -323,11 +323,13 @@ export function ElicitationCard({ question, canAnswer, onAnswer }: {
 }) {
   const { elicitation, answering } = question;
   const disabled = !canAnswer || answering !== null;
+  // Axo's computer-use gate asks before an action it stopped; only axod's own tools can say so.
+  const title = elicitation.askedBy === "computerUse" ? "Axo asks before acting on your Mac" : "The agent asks you";
   return (
-    <div className="tool-card elicitation-card" role="group" aria-label="The agent asks you">
+    <div className="tool-card elicitation-card" role="group" aria-label={title}>
       <div className="tool-heading">
-        <Icon name="question" size={18} />
-        <span className="tool-name">The agent asks you</span>
+        <Icon name={elicitation.askedBy === "computerUse" ? "laptop" : "question"} size={18} />
+        <span className="tool-name">{title}</span>
         {answering ? <span className="spinner" aria-hidden="true" /> : null}
       </div>
       <p className="elicitation-message">{elicitation.message}</p>
