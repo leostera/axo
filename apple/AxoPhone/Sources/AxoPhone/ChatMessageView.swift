@@ -323,30 +323,37 @@ struct ElicitationCard: View {
   let answer: (ElicitationAnswer) -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Label("The agent asks you", systemImage: "questionmark.bubble")
-        .font(.headline)
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label("The agent asks you", systemImage: "questionmark.bubble")
+          .font(.callout.weight(.semibold))
+        Spacer()
+        if question.answering != nil { ProgressView().controlSize(.small) }
+      }
       Text(question.elicitation.message)
         .font(.body)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 12) {
-        Button(question.answering == .accept ? "Yes…" : "Yes") { answer(.accept) }
+      HStack(spacing: 8) {
+        Button("Yes") { answer(.accept) }
           .buttonStyle(.borderedProminent)
           .accessibilityIdentifier("elicitationYes")
-        Button(question.answering == .decline ? "No…" : "No") { answer(.decline) }
+        Button("No") { answer(.decline) }
           .buttonStyle(.bordered)
           .accessibilityIdentifier("elicitationNo")
       }
+      .controlSize(.small)
+      .buttonBorderShape(.capsule)
       .disabled(!canAnswer || question.answering != nil)
       if let failure {
-        Text(failure).font(.footnote).foregroundStyle(.secondary)
+        Text(failure).font(.caption).foregroundStyle(.secondary)
       }
     }
-    .padding(18)
+    .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
-    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.orange.opacity(0.4), lineWidth: 1))
+    .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
+    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("elicitationCard")
   }
 }
