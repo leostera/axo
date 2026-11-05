@@ -2,6 +2,13 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.8 (Mac app build 279, axod 34)
+
+### New
+
+- **Agents can ask you yes or no, and only you can answer** (RFD0029). An agent calls `elicitation_request` with its question and waits up to 5 minutes. The question shows as a card in that chat on the web and on the phone, and the chat is marked as needing you in the list. Tap Yes or No on any device: the agent gets your answer, and the card goes away everywhere. Nobody answering in time counts as no answer (`cancel`).
+- **The agent can't answer for you.** Nothing on the Mac answers a question: answers come only from your signed-in browser or phone, through your account. Another of your Macs can't answer either.
+
 ## 0.7 (Mac app build 278, axod 33)
 
 ### New
