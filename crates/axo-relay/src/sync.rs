@@ -246,7 +246,7 @@ struct LocalFile {
 }
 
 impl LocalFile {
-    fn new(path: Option<PathBuf>) -> Self {
+    pub(super) fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             transcript: None,
@@ -406,7 +406,7 @@ struct Uploader {
 }
 
 impl Uploader {
-    fn new(host: Arc<dyn RelayHost>, channel: Arc<RelayChannel>) -> Self {
+    pub(super) fn new(host: Arc<dyn RelayHost>, channel: Arc<RelayChannel>) -> Self {
         Self {
             host,
             channel,

@@ -808,7 +808,7 @@ struct Follower<'a> {
 }
 
 impl<'a> Follower<'a> {
-    fn new(
+    pub(super) fn new(
         mut socket: RelaySocket,
         mirror: &'a mut Mirror,
         dependencies: &'a PeersDependencies,
