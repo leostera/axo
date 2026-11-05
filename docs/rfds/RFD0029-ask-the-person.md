@@ -74,7 +74,18 @@ computer({ tool: "request_input", args: {
 
 ## Reference-level explanation
 
-### Requests
+### Elicitations
+
+A request to the person is an **elicitation**, the word MCP uses for the same idea. The protocol has two methods and two events:
+
+| Name | Kind | Who |
+|---|---|---|
+| `axo.elicitation.request` | method, waits for the outcome | `axod mcp` (the gate, `request_input`) asks axod |
+| `axo.elicitation.resolve` | method | the person answers, from Axo.app or a signed-in web or iOS client |
+| `axo.elicitation.requested` | event | axod tells every client a card is needed |
+| `axo.elicitation.resolved` | event | axod tells every client it is settled, so they dismiss the card |
+
+The rest of this RFD says "request" for one elicitation.
 
 axod, the daemon, owns every request. A request holds:
 
@@ -92,14 +103,14 @@ axod, the daemon, owns every request. A request holds:
 - The gate creates a confirm request for every flagged action, replacing RFD0028's refusal and its `confirm: true`. The agent no longer has a way to approve.
 - The agent creates input requests with `request_input`. It may *ask*, but nothing it sends can *answer*.
 
-**How `axod mcp` waits:** it calls `axo.ask.request` on the daemon and blocks until the request resolves. The call returns `allowed` (and the action runs), `denied`, `expired` or `filled` (with a receipt).
+**How `axod mcp` waits:** it calls `axo.elicitation.request` on the daemon and blocks until the request resolves. The call returns `allowed` (and the action runs), `denied`, `expired` or `filled` (with a receipt).
 
 **Persistence:** requests live in `axo.db`. When axod restarts, pending requests expire, because the waiting tool call died with the old process.
 
 ### Delivery to clients
 
 - **Local:**
-  - The daemon emits `axo.ask.requested` and `axo.ask.resolved` as events on its socket.
+  - The daemon emits `axo.elicitation.requested` and `axo.elicitation.resolved` as events on its socket.
   - The Mac app shows a transcript card, and a `UNNotification` with category actions (Allow once, Deny, Open).
 - **Remote:**
   - axod sends the same events over its relay socket to HostDO, which forwards them to every ClientDO following the host.
@@ -116,7 +127,7 @@ axod, the daemon, owns every request. A request holds:
 
 The agent runs commands as the person, on the same Mac. So any path the Mac app uses, a script could try. The design rests on three checks:
 
-1. **Local answers come only from Axo.app.** axod accepts `axo.ask.answer` on `axod.sock` only from a peer whose code signature satisfies `identifier "dev.leostera.axo" and anchor apple generic and certificate leaf[subject.OU] = "RGH6S9S55G"`.
+1. **Local answers come only from Axo.app.** axod accepts `axo.elicitation.resolve` on `axod.sock` only from a peer whose code signature satisfies `identifier "dev.leostera.axo" and anchor apple generic and certificate leaf[subject.OU] = "RGH6S9S55G"`.
    - axod reads the peer's audit token (`LOCAL_PEERTOKEN`) and checks it with `SecCodeCopyGuestWithAttributes` and `SecCodeCheckValidity`.
    - A shell script, `node`, `osascript` or `axod mcp` all fail this check.
    - The hardened runtime keeps other processes from injecting code into Axo.app.
@@ -124,7 +135,7 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
    - HostDO forwards an `answer` only from a ClientDO, which means a signed-in web or iOS session.
    - It never takes one from the host socket itself, so the Mac's own credential can't answer.
    - Session-scoped credentials, such as the codemode sandbox of `connections_execute`, have no route to answering at all.
-3. **No method the agent can reach answers a request.** `axod mcp` offers `request_input` and the gate's confirm. It has no answer tool, and axod refuses `axo.ask.answer` from MCP and Session connections whatever their signature.
+3. **No method the agent can reach answers a request.** `axod mcp` offers `request_input` and the gate's confirm. It has no answer tool, and axod refuses `axo.elicitation.resolve` from MCP and Session connections whatever their signature.
 
 **Every remote answer is signed.** Each phone and browser registers a device key (iOS: Secure Enclave; web: a non-extractable WebCrypto key in IndexedDB). It signs every answer over `requestId || reply`. axod refuses an answer whose signature is not for that request and that reply. So a relay that is compromised, or a bug in it, cannot replay an earlier answer for a new request, turn *Allow once* into *Always allow*, or bring back a revoked rule.
 

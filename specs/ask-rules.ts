@@ -19,7 +19,7 @@ const Reply = oneOf("once", "always", "deny");
 
 const Ask = defineMessage("Ask", { action: ActionKind }, { name: "flagged action", over: "axod.sock" });
 const Done = defineMessage("Done", { ran: Boolean }, { name: "the result", over: "axod.sock", tone: "reply" });
-const Requested = defineMessage("Requested", { id: String, action: ActionKind }, { name: "axo.ask.requested", over: "relay" });
+const Requested = defineMessage("Requested", { id: String, action: ActionKind }, { name: "axo.elicitation.requested", over: "relay" });
 const Answer = defineMessage("Answer", { id: String, reply: Reply, sig: nullable(String) }, { name: "answer", over: "relay" });
 const Revoke = defineMessage("Revoke", { rule: String }, { name: "revoke rule", over: "relay" });
 const RuleAdded = defineMessage("RuleAdded", { rule: String, action: ActionKind }, { name: "rule added", over: "relay" });

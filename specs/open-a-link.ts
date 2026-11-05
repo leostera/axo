@@ -41,8 +41,8 @@ const Hit = defineMessage("Hit", { path: String, code: String, state: String }, 
 const ShimOpen = defineMessage("ShimOpen", { site: String, port: Number, path: String, state: String }, { name: "axod-open <link>", over: "axod.sock" });
 const RequestLink = defineMessage("RequestLink", { site: String, port: Number, path: String, state: String }, { name: "request_link", over: "axod.sock" });
 const LinkDone = defineMessage("LinkDone", { outcome: Outcome, callback: nullable(String) }, { name: "request_link result", over: "axod.sock", tone: "reply" });
-const Requested = defineMessage("Requested", { id: String, site: String, port: Number, path: String, state: String }, { name: "axo.ask.requested (link)", over: "relay" });
-const Resolved = defineMessage("Resolved", { id: String }, { name: "axo.ask.resolved", over: "relay" });
+const Requested = defineMessage("Requested", { id: String, site: String, port: Number, path: String, state: String }, { name: "axo.elicitation.requested (link)", over: "relay" });
+const Resolved = defineMessage("Resolved", { id: String }, { name: "axo.elicitation.resolved", over: "relay" });
 const RemoteCallback = defineMessage("RemoteCallback", { id: String, sealed: String }, { name: "callback", over: "wss" });
 const ForwardedCallback = defineMessage("ForwardedCallback", { id: String, sealed: String }, { name: "callback", over: "relay" });
 

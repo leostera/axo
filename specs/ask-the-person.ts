@@ -20,15 +20,15 @@ const Answer = oneOf("allow", "deny", "fill");
 const Kind = oneOf("confirm", "input");
 const Outcome = oneOf("allowed", "denied", "filled", "expired", "cancelled");
 
-const Ask = defineMessage("Ask", { kind: Kind, origin: String }, { name: "axo.ask.request", over: "axod.sock" });
+const Ask = defineMessage("Ask", { kind: Kind, origin: String }, { name: "axo.elicitation.request", over: "axod.sock" });
 const Asked = defineMessage("Asked", { outcome: Outcome, redact: nullable(String) }, { name: "the answer", over: "axod.sock", tone: "reply" });
-const Requested = defineMessage("Requested", { id: String, kind: Kind, origin: String }, { name: "axo.ask.requested", over: "relay" });
-const ShowRequest = defineMessage("ShowRequest", { id: String, kind: Kind, origin: String }, { name: "axo.ask.requested", over: "axod.sock" });
+const Requested = defineMessage("Requested", { id: String, kind: Kind, origin: String }, { name: "axo.elicitation.requested", over: "relay" });
+const ShowRequest = defineMessage("ShowRequest", { id: String, kind: Kind, origin: String }, { name: "axo.elicitation.requested", over: "axod.sock" });
 const RemoteAnswer = defineMessage("RemoteAnswer", { id: String, answer: Answer, value: nullable(String) }, { name: "answer", over: "wss" });
 const ForwardedAnswer = defineMessage("ForwardedAnswer", { id: String, answer: Answer, value: nullable(String) }, { name: "answer", over: "relay" });
-const LocalAnswer = defineMessage("LocalAnswer", { id: String, answer: Answer }, { name: "axo.ask.answer", over: "axod.sock" });
-const Resolved = defineMessage("Resolved", { id: String }, { name: "axo.ask.resolved", over: "relay" });
-const LocalResolved = defineMessage("LocalResolved", { id: String }, { name: "axo.ask.resolved", over: "axod.sock" });
+const LocalAnswer = defineMessage("LocalAnswer", { id: String, answer: Answer }, { name: "axo.elicitation.resolve", over: "axod.sock" });
+const Resolved = defineMessage("Resolved", { id: String }, { name: "axo.elicitation.resolved", over: "relay" });
+const LocalResolved = defineMessage("LocalResolved", { id: String }, { name: "axo.elicitation.resolved", over: "axod.sock" });
 const Fill = defineMessage("Fill", { value: String, page: Number, shown: String }, { name: "set_value", over: "Accessibility" });
 const FillDone = defineMessage("FillDone", { filled: Boolean }, { name: "set_value result", over: "Accessibility", tone: "reply" });
 const Read = defineMessage("Read", {}, { name: "get_window_state", over: "Accessibility" });
@@ -140,7 +140,7 @@ export const Shell = defineActor({
     forgeAllow: {
       with: [atMost(1)],
       label: "Answer \"allow\" over axod.sock",
-      description: "The agent tries to approve its own request by calling axo.ask.answer itself.",
+      description: "The agent tries to approve its own request by calling axo.elicitation.resolve itself.",
       inputs: { id: input(String, { examples: (w): string[] => Object.keys(w.the(Axod).state.requests) }) },
       sends: [LocalAnswer],
       run: (_s, { id }, ctx) => ctx.send(ctx.the(Axod), LocalAnswer, { id, answer: "allow" }),
