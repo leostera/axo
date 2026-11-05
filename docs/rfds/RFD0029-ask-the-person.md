@@ -102,7 +102,7 @@ axod, the daemon, owns every request. A request holds:
 - `state`: `pending`, then `allowed`, `denied`, `filled`, `expired` or `cancelled`.
 
 **Who creates them:** tools, for consent (see the next section), and agents, for questions of their own.
-- The computer-use gate creates a confirm request for every flagged action, replacing RFD0028's refusal and its `confirm: true`.
+- The computer-use gate creates a confirm request for every flagged action, and for every call that passes `confirm: true`, replacing RFD0028's refusal. `confirm: true` no longer approves: it asks.
 - `request_input` is the agent asking for values, but the request is made by the computer tool, which fills them; the agent may *ask*, but nothing it sends can *answer*.
 - `elicitation_request` is the agent's own question. Its answer is for the agent only.
 
@@ -115,7 +115,7 @@ axod, the daemon, owns every request. A request holds:
 An agent must not be the one that says the person agreed, because whatever reaches the agent can be wrong, stale, or written by a web page. So consent is something tools get for themselves:
 
 1. **A tool that needs consent asks for it itself.** It decides what it is about to do first (the app, the window and element, the page's origin; for other tools, the exact command or call), then creates the request with that, and runs only on its answer. Whether an action needs consent is the tool's decision: the gate's checks, or what a tool declares about itself, never something the agent says.
-2. **Consent is never an argument.** No tool takes `confirm`, an elicitation id, an answer, or a claim that the person agreed. A tool's schema has no such field, and a call that passes one is refused rather than ignored, so an agent that tries learns it cannot.
+2. **Consent is never an argument; an argument can only ask for more.** No tool takes an elicitation id, an answer, or a claim that the person agreed, and a call that passes one is refused rather than ignored, so an agent that tries learns it cannot. What an agent may pass is a request to be asked: `computer`'s `confirm: true` means *ask the person before this*, and the tool asks without running the gate's check. Without it, or with `confirm: false`, the gate checks the action (RFD0028's text check, then Clef) and asks only if it flags it. Either way the action runs only on the person's answer or on the gate passing it; `confirm` can make a call ask, never skip asking.
 3. **An answer goes back only to the call that asked.** axod returns the outcome on the connection that made the request and nowhere else, and keeps no record a tool could look up later. A request made by anything else, including the agent's own question or one a script makes on `axod.sock`, cannot be presented to a tool: there is no way to present one.
 4. **An answer is for one action, once.** An *Allow once* runs the action it was asked for, a single time. If the action changed before it runs (the window changed, the element is gone, the arguments differ), the tool asks again. The only standing consent is an Always-allow rule, which only the person creates (see Always allow).
 5. **The agent's own questions authorize nothing.** `elicitation_request` is for the agent to check with the person ("delete the old branches?"). Its answer comes back to the agent as information. A later tool call that depends on it is gated like any other.
@@ -248,7 +248,7 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 - **ClientDO** takes `axo.elicitation.resolve` only from a person's client. A Mac following its peers (`host-…` clients) neither receives elicitations nor answers them (`-32012`).
 - **Clients:** the web and iOS show a card in the chat, with the agent's words, Yes and No, and mark the chat as needing the person in the chat list. The card stays until the Mac says it is settled.
 
-Until the gate asks, RFD0028's `computer` still takes `confirm: true`: an agent can approve a flagged action by itself. Removing it, with the gate asking instead, is the next step.
+Until the gate asks, RFD0028's `computer` still treats `confirm: true` as approval: an agent can approve a flagged action by itself. Turning it into a request to ask, with the gate asking for flagged actions, is the next step.
 
 Not yet built, in the order of this RFD: the gate's confirm requests, the Mac app's card and notification (with the code-signature check), push notifications, device-signed answers, input, links, Always allow and Face ID. Until answers are device-signed, the Worker is trusted not to forge one.
 
@@ -261,7 +261,7 @@ Not yet built, in the order of this RFD: the gate's confirm requests, the Mac ap
   - **The checker found two flaws in the first draft**, now in this RFD:
     - a Deny arriving during a fill overrode the fill (fixed by claiming on the first answer);
     - a parallel read caught the value before its receipt (fixed by one call per window).
-- **To add to `specs/elicitations/ask-the-person.ts`** for *Tools ask; agents cannot approve*: an agent that passes `confirm`, presents the answer to its own question, or reuses an answer for another action. The property: every gated action runs only on the person's answer to the request its tool made for that action.
+- **To add to `specs/elicitations/ask-the-person.ts`** for *Tools ask; agents cannot approve*: an agent that passes `confirm: true` hoping to skip the check (it asks instead), presents the answer to its own question, or reuses an answer for another action. The property: every gated action runs only on the person's answer to the request its tool made for that action.
 - `specs/elicitations/open-a-link.ts` models `wrangler login`, the agent, a local admin service, the loopback interface, axod, HostDO, the iPhone and the web app, with a lost or duplicated callback and an axod restart. Safety held on every path of up to 25 events (13.4M states): the code reaches only the command that opened the link, never the cloud in the clear, no other local service, and once per request. It found:
   - a check of the port's owner made before connecting is stale if the command exits and the agent binds the port (fixed by checking on the connection);
   - a link the agent passes on must name its opener by who printed it, not by who holds the port when it asks;
