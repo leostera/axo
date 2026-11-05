@@ -11,7 +11,7 @@ public protocol AccountFeed: ChatFeed {
   func disconnect() async
   func refresh() async throws -> ClientHello
   func renameHost(_ host: UUID, to name: String) async throws -> String
-  func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer) async throws
+  func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer, sealed: SealedInput?) async throws
 }
 
 /// What a Mac's agent asks the person (RFD0029), until the Mac says it is settled.
@@ -60,6 +60,8 @@ public final class PhoneWorkbench {
   public private(set) var questions: [AskedQuestion] = []
   /// Why the last answer did not go, until the next one does.
   public private(set) var answerFailure: String?
+  /// Each Mac's input key as first seen.
+  public var inputKeyPins = InputKeyPins()
   /// A message is on its way; a second tap must not start a second chat.
   public private(set) var isSending = false
   /// The files in each chat's box (RFD0030), uploading or ready, kept like the words.
@@ -176,12 +178,28 @@ public final class PhoneWorkbench {
 
   /// Answers what a Mac's agent asks. The card stays until the Mac says it is settled; an answer
   /// that came too late (another device answered, or it expired) removes it.
-  public func answer(_ id: String, _ action: ElicitationAnswer) async {
+  public func answer(_ id: String, _ action: ElicitationAnswer, values: [String: String]? = nil) async {
     guard let index = questions.firstIndex(where: { $0.id == id }), questions[index].answering == nil else { return }
-    questions[index].answering = action
     let host = questions[index].hostID
+    var sealed: SealedInput?
+    if let input = questions[index].elicitation.input, action == .accept {
+      // The values leave the phone only sealed to the Mac's key, and only to the key first seen
+      // for that Mac: a different one may be the cloud's, not the Mac's.
+      guard inputKeyPins.check(host: host, key: input.key) != .changed else {
+        answerFailure = "This Mac's encryption key changed. Nothing was sent; check the key in Axo on that Mac."
+        return
+      }
+      guard let values else { return }
+      do {
+        sealed = try InputSeal.seal(values, to: input.key, requestID: id, origin: input.origin)
+      } catch {
+        answerFailure = "The values could not be encrypted for this Mac."
+        return
+      }
+    }
+    questions[index].answering = action
     do {
-      try await feed.resolveElicitation(id, on: host, action: action)
+      try await feed.resolveElicitation(id, on: host, action: action, sealed: sealed)
       answerFailure = nil
     } catch {
       if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notPending {

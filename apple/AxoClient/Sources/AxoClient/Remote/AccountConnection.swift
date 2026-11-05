@@ -108,9 +108,11 @@ public final class AccountConnection: Sendable {
 
   /// Answers what a Mac's agent asks (RFD0029). The Mac takes the first answer; a later one
   /// fails with `ElicitationError.notPending`.
-  public func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer) async throws {
+  /// An accepted input request's values go `sealed` to the Mac: the cloud never reads them.
+  public func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer, sealed: SealedInput? = nil) async throws {
     let _: Resolved = try await rpc.call(
-      "axo.elicitation.resolve", params: ResolveParams(hostId: host.uuidString.lowercased(), elicitationId: id, action: action),
+      "axo.elicitation.resolve",
+      params: ResolveParams(hostId: host.uuidString.lowercased(), elicitationId: id, action: action, sealed: sealed),
       timeout: .seconds(20))
   }
 
@@ -186,6 +188,17 @@ private struct ResolveParams: Encodable, Sendable {
   let hostId: String
   let elicitationId: String
   let action: ElicitationAnswer
+  let sealed: SealedInput?
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(hostId, forKey: .hostId)
+    try container.encode(elicitationId, forKey: .elicitationId)
+    try container.encode(action, forKey: .action)
+    try container.encodeIfPresent(sealed, forKey: .sealed)
+  }
+
+  private enum CodingKeys: String, CodingKey { case hostId, elicitationId, action, sealed }
 }
 private struct Resolved: Decodable, Sendable { let resolved: Bool }
 private struct ElicitationRequestedNotice: Decodable {

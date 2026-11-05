@@ -89,8 +89,14 @@ struct ConversationView: View {
           }
           if let id = session?.sessionId {
             ForEach(phone.questions(in: id)) { question in
-              ElicitationCard(question: question, canAnswer: workbench?.status == .online, failure: phone.answerFailure) { action in
-                Task { await phone.answer(question.id, action) }
+              if question.elicitation.input != nil {
+                InputCard(question: question, canAnswer: workbench?.status == .online, failure: phone.answerFailure) { action, values in
+                  Task { await phone.answer(question.id, action, values: values) }
+                }
+              } else {
+                ElicitationCard(question: question, canAnswer: workbench?.status == .online, failure: phone.answerFailure) { action in
+                  Task { await phone.answer(question.id, action) }
+                }
               }
             }
           }

@@ -1,3 +1,4 @@
+import CryptoKit
 import AxoClient
 import AxoProtocol
 import XCTest
@@ -461,6 +462,39 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(workbench.questions.count, 1)
     channel.notify("axo.elicitation.resolved", #"{"hostId":"\#(a.id.uuidString.lowercased())","id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","action":"accept"}"#)
     try await eventually { workbench.questions.isEmpty }
+  }
+
+  func testAFormsValuesLeaveOnlySealedAndOnlyToTheKeyFirstSeen() async throws {
+    let a = Mac("A", online: true, sessions: [1])
+    let world = PhoneWorld([a], answers: false)
+    try await world.start()
+    let workbench = world.workbench!
+    workbench.inputKeyPins = InputKeyPins(defaults: UserDefaults(suiteName: "axo-phone-pins-\(UUID())")!)
+    let channel = try await world.transport.channel()
+    let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
+    func ask(_ id: String, key: String) {
+      channel.notify(
+        "axo.elicitation.requested",
+        #"{"hostId":"\#(a.id.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"input","askedBy":"computerUse","message":"Fill Password in Safari.","input":{"app":"Safari","window":"Sign in","origin":"https://github.com","fields":[{"id":"f0","label":"Password","kind":"password"}],"key":"\#(key)"},"createdAt":1,"expiresAt":2}}"#)
+    }
+    let first = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60"
+    ask(first, key: key)
+    try await eventually { workbench.questions.count == 1 }
+    let answering = Task { await workbench.answer(first, .accept, values: ["f0": "hunter2"]) }
+    let request = try await channel.nextRequest("axo.elicitation.resolve")
+    let sealed = request.params["sealed"] as? [String: Any]
+    XCTAssertNotNil(sealed?["enc"] as? String)
+    XCTAssertFalse("\(request.params)".contains("hunter2"))
+    channel.reply(to: request.id, result: #"{"resolved":true}"#)
+    await answering.value
+
+    // Another key for the same Mac gets nothing.
+    let second = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61"
+    ask(second, key: P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString())
+    try await eventually { workbench.questions.count == 2 }
+    await workbench.answer(second, .accept, values: ["f0": "hunter2"])
+    XCTAssertFalse(channel.hasRequest)
+    XCTAssertEqual(workbench.answerFailure?.contains("key changed"), true)
   }
 
   func testAnAnswerThatCameTooLateRemovesTheCard() async throws {

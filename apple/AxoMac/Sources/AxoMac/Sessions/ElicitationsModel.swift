@@ -10,7 +10,7 @@ import UserNotifications
 @MainActor
 protocol AxodElicitationClient: AnyObject {
   func pendingElicitations() async throws -> [Elicitation]
-  func resolveElicitation(_ id: String, action: ElicitationAnswer) async throws
+  func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]?) async throws
 }
 
 extension AxodConnection: AxodElicitationClient {}
@@ -84,14 +84,16 @@ final class ElicitationsModel {
   }
 
   /// The person's answer. The card stays until axod says the question is settled.
-  func answer(_ id: String, _ action: ElicitationAnswer) async {
-    guard let client, questions.contains(where: { $0.id == id }), !answering.contains(id) else {
+  /// An accepted form goes with its `values`, straight to axod on this Mac.
+  func answer(_ id: String, _ action: ElicitationAnswer, values: [String: String]? = nil) async {
+    guard let client, let question = questions.first(where: { $0.id == id }), !answering.contains(id) else {
       return
     }
+    if question.input != nil, action == .accept, values == nil { return }
     answering.insert(id)
     failure = nil
     do {
-      try await client.resolveElicitation(id, action: action)
+      try await client.resolveElicitation(id, action: action, values: action == .accept ? values : nil)
     } catch AxoClientError.serverRejected(let code, _) where code == ElicitationError.notPending {
       settle(id)
     } catch {
@@ -115,6 +117,8 @@ final class ElicitationNotifications: NSObject, ElicitationNotifying,
 {
   static let shared = ElicitationNotifications()
   static let category = "axo.elicitation"
+  /// A form: it is filled in Axo, never from the notification.
+  static let inputCategory = "axo.elicitation.input"
   private static let accept = "accept"
   private static let decline = "decline"
 
@@ -134,7 +138,8 @@ final class ElicitationNotifications: NSObject, ElicitationNotifying,
           UNNotificationAction(identifier: Self.accept, title: "Yes", options: [.authenticationRequired]),
           UNNotificationAction(identifier: Self.decline, title: "No", options: [.destructive]),
         ],
-        intentIdentifiers: [])
+        intentIdentifiers: []),
+      UNNotificationCategory(identifier: Self.inputCategory, actions: [], intentIdentifiers: []),
     ])
   }
 
@@ -144,14 +149,15 @@ final class ElicitationNotifications: NSObject, ElicitationNotifying,
       let center = UNUserNotificationCenter.current()
       guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
       let content = UNMutableNotificationContent()
-      switch elicitation.askedBy {
-      case .computerUse: content.title = "Axo asks before acting on your Mac"
-      case .agent: content.title = "The agent asks you"
+      switch (elicitation.kind, elicitation.askedBy) {
+      case (.input, _): content.title = "Axo asks you to sign in"
+      case (_, .computerUse): content.title = "Axo asks before acting on your Mac"
+      case (_, .agent): content.title = "The agent asks you"
       }
       content.subtitle = sessionName
       content.body = elicitation.message
       content.sound = .default
-      content.categoryIdentifier = Self.category
+      content.categoryIdentifier = elicitation.kind == .input ? Self.inputCategory : Self.category
       content.interruptionLevel = .timeSensitive
       content.userInfo = ["sessionId": elicitation.sessionId.rawValue]
       try? await center.add(

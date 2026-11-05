@@ -364,6 +364,103 @@ struct ElicitationCard: View {
   }
 }
 
+/// Values the agent must not see, for a form on the person's Mac (RFD0029). What it shows is the
+/// Mac's own reading of the window; what the person types is sealed to that Mac before it leaves
+/// the phone, and the agent only learns that the fields were filled. The fields carry autofill
+/// hints, so Passwords and 1Password offer the login.
+struct InputCard: View {
+  let question: AskedQuestion
+  let canAnswer: Bool
+  var failure: String?
+  let answer: (ElicitationAnswer, [String: String]?) -> Void
+  @State private var values: [String: String] = [:]
+  @FocusState private var focused: String?
+
+  private var input: InputRequest { question.elicitation.input! }
+  private var complete: Bool { input.fields.allSatisfy { !(values[$0.id] ?? "").isEmpty } }
+  private var disabled: Bool { !canAnswer || question.answering != nil }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label("Axo asks you to sign in on your Mac", systemImage: "key.fill")
+          .font(.callout.weight(.semibold))
+        Spacer()
+        if question.answering != nil { ProgressView().controlSize(.small) }
+      }
+      VStack(alignment: .leading, spacing: 2) {
+        Text(input.origin ?? input.window).font(.body.weight(.semibold)).textSelection(.enabled)
+        Text("in \(input.app)\(input.submit.map { ", then “\($0)”" } ?? "")").font(.footnote).foregroundStyle(.secondary)
+      }
+      ForEach(input.fields) { field in
+        entry(for: field)
+          .textFieldStyle(.roundedBorder)
+          .disabled(disabled)
+          .focused($focused, equals: field.id)
+          .submitLabel(field.id == input.fields.last?.id ? .done : .next)
+          .onSubmit { submit(after: field) }
+      }
+      Text("Goes straight to your Mac, encrypted for it. The agent never sees it.")
+        .font(.caption).foregroundStyle(.secondary)
+      HStack(spacing: 8) {
+        Button("Fill in") { send() }
+          .buttonStyle(.borderedProminent)
+          .disabled(disabled || !complete)
+          .accessibilityIdentifier("inputFill")
+        Button("Cancel") { answer(.decline, nil) }
+          .buttonStyle(.bordered)
+          .disabled(disabled)
+          .accessibilityIdentifier("inputCancel")
+      }
+      .controlSize(.small)
+      .buttonBorderShape(.capsule)
+      if let failure {
+        Text(failure).font(.caption).foregroundStyle(.secondary)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
+    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("inputCard")
+  }
+
+  @ViewBuilder
+  private func entry(for field: InputRequest.Field) -> some View {
+    let binding = Binding(get: { values[field.id] ?? "" }, set: { values[field.id] = String($0.prefix(1000)) })
+    let title = field.label.isEmpty ? field.kind.rawValue.capitalized : field.label
+    switch field.kind {
+    case .password:
+      SecureField(title, text: binding).textContentType(.password)
+    case .username:
+      TextField(title, text: binding).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
+    case .email:
+      TextField(title, text: binding).textContentType(.username).keyboardType(.emailAddress)
+        .textInputAutocapitalization(.never).autocorrectionDisabled()
+    case .code:
+      TextField(title, text: binding).textContentType(.oneTimeCode).keyboardType(.numberPad)
+    case .text:
+      TextField(title, text: binding)
+    }
+  }
+
+  private func submit(after field: InputRequest.Field) {
+    let ids = input.fields.map(\.id)
+    if let index = ids.firstIndex(of: field.id), index + 1 < ids.count {
+      focused = ids[index + 1]
+    } else {
+      send()
+    }
+  }
+
+  private func send() {
+    guard complete, !disabled else { return }
+    answer(.accept, values)
+    values = [:]
+  }
+}
+
 /// What the agent is asking, with a way to answer it from here when that can be done.
 struct QuestionCard: View {
   let question: ChatQuestion

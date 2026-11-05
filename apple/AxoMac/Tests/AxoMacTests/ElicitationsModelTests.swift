@@ -8,12 +8,14 @@ import XCTest
 private final class FakeElicitationClient: AxodElicitationClient {
   var pending: [Elicitation] = []
   var answers: [(String, ElicitationAnswer)] = []
+  var values: [[String: String]?] = []
   var rejection: Error?
 
   func pendingElicitations() async throws -> [Elicitation] { pending }
 
-  func resolveElicitation(_ id: String, action: ElicitationAnswer) async throws {
+  func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]?) async throws {
     answers.append((id, action))
+    self.values.append(values)
     if let rejection { throw rejection }
   }
 }
@@ -35,6 +37,21 @@ final class ElicitationsModelTests: XCTestCase {
   {
     Elicitation(
       id: id, sessionId: session, askedBy: askedBy, message: "Go?", createdAt: 1, expiresAt: 2)
+  }
+
+  func testAFormGoesOnlyWithItsValuesAndACancelWithNone() async {
+    let client = FakeElicitationClient()
+    let model = ElicitationsModel(client: client, notifier: FakeNotifier())
+    let input = InputRequest(
+      app: "Safari", window: "Sign in", origin: "https://github.com",
+      fields: [.init(id: "f0", label: "Password", kind: .password)], key: "QQ==")
+    _ = model.apply(
+      .elicitationRequested(
+        Elicitation(id: "f", sessionId: 1, kind: .input, askedBy: .computerUse, message: "Fill Password.", input: input, createdAt: 1, expiresAt: 2)))
+    await model.answer("f", .accept)
+    XCTAssertTrue(client.answers.isEmpty, "a form is not accepted without its values")
+    await model.answer("f", .accept, values: ["f0": "hunter2"])
+    XCTAssertEqual(client.values.first??["f0"], "hunter2")
   }
 
   func testAQuestionShowsInItsSessionAndNotifiesOnce() {
