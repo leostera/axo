@@ -370,8 +370,10 @@ final class TerminalSessionsModel {
       guard wakingPis.insert(shell.id).inserted else { continue }
       Task { [weak self] in
         defer { self?.wakingPis.remove(shell.id) }
+        // Axod may have started it since (another client wanted it, or a newer catalog).
+        guard let self, self.shell(for: shell.id)?.isDormant == true else { return }
         do {
-          try await self?.restartPiSession(shell.id, automatically: true)
+          try await self.restartPiSession(shell.id, automatically: true)
         } catch {
           AxoTrace.commands.error(
             "event=pi.wake_failed shell_id=\(shell.id.rawValue) reason=\(error.localizedDescription, privacy: .public)")
