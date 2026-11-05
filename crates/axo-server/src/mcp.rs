@@ -466,9 +466,13 @@ impl McpServer {
         if tool.method == Some(method::SESSION_PROMPT) {
             arguments.insert("fromSessionId".into(), json!(self.session_id));
         }
-        // An agent asks only for its own Session, whatever it passes.
+        // An agent asks only for its own Session, as itself, whatever it passes: only its message
+        // passes, so it cannot ask as a tool.
         if tool.method == Some(method::ELICITATION_REQUEST) {
+            let message = arguments.remove("message").unwrap_or(Value::Null);
+            arguments = Map::new();
             arguments.insert("sessionId".into(), json!(self.session_id));
+            arguments.insert("message".into(), message);
         }
         // Connections calls name the Session that made them, for the account's call log.
         if tool
@@ -875,7 +879,8 @@ impl McpServer {
     /// Asks the person on their own devices and waits; `Ok` only if they allowed it. The answer
     /// comes back on this call's own connection to axod, so nothing else can present it.
     fn ask_the_person(&self, question: &str) -> Result<(), String> {
-        let params = json!({ "sessionId": self.session_id, "message": question });
+        let params =
+            json!({ "sessionId": self.session_id, "message": question, "askedBy": "computerUse" });
         let outcome =
             self.call(method::ELICITATION_REQUEST, params)
                 .map_err(|ToolError(why)| {

@@ -96,9 +96,13 @@ test("an agent's question reaches the person's phone, their answer returns to th
     assert.equal(shown[0]!.hostId, host.hostId);
     assert.equal(elicitation.sessionId, sessionId);
     assert.equal(elicitation.message, "Delete the branch feat/old-ui?");
+    assert.equal(elicitation.askedBy, "agent");
+    assert.deepEqual(((await localCall(socketPath, "axo.elicitation.list")) as { elicitations: Elicitation[] }).elicitations.map((e) => e.id), [elicitation.id]);
 
-    // Nothing on axod.sock answers it: the method does not exist there.
-    await assert.rejects(localCall(socketPath, "axo.elicitation.resolve", { elicitationId: elicitation.id, action: "accept" }), /not found/iu);
+    // On axod.sock only Axo.app answers, by code signature: a script cannot.
+    await assert.rejects(localCall(socketPath, "axo.elicitation.resolve", { elicitationId: elicitation.id, action: "accept" }), /only the person answers/iu);
+    // Nor can a script ask as one of Axo's tools; only `axod mcp` itself can.
+    await assert.rejects(localCall(socketPath, "axo.elicitation.request", { sessionId, message: "Pay?", askedBy: "computerUse" }), /only Axo's own tools/iu);
 
     // The phone says yes; the agent's call returns it; both devices dismiss the card.
     await phone.resolveElicitation(host.hostId, elicitation.id, "accept");
@@ -113,9 +117,11 @@ test("an agent's question reaches the person's phone, their answer returns to th
       (error: { code?: number }) => error.code === ELICITATION_ERRORS.notPending);
 
     // A No is a No.
-    const second = callMcp("tools/call", { name: "elicitation_request", arguments: { message: "Push to main?" } });
+    // An agent passing askedBy is still asking as itself.
+    const second = callMcp("tools/call", { name: "elicitation_request", arguments: { message: "Push to main?", askedBy: "computerUse" } });
     const next = await waitFor("the second question", 15_000, async () =>
       asked.find((entry) => entry.elicitation.message === "Push to main?"), daemon);
+    assert.equal(next.elicitation.askedBy, "agent");
     await browser.resolveElicitation(host.hostId, next.elicitation.id, "decline");
     assert.equal((await second).result?.structuredContent?.action, "decline");
 
@@ -135,6 +141,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
       asked.find((entry) => entry.elicitation.message.startsWith("Computer use wants to:")), daemon);
     assert.match(gateQuestion.elicitation.message, /click AXButton "Pay now"/u);
     assert.match(gateQuestion.elicitation.message, /The agent asked to check with you first/u);
+    assert.equal(gateQuestion.elicitation.askedBy, "computerUse");
     await phone.resolveElicitation(host.hostId, gateQuestion.elicitation.id, "decline");
     const declined = await confirmed;
     assert.equal(declined.result?.isError, true);

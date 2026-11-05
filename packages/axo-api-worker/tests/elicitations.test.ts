@@ -33,7 +33,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   const daemon = await connectHost(h, session, host);
   t.after(() => daemon.close());
   const elicitation: Elicitation = {
-    id: crypto.randomUUID(), sessionId: crypto.randomUUID(), kind: "confirm",
+    id: crypto.randomUUID(), sessionId: crypto.randomUUID(), kind: "confirm", askedBy: "computerUse",
     message: "Delete the branch feat/old-ui?", createdAt: Date.now(), expiresAt: Date.now() + 300_000,
   };
   return { h, session, host, daemon, elicitation };

@@ -30,6 +30,8 @@ export const ELICITATION_ERRORS = {
   notPending: -32011,
   /** Only a person answers: a Mac's own credential, or anything else, cannot. */
   notAPerson: -32012,
+  /** On `axod.sock`, only axod's own tools ask as a tool. */
+  notATool: -32013,
 } as const;
 
 /** What the person is asked. Only `confirm` (yes or no) exists yet. */
@@ -37,7 +39,12 @@ export const elicitationSchema = z.object({
   id: z.uuid(),
   sessionId: sessionIdSchema,
   kind: z.literal("confirm"),
-  /** The agent's words, shown as the agent's. */
+  /**
+   * Who asks: the agent, in its own words, or Axo's computer-use gate, describing what it is
+   * about to do. axod lets only its own `axod mcp` ask as a tool. Absent from an older axod.
+   */
+  askedBy: z.enum(["agent", "computerUse"]).default("agent"),
+  /** The asker's words, shown as theirs. */
   message: z.string().min(1).max(ELICITATION_LIMITS.messageChars),
   /** Unix milliseconds. */
   createdAt: z.number().int().nonnegative(),

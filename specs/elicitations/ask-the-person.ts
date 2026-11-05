@@ -8,7 +8,8 @@ import { atMost, budget, defineActor, defineGroup, defineLimit, defineMessage, d
 // Authenticate (Face ID) is an answer with a device signature; it changes no ordering here,
 // so it is left out.
 //
-// Not built yet: only the gate, which exists from RFD0028, has sources.
+// Built: the gate asks (step 2), and axod takes a local answer only from Axo.app by code
+// signature. Not built: input, sealed values, redaction, binding to the element.
 
 /** Faults on one path (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
@@ -188,6 +189,7 @@ export const Axod = defineActor({
     localAnswer: {
       on: LocalAnswer,
       description: "An answer on axod.sock counts only if the peer is Axo.app.",
+      sources: ["crates/axo-server/src/session/elicitations.rs#add_methods", "crates/axo-ipc/src/peer.rs#Peer.is"],
       sends: [Asked, Resolved, LocalResolved],
       run(state, m, ctx) {
         if (peerCheck.on && ctx.from.id !== ctx.the(MacApp).id) return ctx.note("Refused: the peer is not Axo.app.");

@@ -229,6 +229,18 @@ pub const PARITY: &[Parity] = &[
             "an agent on this Mac asks its person; the answer comes through the relay as axo.elicitation.resolve",
         ),
     ),
+    row(
+        method::ELICITATION_RESOLVE,
+        Remote::LocalOnly(
+            "Axo.app answers on this Mac; a remote person's answer arrives on the relay's own axo.elicitation.resolve, from the cloud",
+        ),
+    ),
+    row(
+        method::ELICITATION_LIST,
+        Remote::LocalOnly(
+            "the relay sends what is pending on every connection, as axo.elicitation.requested",
+        ),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

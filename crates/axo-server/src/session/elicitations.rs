@@ -1,10 +1,11 @@
 //! Elicitations (RFD0029): what agents on this Mac ask the person, waiting for an answer.
 //!
-//! `axo.elicitation.request` is the only way in on `axod.sock`, and it only asks. An answer comes
-//! through the relay alone (`RelayHost::resolve_elicitation`), where the cloud takes it only from
-//! a signed-in person's client. The first answer taken wins: it removes the elicitation, so any
-//! later one finds nothing. Elicitations live in memory: when axod stops, the tool calls waiting
-//! on them end too.
+//! On `axod.sock`, `axo.elicitation.request` asks, as the agent, or as a tool only when the peer
+//! is axod's own binary (`axod mcp`, by code signature). An answer comes through the relay
+//! (`RelayHost::resolve_elicitation`), where the cloud takes it only from a signed-in person's
+//! client, or as `axo.elicitation.resolve` on `axod.sock` from Axo.app alone, by code signature.
+//! The first answer taken wins: it removes the elicitation, so any later one finds nothing.
+//! Elicitations live in memory: when axod stops, the tool calls waiting on them end too.
 
 use std::collections::HashMap;
 use std::io;
@@ -13,13 +14,16 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axo_ipc::TypedMethods;
+use axo_ipc::peer::{self, Signer};
 use axo_protocol::elicitation::{
-    Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind, ElicitationOutcome,
-    MAX_MESSAGE_CHARS, MAX_PENDING, RequestElicitation, TIMEOUT_MS,
+    Asker, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind, ElicitationOutcome,
+    MAX_MESSAGE_CHARS, MAX_PENDING, NOT_A_PERSON, NOT_A_TOOL, NOT_PENDING, Pending as Listed,
+    RequestElicitation, ResolveElicitation, Resolved, TIMEOUT_MS,
 };
 use axo_protocol::rpc::method;
 use axo_protocol::{Event, SessionId, new_uuid_v4};
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+use serde_json::Value;
 use std::sync::Arc;
 
 use super::SessionManager;
@@ -106,12 +110,17 @@ impl SessionManager {
             id: new_uuid_v4().map_err(internal)?,
             session_id: request.session_id,
             kind: ElicitationKind::Confirm,
+            asked_by: request.asked_by,
             message: message.to_owned(),
             created_at: now,
             expires_at: now + timeout.as_millis() as u64,
         };
         let id = elicitation.id.clone();
-        let Some(answer) = self.elicitations.open(elicitation.clone()).map_err(internal)? else {
+        let Some(answer) = self
+            .elicitations
+            .open(elicitation.clone())
+            .map_err(internal)?
+        else {
             return Err(RpcError {
                 code: ErrorCode::ServerError(TOO_MANY),
                 message: format!(
@@ -120,7 +129,13 @@ impl SessionManager {
                 data: None,
             });
         };
-        log::info!("event=elicitation.requested id={id} kind=confirm");
+        log::info!(
+            "event=elicitation.requested id={id} kind=confirm asked_by={}",
+            match request.asked_by {
+                Asker::Agent => "agent",
+                Asker::ComputerUse => "computer_use",
+            }
+        );
         self.publish_event(Event::ElicitationRequested { elicitation });
         let action = match answer.recv_timeout(timeout) {
             Ok(action) => action,
@@ -142,8 +157,8 @@ impl SessionManager {
         Ok(ElicitationOutcome { id, action })
     }
 
-    /// A person's answer, from the relay. False when it no longer waits: answered already,
-    /// expired, or never asked.
+    /// A person's answer, from the relay or Axo.app. False when it no longer waits: answered
+    /// already, expired, or never asked.
     pub(crate) fn resolve_elicitation(&self, id: &str, answer: ElicitationAnswer) -> bool {
         let action = ElicitationAction::from(answer);
         match self.elicitations.settle(id, action) {
@@ -184,16 +199,63 @@ impl SessionManager {
     }
 }
 
-/// Registers `axo.elicitation.request`. Nothing here answers one.
+/// Registers `axo.elicitation.request`, and `axo.elicitation.resolve` for Axo.app alone.
 pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler) {
-    let manager = Arc::clone(manager);
+    let asking = Arc::clone(manager);
     handler.add_typed(
         method::ELICITATION_REQUEST,
-        "expected {sessionId, message}",
+        "expected {sessionId, message, askedBy?}",
         move |request: RequestElicitation| {
-            manager.request_elicitation(request, Duration::from_millis(TIMEOUT_MS))
+            if request.asked_by != Asker::Agent && !peer::current().is(Signer::ThisBinary) {
+                log::warn!("event=elicitation.refused reason=not_a_tool");
+                return Err(server_error(
+                    NOT_A_TOOL,
+                    "only Axo's own tools ask as a tool; ask as the agent",
+                ));
+            }
+            asking.request_elicitation(request, Duration::from_millis(TIMEOUT_MS))
         },
     );
+    let listing = Arc::clone(manager);
+    handler.add_typed(
+        method::ELICITATION_LIST,
+        "expected no parameters",
+        move |_: Value| {
+            Ok(Listed {
+                elicitations: listing.pending_elicitations(),
+            })
+        },
+    );
+    let answering = Arc::clone(manager);
+    handler.add_typed(
+        method::ELICITATION_RESOLVE,
+        "expected {elicitationId, action}",
+        move |request: ResolveElicitation| {
+            if !peer::current().is(Signer::AxoApp) {
+                log::warn!("event=elicitation.refused reason=not_axo_app");
+                return Err(server_error(
+                    NOT_A_PERSON,
+                    "only the person answers: on this Mac, from Axo.app",
+                ));
+            }
+            if answering.resolve_elicitation(&request.elicitation_id, request.action) {
+                Ok(Resolved { resolved: true })
+            } else {
+                Err(server_error(
+                    NOT_PENDING,
+                    "already answered, or no longer asked",
+                ))
+            }
+        },
+    );
+}
+
+fn server_error(code: i64, message: &str) -> RpcError {
+    RpcError {
+        code: ErrorCode::ServerError(code),
+        message: message.to_owned(),
+        data: None,
+    }
 }
 
 fn unix_millis() -> u64 {
@@ -228,6 +290,7 @@ mod tests {
             id: id.into(),
             session_id: SessionId::from_u128(1),
             kind: ElicitationKind::Confirm,
+            asked_by: Asker::Agent,
             message: "Go?".into(),
             created_at: 1,
             expires_at: 2,
@@ -268,6 +331,11 @@ mod tests {
                     .unwrap(),
             );
         }
-        assert!(elicitations.open(elicitation("one more")).unwrap().is_none());
+        assert!(
+            elicitations
+                .open(elicitation("one more"))
+                .unwrap()
+                .is_none()
+        );
     }
 }
