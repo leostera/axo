@@ -29,6 +29,7 @@ mod elicitations;
 mod events;
 mod handlers;
 mod input;
+mod devices;
 mod lifecycle;
 mod peer_views;
 mod pi_bridge;
@@ -179,6 +180,8 @@ pub struct SessionManager {
     input_key_store: std::sync::OnceLock<Arc<dyn axo_relay::credential::HostCredentialStore>>,
     /// Salted hashes of values the person filled in, hidden from every later read (RFD0029).
     redactions: input::Redactions,
+    /// The phones and browsers allowed to answer (RFD0029), kept in `devices.json`.
+    devices: devices::DeviceTrust,
 }
 
 impl SessionManager {
@@ -255,6 +258,7 @@ impl SessionManager {
             input_key: Default::default(),
             input_key_store: Default::default(),
             redactions: Default::default(),
+            devices: devices::DeviceTrust::open(server_directory.join("devices.json")),
         });
 
         // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see

@@ -72,6 +72,12 @@ pub enum Event {
         session_id: SessionId,
         action: ElicitationAction,
     },
+    /// A phone or a browser answered without being allowed yet: Axo.app asks the person (RFD0029).
+    #[serde(rename = "device.requested")]
+    DeviceRequested { device: crate::elicitation::Device },
+    /// The trusted or waiting devices changed: read `axo.device.list` again.
+    #[serde(rename = "devices.changed")]
+    DevicesChanged,
     /// The subscriber fell behind and events were dropped; resynchronize from a fresh list.
     #[serde(rename = "subscription.lagged")]
     SubscriptionLagged,
@@ -98,6 +104,8 @@ impl Event {
             Event::WorkspaceChanged { .. }
             | Event::RelayStatus { .. }
             | Event::PeerSessionsChanged
+            | Event::DeviceRequested { .. }
+            | Event::DevicesChanged
             | Event::SubscriptionLagged => None,
         }
     }

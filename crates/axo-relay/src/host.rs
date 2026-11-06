@@ -129,6 +129,7 @@ pub trait RelayHost: Send + Sync {
         _id: &str,
         _answer: axo_protocol::elicitation::ElicitationAnswer,
         _sealed: Option<axo_protocol::elicitation::Sealed>,
+        _device: Option<axo_protocol::elicitation::DeviceProof>,
     ) -> Result<(), (i64, String)> {
         Err((
             axo_protocol::elicitation::NOT_PENDING,

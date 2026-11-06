@@ -54,7 +54,10 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         id: &str,
         answer: axo_protocol::elicitation::ElicitationAnswer,
         sealed: Option<axo_protocol::elicitation::Sealed>,
+        device: Option<axo_protocol::elicitation::DeviceProof>,
     ) -> Result<(), (i64, String)> {
+        self.0
+            .check_answer(id, answer, sealed.as_ref(), device.as_ref())?;
         let reply = sealed.map_or(
             axo_protocol::elicitation::Reply::Bare,
             axo_protocol::elicitation::Reply::Sealed,
@@ -443,6 +446,7 @@ impl SessionManager {
         super::elicitations::add_methods(self, handler);
         super::computer::add_methods(self, handler);
         super::input::add_methods(self, handler);
+        super::devices::add_methods(self, handler);
         let manager = Arc::clone(self);
         handler.add_typed(
             method::SESSION_LIST,

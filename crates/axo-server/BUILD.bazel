@@ -74,6 +74,7 @@ rust_test(
         "@crates//:log",
         "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:p256",
         "@crates//:sha2",
         "@crates//:shlex",
         "@crates//:zeroize",

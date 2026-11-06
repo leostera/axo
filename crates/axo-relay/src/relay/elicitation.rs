@@ -20,6 +20,8 @@ struct ResolveElicitation {
     action: axo_protocol::elicitation::ElicitationAnswer,
     #[serde(default)]
     sealed: Option<axo_protocol::elicitation::Sealed>,
+    #[serde(default)]
+    device: Option<axo_protocol::elicitation::DeviceProof>,
 }
 
 #[derive(Deserialize)]
@@ -40,7 +42,10 @@ pub(super) fn resolve_elicitation(
     {
         return Err((-32002, "Stale host".into()));
     }
-    context
-        .sessions
-        .resolve_elicitation(&request.elicitation_id, request.action, request.sealed)
+    context.sessions.resolve_elicitation(
+        &request.elicitation_id,
+        request.action,
+        request.sealed,
+        request.device,
+    )
 }
