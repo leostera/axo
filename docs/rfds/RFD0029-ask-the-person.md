@@ -155,14 +155,9 @@ The agent runs commands as the person, on the same Mac. So any path the Mac app 
    - Session-scoped credentials, such as the codemode sandbox of `connections_execute`, have no route to answering at all.
 3. **No method the agent can reach answers a request.** `axod mcp` offers `request_input` and the gate's confirm. It has no answer tool, and axod refuses `axo.elicitation.resolve` from MCP and Session connections whatever their signature.
 
-**Every remote answer is signed.** Each phone and browser has a device key: ECDSA P-256, in the Secure Enclave on iOS, and a non-extractable WebCrypto key in IndexedDB on the web. It signs every answer: `axo-answer/v1\n{requestId}\n{action}\n{sha256(enc\nciphertext) or nothing}` (`axo_seal::answer_message`). axod refuses an answer whose signature is not for that request and that reply. So a relay that is compromised, or a bug in it, cannot replay an earlier answer for a new request, turn a No into a Yes, swap a sealed value, turn *Allow once* into *Always allow*, or bring back a revoked rule.
+**Every remote answer is signed.** Each phone and browser has a device key: ECDSA P-256, in the Secure Enclave on iOS, and a non-extractable WebCrypto key in IndexedDB on the web. It signs every answer: `axo-answer/v1\n{requestId}\n{action}\n{sha256(enc\nciphertext) or nothing}` (`axo_seal::answer_message`). axod refuses an answer whose signature is not for that request and that reply (`BAD_SIGNATURE`, `-32015`). So a bug in the relay cannot replay an earlier answer for a new request, turn a No into a Yes, or swap sealed values.
 
-**Devices are allowed at the Mac.** axod takes answers only from keys in its `devices.json`, and only Axo.app adds one (`axo.device.trust`, by code signature).
-- The first answer from a key axod doesn't know is refused (`NOT_TRUSTED`, `-32015`). axod holds the key as waiting and announces it (`device.requested`).
-- Axo.app shows a card with the device's name and fingerprint: the first 8 bytes of the key's SHA-256, as on the device's own refusal message. The person allows it only if the two match. The cloud names the device, but cannot make the fingerprints match.
-- No trust on first use: a forged key from the cloud would otherwise win the race.
-- A refused signature is burned: it never counts later, even once its device is allowed. The person answers again.
-- `axo.device.revoke` stops taking a device's answers. At most 8 devices wait, and 64 are trusted.
+**The account says which devices answer.** Any device signed in to the person's account may answer; the person trusts their account, which Cloudflare Access guards. An earlier design had the person allow each new device at the Mac, comparing a code shown on both, so that a compromised cloud could not add a device of its own. It was built in 0.16 and removed: the extra step guarded against a cloud the person already trusts. If that changes, the place to bind a device to a Mac is pairing, which happens in person anyway. The device keys stay, for signing, and for Face ID below.
 
 **Authenticate:** an answer that requires authentication is signed by a second device key that only Face ID unlocks (Secure Enclave, `.biometryCurrentSet`). The Mac app does the same with Touch ID.
 - axod checks the signature against the device keys the person registered. Registering a key itself needs an authenticated answer from an already-registered device, or pairing at the Mac.
@@ -262,7 +257,7 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 
 **Step 4, input (built):** `request_input` as above, from this Mac's agents (`axod mcp` hands it to axod with `axo.computer.input`) and from other Macs' scripts (`codemode.computer.run`); input cards on the web, the phone and the Mac app, with autofill hints; HPKE sealing on the web and the phone, checked against axod's opening; pinning per Mac. `screenshot` is Cua's `get_desktop_state` under a clearer name. Not yet: accepting a changed key at the Mac, Face ID before filling, and blacking out plain fields in screenshots. Tested live by `packages/axo-api-worker/tests/input-live.test.ts` (`AXO_LIVE_COMPUTER=1`), which signs in to a page in Safari.
 
-**Step 5, device-signed answers (built):** device keys on the phone (Secure Enclave) and the web (IndexedDB); signing in `@axo/app` and `AxoProtocol`, checked against axod's verifying by shared vectors; `crates/axo-server/src/session/devices.rs`; the Mac app's card to allow a device. Spec: `specs/elicitations/device-trust.ts`. Not yet: a list in Axo.app's settings to revoke a device.
+**Step 5, device-signed answers (built):** device keys on the phone (Secure Enclave) and the web (IndexedDB); signing in `@axo/app` and `AxoProtocol`, checked against axod's verifying by shared vectors; `crates/axo-server/src/session/devices.rs`. Spec: `specs/elicitations/device-trust.ts`. On the Mac, yes-or-no questions are native notifications, and a card only once opened or when notifications are off; forms are always a card.
 
 Not yet built, in the order of this RFD: push notifications, links, Always allow and Face ID.
 
