@@ -43,7 +43,7 @@ cat bazel-bin/report.txt
 - a release entry in `CHANGELOG.md`;
 - a production deploy of the account Worker or `axo.leostera.dev`.
 
-**Every other Session only announces.** Commit and push your validated change, keeping `main` green. Bump `builds.axod` in its own commit when axod changed, as above, so local builds restart axod. Then tell the coordinator what needs releasing with `session_prompt` (`delivery: "followUp"`), and give:
+**Every other Session only announces.** Commit and push your validated change, keeping `main` green. Bump `builds.axod` in its own commit when axod changed, as above, so local builds restart axod. Then tell the coordinator what needs releasing with `mcp__axo__session_prompt` (`{ sessionId, text }`), and give:
 
 - the commits;
 - one or two sentences on what changed, for the person using Axo;
