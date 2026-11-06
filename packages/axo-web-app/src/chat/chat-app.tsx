@@ -4,12 +4,13 @@ import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
 import { AppsSettings, signInNotice, signInPage } from "./connections.tsx";
+import { ChatList, ChatListSettings } from "./chat-list.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type ChatRoute, type SettingsRoute } from "./route.ts";
 import {
-  chatKey, chatTitle, ChatWorkbench, isChat, lastActivity, recentChatList, shortAge,
-  type ChatBackend, type ChatMenuEntry, type Host,
+  chatTitle, ChatWorkbench, isChat, lastActivity, recentChatList,
+  type ChatBackend, type Host,
 } from "./workbench.ts";
 import { assetUploader } from "./assets.ts";
 
@@ -257,15 +258,6 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
 
 // MARK: - Chats
 
-function StatusDot({ status }: { status: Host["sessions"][number]["status"] }) {
-  switch (status) {
-    case "working": return <span className="status-dot working" aria-label="Working" />;
-    case "needsAttention": return <span className="status-dot attention" aria-label="Needs your attention" />;
-    case "unavailable": return <span className="status-unavailable" aria-label="Stopped"><Icon name="warning" size={13} /></span>;
-    default: return null;
-  }
-}
-
 function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSettings }: {
   workbench: ChatWorkbench;
   onSelect: (hostId: string, sessionId: string) => void;
@@ -278,6 +270,10 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
   // With more than one Mac, each chat says which it is on.
   const manyHosts = workbench.hosts.length > 1;
   const selection = workbench.selection;
+  const questions = workbench.questions();
+  const asking = useMemo(() => new Set(questions.map(question => question.elicitation.sessionId)), [questions.map(question => question.elicitation.sessionId).join()]);
+  const openChat = selection?.kind === "chat" ? entries.find(entry => entry.host.hostId === workbench.openHostId && entry.session.sessionId === selection.sessionId) ?? null : null;
+  const pageVisible = usePageVisible();
   return (
     <nav className="panel chats-panel" aria-label="Chats">
       <header className="layer-bar top panel-header">
@@ -289,9 +285,11 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
         {entries.length > 0 ? (
-          <RecentChats showHost={manyHosts}
+          <ChatList showHost={manyHosts}
             entries={entries}
-            asking={new Set(workbench.questions().map(question => question.elicitation.sessionId))}
+            asking={asking}
+            openChat={openChat}
+            pageVisible={pageVisible}
             isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
             onSelect={onSelect}
           />
@@ -311,41 +309,6 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
         <button className="circle-button" onClick={onSettings} aria-label="Settings"><Icon name="gear" /></button>
       </footer>
     </nav>
-  );
-}
-
-/** Every chat, the most recently active at the top, each with how long ago. */
-function RecentChats({ entries, showHost, asking, isSelected, onSelect }: {
-  entries: ChatMenuEntry[];
-  /** The chats whose agent waits for the person's answer (RFD0029). */
-  asking: Set<string>;
-  showHost: boolean;
-  isSelected: (hostId: string, sessionId: string) => boolean;
-  onSelect: (hostId: string, sessionId: string) => void;
-}) {
-  // Ages only need to move once a minute.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
-  return (
-    <section className="chat-section recent first" aria-label="Recent chats">
-      {entries.map(entry => {
-        const { host, session } = entry;
-        const selected = isSelected(host.hostId, session.sessionId);
-        const active = lastActivity(session);
-        return (
-          <button key={chatKey(entry)} className={selected ? "chat-row selected" : "chat-row"}
-            aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
-            <span className="chat-row-name">{chatTitle(session)}</span>
-            {showHost ? <span className="chat-row-host" title={`On ${host.label}`}>{host.label}</span> : null}
-            <StatusDot status={asking.has(session.sessionId) ? "needsAttention" : session.status} />
-            <span className="chat-row-age">{active > 0 ? shortAge(active, now) : ""}</span>
-          </button>
-        );
-      })}
-    </section>
   );
 }
 
@@ -543,6 +506,7 @@ function SettingsSheet({ onClose, onSignOut, onApps }: { onClose: () => void; on
           </button>
         </div>
       ) : null}
+      <ChatListSettings />
       <h3 className="sheet-section">Theme</h3>
       <div className="grouped">
         <label className="grouped-row">
@@ -745,4 +709,22 @@ function PairMacSheet({ workbench, pairingUrl, onClose }: { workbench: ChatWorkb
       </div>
     </Sheet>
   );
+}
+
+/** Whether the page is in front of the person: shown and focused, so what it shows is seen. */
+function usePageVisible(): boolean {
+  const read = () => document.visibilityState === "visible" && document.hasFocus();
+  const [visible, setVisible] = useState(read);
+  useEffect(() => {
+    const update = () => setVisible(read());
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("focus", update);
+    window.addEventListener("blur", update);
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("focus", update);
+      window.removeEventListener("blur", update);
+    };
+  }, []);
+  return visible;
 }

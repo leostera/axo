@@ -520,12 +520,32 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     });
     await page.goto(`${appUrl}/__tests__/chat`, { waitUntil: "networkidle" });
     const chats = page.getByRole("navigation", { name: "Chats" });
-    // Every chat in one list by its last message (or creation), as on the Mac, with how long ago.
-    // Chats only: a bare terminal Session is not a chat.
-    const recent = chats.getByRole("region", { name: "Recent chats" });
-    await expect(recent.getByRole("button", { name: "Old idea" }));
-    assert.deepEqual(await recent.locator(".chat-row-name").allTextContents(), ["Browser Agent", "Plan the week", "Old idea"]);
+    // Chats in groups, as on the Mac: Active (the one a minute old), then Earlier by last activity,
+    // each with how long ago. Chats only: a bare terminal Session is not a chat.
+    const recent = chats.locator(".chat-list");
+    const group = (name) => chats.getByRole("region", { name });
+    await expect(recent.getByRole("button", { name: /^Old idea/ }));
+    assert.deepEqual(await group("Active").locator(".chat-row-name").allTextContents(), ["Browser Agent"]);
+    assert.deepEqual(await group("Earlier").locator(".chat-row-name").allTextContents(), ["Plan the week", "Old idea"]);
     assert.deepEqual(await recent.locator(".chat-row-age").allTextContents(), ["1m", "2h", "3w"]);
+    // Pinning puts a chat on top, from its pin under the pointer or from its menu, and the pin is kept.
+    await recent.getByRole("button", { name: /^Old idea/ }).hover();
+    await recent.getByRole("button", { name: "Pin Old idea" }).click();
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await group("Pinned").locator(".chat-row-name").allTextContents(), ["Old idea"]);
+    await recent.getByRole("button", { name: /^Plan the week/ }).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Pin to the top" }).click();
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await group("Pinned").locator(".chat-row-name").allTextContents(), ["Old idea", "Plan the week"], "in the order pinned");
+    assert.equal(await group("Earlier").count(), 0);
+    await shot("pinned-chats");
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("sidebar.pinnedSessions.v1")).length), 2);
+    await recent.getByRole("button", { name: /^Plan the week/ }).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Unpin" }).click();
+    await recent.getByRole("button", { name: "Unpin Old idea" }).click();
+    await page.mouse.move(0, 0);
+    assert.equal(await group("Pinned").count(), 0);
+    assert.deepEqual(await group("Earlier").locator(".chat-row-name").allTextContents(), ["Plan the week", "Old idea"]);
     assert.equal(await page.getByText("Standalone Shell").count(), 0);
     assert.equal(await chats.getByRole("button", { name: "Browser Workspace", exact: true }).count(), 0, "no Workspace tree");
     await shot("recent-chats");
@@ -551,7 +571,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.getByLabel("Message").fill("");
 
     // A chat's history: words, Markdown and the tools Pi used.
-    await chats.getByRole("button", { name: "Browser Agent" }).click();
+    await chats.getByRole("button", { name: /^Browser Agent/ }).click();
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
     await expect(page.getByText("Review the latest changes.", { exact: true }));
     await expect(page.locator("strong", { hasText: "look" }));
@@ -569,7 +589,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
     await expect(page.getByText("Review the latest changes.", { exact: true }));
-    await chats.getByRole("button", { name: "Plan the week" }).click();
+    await chats.getByRole("button", { name: /^Plan the week/ }).click();
     await expect(page.getByRole("heading", { name: "Plan the week", exact: true }));
     assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(4)}`);
     await page.goBack();
@@ -581,7 +601,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       await expect(page.getByRole("heading", { name: "New chat", exact: true }));
       await page.waitForFunction(() => location.pathname === "/__tests__/chat", null, { timeout: 5_000 });
     }
-    await chats.getByRole("button", { name: "Browser Agent" }).click();
+    await chats.getByRole("button", { name: /^Browser Agent/ }).click();
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
 
     // Sending: the message shows at once, then Pi's reply as it is written and once it is whole.
@@ -699,8 +719,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await listening.getByRole("button", { name: "Send" }).click();
     await expect(page.getByText("Done with: and check the logs", { exact: true }));
     assert.deepEqual(prompts[2], { sessionId: sid(2), text: "and check the logs" });
-    // The new chat goes to the top of the list, and into the URL.
-    assert.equal(await recent.locator(".chat-row-name").first().textContent(), "Session 2");
+    // The new chat is Active, and in the URL.
+    await expect(group("Active").getByRole("button", { name: /^Session 2/ }));
     assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(2)}`);
 
     // Search finds a chat by its name.
@@ -709,7 +729,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await search.getByRole("textbox", { name: "Search chats" }).fill("week");
     await search.getByRole("button", { name: /Plan the week/ }).click();
     await expect(page.getByRole("heading", { name: "Plan the week", exact: true }));
-    await chats.getByRole("button", { name: "Session 2" }).click();
+    await chats.getByRole("button", { name: /^Session 2/ }).click();
 
     // The chat's info.
     await page.getByRole("button", { name: "Chat info" }).click();
@@ -747,7 +767,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(pairing.getByText(/^curl -fsSL 'http:\/\/[^']+\/install\?code=B26A-NRKT' \| sh$/));
     await pairing.getByRole("button", { name: "Close Pair a Mac" }).click();
     await account.getByRole("button", { name: "Back to chats" }).click();
-    await expect(chats.getByRole("button", { name: "Browser Agent" }));
+    await expect(chats.getByRole("button", { name: /^Browser Agent/ }));
 
     // On a phone-sized screen the layers stack: the conversation first, the chats a swipe or a tap away.
     await page.setViewportSize({ width: 390, height: 844 });
@@ -758,7 +778,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.waitForFunction(() => document.querySelector(".layer-conversation").getBoundingClientRect().left > 200, null, { timeout: 5_000 });
     await page.waitForTimeout(500);
     await shot("phone-chats");
-    await chats.getByRole("button", { name: "Browser Agent" }).click();
+    await chats.getByRole("button", { name: /^Browser Agent/ }).click();
     await page.waitForFunction(() => document.querySelector(".layer-conversation").getBoundingClientRect().left === 0, null, { timeout: 5_000 });
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
     await shot("phone-chat");
@@ -773,7 +793,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByRole("link", { name: "Continue with Cloudflare" }));
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });
-    await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
+    await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /^Browser Agent/ }));
 
     // A server's sign-in comes back to Settings › Apps › MCP servers, which says how it went
     // and drops the query from the URL.
@@ -881,7 +901,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("region", { name: "Activity" }).locator(".call-row strong", { hasText: "linear · List issues" }));
     await page.getByRole("button", { name: "Close settings" }).click();
-    await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
+    await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /^Browser Agent/ }));
     assert.equal(await page.getByRole("region", { name: "Activity" }).count(), 0);
     assert.ok(!new URL(page.url()).pathname.startsWith("/app/settings"), page.url());
 

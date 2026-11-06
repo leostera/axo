@@ -2,7 +2,8 @@
 export type IconName =
   | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "laptop" | "copy" | "check"
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
-  | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud" | "paperclip";
+  | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud" | "paperclip"
+  | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -43,12 +44,19 @@ const paths: Record<IconName, string> = {
   cloud: "M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7Z",
   paperclip: "M20 11.5 12 19.5a4.6 4.6 0 0 1-6.5-6.5l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.3-7.3",
   chevronLeft: "m15 5-7 7 7 7",
+  chevronDown: "m5 9 7 7 7-7",
+  pin: "M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7",
+  pinFill: "M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7",
+  plus: "M12 4v16M4 12h16",
+  mic: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Zm-6-3a6 6 0 0 0 12 0m-6 6v4",
+  camera: "M4 8a1 1 0 0 1 1-1h3l1.5-2h5L16 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8Zm8 8a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z",
+  photo: "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm-1 12 4.5-4.5 4 4 2.5-2.5L20 18M15.5 9.5a1 1 0 1 0 0-.01",
   chevronRight: "m9 5 7 7-7 7",
   mail: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm0 1 8 7 8-7",
 };
 
 /** Drawn filled, as their ".fill" SF Symbols are. */
-const filled: ReadonlySet<IconName> = new Set(["stopFill", "sparkles"]);
+const filled: ReadonlySet<IconName> = new Set(["stopFill", "sparkles", "pinFill"]);
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const solid = filled.has(name);

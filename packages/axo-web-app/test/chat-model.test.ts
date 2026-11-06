@@ -10,6 +10,7 @@ import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type Dict
 import { connectionsResults } from "@axo/protocol";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
 import { memoryDevice } from "../src/chat/device.ts";
+import { chatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
 import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -211,6 +212,94 @@ test("the recent list puts every chat on every Mac in one list, the most recentl
     session(5, null, { archived: true, lastMessageAt: at("2026-10-27T11:58:00Z") }),
   ]), laptop]);
   assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1].map(sid), "no bare terminals or archived chats; across Workspaces and Macs");
+});
+
+// MARK: - Pins and groups
+
+test("pins toggle, drop duplicates and anything that is not an id, and keep only the newest 256", () => {
+  const pins = SessionPins.parse(["a", "b", "a", 7, null]);
+  assert.deepEqual(pins.ids, ["a", "b"]);
+  assert.deepEqual(pins.toggled("c").ids, ["a", "b", "c"]);
+  assert.deepEqual(pins.toggled("a").ids, ["b"]);
+  assert.deepEqual(SessionPins.parse("nope").ids, []);
+  const many = new SessionPins(Array.from({ length: 300 }, (_, index) => `s${index}`));
+  assert.equal(many.ids.length, 256);
+  assert.equal(many.ids[0], "s44", "the oldest pins go first");
+});
+
+test("settings load with the Mac's defaults, and anything missing or out of range takes its default", () => {
+  assert.deepEqual(parseGrouping(undefined), defaultGrouping);
+  assert.deepEqual(defaultGrouping, {
+    activeWindowMinutes: 3, regroupIntervalSeconds: 30, unseenStayActive: true, unseenMarker: "dotAndBold",
+    pinnedOrder: "pinned", activeOrder: "name", earlierOrder: "activity", showsGroupTitles: true,
+    earlierCollapsed: false, earlierLimit: null,
+  });
+  const odd = parseGrouping({ activeWindowMinutes: 0, regroupIntervalSeconds: 99_999, activeOrder: "pinned", unseenMarker: "glow", earlierLimit: -3, earlierCollapsed: "yes" });
+  assert.equal(odd.activeWindowMinutes, 1);
+  assert.equal(odd.regroupIntervalSeconds, 3_600);
+  assert.equal(odd.activeOrder, "name", "Active cannot be in pinned order");
+  assert.equal(odd.unseenMarker, "dotAndBold");
+  assert.equal(odd.earlierLimit, null);
+  assert.equal(odd.earlierCollapsed, false);
+  assert.equal(parseGrouping({ earlierLimit: 10 }).earlierLimit, 10);
+});
+
+test("chats group as on the Mac: pinned, then working, asking, unseen or just active, then earlier", () => {
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  const seconds = (minutesAgo: number) => Math.floor((now - minutesAgo * 60_000) / 1000);
+  const mac = host([
+    session(1, "Axo", { name: "Zeta", lastMessageAt: seconds(1) }),
+    session(2, "Axo", { name: "Alpha", lastMessageAt: seconds(2) }),
+    session(3, "Axo", { name: "Busy", lastMessageAt: seconds(90), status: "working" }),
+    session(4, "Axo", { name: "Quiet", lastMessageAt: seconds(60) }),
+    session(5, "Axo", { name: "Older", lastMessageAt: seconds(120) }),
+    session(6, "Axo", { name: "Pinned old", lastMessageAt: seconds(600) }),
+    session(7, "Axo", { name: "Asking", lastMessageAt: seconds(500) }),
+  ]);
+  const entries = recentChatList([mac]);
+  const pins = new SessionPins([sid(6)]);
+  // Everything before now was seen, so only the window, status and pins decide.
+  const seen = new SessionSeen(now);
+  const state = { pins, seen, now, settings: defaultGrouping, asking: new Set([sid(7)]) };
+  const sections = chatSections(entries, state);
+  assert.deepEqual(sections.map(section => [section.group, section.entries.map(entry => entry.session.name)]), [
+    ["pinned", ["Pinned old"]],
+    ["active", ["Alpha", "Asking", "Busy", "Zeta"]],
+    ["earlier", ["Quiet", "Older"]],
+  ]);
+  // A longer window keeps the hour-old chat Active.
+  assert.equal(groupOf(entries.find(entry => entry.session.name === "Quiet")!, { ...state, settings: { ...defaultGrouping, activeWindowMinutes: 61 } }), "active");
+  // Activity nobody saw keeps a chat Active until it is seen, unless that is turned off.
+  const unseen = new SessionSeen(now - 200 * 60_000);
+  const older = entries.find(entry => entry.session.name === "Older")!;
+  assert.equal(groupOf(older, { ...state, seen: unseen }), "active");
+  assert.equal(groupOf(older, { ...state, seen: unseen.marked(older, now) }), "earlier");
+  assert.equal(groupOf(older, { ...state, seen: unseen, settings: { ...defaultGrouping, unseenStayActive: false } }), "earlier");
+});
+
+test("rows hold still under the pointer: held chats keep their group and place, new ones lead, pins apply at once", () => {
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  const seconds = (minutesAgo: number) => Math.floor((now - minutesAgo * 60_000) / 1000);
+  const before = recentChatList([host([
+    session(1, "Axo", { name: "A", lastMessageAt: seconds(1) }),
+    session(2, "Axo", { name: "B", lastMessageAt: seconds(100) }),
+    session(3, "Axo", { name: "C", lastMessageAt: seconds(200) }),
+  ])]);
+  const state = { pins: new SessionPins(), seen: new SessionSeen(now), now, settings: defaultGrouping };
+  const held = chatSections(before, state);
+  // Later: C got busy, D is new, and B was pinned under the pointer.
+  const after = recentChatList([host([
+    session(1, "Axo", { name: "A", lastMessageAt: seconds(1) }),
+    session(2, "Axo", { name: "B", lastMessageAt: seconds(100) }),
+    session(3, "Axo", { name: "C", lastMessageAt: seconds(200), status: "working" }),
+    session(4, "Axo", { name: "D", lastMessageAt: seconds(0) }),
+  ])]);
+  const live = chatSections(after, { ...state, now: now + 10 * 60_000, pins: new SessionPins([sid(2)]) });
+  const names = (sections: ReturnType<typeof holdingSections>) => sections.map(section => [section.group, section.entries.map(entry => entry.session.name)]);
+  // Ten minutes on, D (new) and A are past the Active window, and C works. Held, A and C stay put
+  // and D leads Earlier, where it belongs now; released, everything takes its place.
+  assert.deepEqual(names(holdingSections(held, live)), [["pinned", ["B"]], ["active", ["A"]], ["earlier", ["D", "C"]]]);
+  assert.deepEqual(names(holdingSections(null, live)), [["pinned", ["B"]], ["active", ["C"]], ["earlier", ["D", "A"]]]);
 });
 
 test("ages are short, as on the Mac", () => {
