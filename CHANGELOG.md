@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.21 (Mac app build 292, axod 44)
+
+### Fixed
+
+- **The questions panel shows.** It opened with no size, so "1 Question…" seemed to do nothing.
+
 ## 0.20 (Mac app build 291, axod 44)
 
 ### Fixed
