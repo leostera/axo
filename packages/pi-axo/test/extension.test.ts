@@ -62,6 +62,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     registerCommand(name: string, command: { handler: (args: string, context: ExtensionContext) => Promise<void> }) {
       commands.set(name, command.handler);
     },
+    getCommands: () => [...commands.keys()].map(name => ({ name, source: "extension" })),
     sendUserMessage(text: string, options?: unknown) {
       sentMessages.push({ text, options });
     },
@@ -142,7 +143,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       action: { kind: "send", text: "Check the build" },
     })}\n`);
     assert.deepEqual(await next(), { type: "commandResult", requestId: "ask-1", result: { accepted: true } });
-    assert.deepEqual(sentMessages, [{ text: "Check the build", options: undefined }]);
+    assert.deepEqual(sentMessages, [{ text: "Check the build", options: { expandPromptTemplates: true } }]);
 
     idle = false;
     socket.write(`${JSON.stringify({
@@ -152,7 +153,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       action: { kind: "send", text: "Take this alternate path", delivery: "steer" },
     })}\n`);
     assert.deepEqual(await next(), { type: "commandResult", requestId: "steer-1", result: { accepted: true } });
-    assert.deepEqual(sentMessages[1], { text: "Take this alternate path", options: { deliverAs: "steer" } });
+    assert.deepEqual(sentMessages[1], { text: "Take this alternate path", options: { expandPromptTemplates: true, deliverAs: "steer" } });
 
     socket.write(`${JSON.stringify({
       type: "command",

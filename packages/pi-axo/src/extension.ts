@@ -41,6 +41,20 @@ function traceBridge(message: string): void {
   if (process.env.AXO_PI_BRIDGE_DEBUG === "1") console.error(`Axo Pi bridge: ${message}`);
 }
 
+/**
+ * What an Axo client sends (the app's composer, the phone, the menu bar) is taken as if typed into
+ * this Pi: `/axo-share` and other extension commands run, skills and prompt templates expand.
+ * Without this, `pi.sendUserMessage` hands `/axo-share` to the model as plain text.
+ */
+const AS_TYPED = { expandPromptTemplates: true } as const;
+
+/** Whether `content` names one of this Pi's extension commands, which run without a turn. */
+function isExtensionCommand(pi: ExtensionAPI, content: PromptContent): boolean {
+  if (typeof content !== "string" || !content.startsWith("/")) return false;
+  const name = content.slice(1).split(/\s/, 1)[0];
+  return pi.getCommands().some(command => command.source === "extension" && command.name === name);
+}
+
 function errorCode(error: unknown): string {
   if (typeof error !== "object" || error === null || !("code" in error) || typeof error.code !== "string") {
     return "unknown";
@@ -55,7 +69,11 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     isIdle: () => context?.isIdle() ?? true,
     entries: () => context?.sessionManager.getEntries() ?? [],
     appendReceipt: receipt => pi.appendEntry(RECEIPT_ENTRY, receipt),
-    prompt: content => pi.sendUserMessage(content),
+    prompt: content => {
+      const runs = !isExtensionCommand(pi, content);
+      pi.sendUserMessage(content, AS_TYPED);
+      return runs ? "run" : "command";
+    },
     abort: () => context?.abort(),
     now: () => Date.now(),
   });
@@ -109,14 +127,14 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     }
 
     if (activeContext.isIdle()) {
-      pi.sendUserMessage(content);
+      pi.sendUserMessage(content, AS_TYPED);
       return { accepted: true as const };
     }
     if (command.action.delivery === undefined) {
       return { accepted: false as const, reason: "busy" as const };
     }
 
-    pi.sendUserMessage(content, { deliverAs: command.action.delivery });
+    pi.sendUserMessage(content, { ...AS_TYPED, deliverAs: command.action.delivery });
     return { accepted: true as const };
   };
 

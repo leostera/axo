@@ -20,8 +20,10 @@ function fakePi(entries: SessionEntry[] = []) {
     appendReceipt: (receipt: CommandReceipt) => {
       pi.log.push({ type: "custom", customType: RECEIPT_ENTRY, data: receipt, id: `r${pi.log.length}`, parentId: null, timestamp: "" } as SessionEntry);
     },
-    prompt: (text: string) => {
+    prompt: (text: string): "run" | "command" => {
+      if (text.startsWith("/axo-")) return "command";
       pi.asked.push(text);
+      return "run";
     },
     abort: () => {
       pi.aborts += 1;
@@ -141,4 +143,18 @@ test("a full queue refuses as busy and forgets nothing it took", () => {
   // Refused, so not seen: the client may send it again later.
   runEnds(pi, remote);
   assert.equal(remote.prompt(first, "one more"), "held");
+});
+
+test("an extension command runs without a turn and does not hold up the prompts behind it", () => {
+  const pi = fakePi();
+  const remote = new RemoteCommands(pi);
+  pi.idle = false;
+  remote.runStarted();
+  assert.equal(remote.prompt(first, "/axo-share"), "held");
+  assert.equal(remote.prompt(second, "and then this"), "held");
+  runEnds(pi, remote);
+  // The command ran; the next prompt went to Pi at once, not after the run-start grace.
+  assert.deepEqual(written(pi), [`receipt ${first}`, `receipt ${second}`]);
+  assert.deepEqual(pi.asked, ["and then this"]);
+  assert.equal(remote.heldCount, 0);
 });

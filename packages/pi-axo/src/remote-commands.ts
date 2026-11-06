@@ -34,7 +34,8 @@ export interface RemoteCommandPi {
   isIdle(): boolean;
   entries(): readonly SessionEntry[];
   appendReceipt(receipt: CommandReceipt): void;
-  prompt(content: PromptContent): void;
+  /** Hands `content` to Pi: a prompt starts a run, an extension command (`/axo-share`) runs without one. */
+  prompt(content: PromptContent): "run" | "command";
   abort(): void;
   now(): number;
 }
@@ -110,7 +111,11 @@ export class RemoteCommands {
     if (next === undefined) return;
     this.deliveredAt = this.pi.now();
     this.pi.appendReceipt({ commandId: next.commandId });
-    this.pi.prompt(next.content);
+    // A command starts no run, so nothing would release the prompts held behind it.
+    if (this.pi.prompt(next.content) === "command") {
+      this.deliveredAt = null;
+      this.deliverNext();
+    }
   }
 }
 
