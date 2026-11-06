@@ -2,7 +2,9 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
-## 0.21 (Mac app build 292, axod 44)
+## Unreleased
+
+Committed on main, not yet published: the next release takes these under its own version.
 
 ### Fixed
 
