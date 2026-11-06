@@ -40,6 +40,8 @@ crate.spec(package = "jsonrpc-core", version = "18.0.0")
 crate.spec(package = "libc", version = "0.2")
 crate.spec(package = "log", version = "0.4")
 crate.spec(package = "native-tls", version = "0.2.18")
+# Answers signed by the person's devices (RFD0029): ECDSA P-256 over SHA-256.
+crate.spec(package = "p256", version = "0.13", features = ["ecdsa"])
 crate.spec(package = "rand_core", version = "0.9", features = ["os_rng"])
 crate.spec(package = "rusqlite", version = "0.39.0", features = ["bundled"])
 crate.spec(package = "security-framework", version = "3.7.0")

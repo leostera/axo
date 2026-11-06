@@ -61,3 +61,76 @@ public struct InputKeyPins: Sendable {
     return known == key ? .same : .changed
   }
 }
+
+/// What a device sends with an answer (RFD0029, every remote answer is signed): its key, its name
+/// and its signature over that answer alone.
+public struct DeviceProof: Codable, Equatable, Sendable {
+  public let key: String
+  public let name: String
+  public let signature: String
+
+  public init(key: String, name: String, signature: String) {
+    self.key = key
+    self.name = name
+    self.signature = signature
+  }
+}
+
+/// A device's signing key: ECDSA P-256 over SHA-256, in the Secure Enclave where there is one.
+public protocol DeviceSigner: Sendable {
+  /// Base64 of the uncompressed public point, as the Mac knows the device.
+  var publicKey: String { get }
+  /// The raw 64-byte r‖s signature over `message`.
+  func sign(_ message: Data) throws -> Data
+}
+
+extension DeviceSigner {
+  /// What a device signs for one answer: the same bytes as axod's `axo_seal::answer_message`.
+  public static func message(requestID: String, action: ElicitationAnswer, sealed: SealedInput?) -> Data {
+    let digest = sealed.map { sealed in
+      SHA256.hash(data: Data("\(sealed.enc)\n\(sealed.ciphertext)".utf8)).map { String(format: "%02x", $0) }.joined()
+    } ?? ""
+    return Data("axo-answer/v1\n\(requestID)\n\(action.rawValue)\n\(digest)".utf8)
+  }
+
+  public func prove(requestID: String, action: ElicitationAnswer, sealed: SealedInput?, name: String) throws -> DeviceProof {
+    let signature = try sign(Self.message(requestID: requestID, action: action, sealed: sealed))
+    return DeviceProof(key: publicKey, name: name, signature: signature.base64EncodedString())
+  }
+}
+
+/// A software P-256 key: for tests, and where there is no Secure Enclave.
+public struct SoftwareDeviceSigner: DeviceSigner {
+  private let key: P256.Signing.PrivateKey
+
+  public init(key: P256.Signing.PrivateKey = P256.Signing.PrivateKey()) {
+    self.key = key
+  }
+
+  public var publicKey: String { key.publicKey.x963Representation.base64EncodedString() }
+
+  public func sign(_ message: Data) throws -> Data {
+    try key.signature(for: message).rawRepresentation
+  }
+}
+
+/// A Secure Enclave P-256 key: its private half never leaves this device. `dataRepresentation`
+/// is a blob only this device's Secure Enclave can use, kept to find the key again.
+public struct SecureEnclaveDeviceSigner: DeviceSigner {
+  private let key: SecureEnclave.P256.Signing.PrivateKey
+
+  public init(dataRepresentation: Data?) throws {
+    if let dataRepresentation {
+      key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: dataRepresentation)
+    } else {
+      key = try SecureEnclave.P256.Signing.PrivateKey()
+    }
+  }
+
+  public var dataRepresentation: Data { key.dataRepresentation }
+  public var publicKey: String { key.publicKey.x963Representation.base64EncodedString() }
+
+  public func sign(_ message: Data) throws -> Data {
+    try key.signature(for: message).rawRepresentation
+  }
+}

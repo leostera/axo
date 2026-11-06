@@ -19,5 +19,27 @@
   ],
   "note" : "A test-only key: axod opens every case with it.",
   "publicKey" : "BHqrq5Hrx+cmKBfkOIcZ3xOoJv\/ZXgByCTxXSyrJlfMYTncwZzfe0l65EoH589HM\/qM7xGsuqE53fQU94bdb8Bc=",
-  "secretKey" : "G0YVmlitVqMfyNNaOx8mu6yqyC6QDT8ArI2U1GuhYi4="
+  "secretKey" : "G0YVmlitVqMfyNNaOx8mu6yqyC6QDT8ArI2U1GuhYi4=",
+  "signed" : [
+    {
+      "action" : "accept",
+      "fingerprint" : "6520 7919 59be e144",
+      "from" : "webcrypto",
+      "key" : "BDjVhgpjZwjdUmboD4KoMQwHTUrNs0SbS8Muq1dbggbieCiB7rYiaVbGX+mf+egGERujHw76BWLgxW4fD44Q01c=",
+      "requestId" : "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a",
+      "sealed" : {
+        "ciphertext" : "Qg==",
+        "enc" : "QQ=="
+      },
+      "signature" : "+8pNkjWHV\/ms8M4pZUNbG9acBhPpHFxAP5PuAK8RGkcXRJj5bjPVd94+OyGvqj31CiO7lnf2dihzIOIkqCsVIw=="
+    },
+    {
+      "action" : "decline",
+      "fingerprint" : "a02e 0513 2b29 aa64",
+      "from" : "cryptokit",
+      "key" : "BOKwncSrgLcr9sluMyt9tWFzVfgOeHlQWLME5m3DNnM+aFoo6Q3sxKs4g+TWTf8VI9FhrLmbA0l8kvTCN0Z7958=",
+      "requestId" : "0b7f1d2e-3c4a-4b5d-9e6f-7a8b9c0d1e2f",
+      "signature" : "nYVfWbA2+1A9nyDMfDDGIr94qzxq\/08nkWDfTgEc0w34Rqb1CtCvRrw07UIj5Pv3X3WWb3jAxQrsCtoqEA4dSw=="
+    }
+  ]
 }

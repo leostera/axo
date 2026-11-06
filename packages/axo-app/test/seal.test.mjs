@@ -34,3 +34,25 @@ test("what the browser seals opens only with the Mac's key, for its request and 
     writeFileSync(vectorsPath, `${JSON.stringify(vectors, null, 2)}\n`);
   }
 });
+
+test("what a browser signs is for that answer alone", async () => {
+  const { answerMessage, newDeviceKey, signAnswer } = await import("../src/seal.ts");
+  const device = await newDeviceKey();
+  const requestId = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a";
+  const sealed = { enc: "QQ==", ciphertext: "Qg==" };
+  const proof = await signAnswer(device, "Safari", requestId, "accept", sealed);
+  const verify = async (action, id = requestId, s = sealed) =>
+    crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, device.publicKey, fromBase64(proof.signature), await answerMessage(id, action, s ?? undefined));
+  assert.equal(await verify("accept"), true);
+  assert.equal(await verify("decline"), false);
+  assert.equal(await verify("accept", "another"), false);
+  assert.equal(await verify("accept", requestId, null), false);
+  assert.equal(fromBase64(proof.key).length, 65);
+
+  if (process.env.AXO_WRITE_SEAL_VECTORS) {
+    const vectors = JSON.parse(readFileSync(vectorsPath, "utf8"));
+    vectors.signed = (vectors.signed ?? []).filter((c) => c.from !== "webcrypto");
+    vectors.signed.unshift({ from: "webcrypto", requestId, action: "accept", sealed, key: proof.key, signature: proof.signature, fingerprint: await keyFingerprint(proof.key) });
+    writeFileSync(vectorsPath, `${JSON.stringify(vectors, null, 2)}\n`);
+  }
+});

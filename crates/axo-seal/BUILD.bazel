@@ -9,6 +9,8 @@ rust_library(
     deps = [
         "//crates/axo-protocol:axo_protocol",
         "@crates//:hpke",
+        "@crates//:p256",
+        "@crates//:sha2",
         "@crates//:rand_core",
         "@crates//:zeroize",
     ],

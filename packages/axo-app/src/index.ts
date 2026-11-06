@@ -46,6 +46,7 @@ import {
   type HostMethodParams,
 } from "@axo/protocol/v1";
 import { z } from "zod";
+import type { DeviceProof } from "@axo/protocol";
 
 /**
  * The account's client (RFD0018): one WebSocket to the ClientDO at `/api/v1/account/client`. It
@@ -56,7 +57,8 @@ import { z } from "zod";
 
 export type HostRef = z.infer<typeof hostRefSchema>;
 export type { Elicitation, ElicitationAnswer, ElicitationResolved };
-export { keyFingerprint, sealInput } from "./seal.ts";
+export { answerMessage, devicePublicKey, keyFingerprint, newDeviceKey, sealInput, signAnswer } from "./seal.ts";
+export type { DeviceProof } from "@axo/protocol";
 export type { ClientHello, ClientHost, ClientOpenResult, ClientRecord, ClientSession, ProgressSnapshot, SessionMetadata, SessionStatus };
 
 export class AxoApiError extends Error {
@@ -274,8 +276,8 @@ export class AccountConnection {
    * Answers what a Mac asks (RFD0029). The Mac takes the first answer; a later one fails with
    * `ELICITATION_ERRORS.notPending`.
    */
-  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, sealed?: Sealed): Promise<void> {
-    elicitationResolveResultSchema.parse(await this.request(ELICITATION_METHODS.resolve, { hostId, elicitationId, action, ...(sealed ? { sealed } : {}) }));
+  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof, sealed?: Sealed): Promise<void> {
+    elicitationResolveResultSchema.parse(await this.request(ELICITATION_METHODS.resolve, { hostId, elicitationId, action, device, ...(sealed ? { sealed } : {}) }));
   }
 
   close(): void {

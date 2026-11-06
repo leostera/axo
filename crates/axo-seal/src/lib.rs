@@ -1,3 +1,6 @@
+//! The person's answers reach this Mac signed by their devices, and what they type for an input
+//! request reaches it sealed (RFD0029).
+//!
 //! What the person types for an input request reaches this Mac sealed (RFD0029, the side channel
 //! for input): the phone or the browser encrypts it to this Mac's input key with HPKE (RFC 9180,
 //! base mode), so the relay, the agent and the transcript only ever carry ciphertext.
@@ -108,6 +111,60 @@ pub fn seal(public_key: &str, plaintext: &[u8], aad: &[u8]) -> Option<(String, S
     ))
 }
 
+/// What a device signs for one answer: the request, the action, and the sealed values if any,
+/// so a signature is good for that answer alone. Shared with `@axo/app`'s `answerMessage` and
+/// `AxoProtocol`'s `DeviceSigner`.
+pub fn answer_message(request_id: &str, action: &str, sealed: Option<(&str, &str)>) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let sealed = sealed
+        .map(|(enc, ciphertext)| {
+            Sha256::digest(format!("{enc}\n{ciphertext}").as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    format!("axo-answer/v1\n{request_id}\n{action}\n{sealed}").into_bytes()
+}
+
+/// Whether `signature` (base64 of the raw 64-byte r‖s) is `key`'s (base64 of an uncompressed
+/// P-256 point) over `message`, with ECDSA over SHA-256, as WebCrypto and CryptoKit sign.
+pub fn verify_answer(key: &str, signature: &str, message: &[u8]) -> bool {
+    use p256::ecdsa::signature::Verifier;
+    use p256::ecdsa::{Signature, VerifyingKey};
+    let (Ok(key), Ok(signature)) = (
+        axo_protocol::base64::decode(key),
+        axo_protocol::base64::decode(signature),
+    ) else {
+        return false;
+    };
+    let (Ok(key), Ok(signature)) = (
+        VerifyingKey::from_sec1_bytes(&key),
+        Signature::from_slice(&signature),
+    ) else {
+        return false;
+    };
+    // Both (r, s) and (r, n - s) are valid; WebCrypto and CryptoKit may give either.
+    let signature = signature.normalize_s().unwrap_or(signature);
+    key.verify(message, &signature).is_ok()
+}
+
+/// A key's fingerprint as the person compares it across devices: the first 8 bytes of the
+/// SHA-256 of its bytes, as four groups of hex (`@axo/app`'s `keyFingerprint`).
+pub fn fingerprint(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = axo_protocol::base64::decode(key).unwrap_or_default();
+    let hex: String = Sha256::digest(&bytes)[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    hex.as_bytes()
+        .chunks(4)
+        .map(|group| std::str::from_utf8(group).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +220,50 @@ mod tests {
                 std::str::from_utf8(&opened).unwrap(),
                 case["plaintext"].as_str().unwrap()
             );
+        }
+    }
+
+    /// What the browser and CryptoKit signed verifies here, for that answer only.
+    #[test]
+    fn the_browser_s_and_cryptokit_s_signatures_verify_here() {
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/vectors.json")).unwrap();
+        let signed = vectors["signed"].as_array().unwrap();
+        let from: Vec<&str> = signed
+            .iter()
+            .map(|case| case["from"].as_str().unwrap())
+            .collect();
+        assert_eq!(from, ["webcrypto", "cryptokit"]);
+        for case in signed {
+            let text = |name: &str| case[name].as_str().unwrap();
+            let sealed = case["sealed"].as_object().map(|sealed| {
+                (
+                    sealed["enc"].as_str().unwrap(),
+                    sealed["ciphertext"].as_str().unwrap(),
+                )
+            });
+            let message = answer_message(text("requestId"), text("action"), sealed);
+            assert!(
+                verify_answer(text("key"), text("signature"), &message),
+                "{}",
+                text("from")
+            );
+            let other = answer_message(
+                text("requestId"),
+                if text("action") == "accept" {
+                    "decline"
+                } else {
+                    "accept"
+                },
+                sealed,
+            );
+            assert!(!verify_answer(text("key"), text("signature"), &other));
+            assert!(!verify_answer(
+                text("key"),
+                text("signature"),
+                &answer_message("another", text("action"), sealed)
+            ));
+            assert_eq!(fingerprint(text("key")), text("fingerprint"));
         }
     }
 

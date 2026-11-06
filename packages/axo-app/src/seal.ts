@@ -1,5 +1,5 @@
 import { Aes256Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
-import { INPUT_SEAL, type Sealed } from "@axo/protocol";
+import { INPUT_SEAL, type DeviceProof, type Sealed } from "@axo/protocol";
 
 /**
  * Seals what the person typed into an input request's form to the Mac's input key (RFD0029, the
@@ -40,4 +40,34 @@ export async function keyFingerprint(key: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes(key)));
   const hex = [...digest.slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return hex.match(/.{4}/g)!.join(" ");
+}
+
+/**
+ * What a device signs for one answer (RFD0029, every remote answer is signed): the request, the
+ * action, and the sealed values if any, so a signature is good for that answer alone. The same
+ * bytes as axod's `axo_seal::answer_message`.
+ */
+export async function answerMessage(requestId: string, action: string, sealed?: Sealed): Promise<Uint8Array<ArrayBuffer>> {
+  let digest = "";
+  if (sealed) {
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${sealed.enc}\n${sealed.ciphertext}`)));
+    digest = [...hash].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return new TextEncoder().encode(`axo-answer/v1\n${requestId}\n${action}\n${digest}`);
+}
+
+/** A device's signing key: ECDSA P-256, its private half never extractable. */
+export async function newDeviceKey(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+}
+
+/** A device key's public half as the Mac knows it: base64 of the uncompressed point. */
+export async function devicePublicKey(key: CryptoKey): Promise<string> {
+  return base64(await crypto.subtle.exportKey("raw", key));
+}
+
+
+export async function signAnswer(device: CryptoKeyPair, name: string, requestId: string, action: string, sealed?: Sealed): Promise<DeviceProof> {
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, device.privateKey, await answerMessage(requestId, action, sealed));
+  return { key: await devicePublicKey(device.publicKey), name, signature: base64(signature) };
 }
