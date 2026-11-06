@@ -768,14 +768,13 @@ test("a form's values leave only sealed, and only to the key first seen for that
   assert.deepEqual(account.resolves[1], { hostId, elicitationId: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", action: "decline" });
 });
 
-test("every answer goes signed by this browser's key, and a Mac that does not know it says how to allow it", async () => {
+test("every answer goes signed by this browser's key, each with its own signature", async () => {
   const { workbench, account } = await workbenchWith();
   const elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f70", sessionId: sid(1), kind: "confirm" as const, message: "Go?", createdAt: 1, expiresAt: 2 };
   account.events.elicitationRequested?.(hostId, elicitation);
-  account.resolveFails = Object.assign(new Error("not allowed"), { code: -32015 });
+  account.resolveFails = Object.assign(new Error("The answer's signature is not for this answer."), { code: -32015 });
   await workbench.answerQuestion(elicitation.id, "accept");
   assert.equal(account.devices[0]!.key.length, 88);
-  assert.match(workbench.failure ?? "", /^Allow this browser in Axo on your Mac first: it shows [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} there/);
   account.resolveFails = null;
   await workbench.answerQuestion(elicitation.id, "accept");
   assert.equal(account.devices[1]!.key, account.devices[0]!.key);

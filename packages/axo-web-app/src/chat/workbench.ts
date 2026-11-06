@@ -1078,10 +1078,7 @@ export class ChatWorkbench {
       this.failure = null;
     } catch (error) {
       question.answering = null;
-      const code = (error as { code?: number }).code;
-      if (code === ELICITATION_ERRORS.notPending) this.asked.delete(elicitationId);
-      else if (code === ELICITATION_ERRORS.notTrusted)
-        this.failure = `Allow this browser in Axo on your Mac first: it shows ${await this.device.fingerprint()} there. Then answer again.`;
+      if ((error as { code?: number }).code === ELICITATION_ERRORS.notPending) this.asked.delete(elicitationId);
       else this.failure = describe(error);
     }
     this.changed();

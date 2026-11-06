@@ -131,8 +131,8 @@ public enum ElicitationError {
   public static let notAPerson = -32012
   /// An input answer that is missing, did not open, or does not fit its fields; it still waits.
   public static let badInput = -32014
-  /// From a device not allowed at that Mac, or not signed for this answer; it still waits.
-  public static let notTrusted = -32015
+  /// Not signed by its device for this answer; it still waits.
+  public static let badSignature = -32015
 }
 
 /// `axo.elicitation.list`: what waits for the person on this Mac, oldest first.
@@ -152,58 +152,6 @@ public struct LocalElicitationAnswer: Encodable, Sendable {
     self.action = action
     self.values = values
   }
-}
-
-/// A phone or a browser that answers this Mac's questions, or wants to (RFD0029).
-public struct AnsweringDevice: Codable, Equatable, Hashable, Sendable, Identifiable {
-  /// Base64 of its public key.
-  public let key: String
-  public let name: String
-  /// As the device shows it, for the person to compare.
-  public let fingerprint: String
-  /// Unix milliseconds: when it was allowed, or first asked.
-  public let at: Int64
-
-  public var id: String { key }
-
-  public init(key: String, name: String, fingerprint: String, at: Int64) {
-    self.key = key
-    self.name = name
-    self.fingerprint = fingerprint
-    self.at = at
-  }
-}
-
-/// `axo.device.list`.
-public struct AnsweringDevices: Decodable, Equatable, Sendable {
-  public let trusted: [AnsweringDevice]
-  public let pending: [AnsweringDevice]
-
-  public init(trusted: [AnsweringDevice], pending: [AnsweringDevice]) {
-    self.trusted = trusted
-    self.pending = pending
-  }
-}
-
-/// `axo.device.trust` and `axo.device.revoke`, from Axo.app.
-public struct DeviceChoice: Encodable, Sendable {
-  public let key: String
-  public let allow: Bool
-
-  public init(key: String, allow: Bool = true) {
-    self.key = key
-    self.allow = allow
-  }
-}
-
-/// `axo.device.trust`'s result: false if the device was no longer waiting.
-public struct DeviceDecided: Decodable, Sendable {
-  public let decided: Bool
-}
-
-/// `axo.device.revoke`'s result: false if it was not trusted.
-public struct DeviceRevoked: Decodable, Sendable {
-  public let revoked: Bool
 }
 
 /// `axo.elicitation.resolve`'s result.

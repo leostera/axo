@@ -275,9 +275,7 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
         | Event::SessionFocus { .. }
         | Event::WorkspaceChanged { .. }
         | Event::RelayStatus { .. }
-        | Event::PeerSessionsChanged
-        | Event::DeviceRequested { .. }
-        | Event::DevicesChanged => {}
+        | Event::PeerSessionsChanged => {}
     }
 }
 

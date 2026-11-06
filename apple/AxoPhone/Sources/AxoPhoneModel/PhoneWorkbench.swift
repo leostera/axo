@@ -218,10 +218,6 @@ public final class PhoneWorkbench {
     } catch {
       if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notPending {
         questions.removeAll { $0.id == id }
-      } else if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notTrusted {
-        if let again = questions.firstIndex(where: { $0.id == id }) { questions[again].answering = nil }
-        answerFailure =
-          "Allow this iPhone in Axo on that Mac first: it shows \(InputSeal.fingerprint(of: signer.publicKey)) there. Then answer again."
       } else {
         if let again = questions.firstIndex(where: { $0.id == id }) { questions[again].answering = nil }
         answerFailure = error.localizedDescription

@@ -35,7 +35,4 @@ public enum AxodMethodName: String, CaseIterable, Sendable {
   /// What agents and tools ask the person (RFD0029). Only Axo.app answers on this Mac.
   case elicitationList = "axo.elicitation.list"
   case elicitationResolve = "axo.elicitation.resolve"
-  case deviceList = "axo.device.list"
-  case deviceTrust = "axo.device.trust"
-  case deviceRevoke = "axo.device.revoke"
 }

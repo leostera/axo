@@ -123,23 +123,19 @@ test("an agent's question reaches the person's phone, their answer returns to th
     const next = await waitFor("the second question", 15_000, async () =>
       asked.find((entry) => entry.elicitation.message === "Push to main?"), daemon);
     assert.equal(next.elicitation.askedBy, "agent");
-    // Only devices allowed at the Mac answer, each signature for its own answer (RFD0029): a
-    // device the Mac does not know is refused and waits for the person there; the trusted phone's
-    // signature replayed onto this question, or changed to a Yes, is refused too.
+    // Each answer counts only with its device's signature over it (RFD0029): a signature
+    // replayed onto this question, or changed to a Yes, is refused. Any device in the account
+    // may answer.
     const { newDeviceKey, signAnswer } = await import("@axo/app");
-    const stranger = await signAnswer(await newDeviceKey(), "Someone's laptop", next.elicitation.id, "accept");
-    await assert.rejects(browser.resolveElicitation(host.hostId, next.elicitation.id, "accept", stranger),
-      (error: { code?: number; message?: string }) => error.code === ELICITATION_ERRORS.notTrusted && /Allow it in Axo on the Mac/u.test(error.message ?? ""));
-    const devices = (await localCall(socketPath, "axo.device.list")) as { trusted: Array<{ name: string }>; pending: Array<{ name: string; fingerprint: string }> };
-    assert.deepEqual([devices.trusted.map((d) => d.name), devices.pending.map((d) => d.name)], [["Leo's iPhone"], ["Someone's laptop"]]);
-    await assert.rejects(localCall(socketPath, "axo.device.trust", { key: stranger.key }), /only the person at the Mac/iu);
     const replayed = await signAnswer(device.key, "Leo's iPhone", elicitation.id, "decline");
     await assert.rejects(browser.resolveElicitation(host.hostId, next.elicitation.id, "decline", replayed),
-      (error: { code?: number }) => error.code === ELICITATION_ERRORS.notTrusted);
+      (error: { code?: number }) => error.code === ELICITATION_ERRORS.badSignature);
     const no = await signAnswer(device.key, "Leo's iPhone", next.elicitation.id, "decline");
     await assert.rejects(browser.resolveElicitation(host.hostId, next.elicitation.id, "accept", no),
-      (error: { code?: number }) => error.code === ELICITATION_ERRORS.notTrusted);
-    await device.answer(browser, host.hostId, next.elicitation.id, "decline");
+      (error: { code?: number }) => error.code === ELICITATION_ERRORS.badSignature);
+    // This browser's own key, which the Mac has never seen, answers.
+    const browserKey = await newDeviceKey();
+    await browser.resolveElicitation(host.hostId, next.elicitation.id, "decline", await signAnswer(browserKey, "Safari on Mac", next.elicitation.id, "decline"));
     assert.equal((await second).result?.structuredContent?.action, "decline");
 
     // Tools ask; agents cannot approve. The answer to the agent's own question approves nothing:

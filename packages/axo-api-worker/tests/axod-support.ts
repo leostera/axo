@@ -152,17 +152,10 @@ export function browserWebSocketFactory(headers: Record<string, string>) {
 }
 
 
-/**
- * A phone already allowed at the Mac (RFD0029): its key goes into `devices.json` before axod
- * starts, as Axo.app's `axo.device.trust` would have put it. `answer` signs each answer with it.
- */
-export async function trustedDevice(serverDirectory: string, name = "Leo's iPhone") {
-  const { devicePublicKey, keyFingerprint, newDeviceKey, signAnswer } = await import("@axo/app");
-  const { writeFile } = await import("node:fs/promises");
-  const { join } = await import("node:path");
+/** A phone's answer key: `answer` signs each answer with it (RFD0029). */
+export async function trustedDevice(_serverDirectory: string, name = "Leo's iPhone") {
+  const { newDeviceKey, signAnswer } = await import("@axo/app");
   const key = await newDeviceKey();
-  const publicKey = await devicePublicKey(key.publicKey);
-  await writeFile(join(serverDirectory, "devices.json"), JSON.stringify([{ key: publicKey, name, fingerprint: await keyFingerprint(publicKey), at: 1 }]), { mode: 0o600 });
   return {
     key,
     answer: async (

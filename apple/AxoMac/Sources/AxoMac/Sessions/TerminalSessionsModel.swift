@@ -532,7 +532,7 @@ final class TerminalSessionsModel {
     case .subscriptionLagged:
       return false
     case .shellActivity, .terminalOutput, .relayStatus, .elicitationRequested, .elicitationResolved,
-      .deviceRequested, .devicesChanged, .daemonReady, .unknown:
+      .daemonReady, .unknown:
       // Session snapshots carry the state the catalog presents; terminal bytes go to Ghostty;
       // questions to the person go to `elicitations`.
       break

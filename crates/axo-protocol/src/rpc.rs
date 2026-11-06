@@ -70,12 +70,6 @@ pub mod method {
     pub const COMPUTER_INPUT: &str = "axo.computer.input";
     /// Salted hashes of values the person filled in, which `axod mcp` hides from its reads.
     pub const COMPUTER_REDACTIONS: &str = "axo.computer.redactions";
-    /// The phones and browsers allowed to answer this Mac's questions, and those asking to.
-    pub const DEVICE_LIST: &str = "axo.device.list";
-    /// Axo.app allows a waiting device, or turns it away.
-    pub const DEVICE_TRUST: &str = "axo.device.trust";
-    /// Axo.app stops taking a device's answers.
-    pub const DEVICE_REVOKE: &str = "axo.device.revoke";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -129,9 +123,6 @@ pub mod method {
         ASSETS_FETCH,
         COMPUTER_INPUT,
         COMPUTER_REDACTIONS,
-        DEVICE_LIST,
-        DEVICE_TRUST,
-        DEVICE_REVOKE,
     ];
 }
 

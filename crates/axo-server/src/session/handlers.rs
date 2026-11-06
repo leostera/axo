@@ -446,7 +446,6 @@ impl SessionManager {
         super::elicitations::add_methods(self, handler);
         super::computer::add_methods(self, handler);
         super::input::add_methods(self, handler);
-        super::devices::add_methods(self, handler);
         let manager = Arc::clone(self);
         handler.add_typed(
             method::SESSION_LIST,

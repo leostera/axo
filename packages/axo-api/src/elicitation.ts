@@ -28,8 +28,8 @@ export const ELICITATION_LIMITS = {
 export const ELICITATION_ERRORS = {
   /** An input answer that is missing, did not open, or does not fit its fields; it still waits. */
   badInput: -32014,
-  /** From a device the person has not allowed at that Mac, or not signed for this answer; it still waits. */
-  notTrusted: -32015,
+  /** Not signed by its device for this answer; it still waits. */
+  badSignature: -32015,
   /** Answered already, expired, or never asked. */
   notPending: -32011,
   /** Only a person answers: a Mac's own credential, or anything else, cannot. */
@@ -76,8 +76,7 @@ export type Sealed = z.infer<typeof sealedSchema>;
 
 /**
  * What a phone or a browser sends with every answer (RFD0029): its key, its name and its ECDSA
- * P-256 signature over that answer alone. The Mac takes it only from a key the person allowed in
- * Axo there.
+ * P-256 signature over that answer alone.
  */
 export const deviceProofSchema = z.object({
   key: z.base64().length(88),

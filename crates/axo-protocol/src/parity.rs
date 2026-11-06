@@ -253,18 +253,6 @@ pub const PARITY: &[Parity] = &[
         method::COMPUTER_REDACTIONS,
         Remote::LocalOnly("axod hides filled values from remote reads itself"),
     ),
-    row(
-        method::DEVICE_LIST,
-        Remote::LocalOnly("devices are allowed at the Mac, in Axo.app"),
-    ),
-    row(
-        method::DEVICE_TRUST,
-        Remote::LocalOnly("only the person at the Mac allows a device"),
-    ),
-    row(
-        method::DEVICE_REVOKE,
-        Remote::LocalOnly("only the person at the Mac revokes a device for now"),
-    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.
