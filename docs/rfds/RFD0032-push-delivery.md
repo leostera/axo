@@ -31,7 +31,7 @@ RFD0031 took Axo from about 25k Durable Object requests an hour to about 4.3k. H
 | `AxoClientDO.notify` | 748 | Each committed record or progress batch is one call per watching ClientDO. |
 | `AxoAccountDirectory.touchHost` | 235 | A bug: the heartbeat throttle is kept in memory and lost on every hibernation. It is fixed separately. |
 | `AxoSessionDO.read` | 228 | A ClientDO that receives a notice reads the records back, although the HostDO had them in hand. |
-| `AxoHostDO.watch` | 126 | On every connect, axod's peer sync opens and watches about 150 of the other Mac's Sessions (`crates/axo-relay/src/peers.rs`, `open_more`). |
+| `AxoHostDO.watch` | 126 | On every connect, axod's peer sync opens and watches about 150 of the other Mac's Sessions (`crates/axo-relay/src/peers/follower.rs`, `open_more`). |
 | HostDO WebSocket frames | ~1,740 | Incoming frames, billed 20:1: about 87 requests. |
 
 At about 1.2M requests a month, this is at the 1M included in Workers Paid. It grows with every client and every Session a client follows, because every hop between the record and the client is a billed call.

@@ -109,7 +109,7 @@ export const Axod = defineActor({
   transitions: {
     handshake: {
       description: "Sends the manifest: the count and chain of the transcript.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::handshake"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::handshake"],
       when: (s) => s.handshakeDue && s.waiting === null,
       sends: [Sync],
       run(s, _m, ctx) {
@@ -121,7 +121,7 @@ export const Axod = defineActor({
     synced: {
       on: Synced,
       description: "Learns what the cloud holds: a prefix of the file is uploaded from its end; a divergence is cut back first.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::handshake"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::handshake"],
       sends: [Chains],
       run(s, msg, ctx) {
         s.waiting = null;
@@ -135,7 +135,7 @@ export const Axod = defineActor({
     chainsAre: {
       on: ChainsAre,
       description: "Finds the longest prefix both copies share, and asks the cloud to cut back to it.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::realign"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::realign"],
       sends: [Truncate],
       run(s, msg, ctx) {
         let keep = 0;
@@ -147,7 +147,7 @@ export const Axod = defineActor({
     truncated: {
       on: Truncated,
       description: "The cloud is cut back to the shared prefix; a mismatch means it moved, so the handshake runs again.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::realign"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::realign"],
       run(s, msg) {
         s.waiting = null;
         if (msg.outcome === "truncated") s.cloud = { count: msg.count, chain: msg.chain };
@@ -156,7 +156,7 @@ export const Axod = defineActor({
     },
     upload: {
       description: "Appends the next record the cloud lacks.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::upload_next"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::upload_next"],
       when: (s) => !s.handshakeDue && s.waiting === null && s.cloud !== null && s.cloud.count < s.file.length,
       sends: [Append],
       run(s, _m, ctx) {
@@ -169,7 +169,7 @@ export const Axod = defineActor({
     appended: {
       on: Appended,
       description: "A committed append moves its belief on; a gap or a conflict means the cloud is not what it thought, so it handshakes again.",
-      sources: ["crates/axo-relay/src/sync.rs#Uploader::upload_next"],
+      sources: ["crates/axo-relay/src/sync/uploader.rs#Uploader::upload_next"],
       run(s, msg) {
         s.waiting = null;
         if (msg.outcome === "committed") s.cloud = { count: msg.count, chain: msg.chain };
