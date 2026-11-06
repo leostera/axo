@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use axo_protocol::{SessionId, new_uuid_v4};
 
-use crate::protocol::{Action, CommandResult, Outgoing, ProtocolVersion, Record};
-use crate::{BridgeSocketPath, WriterLock, bridge, process_inspection};
+use crate::pi::protocol::{Action, CommandResult, Outgoing, ProtocolVersion, Record};
+use crate::pi::{BridgeSocketPath, bridge};
+use crate::{WriterLock, process_inspection};
 
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
 pub const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);

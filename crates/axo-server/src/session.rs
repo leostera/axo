@@ -11,9 +11,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::workspace_access::WorkspaceDirectoryAccess;
-use axo_panes::{PaneProcess, Panes, RuntimeId};
+use axo_agent::pi::BridgeSocketPath;
 use axo_agent::takeover::TakeoverGrace;
-use axo_agent::{AgentCommand, BridgeSocketPath, WriterLock};
+use axo_agent::{AgentCommand, WriterLock};
+use axo_panes::{PaneProcess, Panes, RuntimeId};
 use axo_protocol::{PaneRole, SessionId, ShellId, Viewport, new_uuid_v4};
 use axo_pty::TerminalOutput;
 use axo_pty::process;
@@ -25,19 +26,19 @@ use axo_store::{
 mod catalog;
 mod cloud_transcripts;
 mod computer;
+mod devices;
 mod elicitations;
 mod events;
 mod handlers;
 mod input;
-mod devices;
 mod lifecycle;
 mod peer_views;
 mod pi_bridge;
 mod pi_recovery;
 mod prompts;
+mod readiness;
 mod settings;
 mod spawn;
-mod readiness;
 mod stop_notice;
 pub(crate) use spawn::set_agent_socket;
 mod terminal;
@@ -76,7 +77,7 @@ struct RunningShell {
     pi_bridge_socket: Option<BridgeSocketPath>,
     pi_bridge_token: Option<String>,
     /// Commands for this Pi, sent on its bridge worker's connection; set when the worker starts.
-    pi_commands: Option<axo_agent::worker::CommandSender>,
+    pi_commands: Option<axo_agent::pi::worker::CommandSender>,
 }
 
 impl RunningShell {
@@ -84,7 +85,7 @@ impl RunningShell {
     fn stop_grace(&self) -> Duration {
         match self.role {
             PaneRole::Terminal => process::SHELL_STOP_GRACE,
-            PaneRole::Pi => axo_agent::STOP_GRACE,
+            PaneRole::Pi => axo_agent::pi::STOP_GRACE,
         }
     }
 }

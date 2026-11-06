@@ -6,14 +6,13 @@ Today it holds Pi processes for axod: launching Pi for a Session, the transcript
 
 | Module | Owns |
 | --- | --- |
-| `launch`, `command` | Launching Pi on a PTY for a Session, from the configured `agent.command`; `STOP_GRACE` |
-| `lock` | `WriterLock`: the exclusive `flock` on `<transcript>.jsonl.lock` every Pi holds. Holding it proves no Pi for the Session is alive |
-| `socket` | `BridgeSocketPath`: where a Pi's bridge listens, and cleaning up after a Pi that died |
-| `protocol` | The bridge protocol shared with `packages/pi-axo/src/protocol.ts` |
-| `bridge`, `connection` | The bridge transport, and the connection as a state machine: authenticate, bind to the exact pane, then one ordered event stream |
-| `worker` | Following one running Pi for as long as it is its pane's current process; `CommandSender` |
-| `takeover`, `process_inspection` | Taking a transcript from a Pi that holds it: ask over the bridge, and on explicit restart signal only the verified Pi process group |
-| `history`, `activity` | Recognising the transcript Axo created, and what a Pi is doing |
+| `command` | The configured `agent.command` |
+| `lock` | `WriterLock`: the exclusive `flock` on `<transcript>.jsonl.lock`. axod takes it and the agent inherits it, so holding it proves no agent for the Session is alive |
+| `takeover`, `process_inspection` | Taking a transcript from an agent that holds it: ask it to shut down, and on explicit restart signal only the verified process group. Asking still goes through Pi's bridge |
+| `history`, `activity` | Recognising the transcript Axo created, and a Session's status from what its agent reports |
+| `pi` | Pi itself: `launch` (Pi on a PTY with the pi-axo extension; `STOP_GRACE`), `socket` (`BridgeSocketPath`), `protocol` (shared with `packages/pi-axo/src/protocol.ts`), `bridge` and `connection` (the transport, and the connection as a state machine), `worker` (following one running Pi; `CommandSender`) |
+
+Code outside `pi` is meant to serve any agent; a second agent gets a module beside `pi`. There is no `Agent` trait yet: it will be drawn from what Pi and the second agent share.
 
 ## Rules
 

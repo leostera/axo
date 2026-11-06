@@ -319,8 +319,8 @@ impl SessionManager {
                     super::terminal::window_size(viewport.full_grid())
                 });
                 let session = session_id.to_string();
-                let pty = axo_agent::spawn_remote_view(
-                    &axo_agent::RemoteViewLaunch {
+                let pty = axo_agent::pi::spawn_remote_view(
+                    &axo_agent::pi::RemoteViewLaunch {
                         agent_command: &state.agent_command,
                         initial_pwd: &directory,
                         home: &home,

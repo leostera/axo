@@ -13,9 +13,10 @@ use super::pi_bridge::{PiRuntimeBinding, log_socket_cleanup};
 use super::spawn::{pi_environment, spawn_shell};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
 use crate::workspace_access::WorkspaceDirectoryAccess;
-use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
+use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess};
 use axo_agent::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
-use axo_agent::{AgentCommand, BridgeSocketPath, PiLaunch, PiProcess, WriterLock};
+use axo_agent::{AgentCommand, WriterLock};
+use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, new_uuid_v4};
 use axo_pty::WindowSize;
 use axo_pty::process::PtyProcess;
@@ -132,7 +133,7 @@ fn spawn_pi(
             },
         writer_lock,
         socket_cleanup,
-    } = axo_agent::spawn(
+    } = axo_agent::pi::spawn(
         &request.launch(&home, &environment),
         lock,
         &bridge_token,
@@ -765,10 +766,11 @@ mod tests {
     use super::*;
     use crate::session::lifecycle::ACTIVE_ON_START;
     use crate::session::{pi_bridge::*, test_support::*};
-    use axo_panes::RuntimeId;
-    use axo_agent::bridge;
+    use axo_agent::pi::BridgeSocketPath;
+    use axo_agent::pi::bridge;
     use axo_agent::takeover::{TakeoverGrace, TakeoverPolicy};
-    use axo_agent::{AgentCommand, BridgeSocketPath, WriterLock};
+    use axo_agent::{AgentCommand, WriterLock};
+    use axo_panes::RuntimeId;
     use axo_protocol::rpc;
     use axo_protocol::{
         Availability, Layout, LayoutDirection, LayoutNode, PaneRole, SessionStatus, new_uuid_v4,

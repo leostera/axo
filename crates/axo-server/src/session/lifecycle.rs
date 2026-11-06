@@ -652,8 +652,8 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::{settings::*, test_support::*};
+    use axo_agent::pi::bridge;
     use axo_panes::Pane;
-    use axo_agent::bridge;
 
     use axo_agent::WriterLock;
 

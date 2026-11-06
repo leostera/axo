@@ -14,7 +14,7 @@ use super::pi_recovery::{PiLaunchRequest, spawn_new_pi};
 use super::spawn::spawn_shell;
 use super::{SessionManager, SessionState};
 use crate::workspace_access::WorkspaceDirectoryAccess;
-use axo_agent::BridgeSocketPath;
+use axo_agent::pi::BridgeSocketPath;
 use axo_protocol::rpc;
 use axo_protocol::{
     Event, PaneRole, SessionId, SessionRecord, WorkspaceRecord, WorkspaceState, is_uuid,

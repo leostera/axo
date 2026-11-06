@@ -6,24 +6,17 @@
 //! launch and when, and what its events mean for the catalog.
 
 pub mod activity;
-pub mod bridge;
 mod command;
-pub mod connection;
 mod history;
-mod launch;
 mod lock;
+pub mod pi;
 mod process_inspection;
-pub mod protocol;
-mod socket;
 pub mod takeover;
-pub mod worker;
 
 pub use activity::Activity;
 pub use command::AgentCommand;
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
-pub use launch::{PiLaunch, PiProcess, RemoteViewLaunch, STOP_GRACE, spawn, spawn_remote_view};
 pub use lock::WriterLock;
-pub use socket::{BridgeSocketPath, MAX_SOCKET_PATH_BYTES, SocketCleanup};
 
 /// A fresh directory under /tmp (not the per-user temp directory: socket paths are limited to
 /// 104 bytes).

@@ -4,7 +4,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use axo_agent::BridgeSocketPath;
+use axo_agent::pi::BridgeSocketPath;
 use axo_protocol::{SessionId, is_uuid};
 use rusqlite::{Connection, OptionalExtension, params};
 

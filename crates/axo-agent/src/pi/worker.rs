@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::BridgeSocketPath;
-use crate::bridge::{self, MAX_RECORD_BYTES};
-use crate::connection::{Connection, ExpectedPane, Rejection, Step};
-use crate::protocol::{
+use crate::pi::BridgeSocketPath;
+use crate::pi::bridge::{self, MAX_RECORD_BYTES};
+use crate::pi::connection::{Connection, ExpectedPane, Rejection, Step};
+use crate::pi::protocol::{
     Action, CommandResult, Outgoing, ProtocolVersion, QueuedDelivery, parse_record,
 };
 use crate::takeover::BRIDGE_REQUEST_TIMEOUT;

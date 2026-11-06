@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use axo_pty::process::{self, PtyProcess, WindowSize};
 
-use crate::{AgentCommand, BridgeSocketPath, SocketCleanup, WriterLock};
+use crate::pi::{BridgeSocketPath, SocketCleanup};
+use crate::{AgentCommand, WriterLock};
 
 /// How long a stopped Pi gets before SIGKILL. On SIGTERM/SIGHUP Pi disposes its runtime (the
 /// pi-axo extension closes and unlinks its bridge socket), then drains terminal input for up to

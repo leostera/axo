@@ -1,10 +1,11 @@
 //! Fixtures shared by the `session` modules' tests.
 
 use super::*;
-use axo_panes::UnavailablePane;
-use axo_agent::bridge;
+use axo_agent::AgentCommand;
+use axo_agent::pi::BridgeSocketPath;
+use axo_agent::pi::bridge;
 use axo_agent::takeover::TakeoverPolicy;
-use axo_agent::{AgentCommand, BridgeSocketPath};
+use axo_panes::UnavailablePane;
 use axo_protocol::{Event, Layout, SessionId, ShellId, Viewport, new_uuid_v4};
 use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber};
