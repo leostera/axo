@@ -21,7 +21,7 @@ There are four kinds of request:
 
 A request appears on every client the person has open:
 - as a card in the Session's transcript on the web, iOS and Mac;
-- as a notification with buttons on the Mac;
+- in a panel under the menu bar Axo on the Mac;
 - as a push notification on iOS.
 
 The first answer wins, and the other clients dismiss their card. Only requests that block on the person notify; a new message never does.
@@ -52,7 +52,7 @@ An agent is buying something in Safari. It clicks "Pay now" through `computer`, 
 
 Allow asks for Face ID, because the action involves money. Once allowed, the click happens on the Mac and the agent's tool call returns *done*. A Deny returns *the person declined*.
 
-**At the Mac:** the same request appears as a notification at the top right, with the same buttons. It also appears as a card in the Mac app's transcript. Whichever the person answers first wins, and the others go away.
+**At the Mac:** the menu bar Axo turns orange. Its menu says *1 Question…*, which opens a panel centered under it with the same request and the same buttons. Whichever the person answers first wins, and the others go away.
 
 **When a login needs details:** the agent reaches a sign-in page. It doesn't have the person's details, so it asks for them:
 
@@ -129,7 +129,7 @@ An agent must not be the one that says the person agreed, because whatever reach
 
 - **Local:**
   - The daemon emits `axo.elicitation.requested` and `axo.elicitation.resolved` as events on its socket.
-  - The Mac app shows a transcript card, and a `UNNotification` with category actions (Allow once, Deny, Open).
+  - The Mac app tints the menu bar Axo, and lists every waiting request in a panel under it, answered in place. Not macOS notifications: they hide their buttons until hovered, and cannot take a password.
 - **Remote:**
   - axod sends the same events over its relay socket to HostDO, which forwards them to every ClientDO following the host.
   - They are ephemeral notices next to RFD0018's transcript records, not Pi lines. Clients place a card at the Session's position for its `createdAt`.
@@ -253,11 +253,11 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 - **Peers by code signature:** axod reads each `axod.sock` connection's audit token (`LOCAL_PEERTOKEN`) and, for the methods that care, checks the peer's running code against a requirement (`crates/axo-ipc/src/peer.rs`). *This binary* is axod's own designated requirement (same team and identifier; for an unsigned build, the same cdhash). *Axo.app* is the same certificate with Axo.app's identifier; an unsigned build has none.
 - **Asked as a tool:** a request carries `askedBy`: `agent` or `computerUse`. axod refuses `computerUse` (`-32013`) unless the peer is this binary, so only `axod mcp`'s gate asks as Axo. `elicitation_request` passes only the agent's message, so an agent cannot ask as a tool through it. Clients title a tool's card *Axo asks before acting on your Mac*, an agent's *The agent asks you*.
 - **Answered on the Mac:** `axo.elicitation.resolve` on `axod.sock` takes an answer only from Axo.app (`-32012` otherwise). `axo.elicitation.list` gives what is pending, for a client that just subscribed.
-- **The Mac app:** a card over the Session's panes with Yes and No, and a time-sensitive notification with Yes (needs the Mac unlocked), No, and a click that opens the Session. Settled questions withdraw their notification.
+- **The Mac app:** while a question waits, the menu bar Axo is orange and its menu offers *N Questions…*. That opens a panel centered under the menu bar Axo, listing every question one after the other, with the Session that asks (a click shows it), Yes and No, and input forms. Return answers the first; the panel closes like a menu, and by itself when nothing is left. (0.18 tried native notifications; their buttons hide until hovered, and they cannot hold a password field.)
 
 **Step 4, input (built):** `request_input` as above, from this Mac's agents (`axod mcp` hands it to axod with `axo.computer.input`) and from other Macs' scripts (`codemode.computer.run`); input cards on the web, the phone and the Mac app, with autofill hints; HPKE sealing on the web and the phone, checked against axod's opening; pinning per Mac. `screenshot` is Cua's `get_desktop_state` under a clearer name. Not yet: accepting a changed key at the Mac, Face ID before filling, and blacking out plain fields in screenshots. Tested live by `packages/axo-api-worker/tests/input-live.test.ts` (`AXO_LIVE_COMPUTER=1`), which signs in to a page in Safari.
 
-**Step 5, device-signed answers (built):** device keys on the phone (Secure Enclave) and the web (IndexedDB); signing in `@axo/app` and `AxoProtocol`, checked against axod's verifying by shared vectors; `crates/axo-server/src/session/devices.rs`. Spec: `specs/elicitations/device-trust.ts`. On the Mac, yes-or-no questions are native notifications, and a card only once opened or when notifications are off; forms are always a card.
+**Step 5, device-signed answers (built):** device keys on the phone (Secure Enclave) and the web (IndexedDB); signing in `@axo/app` and `AxoProtocol`, checked against axod's verifying by shared vectors; `crates/axo-server/src/session/devices.rs`. Spec: `specs/elicitations/device-trust.ts`.
 
 Not yet built, in the order of this RFD: push notifications, links, Always allow and Face ID.
 
@@ -284,10 +284,10 @@ Not yet built, in the order of this RFD: push notifications, links, Always allow
   - origin re-check, redaction, expiry and restart.
 - **Client tests:**
   - the card's states;
-  - the notification categories;
+  - the questions panel;
   - fingerprint pinning;
   - the iOS form's text content types for autofill.
-- **By hand:** a login and a card payment on a test site, answered from the phone, the web and the Mac notification.
+- **By hand:** a login and a card payment on a test site, answered from the phone, the web and the Mac's questions panel.
 
 ## Drawbacks
 
