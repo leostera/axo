@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { ELICITATION_ERRORS, type Elicitation, type ElicitationResolved } from "@axo/protocol";
 import { harness, signInNative } from "./harness";
-import { accountApi, listHosts, localCall, terminate, waitFor } from "./axod-support";
+import { accountApi, listHosts, localCall, terminate, waitFor, trustedDevice } from "./axod-support";
 
 /**
  * An agent asks its person a yes-or-no question (RFD0029), with nothing faked but the sign-in
@@ -30,6 +30,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
   const socketPath = join(root, "axod.sock");
   const pi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
+  const device = await trustedDevice(serverDirectory);
 
   let daemon: ChildProcess | undefined;
   let mcp: ChildProcess | undefined;
@@ -105,7 +106,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
     await assert.rejects(localCall(socketPath, "axo.elicitation.request", { sessionId, message: "Pay?", askedBy: "computerUse" }), /only Axo's own tools/iu);
 
     // The phone says yes; the agent's call returns it; both devices dismiss the card.
-    await phone.resolveElicitation(host.hostId, elicitation.id, "accept");
+    await device.answer(phone, host.hostId, elicitation.id, "accept");
     const outcome = await question;
     assert.equal(outcome.result?.isError, undefined);
     assert.deepEqual(outcome.result?.structuredContent, { id: elicitation.id, action: "accept" });
@@ -113,7 +114,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
     assert.ok(settled.every((entry) => entry.resolved.id === elicitation.id && entry.resolved.action === "accept"));
 
     // The browser's answer comes too late and changes nothing.
-    await assert.rejects(browser.resolveElicitation(host.hostId, elicitation.id, "decline"),
+    await assert.rejects(device.answer(browser, host.hostId, elicitation.id, "decline"),
       (error: { code?: number }) => error.code === ELICITATION_ERRORS.notPending);
 
     // A No is a No.
@@ -122,7 +123,23 @@ test("an agent's question reaches the person's phone, their answer returns to th
     const next = await waitFor("the second question", 15_000, async () =>
       asked.find((entry) => entry.elicitation.message === "Push to main?"), daemon);
     assert.equal(next.elicitation.askedBy, "agent");
-    await browser.resolveElicitation(host.hostId, next.elicitation.id, "decline");
+    // Only devices allowed at the Mac answer, each signature for its own answer (RFD0029): a
+    // device the Mac does not know is refused and waits for the person there; the trusted phone's
+    // signature replayed onto this question, or changed to a Yes, is refused too.
+    const { newDeviceKey, signAnswer } = await import("@axo/app");
+    const stranger = await signAnswer(await newDeviceKey(), "Someone's laptop", next.elicitation.id, "accept");
+    await assert.rejects(browser.resolveElicitation(host.hostId, next.elicitation.id, "accept", stranger),
+      (error: { code?: number; message?: string }) => error.code === ELICITATION_ERRORS.notTrusted && /Allow it in Axo on the Mac/u.test(error.message ?? ""));
+    const devices = (await localCall(socketPath, "axo.device.list")) as { trusted: Array<{ name: string }>; pending: Array<{ name: string; fingerprint: string }> };
+    assert.deepEqual([devices.trusted.map((d) => d.name), devices.pending.map((d) => d.name)], [["Leo's iPhone"], ["Someone's laptop"]]);
+    await assert.rejects(localCall(socketPath, "axo.device.trust", { key: stranger.key }), /only the person at the Mac/iu);
+    const replayed = await signAnswer(device.key, "Leo's iPhone", elicitation.id, "decline");
+    await assert.rejects(browser.resolveElicitation(host.hostId, next.elicitation.id, "decline", replayed),
+      (error: { code?: number }) => error.code === ELICITATION_ERRORS.notTrusted);
+    const no = await signAnswer(device.key, "Leo's iPhone", next.elicitation.id, "decline");
+    await assert.rejects(browser.resolveElicitation(host.hostId, next.elicitation.id, "accept", no),
+      (error: { code?: number }) => error.code === ELICITATION_ERRORS.notTrusted);
+    await device.answer(browser, host.hostId, next.elicitation.id, "decline");
     assert.equal((await second).result?.structuredContent?.action, "decline");
 
     // Tools ask; agents cannot approve. The answer to the agent's own question approves nothing:
@@ -142,7 +159,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
     assert.match(gateQuestion.elicitation.message, /click AXButton "Pay now"/u);
     assert.match(gateQuestion.elicitation.message, /The agent asked to check with you first/u);
     assert.equal(gateQuestion.elicitation.askedBy, "computerUse");
-    await phone.resolveElicitation(host.hostId, gateQuestion.elicitation.id, "decline");
+    await device.answer(phone, host.hostId, gateQuestion.elicitation.id, "decline");
     const declined = await confirmed;
     assert.equal(declined.result?.isError, true);
     assert.equal(text(declined), "Not done: the person declined.");

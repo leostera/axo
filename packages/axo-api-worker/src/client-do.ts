@@ -331,9 +331,9 @@ export class AxoClientDO extends DurableObject<Env> {
           const params = clientElicitationResolveParamsSchema.safeParse(call.params);
           const host = params.success ? this.host(params.data.hostId) : undefined;
           if (!params.success || !host) return failure(id, -32602, "Invalid params");
-          const { hostId, elicitationId, action, sealed } = params.data;
+          const { hostId, elicitationId, action, sealed, device } = params.data;
           const outcome = await this.hostStub(hostId)
-            .resolveElicitation({ target: { hostId, hostGeneration: host.host_generation }, elicitationId, action, ...(sealed ? { sealed } : {}) })
+            .resolveElicitation({ target: { hostId, hostGeneration: host.host_generation }, elicitationId, action, ...(sealed ? { sealed } : {}), ...(device ? { device } : {}) })
             .catch(() => ({ error: { code: -32004, message: "Outcome unknown" } }));
           return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
         }

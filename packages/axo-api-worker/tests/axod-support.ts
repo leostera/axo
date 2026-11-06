@@ -151,3 +151,23 @@ export function browserWebSocketFactory(headers: Record<string, string>) {
   };
 }
 
+
+/**
+ * A phone already allowed at the Mac (RFD0029): its key goes into `devices.json` before axod
+ * starts, as Axo.app's `axo.device.trust` would have put it. `answer` signs each answer with it.
+ */
+export async function trustedDevice(serverDirectory: string, name = "Leo's iPhone") {
+  const { devicePublicKey, keyFingerprint, newDeviceKey, signAnswer } = await import("@axo/app");
+  const { writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const key = await newDeviceKey();
+  const publicKey = await devicePublicKey(key.publicKey);
+  await writeFile(join(serverDirectory, "devices.json"), JSON.stringify([{ key: publicKey, name, fingerprint: await keyFingerprint(publicKey), at: 1 }]), { mode: 0o600 });
+  return {
+    key,
+    answer: async (
+      connection: { resolveElicitation: (hostId: string, id: string, action: "accept" | "decline", device: { key: string; name: string; signature: string }, sealed?: { enc: string; ciphertext: string }) => Promise<void> },
+      hostId: string, id: string, action: "accept" | "decline", sealed?: { enc: string; ciphertext: string },
+    ) => connection.resolveElicitation(hostId, id, action, await signAnswer(key, name, id, action, sealed), sealed),
+  };
+}

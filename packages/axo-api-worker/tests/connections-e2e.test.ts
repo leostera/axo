@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { harness, signIn } from "./harness";
 import type { Elicitation } from "@axo/protocol";
-import { accountApi, listHosts, localCall, terminate, waitFor } from "./axod-support";
+import { accountApi, listHosts, localCall, terminate, waitFor, trustedDevice } from "./axod-support";
 
 /**
  * RFD0016 end to end, with nothing faked but the sign-in provider: a Session's script, sent to a
@@ -30,6 +30,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
+  const device = await trustedDevice(serverDirectory);
   const sessionId = crypto.randomUUID();
 
   let daemon: ChildProcess | undefined;
@@ -106,7 +107,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
       assert.equal(question.sessionId, sessionId);
       assert.match(question.message, /click AXButton "Pay now"/u);
       assert.match(question.message, /Asked from .+'s Session\./u);
-      await phone.resolveElicitation(host.hostId, question.id, "decline");
+      await device.answer(phone, host.hostId, question.id, "decline");
       await assert.rejects(pay, /computer\.run on .+: Not done: the person declined\./u);
     } finally {
       phone.close();

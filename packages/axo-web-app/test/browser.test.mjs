@@ -678,7 +678,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.emulateMedia({ colorScheme: "light" });
     await card.getByRole("button", { name: "Yes" }).click();
     await card.waitFor({ state: "detached", timeout: 10_000 }).catch((error) => failWithContext(page, error, context));
-    assert.deepEqual(answers, [{ hostId, elicitationId, action: "accept" }]);
+    // Signed by this browser's own key, kept in IndexedDB (RFD0029).
+    assert.deepEqual(answers.map(({ device, ...rest }) => rest), [{ hostId, elicitationId, action: "accept" }]);
+    assert.equal(answers[0].device.name, "Chrome on Mac");
+    assert.equal(answers[0].device.key.length, 88);
 
     // A new chat: its first message starts it in the Mac's Home Workspace.
     await chats.getByRole("button", { name: "New chat", exact: true }).click();

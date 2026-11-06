@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { sealInput } from "@axo/app";
 import type { Elicitation } from "@axo/protocol";
 import { harness, signIn } from "./harness";
-import { accountApi, listHosts, localCall, terminate, waitFor } from "./axod-support";
+import { accountApi, listHosts, localCall, terminate, waitFor, trustedDevice } from "./axod-support";
 
 /**
  * RFD0029's side channel for input, live on this Mac: a script asks a real axod to sign in to a
@@ -30,6 +30,7 @@ test("a password typed on the phone reaches a Safari form on the Mac sealed, and
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
+  const device = await trustedDevice(serverDirectory);
   const sessionId = crypto.randomUUID();
 
   const submitted: URLSearchParams[] = [];
@@ -77,7 +78,7 @@ test("a password typed on the phone reaches a Safari form on the Mac sealed, and
       // A filled value is hidden from every later read of the window.
       const filling = run(`async () => codemode.computer.run({ host: "self", tool: "request_input", args: { pid: ${window.pid}, window_id: ${window.window_id}, fields: [{ kind: "email", label: "Email" }] } })`);
       const first = await waitFor("the first form", 20_000, async () => asked[0], daemon);
-      await phone.resolveElicitation(host.hostId, first.id, "accept", await sealInput(first.input!.key, first.id, first.input!.origin, { f0: "leo@example.com" }));
+      await device.answer(phone, host.hostId, first.id, "accept", await sealInput(first.input!.key, first.id, first.input!.origin, { f0: "leo@example.com" }));
       assert.match((await filling).content[0].text, /^Filled Email in Safari/u);
       const read = await run(`async () => codemode.computer.run({ host: "self", tool: "get_window_state", args: { pid: ${window.pid}, window_id: ${window.window_id} } })`);
       const text = JSON.stringify(read);
@@ -108,7 +109,7 @@ test("a password typed on the phone reaches a Safari form on the Mac sealed, and
       });
       assert.equal(local.sessionId, ownSession);
       assert.equal(local.input?.fields[0]?.label, "Password");
-      await phone.resolveElicitation(host.hostId, local.id, "decline");
+      await device.answer(phone, host.hostId, local.id, "decline");
       const answered = await waitFor("axod mcp's answer", 10_000, async () => lines.map((line) => JSON.parse(line)).find((message) => message.id === 2));
       assert.equal(answered.result.isError, true);
       assert.match(answered.result.content[0].text, /the person declined/u);
@@ -130,7 +131,7 @@ test("a password typed on the phone reaches a Safari form on the Mac sealed, and
         submit: "Sign in", key: "string",
       });
       const sealed = await sealInput(question.input!.key, question.id, question.input!.origin, { f0: "leo@example.com", f1: "correct horse 7" });
-      await phone.resolveElicitation(host.hostId, question.id, "accept", sealed);
+      await device.answer(phone, host.hostId, question.id, "accept", sealed);
       const receipt = await signingIn;
       assert.notEqual(receipt.isError, true, JSON.stringify(receipt));
       assert.match(receipt.content[0].text, /^Filled Email and Password in Safari — http:\/\/localhost:\d+ and pressed “Sign in”\. The values are not shown to you/u);

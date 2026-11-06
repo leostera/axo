@@ -11,7 +11,8 @@ import type {
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
-import { sealInput } from "@axo/app";
+import { sealInput, type DeviceProof } from "@axo/app";
+import { browserDevice, type AnswerDevice } from "./device.ts";
 import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type Sealed } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 import { ChatTranscript, type TranscriptRecord } from "./transcript.ts";
@@ -76,7 +77,7 @@ export interface AccountLink {
   open(request: OpenRequest): Promise<ClientOpenResult>;
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
-  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, sealed?: Sealed): Promise<void>;
+  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof, sealed?: Sealed): Promise<void>;
   command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
@@ -329,6 +330,9 @@ export class ChatWorkbench {
   private readonly retryDelay: number;
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly uploadAsset: UploadAsset;
+
+  /** This browser's key, which signs every answer (RFD0029). */
+  device: AnswerDevice = browserDevice();
 
   constructor(
     backend: ChatBackend,
@@ -1069,11 +1073,15 @@ export class ChatWorkbench {
     question.answering = action;
     this.changed();
     try {
-      await this.connection.resolveElicitation(question.hostId, elicitationId, action, sealed);
+      const proof = await this.device.proof(elicitationId, action, sealed);
+      await this.connection.resolveElicitation(question.hostId, elicitationId, action, proof, sealed);
       this.failure = null;
     } catch (error) {
       question.answering = null;
-      if ((error as { code?: number }).code === ELICITATION_ERRORS.notPending) this.asked.delete(elicitationId);
+      const code = (error as { code?: number }).code;
+      if (code === ELICITATION_ERRORS.notPending) this.asked.delete(elicitationId);
+      else if (code === ELICITATION_ERRORS.notTrusted)
+        this.failure = `Allow this browser in Axo on your Mac first: it shows ${await this.device.fingerprint()} there. Then answer again.`;
       else this.failure = describe(error);
     }
     this.changed();

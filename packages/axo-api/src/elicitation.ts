@@ -28,6 +28,8 @@ export const ELICITATION_LIMITS = {
 export const ELICITATION_ERRORS = {
   /** An input answer that is missing, did not open, or does not fit its fields; it still waits. */
   badInput: -32014,
+  /** From a device the person has not allowed at that Mac, or not signed for this answer; it still waits. */
+  notTrusted: -32015,
   /** Answered already, expired, or never asked. */
   notPending: -32011,
   /** Only a person answers: a Mac's own credential, or anything else, cannot. */
@@ -72,6 +74,18 @@ export const sealedSchema = z.object({
 }).strict();
 export type Sealed = z.infer<typeof sealedSchema>;
 
+/**
+ * What a phone or a browser sends with every answer (RFD0029): its key, its name and its ECDSA
+ * P-256 signature over that answer alone. The Mac takes it only from a key the person allowed in
+ * Axo there.
+ */
+export const deviceProofSchema = z.object({
+  key: z.base64().length(88),
+  name: z.string().min(1).max(80),
+  signature: z.base64().length(88),
+}).strict();
+export type DeviceProof = z.infer<typeof deviceProofSchema>;
+
 /** What the person is asked: yes or no, or values for a form's fields. */
 export const elicitationSchema = z.object({
   id: z.uuid(),
@@ -113,6 +127,7 @@ export const clientElicitationResolveParamsSchema = z.object({
   action: elicitationAnswerSchema,
   /** An accepted input request's values, sealed to the Mac: the cloud never reads them. */
   sealed: sealedSchema.optional(),
+  device: deviceProofSchema.optional(),
 }).strict();
 /** The answer as HostDO hands it to the Mac. */
 export const hostElicitationResolveParamsSchema = z.object({
@@ -120,6 +135,7 @@ export const hostElicitationResolveParamsSchema = z.object({
   elicitationId: z.uuid(),
   action: elicitationAnswerSchema,
   sealed: sealedSchema.optional(),
+  device: deviceProofSchema.optional(),
 }).strict();
 export const elicitationResolveResultSchema = z.object({ resolved: z.literal(true) }).strict();
 

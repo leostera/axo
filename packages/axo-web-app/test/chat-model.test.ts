@@ -9,6 +9,7 @@ import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { connectionsResults } from "@axo/protocol";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
+import { memoryDevice } from "../src/chat/device.ts";
 import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -383,7 +384,9 @@ class FakeAccount implements AccountLink {
 
   resolves: Array<{ hostId: string; elicitationId: string; action: string; sealed?: { enc: string; ciphertext: string } }> = [];
   resolveFails: Error | null = null;
-  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline", sealed?: { enc: string; ciphertext: string }) {
+  devices: Array<{ key: string; signature: string }> = [];
+  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline", device: { key: string; signature: string }, sealed?: { enc: string; ciphertext: string }) {
+    this.devices.push(device);
     this.resolves.push(sealed ? { hostId, elicitationId, action, sealed } : { hostId, elicitationId, action });
     if (this.resolveFails) throw this.resolveFails;
   }
@@ -423,6 +426,7 @@ async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, u
   };
   let id = 0;
   const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay, uploadAsset);
+  workbench.device = memoryDevice();
   workbench.start();
   await tick();
   return { workbench, account, connects: () => connects };
@@ -762,4 +766,24 @@ test("a form's values leave only sealed, and only to the key first seen for that
   // Cancelling needs no key.
   await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "decline");
   assert.deepEqual(account.resolves[1], { hostId, elicitationId: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", action: "decline" });
+});
+
+test("every answer goes signed by this browser's key, and a Mac that does not know it says how to allow it", async () => {
+  const { workbench, account } = await workbenchWith();
+  const elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f70", sessionId: sid(1), kind: "confirm" as const, message: "Go?", createdAt: 1, expiresAt: 2 };
+  account.events.elicitationRequested?.(hostId, elicitation);
+  account.resolveFails = Object.assign(new Error("not allowed"), { code: -32015 });
+  await workbench.answerQuestion(elicitation.id, "accept");
+  assert.equal(account.devices[0]!.key.length, 88);
+  assert.match(workbench.failure ?? "", /^Allow this browser in Axo on your Mac first: it shows [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} there/);
+  account.resolveFails = null;
+  await workbench.answerQuestion(elicitation.id, "accept");
+  assert.equal(account.devices[1]!.key, account.devices[0]!.key);
+  assert.notEqual(account.devices[1]!.signature, account.devices[0]!.signature);
+});
+
+test("a browser names itself by its browser and system", async () => {
+  const { browserName } = await import("../src/chat/device.ts");
+  assert.equal(browserName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"), "Safari on Mac");
+  assert.equal(browserName("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"), "Chrome on Windows");
 });
