@@ -41,4 +41,25 @@ final class QuestionsPanelTests: XCTestCase {
     }
     XCTAssertEqual(closed, 0)
   }
+
+  /// The panel itself, as the menu opens it: on screen, as big as its questions, under its anchor.
+  func testThePanelOpensAsBigAsItsQuestionsUnderTheMenuBarAxo() throws {
+    let model = ElicitationsModel(client: nil)
+    _ = model.apply(
+      .elicitationRequested(
+        Elicitation(id: "a", sessionId: 1, askedBy: .agent, message: "Go?", createdAt: 1, expiresAt: 2)))
+    let screen = try XCTUnwrap(NSScreen.main).visibleFrame
+    let anchor = NSRect(x: screen.midX - 14, y: screen.maxY, width: 28, height: 24)
+    let questions = QuestionsPanel()
+    questions.anchor = { anchor }
+    questions.show(model)
+    let panel = try XCTUnwrap(questions.panel)
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertEqual(panel.frame.width, QuestionsList.width)
+    XCTAssertGreaterThan(panel.frame.height, 60)
+    XCTAssertEqual(panel.frame.midX, anchor.midX, accuracy: 1)
+    XCTAssertLessThanOrEqual(panel.frame.maxY, anchor.minY)
+    questions.close()
+    XCTAssertFalse(panel.isVisible)
+  }
 }

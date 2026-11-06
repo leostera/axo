@@ -18,7 +18,7 @@ final class QuestionsPanel {
   /// The menu bar item's frame on screen, to hang the panel under.
   var anchor: () -> NSRect? = { nil }
 
-  private var panel: Panel?
+  private(set) var panel: Panel?
   /// Clicks outside the panel, in other apps and in Axo's own windows, while it shows.
   private var clickMonitors: [Any] = []
 
@@ -68,25 +68,23 @@ final class QuestionsPanel {
     panel.hidesOnDeactivate = false
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
     panel.onCancel = { [weak self] in self?.close() }
+    // Sized by its content (`fittingSize`, from the intrinsic size), and placed again whenever
+    // that changes, as questions come and go, keeping its top under the menu bar.
     let hosting = NSHostingView(
-      rootView: QuestionsList(model: model, close: { [weak self] in self?.close() }))
-    hosting.sizingOptions = [.preferredContentSize]
+      rootView: QuestionsList(
+        model: model, close: { [weak self] in self?.close() },
+        resized: { [weak self, weak panel] in
+          guard let self, let panel, panel.isVisible else { return }
+          self.place(panel)
+        }))
+    hosting.sizingOptions = [.intrinsicContentSize]
     panel.contentView = hosting
-    // Grows and shrinks as questions come and go, keeping its top under the menu bar.
-    hosting.postsFrameChangedNotifications = true
-    NotificationCenter.default.addObserver(
-      forName: NSView.frameDidChangeNotification, object: hosting, queue: .main
-    ) { [weak self, weak panel] _ in
-      MainActor.assumeIsolated {
-        guard let self, let panel, panel.isVisible else { return }
-        self.place(panel)
-      }
-    }
     return panel
   }
 
   /// Centered under the menu bar Axo, a few points below the menu bar, kept on its screen.
   private func place(_ panel: NSPanel) {
+    panel.contentView?.layoutSubtreeIfNeeded()
     let size = panel.contentView?.fittingSize ?? panel.frame.size
     let screen = panel.screen ?? NSScreen.main
     guard let visible = screen?.visibleFrame else { return }
@@ -112,6 +110,7 @@ struct QuestionsList: View {
 
   var model: ElicitationsModel
   let close: () -> Void
+  var resized: () -> Void = {}
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -151,6 +150,7 @@ struct QuestionsList: View {
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
     .onChange(of: model.questions.isEmpty) { _, empty in if empty { close() } }
+    .onGeometryChange(for: CGSize.self, of: \.size) { _ in resized() }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("questionsPanel")
   }
