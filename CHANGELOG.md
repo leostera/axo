@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.18 (Mac app build 289, axod 44)
+
+### Changed
+
+- **No more allowing each phone and browser at the Mac.** Any device signed in to your account answers your Macs' questions straight away. Answers are still signed by the device, so none can be replayed onto another question or changed on the way (phone build 20).
+- **Questions on the Mac are native notifications** with Yes and No, instead of cards over the terminal. Clicking one opens it in its Session. Sign-in forms still show in the window, since a notification can't take a password.
+
+### Fixed
+
+- The pointer over a card in the window is an arrow, not the terminal's text cursor.
+
 ## 0.17 (Mac app build 288, axod 43)
 
 ### Changed
