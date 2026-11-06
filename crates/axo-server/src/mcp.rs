@@ -9,6 +9,8 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use axo_protocol::SessionId;
@@ -19,6 +21,8 @@ use serde_json::{Map, Value, json};
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// A prompt can wait for Pi's bridge for a few seconds; nothing else takes this long.
 const AXOD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Tool calls an agent may have running at once (`McpServer::serve`).
+const MAX_CALLS_IN_FLIGHT: usize = 16;
 const SELF: &str = "self";
 
 const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi conversation (the "pi" pane) with a terminal pane beside it, grouped into Workspaces (a directory each). These tools see and drive every Session on this Mac.
@@ -337,22 +341,67 @@ impl McpServer {
     }
 
     /// Answers MCP requests on `input` until it ends.
-    pub fn serve(&self, input: impl BufRead, mut output: impl Write) -> io::Result<()> {
-        for line in input.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
+    ///
+    /// Tool calls run side by side, each on its own thread, and answer when they finish, in any
+    /// order: a script that asks the person three questions with `Promise.all`, or runs a slow
+    /// `computer` call beside others, waits for the slowest, not the sum. At most
+    /// `MAX_CALLS_IN_FLIGHT` run at once; past that, reading waits for one to finish. Everything
+    /// else (`initialize`, `tools/list`) answers in order, before the next line is read.
+    pub fn serve(&self, input: impl BufRead, output: impl Write + Send) -> io::Result<()> {
+        let output = Mutex::new(output);
+        let in_flight = (Mutex::new(0usize), Condvar::new());
+        let respond = |response: Value| -> io::Result<()> {
+            let mut output = output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            writeln!(output, "{response}")?;
+            output.flush()
+        };
+        thread::scope(|scope| {
+            for line in input.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let message = match serde_json::from_str::<Value>(&line) {
+                    Ok(message) => message,
+                    Err(_) => {
+                        respond(error_response(&Value::Null, -32700, "parse error"))?;
+                        continue;
+                    }
+                };
+                if message["method"] != "tools/call" || message.get("id").is_none() {
+                    if let Some(response) = self.handle(&message) {
+                        respond(response)?;
+                    }
+                    continue;
+                }
+                let (count, freed) = &in_flight;
+                let mut running = count
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                while *running >= MAX_CALLS_IN_FLIGHT {
+                    running = freed
+                        .wait(running)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                *running += 1;
+                drop(running);
+                let (respond, in_flight) = (&respond, &in_flight);
+                scope.spawn(move || {
+                    if let Some(response) = self.handle(&message) {
+                        // stdout gone means the agent left; the call's outcome no longer matters.
+                        let _ = respond(response);
+                    }
+                    let (count, freed) = in_flight;
+                    *count
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
+                    freed.notify_one();
+                });
             }
-            let response = match serde_json::from_str::<Value>(&line) {
-                Ok(message) => self.handle(&message),
-                Err(_) => Some(error_response(&Value::Null, -32700, "parse error")),
-            };
-            if let Some(response) = response {
-                writeln!(output, "{response}")?;
-                output.flush()?;
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// One JSON-RPC message; `None` for notifications.
@@ -1033,12 +1082,97 @@ pub fn serve_stdio() -> io::Result<()> {
     let socket = PathBuf::from(variable("AXO_SOCKET")?);
     let session_id = variable("AXO_SESSION_ID")?;
     let server = McpServer::connect(&socket, &session_id)?;
-    server.serve(io::stdin().lock(), io::stdout().lock())
+    server.serve(io::stdin().lock(), io::stdout())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Three questions asked together are all asked at once: each tool call runs beside the
+    /// others, and answers when its own question does.
+    #[test]
+    fn tool_calls_run_side_by_side_so_a_script_can_wait_for_several_answers() {
+        use std::os::unix::net::UnixListener;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let directory =
+            std::env::temp_dir().join(format!("axo-mcp-{}", axo_protocol::new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("axod.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        // A stand-in axod: holds every question until three are waiting at once (or 5 seconds
+        // pass), then answers them all, saying how many it saw together.
+        let waiting = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let axod = {
+            let waiting = Arc::clone(&waiting);
+            thread::spawn(move || {
+                let mut answering = Vec::new();
+                for _ in 0..3 {
+                    let (stream, _) = listener.accept().unwrap();
+                    let waiting = Arc::clone(&waiting);
+                    answering.push(thread::spawn(move || {
+                        let mut line = String::new();
+                        BufReader::new(&stream).read_line(&mut line).unwrap();
+                        let (count, changed) = &*waiting;
+                        let mut seen = count.lock().unwrap();
+                        *seen += 1;
+                        changed.notify_all();
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        while *seen < 3 && Instant::now() < deadline {
+                            seen = changed
+                                .wait_timeout(seen, Duration::from_millis(50))
+                                .unwrap()
+                                .0;
+                        }
+                        let together = *seen;
+                        drop(seen);
+                        writeln!(
+                            &stream,
+                            "{}",
+                            json!({ "jsonrpc": "2.0", "id": 1, "result": { "together": together } })
+                        )
+                        .unwrap();
+                    }));
+                }
+                for answer in answering {
+                    answer.join().unwrap();
+                }
+            })
+        };
+
+        let server = McpServer {
+            socket,
+            session_id: SID,
+        };
+        let ask = |id: u64| {
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "elicitation_request", "arguments": { "message": format!("Question {id}?") } } }).to_string()
+        };
+        let input = format!("{}\n{}\n{}\n", ask(1), ask(2), ask(3));
+        let mut output = Vec::new();
+        let started = Instant::now();
+        server.serve(input.as_bytes(), &mut output).unwrap();
+        axod.join().unwrap();
+
+        let responses: Vec<Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(responses.len(), 3);
+        for response in &responses {
+            assert_eq!(
+                response["result"]["structuredContent"]["together"], 3,
+                "{response}"
+            );
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the questions waited for each other"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 
     const SID: SessionId = SessionId::from_u128(0x0b8f4e2a_7c1d_4e6b_9a3f_5d2c8e1b7a49);
 
