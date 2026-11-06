@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.17 (Mac app build 288, axod 43)
+
+### Changed
+
+- **The terminal window waits until axod is truly ready.** axod used to count as up as soon as it answered, while the agents it was restarting were still booting. Now it says it's ready only once those agents have come up (or failed, or after 15 seconds), and Axo keeps showing the loading card until then, so the Sessions you see take messages right away.
+
 ## 0.16 (Mac app build 287, axod 42)
 
 ### New
