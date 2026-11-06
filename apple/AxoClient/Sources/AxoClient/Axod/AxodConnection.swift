@@ -127,6 +127,21 @@ public final class AxodConnection: Sendable {
     }
   }
 
+  /// The phones and browsers that answer for this Mac, and those asking to (RFD0029).
+  public func answeringDevices() async throws -> AnsweringDevices {
+    try await call(AxodMethods.deviceList)
+  }
+
+  /// Allows a waiting device, or turns it away. axod takes this only from Axo.app.
+  public func decideDevice(_ key: String, allow: Bool) async throws {
+    _ = try await call(AxodMethods.deviceTrust, DeviceChoice(key: key, allow: allow))
+  }
+
+  /// Stops taking a device's answers. axod takes this only from Axo.app.
+  public func revokeDevice(_ key: String) async throws {
+    _ = try await call(AxodMethods.deviceRevoke, DeviceChoice(key: key))
+  }
+
   // MARK: - Sessions and Workspaces
 
   public func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {

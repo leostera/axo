@@ -531,7 +531,8 @@ final class TerminalSessionsModel {
       await refreshPeerSessions()
     case .subscriptionLagged:
       return false
-    case .shellActivity, .terminalOutput, .relayStatus, .elicitationRequested, .elicitationResolved, .unknown:
+    case .shellActivity, .terminalOutput, .relayStatus, .elicitationRequested, .elicitationResolved,
+      .deviceRequested, .devicesChanged, .unknown:
       // Session snapshots carry the state the catalog presents; terminal bytes go to Ghostty;
       // questions to the person go to `elicitations`.
       break

@@ -25,6 +25,10 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case elicitationRequested(Elicitation)
   /// Answered here or elsewhere, nobody answered in time, or the asker went away.
   case elicitationResolved(id: String, sessionID: SessionID, action: ElicitationAction)
+  /// A phone or a browser answered without being allowed yet: ask the person at this Mac.
+  case deviceRequested(AnsweringDevice)
+  /// The trusted or waiting devices changed: list them again.
+  case devicesChanged
   /// Earlier events were discarded; the consumer must resynchronize from a fresh listing.
   case subscriptionLagged
   /// An event type this client does not understand. Ignored for forward compatibility.
@@ -32,7 +36,7 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case type, session, sessionId, shellId, activity, sequence, data, workspaceId, status
-    case elicitation, id, action
+    case elicitation, id, action, device
   }
 
   public init(from decoder: Decoder) throws {
@@ -73,6 +77,10 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
         id: try container.decode(String.self, forKey: .id),
         sessionID: try container.decode(SessionID.self, forKey: .sessionId),
         action: try container.decode(ElicitationAction.self, forKey: .action))
+    case "device.requested":
+      self = .deviceRequested(try container.decode(AnsweringDevice.self, forKey: .device))
+    case "devices.changed":
+      self = .devicesChanged
     case "subscription.lagged":
       self = .subscriptionLagged
     case let type:

@@ -78,6 +78,7 @@ final class PhoneWorld {
       self.made.append(model)
       return model
     }
+    workbench.device = SoftwareDeviceSigner()
   }
 
   /// Answers the Macs' commands and opens every chat empty.
@@ -452,6 +453,13 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(request.params["elicitationId"] as? String, id)
     XCTAssertEqual(request.params["action"] as? String, "accept")
     XCTAssertEqual(request.hostID, a.id.uuidString.lowercased())
+    // Signed by this phone's key, over this answer alone (RFD0029).
+    let proof = try XCTUnwrap(request.params["device"] as? [String: Any])
+    let signer = try XCTUnwrap(workbench.device)
+    XCTAssertEqual(proof["key"] as? String, signer.publicKey)
+    let signature = try P256.Signing.ECDSASignature(rawRepresentation: Data(base64Encoded: proof["signature"] as! String)!)
+    let key = try P256.Signing.PublicKey(x963Representation: Data(base64Encoded: signer.publicKey)!)
+    XCTAssertTrue(key.isValidSignature(signature, for: SoftwareDeviceSigner.message(requestID: id, action: .accept, sealed: nil)))
     XCTAssertEqual(workbench.questions.first?.answering, .accept)
     await workbench.answer(id, .decline)
     channel.reply(to: request.id, result: #"{"resolved":true}"#)
@@ -511,6 +519,25 @@ final class PhoneWorkbenchTests: XCTestCase {
     channel.reply(to: request.id, error: -32011, message: "Already answered, or no longer asked")
     await answering.value
     XCTAssertTrue(workbench.questions.isEmpty)
+  }
+
+  func testAMacThatDoesNotKnowThisPhoneSaysHowToAllowItAndTheCardStays() async throws {
+    let a = Mac("A", online: true, sessions: [1])
+    let world = PhoneWorld([a], answers: false)
+    try await world.start()
+    let workbench = world.workbench!
+    let signer = SoftwareDeviceSigner()
+    workbench.device = signer
+    let channel = try await world.transport.channel()
+    let id = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5c"
+    channel.notify("axo.elicitation.requested", #"{"hostId":"\#(a.id.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"confirm","message":"Go?","createdAt":1,"expiresAt":2}}"#)
+    try await eventually { workbench.questions.count == 1 }
+    let answering = Task { await workbench.answer(id, .accept) }
+    let request = try await channel.nextRequest("axo.elicitation.resolve")
+    channel.reply(to: request.id, error: -32015, message: "not allowed")
+    await answering.value
+    XCTAssertEqual(workbench.questions.first?.answering, nil)
+    XCTAssertEqual(workbench.answerFailure?.contains(InputSeal.fingerprint(of: signer.publicKey)), true)
   }
 
   func testAnArchivedChatLeavesTheList() async throws {

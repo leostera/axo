@@ -195,8 +195,13 @@ struct ElicitationCards: View {
 
   var body: some View {
     let questions = model.questions(in: sessionID)
-    if !questions.isEmpty {
+    if !questions.isEmpty || !model.waitingDevices.isEmpty {
       VStack(alignment: .trailing, spacing: 8) {
+        ForEach(model.waitingDevices) { device in
+          DeviceCard(device: device, deciding: model.deciding.contains(device.key)) { allow in
+            Task { await model.decide(device.key, allow: allow) }
+          }
+        }
         ForEach(questions) { question in
           if question.input != nil {
             InputCard(
@@ -291,6 +296,50 @@ struct InputCard: View {
     guard complete, !answering else { return }
     answer(.accept, values)
     values = [:]
+  }
+}
+
+/// A phone or a browser answered a question without being allowed to (RFD0029): the person checks
+/// that the fingerprint here is the one the device shows, so only their own devices answer.
+struct DeviceCard: View {
+  let device: AnsweringDevice
+  let deciding: Bool
+  let decide: (Bool) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label("Allow \(device.name) to answer for this Mac?", systemImage: "iphone.gen3.badge.exclamationmark")
+          .font(.callout.weight(.semibold))
+        Spacer()
+        if deciding { ProgressView().controlSize(.small) }
+      }
+      Text(device.fingerprint)
+        .font(.title3.monospaced().weight(.semibold))
+        .textSelection(.enabled)
+        .accessibilityIdentifier("deviceFingerprint")
+      Text("Allow it only if \(device.name) shows these same characters. It can then say yes to agents and computer use here.")
+        .font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button("Allow") { decide(true) }
+          .buttonStyle(.borderedProminent)
+          .accessibilityIdentifier("deviceAllow")
+        Button("Not mine") { decide(false) }
+          .buttonStyle(.bordered)
+          .accessibilityIdentifier("deviceRefuse")
+      }
+      .controlSize(.small)
+      .buttonBorderShape(.capsule)
+      .disabled(deciding)
+    }
+    .padding(14)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.orange.opacity(0.32), lineWidth: 0.5))
+    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("deviceCard")
   }
 }
 

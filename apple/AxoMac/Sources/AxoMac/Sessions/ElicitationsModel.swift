@@ -11,6 +11,8 @@ import UserNotifications
 protocol AxodElicitationClient: AnyObject {
   func pendingElicitations() async throws -> [Elicitation]
   func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]?) async throws
+  func answeringDevices() async throws -> AnsweringDevices
+  func decideDevice(_ key: String, allow: Bool) async throws
 }
 
 extension AxodConnection: AxodElicitationClient {}
@@ -34,6 +36,11 @@ final class ElicitationsModel {
   private(set) var answering: Set<String> = []
   /// Why the last answer did not go, worded for the person.
   private(set) var failure: String?
+  /// Phones and browsers that answered without being allowed: the person compares each
+  /// fingerprint with the one the device shows, then allows it or turns it away.
+  private(set) var waitingDevices: [AnsweringDevice] = []
+  /// Devices whose decision is on its way to axod.
+  private(set) var deciding: Set<String> = []
 
   @ObservationIgnored private let client: AxodElicitationClient?
   @ObservationIgnored private let notifier: ElicitationNotifying?
@@ -66,6 +73,26 @@ final class ElicitationsModel {
     }
     questions = pending
     answering.formIntersection(now)
+    await refreshDevices()
+  }
+
+  private func refreshDevices() async {
+    guard let client, let devices = try? await client.answeringDevices() else { return }
+    waitingDevices = devices.pending
+    deciding.formIntersection(Set(devices.pending.map(\.key)))
+  }
+
+  /// Allows a waiting device to answer this Mac's questions, or turns it away.
+  func decide(_ key: String, allow: Bool) async {
+    guard let client, waitingDevices.contains(where: { $0.key == key }), !deciding.contains(key) else { return }
+    deciding.insert(key)
+    do {
+      try await client.decideDevice(key, allow: allow)
+      waitingDevices.removeAll { $0.key == key }
+    } catch {
+      failure = "Axo couldn’t save that: \(error.localizedDescription)"
+    }
+    deciding.remove(key)
   }
 
   /// Applies an event; false when it is not about questions.
@@ -77,6 +104,10 @@ final class ElicitationsModel {
       notifier?.post(elicitation, sessionName: sessionName(elicitation.sessionId))
     case .elicitationResolved(let id, _, _):
       settle(id)
+    case .deviceRequested(let device):
+      if !waitingDevices.contains(where: { $0.key == device.key }) { waitingDevices.append(device) }
+    case .devicesChanged:
+      Task { await refreshDevices() }
     default:
       return false
     }

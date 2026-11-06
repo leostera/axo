@@ -12,6 +12,10 @@ private final class FakeElicitationClient: AxodElicitationClient {
   var rejection: Error?
 
   func pendingElicitations() async throws -> [Elicitation] { pending }
+  var devices = AnsweringDevices(trusted: [], pending: [])
+  var decisions: [(String, Bool)] = []
+  func answeringDevices() async throws -> AnsweringDevices { devices }
+  func decideDevice(_ key: String, allow: Bool) async throws { decisions.append((key, allow)) }
 
   func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]?) async throws {
     answers.append((id, action))
@@ -37,6 +41,23 @@ final class ElicitationsModelTests: XCTestCase {
   {
     Elicitation(
       id: id, sessionId: session, askedBy: askedBy, message: "Go?", createdAt: 1, expiresAt: 2)
+  }
+
+  func testADeviceThatAsksWaitsForThePersonWhoAllowsOrRefusesItOnce() async {
+    let client = FakeElicitationClient()
+    let model = ElicitationsModel(client: client, notifier: FakeNotifier())
+    let phone = AnsweringDevice(key: "AAAA", name: "Leo's iPhone", fingerprint: "6520 7919 59be e144", at: 1)
+    _ = model.apply(.deviceRequested(phone))
+    _ = model.apply(.deviceRequested(phone))
+    XCTAssertEqual(model.waitingDevices, [phone])
+    await model.decide("AAAA", allow: true)
+    await model.decide("AAAA", allow: true)
+    XCTAssertEqual(client.decisions.map(\.0), ["AAAA"])
+    XCTAssertEqual(client.decisions.map(\.1), [true])
+    XCTAssertTrue(model.waitingDevices.isEmpty)
+    client.devices = AnsweringDevices(trusted: [], pending: [phone])
+    await model.refresh()
+    XCTAssertEqual(model.waitingDevices, [phone], "devices that asked while Axo was closed show on reconnect")
   }
 
   func testAFormGoesOnlyWithItsValuesAndACancelWithNone() async {

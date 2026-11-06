@@ -11,7 +11,8 @@ public protocol AccountFeed: ChatFeed {
   func disconnect() async
   func refresh() async throws -> ClientHello
   func renameHost(_ host: UUID, to name: String) async throws -> String
-  func resolveElicitation(_ id: String, on host: UUID, action: ElicitationAnswer, sealed: SealedInput?) async throws
+  func resolveElicitation(
+    _ id: String, on host: UUID, action: ElicitationAnswer, device: DeviceProof, sealed: SealedInput?) async throws
 }
 
 /// What a Mac's agent asks the person (RFD0029), until the Mac says it is settled.
@@ -62,6 +63,10 @@ public final class PhoneWorkbench {
   public private(set) var answerFailure: String?
   /// Each Mac's input key as first seen.
   public var inputKeyPins = InputKeyPins()
+  /// This phone's key, which signs every answer; made on first use.
+  public var device: (any DeviceSigner)?
+  /// What a Mac shows when this phone first answers it.
+  public var deviceName = "iPhone"
   /// A message is on its way; a second tap must not start a second chat.
   public private(set) var isSending = false
   /// The files in each chat's box (RFD0030), uploading or ready, kept like the words.
@@ -197,13 +202,26 @@ public final class PhoneWorkbench {
         return
       }
     }
+    let signer = device ?? PhoneDeviceKey.stored()
+    device = signer
+    let proof: DeviceProof
+    do {
+      proof = try signer.prove(requestID: id, action: action, sealed: sealed, name: deviceName)
+    } catch {
+      answerFailure = "This iPhone couldn’t sign the answer."
+      return
+    }
     questions[index].answering = action
     do {
-      try await feed.resolveElicitation(id, on: host, action: action, sealed: sealed)
+      try await feed.resolveElicitation(id, on: host, action: action, device: proof, sealed: sealed)
       answerFailure = nil
     } catch {
       if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notPending {
         questions.removeAll { $0.id == id }
+      } else if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notTrusted {
+        if let again = questions.firstIndex(where: { $0.id == id }) { questions[again].answering = nil }
+        answerFailure =
+          "Allow this iPhone in Axo on that Mac first: it shows \(InputSeal.fingerprint(of: signer.publicKey)) there. Then answer again."
       } else {
         if let again = questions.firstIndex(where: { $0.id == id }) { questions[again].answering = nil }
         answerFailure = error.localizedDescription
