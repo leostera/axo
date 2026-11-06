@@ -249,6 +249,9 @@ export class AxoPiBridgeServer {
   }
 
   private async sendEvent(name: string, data: unknown, socket = this.socket): Promise<void> {
+    // Axod authenticates first; any other record before that is a protocol error and closes the
+    // bridge. After /reload Axod reconnects while session_start publishes, so this does happen.
+    if ((socket as SocketWithInput | undefined)?.axoAuthenticated !== true) return;
     this.nextSequence += 1;
     await this.send({ type: "event", streamId: this.streamId, sequence: this.nextSequence, name, data }, socket);
   }

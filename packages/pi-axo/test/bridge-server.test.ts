@@ -173,3 +173,25 @@ test("takes over a socket file abandoned by a killed Pi", async () => {
     await bridge.close();
   }
 });
+
+test("sends nothing to Axod before it authenticates, even when Pi publishes first (after /reload)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axo-pi-bridge-"));
+  const socketPath = join(directory, "bridge.sock");
+  const server = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async () => ({ accepted: true }));
+  try {
+    await server.start();
+    // Axod reconnects at once, while the reloaded extension's session_start runs.
+    const { socket, next } = await connectTo(socketPath);
+    await new Promise(resolve => setImmediate(resolve));
+    server.bindIdentity(identity, () => ({ working: false }));
+    await server.publish("session.started", { reason: "reload" });
+    socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+    assert.deepEqual(await next(), { type: "authenticated", protocolVersion: 1 });
+    assert.deepEqual(await next(), { type: "hello", protocolVersion: 1, identity });
+    const snapshot = await next();
+    assert.equal(snapshot.type === "event" && snapshot.name, "activity.snapshot");
+    socket.destroy();
+  } finally {
+    await server.close();
+  }
+});
