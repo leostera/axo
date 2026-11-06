@@ -56,7 +56,9 @@ ts_project(
 
 node_test(
     name = "test",
-    data = glob(["src/**/*.ts", "test/**/*"]) + _DEPS + [":node_modules/tsx"],
+    # package.json makes the sources ES modules, so packages that only export `import`
+    # (@earendil-works/pi-ai) resolve when a test imports them at run time.
+    data = ["package.json"] + glob(["src/**/*.ts", "test/**/*"]) + _DEPS + [":node_modules/tsx"],
     tests = glob(["test/*.test.ts"]),
     tsx = True,
 )
