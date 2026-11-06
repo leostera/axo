@@ -1,4 +1,5 @@
 import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -8,6 +9,7 @@ import {
   parseFindings,
   redactSnapshot,
   REDACTOR_SYSTEM_PROMPT,
+  redactorRequest,
   slugify,
   SNAPSHOT_VERSION,
   TRIAGE_INSTRUCTIONS,
@@ -79,15 +81,18 @@ export function redactionModels(registry: Registry, classifier: ClassifierModel 
       return answer.probability;
     },
     async findSensitive(text) {
-      const response = await registry.complete(redactor, {
-        systemPrompt: REDACTOR_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: [{ type: "text", text }], timestamp: Date.now() }],
-      }, { signal, cacheRetention: "none" });
-      if (response.stopReason !== "stop") {
-        throw new Error(`The redaction model failed: ${response.errorMessage ?? response.stopReason}`);
-      }
-      const answer = response.content.flatMap(block => block.type === "text" ? [block.text] : []).join("");
-      return parseFindings(answer);
+      const ask = async () => {
+        const response = await registry.complete(redactor, {
+          systemPrompt: REDACTOR_SYSTEM_PROMPT,
+          messages: [{ role: "user", content: [{ type: "text", text: redactorRequest(text, randomUUID()) }], timestamp: Date.now() }],
+        }, { signal, cacheRetention: "none" });
+        if (response.stopReason !== "stop") {
+          throw new Error(`The redaction model failed: ${response.errorMessage ?? response.stopReason}`);
+        }
+        return parseFindings(response.content.flatMap(block => block.type === "text" ? [block.text] : []).join(""));
+      };
+      // A small model occasionally answers in prose; one more try, then the share fails.
+      return ask().catch(ask);
     },
   };
 }
