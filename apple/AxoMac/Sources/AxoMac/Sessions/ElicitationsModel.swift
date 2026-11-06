@@ -11,8 +11,6 @@ import UserNotifications
 protocol AxodElicitationClient: AnyObject {
   func pendingElicitations() async throws -> [Elicitation]
   func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]?) async throws
-  func answeringDevices() async throws -> AnsweringDevices
-  func decideDevice(_ key: String, allow: Bool) async throws
 }
 
 extension AxodConnection: AxodElicitationClient {}
@@ -25,8 +23,10 @@ protocol ElicitationNotifying: AnyObject {
 }
 
 /// What agents and Axo's computer-use gate are asking the person on this Mac, as axod reports
-/// it. A card shows over the Session's panes and a notification offers Yes and No; the first
-/// answer from any device wins, and axod's `resolved` removes the question everywhere.
+/// it. A yes-or-no question is a native notification with Yes and No; it shows as a card over the
+/// Session's panes only when notifications can't show it, or the person opened it. A form is
+/// always a card: a notification has no password field. The first answer from any device wins,
+/// and axod's `resolved` removes the question everywhere.
 @MainActor
 @Observable
 final class ElicitationsModel {
@@ -36,11 +36,10 @@ final class ElicitationsModel {
   private(set) var answering: Set<String> = []
   /// Why the last answer did not go, worded for the person.
   private(set) var failure: String?
-  /// Phones and browsers that answered without being allowed: the person compares each
-  /// fingerprint with the one the device shows, then allows it or turns it away.
-  private(set) var waitingDevices: [AnsweringDevice] = []
-  /// Devices whose decision is on its way to axod.
-  private(set) var deciding: Set<String> = []
+  /// Whether macOS shows Axo's notifications; until it says, assume it does.
+  var notificationsShow = true
+  /// Yes-or-no questions the person opened from their notification, shown as cards.
+  private(set) var opened: Set<String> = []
 
   @ObservationIgnored private let client: AxodElicitationClient?
   @ObservationIgnored private let notifier: ElicitationNotifying?
@@ -59,6 +58,19 @@ final class ElicitationsModel {
     return questions.filter { $0.sessionId == sessionID }
   }
 
+  /// What shows as a card in a Session: its forms, and the questions its notification can't
+  /// carry (notifications off) or that the person opened.
+  func cards(in sessionID: SessionID?) -> [Elicitation] {
+    questions(in: sessionID).filter { $0.input != nil || !notificationsShow || opened.contains($0.id) }
+  }
+
+  /// The person clicked a question's notification: show it as a card in its Session.
+  func open(_ id: String) {
+    guard let question = questions.first(where: { $0.id == id }) else { return }
+    opened.insert(id)
+    showSession(question.sessionId)
+  }
+
   /// Sessions with a question waiting, for the sidebar.
   var asking: Set<SessionID> { Set(questions.map(\.sessionId)) }
 
@@ -73,26 +85,6 @@ final class ElicitationsModel {
     }
     questions = pending
     answering.formIntersection(now)
-    await refreshDevices()
-  }
-
-  private func refreshDevices() async {
-    guard let client, let devices = try? await client.answeringDevices() else { return }
-    waitingDevices = devices.pending
-    deciding.formIntersection(Set(devices.pending.map(\.key)))
-  }
-
-  /// Allows a waiting device to answer this Mac's questions, or turns it away.
-  func decide(_ key: String, allow: Bool) async {
-    guard let client, waitingDevices.contains(where: { $0.key == key }), !deciding.contains(key) else { return }
-    deciding.insert(key)
-    do {
-      try await client.decideDevice(key, allow: allow)
-      waitingDevices.removeAll { $0.key == key }
-    } catch {
-      failure = "Axo couldn’t save that: \(error.localizedDescription)"
-    }
-    deciding.remove(key)
   }
 
   /// Applies an event; false when it is not about questions.
@@ -104,10 +96,6 @@ final class ElicitationsModel {
       notifier?.post(elicitation, sessionName: sessionName(elicitation.sessionId))
     case .elicitationResolved(let id, _, _):
       settle(id)
-    case .deviceRequested(let device):
-      if !waitingDevices.contains(where: { $0.key == device.key }) { waitingDevices.append(device) }
-    case .devicesChanged:
-      Task { await refreshDevices() }
     default:
       return false
     }
@@ -136,6 +124,7 @@ final class ElicitationsModel {
   private func settle(_ id: String) {
     questions.removeAll { $0.id == id }
     answering.remove(id)
+    opened.remove(id)
     notifier?.withdraw(id)
   }
 }
@@ -178,7 +167,9 @@ final class ElicitationNotifications: NSObject, ElicitationNotifying,
     // Questions can carry what an agent is working on; never log them.
     Task {
       let center = UNUserNotificationCenter.current()
-      guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
+      let allowed = (try? await center.requestAuthorization(options: [.alert, .sound])) == true
+      model?.notificationsShow = allowed
+      guard allowed else { return }
       let content = UNMutableNotificationContent()
       switch (elicitation.kind, elicitation.askedBy) {
       case (.input, _): content.title = "Axo asks you to sign in"
@@ -212,8 +203,6 @@ final class ElicitationNotifications: NSObject, ElicitationNotifying,
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
   ) async {
     let id = response.notification.request.identifier
-    let session = (response.notification.request.content.userInfo["sessionId"] as? String)
-      .flatMap(SessionID.init(rawValue:))
     let action = response.actionIdentifier
     await MainActor.run {
       guard let model = self.model else { return }
@@ -221,7 +210,7 @@ final class ElicitationNotifications: NSObject, ElicitationNotifying,
       case Self.accept: Task { await model.answer(id, .accept) }
       case Self.decline: Task { await model.answer(id, .decline) }
       default:
-        if let session { model.showSession(session) }
+        model.open(id)
         NSApp.activate(ignoringOtherApps: true)
       }
     }

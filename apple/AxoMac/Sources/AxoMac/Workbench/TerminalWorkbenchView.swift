@@ -187,21 +187,17 @@ extension ShellCloseConfirmation.Reason {
   }
 }
 
-/// What the selected Session's agent, or Axo's computer-use gate, asks the person (RFD0029): one
-/// card per question, with Yes and No. An answer from any device settles it everywhere.
+/// What the selected Session's agent, or Axo's computer-use gate, asks the person (RFD0029), as
+/// cards: forms, and the yes-or-no questions a notification can't carry or the person opened (see
+/// `ElicitationsModel.cards`). An answer from any device settles it everywhere.
 struct ElicitationCards: View {
   var model: ElicitationsModel
   var sessionID: SessionID?
 
   var body: some View {
-    let questions = model.questions(in: sessionID)
-    if !questions.isEmpty || !model.waitingDevices.isEmpty {
+    let questions = model.cards(in: sessionID)
+    if !questions.isEmpty {
       VStack(alignment: .trailing, spacing: 8) {
-        ForEach(model.waitingDevices) { device in
-          DeviceCard(device: device, deciding: model.deciding.contains(device.key)) { allow in
-            Task { await model.decide(device.key, allow: allow) }
-          }
-        }
         ForEach(questions) { question in
           if question.input != nil {
             InputCard(
@@ -224,6 +220,20 @@ struct ElicitationCards: View {
       .frame(maxWidth: 440)
     }
   }
+}
+
+/// The arrow over a card: without it, the terminal underneath shows its text cursor there.
+private struct ArrowCursor: NSViewRepresentable {
+  final class View: NSView {
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
+  }
+  func makeNSView(context: Context) -> View { View() }
+  func updateNSView(_ view: View, context: Context) { view.window?.invalidateCursorRects(for: view) }
+}
+
+extension View {
+  /// A card's surface: the arrow cursor over it, whatever is underneath.
+  fileprivate func arrowCursor() -> some View { background(ArrowCursor()) }
 }
 
 /// Values the agent must not see, for a form in an app on this Mac (RFD0029): what it shows is
@@ -276,6 +286,7 @@ struct InputCard: View {
     .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
     .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
     .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+    .arrowCursor()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("inputCard")
   }
@@ -296,50 +307,6 @@ struct InputCard: View {
     guard complete, !answering else { return }
     answer(.accept, values)
     values = [:]
-  }
-}
-
-/// A phone or a browser answered a question without being allowed to (RFD0029): the person checks
-/// that the fingerprint here is the one the device shows, so only their own devices answer.
-struct DeviceCard: View {
-  let device: AnsweringDevice
-  let deciding: Bool
-  let decide: (Bool) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Label("Allow \(device.name) to answer for this Mac?", systemImage: "iphone.gen3.badge.exclamationmark")
-          .font(.callout.weight(.semibold))
-        Spacer()
-        if deciding { ProgressView().controlSize(.small) }
-      }
-      Text(device.fingerprint)
-        .font(.title3.monospaced().weight(.semibold))
-        .textSelection(.enabled)
-        .accessibilityIdentifier("deviceFingerprint")
-      Text("Allow it only if \(device.name) shows these same characters. It can then say yes to agents and computer use here.")
-        .font(.caption).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: 8) {
-        Button("Allow") { decide(true) }
-          .buttonStyle(.borderedProminent)
-          .accessibilityIdentifier("deviceAllow")
-        Button("Not mine") { decide(false) }
-          .buttonStyle(.bordered)
-          .accessibilityIdentifier("deviceRefuse")
-      }
-      .controlSize(.small)
-      .buttonBorderShape(.capsule)
-      .disabled(deciding)
-    }
-    .padding(14)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-    .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
-    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.orange.opacity(0.32), lineWidth: 0.5))
-    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("deviceCard")
   }
 }
 
@@ -386,6 +353,7 @@ struct ElicitationCard: View {
     .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
     .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
     .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+    .arrowCursor()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("elicitationCard")
   }

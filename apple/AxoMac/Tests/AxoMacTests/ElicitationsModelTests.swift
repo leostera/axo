@@ -12,10 +12,6 @@ private final class FakeElicitationClient: AxodElicitationClient {
   var rejection: Error?
 
   func pendingElicitations() async throws -> [Elicitation] { pending }
-  var devices = AnsweringDevices(trusted: [], pending: [])
-  var decisions: [(String, Bool)] = []
-  func answeringDevices() async throws -> AnsweringDevices { devices }
-  func decideDevice(_ key: String, allow: Bool) async throws { decisions.append((key, allow)) }
 
   func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]?) async throws {
     answers.append((id, action))
@@ -41,23 +37,6 @@ final class ElicitationsModelTests: XCTestCase {
   {
     Elicitation(
       id: id, sessionId: session, askedBy: askedBy, message: "Go?", createdAt: 1, expiresAt: 2)
-  }
-
-  func testADeviceThatAsksWaitsForThePersonWhoAllowsOrRefusesItOnce() async {
-    let client = FakeElicitationClient()
-    let model = ElicitationsModel(client: client, notifier: FakeNotifier())
-    let phone = AnsweringDevice(key: "AAAA", name: "Leo's iPhone", fingerprint: "6520 7919 59be e144", at: 1)
-    _ = model.apply(.deviceRequested(phone))
-    _ = model.apply(.deviceRequested(phone))
-    XCTAssertEqual(model.waitingDevices, [phone])
-    await model.decide("AAAA", allow: true)
-    await model.decide("AAAA", allow: true)
-    XCTAssertEqual(client.decisions.map(\.0), ["AAAA"])
-    XCTAssertEqual(client.decisions.map(\.1), [true])
-    XCTAssertTrue(model.waitingDevices.isEmpty)
-    client.devices = AnsweringDevices(trusted: [], pending: [phone])
-    await model.refresh()
-    XCTAssertEqual(model.waitingDevices, [phone], "devices that asked while Axo was closed show on reconnect")
   }
 
   func testAFormGoesOnlyWithItsValuesAndACancelWithNone() async {
@@ -87,6 +66,26 @@ final class ElicitationsModelTests: XCTestCase {
     XCTAssertEqual(notifier.posted.map(\.id), ["a"])
     XCTAssertEqual(notifier.posted.first?.session, "Fix the build")
     XCTAssertFalse(model.apply(.peerSessionsChanged))
+  }
+
+  func testAYesOrNoQuestionIsANotificationAndACardOnlyWhenOpenedOrNotificationsAreOff() {
+    let model = ElicitationsModel(client: FakeElicitationClient(), notifier: FakeNotifier())
+    var shown: [SessionID] = []
+    model.showSession = { shown.append($0) }
+    let input = InputRequest(
+      app: "Safari", window: "Sign in", origin: "https://github.com",
+      fields: [.init(id: "f0", label: "Password", kind: .password)], key: "QQ==")
+    _ = model.apply(.elicitationRequested(question("a")))
+    _ = model.apply(
+      .elicitationRequested(
+        Elicitation(id: "f", sessionId: 1, kind: .input, askedBy: .computerUse, message: "Fill.", input: input, createdAt: 1, expiresAt: 2)))
+    XCTAssertEqual(model.cards(in: 1).map(\.id), ["f"], "a form is always a card; a question, a notification")
+    model.open("a")
+    XCTAssertEqual(model.cards(in: 1).map(\.id), ["a", "f"])
+    XCTAssertEqual(shown, [1])
+    _ = model.apply(.elicitationRequested(question("b")))
+    model.notificationsShow = false
+    XCTAssertEqual(model.cards(in: 1).map(\.id), ["a", "f", "b"])
   }
 
   func testTheCardStaysUntilAxodSaysItIsSettled() async {
