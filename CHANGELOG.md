@@ -2,11 +2,21 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.20 (Mac app build 291, axod 44)
+
+### Fixed
+
+- **"1 Question…" in the menu opens the questions panel.** It closed again the moment it opened.
+
+### Changed
+
+- The menu bar Axo turns deep pink, not orange, while a question waits.
+
 ## 0.19 (Mac app build 290, axod 44)
 
 ### Changed
 
-- **Questions on the Mac come from the menu bar.** When an agent or computer use asks you something, the menu bar Axo turns orange. Click it and choose "1 Question…": a panel opens right under Axo with every waiting question, one after the other, and the Session each comes from. Answer each in place, sign-in forms included; Return answers the first one, and the panel closes by itself once nothing is left. This replaces the notifications and the cards over the terminal.
+- **Questions on the Mac come from the menu bar.** When an agent or computer use asks you something, the menu bar Axo turns deep pink. Click it and choose "1 Question…": a panel opens right under Axo with every waiting question, one after the other, and the Session each comes from. Answer each in place, sign-in forms included; Return answers the first one, and the panel closes by itself once nothing is left. This replaces the notifications and the cards over the terminal.
 
 ## 0.18 (Mac app build 289, axod 44)
 
