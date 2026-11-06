@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.16 (Mac app build 287, axod 42)
+
+### New
+
+- **Only your own phones and browsers can answer for your Macs.** Each phone and browser now signs every answer with a key that never leaves it, and a Mac takes answers only from devices you allowed on it. The first time a new phone or browser answers, the Mac shows "Allow … to answer for this Mac?" with a short code; allow it if your device shows the same code, then answer again. Not even Axo's servers can answer for you, replay an old answer, or turn a No into a Yes (phone build 19).
+
 ## 0.15 (Mac app build 286, axod 41)
 
 ### New
