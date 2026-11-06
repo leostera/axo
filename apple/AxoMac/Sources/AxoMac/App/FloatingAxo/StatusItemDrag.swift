@@ -11,6 +11,7 @@ enum StatusItemDrag {
     guard monitor == nil else { return }
     FloatingAxos.shared.home = { statusBarWindow()?.frame }
     FloatingAxos.shared.menuBarAppearance = { statusBarWindow()?.effectiveAppearance }
+    QuestionsPanel.shared.anchor = { statusBarWindow()?.frame }
     monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
       guard let window = event.window, isStatusBarWindow(window) else { return event }
       return track(from: event) ? nil : event

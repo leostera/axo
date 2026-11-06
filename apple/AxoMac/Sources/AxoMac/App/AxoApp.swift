@@ -80,10 +80,13 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
     .defaultPosition(.center)
 
     MenuBarExtra {
-      AxoMenu(daemon: daemon, settingsSection: $settingsSection, usesSplash: usesSplash)
+      AxoMenu(
+        daemon: daemon, elicitations: sessions.elicitations, settingsSection: $settingsSection,
+        usesSplash: usesSplash)
     } label: {
       AxoMenuBarLabel(
         mascot: mascot,
+        elicitations: sessions.elicitations,
         pairingLink: pairingLink,
         settingsSection: $settingsSection,
         opensTerminalWindow: environment.opensTerminalWindow,
@@ -428,6 +431,7 @@ private struct WorkbenchViewCommands: Commands {
 private struct AxoMenuBarLabel: View {
   @Environment(\.openWindow) private var openWindow
   var mascot: AxoMascot
+  var elicitations: ElicitationsModel
   var pairingLink: PairingLinkRouter
   @Binding var settingsSection: SettingsSection
   let opensTerminalWindow: Bool
@@ -443,7 +447,8 @@ private struct AxoMenuBarLabel: View {
         // Stretched out of shape: the rubber Axo is drawn over the menu bar instead.
         Image(nsImage: Self.blank)
       } else if let image = mascot.menuBarImage {
-        Image(nsImage: image)
+        // A question waits: Axo takes a color until it is answered.
+        Image(nsImage: elicitations.questions.isEmpty ? image : AxoMascot.tinted(image, .systemOrange))
       } else {
         Image(systemName: "command")
       }
@@ -482,10 +487,22 @@ private struct AxoMenuBarLabel: View {
 private struct AxoMenu: View {
   @Environment(\.openWindow) private var openWindow
   var daemon: DaemonController
+  var elicitations: ElicitationsModel
   @Binding var settingsSection: SettingsSection
   let usesSplash: Bool
 
   var body: some View {
+    if !elicitations.questions.isEmpty {
+      let count = elicitations.questions.count
+      Button {
+        // After the menu closes, so the panel takes the keyboard.
+        Task { @MainActor in QuestionsPanel.shared.show(elicitations) }
+      } label: {
+        Label(count == 1 ? "1 Question…" : "\(count) Questions…", systemImage: "questionmark.bubble.fill")
+      }
+      Divider()
+    }
+
     Group {
       if case .running = daemon.status {
         Label {

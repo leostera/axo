@@ -199,10 +199,7 @@ final class TerminalSessionsModel {
     sidebarGrouping = SidebarGroupingSettings(
       storedValue: preferenceDefaults.data(forKey: AxoPreferenceKey.sidebarGrouping))
     layoutWriter = TerminalLayoutWriter(client: client)
-    // Only the real daemon connection notifies: in-memory test clients have no app bundle.
-    let notifier: ElicitationNotifications? = client is AxodConnection ? .shared : nil
-    elicitations = ElicitationsModel(client: client as? AxodElicitationClient, notifier: notifier)
-    notifier?.model = elicitations
+    elicitations = ElicitationsModel(client: client as? AxodElicitationClient)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
 

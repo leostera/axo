@@ -123,6 +123,19 @@ final class AxoMascot {
     }
   }
 
+  /// A menu bar frame in `color` instead of the menu bar's own tint: Axo asking for attention.
+  static func tinted(_ image: NSImage, _ color: NSColor) -> NSImage {
+    let tinted = NSImage(size: image.size, flipped: false) { rect in
+      image.draw(in: rect)
+      color.set()
+      rect.fill(using: .sourceAtop)
+      return true
+    }
+    tinted.isTemplate = false
+    tinted.accessibilityDescription = "Axo, with questions waiting"
+    return tinted
+  }
+
   /// The open-eyed first frame in the menu bar and the bundle's icon in the Dock.
   private func holdStill() {
     if let restingMenuBarImage { menuBarImage = restingMenuBarImage }
