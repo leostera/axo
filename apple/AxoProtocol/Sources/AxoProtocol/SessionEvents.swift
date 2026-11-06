@@ -29,6 +29,9 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case deviceRequested(AnsweringDevice)
   /// The trusted or waiting devices changed: list them again.
   case devicesChanged
+  /// Axod has finished starting: the Pis it started at launch are up. Sent once per Axod;
+  /// `DaemonHealth.ready` says the same to a client that subscribed later.
+  case daemonReady
   /// Earlier events were discarded; the consumer must resynchronize from a fresh listing.
   case subscriptionLagged
   /// An event type this client does not understand. Ignored for forward compatibility.
@@ -81,6 +84,8 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
       self = .deviceRequested(try container.decode(AnsweringDevice.self, forKey: .device))
     case "devices.changed":
       self = .devicesChanged
+    case "daemon.ready":
+      self = .daemonReady
     case "subscription.lagged":
       self = .subscriptionLagged
     case let type:

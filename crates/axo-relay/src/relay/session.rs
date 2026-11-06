@@ -271,6 +271,7 @@ fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
         }
         Event::ShellActivity { .. }
         | Event::TerminalOutput { .. }
+        | Event::DaemonReady
         | Event::SessionFocus { .. }
         | Event::WorkspaceChanged { .. }
         | Event::RelayStatus { .. }

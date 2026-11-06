@@ -359,7 +359,8 @@ fn rpc_handler(
 ) -> IoHandler {
     let mut handler = IoHandler::new();
     add_protocol_negotiate_method(&mut handler);
-    add_health_method(&mut handler, daemon_version);
+    let ready = Arc::clone(&sessions);
+    add_health_method(&mut handler, daemon_version, move || ready.is_ready());
     connections::add_methods(
         &mut handler,
         relay.as_ref().map(|relay| Arc::clone(&relay.channel)),
@@ -504,7 +505,11 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
     );
 }
 
-fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
+fn add_health_method(
+    handler: &mut IoHandler,
+    daemon_version: &'static str,
+    ready: impl Fn() -> bool + Send + Sync + 'static,
+) {
     handler.add_typed(
         method::DAEMON_HEALTH,
         "expected no parameters",
@@ -513,6 +518,7 @@ fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
                 version: daemon_version.to_owned(),
                 build_number: build_number(),
                 status: rpc::DaemonStatus::Running,
+                ready: ready(),
                 developer_tools: permissions::developer_tools(),
             })
         },
@@ -646,7 +652,7 @@ mod tests {
     #[test]
     fn health_method_reports_this_build() {
         let mut handler = IoHandler::new();
-        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"));
+        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"), || false);
         let response = handler
             .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.health"}"#)
             .expect("health is a request with a response");
@@ -655,12 +661,13 @@ mod tests {
         assert_eq!(response["result"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(response["result"]["buildNumber"], build_number());
         assert_eq!(response["result"]["status"], "running");
+        assert_eq!(response["result"]["ready"], false, "still starting");
     }
 
     #[test]
     fn unknown_methods_use_the_json_rpc_method_not_found_error() {
         let mut handler = IoHandler::new();
-        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"));
+        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"), || true);
         let response = handler
             .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.unknown"}"#)
             .expect("unknown method requests have an error response");

@@ -356,6 +356,7 @@ impl SessionManager {
         if connected {
             // Pi has finished starting: it can take what was sent to it meanwhile.
             self.flush_queued_pi_prompts(session_id)?;
+            self.check_launch_ready();
         }
         Ok(())
     }

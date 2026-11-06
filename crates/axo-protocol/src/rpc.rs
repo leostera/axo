@@ -356,10 +356,18 @@ pub struct DaemonHealth {
     pub version: String,
     pub build_number: u64,
     pub status: DaemonStatus,
+    /// Whether Axod has finished starting (see `Event::DaemonReady`). An Axod that predates it
+    /// says nothing, and was ready whenever it answered.
+    #[serde(default = "answered_means_ready")]
+    pub ready: bool,
     /// Whether macOS lets axod run as a developer tool, so the programs Sessions run skip the
     /// scan before their first run; absent where macOS cannot say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub developer_tools: Option<PermissionState>,
+}
+
+fn answered_means_ready() -> bool {
+    true
 }
 
 /// How a process stands with one of macOS's privacy permissions.

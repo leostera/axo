@@ -8,6 +8,8 @@ import Foundation
 @MainActor
 protocol AxodClient: AnyObject {
   func negotiate() async throws -> ProtocolNegotiation
+  /// Includes whether Axod has finished starting (`ready`).
+  func health() async throws -> DaemonHealth
   func listSessionSnapshot() async throws -> TerminalSessionListSnapshot
   func listWorkspaces() async throws -> [WorkspaceRecord]
 

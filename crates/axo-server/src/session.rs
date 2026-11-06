@@ -37,6 +37,7 @@ mod pi_recovery;
 mod prompts;
 mod settings;
 mod spawn;
+mod readiness;
 mod stop_notice;
 pub(crate) use spawn::set_agent_socket;
 mod terminal;
@@ -130,6 +131,8 @@ struct SessionState {
     /// also an unavailable pane in `panes`, and starts when the Session is wanted (see
     /// `stop_notice`'s `wake_dormant_pi`).
     dormant_pis: HashSet<ShellId>,
+    /// Whether Axod has finished starting; see `readiness`.
+    launch: readiness::Launch,
     /// Prompts for a Pi that is still starting, sent once its bridge binds; see `prompts`.
     queued_pi_prompts: HashMap<SessionId, Vec<prompts::QueuedPrompt>>,
     /// Who prompted whom, for agent loop limits; see `prompts`.
@@ -229,6 +232,7 @@ impl SessionManager {
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 dormant_pis: HashSet::new(),
+                launch: readiness::Launch::default(),
                 queued_pi_prompts: HashMap::new(),
                 prompt_provenance: prompts::PromptProvenance::default(),
                 events: subscribers.clone(),
@@ -271,6 +275,7 @@ impl SessionManager {
             manager.tell_interrupted_sessions(stop);
         }
         manager.ensure_open_workspace_sessions()?;
+        manager.begin_launch()?;
         manager.start_attachment_listener()?;
         manager.start_reaper();
         Ok(manager)

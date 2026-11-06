@@ -65,11 +65,18 @@ final class TerminalCatalogSync {
         try await sessions.resynchronize()
         await sessions.elicitations.refresh()
         await remoteAccess?.refresh()
-        sessions.setCatalogConnection(.live)
+        // Live only once Axod has finished starting: asked after subscribing, so a
+        // `daemon.ready` sent since is in the stream below.
+        var axodReady = try await client.health().ready
+        if axodReady { sessions.setCatalogConnection(.live) }
         backoff = minimumBackoff
         consecutiveFailures = 0
         streaming: while !Task.isCancelled {
           for event in try await client.nextEvents(for: opened) {
+            if case .daemonReady = event, !axodReady {
+              axodReady = true
+              sessions.setCatalogConnection(.live)
+            }
             if case .relayStatus(let status) = event {
               remoteAccess?.apply(status)
             } else if sessions.elicitations.apply(event) {

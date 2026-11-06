@@ -78,6 +78,10 @@ pub enum Event {
     /// The trusted or waiting devices changed: read `axo.device.list` again.
     #[serde(rename = "devices.changed")]
     DevicesChanged,
+    /// Axod has finished starting: the Pis it started have come up (or failed, or took too
+    /// long). Sent once per Axod; `axo.daemon.health`'s `ready` says the same to a late client.
+    #[serde(rename = "daemon.ready")]
+    DaemonReady,
     /// The subscriber fell behind and events were dropped; resynchronize from a fresh list.
     #[serde(rename = "subscription.lagged")]
     SubscriptionLagged,
@@ -106,6 +110,7 @@ impl Event {
             | Event::PeerSessionsChanged
             | Event::DeviceRequested { .. }
             | Event::DevicesChanged
+            | Event::DaemonReady
             | Event::SubscriptionLagged => None,
         }
     }

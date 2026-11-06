@@ -385,6 +385,8 @@ impl SessionManager {
                     if let Err(error) = manager.reap_exited_peer_views() {
                         log::error!("event=peer.reap_failed reason={error}");
                     }
+                    // A Pi that died, or the time limit, can also end the launch.
+                    manager.check_launch_ready();
                 }
             });
         if let Ok(worker) = worker

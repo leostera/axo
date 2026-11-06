@@ -57,6 +57,8 @@ See [recovery hardening evidence and remaining boundaries](../../docs/axod-recov
 
 On start, Axod restores Pis in order: first those its previous run recorded as mid-turn when it stopped (each is then prompted that it was stopped and may continue; see `stop_notice`), then those active in the last hour, most recent first. Older Sessions' Pis stay dormant (`Availability::Dormant`, `"dormant": true` on the wire) until the Session is wanted: a prompt from anyone, a client sizing or typing into that pane, or the Mac showing the Session (which asks for the restart). Dormant Sessions report `ready`.
 
+Answering is not the same as ready: Axod answers once Sessions are restored, while the Pis it started are still booting. It is **ready** once each of those Pis has connected its bridge or died, or after 15 seconds whatever is still starting (`session/readiness.rs`). It then publishes one `daemon.ready` event, and `axo.daemon.health` answers `ready: true` from then on. The Mac app shows the terminal window only once Axod is ready.
+
 These guarantees do not make a daemon restart transparent: restarting Axod still replaces its PTYs/processes. Automatic Pi recovery remains idle-only and non-forcing, and restoration can leave a pane unavailable when the original transcript or safe writer ownership is unavailable.
 
 ## Agents as clients (RFD0015)

@@ -28,6 +28,9 @@
         },
         {
           "$ref": "#/$defs/SubscriptionLaggedEvent"
+        },
+        {
+          "$ref": "#/$defs/DaemonReadyEvent"
         }
       ]
     },
@@ -250,6 +253,19 @@
         },
         "sessionId": {
           "$ref": "common.schema.json#/$defs/SessionId"
+        }
+      }
+    },
+    "DaemonReadyEvent": {
+      "description": "Axod has finished starting: the Pis it started at launch are up, failed, or took too long. Sent once per axod; health's ready says the same.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "daemon.ready"
         }
       }
     },

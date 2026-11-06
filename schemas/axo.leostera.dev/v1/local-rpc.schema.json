@@ -814,6 +814,10 @@
         "status": {
           "const": "running"
         },
+        "ready": {
+          "description": "Whether axod has finished starting: the Pis it started at launch are up, failed, or took too long. Absent from an axod that predates it.",
+          "type": "boolean"
+        },
         "developerTools": {
           "enum": [
             "granted",

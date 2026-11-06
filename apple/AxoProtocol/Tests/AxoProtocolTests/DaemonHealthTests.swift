@@ -4,6 +4,12 @@ import XCTest
 
 /// `axo.daemon.health`, from axods old and new.
 final class DaemonHealthTests: XCTestCase {
+  func testReadyIsReadAndAnAxodThatDoesNotSayWasReady() throws {
+    XCTAssertFalse(try decode(#"{"buildNumber": 3, "status": "running", "ready": false}"#).ready)
+    XCTAssertTrue(try decode(#"{"buildNumber": 3, "status": "running", "ready": true}"#).ready)
+    XCTAssertTrue(try decode(#"{"buildNumber": 3, "status": "running"}"#).ready)
+  }
+
   private func decode(_ json: String) throws -> DaemonHealth {
     try JSONDecoder().decode(DaemonHealth.self, from: Data(json.utf8))
   }

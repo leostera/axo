@@ -44,6 +44,12 @@ final class FakeAxodClient: AxodClient {
     return ProtocolNegotiation(protocolVersion: protocolVersion, methods: methods)
   }
 
+  /// What health says about Axod having finished starting.
+  var ready = true
+  func health() async throws -> DaemonHealth {
+    DaemonHealth(version: "0.0", buildNumber: 1, status: "running", ready: ready)
+  }
+
   func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {
     listCount += 1
     return TerminalSessionListSnapshot(sessions: sessions, resumeSessionId: resumeSessionID)
@@ -463,6 +469,21 @@ final class TerminalCatalogTests: XCTestCase {
     // next one, or the splash would reveal the terminal before it is connected.
     sync.stop()
     XCTAssertEqual(model.catalogConnection, .connecting)
+  }
+
+  func testTheCatalogIsLiveOnlyOnceAxodHasFinishedStarting() async throws {
+    let client = FakeAxodClient()
+    client.ready = false
+    client.push(.sessionSnapshot(session(1, shells: [10])))
+    let model = makeModel(client)
+    let sync = TerminalCatalogSync(sessions: model, client: client)
+    sync.start()
+    defer { sync.stop() }
+    // Sessions arrive while Axod's Pis start, but the terminal waits.
+    try await waitUntil { model.sessions.count == 1 }
+    XCTAssertEqual(model.catalogConnection, .connecting)
+    client.push(.daemonReady)
+    try await waitUntil { model.catalogConnection == .live }
   }
 
   func testBatchedEventsApplyInOrder() async throws {
