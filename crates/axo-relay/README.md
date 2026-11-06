@@ -9,14 +9,13 @@ Everything runs on threads that `RelayWorker::start` owns. The crate reaches axo
 | Module | Owns |
 | --- | --- |
 | `relay` | The reconnect loop and `RelayWorker`. `relay/`: `status` (what Axo.app shows), `socket` (WebSocket transport, shared with `peers`), `session` (one connected session), `dispatch` (`axo.remote.*` calls), `jobs` (bash, prompts with attachments, sign-ins), `elicitation` (RFD0029), `wire` (JSON-RPC types) |
-| `sync` | Uploading transcripts (RFD0018, RFD0027). `sync/`: `metadata`, `local_file` (reading and hashing a Pi file), `uploader` (the handshake and append loop) |
+| `sync` | Uploading transcripts (RFD0018, RFD0027). `sync/`: `metadata`, `uploader` (the handshake and append loop). It reads each transcript with `axo_agent::pi::TranscriptFile` |
 | `peers` | Copies of other Macs' Sessions and commands sent to them (RFD0022, RFD0024). `peers/`: `mirror` (copies on disk), `index` (the listing), `live` (state shared with axod's remote panes), `follower` (the socket) |
 | `link`, `pairing`, `credential` | Whether and how this host is linked to an account, and where its credential is kept (Keychain or files) |
 | `outbound` | `RelayChannel`: how other threads send on the host's one socket, by priority |
 | `fragments` | Messages larger than one frame (RFD0016, Transport) |
 | `assets` | Fetching a prompt's attachments before it reaches Pi (RFD0030) |
 | `bash`, `signin` | The host connection's `bash` tool and loopback sign-in (RFD0016) |
-| `pi3` | Record identity and hashing for Pi session files, shared with `packages/axo-api` |
 | `endpoint`, `host` | The relay URL, and the `RelayHost` trait axod implements |
 
 ## Rules
@@ -24,7 +23,7 @@ Everything runs on threads that `RelayWorker::start` owns. The crate reaches axo
 - The daemon route authenticates with the host credential and never follows a redirect; a redirect means something (usually an Access login) intercepts it, and is reported.
 - The cloud's answer to a sync handshake always wins over what `axo.db` remembers; a cursor moves only when the cloud acknowledges a commit.
 - A peer copy is acknowledged only once written, never uploaded, and never written into this Mac's own folder.
-- `pi3` and `fragments` have TypeScript twins in `packages/axo-api`; both are checked against `schemas/axo.leostera.dev/v1` and the models in `specs/`.
+- `fragments` (and `axo_agent::pi::pi3`) have TypeScript twins in `packages/axo-api`; both are checked against `schemas/axo.leostera.dev/v1` and the models in `specs/`.
 
 ## Build and test
 

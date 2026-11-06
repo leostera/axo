@@ -165,9 +165,9 @@ mod tests {
     use super::*;
 
     const SESSION: &str =
-        include_str!("../../../schemas/axo.leostera.dev/v1/fixtures/pi3-session.jsonl");
+        include_str!("../../../../schemas/axo.leostera.dev/v1/fixtures/pi3-session.jsonl");
     const VECTORS: &str =
-        include_str!("../../../schemas/axo.leostera.dev/v1/fixtures/pi3-vectors.json");
+        include_str!("../../../../schemas/axo.leostera.dev/v1/fixtures/pi3-vectors.json");
 
     #[test]
     fn the_fixture_transcript_hashes_to_the_vectors_typescript_produces() {

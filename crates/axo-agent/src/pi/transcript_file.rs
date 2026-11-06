@@ -1,30 +1,28 @@
-//! A Session's Pi file as the uploader reads it: hashed record by record as far as its last
+//! A Session's Pi file as it is read for upload: hashed record by record as far as its last
 //! complete line, and hashed again from the start if it is rewritten.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
 
-use crate::pi3::{self, Transcript};
+use super::pi3::{self, Transcript};
 
 /// A Session's Pi file, hashed as far as its last complete line.
-pub(super) struct LocalFile {
-    pub(super) path: Option<PathBuf>,
-    pub(super) transcript: Option<Transcript>,
+pub struct TranscriptFile {
+    path: Option<PathBuf>,
+    transcript: Option<Transcript>,
     /// Where each record's line starts in the file and how long it is (index = position - 1).
-    pub(super) lines: Vec<(u64, usize)>,
+    lines: Vec<(u64, usize)>,
     /// Bytes of the file hashed: whole lines only.
     hashed: u64,
     /// The last record's content digest, to notice a file rewritten in place.
     last_digest: Option<String>,
     /// The first line that is not a record; nothing from there is uploaded until the file changes.
-    pub(super) invalid: bool,
-    pub(super) checked_at: Option<Instant>,
+    invalid: bool,
 }
 
-impl LocalFile {
-    pub(super) fn new(path: Option<PathBuf>) -> Self {
+impl TranscriptFile {
+    pub fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             transcript: None,
@@ -32,18 +30,41 @@ impl LocalFile {
             hashed: 0,
             last_digest: None,
             invalid: false,
-            checked_at: None,
         }
     }
 
-    pub(super) fn count(&self) -> u64 {
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The records hashed so far, once the header has been read.
+    pub fn transcript(&self) -> Option<&Transcript> {
+        self.transcript.as_ref()
+    }
+
+    pub fn count(&self) -> u64 {
         self.transcript.as_ref().map_or(0, Transcript::count)
+    }
+
+    /// The length in bytes of the line of record `position` (from 1), without its newline.
+    pub fn line_length(&self, position: u64) -> Option<usize> {
+        let index = usize::try_from(position.checked_sub(1)?).ok()?;
+        self.lines.get(index).map(|&(_, length)| length)
+    }
+
+    /// Treats the next record as one that cannot be uploaded, as if it were not a record: nothing
+    /// from there is read until the file changes.
+    pub fn mark_invalid(&mut self) {
+        self.invalid = true;
+    }
+
+    pub fn is_invalid(&self) -> bool {
+        self.invalid
     }
 
     /// Hashes lines appended since the last check. A file that shrank, or whose last hashed line
     /// changed, is hashed again from the start. Returns whether anything changed.
-    pub(super) fn refresh(&mut self) -> io::Result<bool> {
-        self.checked_at = Some(Instant::now());
+    pub fn refresh(&mut self) -> io::Result<bool> {
         let Some(path) = self.path.clone() else {
             return Ok(false);
         };
@@ -55,7 +76,6 @@ impl LocalFile {
         let length = file.metadata()?.len();
         if length < self.hashed || !self.last_line_unchanged(&mut file)? {
             *self = Self::new(Some(path.clone()));
-            self.checked_at = Some(Instant::now());
         }
         if length == self.hashed {
             return Ok(false);
@@ -77,14 +97,14 @@ impl LocalFile {
                 .ok()
                 .filter(|_| line.len() <= pi3::MAX_LINE_BYTES)
             else {
-                self.mark_invalid(&path);
+                self.log_invalid_line(&path);
                 continue;
             };
             match &mut self.transcript {
                 None => self.transcript = Some(Transcript::start(text)),
                 Some(transcript) => {
                     if transcript.push(text).is_none() {
-                        self.mark_invalid(&path);
+                        self.log_invalid_line(&path);
                         continue;
                     }
                     self.lines.push((offset, line.len()));
@@ -99,7 +119,7 @@ impl LocalFile {
 
     /// Every byte of the file is a record already hashed: nothing partial, nothing refused.
     /// Returns its length then.
-    pub(super) fn whole_length(&self) -> io::Result<Option<u64>> {
+    pub fn whole_length(&self) -> io::Result<Option<u64>> {
         let Some(path) = &self.path else {
             return Ok(None);
         };
@@ -111,7 +131,7 @@ impl LocalFile {
         Ok((!self.invalid && self.transcript.is_some() && length == self.hashed).then_some(length))
     }
 
-    fn mark_invalid(&mut self, path: &std::path::Path) {
+    fn log_invalid_line(&mut self, path: &Path) {
         self.invalid = true;
         log::warn!(
             "event=sync.invalid_line position={} file={}",
@@ -133,7 +153,7 @@ impl LocalFile {
     }
 
     /// The raw lines of positions `from..=to`, read from the file.
-    pub(super) fn read(&self, from: u64, to: u64) -> io::Result<Vec<String>> {
+    pub fn read(&self, from: u64, to: u64) -> io::Result<Vec<String>> {
         let path = self.path.as_ref().ok_or(io::ErrorKind::NotFound)?;
         let mut file = File::open(path)?;
         (from..=to)
@@ -148,19 +168,68 @@ impl LocalFile {
     }
 }
 
+/// How many records a Pi transcript has and the chain at the last, if every line of it is a
+/// whole record (RFD0027: a restored transcript must be the one that was deleted).
+pub fn transcript_chain(path: &Path) -> io::Result<Option<(u64, String)>> {
+    let mut file = TranscriptFile::new(Some(path.to_owned()));
+    file.refresh()?;
+    if file.whole_length()?.is_none() {
+        return Ok(None);
+    }
+    let count = file.count();
+    Ok(file
+        .transcript()
+        .and_then(|transcript| transcript.chain_at(count))
+        .map(|chain| (count, chain.to_owned())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
 
-    use crate::sync::test_support::{HEADER, temp_file};
+    const HEADER: &str = r#"{"type":"session","version":3,"id":"s"}"#;
+
+    fn temp_file(contents: &str) -> PathBuf {
+        let path = crate::test_directory().join("transcript.jsonl");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_transcript_has_a_chain_only_when_every_line_is_a_whole_record() {
+        let whole = temp_file(&format!(
+            "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\":\"b\",\"parentId\":\"a\"}}\n"
+        ));
+        let mut expected = Transcript::start(HEADER);
+        expected.push(r#"{"id":"a","parentId":null}"#);
+        expected.push(r#"{"id":"b","parentId":"a"}"#);
+        assert_eq!(
+            transcript_chain(&whole).unwrap(),
+            Some((2, expected.chain().to_owned()))
+        );
+        let partial = temp_file(&format!(
+            "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\""
+        ));
+        assert_eq!(
+            transcript_chain(&partial).unwrap(),
+            None,
+            "a partial last line"
+        );
+        let refused = temp_file(&format!("{HEADER}\nnot a record\n"));
+        assert_eq!(
+            transcript_chain(&refused).unwrap(),
+            None,
+            "a line that is not a record"
+        );
+    }
 
     #[test]
     fn a_file_is_hashed_line_by_line_and_a_partial_last_line_waits() {
         let path = temp_file(&format!(
             "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\":\"b\""
         ));
-        let mut file = LocalFile::new(Some(path.clone()));
+        let mut file = TranscriptFile::new(Some(path.clone()));
         assert!(file.refresh().unwrap());
         assert_eq!(file.count(), 1);
         let mut handle = std::fs::OpenOptions::new()
@@ -180,14 +249,13 @@ mod tests {
         let mut expected = Transcript::start(HEADER);
         expected.push(r#"{"id":"a","parentId":null}"#);
         expected.push(r#"{"id":"b","parentId":"a"}"#);
-        assert_eq!(file.transcript.as_ref().unwrap().chain(), expected.chain());
-        std::fs::remove_file(path).unwrap();
+        assert_eq!(file.transcript().unwrap().chain(), expected.chain());
     }
 
     #[test]
     fn a_rewritten_file_is_hashed_again_from_the_start() {
         let path = temp_file(&format!("{HEADER}\n{{\"id\":\"a\"}}\n{{\"id\":\"b\"}}\n"));
-        let mut file = LocalFile::new(Some(path.clone()));
+        let mut file = TranscriptFile::new(Some(path.clone()));
         file.refresh().unwrap();
         assert_eq!(file.count(), 2);
         std::fs::write(
@@ -199,8 +267,7 @@ mod tests {
         let mut expected = Transcript::start(HEADER);
         expected.push(r#"{"id":"a"}"#);
         expected.push(r#"{"id":"c"}"#);
-        assert_eq!(file.transcript.as_ref().unwrap().chain(), expected.chain());
-        std::fs::remove_file(path).unwrap();
+        assert_eq!(file.transcript().unwrap().chain(), expected.chain());
     }
 
     #[test]
@@ -208,10 +275,9 @@ mod tests {
         let path = temp_file(&format!(
             "{HEADER}\n{{\"id\":\"a\"}}\nnot json\n{{\"id\":\"b\"}}\n"
         ));
-        let mut file = LocalFile::new(Some(path.clone()));
+        let mut file = TranscriptFile::new(Some(path.clone()));
         file.refresh().unwrap();
         assert_eq!(file.count(), 1);
-        assert!(file.invalid);
-        std::fs::remove_file(path).unwrap();
+        assert!(file.is_invalid());
     }
 }

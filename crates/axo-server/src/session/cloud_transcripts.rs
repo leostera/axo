@@ -80,7 +80,7 @@ impl SessionManager {
         };
         let expected = Some((transcript.position, chain.to_owned()));
         // Deleted after a crash, or restored by a reopen that failed later: already in place.
-        if file.exists() && axo_relay::transcript_chain(&file)? == expected {
+        if file.exists() && axo_agent::pi::transcript_chain(&file)? == expected {
             return Ok(());
         }
         let place = Place::of(
@@ -100,7 +100,7 @@ impl SessionManager {
             .restore(place.clone(), transcript.position, RESTORE_TIMEOUT)
             .map_err(|error| unavailable(&error.to_string()))?;
         let mut staging = Mirror::new(restore_directory(&access.index));
-        let outcome = if axo_relay::transcript_chain(&staged)? == expected {
+        let outcome = if axo_agent::pi::transcript_chain(&staged)? == expected {
             if let Some(folder) = file.parent() {
                 fs::create_dir_all(folder)?;
             }
@@ -162,7 +162,7 @@ pub(super) fn reopened_with_transcript(
         return Ok(());
     }
     let on_disk = match transcript.pi_session_file.as_deref().map(Path::new) {
-        Some(file) if file.exists() => axo_relay::transcript_chain(file)?,
+        Some(file) if file.exists() => axo_agent::pi::transcript_chain(file)?,
         _ => None,
     };
     if on_disk != transcript.chain.map(|chain| (transcript.position, chain)) {
@@ -206,7 +206,7 @@ mod tests {
         let file = fixture.directory.join(format!("{session_id}.jsonl"));
         fs::write(&file, LINES).unwrap();
         fs::write(lock_file(&file), b"").unwrap();
-        let (count, chain) = axo_relay::transcript_chain(&file).unwrap().unwrap();
+        let (count, chain) = axo_agent::pi::transcript_chain(&file).unwrap().unwrap();
         assert_eq!(count, 2);
         let state = fixture.manager.lock_state().unwrap();
         state

@@ -6,16 +6,15 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axo_agent::pi::{TranscriptFile, pi3};
 use axo_protocol::{SessionId, SessionStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::local_file::LocalFile;
 use super::metadata::{SessionMetadata, StoredSyncState};
 use super::unix_seconds;
 use crate::host::RelayHost;
 use crate::outbound::{Priority, RelayCallError, RelayChannel};
-use crate::pi3;
 
 /// Records and bytes of lines in one append batch.
 const BATCH_RECORDS: usize = 64;
@@ -41,7 +40,9 @@ struct Cloud {
 }
 
 struct SessionSync {
-    file: LocalFile,
+    file: TranscriptFile,
+    /// When `file` was last read for changes.
+    checked_at: Option<Instant>,
     metadata: SessionMetadata,
     metadata_version: u64,
     /// The highest metadata version the cloud acknowledged.
@@ -52,6 +53,14 @@ struct SessionSync {
     cloud: Option<Cloud>,
     /// axod would not delete the transcript; not asked again until the Session changes.
     eviction_refused: bool,
+}
+
+impl SessionSync {
+    /// Reads the file for lines appended or rewritten since the last check.
+    fn refresh(&mut self) -> io::Result<bool> {
+        self.checked_at = Some(Instant::now());
+        self.file.refresh()
+    }
 }
 
 pub(super) struct Uploader {
@@ -159,7 +168,8 @@ impl Uploader {
                     self.sessions.insert(
                         session.session_id,
                         SessionSync {
-                            file: LocalFile::new(session.pi_session_file.clone()),
+                            file: TranscriptFile::new(session.pi_session_file.clone()),
+                            checked_at: None,
                             metadata: known.unwrap_or_else(|| metadata.clone()),
                             metadata_version: state.metadata_version,
                             metadata_sent: 0,
@@ -179,8 +189,9 @@ impl Uploader {
                 let path = (!session.transcript_in_cloud)
                     .then(|| session.pi_session_file.clone())
                     .flatten();
-                if entry.file.path != path {
-                    entry.file = LocalFile::new(path);
+                if entry.file.path() != path.as_deref() {
+                    entry.file = TranscriptFile::new(path);
+                    entry.checked_at = None;
                 }
                 if entry.metadata != metadata || entry.metadata_version == 0 {
                     entry.metadata = metadata;
@@ -201,11 +212,8 @@ impl Uploader {
             } else {
                 POLL_OPEN
             };
-            if session
-                .file
-                .checked_at
-                .is_none_or(|at| at.elapsed() >= every)
-                && session.file.refresh()?
+            if session.checked_at.is_none_or(|at| at.elapsed() >= every)
+                && session.refresh()?
                 && session
                     .cloud
                     .is_some_and(|cloud| cloud.count > session.file.count())
@@ -226,7 +234,7 @@ impl Uploader {
             .iter()
             .map(|id| {
                 let session = &self.sessions[id];
-                let upload = session.file.transcript.as_ref().map(|transcript| {
+                let upload = session.file.transcript().map(|transcript| {
                     let mut heads = transcript.heads();
                     heads.truncate(MAX_HEADS);
                     json!({ "count": transcript.count(), "chain": transcript.chain(), "heads": heads })
@@ -263,7 +271,7 @@ impl Uploader {
             let Some(session) = self.sessions.get(&state.session_id) else {
                 continue;
             };
-            let local = session.file.transcript.as_ref();
+            let local = session.file.transcript();
             let (epoch, count) = (state.epoch.unwrap_or(1), state.count.unwrap_or(0));
             let prefix = local.is_none_or(|local| {
                 count <= local.count() && local.chain_at(count) == state.chain.as_deref()
@@ -287,8 +295,7 @@ impl Uploader {
             };
             let chain = self.sessions[&state.session_id]
                 .file
-                .transcript
-                .as_ref()
+                .transcript()
                 .and_then(|transcript| transcript.chain_at(cloud.count))
                 .map(str::to_owned);
             if let Some(chain) = chain {
@@ -310,8 +317,8 @@ impl Uploader {
     fn realign(&mut self, session_id: SessionId, cloud_count: u64) -> io::Result<Option<Cloud>> {
         let local = self.sessions[&session_id]
             .file
-            .transcript
-            .clone()
+            .transcript()
+            .cloned()
             .expect("only a local transcript can diverge");
         // Copies that agree at a position agree at every position before it, so the search
         // narrows [low, high] to the last position where they agree, 32 positions a round.
@@ -392,14 +399,19 @@ impl Uploader {
         let cloud = session.cloud.expect("only synced Sessions upload");
         let transcript = session
             .file
-            .transcript
-            .as_ref()
+            .transcript()
             .expect("only Sessions with records upload");
         let from = cloud.count + 1;
         let mut to = from;
-        let mut bytes = session.file.lines[(from - 1) as usize].1;
+        let line_length = |position| {
+            session
+                .file
+                .line_length(position)
+                .expect("every hashed record has a line")
+        };
+        let mut bytes = line_length(from);
         while to < transcript.count() && (to - from + 1) < BATCH_RECORDS as u64 {
-            let next = session.file.lines[to as usize].1;
+            let next = line_length(to + 1);
             if bytes + next > BATCH_BYTES {
                 break;
             }
@@ -425,7 +437,7 @@ impl Uploader {
                         "event=sync.append session_id={session_id} from={from} outcome=too_large"
                     );
                     if let Some(session) = self.sessions.get_mut(&session_id) {
-                        session.file.invalid = true;
+                        session.file.mark_invalid();
                     }
                     return Ok(true);
                 }
@@ -477,7 +489,7 @@ impl Uploader {
             return Ok(());
         };
         let session = self.sessions.get_mut(&session_id).expect("found above");
-        if session.file.refresh()? {
+        if session.refresh()? {
             return Ok(());
         }
         let count = session.file.count();
@@ -485,8 +497,7 @@ impl Uploader {
             session.file.whole_length()?,
             session
                 .file
-                .transcript
-                .as_ref()
+                .transcript()
                 .and_then(|transcript| transcript.chain_at(count))
                 .map(str::to_owned),
         ) else {
@@ -504,7 +515,8 @@ impl Uploader {
         );
         if let Some(session) = self.sessions.get_mut(&session_id) {
             if evicted {
-                session.file = LocalFile::new(None);
+                session.file = TranscriptFile::new(None);
+                session.checked_at = None;
             } else {
                 session.eviction_refused = true;
             }

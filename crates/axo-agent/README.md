@@ -10,7 +10,7 @@ Today it holds Pi processes for axod: launching Pi for a Session, the transcript
 | `lock` | `WriterLock`: the exclusive `flock` on `<transcript>.jsonl.lock`. axod takes it and the agent inherits it, so holding it proves no agent for the Session is alive |
 | `takeover`, `process_inspection` | Taking a transcript from an agent that holds it: ask it to shut down, and on explicit restart signal only the verified process group. Asking still goes through Pi's bridge |
 | `history`, `activity` | Recognising the transcript Axo created, and a Session's status from what its agent reports |
-| `pi` | Pi itself: `launch` (Pi on a PTY with the pi-axo extension; `STOP_GRACE`), `socket` (`BridgeSocketPath`), `protocol` (shared with `packages/pi-axo/src/protocol.ts`), `bridge` and `connection` (the transport, and the connection as a state machine), `worker` (following one running Pi; `CommandSender`) |
+| `pi` | Pi itself: `launch` (Pi on a PTY with the pi-axo extension; `STOP_GRACE`), `socket` (`BridgeSocketPath`), `protocol` (shared with `packages/pi-axo/src/protocol.ts`), `bridge` and `connection` (the transport, and the connection as a state machine), `worker` (following one running Pi; `CommandSender`), `pi3` (record identity and hashing for Pi files, the upload's wire format, shared with `packages/axo-api/src/pi3.ts`) and `TranscriptFile` (a Session's Pi file read and hashed for upload; `transcript_chain`) |
 
 Code outside `pi` is meant to serve any agent; a second agent gets a module beside `pi`. There is no `Agent` trait yet: it will be drawn from what Pi and the second agent share.
 

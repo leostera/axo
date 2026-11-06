@@ -13,11 +13,13 @@ rust_library(
         "@crates//:log",
         "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:sha2",
     ],
 )
 
 rust_test(
     name = "axo_agent_tests",
+    compile_data = ["//schemas/axo.leostera.dev/v1"],
     crate = ":axo_agent",
     edition = "2024",
 )

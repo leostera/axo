@@ -15,12 +15,8 @@
 //!
 //! This runs on its own thread and reaches the cloud through `RelayChannel`.
 
-mod local_file;
 mod metadata;
 mod uploader;
-
-#[cfg(test)]
-mod test_support;
 
 pub use metadata::{SessionMetadata, StoredSyncState, SyncSession, WorkspaceState};
 
@@ -30,7 +26,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use local_file::LocalFile;
 use uploader::Uploader;
 
 use crate::host::RelayHost;
@@ -95,22 +90,6 @@ impl SyncWorker {
     }
 }
 
-/// How many records a Pi transcript has and the chain at the last, if every line of it is a
-/// whole record (RFD0027: a restored transcript must be the one that was deleted).
-pub fn transcript_chain(path: &std::path::Path) -> io::Result<Option<(u64, String)>> {
-    let mut file = LocalFile::new(Some(path.to_owned()));
-    file.refresh()?;
-    if file.whole_length()?.is_none() {
-        return Ok(None);
-    }
-    let count = file.count();
-    Ok(file
-        .transcript
-        .as_ref()
-        .and_then(|transcript| transcript.chain_at(count))
-        .map(|chain| (count, chain.to_owned())))
-}
-
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -124,42 +103,4 @@ fn is_uuid(value: &str) -> bool {
             8 | 13 | 18 | 23 => c == '-',
             _ => c.is_ascii_hexdigit(),
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pi3::Transcript;
-    use crate::sync::test_support::{HEADER, temp_file};
-
-    #[test]
-    fn a_transcript_has_a_chain_only_when_every_line_is_a_whole_record() {
-        let whole = temp_file(&format!(
-            "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\":\"b\",\"parentId\":\"a\"}}\n"
-        ));
-        let mut expected = Transcript::start(HEADER);
-        expected.push(r#"{"id":"a","parentId":null}"#);
-        expected.push(r#"{"id":"b","parentId":"a"}"#);
-        assert_eq!(
-            transcript_chain(&whole).unwrap(),
-            Some((2, expected.chain().to_owned()))
-        );
-        let partial = temp_file(&format!(
-            "{HEADER}\n{{\"id\":\"a\",\"parentId\":null}}\n{{\"id\""
-        ));
-        assert_eq!(
-            transcript_chain(&partial).unwrap(),
-            None,
-            "a partial last line"
-        );
-        let refused = temp_file(&format!("{HEADER}\nnot a record\n"));
-        assert_eq!(
-            transcript_chain(&refused).unwrap(),
-            None,
-            "a line that is not a record"
-        );
-        for path in [whole, partial, refused] {
-            std::fs::remove_file(path).unwrap();
-        }
-    }
 }
