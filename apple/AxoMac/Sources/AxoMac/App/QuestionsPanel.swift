@@ -1,31 +1,59 @@
 import AppKit
 import AxoProtocol
 import SwiftUI
+import os
 
 /// What agents and Axo's computer-use gate ask the person on this Mac (RFD0029), in a panel that
 /// drops down from the menu bar Axo, centered under it: every question, one after the other, each
 /// answered in place. It closes like a menu, when the person clicks elsewhere or presses Escape,
 /// and by itself once nothing is left to answer.
+///
+/// Not on losing the keyboard: the menu that opens it gives the keyboard back to the app in front
+/// as it closes, which would close the panel as soon as it showed.
 @MainActor
 final class QuestionsPanel {
   static let shared = QuestionsPanel()
+  private static let log = Logger(subsystem: "dev.leostera.axo", category: "questions")
 
   /// The menu bar item's frame on screen, to hang the panel under.
   var anchor: () -> NSRect? = { nil }
 
   private var panel: Panel?
-  private var resignObserver: NSObjectProtocol?
+  /// Clicks outside the panel, in other apps and in Axo's own windows, while it shows.
+  private var clickMonitors: [Any] = []
 
   /// Shows the panel under the menu bar Axo, or brings it forward.
   func show(_ model: ElicitationsModel) {
     let panel = self.panel ?? makePanel(model)
     self.panel = panel
     place(panel)
-    panel.makeKeyAndOrderFront(nil)
+    panel.orderFrontRegardless()
+    panel.makeKey()
+    watchClicksOutside(panel)
+    Self.log.info("event=questions_panel.shown questions=\(model.questions.count) frame=\(NSStringFromRect(panel.frame), privacy: .public)")
   }
 
   func close() {
-    panel?.orderOut(nil)
+    guard let panel, panel.isVisible else { return }
+    panel.orderOut(nil)
+    for monitor in clickMonitors { NSEvent.removeMonitor(monitor) }
+    clickMonitors = []
+  }
+
+  private func watchClicksOutside(_ panel: Panel) {
+    guard clickMonitors.isEmpty else { return }
+    let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+    if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+      MainActor.assumeIsolated { self?.close() }
+    }) {
+      clickMonitors.append(global)
+    }
+    if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self, weak panel] event in
+      if event.window !== panel { self?.close() }
+      return event
+    }) {
+      clickMonitors.append(local)
+    }
   }
 
   private func makePanel(_ model: ElicitationsModel) -> Panel {
@@ -44,12 +72,6 @@ final class QuestionsPanel {
       rootView: QuestionsList(model: model, close: { [weak self] in self?.close() }))
     hosting.sizingOptions = [.preferredContentSize]
     panel.contentView = hosting
-    // Like a menu: clicking anywhere else closes it.
-    resignObserver = NotificationCenter.default.addObserver(
-      forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated { self?.close() }
-    }
     // Grows and shrinks as questions come and go, keeping its top under the menu bar.
     hosting.postsFrameChangedNotifications = true
     NotificationCenter.default.addObserver(

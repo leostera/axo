@@ -123,6 +123,9 @@ final class AxoMascot {
     }
   }
 
+  /// Axo's color while a question waits: a deep pink.
+  static let askingColor = NSColor(srgbRed: 0.85, green: 0.09, blue: 0.36, alpha: 1)
+
   /// A menu bar frame in `color` instead of the menu bar's own tint: Axo asking for attention.
   static func tinted(_ image: NSImage, _ color: NSColor) -> NSImage {
     let tinted = NSImage(size: image.size, flipped: false) { rect in

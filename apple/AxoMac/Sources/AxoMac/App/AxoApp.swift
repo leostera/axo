@@ -448,7 +448,7 @@ private struct AxoMenuBarLabel: View {
         Image(nsImage: Self.blank)
       } else if let image = mascot.menuBarImage {
         // A question waits: Axo takes a color until it is answered.
-        Image(nsImage: elicitations.questions.isEmpty ? image : AxoMascot.tinted(image, .systemOrange))
+        Image(nsImage: elicitations.questions.isEmpty ? image : AxoMascot.tinted(image, AxoMascot.askingColor))
       } else {
         Image(systemName: "command")
       }
@@ -496,7 +496,9 @@ private struct AxoMenu: View {
       let count = elicitations.questions.count
       Button {
         // After the menu closes, so the panel takes the keyboard.
-        Task { @MainActor in QuestionsPanel.shared.show(elicitations) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+          MainActor.assumeIsolated { QuestionsPanel.shared.show(elicitations) }
+        }
       } label: {
         Label(count == 1 ? "1 Question…" : "\(count) Questions…", systemImage: "questionmark.bubble.fill")
       }
