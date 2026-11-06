@@ -17,8 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{SessionManager, SessionState};
-use axo_pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
-use axo_pi::worker::CommandSender;
+use axo_agent::protocol::{CommandResult, QueuedDelivery, RejectReason};
+use axo_agent::worker::CommandSender;
 use axo_protocol::asset::FetchedAttachment;
 use axo_protocol::rpc::{PromptAccepted, PromptDelivery, PromptSession};
 use axo_protocol::{PaneRole, SessionId, ShellId};

@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 package(default_visibility = ["//visibility:public"])
 
 rust_library(
-    name = "axo_pi",
+    name = "axo_agent",
     srcs = glob(["src/*.rs"]),
     edition = "2024",
     deps = [
@@ -17,7 +17,7 @@ rust_library(
 )
 
 rust_test(
-    name = "axo_pi_tests",
-    crate = ":axo_pi",
+    name = "axo_agent_tests",
+    crate = ":axo_agent",
     edition = "2024",
 )

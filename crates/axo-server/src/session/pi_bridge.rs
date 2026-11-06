@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::lifecycle::{valid_session_emoji, valid_session_title};
 use super::{SessionManager, SessionState};
 use axo_panes::RuntimeId;
-use axo_pi::{BridgeSocketPath, SocketCleanup, worker};
+use axo_agent::{BridgeSocketPath, SocketCleanup, worker};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId};
 use axo_store::Connection;
 use axo_store::{StoredPiSession, open_pi_session, pi_bridge_sockets};
@@ -479,7 +479,7 @@ mod tests {
 
     use crate::session::{catalog::*, settings::*, spawn::*, terminal::*, test_support::*};
 
-    use axo_pi::WriterLock;
+    use axo_agent::WriterLock;
 
     use axo_protocol::{PaneRole, SessionStatus, new_uuid_v4};
     use axo_pty::WindowSize;

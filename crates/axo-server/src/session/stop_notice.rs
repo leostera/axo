@@ -162,7 +162,7 @@ mod tests {
     fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
         use super::super::pi_bridge::PiRuntimeBinding;
         use super::super::test_support::PiRecoveryFixture;
-        use axo_pi::takeover::TakeoverPolicy;
+        use axo_agent::takeover::TakeoverPolicy;
         use serde_json::json;
 
         let fixture = PiRecoveryFixture::new();

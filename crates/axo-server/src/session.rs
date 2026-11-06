@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_panes::{PaneProcess, Panes, RuntimeId};
-use axo_pi::takeover::TakeoverGrace;
-use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
+use axo_agent::takeover::TakeoverGrace;
+use axo_agent::{AgentCommand, BridgeSocketPath, WriterLock};
 use axo_protocol::{PaneRole, SessionId, ShellId, Viewport, new_uuid_v4};
 use axo_pty::TerminalOutput;
 use axo_pty::process;
@@ -76,7 +76,7 @@ struct RunningShell {
     pi_bridge_socket: Option<BridgeSocketPath>,
     pi_bridge_token: Option<String>,
     /// Commands for this Pi, sent on its bridge worker's connection; set when the worker starts.
-    pi_commands: Option<axo_pi::worker::CommandSender>,
+    pi_commands: Option<axo_agent::worker::CommandSender>,
 }
 
 impl RunningShell {
@@ -84,7 +84,7 @@ impl RunningShell {
     fn stop_grace(&self) -> Duration {
         match self.role {
             PaneRole::Terminal => process::SHELL_STOP_GRACE,
-            PaneRole::Pi => axo_pi::STOP_GRACE,
+            PaneRole::Pi => axo_agent::STOP_GRACE,
         }
     }
 }
@@ -126,7 +126,7 @@ struct SessionState {
     /// Every open pane, running or unavailable; see `panes`.
     panes: Panes<RunningShell>,
     shutting_down: bool,
-    pi_activity: HashMap<SessionId, axo_pi::Activity>,
+    pi_activity: HashMap<SessionId, axo_agent::Activity>,
     /// Pi panes left unstarted because their Session wasn't active when Axod started; each is
     /// also an unavailable pane in `panes`, and starts when the Session is wanted (see
     /// `stop_notice`'s `wake_dormant_pi`).

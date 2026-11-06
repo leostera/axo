@@ -2,9 +2,9 @@
 
 use super::*;
 use axo_panes::UnavailablePane;
-use axo_pi::bridge;
-use axo_pi::takeover::TakeoverPolicy;
-use axo_pi::{AgentCommand, BridgeSocketPath};
+use axo_agent::bridge;
+use axo_agent::takeover::TakeoverPolicy;
+use axo_agent::{AgentCommand, BridgeSocketPath};
 use axo_protocol::{Event, Layout, SessionId, ShellId, Viewport, new_uuid_v4};
 use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber};

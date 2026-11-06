@@ -8,7 +8,7 @@ use super::SessionManager;
 use super::events::SharedEvent;
 use super::prompts::PromptError;
 use axo_ipc::TypedMethods;
-use axo_pi::takeover::TakeoverPolicy;
+use axo_agent::takeover::TakeoverPolicy;
 use axo_protocol::rpc::{self, method};
 use axo_protocol::{
     Event, Layout, LayoutNode, RelayStatus, RemoteSessionSnapshot, SessionId, SessionRecord,

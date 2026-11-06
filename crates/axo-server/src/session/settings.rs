@@ -4,7 +4,7 @@ use std::io;
 use std::path::PathBuf;
 
 use super::SessionManager;
-use axo_pi::AgentCommand;
+use axo_agent::AgentCommand;
 use axo_protocol::ConfigKey;
 use axo_protocol::rpc;
 use axo_pty::CommandLine;

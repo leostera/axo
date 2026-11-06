@@ -1,6 +1,8 @@
-# axo-pi
+# axo-agent
 
-Pi processes for axod: launching Pi for a Session, the transcript writer lock that proves whether one is alive, its bridge socket, the bridge protocol and transport, and taking a transcript over from a running Pi. It knows nothing of the catalog; callers decide which Pi to launch and what its events mean.
+Everything axod knows about running a coding agent for a Session. Pi is the only agent today. The goal is one crate that launches, supervises and steers any agent (Pi, Codex, Claude Code, OpenCode) and turns its session into ATXF records, so nothing above it knows which agent runs; see AXP's `agent` extension (`axp/extensions/agent.md`).
+
+Today it holds Pi processes for axod: launching Pi for a Session, the transcript writer lock that proves whether one is alive, its bridge socket, the bridge protocol and transport, and taking a transcript over from a running Pi. It knows nothing of the catalog; callers decide which Pi to launch and what its events mean.
 
 | Module | Owns |
 | --- | --- |
@@ -21,6 +23,6 @@ Pi processes for axod: launching Pi for a Session, the transcript writer lock th
 ## Build and test
 
 ```sh
-bazel build //crates/axo-pi
-bazel test //crates/axo-pi:axo_pi_tests
+bazel build //crates/axo-agent
+bazel test //crates/axo-agent:axo_agent_tests
 ```

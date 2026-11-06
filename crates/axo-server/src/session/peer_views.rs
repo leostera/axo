@@ -319,8 +319,8 @@ impl SessionManager {
                     super::terminal::window_size(viewport.full_grid())
                 });
                 let session = session_id.to_string();
-                let pty = axo_pi::spawn_remote_view(
-                    &axo_pi::RemoteViewLaunch {
+                let pty = axo_agent::spawn_remote_view(
+                    &axo_agent::RemoteViewLaunch {
                         agent_command: &state.agent_command,
                         initial_pwd: &directory,
                         home: &home,
@@ -517,7 +517,7 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::test_support::LifecycleFixture;
-    use axo_pi::AgentCommand;
+    use axo_agent::AgentCommand;
     use axo_relay::peers::{ClientRecord, Mirror};
     use serde_json::json;
     use std::fs;

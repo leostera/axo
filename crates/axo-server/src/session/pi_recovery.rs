@@ -14,8 +14,8 @@ use super::spawn::{pi_environment, spawn_shell};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
-use axo_pi::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
-use axo_pi::{AgentCommand, BridgeSocketPath, PiLaunch, PiProcess, WriterLock};
+use axo_agent::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
+use axo_agent::{AgentCommand, BridgeSocketPath, PiLaunch, PiProcess, WriterLock};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, new_uuid_v4};
 use axo_pty::WindowSize;
 use axo_pty::process::PtyProcess;
@@ -132,7 +132,7 @@ fn spawn_pi(
             },
         writer_lock,
         socket_cleanup,
-    } = axo_pi::spawn(
+    } = axo_agent::spawn(
         &request.launch(&home, &environment),
         lock,
         &bridge_token,
@@ -379,7 +379,7 @@ impl SessionManager {
         };
 
         let check_current = || recovery.ensure_current();
-        let history = axo_pi::recoverable_history(
+        let history = axo_agent::recoverable_history(
             &request.session_file,
             self.pi_directories.home_of(&request.session_file),
             has_messages,
@@ -391,7 +391,7 @@ impl SessionManager {
             &|| recovery.ensure_current(),
             &|process_id, signal| recovery.signal_current(process_id, signal),
         )?;
-        if axo_pi::recoverable_history(
+        if axo_agent::recoverable_history(
             &request.session_file,
             self.pi_directories.home_of(&request.session_file),
             has_messages,
@@ -766,9 +766,9 @@ mod tests {
     use crate::session::lifecycle::ACTIVE_ON_START;
     use crate::session::{pi_bridge::*, test_support::*};
     use axo_panes::RuntimeId;
-    use axo_pi::bridge;
-    use axo_pi::takeover::{TakeoverGrace, TakeoverPolicy};
-    use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
+    use axo_agent::bridge;
+    use axo_agent::takeover::{TakeoverGrace, TakeoverPolicy};
+    use axo_agent::{AgentCommand, BridgeSocketPath, WriterLock};
     use axo_protocol::rpc;
     use axo_protocol::{
         Availability, Layout, LayoutDirection, LayoutNode, PaneRole, SessionStatus, new_uuid_v4,

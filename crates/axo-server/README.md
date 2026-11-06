@@ -2,7 +2,7 @@
 
 The daemon itself: `SessionManager` and everything it orchestrates, the local JSON-RPC methods on `axod.sock`, the relay adapter, and `axod mcp`. The `axod` binary only parses arguments and calls `serve_ipc`.
 
-It has no SQL outside its tests (that is `axo-store`), launches processes through `axo-pty` and `axo-pi`, and tracks panes with `axo-panes`.
+It has no SQL outside its tests (that is `axo-store`), launches processes through `axo-pty` and `axo-agent`, and tracks panes with `axo-panes`.
 
 ## Layout
 

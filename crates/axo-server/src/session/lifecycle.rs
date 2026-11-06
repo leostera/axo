@@ -653,9 +653,9 @@ mod tests {
     use super::*;
     use crate::session::{settings::*, test_support::*};
     use axo_panes::Pane;
-    use axo_pi::bridge;
+    use axo_agent::bridge;
 
-    use axo_pi::WriterLock;
+    use axo_agent::WriterLock;
 
     use axo_protocol::{Layout, LayoutDirection, LayoutNode, new_uuid_v4};
     use axo_pty::WindowSize;

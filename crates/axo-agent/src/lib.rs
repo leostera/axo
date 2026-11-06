@@ -1,8 +1,8 @@
-//! Pi processes for Axod: launching Pi for a Session, the transcript writer lock that proves
-//! whether one is alive, its bridge socket, taking a transcript over from a running Pi, and the
-//! bridge transport.
+//! Coding agents for Axod. Pi is the only one today: launching Pi for a Session, the transcript
+//! writer lock that proves whether one is alive, its bridge socket, taking a transcript over from
+//! a running Pi, and the bridge transport.
 //!
-//! Nothing here knows about the session catalog or its database; callers decide which Pi to
+//! Nothing here knows about the session catalog or its database; callers decide which agent to
 //! launch and when, and what its events mean for the catalog.
 
 pub mod activity;
@@ -30,7 +30,7 @@ pub use socket::{BridgeSocketPath, MAX_SOCKET_PATH_BYTES, SocketCleanup};
 #[cfg(test)]
 pub(crate) fn test_directory() -> std::path::PathBuf {
     let directory = std::path::PathBuf::from("/tmp").join(format!(
-        "axo-pi-test-{}",
+        "axo-agent-test-{}",
         axo_protocol::new_uuid_v4().unwrap()
     ));
     std::fs::create_dir_all(&directory).unwrap();
