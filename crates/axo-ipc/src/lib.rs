@@ -5,10 +5,12 @@
 pub mod cancel;
 pub mod event_queue;
 pub mod extension;
+pub mod local;
 pub mod peer;
 mod server;
 
 pub use event_queue::{EventQueue, PushOutcome};
 pub use extension::{Conflict, Extension, Methods};
 pub use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
-pub use server::{Only, TypedMethods, serve};
+pub use local::{Local, LocalError};
+pub use server::{Only, TypedMethods, Upgraded, Upgrades, serve};

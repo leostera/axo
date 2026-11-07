@@ -283,7 +283,7 @@ pub fn serve_ipc(
         })?;
 
     log::info!("event=daemon.ready pid={}", std::process::id());
-    let served = axo_ipc::serve(listener, handler, stop_server);
+    let served = axo_ipc::serve(listener, handler, axo_ipc::Upgrades::default(), stop_server);
     stop_watcher.store(true, Ordering::Relaxed);
     let _ = signal_watcher.join();
     if let Some(relay) = remote_relay.as_mut() {

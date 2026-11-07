@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::net::UnixListener as StdUnixListener;
+use std::os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -209,10 +209,70 @@ fn handler_failed() -> RpcError {
     }
 }
 
+/// A connection taken over by its first request: an [`Upgrades`] method, such as the MCP server
+/// that `axod mcp` opens. From then on the connection carries what the upgrade speaks, not
+/// axod's requests.
+pub struct Upgraded {
+    id: Value,
+    /// The first request's parameters.
+    pub params: Value,
+    /// What the client sent after its first request, read already; it comes before the stream.
+    pub pending: Vec<u8>,
+    /// The connection, blocking.
+    pub stream: StdUnixStream,
+    /// axod's methods, called as this connection's peer.
+    pub local: crate::local::Local,
+}
+
+impl Upgraded {
+    /// Answers the first request; call it once, before anything else is written.
+    pub fn answer(&mut self, result: Result<Value, RpcError>) -> io::Result<()> {
+        use std::io::Write;
+        let response = match result {
+            Ok(result) => serde_json::json!({ "jsonrpc": "2.0", "id": self.id, "result": result }),
+            Err(error) => serde_json::json!({ "jsonrpc": "2.0", "id": self.id, "error": error }),
+        };
+        writeln!(self.stream, "{response}")?;
+        self.stream.flush()
+    }
+
+    /// What the client sends from here on.
+    pub fn reader(&self) -> io::Result<impl std::io::BufRead + Send + 'static> {
+        let pending = std::io::Cursor::new(self.pending.clone());
+        let rest = std::io::Read::chain(pending, self.stream.try_clone()?);
+        Ok(std::io::BufReader::new(rest))
+    }
+}
+
+/// Methods that take over the connection they arrive on, when they are its first request. Each
+/// runs on the blocking pool for as long as it keeps the connection.
+#[derive(Clone, Default)]
+pub struct Upgrades(HashMap<String, Arc<dyn Fn(Upgraded) + Send + Sync>>);
+
+impl Upgrades {
+    pub fn add(&mut self, method: &str, upgrade: impl Fn(Upgraded) + Send + Sync + 'static) {
+        self.0.insert(method.to_owned(), Arc::new(upgrade));
+    }
+
+    fn get(&self, request: &str) -> Option<(Arc<dyn Fn(Upgraded) + Send + Sync>, Value, Value)> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let mut request: Value = serde_json::from_str(request).ok()?;
+        let upgrade = self.0.get(request.get("method")?.as_str()?)?;
+        Some((
+            Arc::clone(upgrade),
+            request["id"].take(),
+            request["params"].take(),
+        ))
+    }
+}
+
 /// Serves `handler` on `listener` until `stop` is set. Blocks the calling thread.
 pub fn serve(
     listener: StdUnixListener,
     handler: IoHandler,
+    upgrades: Upgrades,
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -220,7 +280,8 @@ pub fn serve(
         .thread_name("axo-rpc")
         .enable_all()
         .build()?;
-    let result = runtime.block_on(accept_until_stopped(listener, Arc::new(handler), stop));
+    let served = accept_until_stopped(listener, Arc::new(handler), Arc::new(upgrades), stop);
+    let result = runtime.block_on(served);
     runtime.shutdown_timeout(SHUTDOWN_GRACE);
     result
 }
@@ -228,6 +289,7 @@ pub fn serve(
 async fn accept_until_stopped(
     listener: StdUnixListener,
     handler: Arc<IoHandler>,
+    upgrades: Arc<Upgrades>,
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
@@ -237,7 +299,8 @@ async fn accept_until_stopped(
         match tokio::time::timeout(STOP_POLL_INTERVAL, listener.accept()).await {
             Err(_) => {}
             Ok(Ok((stream, _))) => {
-                tokio::spawn(serve_connection(stream, Arc::clone(&handler)));
+                let (handler, upgrades) = (Arc::clone(&handler), Arc::clone(&upgrades));
+                tokio::spawn(serve_connection(stream, handler, upgrades));
             }
             Ok(Err(error)) => {
                 log::warn!("event=ipc.accept_failed error_kind={:?}", error.kind());
@@ -248,11 +311,68 @@ async fn accept_until_stopped(
     Ok(())
 }
 
+/// One request line into `line`; `false` when the connection ends or misbehaves.
+async fn read_request<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+) -> bool {
+    line.clear();
+    match reader
+        .take(MAX_REQUEST_BYTES + 1)
+        .read_until(b'\n', line)
+        .await
+    {
+        Ok(0) => false,
+        Ok(_) if line.len() as u64 > MAX_REQUEST_BYTES => {
+            log::warn!("event=ipc.request_rejected reason=too_large");
+            false
+        }
+        Ok(_) => true,
+        Err(error) => {
+            log::debug!("event=ipc.read_failed error_kind={:?}", error.kind());
+            false
+        }
+    }
+}
+
 /// Reads newline-delimited requests and answers each as soon as it completes. Responses may be
-/// written out of order; JSON-RPC ids correlate them.
-async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
+/// written out of order; JSON-RPC ids correlate them. A first request that names an upgrade
+/// hands the connection to it instead.
+async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>, upgrades: Arc<Upgrades>) {
     let peer = crate::peer::Peer::of(&stream);
-    let (reader, mut writer) = stream.into_split();
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut line = Vec::new();
+    if !read_request(&mut reader, &mut line).await {
+        return;
+    }
+    if let Some((upgrade, id, params)) = std::str::from_utf8(&line)
+        .ok()
+        .and_then(|request| upgrades.get(request.trim()))
+    {
+        let pending = reader.buffer().to_vec();
+        let Ok(stream) = reader.into_inner().reunite(writer) else {
+            return;
+        };
+        let Ok(stream) = stream.into_std().and_then(|stream| {
+            stream.set_nonblocking(false)?;
+            Ok(stream)
+        }) else {
+            return;
+        };
+        let runtime = tokio::runtime::Handle::current();
+        let local = crate::local::Local::new(handler, runtime.clone(), peer);
+        let upgraded = Upgraded {
+            id,
+            params,
+            pending,
+            stream,
+            local,
+        };
+        let _ = runtime.spawn_blocking(move || upgrade(upgraded)).await;
+        return;
+    }
+    let mut writer = writer;
     let (responses, mut outgoing) = mpsc::channel::<String>(MAX_IN_FLIGHT_PER_CONNECTION);
     let writer_task = tokio::spawn(async move {
         while let Some(mut response) = outgoing.recv().await {
@@ -267,56 +387,39 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
     // Each unanswered request's cancellation, so the connection's end can cancel them.
     let unanswered: Arc<std::sync::Mutex<HashMap<u64, Cancellation>>> = Arc::default();
     let mut next_request = 0u64;
-    let mut reader = BufReader::new(reader);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = (&mut reader)
-            .take(MAX_REQUEST_BYTES + 1)
-            .read_until(b'\n', &mut line)
-            .await;
-        match read {
-            Ok(0) => break,
-            Ok(_) if line.len() as u64 > MAX_REQUEST_BYTES => {
-                log::warn!("event=ipc.request_rejected reason=too_large");
-                break;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                log::debug!("event=ipc.read_failed error_kind={:?}", error.kind());
-                break;
-            }
-        }
+    // The first request is in `line` already.
+    let mut read = true;
+    while read {
         let Ok(request) = std::str::from_utf8(&line) else {
             log::warn!("event=ipc.request_rejected reason=not_utf8");
             break;
         };
         let request = request.trim();
-        if request.is_empty() {
-            continue;
+        if !request.is_empty() {
+            let Ok(permit) = Arc::clone(&in_flight).acquire_owned().await else {
+                break;
+            };
+            let request = request.to_owned();
+            let handler = Arc::clone(&handler);
+            let responses = responses.clone();
+            let cancellation = Cancellation::default();
+            next_request += 1;
+            let key = next_request;
+            lock(&unanswered).insert(key, cancellation.clone());
+            let unanswered = Arc::clone(&unanswered);
+            tokio::spawn(async move {
+                let _permit = permit;
+                let started = std::time::Instant::now();
+                let handled = crate::peer::scope(peer, handler.handle_request(&request));
+                let response = crate::cancel::scope(cancellation, handled).await;
+                lock(&unanswered).remove(&key);
+                log_if_slow(&request, started.elapsed());
+                if let Some(response) = response {
+                    let _ = responses.send(response).await;
+                }
+            });
         }
-        let Ok(permit) = Arc::clone(&in_flight).acquire_owned().await else {
-            break;
-        };
-        let request = request.to_owned();
-        let handler = Arc::clone(&handler);
-        let responses = responses.clone();
-        let cancellation = Cancellation::default();
-        next_request += 1;
-        let key = next_request;
-        lock(&unanswered).insert(key, cancellation.clone());
-        let unanswered = Arc::clone(&unanswered);
-        tokio::spawn(async move {
-            let _permit = permit;
-            let started = std::time::Instant::now();
-            let handled = crate::peer::scope(peer, handler.handle_request(&request));
-            let response = crate::cancel::scope(cancellation, handled).await;
-            lock(&unanswered).remove(&key);
-            log_if_slow(&request, started.elapsed());
-            if let Some(response) = response {
-                let _ = responses.send(response).await;
-            }
-        });
+        read = read_request(&mut reader, &mut line).await;
     }
     // The caller has gone (AXP §5: its unanswered requests have an unknown outcome): whatever
     // still waits for it gives up.
@@ -409,8 +512,73 @@ mod tests {
         });
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stop);
-        std::thread::spawn(move || serve(listener, handler, stopping));
+        std::thread::spawn(move || serve(listener, handler, upgraded(), stopping));
         (socket, cancelled, stop)
+    }
+
+    /// `shout.open` answers with its parameters, then shouts each line back, and says whether
+    /// axod's own `quick` answers it in process.
+    fn upgraded() -> Upgrades {
+        let mut upgrades = Upgrades::default();
+        upgrades.add("shout.open", |mut upgraded: Upgraded| {
+            let params = upgraded.params.clone();
+            upgraded.answer(Ok(params)).unwrap();
+            let quick = upgraded.local.call(
+                "quick",
+                Value::Null,
+                Duration::from_secs(1),
+                &Cancellation::default(),
+            );
+            writeln!(upgraded.stream, "quick={quick:?}").unwrap();
+            for line in upgraded.reader().unwrap().lines() {
+                writeln!(upgraded.stream, "{}", line.unwrap().to_uppercase()).unwrap();
+            }
+        });
+        upgrades
+    }
+
+    #[test]
+    fn a_first_request_that_names_an_upgrade_takes_the_connection_over() {
+        let (socket, _, stop) = serving("upgrade");
+        let mut stream = StdUnixStream::connect(&socket).unwrap();
+        // The client may write on before the answer; nothing it sent is lost.
+        write!(
+            stream,
+            "{{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"shout.open\",\"params\":{{\"who\":\"me\"}}}}\nhello\n"
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        let opened: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            opened,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 5, "result": { "who": "me" } })
+        );
+        assert_eq!(lines.next().unwrap().unwrap(), "quick=Ok(Bool(false))");
+        assert_eq!(lines.next().unwrap().unwrap(), "HELLO");
+        writeln!(stream, "{{\"method\":\"quick\"}}").unwrap();
+        assert_eq!(
+            lines.next().unwrap().unwrap(),
+            "{\"METHOD\":\"QUICK\"}",
+            "no longer axod's requests"
+        );
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn an_upgrade_named_later_is_an_ordinary_request() {
+        let (socket, _, stop) = serving("not-first");
+        let mut stream = StdUnixStream::connect(&socket).unwrap();
+        send(&mut stream, "quick");
+        send(&mut stream, "shout.open");
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        // Answers come as they finish, in any order.
+        let mut answers: Vec<Value> = (0..2)
+            .map(|_| serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap())
+            .collect();
+        answers.sort_by_key(|answer| answer.get("error").is_some());
+        assert_eq!(answers[0]["result"], false);
+        assert_eq!(answers[1]["error"]["code"], -32601, "{}", answers[1]);
+        stop.store(true, Ordering::Relaxed);
     }
 
     fn send(stream: &mut StdUnixStream, method: &str) {
