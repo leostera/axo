@@ -36,8 +36,18 @@ final class AxoPhoneFollowTests: XCTestCase {
   /// The left edge of whichever flood replies are on screen: the transcript's column.
   @MainActor
   private func columnEdges(_ app: XCUIApplication) -> Set<Int> {
-    let replies = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Flood reply '")).allElementsBoundByIndex
-    return Set(replies.filter { $0.exists && $0.frame.maxY > 0 }.map { Int($0.frame.minX.rounded()) })
+    // One snapshot of the whole tree: listing the replies and then asking each for its frame
+    // fails when one scrolls out of the lazy stack in between.
+    guard let root = try? app.snapshot() else { return [] }
+    var edges = Set<Int>()
+    func visit(_ element: any XCUIElementSnapshot) {
+      if element.elementType == .staticText, element.label.hasPrefix("Flood reply "), element.frame.maxY > 0 {
+        edges.insert(Int(element.frame.minX.rounded()))
+      }
+      element.children.forEach(visit)
+    }
+    visit(root)
+    return edges
   }
 
   private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
