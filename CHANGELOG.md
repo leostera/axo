@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.25 (Mac app build 296, axod 48)
+
+### Changed
+
+- Inside axod: it is now put together from extensions (apps, assets, questions, computer use), each in a crate of its own. Nothing should look different; tell me if something does.
+
 ## 0.24 (Mac app build 295, axod 47)
 
 ### Changed
