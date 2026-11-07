@@ -682,7 +682,7 @@
         },
         "method": {
           "type": "string",
-          "const": "axo.apps.execute"
+          "const": "axo.apps.run"
         },
         "params": {
           "type": "object",
@@ -714,7 +714,7 @@
       "additionalProperties": false
     },
     "ExecuteResult": {
-      "description": "The result of axo.apps.execute.",
+      "description": "The result of axo.apps.run.",
       "type": "object",
       "properties": {
         "result": {},

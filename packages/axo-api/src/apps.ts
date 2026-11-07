@@ -15,7 +15,7 @@ import { attachmentSchema } from "./assets.ts";
 export const APPS_METHODS = {
   list: "axo.apps.list",
   search: "axo.apps.search",
-  execute: "axo.apps.execute",
+  execute: "axo.apps.run",
   add: "axo.apps.add",
   remove: "axo.apps.remove",
   log: "axo.apps.log",

@@ -78,7 +78,7 @@ fn the_accounts_apps_are_not_connected_without_an_account() {
             json!({ "sessionId": session, "code": "return 1" }),
         ),
         axod.err(
-            "axo.apps.execute",
+            "axo.apps.run",
             json!({ "sessionId": session, "code": "return 1" }),
         ),
         axod.err("axo.apps.log", json!({ "sessionId": session })),

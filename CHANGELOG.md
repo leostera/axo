@@ -6,7 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Changed
 
-- **Connections are now Apps.** An agent's tools are `apps_list`, `apps_search`, `apps_run`, `apps_add`, `apps_remove` and `apps_log`, and scripts, Settings and the phone all say Apps. Sign-ins you set up with a provider keep working.
+- **Connections are now Apps.** An agent's tools are `apps_list`, `apps_search`, `apps_run` (from 0.24; `apps_execute` in 0.23), `apps_add`, `apps_remove` and `apps_log`, and scripts, Settings and the phone all say Apps. Sign-ins you set up with a provider keep working.
 
 ## 0.22 (Mac app build 293, axod 45)
 

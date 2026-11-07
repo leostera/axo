@@ -64,7 +64,7 @@ test("a password typed on the phone reaches a Safari form on the Mac sealed, and
 
     execFileSync("open", ["-g", "-a", "Safari", `${origin}/`]);
     const run = async (code: string) =>
-      ((await localCall(socketPath, "axo.apps.execute", { sessionId, code })) as { result: any }).result;
+      ((await localCall(socketPath, "axo.apps.run", { sessionId, code })) as { result: any }).result;
     const window = await waitFor("the page in Safari", 15_000, async () => {
       const listed = await run(`async () => codemode.computer.run({ host: "self", tool: "list_windows", args: {} })`);
       return listed.structuredContent?.windows?.find((w: { app_name: string; title: string }) => w.app_name === "Safari" && w.title === "Axo test sign-in");

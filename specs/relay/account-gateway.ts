@@ -24,7 +24,7 @@ type Waiting = { request: string; script: Script; from: string; pulled: boolean 
 const faults = budget("faults", 1);
 
 // Session -> AxoGateway (through axod and the Session's AxoHostDO, as in apps.ts)
-const AppsCall = defineCall("AppsCall", { request: String, script: oneOf("gmail", "bash:studio", "bash:laptop") }, { name: "axo.apps.execute", over: "rpc" });
+const AppsCall = defineCall("AppsCall", { request: String, script: oneOf("gmail", "bash:studio", "bash:laptop") }, { name: "axo.apps.run", over: "rpc" });
 const Result = defineMessage("Result", { request: String, output: String }, { name: "execute result", over: "rpc", tone: "reply" });
 const CallFailed = defineMessage("CallFailed", { request: String, error: String }, { name: "execute failed", over: "rpc", tone: "refused" });
 // AxoGateway <-> AxoAccountManager (Durable Object RPC)

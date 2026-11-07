@@ -290,7 +290,7 @@ const discard = await fixture("transport-discard.relay.json");
 validateWith("https://schemas.axo.leostera.dev/v1/apps.schema.json#/$defs/TransportDiscard", discard);
 assert.equal(discardSchema.safeParse(discard).success, true, "Zod must accept the discard fixture");
 const appsSchema = (name) => `https://schemas.axo.leostera.dev/v1/apps.schema.json#/$defs/${name}`;
-for (const [name, method, file] of [["List", APPS_METHODS.list, "apps-list"], ["Execute", APPS_METHODS.execute, "apps-execute"]]) {
+for (const [name, method, file] of [["List", APPS_METHODS.list, "apps-list"], ["Execute", APPS_METHODS.execute, "apps-run"]]) {
   const call = await fixture(`${file}.call.json`);
   validateWith(appsSchema(`${name}Call`), call);
   assert.equal(call.method, method);

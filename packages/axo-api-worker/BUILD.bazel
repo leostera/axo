@@ -77,6 +77,8 @@ node_test(
         ],
     ),
     tests_in_data = True,
+    # About 4 minutes alone, one file at a time; the default 5 is too close under a full run.
+    timeout = "long",
     tsx = True,
 )
 

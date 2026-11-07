@@ -146,7 +146,7 @@ mod tests {
         let idle = handler(Some(RelayChannel::new()));
         let refused = call(
             &idle,
-            method::APPS_EXECUTE,
+            method::APPS_RUN,
             json!({ "sessionId": session, "code": "async () => 1" }),
         );
         assert_eq!(refused["error"]["code"], NOT_CONNECTED);

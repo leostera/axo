@@ -35,7 +35,7 @@ export function registerAxoMcpServer(pi: ExtensionAPI, config: AxoMcpConfig): vo
     args: ["mcp"],
     env: { AXO_SOCKET: config.socket, AXO_SESSION_ID: config.sessionId },
     exposure: "codemode",
-    // A question to the person (elicitation_request) and a script (apps_execute) each wait
+    // A question to the person (elicitation_request) and a script (apps_run) each wait
     // up to 5 minutes; axod answers within that plus a margin.
     timeout: 330,
     description:

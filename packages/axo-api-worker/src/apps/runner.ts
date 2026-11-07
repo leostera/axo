@@ -42,7 +42,7 @@ export class ToolDispatcher extends RpcTarget {
   /** Inputs and outputs cross as JSON text, so nothing but plain data reaches either side. */
   async call(service: string, tool: string, inputJson: string): Promise<string> {
     if (this.closed) throw new Error("the script has ended");
-    if (!this.caller) throw new Error("apps_search cannot call tools; use apps_execute");
+    if (!this.caller) throw new Error("apps_search cannot call tools; use apps_run");
     if (this.calls >= APPS_LIMITS.callsPerScript) {
       this.limitBroken ??= new LimitError("callsPerScript", `a script may make at most ${APPS_LIMITS.callsPerScript} tool calls`);
       throw new Error(this.limitBroken.message);

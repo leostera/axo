@@ -68,7 +68,7 @@ test("an agent adds a server that needs sign-in, the person signs in, and a scri
     { service: "linear", name: "create_issue", title: "create_issue" },
   ]);
 
-  const executed = result(await call("axo.apps.execute", { code: `async () => codemode.linear.list_issues({ team: "AXO" })` }));
+  const executed = result(await call("axo.apps.run", { code: `async () => codemode.linear.list_issues({ team: "AXO" })` }));
   assert.deepEqual(executed.result, { tool: "list-issues", args: { team: "AXO" } });
   assert.equal(server.calls.length, 1);
   assert.ok(server.calls[0]!.token, "the call carried the account's grant");
@@ -115,7 +115,7 @@ test("a grant about to expire is renewed before the call, and the rotated refres
   await signInThroughBrowser(h, server, session, added.signInUrl);
   await waitForTools(call);
   const before = server.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length;
-  result(await call("axo.apps.execute", { code: `async () => codemode.linear.create_issue({ title: "a" })` }));
+  result(await call("axo.apps.run", { code: `async () => codemode.linear.create_issue({ title: "a" })` }));
   const refreshes = server.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length;
   assert.ok(refreshes > before, "the grant was renewed");
   assert.equal(server.calls.length, 1);
@@ -133,7 +133,7 @@ test("a server that needs no sign-in is ready at once; a Mac's name is free for 
   assert.equal(studio.connection.name, "studio");
   assert.deepEqual(result(await call("axo.apps.remove", { name: "studio" })), { removed: true });
   assert.deepEqual(result(await call("axo.apps.remove", { name: "docs" })), { removed: true });
-  const gone = await call("axo.apps.execute", { code: `async () => codemode.docs.list_issues({})` });
+  const gone = await call("axo.apps.run", { code: `async () => codemode.docs.list_issues({})` });
   assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
 });
 
@@ -154,7 +154,7 @@ test("a server is added under any name, reached by its slug, and may be added ag
 
   await signInThroughBrowser(h, server, session, first.signInUrl);
   await waitForTools(call);
-  const executed = result(await call("axo.apps.execute", { code: `async () => (await codemode.emdash_leostera_com.list_issues({ team: "AXO" })).tool` }));
+  const executed = result(await call("axo.apps.run", { code: `async () => (await codemode.emdash_leostera_com.list_issues({ team: "AXO" })).tool` }));
   assert.equal(executed.result, "list-issues");
   const listed = result(await call("axo.apps.list")).apps.filter((c: { kind: string }) => c.kind === "thirdParty").map((c: { name: string; state: string }) => [c.name, c.state]);
   assert.deepEqual(listed, [["emdash_leostera_com", "ready"], ["emdash_ocaml_ai", "needsSignIn"], ["linear", "needsSignIn"]]);
@@ -169,13 +169,13 @@ test("a server whose tools answer 401 says so on its page and to the agent, unti
     return [listed.state, listed.lastError];
   };
   server.upstreamRefuses = true;
-  const refused = await call("axo.apps.execute", { code: `async () => codemode.paypal.list_issues({})` });
+  const refused = await call("axo.apps.run", { code: `async () => codemode.paypal.list_issues({})` });
   assert.ok("error" in refused, JSON.stringify(refused));
   assert.match(refused.error.message, /401 Unauthorized/);
   assert.match(refused.error.message, /signs in to paypal again: remove it at https:\/\/axo\.leostera\.dev\/app\/settings\/apps\/mcp and add it back/);
   assert.deepEqual(await state(), ["ready", "its tools answered Unauthorized: Failed to fetch transactions: 401 Unauthorized"]);
   server.upstreamRefuses = false;
-  result(await call("axo.apps.execute", { code: `async () => codemode.paypal.list_issues({})` }));
+  result(await call("axo.apps.run", { code: `async () => codemode.paypal.list_issues({})` }));
   assert.deepEqual(await state(), ["ready", null], "a call that works clears it");
 });
 

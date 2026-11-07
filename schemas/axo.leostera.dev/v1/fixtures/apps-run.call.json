@@ -1,1 +1,1 @@
-{ "jsonrpc": "2.0", "id": "c-2", "method": "axo.apps.execute", "params": { "sessionId": "6a0f6c2e-6f0c-4b8e-9a77-3f1d2b8c4e10", "code": "async () => (await codemode.studio.bash({ command: 'uptime' })).stdout" } }
+{ "jsonrpc": "2.0", "id": "c-2", "method": "axo.apps.run", "params": { "sessionId": "6a0f6c2e-6f0c-4b8e-9a77-3f1d2b8c4e10", "code": "async () => (await codemode.studio.bash({ command: 'uptime' })).stdout" } }

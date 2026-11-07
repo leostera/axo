@@ -63,7 +63,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
     const service = apps[0]!.name;
 
     // A command's output larger than one relay frame comes back whole, as fragments.
-    const executed = (await localCall(socketPath, "axo.apps.execute", {
+    const executed = (await localCall(socketPath, "axo.apps.run", {
       sessionId,
       code: `async () => {
         const small = await codemode.bash.run({ host: ${JSON.stringify(service)}, command: "echo hello-$((40 + 2)); pwd", cwd: ${JSON.stringify(root)} });
@@ -87,7 +87,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
     assert.deepEqual(records.map((r) => r.input.command).sort(), ["echo hello-$((40 + 2)); pwd", "head -c 300000 /dev/zero | tr '\\0' a"]);
 
     // The Mac lists itself, and says whether it can do computer use now.
-    const hosts = (await localCall(socketPath, "axo.apps.execute", { sessionId, code: `async () => codemode.hosts.list()` })) as {
+    const hosts = (await localCall(socketPath, "axo.apps.run", { sessionId, code: `async () => codemode.hosts.list()` })) as {
       result: Array<{ name: string; online: boolean; self: boolean; computerUse: { available: boolean } | null }>;
     };
     assert.deepEqual(hosts.result.map((h) => [h.name, h.online, h.self, typeof h.computerUse?.available]), [[service, true, true, "boolean"]]);
@@ -98,7 +98,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
       elicitationRequested: (_hostId, elicitation) => asked.push(elicitation),
     });
     try {
-      const pay = localCall(socketPath, "axo.apps.execute", {
+      const pay = localCall(socketPath, "axo.apps.run", {
         sessionId,
         code: `async () => codemode.computer.run({ host: "self", tool: "click", args: { role: "AXButton", name: "Pay now" }, confirm: true })`,
       });

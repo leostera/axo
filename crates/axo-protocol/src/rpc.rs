@@ -48,7 +48,7 @@ pub mod method {
     /// and parameters are those of `apps.schema.json`.
     pub const APPS_LIST: &str = "axo.apps.list";
     pub const APPS_SEARCH: &str = "axo.apps.search";
-    pub const APPS_EXECUTE: &str = "axo.apps.execute";
+    pub const APPS_RUN: &str = "axo.apps.run";
     pub const APPS_LOG: &str = "axo.apps.log";
     pub const APPS_ADD: &str = "axo.apps.add";
     pub const APPS_REMOVE: &str = "axo.apps.remove";
@@ -108,7 +108,7 @@ pub mod method {
         SESSION_SHARE,
         APPS_LIST,
         APPS_SEARCH,
-        APPS_EXECUTE,
+        APPS_RUN,
         APPS_LOG,
         APPS_ADD,
         APPS_REMOVE,
@@ -142,7 +142,7 @@ pub mod forwarded {
     pub const METHODS: &[(&str, Duration)] = &[
         (method::APPS_LIST, QUICK),
         (method::APPS_SEARCH, SCRIPT),
-        (method::APPS_EXECUTE, SCRIPT),
+        (method::APPS_RUN, SCRIPT),
         (method::APPS_LOG, QUICK),
         // Adding tries the server and may register a client with it.
         (method::APPS_ADD, Duration::from_secs(60)),

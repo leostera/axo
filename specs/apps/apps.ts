@@ -62,12 +62,12 @@ type LogRecord = { account: string; request: string; service: string; tool: stri
 const faults = budget("faults", 1);
 
 // Session agent -> axod (axod mcp over axod.sock)
-const Execute = defineMessage("Execute", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "apps_execute", over: "unix socket" });
+const Execute = defineMessage("Execute", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "apps_run", over: "unix socket" });
 const Done = defineMessage("Done", { request: String, results: listOf(String) }, { name: "script result", over: "unix socket", tone: "reply" });
 const Failed = defineMessage("Failed", { request: String, error: String }, { name: "script failed", over: "unix socket", tone: "refused" });
 const RelayDown = defineMessage("RelayDown", { request: String }, { name: "this Mac is not connected to its account", over: "unix socket", tone: "refused" });
 // axod <-> the Durable Object that owns its relay socket
-const Forward = defineMessage("Forward", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3"), epoch: Number }, { name: "axo.apps.execute", over: "websocket" });
+const Forward = defineMessage("Forward", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3"), epoch: Number }, { name: "axo.apps.run", over: "websocket" });
 const Answer = defineMessage("Answer", { request: String, results: listOf(String), epoch: Number }, { name: "execute result", over: "websocket", tone: "reply" });
 const Refused = defineMessage("Refused", { request: String, error: String, epoch: Number }, { name: "execute failed", over: "websocket", tone: "refused" });
 const Bash = defineMessage("Bash", { call: String, account: String, command: String, epoch: Number }, { name: "axo.apps.bash", over: "websocket" });
@@ -711,7 +711,7 @@ function failWaiting(state: any, ctx: any): void {
 
 export const Session = defineActor({
   name: "Session",
-  description: "The Pi agent in an Axo Session, calling apps_execute through axod mcp.",
+  description: "The Pi agent in an Axo Session, calling apps_run through axod mcp.",
   zone: macs,
   initialState: (ctx) => ({
     host: hostOf(ctx.label),

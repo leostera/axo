@@ -28,7 +28,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   t.after(() => daemon.close());
   const sessionId = crypto.randomUUID();
   const call = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params }) as Promise<Reply>;
-  const execute = (code: string) => call("axo.apps.execute", { code });
+  const execute = (code: string) => call("axo.apps.run", { code });
   return { google, h, session, call, execute };
 }
 

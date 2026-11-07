@@ -175,7 +175,7 @@ fn without_an_account_the_apps_tools_say_so() {
     for message in [
         mcp.err("apps_list", json!({})),
         mcp.err("apps_search", json!({ "query": "linear issues" })),
-        mcp.err("apps_execute", json!({ "code": "async () => 1" })),
+        mcp.err("apps_run", json!({ "code": "async () => 1" })),
         mcp.err(
             "apps_add",
             json!({ "name": "linear", "url": "https://mcp.linear.app/mcp" }),

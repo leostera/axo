@@ -180,7 +180,7 @@ pub const PARITY: &[Parity] = &[
         ),
     ),
     row(
-        method::APPS_EXECUTE,
+        method::APPS_RUN,
         Remote::LocalOnly(
             "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),

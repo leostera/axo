@@ -89,7 +89,7 @@ test("a daemon's axo.apps call goes to the account and its answer comes back on 
   const { apps } = reply.result as { apps: Array<{ kind: string }> };
   assert.deepEqual(apps.filter((c) => c.kind === "host"), [{ kind: "host", name: "test_mac", hostId: host.hostId, state: "online" }]);
   // A call the account refuses comes back as its error, not dropped.
-  const refused = await daemon.call("axo.apps.execute", { connectionId: "c1", code: "1" });
+  const refused = await daemon.call("axo.apps.run", { connectionId: "c1", code: "1" });
   assert.ok("error" in refused);
   assert.equal(refused.error.code, -32602);
   // The socket still serves everything else.
