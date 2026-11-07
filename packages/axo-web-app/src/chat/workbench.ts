@@ -189,6 +189,8 @@ export interface DraftAttachment {
 /** How long an uncertain message waits before it is sent again, and how often it is. */
 export const RETRY_DELAY_MS = 3_000;
 export const MAX_RETRIES = 40;
+/** How long "Restarting…" shows when no listing ever shows the agent leave ready. */
+export const RESTART_SETTLE_MS = 20_000;
 
 export type HistoryState =
   | { kind: "none" }
@@ -204,6 +206,8 @@ export class Chat {
   stopping = false;
   /** A restart was asked for and the agent is not ready again yet. */
   restarting = false;
+  /** The restart has been seen to take the agent down (or start it); its next `ready` ends it. */
+  restartLeftReady = false;
   /** The slash commands its Pi runs, read when the `/` list opens. */
   commands: Loadable<PiCommand> | null = null;
   /** The models its Pi can switch to, read when the model menu opens. */
@@ -388,6 +392,7 @@ export class ChatWorkbench {
   private readonly newId: () => string;
   private readonly retryDelay: number;
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly restartTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly uploadAsset: UploadAsset;
 
   /** This browser's key, which signs every answer (RFD0029). */
@@ -535,6 +540,8 @@ export class ChatWorkbench {
     this.clearReconnect();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
+    for (const timer of this.restartTimers.values()) clearTimeout(timer);
+    this.restartTimers.clear();
     this.connection?.close();
     this.connection = null;
     this.link = "idle";
@@ -611,8 +618,10 @@ export class ChatWorkbench {
         chat.transcript.settle(working);
         if (!working) chat.stopping = false;
       }
-      // A restart is over once the agent is back; until then it starts, or is still on its way down.
-      if (chat?.restarting && session.status === "ready") chat.restarting = false;
+      // A restart is over once the agent has gone down or started, and is ready again. A listing still
+      // saying ready from before the restart does not end it.
+      if (chat?.restarting && session.status && session.status !== "ready") chat.restartLeftReady = true;
+      if (chat?.restarting && chat.restartLeftReady && session.status === "ready") this.endRestart(chat);
     }
     this.rebuildHosts();
     this.changed();
@@ -1116,16 +1125,32 @@ export class ChatWorkbench {
     const chat = this.chat(sessionId);
     if (!host || chat.restarting || !this.ready()) return;
     chat.restarting = true;
+    chat.restartLeftReady = false;
+    // A restart so quick no listing shows it leaving ready is over by then.
+    this.restartTimers.set(sessionId, setTimeout(() => {
+      if (chat.restarting) this.endRestart(chat);
+      this.changed();
+    }, RESTART_SETTLE_MS));
     chat.commands = null;
     chat.models = null;
     this.changed();
     try {
       await this.connection!.command("axo.remote.session.restart", { target: this.reference(host), sessionId });
     } catch (error) {
-      chat.restarting = false;
+      this.endRestart(chat);
       this.failure = `Could not restart the agent: ${describe(error)}`;
     }
     this.changed();
+  }
+
+  private endRestart(chat: Chat): void {
+    chat.restarting = false;
+    chat.restartLeftReady = false;
+    for (const [sessionId, timer] of this.restartTimers) {
+      if (this.chats.get(sessionId) !== chat) continue;
+      clearTimeout(timer);
+      this.restartTimers.delete(sessionId);
+    }
   }
 
   /** Reads the slash commands the chat's Pi runs, each time the `/` list opens: they change as skills do. */

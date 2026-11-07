@@ -950,8 +950,10 @@ test("restart asks the Mac once and says Restarting until the agent is ready aga
   const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));
   await tick();
-  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
   await Promise.all([workbench.restart(sid(1)), workbench.restart(sid(1))]);
+  // A listing from before the restart took effect still says ready: that is not the restart done.
+  account.events.sessions?.(hostId, [clientSession(1, { status: "ready" })]);
+  assert.equal(workbench.chat(sid(1)).restarting, true, "ready from before the restart does not end it");
   assert.equal(account.commands.filter(call => call.method === "axo.remote.session.restart").length, 1);
   const chat = workbench.chat(sid(1));
   assert.equal(chat.restarting, true);
