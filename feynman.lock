@@ -67,6 +67,8 @@
     "crates/axo-server/src/session/elicitations.rs#SessionManager.input_values": "493a6869ffe0",
     "crates/axo-server/src/session/elicitations.rs#SessionManager.resolve_elicitation": "6483b1938017",
     "crates/axo-server/src/session/elicitations.rs#add_methods": "a74af2434eea",
+    "crates/axo-server/src/session/elicitations.rs#ask_with": "de01c9d166c3",
+    "crates/axo-server/src/session/elicitations.rs#resolve_elicitation": "6483b1938017",
     "crates/axo-server/src/session/input.rs#SessionManager.fill": "d3691db823a2",
     "crates/axo-server/src/session/input.rs#SessionManager.request_input": "bae526c358b2",
     "crates/axo-server/src/session/lifecycle.rs#SessionManager::close_session_and_publish": "282a7dfce211",
