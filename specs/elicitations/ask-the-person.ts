@@ -193,7 +193,7 @@ export const Axod = defineActor({
     localAnswer: {
       on: LocalAnswer,
       description: "An answer on axod.sock counts only if the peer is Axo.app.",
-      sources: ["crates/axo-server/src/session/elicitations.rs#add_methods", "crates/axo-ipc/src/peer.rs#Peer.is"],
+      sources: ["crates/axo-questions/src/lib.rs#QuestionsExtension.register", "crates/axo-ipc/src/peer.rs#Peer.is"],
       sends: [Asked, Resolved, LocalResolved],
       run(state, m, ctx) {
         if (peerCheck.on && ctx.from.id !== ctx.the(MacApp).id) return ctx.note("Refused: the peer is not Axo.app.");
@@ -203,7 +203,7 @@ export const Axod = defineActor({
     forwardedAnswer: {
       on: ForwardedAnswer,
       description: "An answer from a signed-in client, through the cloud: opens a sealed value and fills it, or confirms.",
-      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.resolve_elicitation", "crates/axo-server/src/session/elicitations.rs#SessionManager.input_values", "crates/axo-server/src/session/input.rs#SessionManager.fill", "crates/axo-seal/src/lib.rs#InputKey.open"],
+      sources: ["crates/axo-questions/src/lib.rs#Questions.resolve", "crates/axo-questions/src/lib.rs#input_values", "crates/axo-server/src/session/input.rs#SessionManager.fill", "crates/axo-seal/src/lib.rs#InputKey.open"],
       sends: [Asked, Resolved, LocalResolved, Fill],
       run(state, m, ctx) {
         const request = state.requests[m.id];

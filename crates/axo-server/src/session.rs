@@ -27,7 +27,6 @@ mod catalog;
 mod cloud_transcripts;
 mod computer;
 mod devices;
-mod elicitations;
 mod events;
 mod handlers;
 mod input;
@@ -36,6 +35,7 @@ mod peer_views;
 mod pi_bridge;
 mod pi_recovery;
 mod prompts;
+mod questions;
 mod readiness;
 mod settings;
 mod spawn;
@@ -175,7 +175,7 @@ pub struct SessionManager {
     /// The other Macs, once the relay follows them (RFD0024).
     peers: peer_views::PeerSlot,
     /// What agents here are asking the person (RFD0029).
-    elicitations: elicitations::Elicitations,
+    elicitations: Arc<axo_questions::Questions>,
     /// The account's assets while the relay is connected (RFD0028).
     asset_source: Arc<axo_assets::AssetSlot>,
     /// This Mac's input key, which forms are sealed to (RFD0029): read or made on first use,

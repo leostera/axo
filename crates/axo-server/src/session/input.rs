@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::SessionManager;
-use crate::session::elicitations::Values;
+use axo_questions::Values;
 
 /// Where this Mac's input key is kept, beside the host credential, under a fixed id.
 const INPUT_KEY_ID: &str = "a5c1e7d0-5e4b-4c1f-9d3a-1f0b2c3d4e5f";

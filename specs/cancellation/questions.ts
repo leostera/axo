@@ -45,7 +45,7 @@ export const Axod = defineActor({
       label: "Five minutes pass",
       description: "Every question still waiting ends as cancel.",
       when: (s) => Object.values(s.questions).some((q) => q.settled === null),
-      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
+      sources: ["crates/axo-questions/src/lib.rs#Questions.ask_with"],
       sends: [Dismiss, Outcome],
       run(state, _m, ctx) {
         for (const [id, question] of Object.entries(state.questions)) {
@@ -61,7 +61,7 @@ export const Axod = defineActor({
     ask: {
       on: Ask,
       description: "Opens the question and shows it to every client, unless the request was cancelled before it started.",
-      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
+      sources: ["crates/axo-questions/src/lib.rs#Questions.ask_with"],
       sends: [Card, Outcome],
       run(state, m, ctx) {
         const id = `q${Object.keys(state.questions).length + 1}`;
@@ -80,7 +80,7 @@ export const Axod = defineActor({
     answer: {
       on: Answer,
       description: "The person's answer settles a question still waiting, and goes to its asker.",
-      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.resolve_elicitation"],
+      sources: ["crates/axo-questions/src/lib.rs#Questions.resolve"],
       sends: [Dismiss, Outcome],
       run(state, m, ctx) {
         const question = state.questions[m.id];
@@ -93,7 +93,7 @@ export const Axod = defineActor({
     hungUp: {
       on: HungUp,
       description: "The asker's connection closed: its questions are withdrawn.",
-      sources: ["crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-ipc/src/cancel.rs#Cancellation.cancel", "crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
+      sources: ["crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-ipc/src/cancel.rs#Cancellation.cancel", "crates/axo-questions/src/lib.rs#Questions.ask_with"],
       sends: [Dismiss],
       run(state, m, ctx) {
         state.gone.push(m.asker);
@@ -108,7 +108,7 @@ export const Axod = defineActor({
     cancelled: {
       on: Cancelled,
       description: "The asker cancelled its request: the question is withdrawn, and the asker told.",
-      sources: ["crates/axo-mcp/src/calls.rs#Calls.give_up", "crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
+      sources: ["crates/axo-mcp/src/calls.rs#Calls.give_up", "crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-questions/src/lib.rs#Questions.ask_with"],
       sends: [Dismiss, Outcome],
       run(state, m, ctx) {
         if (!withdrawOnCancel.on) return;

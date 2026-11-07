@@ -443,7 +443,6 @@ fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Err
 
 impl SessionManager {
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
-        super::elicitations::add_methods(self, handler);
         super::input::add_methods(self, handler);
         let manager = Arc::clone(self);
         handler.add_typed(

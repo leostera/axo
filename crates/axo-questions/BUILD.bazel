@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# The questions extension: what agents on this Mac ask the person (RFD0029).
+rust_library(
+    name = "axo_questions",
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    deps = [
+        "//crates/axo-ipc:axo_ipc",
+        "//crates/axo-protocol:axo_protocol",
+        "//crates/axo-seal:axo_seal",
+        "@crates//:jsonrpc-core",
+        "@crates//:log",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:zeroize",
+    ],
+)
+
+rust_test(
+    name = "axo_questions_tests",
+    crate = ":axo_questions",
+    edition = "2024",
+)
