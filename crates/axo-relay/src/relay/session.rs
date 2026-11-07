@@ -7,8 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axo_protocol::Event;
+use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::MissedTickBehavior;
 use tungstenite::Message;
 
 use super::HEARTBEAT_INTERVAL;
@@ -17,18 +20,26 @@ use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
 use super::jobs::{start_bash, start_computer, start_prompt, start_sign_in};
-use super::socket::{RelaySocket, read_message, send_json};
+use super::socket::{RelaySink, RelayStream, receive, send_json_async};
 use super::status::RelayControl;
 use super::wire::{HostIdentity, IncomingMessage, JSONRPC, OutgoingRequest, RequestId};
 use crate::fragments::Reassembler;
 use crate::host::RelayHost;
-use crate::outbound::{FRAMES_PER_TURN, Outbox, Priority, RelayChannel, ReplySender};
+use crate::outbound::{FRAMES_PER_TURN, Outbox, Outgoing, Priority, RelayChannel, ReplySender};
 use crate::sync::SyncWaker;
+
+/// How long the relay has to answer a handshake request.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often half-received messages are checked for expiry.
+const REASSEMBLY_CHECK: Duration = Duration::from_secs(1);
+/// How long the event forwarder waits for an event before looking at its flag again.
+const EVENT_WAIT: Duration = Duration::from_millis(200);
 
 // The handshake answers the relay's own requests while it waits, so it needs the host too.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn rpc_call(
-    socket: &mut RelaySocket,
+pub(super) async fn rpc_call(
+    sink: &mut RelaySink,
+    stream: &mut RelayStream,
     reassembler: &mut Reassembler,
     request_number: &mut u64,
     method: &str,
@@ -39,31 +50,44 @@ pub(super) fn rpc_call(
 ) -> io::Result<()> {
     *request_number = request_number.saturating_add(1);
     let id = format!("axod-{}", *request_number);
-    send_json(
-        socket,
+    send_json_async(
+        sink,
         &OutgoingRequest {
             jsonrpc: JSONRPC,
             id: &id,
             method,
             params,
         },
-    )?;
-    loop {
-        let Some(raw) = read_message(socket, reassembler)? else {
-            continue;
-        };
-        let response: IncomingMessage = serde_json::from_str(&raw)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-        if response.method.is_none() && response.id == Some(RequestId::Text(id.clone())) {
-            return response
-                .result
-                .map(drop)
-                .ok_or_else(|| io::Error::other("relay RPC request was rejected"));
+    )
+    .await?;
+    let answered = async {
+        loop {
+            let message = stream.next().await;
+            let Some(raw) = receive(sink, message, reassembler).await? else {
+                continue;
+            };
+            let response: IncomingMessage = serde_json::from_str(&raw)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
+            if response.method.is_none() && response.id == Some(RequestId::Text(id.clone())) {
+                return response
+                    .result
+                    .map(drop)
+                    .ok_or_else(|| io::Error::other("relay RPC request was rejected"));
+            }
+            if let Some(reply) = remote_request_reply(&response, sessions, host_id, host_generation)
+            {
+                send_json_async(sink, &reply).await?;
+            }
         }
-        if let Some(reply) = remote_request_reply(&response, sessions, host_id, host_generation) {
-            send_json(socket, &reply)?;
-        }
-    }
+    };
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, answered)
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("relay did not answer {method}"),
+            )
+        })?
 }
 
 pub(super) struct RelaySessionContext<'a> {
@@ -74,8 +98,6 @@ pub(super) struct RelaySessionContext<'a> {
     pub(super) stop: &'a AtomicBool,
     pub(super) control: &'a RelayControl,
     pub(super) channel: &'a RelayChannel,
-    /// What other threads queued for this socket.
-    pub(super) outgoing: std::sync::mpsc::Receiver<crate::outbound::Outgoing>,
     /// Replies to the cloud's requests on this socket, from threads that answer them later.
     pub(super) replies: ReplySender,
     /// Tells the uploader a Session changed, so its new lines go up at once.
@@ -87,130 +109,214 @@ pub(super) struct RelaySessionContext<'a> {
     pub(super) assets: Option<crate::assets::AssetSource>,
 }
 
-pub(super) fn relay_session(
-    socket: &mut RelaySocket,
+/// A request from the cloud that the host answers at once, in the order they came.
+pub(super) enum HostRequest {
+    ComputerStatus { id: Value, params: Value },
+    ResolveElicitation { id: Value, params: Value },
+    Call(IncomingMessage),
+}
+
+/// Serves one connected socket until it closes, axod stops, or a reconnect is asked for.
+///
+/// The loop waits on everything at once: the cloud's messages, what threads queued to send
+/// (`outgoing`), the heartbeat, and the control's wake-up. Requests the host answers at once go
+/// to `requests`, answered in order on a thread of their own; slower ones (bash, computer use,
+/// prompts, sign-ins) start their jobs. Neither holds up the socket.
+pub(super) async fn relay_session(
+    sink: &mut RelaySink,
+    stream: &mut RelayStream,
     reassembler: &mut Reassembler,
     request_number: &mut u64,
-    context: RelaySessionContext<'_>,
+    context: &RelaySessionContext<'_>,
+    mut outgoing: UnboundedReceiver<Outgoing>,
+    requests: std::sync::mpsc::Sender<HostRequest>,
 ) -> io::Result<()> {
-    let mut next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+    let start = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval_at(start + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut expiry = tokio::time::interval_at(start + REASSEMBLY_CHECK, REASSEMBLY_CHECK);
     let mut outbox = Outbox::default();
+    let queue = |outbox: &mut Outbox, queued: Outgoing| {
+        if !outbox.push(queued, &context.socket_id) {
+            log::warn!("event=relay.outbound_refused reason=too_large_or_full");
+        }
+    };
     while !context.stop.load(Ordering::Relaxed)
         && !context.control.reconnect_requested.load(Ordering::Relaxed)
     {
-        // What other threads queued goes out by priority, a few frames a turn.
-        while let Ok(queued) = context.outgoing.try_recv() {
-            if !outbox.push(queued, &context.socket_id) {
-                log::warn!("event=relay.outbound_refused reason=too_large_or_full");
+        tokio::select! {
+            () = context.control.woken() => {}
+            queued = outgoing.recv() => {
+                let Some(queued) = queued else { break };
+                queue(&mut outbox, queued);
+                while let Ok(queued) = outgoing.try_recv() {
+                    queue(&mut outbox, queued);
+                }
             }
-        }
-        for _ in 0..FRAMES_PER_TURN {
-            let Some(frame) = outbox.next_frame() else {
-                break;
-            };
-            socket
-                .send(Message::Text(frame.into()))
-                .map_err(io::Error::other)?;
-        }
-        reassembler.expire(Instant::now());
-
-        if Instant::now() >= next_heartbeat {
-            *request_number = request_number.saturating_add(1);
-            send_json(
-                socket,
-                &OutgoingRequest {
-                    jsonrpc: JSONRPC,
-                    id: &format!("axod-{}", *request_number),
-                    method: "axo.host.heartbeat",
-                    params: HostIdentity {
-                        host_id: context.host_id,
-                        host_generation: context.host_generation,
+            // What threads queued goes out by priority, a few frames a turn, so a reply can
+            // overtake an upload between its fragments.
+            () = std::future::ready(()), if !outbox.is_empty() => {
+                for _ in 0..FRAMES_PER_TURN {
+                    while let Ok(queued) = outgoing.try_recv() {
+                        queue(&mut outbox, queued);
+                    }
+                    let Some(frame) = outbox.next_frame() else {
+                        break;
+                    };
+                    sink.send(Message::Text(frame.into()))
+                        .await
+                        .map_err(io::Error::other)?;
+                }
+            }
+            _ = heartbeat.tick() => {
+                *request_number = request_number.saturating_add(1);
+                send_json_async(
+                    sink,
+                    &OutgoingRequest {
+                        jsonrpc: JSONRPC,
+                        id: &format!("axod-{}", *request_number),
+                        method: "axo.host.heartbeat",
+                        params: HostIdentity {
+                            host_id: context.host_id,
+                            host_generation: context.host_generation,
+                        },
                     },
-                },
-            )?;
-            next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+                )
+                .await?;
+            }
+            _ = expiry.tick() => reassembler.expire(Instant::now()),
+            message = stream.next() => {
+                if let Some(raw) = receive(sink, message, reassembler).await? {
+                    take_message(&raw, context, &requests)?;
+                }
+            }
         }
+    }
+    let _ = sink.close().await;
+    Ok(())
+}
 
-        if let Some(event) = context
-            .sessions
-            .next_remote_event(context.subscription_id, Duration::ZERO)?
-        {
-            forward_event(event, &context);
-        }
-
-        let Some(raw) = read_message(socket, reassembler)? else {
-            continue;
-        };
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-        // A reply to a request another thread sent.
-        if value.get("method").is_none() && context.channel.resolve(&value) {
-            continue;
-        }
-        if value.get("method").and_then(Value::as_str) == Some(crate::computer::METHOD) {
-            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                start_computer(id.clone(), &value["params"], &context);
+/// One whole message from the cloud: a reply to a thread's request, a job to start, or a request
+/// for the host to answer.
+fn take_message(
+    raw: &str,
+    context: &RelaySessionContext<'_>,
+    requests: &std::sync::mpsc::Sender<HostRequest>,
+) -> io::Result<()> {
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
+    // A reply to a request another thread sent.
+    if value.get("method").is_none() && context.channel.resolve(&value) {
+        return Ok(());
+    }
+    let method = value.get("method").and_then(Value::as_str);
+    let id = value.get("id").filter(|id| !id.is_null()).cloned();
+    let params = &value["params"];
+    let request = match method {
+        Some(crate::computer::METHOD) => {
+            if let Some(id) = id {
+                start_computer(id, params, context);
             }
-            continue;
+            return Ok(());
         }
-        if value.get("method").and_then(Value::as_str) == Some(crate::computer::STATUS_METHOD) {
-            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                let outcome = crate::computer::parse_status(&value["params"], &context.account_id)
-                    .map(|()| context.sessions.computer_status());
-                context.replies.reply(id, outcome);
+        Some(crate::bash::METHOD) => {
+            if let Some(id) = id {
+                start_bash(id, params, context);
             }
-            continue;
+            return Ok(());
         }
-        if value.get("method").and_then(Value::as_str) == Some(crate::bash::METHOD) {
-            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                start_bash(id.clone(), &value["params"], &context);
+        Some(crate::signin::METHOD) => {
+            if let Some(id) = id {
+                start_sign_in(id, params, context);
             }
-            continue;
-        }
-        if value.get("method").and_then(Value::as_str) == Some(ELICITATION_RESOLVE) {
-            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                let outcome = resolve_elicitation(&value["params"], &context);
-                send_json(
-                    socket,
-                    &match outcome {
-                        Ok(()) => {
-                            serde_json::json!({ "jsonrpc": JSONRPC, "id": id, "result": { "resolved": true } })
-                        }
-                        Err((code, message)) => {
-                            serde_json::json!({ "jsonrpc": JSONRPC, "id": id, "error": { "code": code, "message": message } })
-                        }
-                    },
-                )?;
-            }
-            continue;
-        }
-        if value.get("method").and_then(Value::as_str) == Some(crate::signin::METHOD) {
-            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                start_sign_in(id.clone(), &value["params"], &context);
-            }
-            continue;
+            return Ok(());
         }
         // A prompt is answered once Pi has it in its log, after its attachments are fetched
         // (RFD0030) and Pi has started (RFD0033): on a thread of its own.
-        if value.get("method").and_then(Value::as_str) == Some("axo.remote.session.prompt") {
-            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                start_prompt(id.clone(), &value["params"], &context);
+        Some("axo.remote.session.prompt") => {
+            if let Some(id) = id {
+                start_prompt(id, params, context);
             }
-            continue;
+            return Ok(());
         }
-        let message: IncomingMessage = serde_json::from_value(value)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-        if let Some(reply) = remote_request_reply(
-            &message,
-            context.sessions,
-            context.host_id,
-            context.host_generation,
-        ) {
-            send_json(socket, &reply)?;
+        Some(crate::computer::STATUS_METHOD) => match id {
+            Some(id) => HostRequest::ComputerStatus {
+                id,
+                params: params.clone(),
+            },
+            None => return Ok(()),
+        },
+        Some(ELICITATION_RESOLVE) => match id {
+            Some(id) => HostRequest::ResolveElicitation {
+                id,
+                params: params.clone(),
+            },
+            None => return Ok(()),
+        },
+        _ => HostRequest::Call(
+            serde_json::from_value(value)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?,
+        ),
+    };
+    let _ = requests.send(request);
+    Ok(())
+}
+
+/// Answers the host's requests in the order they came, until the socket's loop ends.
+pub(super) fn answer_requests(
+    requests: std::sync::mpsc::Receiver<HostRequest>,
+    context: &RelaySessionContext<'_>,
+) {
+    for request in requests {
+        match request {
+            HostRequest::ComputerStatus { id, params } => {
+                let outcome = crate::computer::parse_status(&params, &context.account_id)
+                    .map(|()| context.sessions.computer_status());
+                context.replies.reply(&id, outcome);
+            }
+            HostRequest::ResolveElicitation { id, params } => {
+                let outcome = resolve_elicitation(&params, context)
+                    .map(|()| serde_json::json!({ "resolved": true }));
+                context.replies.reply(&id, outcome);
+            }
+            HostRequest::Call(message) => {
+                if let Some(reply) = remote_request_reply(
+                    &message,
+                    context.sessions,
+                    context.host_id,
+                    context.host_generation,
+                ) {
+                    match serde_json::to_string(&reply) {
+                        Ok(text) => context.replies.send(text),
+                        Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),
+                    }
+                }
+            }
         }
     }
-    let _ = socket.close(None);
-    Ok(())
+}
+
+/// Forwards local events to the cloud while `done` is unset. If events cannot be read, the
+/// socket is reconnected, which subscribes again.
+pub(super) fn forward_events(context: &RelaySessionContext<'_>, done: &AtomicBool) {
+    while !done.load(Ordering::Relaxed) {
+        match context
+            .sessions
+            .next_remote_event(context.subscription_id, EVENT_WAIT)
+        {
+            Ok(Some(event)) => forward_event(event, context),
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("event=relay.events_unreadable error={error}");
+                context
+                    .control
+                    .reconnect_requested
+                    .store(true, Ordering::Relaxed);
+                context.control.wake();
+                return;
+            }
+        }
+    }
 }
 
 /// What a local event means for the cloud (RFD0018). Durable records come from the Pi file, so

@@ -20,11 +20,17 @@ use crate::fragments::{self, Reassembler};
 use crate::link::AccountLink;
 
 pub(crate) const MAX_FRAME_BYTES: usize = fragments::FRAME_BYTES;
-pub(super) const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(20);
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// The relay connection's socket, on tokio: written through its sink half and read through its
+/// stream half, so the loop can wait on reading while it writes.
+pub(crate) type AsyncRelaySocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+pub(crate) type RelaySink = futures_util::stream::SplitSink<AsyncRelaySocket, Message>;
+pub(crate) type RelayStream = futures_util::stream::SplitStream<AsyncRelaySocket>;
 
 /// The account-scoped daemon WebSocket, authenticated with the host credential.
 pub(super) fn relay_websocket_request(
@@ -79,21 +85,8 @@ pub(crate) fn connect_websocket(
     request: tungstenite::http::Request<()>,
     config: WebSocketConfig,
 ) -> io::Result<RelaySocket> {
-    let uri = request.uri();
-    let host = uri
-        .host()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "relay URL has no host"))?;
-    let host = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    let port = uri
-        .port_u16()
-        .unwrap_or(if uri.scheme_str() == Some("wss") {
-            443
-        } else {
-            80
-        });
+    let (host, port) = address_of(request.uri())?;
+    let host = host.as_str();
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     let mut connected = None;
     let mut last_error = None;
@@ -136,6 +129,95 @@ pub(crate) fn connect_websocket(
     }
 }
 
+/// The host and port a relay URL names.
+fn address_of(uri: &tungstenite::http::Uri) -> io::Result<(String, u16)> {
+    let host = uri
+        .host()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "relay URL has no host"))?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("wss") {
+            443
+        } else {
+            80
+        });
+    Ok((host.to_owned(), port))
+}
+
+/// [`connect_websocket`] on tokio: the same timeouts, and the same refusal to follow a redirect.
+pub(crate) async fn connect_websocket_async(
+    request: tungstenite::http::Request<()>,
+    config: WebSocketConfig,
+) -> io::Result<AsyncRelaySocket> {
+    let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "relay connection timed out");
+    let (host, port) = address_of(request.uri())?;
+    let stream = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect((host.as_str(), port)),
+    )
+    .await
+    .map_err(|_| timed_out())??;
+    stream.set_nodelay(true)?;
+    let handshake =
+        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), None);
+    match tokio::time::timeout(CONNECT_TIMEOUT, handshake).await {
+        Err(_) => Err(timed_out()),
+        Ok(Ok((socket, _))) => Ok(socket),
+        Ok(Err(tungstenite::Error::Http(response))) if response.status().is_redirection() => {
+            Err(io::Error::other(format!(
+                "relay redirected the host connection (HTTP {}); the daemon route must not be behind a login",
+                response.status().as_u16()
+            )))
+        }
+        Ok(Err(error)) => Err(io::Error::other(error)),
+    }
+}
+
+/// One whole message read from the async socket, as [`read_message`] does: `None` for a control
+/// frame or a fragment that completes nothing yet. A ping's pong goes out through `sink`.
+pub(crate) async fn receive(
+    sink: &mut RelaySink,
+    message: Option<Result<Message, tungstenite::Error>>,
+    reassembler: &mut Reassembler,
+) -> io::Result<Option<String>> {
+    use futures_util::SinkExt;
+    match message {
+        Some(Ok(Message::Text(text))) => receive_text(text.to_string(), reassembler),
+        Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
+            sink.flush().await.map_err(io::Error::other)?;
+            Ok(None)
+        }
+        None | Some(Ok(Message::Close(_))) => Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "relay connection closed",
+        )),
+        Some(Ok(Message::Binary(_))) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "relay sent a binary frame",
+        )),
+        Some(Ok(Message::Frame(_))) => Ok(None),
+        Some(Err(error)) => Err(io::Error::other(error)),
+    }
+}
+
+/// [`send_json`] on the async socket.
+pub(crate) async fn send_json_async(
+    sink: &mut RelaySink,
+    value: &impl Serialize,
+) -> io::Result<()> {
+    use futures_util::SinkExt;
+    for frame in frames(value)? {
+        sink.send(Message::Text(frame.into()))
+            .await
+            .map_err(io::Error::other)?;
+    }
+    Ok(())
+}
+
 /// One whole message: a frame, or the last fragment's frame completing a larger message. A
 /// fragment that breaks the rules ends the connection.
 pub(crate) fn read_message(
@@ -145,6 +227,11 @@ pub(crate) fn read_message(
     let Some(raw) = read_text(socket)? else {
         return Ok(None);
     };
+    receive_text(raw, reassembler)
+}
+
+/// A text frame as a whole message, after reassembly when it is a fragment.
+fn receive_text(raw: String, reassembler: &mut Reassembler) -> io::Result<Option<String>> {
     if !raw.contains(fragments::FRAGMENT_METHOD) && !raw.contains(fragments::DISCARD_METHOD) {
         return Ok(Some(raw));
     }
@@ -204,6 +291,16 @@ fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
 
 /// Sends one message: in one frame, or as fragments when it is larger (RFD0016, Transport).
 pub(crate) fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()> {
+    for frame in frames(value)? {
+        socket
+            .send(Message::Text(frame.into()))
+            .map_err(io::Error::other)?;
+    }
+    Ok(())
+}
+
+/// One message's frames: itself, or its fragments when it is larger than a frame.
+fn frames(value: &impl Serialize) -> io::Result<Vec<String>> {
     static MESSAGES: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_string(value).map_err(io::Error::other)?;
     let message_id = format!(
@@ -211,18 +308,12 @@ pub(crate) fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io:
         std::process::id(),
         MESSAGES.fetch_add(1, Ordering::Relaxed)
     );
-    let frames = fragments::split(&text, &message_id).ok_or_else(|| {
+    fragments::split(&text, &message_id).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "relay message exceeds the largest message the relay reassembles",
         )
-    })?;
-    for frame in frames {
-        socket
-            .send(Message::Text(frame.into()))
-            .map_err(io::Error::other)?;
-    }
-    Ok(())
+    })
 }
 
 pub(crate) fn set_read_timeout(

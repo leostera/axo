@@ -36,8 +36,12 @@ fn linked_with(hub: &FakeHub, options: Options) -> (Axod, Value) {
     });
     let link = axod.ok("axo.relay.link", json!({ "code": CODE }));
     assert_eq!(link["linked"], true, "{link}");
-    hub.wait_until_connected();
-    let register = hub.wait_for_request("axo.host.register");
+    // A connection that never comes is axod's to explain: its log goes with the failure.
+    let register = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        hub.wait_until_connected();
+        hub.wait_for_request("axo.host.register")
+    }))
+    .unwrap_or_else(|_| panic!("axod did not connect and register; axod log:\n{}", axod.log()));
     let target = json!({
         "hostId": register["params"]["hostId"],
         "hostGeneration": register["params"]["hostGeneration"],
@@ -618,4 +622,26 @@ fn the_account_drives_a_sessions_panes_keys_and_layout() {
         )
         .unwrap_err();
     assert_eq!(unknown_key["code"], INVALID_PARAMS, "{unknown_key}");
+}
+
+/// Nothing in the relay loop polls (RFD0034, step 7): a request is read as it arrives and its
+/// answer sent as soon as it is ready. A loop that checked the socket on a timer would add half
+/// its period to every call; the median of many calls shows it under any load.
+#[test]
+fn the_account_s_calls_are_answered_without_waiting_for_a_poll() {
+    let hub = FakeHub::start();
+    let (_axod, target) = linked(&hub, Pi::Fake);
+    let mut took: Vec<Duration> = (0..40)
+        .map(|_| {
+            let started = Instant::now();
+            hub.ok("axo.remote.workspace.list", json!({ "target": target }));
+            started.elapsed()
+        })
+        .collect();
+    took.sort();
+    let median = took[took.len() / 2];
+    assert!(
+        median < Duration::from_millis(5),
+        "median {median:?} of {took:?}"
+    );
 }

@@ -14,6 +14,9 @@ type RelayStatusObserver = Box<dyn Fn(&RelayStatus) + Send + Sync>;
 pub struct RelayControl {
     status: Mutex<RelayStatus>,
     pub(super) reconnect_requested: AtomicBool,
+    /// Wakes the relay loop for a reconnect or to stop, whether it waits to retry or serves a
+    /// socket.
+    wake: tokio::sync::Notify,
     /// Told about every status change, outside the status lock (publishes `relay.status`).
     observer: Option<RelayStatusObserver>,
 }
@@ -29,6 +32,7 @@ impl RelayControl {
                 last_error: None,
             }),
             reconnect_requested: AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
             observer: None,
         }
     }
@@ -64,7 +68,18 @@ impl RelayControl {
 
     pub fn request_connect(&self) -> io::Result<()> {
         self.reconnect_requested.store(true, Ordering::Relaxed);
+        self.wake();
         self.update(Self::connecting)
+    }
+
+    /// Wakes the relay loop to look at its flags again.
+    pub(super) fn wake(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Until the relay loop is woken (at once if it was woken while not waiting).
+    pub(super) async fn woken(&self) {
+        self.wake.notified().await;
     }
 
     fn connecting(status: &mut RelayStatus) {

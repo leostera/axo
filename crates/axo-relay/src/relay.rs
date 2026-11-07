@@ -3,7 +3,9 @@
 //!
 //! - `status`: the connection state Axo.app shows, and its manual retry.
 //! - `socket`: connecting, and reading and sending whole messages (shared with `peers`).
-//! - `session`: one connected session: negotiate, register, then serve until it closes.
+//! - `session`: one connected session: negotiate, register, then serve until it closes. It runs
+//!   on tokio (RFD0034, step 7), waiting on the socket, the outgoing queue, the heartbeat and the
+//!   control's wake-up at once; nothing polls.
 //! - `dispatch`: answering `axo.remote.*` requests through the host.
 //! - `jobs`: bash, prompts with attachments and sign-ins, each on a thread of its own.
 //! - `elicitation`: a person's answers to an agent's questions (RFD0029).
@@ -31,8 +33,9 @@ use std::time::{Duration, Instant};
 
 use axo_protocol::HostKind;
 use elicitation::ELICITATION_REQUESTED;
-use session::{RelaySessionContext, relay_session, rpc_call};
-use socket::{SOCKET_READ_TIMEOUT, relay_websocket_request};
+use futures_util::StreamExt;
+use session::{RelaySessionContext, answer_requests, forward_events, relay_session, rpc_call};
+use socket::{connect_websocket_async, relay_websocket_request};
 use tungstenite::protocol::WebSocketConfig;
 use wire::{HOST_CAPABILITIES, HostRegistration, NegotiateParams};
 
@@ -151,6 +154,7 @@ impl RelayWorker {
 
     pub fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.control.wake();
         if let Some(worker) = self.thread.take() {
             let _ = worker.join();
         }
@@ -174,6 +178,19 @@ fn run_reconnect_loop(
     channel: Arc<RelayChannel>,
     waker: SyncWaker,
 ) {
+    // The relay connection's own runtime, on this thread: one connection at a time.
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            log::error!("event=relay.runtime_unavailable error={error}");
+            control.mark_disconnected(&error);
+            return;
+        }
+    };
+    let runtime = &runtime;
     let mut retry_delay = Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
         let link = match dependencies.links.load_link() {
@@ -181,7 +198,7 @@ fn run_reconnect_loop(
             Err(error) => {
                 control.mark_disconnected(&error);
                 log::warn!("event=relay.link_unavailable reason={error}");
-                wait_for_reconnect(&control, &stop, retry_delay);
+                wait_for_reconnect(runtime, &control, &stop, retry_delay);
                 retry_delay = (retry_delay * 2).min(MAX_RECONNECT_DELAY);
                 continue;
             }
@@ -189,13 +206,21 @@ fn run_reconnect_loop(
         // Only a linked host connects; linking requests a reconnect, which ends this wait.
         let Some(account) = link.account() else {
             control.mark_disconnected(NOT_LINKED);
-            wait_for_reconnect(&control, &stop, Duration::from_secs(1));
+            wait_for_reconnect(runtime, &control, &stop, Duration::from_secs(1));
             retry_delay = Duration::from_secs(1);
             continue;
         };
 
         control.mark_connecting();
-        match run_connection(&dependencies, account, &stop, &control, &channel, &waker) {
+        match run_connection(
+            runtime,
+            &dependencies,
+            account,
+            &stop,
+            &control,
+            &channel,
+            &waker,
+        ) {
             Ok(()) if stop.load(Ordering::Relaxed) => break,
             Ok(()) => {
                 control.mark_disconnected("relay connection ended");
@@ -209,7 +234,7 @@ fn run_reconnect_loop(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let requested_now = wait_for_reconnect(&control, &stop, retry_delay);
+        let requested_now = wait_for_reconnect(runtime, &control, &stop, retry_delay);
         retry_delay = if requested_now {
             Duration::from_secs(1)
         } else {
@@ -218,18 +243,34 @@ fn run_reconnect_loop(
     }
 }
 
-fn wait_for_reconnect(control: &RelayControl, stop: &AtomicBool, delay: Duration) -> bool {
+/// Waits `delay`, or less if a reconnect is asked for (true) or axod stops.
+fn wait_for_reconnect(
+    runtime: &tokio::runtime::Runtime,
+    control: &RelayControl,
+    stop: &AtomicBool,
+    delay: Duration,
+) -> bool {
     let until = Instant::now() + delay;
-    while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
         if control.reconnect_requested.swap(false, Ordering::Relaxed) {
             return true;
         }
-        thread::sleep(Duration::from_millis(100));
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        // The timer is made inside the runtime, which it needs.
+        runtime.block_on(async {
+            let _ = tokio::time::timeout(left, control.woken()).await;
+        });
     }
-    false
 }
 
 fn run_connection(
+    runtime: &tokio::runtime::Runtime,
     dependencies: &RelayDependencies,
     account: &AccountLink,
     stop: &AtomicBool,
@@ -253,14 +294,15 @@ fn run_connection(
         .max_write_buffer_size(131_072)
         .max_message_size(Some(MAX_FRAME_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES));
-    let mut socket = connect_websocket(request, websocket_config)?;
-    set_read_timeout(&mut socket, SOCKET_READ_TIMEOUT)?;
+    let socket = runtime.block_on(connect_websocket_async(request, websocket_config))?;
+    let (mut sink, mut stream) = socket.split();
 
     let mut request_number = 0_u64;
     // Partial messages die with this socket (RFD0016, Transport).
     let mut reassembler = Reassembler::default();
-    rpc_call(
-        &mut socket,
+    runtime.block_on(rpc_call(
+        &mut sink,
+        &mut stream,
         &mut reassembler,
         &mut request_number,
         "axo.protocol.negotiate",
@@ -270,7 +312,7 @@ fn run_connection(
         sessions,
         &host_id,
         &host_generation,
-    )?;
+    ))?;
     let subscription_id = sessions.subscribe_remote_events()?;
     let label = host_label();
     let registration = HostRegistration {
@@ -282,8 +324,9 @@ fn run_connection(
         capabilities: HOST_CAPABILITIES,
         sessions: [],
     };
-    if let Err(error) = rpc_call(
-        &mut socket,
+    if let Err(error) = runtime.block_on(rpc_call(
+        &mut sink,
+        &mut stream,
         &mut reassembler,
         &mut request_number,
         "axo.host.register",
@@ -291,7 +334,7 @@ fn run_connection(
         sessions,
         &host_id,
         &host_generation,
-    ) {
+    )) {
         let _ = sessions.unsubscribe_remote_events(&subscription_id);
         return Err(error);
     }
@@ -322,26 +365,40 @@ fn run_connection(
             });
     // Local callers fetch the account's assets through this socket's account while it lives.
     sessions.set_asset_source(assets.clone());
-    let result = relay_session(
-        &mut socket,
-        &mut reassembler,
-        &mut request_number,
-        RelaySessionContext {
-            sessions,
-            host_id: &host_id,
-            host_generation: &host_generation,
-            subscription_id: &subscription_id,
-            stop,
-            control,
-            channel,
+    let context = RelaySessionContext {
+        sessions,
+        host_id: &host_id,
+        host_generation: &host_generation,
+        subscription_id: &subscription_id,
+        stop,
+        control,
+        channel,
+        replies,
+        waker,
+        socket_id: format!("axod-{}-{epoch}", std::process::id()),
+        account_id: account.account_id().to_owned(),
+        assets,
+    };
+    // The host's answers and local events each have a thread beside the loop, so neither
+    // a slow answer nor waiting for events holds up the socket.
+    let (requests, waiting) = std::sync::mpsc::channel();
+    let done = AtomicBool::new(false);
+    let result = thread::scope(|scope| {
+        let (context, done) = (&context, &done);
+        scope.spawn(move || answer_requests(waiting, context));
+        scope.spawn(move || forward_events(context, done));
+        let served = runtime.block_on(relay_session(
+            &mut sink,
+            &mut stream,
+            &mut reassembler,
+            &mut request_number,
+            context,
             outgoing,
-            replies,
-            waker,
-            socket_id: format!("axod-{}-{epoch}", std::process::id()),
-            account_id: account.account_id().to_owned(),
-            assets,
-        },
-    );
+            requests,
+        ));
+        done.store(true, Ordering::Relaxed);
+        served
+    });
     channel.detach(epoch);
     sessions.set_asset_source(None);
     let _ = sessions.unsubscribe_remote_events(&subscription_id);

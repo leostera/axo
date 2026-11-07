@@ -100,11 +100,7 @@ static PROMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 /// Fetches a prompt's attachments, all of them or none (RFD0030), then gives it to Pi; the reply
 /// goes back on this socket once Pi has written it to its log (RFD0033), or with why it was
 /// refused.
-pub(super) fn start_prompt(
-    id: Value,
-    params: &Value,
-    context: &RelaySessionContext<'_>,
-) {
+pub(super) fn start_prompt(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
     let request = match serde_json::from_value::<PromptParams>(params.clone()) {
         Ok(request) => request,
         Err(_) => {
@@ -141,7 +137,10 @@ pub(super) fn start_prompt(
         PROMPTS.fetch_sub(1, Ordering::SeqCst);
         return context.replies.reply(
             &id,
-            Err((-32006, "too many prompts are on their way on this Mac".into())),
+            Err((
+                -32006,
+                "too many prompts are on their way on this Mac".into(),
+            )),
         );
     }
     let replies = context.replies.clone();

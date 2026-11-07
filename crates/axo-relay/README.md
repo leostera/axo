@@ -2,7 +2,7 @@
 
 Axod's side of the Axo cloud: it links this host to an account, keeps an authenticated WebSocket to the relay so remote clients can list, create and drive Sessions, uploads every Session's transcript, and keeps a copy of the account's other Macs' Sessions.
 
-Everything runs on threads that `RelayWorker::start` owns. The crate reaches axod only through the `RelayHost` trait (`host.rs`), so it holds no catalog or process state of its own.
+Everything runs on threads that `RelayWorker::start` owns. The host's socket runs on a tokio runtime of its own, on the relay thread: one loop waits on the socket, the outgoing queue, the heartbeat and the control's wake-up at once. Beside it, one thread answers the host's requests in order and one forwards local events. The crate reaches axod only through the `RelayHost` trait (`host.rs`), so it holds no catalog or process state of its own.
 
 ## Layout
 

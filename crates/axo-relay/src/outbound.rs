@@ -10,9 +10,11 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, SyncSender};
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use serde_json::{Value, json};
 
@@ -93,7 +95,7 @@ impl Abandon {
 
 struct Live {
     epoch: u64,
-    tx: Sender<Outgoing>,
+    tx: UnboundedSender<Outgoing>,
 }
 
 /// The handle threads use to reach the cloud. Cheap to share.
@@ -215,9 +217,9 @@ impl RelayChannel {
     }
 
     /// The relay loop opened a socket: from now on threads queue onto it.
-    pub(crate) fn attach(&self) -> (u64, Receiver<Outgoing>, ReplySender) {
+    pub(crate) fn attach(&self) -> (u64, UnboundedReceiver<Outgoing>, ReplySender) {
         let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = unbounded_channel();
         let replies = ReplySender { tx: tx.clone() };
         if let Ok(mut live) = self.live.lock() {
             *live = Some(Live { epoch, tx });
@@ -276,7 +278,7 @@ impl RelayChannel {
 /// nowhere: they are never sent on the next one.
 #[derive(Clone)]
 pub struct ReplySender {
-    tx: Sender<Outgoing>,
+    tx: UnboundedSender<Outgoing>,
 }
 
 impl ReplySender {
@@ -288,6 +290,11 @@ impl ReplySender {
             }
         }
         .to_string();
+        self.send(text);
+    }
+
+    /// Sends a reply already written out.
+    pub(crate) fn send(&self, text: String) {
         let _ = self.tx.send(Outgoing {
             text,
             priority: Priority::Control,
@@ -357,7 +364,7 @@ impl Outbox {
         None
     }
 
-    #[cfg(test)]
+    /// Whether nothing waits to be sent.
     pub(crate) fn is_empty(&self) -> bool {
         self.classes.iter().all(VecDeque::is_empty)
     }
@@ -454,14 +461,14 @@ mod tests {
             Err(RelayCallError::NotConnected)
         );
 
-        let (epoch, rx, _replies) = channel.attach();
+        let (epoch, mut rx, _replies) = channel.attach();
         let caller = {
             let channel = Arc::clone(&channel);
             thread::spawn(move || {
                 channel.request("m", json!({}), Priority::Control, Duration::from_secs(5))
             })
         };
-        let sent: Value = serde_json::from_str(&rx.recv().unwrap().text).unwrap();
+        let sent: Value = serde_json::from_str(&rx.blocking_recv().unwrap().text).unwrap();
         assert!(
             channel
                 .resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": { "ok": true } }))
@@ -474,7 +481,7 @@ mod tests {
                 channel.request("m", json!({}), Priority::Control, Duration::from_secs(5))
             })
         };
-        rx.recv().unwrap();
+        rx.blocking_recv().unwrap();
         channel.detach(epoch);
         assert_eq!(caller.join().unwrap(), Err(RelayCallError::Disconnected));
         assert!(!channel.connected());
@@ -483,7 +490,7 @@ mod tests {
     #[test]
     fn an_abandoned_request_stops_waiting_and_its_late_reply_is_dropped() {
         let channel = RelayChannel::new();
-        let (_epoch, rx, _replies) = channel.attach();
+        let (_epoch, mut rx, _replies) = channel.attach();
         let (handed, abandon) = mpsc::channel();
         let caller = {
             let channel = Arc::clone(&channel);
@@ -497,7 +504,7 @@ mod tests {
                 )
             })
         };
-        let sent: Value = serde_json::from_str(&rx.recv().unwrap().text).unwrap();
+        let sent: Value = serde_json::from_str(&rx.blocking_recv().unwrap().text).unwrap();
         abandon.recv().unwrap().abandon();
         assert_eq!(caller.join().unwrap(), Err(RelayCallError::Abandoned));
         assert!(
@@ -512,7 +519,7 @@ mod tests {
         let (old, old_rx, old_replies) = channel.attach();
         drop(old_rx);
         channel.detach(old);
-        let (_new, new_rx, _) = channel.attach();
+        let (_new, mut new_rx, _) = channel.attach();
         old_replies.reply(&json!("call-1"), Ok(json!({})));
         assert!(new_rx.try_recv().is_err());
     }

@@ -335,8 +335,10 @@ fn daemon_socket(stream: TcpStream, shared: Arc<Shared>) {
         shared.changed.notify_all();
         state.generation
     };
+    // The hub sends what a test queued between reads, so a short read keeps it from adding its
+    // own delay to every call (conformance_relay measures axod's).
     stream
-        .set_read_timeout(Some(Duration::from_millis(20)))
+        .set_read_timeout(Some(Duration::from_millis(1)))
         .unwrap();
     converse(&mut socket, generation, &outgoing, &shared, is_daemon);
     let _ = socket.close(None);

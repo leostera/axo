@@ -874,7 +874,7 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.24.0",
  "tracing",
  "url",
  "uuid",
@@ -990,6 +990,7 @@ dependencies = [
  "cua-driver-core",
  "cursor-overlay",
  "env_logger",
+ "futures-util",
  "hpke",
  "httparse",
  "jsonrpc-core",
@@ -1006,6 +1007,7 @@ dependencies = [
  "sha2",
  "shlex",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tungstenite 0.30.0",
  "url",
  "zeroize",
@@ -2689,7 +2691,7 @@ dependencies = [
  "time",
  "tiny-skia",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.24.0",
  "tracing",
  "uuid",
  "zeroize",
@@ -3718,6 +3720,20 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tungstenite 0.24.0",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
+dependencies = [
+ "futures-util",
+ "log",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tungstenite 0.30.0",
 ]
 
 [[package]]
