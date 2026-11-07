@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
@@ -25,7 +25,6 @@ export type AccountProfile = { email: string | null; name: string | null };
 
 /** The phone's layers, left to right. The conversation is home. */
 type Layer = "account" | "chats" | "conversation" | "info";
-const layerOrder: Layer[] = ["account", "chats", "conversation", "info"];
 
 type Appearance = "system" | "light" | "dark";
 const APPEARANCE_KEY = "axo.appearance";
@@ -168,24 +167,8 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
     else setLayer(layer === "info" ? "conversation" : "info");
   };
 
-  // A swipe moves the stack one layer, as on the phone; only where the layers stack.
-  const swipe = useRef<{ x: number; y: number; id: number } | null>(null);
-  const onPointerDown = (event: ReactPointerEvent) => {
-    if (wide || event.pointerType === "mouse") return;
-    swipe.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
-  };
-  const onPointerUp = (event: ReactPointerEvent) => {
-    const start = swipe.current;
-    swipe.current = null;
-    if (!start || start.id !== event.pointerId) return;
-    const dx = event.clientX - start.x;
-    const dy = event.clientY - start.y;
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    const index = layerOrder.indexOf(layer) + (dx > 0 ? -1 : 1);
-    const next = layerOrder[Math.max(0, Math.min(layerOrder.length - 1, index))]!;
-    setLayer(next);
-  };
-
+  // No swipes: the panes open and close by the bars' buttons alone, so selecting a message's text
+  // (a drag, or a long press on a phone) is never taken for a swipe.
   const sidebar: Layer = wide ? (layer === "account" ? "account" : "chats") : layer;
   const stackClass = wide
     ? `stack wide sidebar-${sidebar}${infoOpen ? " info-open" : ""}`
@@ -193,7 +176,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
 
   return (
     <main className="chat-app">
-      <div className={stackClass} inert={settings !== null} onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerCancel={() => { swipe.current = null; }}>
+      <div className={stackClass} inert={settings !== null}>
         <div className="layer layer-account" inert={wide ? sidebar !== "account" : layer !== "account"}>
           <AccountPanel
             workbench={workbench}

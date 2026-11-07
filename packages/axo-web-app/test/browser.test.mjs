@@ -782,6 +782,27 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.waitForFunction(() => document.querySelector(".layer-conversation").getBoundingClientRect().left === 0, null, { timeout: 5_000 });
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
     await shot("phone-chat");
+    // Nothing swipes the panes: a sideways drag over a message, by finger or by mouse to select
+    // its text, leaves the conversation where it is; only the bars' buttons move the panes.
+    const message = page.locator(".layer-conversation .message p").first();
+    const messageBox = await message.boundingBox();
+    await message.evaluate((element, { y }) => {
+      for (const [type, x] of [["pointerdown", 320], ["pointermove", 200], ["pointermove", 60], ["pointerup", 20]]) {
+        element.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch", pointerId: 7, isPrimary: true, clientX: x, clientY: y }));
+      }
+      for (const [type, x] of [["pointerdown", 20], ["pointermove", 200], ["pointerup", 360]]) {
+        element.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch", pointerId: 8, isPrimary: true, clientX: x, clientY: y }));
+      }
+    }, { y: messageBox.y + messageBox.height / 2 });
+    await page.mouse.move(messageBox.x + 2, messageBox.y + messageBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(messageBox.x + messageBox.width - 2, messageBox.y + messageBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    assert.ok((await page.evaluate(() => window.getSelection()?.toString() ?? "")).length > 0, "the drag selected the message's text");
+    assert.match(await page.locator(".stack").getAttribute("class"), /at-conversation/, "no pane moved");
+    assert.equal(await chatsLeft(), 0);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".stack")).touchAction), "auto", "a long press can select text");
     await page.emulateMedia({ colorScheme: "dark" });
     await shot("phone-chat-dark");
     await page.setViewportSize({ width: 1440, height: 960 });
