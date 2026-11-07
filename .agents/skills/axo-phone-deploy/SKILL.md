@@ -6,10 +6,9 @@ description: Build and install the Axo iPhone app on Leo's phone. Use after any 
 # Axo phone deploy
 
 **Redeploy the phone app after every validated AxoPhone change.** Tests passing in the
-simulator are not delivery; Leo tries changes on his phone. Installing on the phone is local
-delivery; releasing (TestFlight, the Mac app, the Worker) goes through the release coordinator
-Session: announce it, as [packaging](../axo-macos-packaging/SKILL.md)'s "Releases go through the
-release coordinator" says.
+simulator are not delivery; Leo tries changes on his phone. When the change also touches the
+Mac app, axod or anything else shipped, publish that too, following
+[packaging](../axo-macos-packaging/SKILL.md)'s "Always publish and deploy safe changes".
 
 Every `bazel build` builds `//apple/AxoPhone:AxoPhoneDevice` for arm64 when this Mac has the
 phone's provisioning profile, and installs and relaunches it on the phone when

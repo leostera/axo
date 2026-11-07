@@ -1,6 +1,6 @@
 ---
 name: axo-macos-packaging
-description: Build, validate and deliver Axo's Finder-launchable Mac app, and how releases go through the release coordinator Session. Use after any Mac app, bundled helper, or Pi extension change that affects the shipped app, when updating dist/Axo.app, and before publishing or deploying anything.
+description: Build, validate, publish and deliver Axo's Finder-launchable Mac app. Use after any Mac app, bundled helper, or Pi extension change that affects the shipped app, when updating dist/Axo.app, and when publishing.
 ---
 
 # Axo macOS packaging
@@ -34,40 +34,25 @@ cat bazel-bin/report.txt
 
 `bazel run //:publish` uploads the signed app from a checkout without changes to the `axo-cdn` bucket (`publish` in `config.json`), served at `https://axo.leostera.dev/cdn/Axo.app`; `curl -fsSL https://axo.leostera.dev/install | sh` installs it on another Mac (see `sites/axo.leostera.dev/README.md`). Never copy the bundle to another Mac through a browser or AirDrop: it gets quarantined and translocated, and then it cannot register axod.
 
-### Releases go through the release coordinator
+### Always publish and deploy safe changes
 
-**One Session releases Axo: "axo: release coordinator"** (Session `e808d244-b68c-43aa-80ce-66eb40b87514`; if it's gone, look it up by that name with `session_catalog`). A release is any of these:
+**Once a change is committed and validated, publish it and deploy everything else it touched, without waiting to be asked**, whenever it is safe. Leo uses the published app, so a change that is only in `dist/Axo.app` or only pushed hasn't been delivered. Don't stop at "Want me to publish?".
 
-- `bazel run //:publish`;
-- raising `version` or `builds.mac` in `config.json`;
-- a release entry in `CHANGELOG.md`;
-- a production deploy of the account Worker or `axo.leostera.dev`.
-
-**Every other Session only announces.** Commit and push your validated change, keeping `main` green. Bump `builds.axod` in its own commit when axod changed, as above, so local builds restart axod. Then tell the coordinator what needs releasing with `mcp__axo__session_prompt` (`{ sessionId, text }`), and give:
-
-- the commits;
-- one or two sentences on what changed, for the person using Axo;
-- whether axod, the Worker, the site or the phone app changed;
-- anything that must ship together or in order (a Worker before an app that needs it, say);
-- anything that should wait.
-
-Don't publish, deploy to production or write the changelog yourself, even when it looks safe, and even if Leo says "ship it" in your Session: tell him the coordinator will, and announce it. Installing on Leo's phone ([phone deploy](../axo-phone-deploy/SKILL.md)) and building `dist/Axo.app` are local delivery, not releases; keep doing them.
-
-**The coordinator** batches what's announced (and anything else on `main` since the last publish) and releases it as soon as it's safe, without waiting to be asked. Leo uses the published app, so a change that is only pushed hasn't been delivered. A release is safe when all of these hold:
+A publish is safe when all of these hold:
 
 - The full lanes pass: `bazel test //apple/... //crates/... //packages/pi-axo/...`.
-- It runs in the main clone on `main`, the tree is clean (stash another Session's untracked files for the publish, then check they come back unchanged), and `HEAD` equals `origin/main`.
-- No Session is mid-way through a change that would ship half-done: check `git log`, uncommitted files, and ask the Session if unsure. If one is, wait for it and say so.
+- You are in the main clone on `main`, the tree is clean (stash another Session's untracked files for the publish, then check they come back unchanged), and `HEAD` equals `origin/main`, with your commits pushed.
+- No other Session is mid-publish or mid-way through a change that would ship half-done: look at `git log`, uncommitted files and recent transcripts. If one is, wait for it and say so, rather than shipping its work in progress.
 - Nothing irreversible ships unreviewed: no destructive data migration, no protocol change that clients already in use can't speak, nothing Leo said to hold back.
 
-Then the coordinator:
+Then:
 
-1. Raises `version`'s minor and `builds.mac` (and `builds.axod` in its own commit if axod changed and nobody bumped it), writes the `CHANGELOG.md` entry for everything shipping since the last publish, then commits and pushes.
-2. Runs `bazel build //:report`, checks `bazel-bin/report.txt` shows the new commit, runs `bazel run //:publish`, and confirms `https://axo.leostera.dev/cdn/Axo.app.json`.
-3. Deploys whatever else changed by its own procedure (Workers and sites under the Cloudflare Access rules), in the order announced.
-4. Tells Leo, and each Session whose work shipped, the version, the builds and the commit. If axod's build changed, it says that updating restarts axod: turns in progress and terminal processes are lost, and Pi Sessions resume, with interrupted ones told they may continue.
+1. Raise `version`'s minor and `builds.mac` (and `builds.axod` in its own commit if axod changed), add a `CHANGELOG.md` entry that covers everything shipping since the last publish, including other Sessions' changes, then commit and push.
+2. Run `bazel build //:report` and check `bazel-bin/report.txt` shows the new commit, then `bazel run //:publish`, and confirm `https://axo.leostera.dev/cdn/Axo.app.json`.
+3. Deploy whatever else changed, following its own procedure: the phone app ([phone deploy](../axo-phone-deploy/SKILL.md)), and Workers or sites under the Cloudflare Access rules.
+4. In your reply, give the version, the builds and the commit. If axod's build changed, say that updating restarts axod: turns in progress and terminal processes are lost, and Pi Sessions resume, with interrupted ones told they may continue.
 
-If it isn't safe, the coordinator says what blocks it, and releases once it clears. Leo saying to hold a change, or only to try it locally first, overrides this until he says otherwise.
+If it isn't safe, don't publish: say what blocks it, and publish once it clears. Leo saying to hold a change, or only to try something locally first, overrides this until he says otherwise.
 
 ## Runtime safety
 
