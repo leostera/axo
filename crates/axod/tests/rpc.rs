@@ -165,6 +165,11 @@ fn start_axod_with_pi(
         .arg(socket)
         .arg("--server-dir")
         .arg(directory)
+        // Hermetic: never the login Keychain or the production relay.
+        .arg("--host-credentials")
+        .arg("files")
+        .arg("--relay-url")
+        .arg("http://127.0.0.1:9")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
