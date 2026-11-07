@@ -72,20 +72,23 @@ struct ConversationView: View {
         LazyVStack(alignment: .leading, spacing: 30) {
           olderHistory
           if transcript.messages.isEmpty { emptyState }
-          // The records, then the reply as far as it has got.
-          ForEach(shownMessages) { shown in
-            ChatMessageView(
-              message: shown.message, piIsWorking: shown.isLive || transcript.activity == .working, isLive: shown.isLive,
-              entrance: entrance(of: shown))
-          }
-          ForEach(pending) { prompt in
-            PendingPromptView(
-              prompt: prompt,
-              editAgain: {
-                if let selection = phone.selection { phone.setDraft(prompt.text, for: selection) }
-                if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) }
-              },
-              dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
+          // The records, the person's messages on their way and the reply as far as it has got,
+          // each in the place it keeps (see `ConversationRow`).
+          ForEach(ConversationRow.rows(shown: shownMessages, pending: pending)) { row in
+            switch row {
+            case .message(let shown):
+              ChatMessageView(
+                message: shown.message, piIsWorking: shown.isLive || transcript.activity == .working, isLive: shown.isLive,
+                entrance: entrance(of: shown))
+            case .pending(let prompt):
+              PendingPromptView(
+                prompt: prompt,
+                editAgain: {
+                  if let selection = phone.selection { phone.setDraft(prompt.text, for: selection) }
+                  if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) }
+                },
+                dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
+            }
           }
           if let id = session?.sessionId {
             ForEach(phone.questions(in: id)) { question in

@@ -98,6 +98,22 @@ public final class HostWorkbenchModel {
     /// Files already in the account, fetched by the Mac before Pi gets the prompt (RFD0030).
     public var attachments: [Attachment] = []
     public fileprivate(set) var state: State
+    /// Sent while the agent was busy: it waits behind the reply being written, and shows below
+    /// it; otherwise it starts the next reply, and shows above it.
+    public var behindReply = false
+
+    /// Its row in the conversation, the same as its record's once that arrives, so the row the
+    /// screen holds its place by does not vanish under the reader.
+    public var key: String { Self.key(commandId: id.uuidString.lowercased()) }
+    public static func key(commandId: String) -> String { "prompt:\(commandId)" }
+
+    init(id: UUID, text: String, attachments: [Attachment] = [], state: State, behindReply: Bool = false) {
+      self.id = id
+      self.text = text
+      self.attachments = attachments
+      self.state = state
+      self.behindReply = behindReply
+    }
   }
 
   /// Whether the account's socket is up.
@@ -390,7 +406,8 @@ public final class HostWorkbenchModel {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let session = selectedSession, !prompt.isEmpty || !attachments.isEmpty else { return .notSent }
     let id = session.sessionId
-    let pending = PendingPrompt(id: UUID(), text: prompt, attachments: attachments, state: .sending)
+    let busy = chat(id).transcript?.activity == .working
+    let pending = PendingPrompt(id: UUID(), text: prompt, attachments: attachments, state: .sending, behindReply: busy)
     chat(id).pending.append(pending)
     let outcome = await deliver(pending, in: id, attempt: 0)
     if outcome == .notSent { removePending(pending.id, in: id) }
@@ -419,7 +436,9 @@ public final class HostWorkbenchModel {
     else { return outcome }
     switch outcome {
     case .accepted:
-      chat.pending[index].state = chat.transcript?.activity == .working ? .queued : .sent
+      // Busy when it was sent, not when the Mac answered: by then the agent may be working on
+      // this very message.
+      chat.pending[index].state = pending.behindReply ? .queued : .sent
     case .uncertain:
       chat.pending[index].state = .uncertain
       if attempt < Self.maxRetries { scheduleRetry(of: pending, in: id, attempt: attempt + 1) }

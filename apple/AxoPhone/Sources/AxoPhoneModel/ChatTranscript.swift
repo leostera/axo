@@ -248,6 +248,8 @@ public struct ChatTranscript: Equatable, Sendable {
     guard case .message(let id, let message) = entry, let role = message["role"]?.stringValue else {
       return
     }
+    // The person's message sent by a client: keyed as its pending row was (see `PendingPrompt.key`).
+    let promptKey = role == "user" ? receipt.map { HostWorkbenchModel.PendingPrompt.key(commandId: $0) } : nil
     if role == "user" {
       lastUserEntry = id
       if let receipt { delivered.insert(receipt) }
@@ -272,7 +274,8 @@ public struct ChatTranscript: Equatable, Sendable {
           id: index == 0 ? id : "\(id)#\(index)", role: piece.role, text: piece.text,
           blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
           timestamp: timestamp, tool: tool, images: piece.images,
-          replyKey: role == "assistant" ? ChatMessage.replyKey(timestamp: timestamp, index: index) : nil))
+          replyKey: role == "assistant"
+            ? ChatMessage.replyKey(timestamp: timestamp, index: index) : index == 0 ? promptKey : promptKey.map { "\($0)#\(index)" }))
     }
   }
 
