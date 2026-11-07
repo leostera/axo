@@ -6,7 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
-- **Session controls on the web** (RFD0033). The message box names the model and thinking level the chat's Pi runs ("Opus 4.1 · High"), and picking another switches it. Typing `/` lists the commands this Pi runs: prompt templates, skills and extension commands. Holding Send (or ⌘↵) steers a working agent at its next step instead of waiting for its reply. Chat info has Restart Pi.
+- **Session controls on the web and the phone** (RFD0033). The message box names the model and thinking level the chat's Pi runs ("Opus 4.1 · High"), and picking another switches it. Typing `/` lists the commands this Pi runs: prompt templates, skills and extension commands. Holding Send (or ⌘↵ on the web) steers a working agent at its next step instead of waiting for its reply. Chat info has Restart Pi.
 
 ### Changed
 
