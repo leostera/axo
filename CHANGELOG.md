@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.27 (Mac app build 298, axod 50)
+
+### Added
+
+- **Session controls on the web** (RFD0033). The message box names the model and thinking level the chat's Pi runs ("Opus 4.1 · High"), and picking another switches it. Typing `/` lists the commands this Pi runs: prompt templates, skills and extension commands. Holding Send (or ⌘↵) steers a working agent at its next step instead of waiting for its reply. Chat info has Restart Pi.
+
+### Changed
+
+- A message sent while Pi works is written to the Session's log before it is accepted, so a reload, a closed tab, or Pi exiting or restarting can't lose it. It shows as Queued or Steering until Pi takes it, on every device.
+- Restart works on a running Pi too: it stops the reply and starts Pi again on the same conversation.
+
 ## 0.26 (Mac app build 297, axod 49)
 
 ### Changed
