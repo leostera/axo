@@ -15,6 +15,7 @@ npm_package(
 
 _DEPS = [
     ":node_modules/@axo/protocol",
+    ":node_modules/@hpke/core",
     ":node_modules/zod",
 ]
 
