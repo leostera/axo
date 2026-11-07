@@ -922,14 +922,17 @@ mod tests {
             .unwrap()
             .role = PaneRole::Terminal;
         let command_id = |text: &str| {
-            axo_relay::CommandId::try_from(format!(
-                "00000000-0000-4000-8000-{:012x}",
-                text.len()
-            ))
-            .unwrap()
+            axo_relay::CommandId::try_from(format!("00000000-0000-4000-8000-{:012x}", text.len()))
+                .unwrap()
         };
         let refused = manager
-            .prompt_pi(session.id, "hello", &command_id("hello"), &[], rpc::PromptDelivery::FollowUp)
+            .prompt_pi(
+                session.id,
+                "hello",
+                &command_id("hello"),
+                &[],
+                rpc::PromptDelivery::FollowUp,
+            )
             .unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 
@@ -942,17 +945,35 @@ mod tests {
             .role = PaneRole::Pi;
         for bad in ["", "   \n", &"x".repeat(MAX_PI_PROMPT_BYTES + 1)] {
             let error = manager
-                .prompt_pi(session.id, bad, &command_id(bad), &[], rpc::PromptDelivery::FollowUp)
+                .prompt_pi(
+                    session.id,
+                    bad,
+                    &command_id(bad),
+                    &[],
+                    rpc::PromptDelivery::FollowUp,
+                )
                 .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
         // A person's prompt is answered only once Pi has it (RFD0033): a Pi still starting after
         // a moment is answered as starting, and nothing is kept for it.
         let starting = manager
-            .prompt_pi(session.id, "early", &command_id("early"), &[], rpc::PromptDelivery::FollowUp)
+            .prompt_pi(
+                session.id,
+                "early",
+                &command_id("early"),
+                &[],
+                rpc::PromptDelivery::FollowUp,
+            )
             .unwrap_err();
         assert_eq!(starting.kind(), io::ErrorKind::TimedOut);
-        assert!(!manager.lock_state().unwrap().queued_pi_prompts.contains_key(&session.id));
+        assert!(
+            !manager
+                .lock_state()
+                .unwrap()
+                .queued_pi_prompts
+                .contains_key(&session.id)
+        );
         // An agent's prompt waits for Pi to start.
         manager
             .prompt_session(&rpc::PromptSession {
@@ -1121,7 +1142,13 @@ mod tests {
             axo_relay::CommandId::try_from("6F1D2C3B-4A5E-4F60-8A7B-9C0D1E2F3A4B".to_owned())
                 .unwrap();
         manager
-            .prompt_pi(session.id, "yes", &command_id, &[], rpc::PromptDelivery::Steer)
+            .prompt_pi(
+                session.id,
+                "yes",
+                &command_id,
+                &[],
+                rpc::PromptDelivery::Steer,
+            )
             .unwrap();
         assert_eq!(
             actions.recv_timeout(Duration::from_secs(5)).unwrap(),
@@ -1138,12 +1165,8 @@ mod tests {
             serde_json::json!({ "kind": "stop", "turnId": "turn-running" })
         );
         // What else the client saw of the run goes to Pi as it is.
-        let seen = axo_relay::StopTarget::new(
-            None,
-            Some(turn("e9")),
-            vec![command_id.clone()],
-        )
-        .unwrap();
+        let seen =
+            axo_relay::StopTarget::new(None, Some(turn("e9")), vec![command_id.clone()]).unwrap();
         manager.stop_pi_turn(session.id, &seen).unwrap();
         let _ended = actions.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(

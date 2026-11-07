@@ -320,7 +320,10 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         self.0.pi_commands(session_id)
     }
 
-    fn remote_pi_models(&self, session_id: SessionId) -> io::Result<Vec<axo_protocol::PiModelInfo>> {
+    fn remote_pi_models(
+        &self,
+        session_id: SessionId,
+    ) -> io::Result<Vec<axo_protocol::PiModelInfo>> {
         self.0.pi_models(session_id)
     }
 

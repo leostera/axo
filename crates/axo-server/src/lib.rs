@@ -6,8 +6,6 @@ use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::Duration;
 
 use axo_ipc::{ErrorCode, Extension, Methods, RpcError, TypedMethods};
@@ -19,7 +17,6 @@ mod session;
 mod workspace_access;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
-static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub const BUILD_NUMBER: &str = match option_env!("AXO_BUILD_NUMBER") {
     Some(build_number) => build_number,
@@ -219,6 +216,7 @@ pub fn serve_ipc(
     prepare_runtime_directory(&socket_path.0)?;
     remove_stale_socket(&socket_path.0)?;
 
+    let runtime = axod_runtime()?;
     session::set_agent_socket(&socket_path.0);
     let sessions_directory = sessions_directory_for(server_directory);
     let sessions = session::SessionManager::open(server_directory, &sessions_directory)?;
@@ -248,9 +246,6 @@ pub fn serve_ipc(
             None
         }
     };
-    let relay_stop = remote_relay
-        .as_ref()
-        .map(axo_relay::RelayWorker::stop_handle);
     let relay = remote_relay.as_ref().map(|worker| RelayContext {
         control: worker.control_handle(),
         channel: worker.channel_handle(),
@@ -262,25 +257,13 @@ pub fn serve_ipc(
     let listener = std::os::unix::net::UnixListener::bind(&socket_path.0)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
     let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
-    let signal_handlers = SignalHandlers::install()?;
-    let stop_watcher = Arc::new(AtomicBool::new(false));
-    let stop_server = Arc::new(AtomicBool::new(false));
-    let close_server = Arc::clone(&stop_server);
-    let watcher_stop = Arc::clone(&stop_watcher);
-    let signal_watcher = thread::Builder::new()
-        .name("axo-shutdown-signals".into())
-        .spawn(move || {
-            while !watcher_stop.load(Ordering::Relaxed) {
-                if SHUTDOWN_REQUESTED.swap(false, Ordering::Relaxed) {
-                    if let Some(relay_stop) = &relay_stop {
-                        relay_stop.store(true, Ordering::Relaxed);
-                    }
-                    close_server.store(true, Ordering::Relaxed);
-                    break;
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-        })?;
+    let stop = axo_ipc::Stop::default();
+    let signalled = {
+        // Signal streams register with the runtime they are made in.
+        let _inside = runtime.enter();
+        stop_on_signal(stop.clone())?
+    };
+    runtime.spawn(signalled);
 
     log::info!("event=daemon.ready pid={}", std::process::id());
     // `axod mcp` opens the MCP server for its Session on its connection (RFD0034).
@@ -289,70 +272,45 @@ pub fn serve_ipc(
     upgrades.add(axo_mcp::OPEN, move |upgraded| {
         axo_mcp::upgrade(upgraded, mcp_socket.clone())
     });
-    let served = axo_ipc::serve(listener, handler, upgrades, stop_server);
-    stop_watcher.store(true, Ordering::Relaxed);
-    let _ = signal_watcher.join();
+    let served = axo_ipc::serve(runtime.handle(), listener, handler, upgrades, stop);
     if let Some(relay) = remote_relay.as_mut() {
         relay.shutdown();
     }
     sessions.shutdown();
-    drop(signal_handlers);
+    // Requests still running get a moment to finish; then they are cut short.
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
     log::info!("event=daemon.server_stopped");
     served?;
     Ok(())
 }
 
-extern "C" fn request_shutdown(_: libc::c_int) {
-    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+/// Grace for requests still running when axod stops.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// axod's one runtime (RFD0034, step 7): the socket, its requests, the MCP servers and the
+/// relay run on it; blocking work runs on its blocking pool.
+fn axod_runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("axod")
+        .enable_all()
+        .build()
 }
 
-struct SignalHandlers {
-    previous_terminate: libc::sighandler_t,
-    previous_interrupt: libc::sighandler_t,
-}
-
-impl SignalHandlers {
-    fn install() -> io::Result<Self> {
-        SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
-        // SAFETY: request_shutdown only performs an atomic store, which is signal-safe.
-        let previous_terminate = unsafe {
-            libc::signal(
-                libc::SIGTERM,
-                request_shutdown as *const () as libc::sighandler_t,
-            )
+/// Stops axod on SIGTERM or SIGINT. The streams are made now, so a signal from here on is never
+/// missed, and they replace the default handlers, which would kill the process.
+fn stop_on_signal(stop: axo_ipc::Stop) -> io::Result<impl std::future::Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    Ok(async move {
+        let name = tokio::select! {
+            _ = terminate.recv() => "SIGTERM",
+            _ = interrupt.recv() => "SIGINT",
         };
-        if previous_terminate == libc::SIG_ERR {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: request_shutdown only performs an atomic store, which is signal-safe.
-        let previous_interrupt = unsafe {
-            libc::signal(
-                libc::SIGINT,
-                request_shutdown as *const () as libc::sighandler_t,
-            )
-        };
-        if previous_interrupt == libc::SIG_ERR {
-            // SAFETY: restore the prior SIGTERM handler after SIGINT setup failed.
-            unsafe {
-                libc::signal(libc::SIGTERM, previous_terminate);
-            }
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self {
-            previous_terminate,
-            previous_interrupt,
-        })
-    }
-}
-
-impl Drop for SignalHandlers {
-    fn drop(&mut self) {
-        // SAFETY: restore the process's prior handlers after the watcher stopped.
-        unsafe {
-            libc::signal(libc::SIGTERM, self.previous_terminate);
-            libc::signal(libc::SIGINT, self.previous_interrupt);
-        }
-    }
+        log::info!("event=daemon.signal signal={name}");
+        stop.stop();
+    })
 }
 
 /// axod's methods, from its extensions (RFD0034). Each method has one owner; two claiming the

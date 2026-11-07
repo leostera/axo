@@ -251,3 +251,22 @@ fn sigterm_stops_axod_and_its_panes() {
         });
     }
 }
+
+/// launchd stops axod with SIGTERM, a terminal with SIGINT: either stops it on its own, cleanly
+/// and at once, without the SIGKILL that `stop` falls back to.
+#[test]
+fn a_signal_stops_axod_cleanly() {
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        let mut axod = Axod::start();
+        axod.ok("axo.session.list", json!({}));
+        // SAFETY: signals only the axod this test started.
+        unsafe { libc::kill(axod.pid() as libc::pid_t, signal) };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        while axod.running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!axod.running(), "signal {signal} did not stop axod:\n{}", axod.log());
+        let log = axod.log();
+        assert!(log.contains("event=daemon.server_stopped"), "{log}");
+    }
+}

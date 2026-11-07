@@ -264,7 +264,7 @@ export const Axod = defineActor({
       on: Terminate,
       uses: [stops],
       description: "SIGTERM: says goodbye on the socket with the reason it was given (or \"stop\"), stops Pi and its shells, and exits.",
-      sources: ["crates/axo-server/src/lib.rs#request_shutdown", "crates/axo-relay/src/relay.rs#RelayWorker::shutdown"],
+      sources: ["crates/axo-server/src/lib.rs#stop_on_signal", "crates/axo-relay/src/relay.rs#RelayWorker::shutdown"],
       sends: [Goodbye, Dropped, Exited],
       say: (s) => `Stopping generation ${s.generation}`,
       run(s, _m, ctx) {

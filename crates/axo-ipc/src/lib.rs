@@ -8,9 +8,11 @@ pub mod extension;
 pub mod local;
 pub mod peer;
 mod server;
+pub mod stop;
 
 pub use event_queue::{EventQueue, PushOutcome};
 pub use extension::{Conflict, Extension, Methods};
 pub use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 pub use local::{Local, LocalError};
 pub use server::{Only, TypedMethods, Upgraded, Upgrades, serve};
+pub use stop::Stop;

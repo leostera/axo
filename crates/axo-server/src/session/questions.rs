@@ -36,18 +36,6 @@ impl SessionManager {
         Arc::clone(&self.elicitations)
     }
 
-    /// Asks in `session_id`, which may run on another Mac (RFD0028), and waits.
-    pub(crate) fn ask(
-        &self,
-        session_id: SessionId,
-        message: &str,
-        asked_by: Asker,
-        timeout: Duration,
-    ) -> Result<ElicitationOutcome, RpcError> {
-        self.elicitations
-            .ask(self, session_id, message, asked_by, timeout)
-    }
-
     /// Asks for a form and waits; an accepted form comes with its values.
     pub(crate) fn ask_with(
         &self,

@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::io;
 use std::os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use std::future::Future;
@@ -28,10 +27,6 @@ use crate::peer::Signer;
 const MAX_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
 /// Requests one connection may have in flight before its reader waits.
 const MAX_IN_FLIGHT_PER_CONNECTION: usize = 64;
-/// How often the accept loop checks for shutdown.
-const STOP_POLL_INTERVAL: Duration = Duration::from_millis(20);
-/// Grace period for in-flight blocking handlers when the daemon stops.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// Requests slower than this are logged once with their method and duration. Long-polls
 /// (`axo.session.events.next`) wait by design and are excluded.
 const SLOW_REQUEST: Duration = Duration::from_millis(100);
@@ -268,47 +263,48 @@ impl Upgrades {
     }
 }
 
-/// Serves `handler` on `listener` until `stop` is set. Blocks the calling thread.
+/// Serves `handler` on `listener`, on `runtime`, until `stop`. Blocks the calling thread, which
+/// must not be one of the runtime's. Requests still running when it returns are the runtime
+/// owner's to wait for or cut short.
 pub fn serve(
+    runtime: &tokio::runtime::Handle,
     listener: StdUnixListener,
     handler: IoHandler,
     upgrades: Upgrades,
-    stop: Arc<AtomicBool>,
+    stop: crate::Stop,
 ) -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("axo-rpc")
-        .enable_all()
-        .build()?;
-    let served = accept_until_stopped(listener, Arc::new(handler), Arc::new(upgrades), stop);
-    let result = runtime.block_on(served);
-    runtime.shutdown_timeout(SHUTDOWN_GRACE);
-    result
+    runtime.block_on(accept_until_stopped(
+        listener,
+        Arc::new(handler),
+        Arc::new(upgrades),
+        stop,
+    ))
 }
 
 async fn accept_until_stopped(
     listener: StdUnixListener,
     handler: Arc<IoHandler>,
     upgrades: Arc<Upgrades>,
-    stop: Arc<AtomicBool>,
+    stop: crate::Stop,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let listener = tokio::net::UnixListener::from_std(listener)?;
-    while !stop.load(Ordering::Relaxed) {
-        // Accept wakes immediately on a connection; the timeout only bounds the shutdown check.
-        match tokio::time::timeout(STOP_POLL_INTERVAL, listener.accept()).await {
-            Err(_) => {}
-            Ok(Ok((stream, _))) => {
+    loop {
+        let accepted = tokio::select! {
+            () = stop.stopped() => return Ok(()),
+            accepted = listener.accept() => accepted,
+        };
+        match accepted {
+            Ok((stream, _)) => {
                 let (handler, upgrades) = (Arc::clone(&handler), Arc::clone(&upgrades));
                 tokio::spawn(serve_connection(stream, handler, upgrades));
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 log::warn!("event=ipc.accept_failed error_kind={:?}", error.kind());
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
     }
-    Ok(())
 }
 
 /// One request line into `line`; `false` when the connection ends or misbehaves.
@@ -474,6 +470,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream as StdUnixStream;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A handler that waits until its request is cancelled, and says so on `cancelled`.
     fn serving(
@@ -481,7 +478,7 @@ mod tests {
     ) -> (
         std::path::PathBuf,
         std::sync::mpsc::Receiver<&'static str>,
-        Arc<AtomicBool>,
+        crate::Stop,
     ) {
         // Under /tmp: socket paths are limited to 104 bytes, and Bazel's TMPDIR is long.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -510,9 +507,19 @@ mod tests {
         handler.add_typed("quick", "expected {}", |_: Value| {
             Ok(crate::cancel::current().is_cancelled())
         });
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopping = Arc::clone(&stop);
-        std::thread::spawn(move || serve(listener, handler, upgraded(), stopping));
+        let stop = crate::Stop::default();
+        let stopping = stop.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let served = serve(runtime.handle(), listener, handler, upgraded(), stopping);
+            // Handlers still waiting are not waited for.
+            runtime.shutdown_background();
+            served
+        });
         (socket, cancelled, stop)
     }
 
@@ -561,7 +568,7 @@ mod tests {
             "{\"METHOD\":\"QUICK\"}",
             "no longer axod's requests"
         );
-        stop.store(true, Ordering::Relaxed);
+        stop.stop();
     }
 
     #[test]
@@ -578,7 +585,7 @@ mod tests {
         answers.sort_by_key(|answer| answer.get("error").is_some());
         assert_eq!(answers[0]["result"], false);
         assert_eq!(answers[1]["error"]["code"], -32601, "{}", answers[1]);
-        stop.store(true, Ordering::Relaxed);
+        stop.stop();
     }
 
     fn send(stream: &mut StdUnixStream, method: &str) {
@@ -600,7 +607,7 @@ mod tests {
             cancelled.recv_timeout(Duration::from_secs(5)),
             Ok("cancelled")
         );
-        stop.store(true, Ordering::Relaxed);
+        stop.stop();
     }
 
     #[test]
@@ -643,6 +650,6 @@ mod tests {
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         assert!(line.contains("\"result\":false"), "{line}");
-        stop.store(true, Ordering::Relaxed);
+        stop.stop();
     }
 }

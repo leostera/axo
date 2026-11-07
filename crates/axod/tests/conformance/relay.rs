@@ -22,10 +22,13 @@ const INVALID_PARAMS: i64 = -32602;
 
 /// An axod linked to `hub`, connected, and the target the account names it by.
 fn linked(hub: &FakeHub, pi: Pi) -> (Axod, Value) {
-    linked_with(hub, Options {
-        pi,
-        ..Options::default()
-    })
+    linked_with(
+        hub,
+        Options {
+            pi,
+            ..Options::default()
+        },
+    )
 }
 
 /// [`linked`], with axod started as `options` say.
@@ -41,7 +44,12 @@ fn linked_with(hub: &FakeHub, options: Options) -> (Axod, Value) {
         hub.wait_until_connected();
         hub.wait_for_request("axo.host.register")
     }))
-    .unwrap_or_else(|_| panic!("axod did not connect and register; axod log:\n{}", axod.log()));
+    .unwrap_or_else(|_| {
+        panic!(
+            "axod did not connect and register; axod log:\n{}",
+            axod.log()
+        )
+    });
     let target = json!({
         "hostId": register["params"]["hostId"],
         "hostGeneration": register["params"]["hostGeneration"],
@@ -252,7 +260,10 @@ fn a_prompt_from_the_account_says_when_a_working_pi_takes_it() {
         json!({ "target": target, "sessionId": session, "text": "look here", "delivery": "steer", "commandId": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d" }),
     );
     let log = axod.pi_log();
-    assert!(log.contains("DELIVERY:followUp:after this"), "a follow-up unless it says otherwise:\n{log}");
+    assert!(
+        log.contains("DELIVERY:followUp:after this"),
+        "a follow-up unless it says otherwise:\n{log}"
+    );
     assert!(log.contains("DELIVERY:steer:look here"), "{log}");
 
     let refused = hub
@@ -267,10 +278,13 @@ fn a_prompt_from_the_account_says_when_a_working_pi_takes_it() {
 #[test]
 fn a_prompt_to_a_starting_pi_is_answered_once_pi_has_it_in_its_log() {
     let hub = FakeHub::start();
-    let (axod, target) = linked_with(&hub, Options {
-        env: vec![("AXO_FAKE_PI_STARTUP_MS".into(), "1500".into())],
-        ..Options::default()
-    });
+    let (axod, target) = linked_with(
+        &hub,
+        Options {
+            env: vec![("AXO_FAKE_PI_STARTUP_MS".into(), "1500".into())],
+            ..Options::default()
+        },
+    );
     let session = axod.sessions()[0]["id"].clone();
     let accepted = hub.ok(
         "axo.remote.session.prompt",
@@ -284,15 +298,24 @@ fn a_prompt_to_a_starting_pi_is_answered_once_pi_has_it_in_its_log() {
 #[test]
 fn a_pi_too_slow_to_start_is_answered_as_starting_and_the_retry_is_taken_once() {
     let hub = FakeHub::start();
-    let (axod, target) = linked_with(&hub, Options {
-        env: vec![("AXO_FAKE_PI_STARTUP_MS".into(), "6000".into())],
-        ..Options::default()
-    });
+    let (axod, target) = linked_with(
+        &hub,
+        Options {
+            env: vec![("AXO_FAKE_PI_STARTUP_MS".into(), "6000".into())],
+            ..Options::default()
+        },
+    );
     let listed = axod.sessions()[0].clone();
     let prompt = json!({ "target": target, "sessionId": listed["id"], "text": "patient", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" });
-    let starting = hub.call("axo.remote.session.prompt", prompt.clone()).unwrap_err();
+    let starting = hub
+        .call("axo.remote.session.prompt", prompt.clone())
+        .unwrap_err();
     assert_eq!(starting["code"], -32008, "{starting}");
-    assert_eq!(logged(&axod, "SENT:patient"), 0, "refused, so nothing is kept for later");
+    assert_eq!(
+        logged(&axod, "SENT:patient"),
+        0,
+        "refused, so nothing is kept for later"
+    );
 
     axod.wait_for_pi(&listed);
     hub.ok("axo.remote.session.prompt", prompt.clone());
@@ -336,7 +359,10 @@ fn the_account_sees_the_model_pi_runs_and_switches_it() {
         .map(|model| model["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["Fake One", "Fake Two"]);
-    assert_eq!(models["models"][1]["thinkingLevels"], json!(["off", "low", "medium", "high"]));
+    assert_eq!(
+        models["models"][1]["thinkingLevels"],
+        json!(["off", "low", "medium", "high"])
+    );
 
     let saved = hub.ok(
         "axo.remote.session.model.set",
@@ -360,7 +386,9 @@ fn the_account_sees_the_model_pi_runs_and_switches_it() {
         json!({ "target": target, "sessionId": session }),
         json!({ "target": target, "sessionId": session, "thinkingLevel": "extreme" }),
     ] {
-        let refused = hub.call("axo.remote.session.model.set", nothing).unwrap_err();
+        let refused = hub
+            .call("axo.remote.session.model.set", nothing)
+            .unwrap_err();
         assert_eq!(refused["code"], INVALID_PARAMS, "{refused}");
     }
 }
@@ -368,10 +396,13 @@ fn the_account_sees_the_model_pi_runs_and_switches_it() {
 #[test]
 fn the_account_restarts_a_working_pi_on_the_same_conversation() {
     let hub = FakeHub::start();
-    let (axod, target) = linked_with(&hub, Options {
-        env: vec![("AXO_FAKE_PI_TURN_MS".into(), "60000".into())],
-        ..Options::default()
-    });
+    let (axod, target) = linked_with(
+        &hub,
+        Options {
+            env: vec![("AXO_FAKE_PI_TURN_MS".into(), "60000".into())],
+            ..Options::default()
+        },
+    );
     let before = axod.wait_for_pi(&axod.sessions()[0]);
     let session = before["id"].clone();
     hub.ok(
@@ -392,7 +423,8 @@ fn the_account_restarts_a_working_pi_on_the_same_conversation() {
         (logged(&axod, "STARTED:") == 2 && listed["status"] == "ready").then_some(())
     });
     assert_eq!(
-        the_session(&axod, &session)["piSessionFile"], before["piSessionFile"],
+        the_session(&axod, &session)["piSessionFile"],
+        before["piSessionFile"],
         "the same conversation"
     );
 
@@ -606,7 +638,12 @@ fn the_account_drives_a_sessions_panes_keys_and_layout() {
     );
     match seen {
         Ok(stopped) => assert_eq!(stopped["stopped"], false, "{stopped}"),
-        Err(error) => assert!(error["code"].as_i64().is_some_and(|c| c < 0 && c != INVALID_PARAMS), "{error}"),
+        Err(error) => assert!(
+            error["code"]
+                .as_i64()
+                .is_some_and(|c| c < 0 && c != INVALID_PARAMS),
+            "{error}"
+        ),
     }
     let nothing = hub
         .call(
@@ -622,26 +659,4 @@ fn the_account_drives_a_sessions_panes_keys_and_layout() {
         )
         .unwrap_err();
     assert_eq!(unknown_key["code"], INVALID_PARAMS, "{unknown_key}");
-}
-
-/// Nothing in the relay loop polls (RFD0034, step 7): a request is read as it arrives and its
-/// answer sent as soon as it is ready. A loop that checked the socket on a timer would add half
-/// its period to every call; the median of many calls shows it under any load.
-#[test]
-fn the_account_s_calls_are_answered_without_waiting_for_a_poll() {
-    let hub = FakeHub::start();
-    let (_axod, target) = linked(&hub, Pi::Fake);
-    let mut took: Vec<Duration> = (0..40)
-        .map(|_| {
-            let started = Instant::now();
-            hub.ok("axo.remote.workspace.list", json!({ "target": target }));
-            started.elapsed()
-        })
-        .collect();
-    took.sort();
-    let median = took[took.len() / 2];
-    assert!(
-        median < Duration::from_millis(5),
-        "median {median:?} of {took:?}"
-    );
 }

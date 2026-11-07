@@ -168,7 +168,11 @@ impl PiBridge {
         let stop = axo_agent::pi::worker::TurnStop {
             turn_id: stop.turn_id.as_ref().map(|id| id.as_str().to_owned()),
             seen: stop.seen.as_ref().map(|id| id.as_str().to_owned()),
-            command_ids: stop.command_ids.iter().map(|id| id.as_str().to_owned()).collect(),
+            command_ids: stop
+                .command_ids
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect(),
         };
         match self.0.stop_turn(stop, PROMPT_ANSWER_TIMEOUT) {
             Ok(CommandResult::Accepted) => Ok(true),
@@ -383,10 +387,13 @@ impl SessionManager {
                 if connected && pi_shell(&state, session_id).is_some() {
                     return Ok(());
                 }
-                let starting = state.panes.in_session(session_id).any(|(_, pane)| match pane {
-                    axo_panes::Pane::Running(shell) => shell.role == PaneRole::Pi,
-                    axo_panes::Pane::Unavailable(pane) => pane.is_recovering(),
-                });
+                let starting = state
+                    .panes
+                    .in_session(session_id)
+                    .any(|(_, pane)| match pane {
+                        axo_panes::Pane::Running(shell) => shell.role == PaneRole::Pi,
+                        axo_panes::Pane::Unavailable(pane) => pane.is_recovering(),
+                    });
                 if !starting {
                     return Err(PromptError::NoPi.into());
                 }

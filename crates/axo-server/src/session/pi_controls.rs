@@ -253,7 +253,12 @@ impl SessionManager {
     }
 
     /// Whether the Pi `process_id` in `shell_id` has exited within `timeout`.
-    fn wait_until_unavailable(&self, shell_id: ShellId, process_id: u32, timeout: Duration) -> bool {
+    fn wait_until_unavailable(
+        &self,
+        shell_id: ShellId,
+        process_id: u32,
+        timeout: Duration,
+    ) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             let exited = self.lock_state().map_or(true, |state| {

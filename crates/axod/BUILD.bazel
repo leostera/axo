@@ -73,7 +73,11 @@ CONFORMANCE = [
     "elicitations",
     "mcp",
     "relay",
+    "latency",
 ]
+
+# Measurements run alone: numbers taken while other tests share the machine are noise.
+EXCLUSIVE = ["latency"]
 
 [
     rust_test(
@@ -98,6 +102,7 @@ CONFORMANCE = [
             "@crates//:serde_json",
             "@crates//:tungstenite",
         ],
+        tags = ["exclusive"] if area in EXCLUSIVE else [],
     )
     for area in CONFORMANCE
 ]
