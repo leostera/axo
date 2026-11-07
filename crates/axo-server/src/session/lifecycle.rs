@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::catalog::{
     open_shell_ids, remove_session_shells, running_shell_record, session_metadata,
@@ -29,7 +29,52 @@ use axo_store::{
 use axo_store::{insert_terminal_shell, open_session_workspace_id};
 use axo_store::{open_session_ids_in_workspace, set_manual_session_name, write_session_layout};
 
+/// How often the reaper looks for exited children when nothing tells it a child exited: only
+/// outside axod's runtime, in unit tests. In axod, SIGCHLD wakes it (`Reaper::on_child_exit`).
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Wakes the reaper: a child exited, or axod is stopping. Until something wires SIGCHLD to it
+/// (`SessionManager::reap_on_child_exit`), it also wakes every `REAPER_INTERVAL`.
+#[derive(Default)]
+pub(super) struct Reaper {
+    woken: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+    signalled: std::sync::atomic::AtomicBool,
+}
+
+impl Reaper {
+    pub(super) fn wake(&self) {
+        *self.woken.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits until woken, or until `deadline` (the launch's time limit) if there is one.
+    fn wait(&self, deadline: Option<Instant>) {
+        let signalled = self.signalled.load(Ordering::Relaxed);
+        let now = Instant::now();
+        let until = match (deadline, signalled) {
+            (deadline, true) => deadline,
+            (deadline, false) => Some(deadline.map_or(now + REAPER_INTERVAL, |deadline| {
+                deadline.min(now + REAPER_INTERVAL)
+            })),
+        };
+        let mut woken = self.woken.lock().unwrap_or_else(|p| p.into_inner());
+        while !*woken {
+            let now = Instant::now();
+            woken = match until {
+                None => self.changed.wait(woken).unwrap_or_else(|p| p.into_inner()),
+                Some(until) if until <= now => break,
+                Some(until) => {
+                    self.changed
+                        .wait_timeout(woken, until - now)
+                        .unwrap_or_else(|p| p.into_inner())
+                        .0
+                }
+            };
+        }
+        *woken = false;
+    }
+}
 
 pub(super) fn valid_session_title(title: &str) -> bool {
     !title.is_empty()
@@ -372,11 +417,18 @@ impl SessionManager {
     pub(super) fn start_reaper(self: &Arc<Self>) {
         let manager = Arc::downgrade(self);
         let stop_workers = Arc::clone(&self.stop_workers);
+        let reaper = Arc::clone(&self.reaper);
         let worker = thread::Builder::new()
             .name("axo-session-reaper".into())
             .spawn(move || {
                 while !stop_workers.load(Ordering::Relaxed) {
-                    thread::sleep(REAPER_INTERVAL);
+                    let deadline = manager
+                        .upgrade()
+                        .and_then(|manager| manager.launch_deadline());
+                    reaper.wait(deadline);
+                    if stop_workers.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let Some(manager) = manager.upgrade() else {
                         break;
                     };
@@ -395,6 +447,27 @@ impl SessionManager {
         {
             workers.push(worker);
         }
+    }
+
+    /// From now on the reaper sleeps until a child exits, instead of looking every
+    /// `REAPER_INTERVAL`: SIGCHLD, received as a stream on `runtime`, wakes it. A signal for
+    /// several children wakes it once; it looks at every child each time.
+    pub fn reap_on_child_exit(&self, runtime: &tokio::runtime::Handle) -> io::Result<()> {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut exited = {
+            let _inside = runtime.enter();
+            signal(SignalKind::child())?
+        };
+        let reaper = Arc::clone(&self.reaper);
+        reaper.signalled.store(true, Ordering::Relaxed);
+        runtime.spawn(async move {
+            while exited.recv().await.is_some() {
+                reaper.wake();
+            }
+        });
+        // A child that exited before the stream existed is found on this first look.
+        self.reaper.wake();
+        Ok(())
     }
 
     pub(super) fn set_layout(&self, session_id: SessionId, layout: Layout) -> io::Result<()> {
@@ -656,6 +729,46 @@ mod tests {
     use crate::session::{settings::*, test_support::*};
     use axo_agent::pi::bridge;
     use axo_panes::Pane;
+
+    /// Once SIGCHLD is wired, the reaper sleeps until it is woken or the launch's time limit,
+    /// with no tick; before, it also looks every `REAPER_INTERVAL`.
+    #[test]
+    fn the_reaper_sleeps_until_woken_or_the_launch_deadline() {
+        let reaper = Arc::new(Reaper::default());
+        reaper.signalled.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        reaper.wait(Some(started + Duration::from_millis(150)));
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "woke before the deadline"
+        );
+
+        let waker = Arc::clone(&reaper);
+        let waking = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            waker.wake();
+        });
+        let started = Instant::now();
+        reaper.wait(None);
+        let slept = started.elapsed();
+        waking.join().unwrap();
+        assert!(slept >= Duration::from_millis(300), "it ticked: {slept:?}");
+        assert!(slept < Duration::from_secs(5), "{slept:?}");
+
+        // A wake while nobody waits is kept for the next wait.
+        reaper.wake();
+        let started = Instant::now();
+        reaper.wait(None);
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        let unsignalled = Reaper::default();
+        let started = Instant::now();
+        unsignalled.wait(None);
+        assert!(
+            started.elapsed() < REAPER_INTERVAL * 10,
+            "no tick without SIGCHLD"
+        );
+    }
 
     use axo_agent::WriterLock;
 

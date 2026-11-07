@@ -73,6 +73,14 @@ impl SessionManager {
 
     /// Ends the launch once nothing it waits for is still starting, or its time is up, and
     /// tells every subscriber. Cheap to call often.
+    /// When the launch stops waiting for Pis that have not connected, if it is waiting.
+    pub(super) fn launch_deadline(&self) -> Option<Instant> {
+        match &self.state.lock().ok()?.launch {
+            Launch::Starting { deadline, .. } => Some(*deadline),
+            _ => None,
+        }
+    }
+
     pub(super) fn check_launch_ready(&self) {
         let Ok(mut state) = self.lock_state() else {
             return;

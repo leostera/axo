@@ -22,7 +22,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -136,7 +135,7 @@ impl LifecycleFixture {
         let manager = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
         // Keep state transitions deterministic: these tests drive the reaper
         // explicitly, rather than racing its periodic background tick.
-        manager.stop_workers.store(true, Ordering::Relaxed);
+        manager.stop_background_workers();
         let workers = std::mem::take(&mut *manager.workers.lock().unwrap());
         join_session_workers(workers);
         Self { directory, manager }

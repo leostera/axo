@@ -85,16 +85,22 @@ fn process_name(_process_id: libc::pid_t) -> Option<String> {
 
 /// Waits until `descriptor` is readable or `timeout` passes. Errors count as readable so the
 /// caller's own call reports them.
-fn wait_until_readable(descriptor: RawFd, timeout: Duration) -> bool {
-    let mut poll_descriptor = libc::pollfd {
-        fd: descriptor,
+/// Waits, with no timeout, until `listener` has a client or `stopping` is readable (its other end
+/// was closed: axod is stopping). `true` for a client.
+fn wait_for_client(listener: RawFd, stopping: RawFd) -> bool {
+    let mut descriptors = [listener, stopping].map(|fd| libc::pollfd {
+        fd,
         events: libc::POLLIN,
         revents: 0,
-    };
-    let timeout_millis = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
-    // SAFETY: poll reads one initialized pollfd for the duration of the call.
-    let ready = unsafe { libc::poll(&mut poll_descriptor, 1, timeout_millis) };
-    ready != 0
+    });
+    loop {
+        // SAFETY: poll reads two initialized pollfds for the duration of the call.
+        let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+        if ready < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return ready > 0 && descriptors[1].revents == 0;
+    }
 }
 
 pub(super) struct ShellAttachment {
@@ -301,13 +307,19 @@ impl SessionManager {
         let manager = Arc::downgrade(self);
         let active_attachments = Arc::new(AtomicUsize::new(0));
         let stop_workers = Arc::clone(&self.stop_workers);
+        // Shutdown drops the other end, which wakes the acceptor: it sleeps until then or a client.
+        let (stopping, stop_acceptor) = UnixStream::pair()?;
+        *self
+            .stop_acceptor
+            .lock()
+            .map_err(|_| io::Error::other("the acceptor's stop lock was poisoned"))? =
+            Some(stop_acceptor);
         let worker = thread::Builder::new()
             .name("axo-pty-attachments".into())
             .spawn(move || {
                 while !stop_workers.load(Ordering::Relaxed) {
-                    // Wake as soon as a client connects; the timeout only bounds the stop check.
-                    if !wait_until_readable(listener.as_raw_fd(), ATTACH_STOP_POLL_INTERVAL) {
-                        continue;
+                    if !wait_for_client(listener.as_raw_fd(), stopping.as_raw_fd()) {
+                        break;
                     }
                     match listener.accept() {
                         Ok((mut stream, _)) => {

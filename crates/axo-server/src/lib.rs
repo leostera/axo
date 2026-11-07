@@ -224,6 +224,7 @@ pub fn serve_ipc(
     let host = Arc::new(session::RelayHostAdapter(Arc::clone(&sessions)));
     let credentials = remote_access.credential_storage.open(server_directory);
     sessions.keep_input_key_in(Arc::clone(&credentials));
+    sessions.reap_on_child_exit(runtime.handle())?;
     // What the peers socket follows, shared with the remote panes' handlers (RFD0024).
     let peer_live = axo_relay::peers::PeerLive::new();
     sessions.attach_peers(Arc::clone(&peer_live), server_directory.join("peers.json"));

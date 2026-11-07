@@ -160,6 +160,10 @@ pub struct SessionManager {
     host_id: String,
     host_generation: String,
     stop_workers: Arc<AtomicBool>,
+    /// Wakes the reaper when a child exits or axod stops.
+    reaper: Arc<lifecycle::Reaper>,
+    /// Dropped when axod stops, which wakes the attachment acceptor.
+    stop_acceptor: Mutex<Option<std::os::unix::net::UnixStream>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     subscriptions: Mutex<HashMap<String, Arc<LocalSubscription>>>,
     subscribers: EventBus,
@@ -249,6 +253,8 @@ impl SessionManager {
             host_id,
             host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),
+            reaper: Default::default(),
+            stop_acceptor: Default::default(),
             workers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(HashMap::new()),
             subscribers,
@@ -283,6 +289,15 @@ impl SessionManager {
         Ok(manager)
     }
 
+    /// Tells the reaper and the attachment acceptor to stop, and wakes them; join them after.
+    fn stop_background_workers(&self) {
+        self.stop_workers.store(true, Ordering::Relaxed);
+        self.reaper.wake();
+        if let Ok(mut acceptor) = self.stop_acceptor.lock() {
+            acceptor.take();
+        }
+    }
+
     pub fn shutdown(&self) {
         // Fence in-flight launches before joining workers or draining processes.
         // stop_workers alone is also used to quiesce background fixture workers.
@@ -293,7 +308,7 @@ impl SessionManager {
             }
             state.shutting_down = true;
         }
-        self.stop_workers.store(true, Ordering::Relaxed);
+        self.stop_background_workers();
         let workers = self
             .workers
             .lock()
