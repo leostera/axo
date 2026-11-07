@@ -163,4 +163,10 @@ await codemode.bash.run({ host: "studio", command: "ls ~/Desktop" });
   - reading typed text back.
 - **Screenshots:** when Clef's answer is uncertain or the target has no label, should the gate add the window's screenshot (about 4 s)?
 - **More models in `axod-infer`:** the side-car is named for inference in general, not for Clef. Speech, such as NVIDIA's Parakeet for transcription, is next. llama.cpp can't run Parakeet, so `axod-infer` will need a second runtime: parakeet-mlx, sherpa-onnx or a Core ML conversion. The question is whether one process should hold both runtimes, or each runtime gets its own socket.
+- **Computer use on a locked Mac (open, 2026-11-08).** Someone away from their Mac, which is the point of computer use from anywhere, usually has it locked. Locked, the login window owns the screen: screenshots show the lock screen or nothing, and synthesized key and mouse events go to the login window, not the apps. What to find out in a spike, in order:
+  - what still works while locked: Cua's accessibility calls (`get_window_state`, `AXPress`, setting values) on apps that keep running, with no screenshot and no synthesized event;
+  - whether a virtual display, or a second graphical session, can host the apps while the physical one stays locked;
+  - whether the person can unlock it on purpose from their phone, with Face ID as in RFD0029, and have it lock again when the call ends; macOS offers no public remote unlock, so this may not exist;
+  - keeping the Mac awake (the display-awake guard does that) is not enough, and keeping it unlocked is a security setting axod must not change for the person.
+  Until then a computer call on a locked Mac should say so plainly ("this Mac is locked") rather than act on the lock screen.
 - **Asking the person:** proposed in [RFD0029](RFD0029-ask-the-person.md). The gate asks the person on their own clients instead of refusing, and `confirm: true` only asks (built). Values such as logins and cards going past the agent is still to come.
