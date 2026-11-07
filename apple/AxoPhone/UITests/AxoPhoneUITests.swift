@@ -398,6 +398,25 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testTheBoxsPlusOffersPhotosFilesAndPluginsInAMenuAboveIt() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
+    let composer = app.textFields["composer"]
+    let add = app.buttons["attach"]
+    XCTAssertTrue(add.waitForExistence(timeout: 5))
+    XCTAssertLessThan(composer.frame.maxY, add.frame.minY + 1, "the words on top, the + in the bar under them")
+    capture(app, named: "composer-light")
+    add.tapWhereItIs()
+    let photos = app.buttons["add-photos"]
+    XCTAssertTrue(photos.waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["add-files"].exists)
+    XCTAssertTrue(app.buttons["add-plugins"].exists)
+    XCTAssertLessThan(photos.frame.maxY, add.frame.minY, "above the +")
+    capture(app, named: "composer-add-menu-light")
+    app.buttons["add-plugins"].tap()
+    XCTAssertTrue(app.navigationBars["Apps"].waitForExistence(timeout: 5), "Plugins opens Settings › Apps")
+  }
+
+  @MainActor
   func testSettingsOpenFromTheMenu() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

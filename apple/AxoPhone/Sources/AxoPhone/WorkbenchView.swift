@@ -264,7 +264,8 @@ struct WorkbenchView: View {
       workbench: workbench.current,
       session: currentSession,
       showSidebar: { show(.chats) },
-      voice: voice
+      voice: voice,
+      showApps: { settings = .apps }
     )
     .id(currentSession?.sessionId)
     // Words said for one chat never land in another.

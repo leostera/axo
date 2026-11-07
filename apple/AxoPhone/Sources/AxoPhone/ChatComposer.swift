@@ -4,10 +4,12 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The message box. It stays closed, saying why in its placeholder, when there is nobody to send
-/// to. Once a message runs past a couple of lines it can be opened full screen, as the original
-/// app did. Return starts a new line and Send sends, as the web does on a touch screen. With `voice`, a message can be said instead of typed: while listening the box
-/// becomes the listening bar.
+/// The message box: one rounded card, the words on top and a bar under them with + on the left
+/// (the camera, photos, files and plugins, in a menu above it) and voice and Send on the right. It
+/// grows with the words. It stays closed, saying why in its placeholder, when there is nobody to
+/// send to. Once a message runs past a few lines it can be opened full screen. Return starts a new
+/// line and Send sends, as the web does on a touch screen. With `voice`, a message can be said
+/// instead of typed: while listening the box becomes the listening bar.
 struct ChatComposer: View {
   @Binding var draft: String
   let placeholder: String
@@ -18,6 +20,8 @@ struct ChatComposer: View {
   var attach: ([(data: Data, name: String, mimeType: String, thumbnail: Data?)]) -> Void = { _ in }
   var detach: (UUID) -> Void = { _ in }
   let voice: VoicePrompt?
+  /// Settings › Apps, from the + menu's Plugins.
+  var showApps: (() -> Void)?
   let send: () -> Void
 
   @State private var editorHeight: CGFloat = 0
@@ -25,13 +29,12 @@ struct ChatComposer: View {
   @State private var pickedPhotos: [PhotosPickerItem] = []
   @State private var showingPhotos = false
   @State private var showingFiles = false
+  @State private var showingCamera = false
+  @State private var showingAddMenu = false
 
   private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty }
-  /// Tall enough (about three lines) for the expand button to sit above Send inside the box: the
-  /// button, the spacing and Send.
-  private var isLong: Bool { editorHeight >= Self.expandSize + Self.expandSpacing + ComposerMetrics.control }
-  private static let expandSize: CGFloat = 40
-  private static let expandSpacing: CGFloat = 6
+  /// About three lines: long enough to want the whole screen to read and edit it.
+  private var isLong: Bool { editorHeight >= 66 }
 
   private var isListening: Bool {
     guard let voice else { return false }
@@ -61,32 +64,24 @@ struct ChatComposer: View {
   }
 
   private var box: some View {
-    HStack(alignment: .bottom, spacing: 6) {
-      attachMenu
+    VStack(alignment: .leading, spacing: 4) {
       TextField(placeholder, text: $draft, axis: .vertical)
-        .lineLimit(1...6)
-        .padding(.leading, 14).padding(.vertical, ComposerMetrics.textInset)
-        .frame(minHeight: ComposerMetrics.control)
+        .lineLimit(1...8)
+        .padding(.horizontal, 6).padding(.top, 4).padding(.bottom, 2)
+        .frame(minHeight: 30)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
         .disabled(!canSend)
         .accessibilityIdentifier("composer")
-        // Return starts a new line, as on the web on a touch screen; Send sends.
-      // An empty box offers the microphone where Send goes; once something is typed, Send (the
-      // keyboard has its own dictation for adding to what is typed).
-      if let voice, !hasDraft {
-        VoiceButton(voice: voice, enabled: canSend)
-      } else {
+      // Return starts a new line, as on the web on a touch screen; Send sends.
+      HStack(spacing: 8) {
+        addButton
+        Spacer(minLength: 0)
+        if isLong { expandButton }
+        if let voice { VoiceButton(voice: voice, enabled: canSend) }
         sendButton
-          // Drawn above Send rather than beside the text, so the text never narrows and re-wraps
-          // as it appears, and the box's layout is the same with it or without.
-          .overlay(alignment: .top) {
-            if isLong {
-              expandButton.offset(y: -(Self.expandSize + Self.expandSpacing))
-            }
-          }
       }
     }
-    .composerBox()
+    .composerCard()
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
     }
@@ -100,29 +95,51 @@ struct ChatComposer: View {
       guard case .success(let urls) = result else { return }
       attach(AttachmentImport.files(urls))
     }
+    .fullScreenCover(isPresented: $showingCamera) {
+      CameraPicker { image in attach([AttachmentImport.camera(image)]) }
+        .ignoresSafeArea()
+    }
   }
 
-  /// Photos or files, from a small menu where the box starts.
-  private var attachMenu: some View {
-    Menu {
-      Button { showingPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
-      Button { showingFiles = true } label: { Label("Files", systemImage: "folder") }
-    } label: {
-      Image(systemName: "paperclip").font(.system(size: 17, weight: .medium))
+  /// What can go with a message, in a frosted menu above the +.
+  private var addButton: some View {
+    Button { showingAddMenu = true } label: {
+      Image(systemName: "plus").font(.system(size: 19, weight: .regular))
         .foregroundStyle(canSend ? Color.primary : Color.secondary)
         .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
+        .contentShape(Circle())
     }
+    .buttonStyle(.plain)
     .disabled(!canSend)
-    .accessibilityLabel("Attach")
+    .accessibilityLabel("Add photos, files and more")
     .accessibilityIdentifier("attach")
+    .popover(isPresented: $showingAddMenu, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+      AddMenu(
+        camera: UIImagePickerController.isSourceTypeAvailable(.camera),
+        plugins: showApps != nil
+      ) { choice in
+        showingAddMenu = false
+        // The menu goes first; a sheet asked for while it is still leaving would not show.
+        Task { @MainActor in
+          try? await Task.sleep(for: .milliseconds(350))
+          switch choice {
+          case .camera: showingCamera = true
+          case .photos: showingPhotos = true
+          case .files: showingFiles = true
+          case .plugins: showApps?()
+          }
+        }
+      }
+      .presentationCompactAdaptation(.popover)
+    }
   }
 
   private var expandButton: some View {
     Button { showingExpandedEditor = true } label: {
       Image(systemName: "arrow.up.left.and.arrow.down.right")
-        .font(.system(size: 16, weight: .medium))
-        .frame(width: Self.expandSize, height: Self.expandSize)
-        .background(.secondary.opacity(0.12), in: Circle())
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(.secondary)
+        .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
     }
     .buttonStyle(.plain)
     .accessibilityLabel("Expand message editor")
@@ -153,7 +170,87 @@ enum ComposerMetrics {
   static var cornerRadius: CGFloat { control / 2 + edge }
 }
 
+/// What the + menu offers.
+enum AddChoice: CaseIterable {
+  case camera, photos, files, plugins
+}
+
+/// The + menu: big rows, each an icon in a round well and a label, on frosted glass.
+private struct AddMenu: View {
+  let camera: Bool
+  let plugins: Bool
+  let pick: (AddChoice) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      if camera { row(.camera, "Camera", "camera") }
+      row(.photos, "Photos", "photo.on.rectangle")
+      row(.files, "Files", "folder")
+      if plugins { row(.plugins, "Plugins", "powerplug") }
+    }
+    .padding(8)
+    .frame(width: 240)
+    .presentationBackground(.thinMaterial)
+  }
+
+  private func row(_ choice: AddChoice, _ title: String, _ icon: String) -> some View {
+    Button { pick(choice) } label: {
+      HStack(spacing: 14) {
+        Image(systemName: icon)
+          .font(.system(size: 19, weight: .regular))
+          .frame(width: 44, height: 44)
+          .background(Color.primary.opacity(0.08), in: Circle())
+        Text(title).font(.body)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 8).padding(.vertical, 5)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("add-\(title.lowercased())")
+  }
+}
+
+/// The system camera, for a photo to send.
+private struct CameraPicker: UIViewControllerRepresentable {
+  let took: (UIImage) -> Void
+  @Environment(\.dismiss) private var dismiss
+
+  func makeUIViewController(context: Context) -> UIImagePickerController {
+    let picker = UIImagePickerController()
+    picker.sourceType = .camera
+    picker.delegate = context.coordinator
+    return picker
+  }
+
+  func updateUIViewController(_ picker: UIImagePickerController, context: Context) {}
+
+  func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+  final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+    let parent: CameraPicker
+    init(_ parent: CameraPicker) { self.parent = parent }
+
+    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+      if let image = info[.originalImage] as? UIImage { parent.took(image) }
+      parent.dismiss()
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
+  }
+}
+
 extension View {
+  /// The composer's card: the words on top, a bar of controls under them.
+  func composerCard() -> some View {
+    padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 8)
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+      )
+      .padding(.horizontal, 12)
+  }
+
   /// The composer's rounded box around one row of controls.
   func composerBox() -> some View {
     padding(ComposerMetrics.edge)

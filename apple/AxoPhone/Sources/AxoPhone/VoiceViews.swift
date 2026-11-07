@@ -10,14 +10,13 @@ struct VoiceButton: View {
     Button { voice.start() } label: {
       Group {
         if case .requestingPermission = voice.state {
-          ProgressView().tint(ChatColors.background)
+          ProgressView()
         } else {
-          Image(systemName: "waveform").font(.system(size: 17, weight: .medium))
+          Image(systemName: "mic").font(.system(size: 18, weight: .regular))
         }
       }
-      .foregroundStyle(enabled ? ChatColors.background : Color.secondary)
+      .foregroundStyle(enabled ? Color.primary : Color.secondary)
       .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
-      .background(enabled ? Color.primary : ChatColors.disabledControl, in: Circle())
       .contentShape(Circle())
     }
     .buttonStyle(.plain)

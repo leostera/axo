@@ -59,15 +59,15 @@ final class AxoPhoneVoiceTests: XCTestCase {
   }
 
   @MainActor
-  func testTheMicrophoneMakesWayForSendOnceSomethingIsTyped() {
+  func testTheMicrophoneStaysBesideSendWhichWaitsForSomethingToSend() {
     let app = launch(chat: 1)
     XCTAssertTrue(app.buttons["voice-start"].exists)
-    XCTAssertFalse(app.buttons["send-message"].exists)
+    XCTAssertFalse(app.buttons["send-message"].isEnabled, "nothing to send yet")
     let composer = app.textFields["composer"]
     composer.tap()
     composer.typeText("Please")
-    XCTAssertTrue(app.buttons["send-message"].waitForExistence(timeout: 5))
-    XCTAssertFalse(app.buttons["voice-start"].exists)
+    XCTAssertTrue(waitUntil(5) { app.buttons["send-message"].isEnabled })
+    XCTAssertTrue(app.buttons["voice-start"].exists, "voice stays, to add to what is typed")
   }
 
   @MainActor

@@ -77,6 +77,12 @@ enum AttachmentImport {
     return files
   }
 
+  /// A photo just taken, as JPEG.
+  static func camera(_ image: UIImage) -> File {
+    let jpeg = image.jpegData(compressionQuality: 0.85) ?? Data()
+    return (jpeg, "photo.jpg", "image/jpeg", thumbnailData(image))
+  }
+
   static func files(_ urls: [URL]) -> [File] {
     urls.compactMap { url in
       let scoped = url.startAccessingSecurityScopedResource()

@@ -15,6 +15,8 @@ struct ConversationView: View {
   let showSidebar: () -> Void
   /// Saying a message instead of typing it, where the iPhone can.
   let voice: VoicePrompt?
+  /// Settings › Apps, from the box's + menu.
+  var showApps: (() -> Void)?
   /// When to follow what is new and when to leave the reader be.
   @State private var follow = ScrollFollow()
   #if DEBUG && targetEnvironment(simulator)
@@ -394,7 +396,8 @@ struct ConversationView: View {
         .accessibilityLabel(follow.hasNew ? "Jump to new message" : "Jump to latest")
       }
       HostPicker(phone: phone)
-      DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, send: sendDraft)
+      DraftComposer(
+        phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, showApps: showApps, send: sendDraft)
     }
     // With the keyboard down the composer sits down in the home indicator's area, as the
     // system's own bars do, rather than above all of it; with the keyboard up, just above it.

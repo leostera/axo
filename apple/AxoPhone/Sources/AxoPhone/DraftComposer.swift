@@ -9,6 +9,7 @@ struct DraftComposer: View {
   let placeholder: String
   let canSend: Bool
   let voice: VoicePrompt?
+  var showApps: (() -> Void)?
   let send: () -> Void
 
   var body: some View {
@@ -23,6 +24,7 @@ struct DraftComposer: View {
       attach: { phone.attach($0) },
       detach: { phone.detach($0) },
       voice: voice,
+      showApps: showApps,
       send: send)
     .onChange(of: voice?.transcript) { _, transcript in
       if let transcript { take(transcript) }
