@@ -13,6 +13,8 @@
 
 #![allow(dead_code)]
 
+pub mod hub;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

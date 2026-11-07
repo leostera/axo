@@ -108,3 +108,24 @@ fn every_method_axod_offers_has_a_conformance_test() {
         "these have tests now; take them off NOT_YET_COVERED: {stale:#?}"
     );
 }
+
+/// Every call the account may make of a Mac (`axo.remote.*`, the parity table) has a test that
+/// makes it through the fake hub (`relay.rs`), so moving the relay into the server core keeps
+/// them all (RFD0034 step 6).
+#[test]
+fn every_call_the_account_makes_of_a_mac_has_a_conformance_test() {
+    use axo_protocol::parity::{PARITY, Remote};
+    let sources = sources();
+    let uncovered: Vec<&str> = PARITY
+        .iter()
+        .filter_map(|parity| match parity.remote {
+            Remote::Call(name) => Some(name),
+            _ => None,
+        })
+        .filter(|name| !calls(&sources, name))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "no conformance test makes these remote calls: {uncovered:?}"
+    );
+}

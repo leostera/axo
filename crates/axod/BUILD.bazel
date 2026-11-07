@@ -72,6 +72,7 @@ CONFORMANCE = [
     "account",
     "elicitations",
     "mcp",
+    "relay",
 ]
 
 [
@@ -95,6 +96,7 @@ CONFORMANCE = [
         deps = [
             "@crates//:libc",
             "@crates//:serde_json",
+            "@crates//:tungstenite",
         ],
     )
     for area in CONFORMANCE

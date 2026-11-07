@@ -1,0 +1,418 @@
+//! A Mac linked to an account, seen from the account: axod against a fake of Axo's cloud
+//! (`support/hub.rs`). Linking, the daemon socket and its credential, what the account may ask
+//! of the Mac (`axo.remote.*`, commands, prompts), what the Mac forwards to the account
+//! (a Session's apps calls) and what it tells it (questions). These hold the relay's behaviour
+//! still while it moves into the server core (RFD0034 step 6).
+//!
+//! The Worker's relay tests (`//packages/axo-api-worker:relay_test`) drive the same paths through
+//! the real Worker; these are the Mac's half alone, fast and exact.
+
+#[path = "../support/mod.rs"]
+mod support;
+
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use support::hub::{ACCOUNT_ID, Answer, CODE, FakeHub};
+use support::{Axod, Options, Pi};
+
+const STALE_HOST: i64 = -32002;
+const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+
+/// An axod linked to `hub`, connected, and the target the account names it by.
+fn linked(hub: &FakeHub, pi: Pi) -> (Axod, Value) {
+    let axod = Axod::with(Options {
+        pi,
+        relay_url: Some(hub.url()),
+        ..Options::default()
+    });
+    let link = axod.ok("axo.relay.link", json!({ "code": CODE }));
+    assert_eq!(link["linked"], true, "{link}");
+    hub.wait_until_connected();
+    let register = hub.wait_for_request("axo.host.register");
+    let target = json!({
+        "hostId": register["params"]["hostId"],
+        "hostGeneration": register["params"]["hostGeneration"],
+    });
+    (axod, target)
+}
+
+fn wait_for_status(axod: &Axod, state: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let status = axod.ok("axo.relay.status", json!({}));
+        if status["state"] == state {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "relay never became {state}: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_linked_mac_connects_with_its_credential_and_registers() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+
+    let redeemed = hub.redeemed();
+    assert_eq!(redeemed.len(), 1);
+    let redemption = &redeemed[0];
+    assert_eq!(redemption["code"], CODE);
+    assert_eq!(redemption["hostId"], target["hostId"]);
+    assert!(
+        redemption["credential"]
+            .as_str()
+            .is_some_and(|c| c.len() >= 40),
+        "{redemption}"
+    );
+
+    // The daemon socket is the account's route for this host, with the credential it redeemed.
+    let daemon = hub
+        .sockets()
+        .into_iter()
+        .find(|socket| socket.path.ends_with("/daemon"))
+        .expect("a daemon socket");
+    assert_eq!(
+        daemon.path,
+        format!(
+            "/api/v1/accounts/{ACCOUNT_ID}/hosts/{}/daemon",
+            target["hostId"].as_str().unwrap()
+        )
+    );
+    assert_eq!(
+        daemon.authorization.as_deref(),
+        Some(format!("Bearer {}", redemption["credential"].as_str().unwrap()).as_str())
+    );
+    assert_eq!(
+        daemon.credential_id.as_deref(),
+        redemption["credentialId"].as_str()
+    );
+
+    // It negotiates the protocol before it registers.
+    let negotiate = hub.wait_for_request("axo.protocol.negotiate");
+    assert!(
+        negotiate["params"]["protocolVersion"].is_u64(),
+        "{negotiate}"
+    );
+    let register = &hub.received("axo.host.register")[0];
+    assert_eq!(
+        (negotiate["id"].clone(), register["id"].clone()),
+        (json!("axod-1"), json!("axod-2")),
+        "negotiate, then register"
+    );
+    let status = wait_for_status(&axod, "connected");
+    assert!(status["connectedSinceUnixMillis"].is_number(), "{status}");
+}
+
+#[test]
+fn a_dropped_socket_comes_back_and_registers_again() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+    hub.drop_socket();
+    let again = hub.wait_for_request("axo.host.register");
+    assert_eq!(again["params"]["hostId"], target["hostId"]);
+    wait_for_status(&axod, "connected");
+}
+
+#[test]
+fn the_account_creates_renames_and_closes_sessions_on_the_mac() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+
+    let workspaces = hub.ok("axo.remote.workspace.list", json!({ "target": target }));
+    let names: Vec<_> = workspaces["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("Home")], "{workspaces}");
+    assert!(
+        workspaces["workspaces"][0].get("directoryPath").is_none(),
+        "the account sees names, not paths: {workspaces}"
+    );
+
+    let created = hub.ok("axo.remote.session.create", json!({ "target": target }));
+    let session = created["session"]["sessionId"].clone();
+    assert!(session.is_string(), "{created}");
+    assert!(
+        axod.sessions().iter().any(|listed| listed["id"] == session),
+        "the Mac lists the Session the account created"
+    );
+
+    hub.ok(
+        "axo.remote.session.rename",
+        json!({ "target": target, "sessionId": session, "name": "From the phone" }),
+    );
+    let renamed = axod
+        .sessions()
+        .into_iter()
+        .find(|listed| listed["id"] == session)
+        .unwrap();
+    assert_eq!(renamed["manualName"], "From the phone");
+
+    hub.ok(
+        "axo.remote.session.close",
+        json!({ "target": target, "sessionId": session }),
+    );
+    assert!(!axod.sessions().iter().any(|listed| listed["id"] == session));
+}
+
+#[test]
+fn the_account_is_refused_for_another_mac_and_for_what_it_cannot_ask() {
+    let hub = FakeHub::start();
+    let (_axod, target) = linked(&hub, Pi::Fake);
+
+    let stale = json!({ "hostId": target["hostId"], "hostGeneration": "an-older-generation" });
+    let refused = hub
+        .call("axo.remote.session.create", json!({ "target": stale }))
+        .unwrap_err();
+    assert_eq!(refused["code"], STALE_HOST, "{refused}");
+
+    let malformed = hub
+        .call(
+            "axo.remote.session.create",
+            json!({ "target": target, "extra": 1 }),
+        )
+        .unwrap_err();
+    assert_eq!(malformed["code"], INVALID_PARAMS, "{malformed}");
+
+    let unknown = hub
+        .call(
+            "axo.remote.session.delete-everything",
+            json!({ "target": target }),
+        )
+        .unwrap_err();
+    assert_eq!(unknown["code"], METHOD_NOT_FOUND, "{unknown}");
+}
+
+#[test]
+fn a_prompt_from_the_account_reaches_pi() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+    let listed = axod.sessions()[0].clone();
+    axod.wait_for_pi(&listed);
+    let session = listed["id"].clone();
+
+    let accepted = hub.ok(
+        "axo.remote.session.prompt",
+        json!({ "target": target, "sessionId": session, "text": "run the tests" }),
+    );
+    assert_eq!(accepted["accepted"], true, "{accepted}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !axod.pi_log().contains("SENT:run the tests") {
+        assert!(
+            Instant::now() < deadline,
+            "Pi never got it:\n{}",
+            axod.pi_log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn the_account_runs_a_command_on_the_mac_and_hears_how_it_ended() {
+    let hub = FakeHub::start();
+    let (_axod, _target) = linked(&hub, Pi::Fake);
+    let result = hub.ok(
+        "axo.apps.bash",
+        json!({
+            "accountId": ACCOUNT_ID,
+            "callId": "00000000-0000-4000-8000-000000000001",
+            "command": "echo from-the-account; exit 3",
+        }),
+    );
+    assert_eq!(result["stdout"], "from-the-account\n", "{result}");
+    assert_eq!(result["exitCode"], 3, "{result}");
+    assert_eq!(result["timedOut"], false, "{result}");
+
+    // A command for any other account is refused, and nothing runs.
+    let refused = hub
+        .call(
+            "axo.apps.bash",
+            json!({
+                "accountId": "00000000-0000-4000-8000-0000000000ff",
+                "callId": "00000000-0000-4000-8000-000000000002",
+                "command": "echo should-not-run",
+            }),
+        )
+        .unwrap_err();
+    assert!(
+        refused["code"].as_i64().is_some_and(|code| code < 0),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_sessions_apps_calls_go_to_the_account_and_its_answer_comes_back() {
+    let hub = FakeHub::start();
+    let (axod, _target) = linked(&hub, Pi::Fake);
+    let session = axod.sessions()[0]["id"].clone();
+
+    hub.respond(
+        "axo.apps.list",
+        Answer::Result(json!({ "apps": [{ "kind": "thirdParty", "name": "linear" }] })),
+    );
+    let listed = axod.ok("axo.apps.list", json!({ "sessionId": session }));
+    assert_eq!(listed["apps"][0]["name"], "linear", "{listed}");
+    // The account learns which Session asked.
+    let forwarded = hub.wait_for_request("axo.apps.list");
+    assert_eq!(forwarded["params"]["sessionId"], session, "{forwarded}");
+
+    // A refusal keeps its code and words.
+    hub.respond(
+        "axo.apps.run",
+        Answer::Error(-32602, "the script is not a function".into()),
+    );
+    let refused = axod.err(
+        "axo.apps.run",
+        json!({ "sessionId": session, "code": "not a function" }),
+    );
+    assert_eq!(refused.code, -32602, "{refused:?}");
+    assert_eq!(refused.message, "the script is not a function");
+}
+
+#[test]
+fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves() {
+    let hub = FakeHub::start();
+    let (axod, _target) = linked(&hub, Pi::Fake);
+    let session = axod.sessions()[0]["id"].clone();
+    {
+        let mut stream = std::os::unix::net::UnixStream::connect(axod.socket()).unwrap();
+        use std::io::Write;
+        writeln!(
+            stream,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "axo.elicitation.request", "params": { "sessionId": session, "message": "Deploy?" } })
+        )
+        .unwrap();
+        let requested = hub.wait_for("the question", |message| {
+            message["method"] == "axo.elicitation.requested"
+        });
+        assert_eq!(requested["params"]["message"], "Deploy?", "{requested}");
+        assert_eq!(requested["params"]["sessionId"], session, "{requested}");
+        // The asker hangs up.
+    }
+    let resolved = hub.wait_for("the question withdrawn", |message| {
+        message["method"] == "axo.elicitation.resolved"
+    });
+    assert_eq!(resolved["params"]["action"], "cancel", "{resolved}");
+}
+
+#[test]
+fn the_account_drives_a_sessions_panes_keys_and_layout() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+    let home = hub.ok("axo.remote.workspace.list", json!({ "target": target }))["workspaces"][0]
+        ["workspaceId"]
+        .clone();
+    let created = hub.ok(
+        "axo.remote.workspace.session.create",
+        json!({ "target": target, "workspaceId": home }),
+    );
+    let session = created["session"]["sessionId"].clone();
+    let listed = axod
+        .sessions()
+        .into_iter()
+        .find(|listed| listed["id"] == session)
+        .expect("the Mac lists it");
+    axod.wait_for_pi(&listed);
+    let pi = listed["shells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|shell| shell["role"] == "pi")
+        .unwrap()["id"]
+        .clone();
+
+    // A terminal beside Pi: typed into (base64, from sequence 0), resized, laid out, and closed.
+    let shell = hub.ok(
+        "axo.remote.shell.create",
+        json!({ "target": target, "sessionId": session }),
+    );
+    assert_eq!(shell["sessionId"], session, "{shell}");
+    let terminal = shell["shellId"].clone();
+    let typed = hub.ok(
+        "axo.remote.terminal.input",
+        json!({ "target": target, "sessionId": session, "shellId": terminal, "sequence": 0, "data": "ZWNobyBoaQ0=" }),
+    );
+    assert_eq!(
+        (typed["accepted"].clone(), typed["sequence"].clone()),
+        (json!(true), json!(0))
+    );
+    let resized = hub.ok(
+        "axo.remote.terminal.resize",
+        json!({ "target": target, "sessionId": session, "shellId": terminal, "rows": 30, "columns": 100 }),
+    );
+    assert_eq!(
+        (resized["rows"].clone(), resized["columns"].clone()),
+        (json!(30), json!(100))
+    );
+    // A layout names every pane of the Session, once.
+    let shells: Vec<Value> = axod
+        .sessions()
+        .into_iter()
+        .find(|listed| listed["id"] == session)
+        .unwrap()["shells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|shell| shell["id"].clone())
+        .collect();
+    assert!(
+        shells.contains(&pi) && shells.contains(&terminal),
+        "{shells:?}"
+    );
+    let split_ids = [
+        "7d0e6a52-3f1c-4b8e-9a2d-6c4f1e8b9a10",
+        "02a4c161-8143-4c9a-bbf2-1a625e8b8342",
+        "5b3f8e21-9c7d-4a1e-b2f0-3d6e8a9c1b47",
+    ];
+    let mut layout = json!({ "kind": "pane", "shellId": shells.last().unwrap() });
+    for (index, shell) in shells.iter().rev().skip(1).enumerate() {
+        layout = json!({
+            "kind": "split",
+            "id": split_ids[index],
+            "direction": "right",
+            "ratio": 0.5,
+            "first": { "kind": "pane", "shellId": shell },
+            "second": layout,
+        });
+    }
+    let saved = hub.ok(
+        "axo.remote.session.layout.set",
+        json!({ "target": target, "sessionId": session, "layout": layout }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let closed = hub.ok(
+        "axo.remote.shell.close",
+        json!({ "target": target, "sessionId": session, "shellId": terminal }),
+    );
+    assert_eq!(closed["closed"], true, "{closed}");
+
+    // Pi's keys, and stopping a turn that is not running.
+    let key = hub.ok(
+        "axo.remote.session.key",
+        json!({ "target": target, "sessionId": session, "key": "escape" }),
+    );
+    assert_eq!(key["accepted"], true, "{key}");
+    let stop = hub.call(
+        "axo.remote.session.stop",
+        json!({ "target": target, "sessionId": session, "turnId": "no-such-turn" }),
+    );
+    match stop {
+        Ok(stopped) => assert_eq!(stopped["stopped"], false, "{stopped}"),
+        Err(error) => assert!(error["code"].as_i64().is_some_and(|c| c < 0), "{error}"),
+    }
+    let unknown_key = hub
+        .call(
+            "axo.remote.session.key",
+            json!({ "target": target, "sessionId": session, "key": "delete" }),
+        )
+        .unwrap_err();
+    assert_eq!(unknown_key["code"], INVALID_PARAMS, "{unknown_key}");
+}
