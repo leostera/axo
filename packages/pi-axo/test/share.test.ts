@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildSharedMessages,
+  lastReplyModel,
   parseFindings,
   redactorRequest,
   redactSnapshot,
@@ -11,6 +12,7 @@ import {
   type RedactionReport,
   type SharedSnapshot,
 } from "../src/share.js";
+import { sessionEmoji } from "../src/title.js";
 
 const emptyReport = (): RedactionReport => ({ categories: {}, fieldsChecked: 0, fieldsSentToRedactor: 0, classifierUsed: false });
 
@@ -126,4 +128,21 @@ test("each field reaches the redaction model fenced as data, with the task after
 test("snapshot file names are readable slugs", () => {
   assert.equal(slugify("axo: share sessions"), "axo-share-sessions");
   assert.equal(slugify("[redacted:secret]"), "session");
+});
+
+test("the share names the model behind the last reply, and the Session's emoji", () => {
+  const branch = [
+    { type: "custom", id: "c1", customType: "axo_session_appearance", data: { emoji: "🐫" } },
+    { type: "message", id: "a1", message: { role: "assistant", provider: "openai", model: "gpt-5", content: [] } },
+    { type: "message", id: "u1", message: { role: "user", content: "next" } },
+    { type: "message", id: "a2", message: { role: "assistant", provider: "anthropic", model: "claude-opus-4-5", content: [] } },
+    { type: "message", id: "u2", message: { role: "user", content: "thanks" } },
+  ];
+  const names: Record<string, string> = { "anthropic/claude-opus-4-5": "Claude Opus 4.5" };
+  assert.deepEqual(lastReplyModel(branch, (provider, id) => names[`${provider}/${id}`]),
+    { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus 4.5" });
+  assert.deepEqual(lastReplyModel(branch.slice(0, 2), () => undefined), { provider: "openai", id: "gpt-5", name: "gpt-5" });
+  assert.equal(lastReplyModel(branch.slice(2, 3), () => undefined), undefined);
+  assert.equal(sessionEmoji(branch as never), "🐫");
+  assert.equal(sessionEmoji([] as never), undefined);
 });

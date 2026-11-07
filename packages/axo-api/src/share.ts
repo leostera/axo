@@ -35,9 +35,19 @@ export const sharedMessageSchema = z.object({
   images: z.array(z.never()).max(0),
 }).strict();
 
+/** The model that wrote the replies, as Pi names it. */
+export const sharedModelSchema = z.object({
+  provider: text(64).min(1),
+  id: text(128).min(1),
+  name: text(128).min(1),
+}).strict();
+
 export const sharedSnapshotSchema = z.object({
   version: z.literal(SHARED_SNAPSHOT_VERSION),
   title: text(200).min(1),
+  // Optional: shares published before they were added have neither.
+  emoji: text(16).min(1).optional(),
+  model: sharedModelSchema.optional(),
   publishedAt: z.string().datetime({ offset: true }),
   messages: z.array(sharedMessageSchema).min(1).max(MAX_SHARED_MESSAGES),
 }).strict();

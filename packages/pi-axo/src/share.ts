@@ -42,9 +42,19 @@ export interface SharedMessage {
   images: [];
 }
 
+export interface SharedModel {
+  provider: string;
+  id: string;
+  name: string;
+}
+
 export interface SharedSnapshot {
   version: typeof SNAPSHOT_VERSION;
   title: string;
+  /** The Session's emoji, when it has one; the page draws it with the title. */
+  emoji?: string;
+  /** The model that wrote the last reply. */
+  model?: SharedModel;
   publishedAt: string;
   messages: SharedMessage[];
 }
@@ -183,6 +193,21 @@ export function buildSharedMessages(branch: readonly BranchEntry[]): SharedMessa
     }
   }
   return messages;
+}
+
+/** The model behind the branch's last reply, as Pi names it; `name` falls back to the ID. */
+export function lastReplyModel(branch: readonly BranchEntry[], nameOf: (provider: string, id: string) => string | undefined): SharedModel | undefined {
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index]!;
+    if (entry.type !== "message") continue;
+    const message = asObject(entry.message);
+    if (message?.role !== "assistant" || typeof message.provider !== "string" || typeof message.model !== "string") continue;
+    const provider = message.provider.slice(0, 64);
+    const id = message.model.slice(0, 128);
+    if (!provider || !id) return undefined;
+    return { provider, id, name: (nameOf(message.provider, message.model) || id).slice(0, 128) };
+  }
+  return undefined;
 }
 
 // ---- deterministic scrubbing ----

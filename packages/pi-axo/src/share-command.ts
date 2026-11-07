@@ -4,8 +4,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { AxodCallError, callAxod } from "./axod-client.js";
+import { sessionEmoji } from "./title.js";
 import {
   buildSharedMessages,
+  lastReplyModel,
   parseFindings,
   redactSnapshot,
   REDACTOR_SYSTEM_PROMPT,
@@ -19,6 +21,9 @@ import {
 } from "./share.js";
 
 export const SHARE_ENTRY = "axo_session_share";
+
+/** `{ [key]: value }`, or nothing when there is no value: the snapshot leaves out what it lacks. */
+const optional = <K extends string, V>(key: K, value: V | undefined) => (value === undefined ? {} : { [key]: value }) as Partial<Record<K, V>>;
 const SHARE_METHOD = "axo.session.share";
 /** Axod waits up to 60 seconds for the cloud; leave it room to answer. */
 const PUBLISH_TIMEOUT_MS = 75_000;
@@ -160,7 +165,8 @@ export function registerShareCommand(pi: ExtensionAPI): void {
       }
       await context.waitForIdle();
 
-      const messages = buildSharedMessages(context.sessionManager.getBranch());
+      const branch = context.sessionManager.getBranch();
+      const messages = buildSharedMessages(branch);
       if (messages.length === 0) {
         context.ui.notify("There is nothing to share yet.", "warning");
         return;
@@ -175,6 +181,8 @@ export function registerShareCommand(pi: ExtensionAPI): void {
       const snapshot: SharedSnapshot = {
         version: SNAPSHOT_VERSION,
         title: pi.getSessionName() ?? "Shared Axo session",
+        ...optional("emoji", sessionEmoji(branch)),
+        ...optional("model", lastReplyModel(branch, (provider, id) => context.modelRegistry.find(provider, id)?.name)),
         publishedAt: new Date().toISOString(),
         messages,
       };

@@ -69,7 +69,11 @@ function validEmoji(value: string): string | undefined {
 }
 
 function latestSessionEmoji(context: ExtensionContext): string | undefined {
-  const entries = context.sessionManager.getBranch();
+  return sessionEmoji(context.sessionManager.getBranch());
+}
+
+/** The emoji `axo_set_title` last gave this branch, if it gave one. */
+export function sessionEmoji(entries: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>): string | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry?.type !== "custom" || entry.customType !== AXO_APPEARANCE_ENTRY) continue;
