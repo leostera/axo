@@ -23,8 +23,8 @@ mod status;
 mod wire;
 
 pub(crate) use socket::{
-    CONNECT_TIMEOUT, MAX_FRAME_BYTES, RelaySocket, connect_websocket, host_websocket_request,
-    read_message, send_json, set_read_timeout,
+    MAX_FRAME_BYTES, RelaySink, RelayStream, connect_websocket, host_websocket_request, receive,
+    send_json,
 };
 pub use status::{RelayControl, unavailable_status};
 
@@ -39,7 +39,7 @@ use axo_protocol::HostKind;
 use elicitation::ELICITATION_REQUESTED;
 use futures_util::StreamExt;
 use session::{RelaySessionContext, answer_requests, relay_session, rpc_call};
-use socket::{connect_websocket_async, relay_websocket_request};
+use socket::relay_websocket_request;
 use tungstenite::protocol::WebSocketConfig;
 use wire::{HOST_CAPABILITIES, HostRegistration, NegotiateParams};
 
@@ -123,6 +123,7 @@ impl RelayWorker {
                     index: paths.index,
                     live: paths.live,
                 },
+                runtime.clone(),
                 stop.clone(),
             )?),
             None => None,
@@ -290,7 +291,7 @@ async fn run_connection(
         .max_write_buffer_size(131_072)
         .max_message_size(Some(MAX_FRAME_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES));
-    let socket = connect_websocket_async(request, websocket_config).await?;
+    let socket = connect_websocket(request, websocket_config).await?;
     let (mut sink, mut stream) = socket.split();
 
     let mut request_number = 0_u64;

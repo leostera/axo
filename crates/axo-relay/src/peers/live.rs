@@ -79,6 +79,8 @@ type Observer = Box<dyn Fn() + Send + Sync>;
 pub struct PeerLive {
     state: Mutex<LiveState>,
     changed: Condvar,
+    /// Wakes the peers socket's loop: a pane, a command or a restore wants something.
+    woken: tokio::sync::Notify,
     listing_observer: Mutex<Option<Observer>>,
 }
 
@@ -198,6 +200,7 @@ impl PeerLive {
                 reply,
             });
         }
+        self.woken.notify_one();
         match answer.recv_timeout(timeout) {
             Ok(outcome) => outcome,
             Err(_) => Err(PeerCommandError::unknown()),
@@ -210,6 +213,12 @@ impl PeerLive {
             state.version += 1;
         }
         self.changed.notify_all();
+        self.woken.notify_one();
+    }
+
+    /// Until something wakes the peers socket's loop (at once if it was woken meanwhile).
+    pub(super) async fn woken(&self) {
+        self.woken.notified().await;
     }
 
     pub(super) fn touch(&self) {

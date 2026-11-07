@@ -2,17 +2,15 @@
 //! and reading and sending whole JSON messages, fragmented when large (RFD0016, Transport).
 
 use std::io;
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
+use tungstenite::Message;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::HeaderValue;
 use tungstenite::protocol::WebSocketConfig;
-use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, client_tls_with_config};
 
 use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
@@ -23,14 +21,12 @@ pub(crate) const MAX_FRAME_BYTES: usize = fragments::FRAME_BYTES;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
-
-/// The relay connection's socket, on tokio: written through its sink half and read through its
+/// A relay socket, on tokio: written through its sink half and read through its
 /// stream half, so the loop can wait on reading while it writes.
-pub(crate) type AsyncRelaySocket =
+pub(crate) type RelaySocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-pub(crate) type RelaySink = futures_util::stream::SplitSink<AsyncRelaySocket, Message>;
-pub(crate) type RelayStream = futures_util::stream::SplitStream<AsyncRelaySocket>;
+pub(crate) type RelaySink = futures_util::stream::SplitSink<RelaySocket, Message>;
+pub(crate) type RelayStream = futures_util::stream::SplitStream<RelaySocket>;
 
 /// The account-scoped daemon WebSocket, authenticated with the host credential.
 pub(super) fn relay_websocket_request(
@@ -78,57 +74,6 @@ pub(crate) fn host_websocket_request(
     Ok(request)
 }
 
-/// One connection attempt. The daemon route authenticates with the host credential and never
-/// redirects; a redirect means something in front of it (usually a Cloudflare Access login)
-/// is intercepting the route, which is reported instead of followed.
-pub(crate) fn connect_websocket(
-    request: tungstenite::http::Request<()>,
-    config: WebSocketConfig,
-) -> io::Result<RelaySocket> {
-    let (host, port) = address_of(request.uri())?;
-    let host = host.as_str();
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    let mut connected = None;
-    let mut last_error = None;
-    for address in (host, port).to_socket_addrs()? {
-        let timeout = deadline.saturating_duration_since(Instant::now());
-        if timeout.is_zero() {
-            break;
-        }
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => {
-                connected = Some(stream);
-                break;
-            }
-            Err(error) => last_error = Some(error),
-        }
-    }
-    let stream = connected.ok_or_else(|| {
-        last_error.unwrap_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::AddrNotAvailable,
-                "relay host has no usable address",
-            )
-        })
-    })?;
-    stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(CONNECT_TIMEOUT))?;
-    stream.set_write_timeout(Some(CONNECT_TIMEOUT))?;
-
-    match client_tls_with_config(request, stream, Some(config), None) {
-        Ok((socket, _)) => Ok(socket),
-        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)))
-            if response.status().is_redirection() =>
-        {
-            Err(io::Error::other(format!(
-                "relay redirected the host connection (HTTP {}); the daemon route must not be behind a login",
-                response.status().as_u16()
-            )))
-        }
-        Err(error) => Err(io::Error::other(error)),
-    }
-}
-
 /// The host and port a relay URL names.
 fn address_of(uri: &tungstenite::http::Uri) -> io::Result<(String, u16)> {
     let host = uri
@@ -148,11 +93,13 @@ fn address_of(uri: &tungstenite::http::Uri) -> io::Result<(String, u16)> {
     Ok((host.to_owned(), port))
 }
 
-/// [`connect_websocket`] on tokio: the same timeouts, and the same refusal to follow a redirect.
-pub(crate) async fn connect_websocket_async(
+/// One connection attempt. The daemon route authenticates with the host credential and never
+/// redirects; a redirect means something in front of it (usually a Cloudflare Access login)
+/// is intercepting the route, which is reported instead of followed.
+pub(crate) async fn connect_websocket(
     request: tungstenite::http::Request<()>,
     config: WebSocketConfig,
-) -> io::Result<AsyncRelaySocket> {
+) -> io::Result<RelaySocket> {
     let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "relay connection timed out");
     let (host, port) = address_of(request.uri())?;
     let stream = tokio::time::timeout(
@@ -177,8 +124,9 @@ pub(crate) async fn connect_websocket_async(
     }
 }
 
-/// One whole message read from the async socket, as [`read_message`] does: `None` for a control
-/// frame or a fragment that completes nothing yet. A ping's pong goes out through `sink`.
+/// One whole message: a frame, or the last fragment's frame completing a larger message; `None`
+/// for a control frame or a fragment that completes nothing yet. A fragment that breaks the rules
+/// ends the connection. A ping's pong goes out through `sink`.
 pub(crate) async fn receive(
     sink: &mut RelaySink,
     message: Option<Result<Message, tungstenite::Error>>,
@@ -204,11 +152,8 @@ pub(crate) async fn receive(
     }
 }
 
-/// [`send_json`] on the async socket.
-pub(crate) async fn send_json_async(
-    sink: &mut RelaySink,
-    value: &impl Serialize,
-) -> io::Result<()> {
+/// Sends one message: in one frame, or as fragments when it is larger (RFD0016, Transport).
+pub(crate) async fn send_json(sink: &mut RelaySink, value: &impl Serialize) -> io::Result<()> {
     use futures_util::SinkExt;
     for frame in frames(value)? {
         sink.send(Message::Text(frame.into()))
@@ -216,18 +161,6 @@ pub(crate) async fn send_json_async(
             .map_err(io::Error::other)?;
     }
     Ok(())
-}
-
-/// One whole message: a frame, or the last fragment's frame completing a larger message. A
-/// fragment that breaks the rules ends the connection.
-pub(crate) fn read_message(
-    socket: &mut RelaySocket,
-    reassembler: &mut Reassembler,
-) -> io::Result<Option<String>> {
-    let Some(raw) = read_text(socket)? else {
-        return Ok(None);
-    };
-    receive_text(raw, reassembler)
 }
 
 /// A text frame as a whole message, after reassembly when it is a fragment.
@@ -261,44 +194,6 @@ fn receive_text(raw: String, reassembler: &mut Reassembler) -> io::Result<Option
         })
 }
 
-fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
-    match socket.read() {
-        Ok(Message::Text(text)) => Ok(Some(text.to_string())),
-        Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {
-            socket.flush().map_err(io::Error::other)?;
-            Ok(None)
-        }
-        Ok(Message::Close(_)) => Err(io::Error::new(
-            io::ErrorKind::ConnectionAborted,
-            "relay connection closed",
-        )),
-        Ok(Message::Binary(_)) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "relay sent a binary frame",
-        )),
-        Ok(Message::Frame(_)) => Ok(None),
-        Err(tungstenite::Error::Io(error))
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(io::Error::other(error)),
-    }
-}
-
-/// Sends one message: in one frame, or as fragments when it is larger (RFD0016, Transport).
-pub(crate) fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()> {
-    for frame in frames(value)? {
-        socket
-            .send(Message::Text(frame.into()))
-            .map_err(io::Error::other)?;
-    }
-    Ok(())
-}
-
 /// One message's frames: itself, or its fragments when it is larger than a frame.
 fn frames(value: &impl Serialize) -> io::Result<Vec<String>> {
     static MESSAGES: AtomicU64 = AtomicU64::new(0);
@@ -316,25 +211,12 @@ fn frames(value: &impl Serialize) -> io::Result<Vec<String>> {
     })
 }
 
-pub(crate) fn set_read_timeout(
-    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    timeout: Duration,
-) -> io::Result<()> {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => stream.set_read_timeout(Some(timeout)),
-        MaybeTlsStream::NativeTls(stream) => stream.get_mut().set_read_timeout(Some(timeout)),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "unsupported WebSocket TLS stream",
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Instant;
     use std::thread;
 
     fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
@@ -400,7 +282,12 @@ mod tests {
         let request = format!("ws://{address}/daemon")
             .into_client_request()
             .unwrap();
-        let error = match connect_websocket(request, WebSocketConfig::default()) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let connecting = connect_websocket(request, WebSocketConfig::default());
+        let error = match runtime.block_on(connecting) {
             Ok(_) => panic!("a redirect must not be accepted as a relay"),
             Err(error) => error,
         };

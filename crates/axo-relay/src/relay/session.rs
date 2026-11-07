@@ -21,7 +21,7 @@ use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
 use super::jobs::{start_bash, start_computer, start_prompt, start_sign_in};
-use super::socket::{RelaySink, RelayStream, receive, send_json_async};
+use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
 use super::wire::{HostIdentity, IncomingMessage, JSONRPC, OutgoingRequest, RequestId};
 use crate::fragments::Reassembler;
@@ -51,7 +51,7 @@ pub(super) async fn rpc_call(
 ) -> io::Result<()> {
     *request_number = request_number.saturating_add(1);
     let id = format!("axod-{}", *request_number);
-    send_json_async(
+    send_json(
         sink,
         &OutgoingRequest {
             jsonrpc: JSONRPC,
@@ -86,7 +86,7 @@ pub(super) async fn rpc_call(
             .await
             .map_err(io::Error::other)?;
             if let Some(reply) = reply {
-                send_json_async(sink, &reply).await?;
+                send_json(sink, &reply).await?;
             }
         }
     };
@@ -186,7 +186,7 @@ pub(super) async fn relay_session(
             }
             _ = heartbeat.tick() => {
                 *request_number = request_number.saturating_add(1);
-                send_json_async(
+                send_json(
                     sink,
                     &OutgoingRequest {
                         jsonrpc: JSONRPC,

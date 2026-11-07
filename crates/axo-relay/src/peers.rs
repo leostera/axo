@@ -34,7 +34,6 @@ pub use mirror::{ClientRecord, CopyRead, CopyState, Mirror, Place, read_copy};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use follower::Follower;
@@ -43,6 +42,8 @@ use tungstenite::protocol::WebSocketConfig;
 use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
 use crate::link::HostLinkStore;
+use futures_util::StreamExt;
+
 use crate::relay::{MAX_FRAME_BYTES, connect_websocket, host_websocket_request};
 
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
@@ -72,32 +73,57 @@ pub struct PeersDependencies {
 }
 
 pub struct PeersWorker {
-    thread: Option<JoinHandle<()>>,
+    runtime: tokio::runtime::Handle,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// How long stopping waits for the socket to close.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+
 impl PeersWorker {
-    pub fn start(dependencies: PeersDependencies, stop: axo_ipc::Stop) -> io::Result<Self> {
-        let thread = thread::Builder::new()
-            .name("axo-peers".to_owned())
-            .spawn(move || run(dependencies, stop))?;
+    /// Follows the account on `runtime` until `stop`.
+    pub fn start(
+        dependencies: PeersDependencies,
+        runtime: tokio::runtime::Handle,
+        stop: axo_ipc::Stop,
+    ) -> io::Result<Self> {
+        let task = runtime.spawn(run(dependencies, stop));
         Ok(Self {
-            thread: Some(thread),
+            runtime,
+            task: Some(task),
         })
     }
 
+    /// Waits for the socket to close once axod stops. Call it from outside the runtime.
     pub fn join(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(task) = self.task.take() {
+            self.runtime.block_on(async {
+                let _ = tokio::time::timeout(SHUTDOWN_WAIT, task).await;
+            });
         }
     }
 }
 
-fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
+/// Waits `delay`, or less if axod stops.
+async fn wait(stop: &axo_ipc::Stop, delay: Duration) {
+    tokio::select! {
+        () = tokio::time::sleep(delay) => {}
+        () = stop.stopped() => {}
+    }
+}
+
+async fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
+    let dependencies = Arc::new(dependencies);
     let mut mirror = Mirror::new(dependencies.sessions_directory.clone());
     let mut delay = Duration::from_secs(1);
     while !stop.is_stopped() {
-        let account = match dependencies.links.load_link() {
-            Ok(link) => link.account().cloned(),
+        let links = Arc::clone(&dependencies.links);
+        let account = match tokio::task::spawn_blocking(move || links.load_link()).await {
+            Ok(Ok(link)) => link.account().cloned(),
+            Ok(Err(error)) => {
+                log::warn!("event=peers.link_unavailable reason={error}");
+                None
+            }
             Err(error) => {
                 log::warn!("event=peers.link_unavailable reason={error}");
                 None
@@ -105,24 +131,11 @@ fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
         };
         let Some(account) = account else {
             // Not paired: nothing to follow until it is.
-            stop.wait(Duration::from_secs(5));
+            wait(&stop, Duration::from_secs(5)).await;
             continue;
         };
         let started = Instant::now();
-        let outcome = host_websocket_request(
-            dependencies
-                .endpoint
-                .peers_url(account.account_id(), &dependencies.host_id),
-            &account,
-            dependencies.credentials.as_ref(),
-        )
-        .and_then(|request| {
-            let config = WebSocketConfig::default()
-                .max_message_size(Some(MAX_FRAME_BYTES))
-                .max_frame_size(Some(MAX_FRAME_BYTES));
-            connect_websocket(request, config)
-        })
-        .and_then(|socket| Follower::new(socket, &mut mirror, &dependencies, &stop)?.run());
+        let outcome = follow(&dependencies, account, &mut mirror, &stop).await;
         match outcome {
             Ok(()) => log::info!("event=peers.socket_renewed"),
             Err(error) => log::warn!("event=peers.connection_retry reason={error}"),
@@ -133,8 +146,39 @@ fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
         } else {
             (delay * 2).min(MAX_RETRY_DELAY)
         };
-        stop.wait(delay);
+        wait(&stop, delay).await;
     }
+}
+
+/// One socket's life, from connecting to its end.
+async fn follow(
+    dependencies: &Arc<PeersDependencies>,
+    account: crate::link::AccountLink,
+    mirror: &mut Mirror,
+    stop: &axo_ipc::Stop,
+) -> io::Result<()> {
+    let request = {
+        let dependencies = Arc::clone(dependencies);
+        // The credential comes from the Keychain, which may take its time.
+        tokio::task::spawn_blocking(move || {
+            host_websocket_request(
+                dependencies
+                    .endpoint
+                    .peers_url(account.account_id(), &dependencies.host_id),
+                &account,
+                dependencies.credentials.as_ref(),
+            )
+        })
+        .await
+        .map_err(io::Error::other)??
+    };
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_FRAME_BYTES))
+        .max_frame_size(Some(MAX_FRAME_BYTES));
+    let (sink, stream) = connect_websocket(request, config).await?.split();
+    Follower::new(mirror, dependencies, stop)
+        .run(sink, stream)
+        .await
 }
 
 /// Where this Mac's own transcripts are fetched to before they are checked and moved into

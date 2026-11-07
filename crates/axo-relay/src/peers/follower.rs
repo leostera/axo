@@ -1,13 +1,18 @@
 //! One socket's life: hello, open every Session from where its copy ends, then keep the copies
 //! current and carry commands out.
+//!
+//! The socket loop is async (RFD0034, step 7): it waits on the socket, `PeerLive`'s wake-up (a
+//! pane, a command, a restore), the ping, the rate limit and stopping at once. Handling a
+//! message writes copies to disk, so it runs under `block_in_place`; what it sends is queued and
+//! goes out by the loop, at most `FRAMES_PER_SECOND`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::Path;
 use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tungstenite::Message;
 
@@ -16,7 +21,7 @@ use super::live::{PeerCommand, PeerCommandError, PeerLive, Restoring};
 use super::mirror::{ClientRecord, CopyState, Mirror, Place};
 use super::{PeersDependencies, restore_directory};
 use crate::fragments::Reassembler;
-use crate::relay::{CONNECT_TIMEOUT, RelaySocket, read_message, send_json, set_read_timeout};
+use crate::relay::{RelaySink, RelayStream, receive, send_json};
 
 /// Frames sent per second, half what the cloud allows a client (`FRAMES_PER_SECOND`).
 const FRAMES_PER_SECOND: usize = 30;
@@ -25,7 +30,6 @@ const OPENS_IN_FLIGHT: usize = 4;
 /// The cloud signs the socket in for an hour; it is opened again before that.
 const SOCKET_LIFETIME: Duration = Duration::from_secs(50 * 60);
 const PING_INTERVAL: Duration = Duration::from_secs(30);
-const READ_TIMEOUT: Duration = Duration::from_millis(50);
 
 enum Pending {
     Hello,
@@ -40,7 +44,8 @@ enum Pending {
 
 /// One socket's life: hello, then open every Session, then keep the copies current.
 pub(super) struct Follower<'a> {
-    socket: RelaySocket,
+    /// What to send, in order, as fast as the rate limit allows.
+    outbox: VecDeque<Value>,
     reassembler: Reassembler,
     mirror: &'a mut Mirror,
     own_host_id: &'a str,
@@ -69,14 +74,12 @@ pub(super) struct Follower<'a> {
 
 impl<'a> Follower<'a> {
     pub(super) fn new(
-        mut socket: RelaySocket,
         mirror: &'a mut Mirror,
         dependencies: &'a PeersDependencies,
         stop: &'a axo_ipc::Stop,
-    ) -> io::Result<Self> {
-        set_read_timeout(&mut socket, READ_TIMEOUT)?;
-        Ok(Self {
-            socket,
+    ) -> Self {
+        Self {
+            outbox: VecDeque::new(),
             reassembler: Reassembler::default(),
             mirror,
             own_host_id: &dependencies.host_id,
@@ -95,12 +98,12 @@ impl<'a> Follower<'a> {
             own_epochs: HashMap::new(),
             index: PeerIndex::default(),
             sent: VecDeque::new(),
-        })
+        }
     }
 
-    pub(super) fn run(mut self) -> io::Result<()> {
+    pub(super) async fn run(mut self, sink: RelaySink, stream: RelayStream) -> io::Result<()> {
         self.live.connected();
-        let outcome = self.follow();
+        let outcome = self.follow(sink, stream).await;
         let in_flight = self
             .pending
             .drain()
@@ -113,37 +116,53 @@ impl<'a> Follower<'a> {
         outcome
     }
 
-    fn follow(&mut self) -> io::Result<()> {
-        let opened = Instant::now();
-        let mut pinged = Instant::now();
+    async fn follow(&mut self, mut sink: RelaySink, mut stream: RelayStream) -> io::Result<()> {
+        let lifetime = tokio::time::sleep(SOCKET_LIFETIME);
+        let mut lifetime = std::pin::pin!(lifetime);
+        let start = tokio::time::Instant::now();
+        let mut ping = tokio::time::interval_at(start + PING_INTERVAL, PING_INTERVAL);
         let client_id = format!("host-{}", self.own_host_id);
         self.call(
             Pending::Hello,
             "axo.client.hello",
             json!({ "protocolVersion": axo_protocol::rpc::PROTOCOL_VERSION, "clientId": client_id }),
         )?;
-        while !self.stop.is_stopped() && opened.elapsed() < SOCKET_LIFETIME {
-            self.follow_panes()?;
-            self.start_restores()?;
-            self.open_more()?;
-            for command in self.live.take_commands() {
-                self.forward(command)?;
-            }
-            if pinged.elapsed() >= PING_INTERVAL {
-                self.socket
-                    .send(Message::Ping(Vec::new().into()))
-                    .map_err(io::Error::other)?;
-                pinged = Instant::now();
-            }
-            let Some(text) = read_message(&mut self.socket, &mut self.reassembler)? else {
-                continue;
-            };
-            let message: Value = serde_json::from_str(&text).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "the cloud sent invalid JSON")
+        while !self.stop.is_stopped() {
+            // What panes, commands and restores asked for since the last turn.
+            tokio::task::block_in_place(|| -> io::Result<()> {
+                self.follow_panes()?;
+                self.start_restores()?;
+                self.open_more()?;
+                for command in self.live.take_commands() {
+                    self.forward(command)?;
+                }
+                Ok(())
             })?;
-            self.receive(message)?;
+            self.flush(&mut sink).await?;
+            let next_send = self.next_send();
+            tokio::select! {
+                () = self.stop.stopped() => {}
+                () = self.live.woken() => {}
+                () = &mut lifetime => break,
+                _ = ping.tick() => {
+                    sink.send(Message::Ping(Vec::new().into()))
+                        .await
+                        .map_err(io::Error::other)?;
+                }
+                () = sleep_until(next_send), if next_send.is_some() => {}
+                message = stream.next() => {
+                    let Some(text) = receive(&mut sink, message, &mut self.reassembler).await? else {
+                        continue;
+                    };
+                    let message: Value = serde_json::from_str(&text).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "the cloud sent invalid JSON")
+                    })?;
+                    // Handling it writes the copies to disk before they are acknowledged.
+                    tokio::task::block_in_place(|| self.receive(message))?;
+                }
+            }
         }
-        let _ = self.socket.close(None);
+        let _ = sink.close().await;
         Ok(())
     }
 
@@ -608,22 +627,53 @@ impl<'a> Follower<'a> {
         self.send(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
     }
 
-    /// Sends, at most `FRAMES_PER_SECOND`: the cloud closes a client that sends faster.
+    /// Queues a message; the loop sends it, at most `FRAMES_PER_SECOND`: the cloud closes a client
+    /// that sends faster.
     fn send(&mut self, value: &Value) -> io::Result<()> {
-        let now = Instant::now();
-        while self
-            .sent
-            .front()
-            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(1))
-        {
-            self.sent.pop_front();
+        self.outbox.push_back(value.clone());
+        Ok(())
+    }
+
+    /// Sends what the rate limit allows now.
+    async fn flush(&mut self, sink: &mut RelaySink) -> io::Result<()> {
+        loop {
+            let now = Instant::now();
+            while self
+                .sent
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(1))
+            {
+                self.sent.pop_front();
+            }
+            if self.sent.len() >= FRAMES_PER_SECOND {
+                return Ok(());
+            }
+            let Some(value) = self.outbox.pop_front() else {
+                return Ok(());
+            };
+            self.sent.push_back(now);
+            send_json(sink, &value).await?;
         }
-        if self.sent.len() >= FRAMES_PER_SECOND {
-            let wait = Duration::from_secs(1).saturating_sub(now.duration_since(self.sent[0]));
-            thread::sleep(wait.min(CONNECT_TIMEOUT));
-            self.sent.pop_front();
+    }
+
+    /// When the next queued message may go, if any waits.
+    fn next_send(&self) -> Option<Instant> {
+        if self.outbox.is_empty() {
+            return None;
         }
-        self.sent.push_back(Instant::now());
-        send_json(&mut self.socket, value)
+        match self.sent.front() {
+            Some(first) if self.sent.len() >= FRAMES_PER_SECOND => {
+                Some(*first + Duration::from_secs(1))
+            }
+            _ => Some(Instant::now()),
+        }
+    }
+}
+
+/// Until `at`; never if there is no `at`.
+async fn sleep_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
     }
 }
