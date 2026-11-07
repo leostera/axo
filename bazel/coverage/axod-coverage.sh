@@ -41,7 +41,7 @@ export LLVM_PROFILE_FILE="$out/profiles/axod-%p-%m.profraw"
 
 echo "== 3. black-box tests of the binary"
 bazel test //crates/axod:all --nocache_test_results --test_tag_filters=-manual \
-  --test_env=AXOD_BINARY="$binary" --test_env=LLVM_PROFILE_FILE="$LLVM_PROFILE_FILE" \
+  --test_env=AXOD_BINARY_OVERRIDE="$binary" --test_env=LLVM_PROFILE_FILE="$LLVM_PROFILE_FILE" \
   --sandbox_writable_path="$out/profiles" 2>&1 | grep -E '^//|Executed|FAILED' || true
 
 if (( worker )); then

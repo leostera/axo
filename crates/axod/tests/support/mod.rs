@@ -100,8 +100,13 @@ pub fn runfile(variable: &str) -> PathBuf {
     .unwrap_or_else(|| panic!("{} is not in the runfiles", path.display()))
 }
 
+/// The axod under test: the target's own, unless `AXOD_BINARY_OVERRIDE` names another, as the
+/// coverage script does with an instrumented build (a target's `env` outranks `--test_env`).
 pub fn axod_binary() -> PathBuf {
-    runfile("AXOD_BINARY")
+    match std::env::var_os("AXOD_BINARY_OVERRIDE") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => runfile("AXOD_BINARY"),
+    }
 }
 
 /// A fresh directory under `/tmp` (Unix socket paths are limited to 104 bytes, which rules out

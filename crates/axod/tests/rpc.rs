@@ -99,6 +99,10 @@ impl Drop for ChildGuard {
 }
 
 fn axod_binary() -> std::path::PathBuf {
+    // The coverage script's instrumented build (a target's `env` outranks `--test_env`).
+    if let Some(path) = std::env::var_os("AXOD_BINARY_OVERRIDE").filter(|path| !path.is_empty()) {
+        return std::path::PathBuf::from(path);
+    }
     if let Some(path) = std::env::var_os("AXOD_BINARY") {
         let path = std::path::PathBuf::from(path);
         if path.is_absolute() || path.exists() {
