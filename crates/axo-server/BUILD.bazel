@@ -27,6 +27,7 @@ rust_library(
     version = AXO["version"] + ".0",
     deps = [
         "//crates/axo-apps:axo_apps",
+        "//crates/axo-assets:axo_assets",
         "//crates/axo-computer:axo_computer",
         "//crates/axo-ipc:axo_ipc",
         "//crates/axo-panes:axo_panes",
@@ -60,6 +61,7 @@ rust_test(
     version = AXO["version"] + ".0",
     deps = [
         "//crates/axo-apps:axo_apps",
+        "//crates/axo-assets:axo_assets",
         "//crates/axo-computer:axo_computer",
         "//crates/axo-ipc:axo_ipc",
         "//crates/axo-panes:axo_panes",

@@ -1,21 +1,14 @@
-//! Computer use on this Mac from another Mac's script, and fetching the account's assets for
-//! `axod mcp` (RFD0028, Computer use from anywhere).
+//! Computer use on this Mac from another Mac's script (RFD0028, Computer use from anywhere).
 //!
 //! A call runs the same gate as the local `computer` tool. When it must ask, this Mac asks in the
 //! *calling* Session (`ask`): its card shows in that chat on the web and the phone, and the answer
 //! comes back to this Mac. The tool runs only on the person's Accept or the gate passing it.
 
-use std::sync::Mutex;
 use std::time::Duration;
 
-use axo_ipc::peer::Signer;
-use axo_ipc::{Only, TypedMethods};
-use axo_protocol::asset::{Attachments, FetchedAttachment};
 use axo_protocol::elicitation::{Asker, ElicitationAction, MAX_MESSAGE_CHARS, TIMEOUT_MS};
-use axo_relay::assets::{AssetSource, FetchError};
+use axo_relay::assets::AssetSource;
 use axo_relay::computer::ComputerParams;
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -27,24 +20,6 @@ pub const NOT_ALLOWED: i64 = -32031;
 const ANSWER_MARGIN: Duration = Duration::from_secs(10);
 /// The shortest question worth asking.
 const SHORTEST_QUESTION: Duration = Duration::from_secs(15);
-
-use axo_protocol::rpc::method::ASSETS_FETCH;
-
-/// The account's assets, reachable while the relay is connected.
-#[derive(Default)]
-pub(crate) struct AssetSlot(Mutex<Option<AssetSource>>);
-
-impl AssetSlot {
-    pub(crate) fn set(&self, source: Option<AssetSource>) {
-        if let Ok(mut slot) = self.0.lock() {
-            *slot = source;
-        }
-    }
-
-    fn get(&self) -> Option<AssetSource> {
-        self.0.lock().ok().and_then(|slot| slot.clone())
-    }
-}
 
 impl SessionManager {
     /// One computer-use tool for another Mac's script. `Err` fails the script's call.
@@ -143,72 +118,8 @@ impl SessionManager {
         self.asset_source.set(source);
     }
 
-    /// Fetches attachments into `~/.axo/assets`, as a prompt's are, with this Mac's credential.
-    fn fetch_assets(&self, attachments: &Attachments) -> Result<Vec<FetchedAttachment>, RpcError> {
-        let source = self.asset_source.get().ok_or_else(|| RpcError {
-            code: ErrorCode::ServerError(-32003),
-            message: "this Mac is not connected to its account".into(),
-            data: None,
-        })?;
-        axo_relay::assets::fetch_all(&source, attachments).map_err(|error| RpcError {
-            code: ErrorCode::ServerError(-32010),
-            message: match error {
-                FetchError::NotFound => "an asset is no longer in the account".into(),
-                FetchError::Mismatch => "an asset did not match its name".into(),
-                FetchError::Failed(error) => format!("an asset could not be fetched: {error}"),
-            },
-            data: None,
-        })
+    /// The slot the relay fills with the account's assets, for the assets extension.
+    pub(crate) fn asset_slot(&self) -> Arc<axo_assets::AssetSlot> {
+        Arc::clone(&self.asset_source)
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FetchAssets {
-    attachments: Attachments,
-}
-
-#[derive(Serialize)]
-struct Fetched {
-    files: Vec<FetchedFile>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FetchedFile {
-    path: String,
-    asset: String,
-    name: String,
-    mime_type: String,
-    size: u64,
-}
-
-/// Registers `axo.assets.fetch`, for axod's own `axod mcp` (by code signature): it shows the
-/// agent the images a apps script returned.
-pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler) {
-    let manager = Arc::clone(manager);
-    handler.add_typed_only(
-        Only {
-            signer: Signer::ThisBinary,
-            code: -32003,
-            message: "only axod's own tools fetch assets here",
-        },
-        ASSETS_FETCH,
-        "expected {attachments}",
-        move |request: FetchAssets| {
-            let fetched = manager.fetch_assets(&request.attachments)?;
-            Ok(Fetched {
-                files: fetched
-                    .into_iter()
-                    .map(|file| FetchedFile {
-                        path: file.path.to_string_lossy().into_owned(),
-                        asset: file.asset.to_string(),
-                        name: file.name.as_str().to_owned(),
-                        mime_type: file.mime_type.as_str().to_owned(),
-                        size: file.size,
-                    })
-                    .collect(),
-            })
-        },
-    );
 }

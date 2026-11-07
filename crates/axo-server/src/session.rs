@@ -177,7 +177,7 @@ pub struct SessionManager {
     /// What agents here are asking the person (RFD0029).
     elicitations: elicitations::Elicitations,
     /// The account's assets while the relay is connected (RFD0028).
-    asset_source: computer::AssetSlot,
+    asset_source: Arc<axo_assets::AssetSlot>,
     /// This Mac's input key, which forms are sealed to (RFD0029): read or made on first use,
     /// from where the host credential is kept.
     input_key: std::sync::OnceLock<axo_seal::InputKey>,

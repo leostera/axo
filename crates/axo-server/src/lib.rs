@@ -357,6 +357,7 @@ fn rpc_handler(
     relay: Option<RelayContext>,
 ) -> IoHandler {
     let apps = axo_apps::Apps::new(relay.as_ref().map(|relay| Arc::clone(&relay.channel)));
+    let assets = axo_assets::Assets::new(sessions.asset_slot());
     let daemon = Daemon {
         version: daemon_version,
         sessions: Arc::clone(&sessions),
@@ -367,6 +368,7 @@ fn rpc_handler(
         &Relay(relay),
         &Sessions(sessions),
         &apps,
+        &assets,
     ] {
         if let Err(conflict) = methods.add(extension) {
             panic!("{conflict}");

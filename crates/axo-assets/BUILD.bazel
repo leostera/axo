@@ -1,0 +1,23 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# The assets extension: axo.assets.fetch for axod's own tools (RFD0030).
+rust_library(
+    name = "axo_assets",
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    deps = [
+        "//crates/axo-ipc:axo_ipc",
+        "//crates/axo-protocol:axo_protocol",
+        "//crates/axo-relay:axo_relay",
+        "@crates//:jsonrpc-core",
+        "@crates//:serde",
+    ],
+)
+
+rust_test(
+    name = "axo_assets_tests",
+    crate = ":axo_assets",
+    edition = "2024",
+)
