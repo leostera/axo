@@ -48,6 +48,8 @@ _RELAY_TESTS = [
     "tests/phone-path.test.ts",
     "tests/connections-e2e.test.ts",
     "tests/axod-peers.test.ts",
+    "tests/elicitations-e2e.test.ts",
+    "tests/attachments-e2e.test.ts",
 ]
 
 # Every file the tests read, copied to the output tree by an untagged target (see node_test).
