@@ -50,3 +50,61 @@ js_library(
     testonly = True,
     srcs = ["testdata/pi-fixture.sh"],
 )
+
+# The conformance suite (tests/conformance, harness in tests/support): the real axod binary,
+# driven only over its socket, one target per area so they run side by side. See
+# tests/conformance/inventory.rs for the rule that every method has a test here.
+rust_binary(
+    name = "fake_pi",
+    testonly = True,
+    srcs = ["testdata/fake_pi.rs"],
+    edition = "2024",
+    deps = [
+        "@crates//:libc",
+        "@crates//:serde_json",
+    ],
+)
+
+CONFORMANCE = [
+    "daemon",
+    "sessions",
+    "account",
+    "elicitations",
+    "mcp",
+]
+
+[
+    rust_test(
+        name = "conformance_" + area,
+        srcs = ["tests/conformance/%s.rs" % area] + glob(["tests/support/*.rs"]),
+        crate_root = "tests/conformance/%s.rs" % area,
+        edition = "2024",
+        data = [
+            ":axod",
+            ":fake_pi",
+            "testdata/pi-fixture.sh",
+            "//crates/axo-server:pi_extension_fixture",
+        ],
+        env = {
+            "AXOD_BINARY": "$(rootpath :axod)",
+            "AXO_TEST_FAKE_PI": "$(rootpath :fake_pi)",
+            "AXO_TEST_PI_EXECUTABLE": "$(rootpath testdata/pi-fixture.sh)",
+            "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        },
+        deps = [
+            "@crates//:libc",
+            "@crates//:serde_json",
+        ],
+    )
+    for area in CONFORMANCE
+]
+
+rust_test(
+    name = "conformance_inventory",
+    srcs = ["tests/conformance/inventory.rs"],
+    crate_root = "tests/conformance/inventory.rs",
+    edition = "2024",
+    data = glob(["tests/conformance/*.rs"]) + ["tests/rpc.rs"],
+    env = {"CONFORMANCE_SOURCES": "$(rootpath tests/conformance/inventory.rs)"},
+    deps = ["//crates/axo-protocol:axo_protocol"],
+)
