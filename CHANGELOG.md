@@ -2,6 +2,13 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.30 (Mac app build 301, axod 53)
+
+### Changed
+
+- Prompts, stops and model switches reach Pi about 200ms sooner: axod sends them the moment they arrive instead of on its next check of Pi's connection.
+- axod sleeps when nothing is happening. It no longer wakes several times a second for each Session, open terminal and running command, so an idle Mac does less work.
+
 ## 0.29 (Mac app build 300, axod 52)
 
 ### Changed
