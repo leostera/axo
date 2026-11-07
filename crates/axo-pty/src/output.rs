@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -35,7 +36,6 @@ const SCREEN_SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 /// How often an idle pump rechecks whether its shell was removed from the catalog. Shell exit is
 /// observed immediately as end of file; this only bounds descriptor retention after a close.
-const STOP_POLL_INTERVAL_MILLIS: libc::c_int = 250;
 
 /// The screen a PTY's program has drawn, kept by a headless terminal fed every byte it writes.
 ///
@@ -147,6 +147,8 @@ pub struct TerminalOutput {
     state: Mutex<OutputState>,
     binding: OnceLock<OutputBinding>,
     stopped: AtomicBool,
+    /// The pump waits on this socket beside the PTY; `stop` drops this end, which wakes it.
+    stop_signal: Mutex<Option<UnixStream>>,
 }
 
 struct OutputState {
@@ -177,6 +179,7 @@ impl TerminalOutput {
             }),
             binding: OnceLock::new(),
             stopped: AtomicBool::new(false),
+            stop_signal: Mutex::new(None),
         }
     }
 
@@ -191,11 +194,16 @@ impl TerminalOutput {
         // SAFETY: fcntl returned a new descriptor owned by the pump.
         let reader = unsafe { OwnedFd::from_raw_fd(duplicate) };
         let size = process::window_size(&reader).unwrap_or(WindowSize::DEFAULT);
+        let (stop_signal, stopping) = UnixStream::pair()?;
         let output = Arc::new(Self::new(size));
+        *output
+            .stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stop_signal);
         let pump = Arc::clone(&output);
         thread::Builder::new()
             .name("axo-pty-output".into())
-            .spawn(move || pump.run(reader))?;
+            .spawn(move || pump.run(reader, stopping))?;
         Ok(output)
     }
 
@@ -210,10 +218,14 @@ impl TerminalOutput {
         let _ = self.binding.set(OutputBinding { label, sink });
     }
 
-    /// Stops the pump within `STOP_POLL_INTERVAL_MILLIS` and releases its descriptor. Attached
-    /// clients drain what was already queued and then see end of file.
+    /// Stops the pump at once and releases its descriptor. Attached clients drain what was
+    /// already queued and then see end of file.
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
+        self.stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
     }
 
     /// Registers a subscriber and returns the replay it must write first: a snapshot of the
@@ -285,7 +297,7 @@ impl TerminalOutput {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn run(&self, reader: OwnedFd) {
+    fn run(&self, reader: OwnedFd, stopping: UnixStream) {
         let fd = reader.as_raw_fd();
         let mut buffer = vec![0_u8; READ_BUFFER_BYTES];
         let mut sequence = 0_u64;
@@ -294,8 +306,8 @@ impl TerminalOutput {
             if self.stopped.load(Ordering::Relaxed) {
                 break "stopped";
             }
-            match wait_readable(fd, STOP_POLL_INTERVAL_MILLIS) {
-                Ok(false) => continue,
+            match wait_readable(fd, stopping.as_raw_fd()) {
+                Ok(false) => break "stopped",
                 Ok(true) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => break "poll_failed",
@@ -339,20 +351,21 @@ impl TerminalOutput {
     }
 }
 
-fn wait_readable(fd: RawFd, timeout_millis: libc::c_int) -> io::Result<bool> {
-    let mut descriptor = libc::pollfd {
+/// Waits, with no timeout, until `fd` can be read (`true`) or `stopping` is (`false`: its other
+/// end was dropped by `stop`).
+fn wait_readable(fd: RawFd, stopping: RawFd) -> io::Result<bool> {
+    let mut descriptors = [fd, stopping].map(|fd| libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
-    };
-    // SAFETY: descriptor points to one initialized pollfd for a live descriptor.
-    let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_millis) };
-    match ready {
-        -1 => Err(io::Error::last_os_error()),
-        0 => Ok(false),
-        // POLLHUP/POLLERR also mean "read now": read reports EOF or the error.
-        _ => Ok(true),
+    });
+    // SAFETY: descriptors points to two initialized pollfds for live descriptors.
+    let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+    if ready == -1 {
+        return Err(io::Error::last_os_error());
     }
+    // POLLHUP/POLLERR also mean "read now": read reports EOF or the error.
+    Ok(descriptors[1].revents == 0)
 }
 
 /// One attachment's view of a shell's output.
@@ -656,6 +669,44 @@ mod tests {
         fn publish_terminal_output(&self, _: u64, output: &[u8]) {
             self.0.fetch_add(output.len() as u64, Ordering::Relaxed);
         }
+    }
+
+    /// A pump whose shell is still open and quiet ends as soon as it is stopped: it sleeps on
+    /// the PTY and a stop socket together, not on a timer.
+    #[test]
+    fn stopping_a_quiet_pump_ends_it_at_once() {
+        let mut master: RawFd = -1;
+        let mut slave: RawFd = -1;
+        // SAFETY: openpty initializes both descriptors on success.
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0);
+        // SAFETY: openpty returned owned descriptors.
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        // SAFETY: openpty returned owned descriptors; the slave stays open, so no hang-up.
+        let _slave = unsafe { OwnedFd::from_raw_fd(slave) };
+        let output = TerminalOutput::start(&master).unwrap();
+        let (_, subscriber) = output.subscribe(None, None);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let stopped = Instant::now();
+        output.stop();
+        assert!(matches!(
+            subscriber.next(Duration::from_secs(5)),
+            NextOutput::Ended
+        ));
+        assert!(
+            stopped.elapsed() < Duration::from_millis(100),
+            "{:?}",
+            stopped.elapsed()
+        );
     }
 
     #[test]
