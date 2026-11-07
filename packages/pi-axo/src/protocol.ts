@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { parseAttachments, type PromptAttachment } from "./attachments.js";
+import { isThinkingLevel, type ThinkingLevel } from "./pi-state.js";
 
 export const AXO_PI_PROTOCOL_VERSION = 1;
 export const MAX_BRIDGE_RECORD_BYTES = 8 * 1024 * 1024;
@@ -21,14 +22,17 @@ export interface PiSessionIdentity {
 export type PiControlAction =
   /**
    * A prompt. With a `commandId` (a client's, RFD0024) it is taken at most once, recorded in the
-   * log with a receipt, and held by pi-axo while Pi works, whatever `delivery` says.
+   * log with a receipt, and queued in the log while Pi works: `delivery` says whether it waits
+   * for the turn to end (`followUp`, the default) or joins it (`steer`, RFD0033).
    */
   | { kind: "send"; text: string; delivery?: "steer" | "followUp"; commandId?: string; attachments?: PromptAttachment[] }
   | { kind: "cancel" }
   /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
   | { kind: "stop"; turnId: string }
   | { kind: "shutdown" }
-  | { kind: "shutdownIfIdle" };
+  | { kind: "shutdownIfIdle" }
+  /** Switches this Session's model, thinking level, or both (RFD0033). */
+  | { kind: "setModel"; model?: { provider: string; id: string }; thinkingLevel?: ThinkingLevel };
 
 export interface PiControlCommand {
   requestId: string;
@@ -117,6 +121,24 @@ function parseAction(value: unknown): PiControlAction | null {
   if (value.kind === "stop") {
     if (!hasOnlyKeys(value, ["kind", "turnId"]) || !isRequestId(value.turnId)) return null;
     return { kind: "stop", turnId: value.turnId };
+  }
+
+  if (value.kind === "setModel") {
+    if (!hasOnlyKeys(value, ["kind", "model", "thinkingLevel"])) return null;
+    if (value.model === undefined && value.thinkingLevel === undefined) return null;
+    if (value.thinkingLevel !== undefined && !isThinkingLevel(value.thinkingLevel)) return null;
+    let model: { provider: string; id: string } | undefined;
+    if (value.model !== undefined) {
+      if (!isRecord(value.model) || !hasOnlyKeys(value.model, ["provider", "id"])) return null;
+      const { provider, id } = value.model;
+      if (typeof provider !== "string" || typeof id !== "string" || provider.length === 0 || id.length === 0 || provider.length > 128 || id.length > 128) return null;
+      model = { provider, id };
+    }
+    return {
+      kind: "setModel",
+      ...(model === undefined ? {} : { model }),
+      ...(value.thinkingLevel === undefined ? {} : { thinkingLevel: value.thinkingLevel }),
+    };
   }
 
   if (value.kind === "cancel" && hasOnlyKeys(value, ["kind"])) {

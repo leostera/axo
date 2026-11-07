@@ -1,22 +1,29 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { PromptContent } from "./attachments.js";
+import { parseAttachments, type PromptAttachment } from "./attachments.js";
 
 /**
  * Prompts and stops from Axo clients (the phone, the web app, other Macs), as the Pi that owns
- * the Session takes them (RFD0024). This Pi is the only writer of its log, so a client knows what
- * its command did only from the log:
+ * the Session takes them (RFD0024, RFD0033). This Pi is the only writer of its log, so a client
+ * knows what its command did only from the log:
  *
- * - **Receipts.** Before a client's prompt becomes a user message, an `axo.command` entry with its
- *   `commandId` is written, so clients match their pending prompts by id, never by text.
+ * - **Receipts.** Just before a client's prompt becomes a user message, an `axo.command` entry
+ *   with its `commandId` is written, so clients match their pending prompts by id, never by text.
  * - **At most once.** A `commandId` seen before, in the log or held here, is answered as taken and
  *   prompts nothing: a client retries after an unknown outcome with the same id.
- * - **Held, not queued in Pi.** A prompt that arrives during a turn waits here and starts the
- *   next turn. Pi's own queue would not do: its terminal UI moves the queue into the editor on
- *   any stop, where the prompt is lost to the client that sent it.
+ * - **Queued in the log.** A prompt that can't go to Pi at once is written to the log as
+ *   `axo.command.queued` before it is accepted, then held here. A Pi that exits, crashes or is
+ *   restarted holds it again from the log, so an accepted prompt is never lost, and clients show
+ *   it as queued from the log alone.
+ * - **Follow-ups start the next turn; steers join this one.** A steer is handed to Pi at the end
+ *   of a turn that goes on, right before Pi reads its steering queue, so its receipt is still the
+ *   entry before its user message. Pi's own queue is never left holding a client's prompt: its
+ *   terminal UI moves the queue into the editor on any stop, where the prompt is lost.
  * - **Stops name their turn.** A stop carries the id of a user record of the turn the client
  *   showed running, and stops nothing if another turn runs now.
  */
 export const RECEIPT_ENTRY = "axo.command";
+/** A client's prompt, accepted and waiting for Pi: `{commandId, delivery, text, attachments}`. */
+export const QUEUED_ENTRY = "axo.command.queued";
 
 /** How many prompts may wait for Pi at once; more are refused as busy. */
 export const MAX_HELD_PROMPTS = 32;
@@ -26,16 +33,34 @@ export const MAX_HELD_PROMPTS = 32;
  */
 export const RUN_START_GRACE_MS = 10_000;
 
+/** When a prompt sent while Pi works reaches it: after this turn, or within it. */
+export type Delivery = "followUp" | "steer";
+
+/** What a client sent, as the log keeps it: attachments are files on this Mac, not bytes. */
+export interface ClientPrompt {
+  text: string;
+  attachments: PromptAttachment[];
+}
+
 export interface CommandReceipt {
   commandId: string;
+}
+
+export interface QueuedCommand extends ClientPrompt {
+  commandId: string;
+  delivery: Delivery;
 }
 
 export interface RemoteCommandPi {
   isIdle(): boolean;
   entries(): readonly SessionEntry[];
   appendReceipt(receipt: CommandReceipt): void;
-  /** Hands `content` to Pi: a prompt starts a run, an extension command (`/axo-share`) runs without one. */
-  prompt(content: PromptContent): "run" | "command";
+  appendQueued(command: QueuedCommand): void;
+  /**
+   * Hands `prompt` to Pi: as a new turn, or as a steer of the running one. A prompt starts a
+   * run; an extension command (`/axo-share`) runs without one.
+   */
+  prompt(prompt: ClientPrompt, as: "turn" | "steer"): "run" | "command";
   abort(): void;
   now(): number;
 }
@@ -45,12 +70,15 @@ export type StopOutcome = "stopped" | "ignored";
 
 interface HeldPrompt {
   commandId: string;
-  content: PromptContent;
+  delivery: Delivery;
+  prompt: ClientPrompt;
 }
 
 export class RemoteCommands {
   private readonly seen = new Set<string>();
-  private readonly held: HeldPrompt[] = [];
+  private held: HeldPrompt[] = [];
+  /** A steer handed to Pi whose user message has not been written yet. */
+  private steering: HeldPrompt | null = null;
   /** Entries before the running turn's first: its user records come after. */
   private turnStart: number | null = null;
   /** When the last prompt was handed to Pi, until its run starts. */
@@ -58,22 +86,48 @@ export class RemoteCommands {
 
   constructor(private readonly pi: RemoteCommandPi) {}
 
-  /** Learns the commands already in the log, when Pi starts or resumes the Session. */
+  /**
+   * Learns the commands already in the log when Pi starts or resumes the Session, and holds
+   * again, in log order, every queued prompt that has no receipt yet. Call {@link resume} once
+   * Pi can take them.
+   */
   restore(): void {
+    const receipts = new Set<string>();
+    const queued: HeldPrompt[] = [];
     for (const entry of this.pi.entries()) {
       const commandId = receiptOf(entry);
-      if (commandId !== null) this.seen.add(commandId);
+      if (commandId !== null) receipts.add(commandId);
+      const command = queuedOf(entry);
+      if (command !== null) queued.push(command);
+    }
+    for (const commandId of receipts) this.seen.add(commandId);
+    for (const command of queued) {
+      if (receipts.has(command.commandId) || this.isHeld(command.commandId)) continue;
+      this.seen.add(command.commandId);
+      this.held.push(command);
     }
   }
 
-  prompt(commandId: string, content: PromptContent): PromptOutcome {
+  /** Delivers what is held, if Pi is idle: after {@link restore}, or a restart. */
+  resume(): void {
+    if (this.ready()) this.deliverNext();
+  }
+
+  prompt(commandId: string, prompt: ClientPrompt, delivery: Delivery = "followUp"): PromptOutcome {
     if (this.seen.has(commandId)) return "taken";
     if (this.held.length >= MAX_HELD_PROMPTS) return "busy";
     this.seen.add(commandId);
-    this.held.push({ commandId, content });
-    // An idle Pi takes the oldest held prompt now, which is this one unless a delivery failed.
+    const command = { commandId, delivery, prompt };
+    // An idle Pi with nothing waiting takes it now: the receipt and the user message are the log.
+    if (this.held.length === 0 && this.ready()) {
+      this.deliver(command);
+      return "taken";
+    }
+    // Written before the client hears it was accepted.
+    this.pi.appendQueued({ commandId, delivery, ...prompt });
+    this.held.push(command);
     if (this.ready()) this.deliverNext();
-    return this.held.some(prompt => prompt.commandId === commandId) ? "held" : "taken";
+    return this.isHeld(commandId) ? "held" : "taken";
   }
 
   stop(turnId: string): StopOutcome {
@@ -90,15 +144,46 @@ export class RemoteCommands {
     this.turnStart = this.pi.entries().length;
   }
 
-  /** Pi will not go on by itself: the next held prompt starts a turn. */
+  /**
+   * A turn of the running run ended. Unless it was stopped or failed, the oldest held steer
+   * joins the run: Pi reads its steering queue right after this, before its next model call.
+   * One at a time, so each receipt is the entry before its own user message.
+   */
+  turnEnded(stopped: boolean): void {
+    if (stopped || this.steering !== null || this.pi.isIdle()) return;
+    const index = this.held.findIndex(command => command.delivery === "steer");
+    if (index < 0) return;
+    const [command] = this.held.splice(index, 1);
+    this.steering = command!;
+    this.pi.appendReceipt({ commandId: command!.commandId });
+    this.pi.prompt(command!.prompt, "steer");
+  }
+
+  /** Pi wrote a user message: a steer handed to it has arrived. */
+  userMessageWritten(): void {
+    this.steering = null;
+  }
+
+  /**
+   * Pi will not go on by itself. A steer it never took (the run stopped first) is delivered
+   * again, first; then the next held prompt starts a turn.
+   */
   settled(): void {
     this.turnStart = null;
     this.deliveredAt = null;
+    if (this.steering !== null) {
+      this.held.unshift(this.steering);
+      this.steering = null;
+    }
     this.deliverNext();
   }
 
   get heldCount(): number {
     return this.held.length;
+  }
+
+  private isHeld(commandId: string): boolean {
+    return this.held.some(command => command.commandId === commandId);
   }
 
   private ready(): boolean {
@@ -108,11 +193,14 @@ export class RemoteCommands {
 
   private deliverNext(): void {
     const next = this.held.shift();
-    if (next === undefined) return;
+    if (next !== undefined) this.deliver(next);
+  }
+
+  private deliver(command: HeldPrompt): void {
     this.deliveredAt = this.pi.now();
-    this.pi.appendReceipt({ commandId: next.commandId });
+    this.pi.appendReceipt({ commandId: command.commandId });
     // A command starts no run, so nothing would release the prompts held behind it.
-    if (this.pi.prompt(next.content) === "command") {
+    if (this.pi.prompt(command.prompt, "turn") === "command") {
       this.deliveredAt = null;
       this.deliverNext();
     }
@@ -123,6 +211,16 @@ function receiptOf(entry: SessionEntry): string | null {
   if (entry.type !== "custom" || entry.customType !== RECEIPT_ENTRY) return null;
   const data = entry.data as Partial<CommandReceipt> | undefined;
   return typeof data?.commandId === "string" ? data.commandId : null;
+}
+
+function queuedOf(entry: SessionEntry): HeldPrompt | null {
+  if (entry.type !== "custom" || entry.customType !== QUEUED_ENTRY) return null;
+  const data = entry.data as Partial<QueuedCommand> | undefined;
+  if (typeof data?.commandId !== "string" || typeof data.text !== "string") return null;
+  const delivery: Delivery = data.delivery === "steer" ? "steer" : "followUp";
+  // Files on this Mac, checked as the bridge checks them; a malformed list keeps the text alone.
+  const attachments = data.attachments === undefined ? [] : parseAttachments(data.attachments) ?? [];
+  return { commandId: data.commandId, delivery, prompt: { text: data.text, attachments } };
 }
 
 function isUserMessage(entry: SessionEntry): boolean {

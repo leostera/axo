@@ -5,8 +5,10 @@ import { parsePiSessionIdentity, type PiControlCommand, type PiSessionIdentity }
 import { installAxoSessionNaming } from "./title.js";
 import { registerShareCommand } from "./share-command.js";
 import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
-import { RECEIPT_ENTRY, RemoteCommands } from "./remote-commands.js";
+import { QUEUED_ENTRY, RECEIPT_ENTRY, RemoteCommands, type ClientPrompt } from "./remote-commands.js";
+import { commandList, modelList, piState } from "./pi-state.js";
 import { promptContent, showAttachmentLines, type PromptContent } from "./attachments.js";
+import type { ThinkingLevel } from "./pi-state.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -69,9 +71,18 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     isIdle: () => context?.isIdle() ?? true,
     entries: () => context?.sessionManager.getEntries() ?? [],
     appendReceipt: receipt => pi.appendEntry(RECEIPT_ENTRY, receipt),
-    prompt: content => {
+    appendQueued: command => pi.appendEntry(QUEUED_ENTRY, command),
+    prompt: (prompt: ClientPrompt, as) => {
+      let content: PromptContent;
+      try {
+        content = promptContent(prompt.text, prompt.attachments);
+      } catch {
+        // A file gone since the prompt was accepted: nothing can be sent, and nothing waits on it.
+        console.error("Axo Pi bridge: a held prompt's attachment is gone; it was not sent");
+        return "command";
+      }
       const runs = !isExtensionCommand(pi, content);
-      pi.sendUserMessage(content, AS_TYPED);
+      pi.sendUserMessage(content, as === "steer" && runs ? { ...AS_TYPED, deliverAs: "steer" } : AS_TYPED);
       return runs ? "run" : "command";
     },
     abort: () => context?.abort(),
@@ -103,6 +114,10 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
         : { accepted: false as const, reason: "idle" as const };
     }
 
+    if (command.action.kind === "setModel") {
+      return setModel(activeContext, command.action.model, command.action.thinkingLevel);
+    }
+
     let content: PromptContent = "";
     if (command.action.kind === "send") {
       try {
@@ -113,9 +128,11 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       }
     }
 
-    // A client's prompt (RFD0024): taken at most once, with a receipt, held while Pi works.
+    // A client's prompt (RFD0024): taken at most once, with a receipt, queued in the log while Pi
+    // works (RFD0033). Its files were read above, so one already gone is refused now.
     if (command.action.kind === "send" && command.action.commandId !== undefined) {
-      return remote.prompt(command.action.commandId, content) === "busy"
+      const prompt = { text: command.action.text, attachments: command.action.attachments ?? [] };
+      return remote.prompt(command.action.commandId, prompt, command.action.delivery ?? "followUp") === "busy"
         ? { accepted: false as const, reason: "busy" as const }
         : { accepted: true as const };
     }
@@ -156,6 +173,33 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   const publish = (name: string, data: unknown) => bridge.publish(name, data);
   const progress = new ProgressThrottle((name, data) => void publish(name, data));
 
+  // What this Pi runs, for clients to show and change (RFD0033).
+  // Each is also sent to an Axod that connects later, after its activity snapshot.
+  const stateEvent = (sessionContext: ExtensionContext) => ({ name: "pi.state", data: piState(sessionContext.model, pi.getThinkingLevel()) });
+  const catalogEvents = (sessionContext: ExtensionContext) => [
+    { name: "pi.commands", data: { commands: commandList(pi.getCommands()) } },
+    { name: "pi.models", data: { models: modelList(sessionContext.modelRegistry.getAvailable()) } },
+  ];
+  const publishState = (sessionContext: ExtensionContext) => {
+    const { name, data } = stateEvent(sessionContext);
+    return publish(name, data);
+  };
+  const setModel = async (
+    activeContext: ExtensionContext,
+    wanted: { provider: string; id: string } | undefined,
+    thinkingLevel: ThinkingLevel | undefined,
+  ) => {
+    if (wanted !== undefined) {
+      const model = activeContext.modelRegistry.find(wanted.provider, wanted.id);
+      if (model === undefined) return { accepted: false as const, reason: "invalid" as const };
+      // False when Pi has no credentials for the model's provider.
+      if (!(await pi.setModel(model))) return { accepted: false as const, reason: "unavailable" as const };
+    }
+    // Pi clamps the level to what the model supports.
+    if (thinkingLevel !== undefined) pi.setThinkingLevel(thinkingLevel);
+    return { accepted: true as const };
+  };
+
   pi.registerCommand("axo-import", {
     description: "Import a Pi JSONL transcript as a new Axo Session in this Workspace",
     handler: async (args, commandContext) => {
@@ -191,15 +235,22 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     }
     identity = nextIdentity;
     remote.restore();
+    // Prompts queued in the log before this Pi started go now, once Pi is past session_start.
+    setImmediate(() => remote.resume());
 
     if (!bridgeAvailable) {
       notifyBridgeFailure(sessionContext, "socket listener did not start");
       return;
     }
 
-    bridge.bindIdentity(nextIdentity, () => ({ working: !sessionContext.isIdle() }));
+    bridge.bindIdentity(
+      nextIdentity,
+      () => ({ working: !sessionContext.isIdle() }),
+      () => [stateEvent(sessionContext), ...catalogEvents(sessionContext)],
+    );
     traceBridge(`session bound (${event.reason})`);
     await publish("session.started", { reason: event.reason });
+    for (const { name, data } of [stateEvent(sessionContext), ...catalogEvents(sessionContext)]) await publish(name, data);
   });
 
   pi.on("session_shutdown", async event => {
@@ -241,14 +292,22 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   });
 
   // Every payload is shaped to fit the wire (see events.ts); progress is throttled.
-  pi.on("message_start", event => publish("message.start", messageEvent(event)));
+  pi.on("message_start", event => {
+    if (event.message.role === "user") remote.userMessageWritten();
+    return publish("message.start", messageEvent(event));
+  });
   pi.on("message_update", event => progress.offer("message.update", "message", messageEvent(event)));
   pi.on("message_end", event => {
     progress.finish("message.update", "message");
     return publish("message.end", messageEvent(event));
   });
   pi.on("turn_start", event => publish("turn.start", event));
-  pi.on("turn_end", event => publish("turn.end", turnEndEvent(event)));
+  // Pi reads its steering queue right after this: a held steer joins the run here (RFD0033).
+  pi.on("turn_end", event => {
+    const stopReason = (event.message as { stopReason?: string }).stopReason;
+    remote.turnEnded(stopReason === "aborted" || stopReason === "error");
+    return publish("turn.end", turnEndEvent(event));
+  });
   pi.on("agent_start", () => {
     remote.runStarted();
     return publish("agent.start", {});
@@ -269,6 +328,8 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     return publish("tool.end", toolEvent(event));
   });
   pi.on("session_info_changed", event => publish("session.info", event));
+  pi.on("model_select", (_event, sessionContext) => publishState(sessionContext));
+  pi.on("thinking_level_select", (_event, sessionContext) => publishState(sessionContext));
   pi.on("ui_prompt_start", event => publish("ui.prompt.start", { kind: event.kind, ...(event.title ? { title: event.title.slice(0, 500) } : {}) }));
   pi.on("ui_prompt_end", event => publish("ui.prompt.end", { kind: event.kind }));
 

@@ -23,6 +23,8 @@ export class AxoPiBridgeServer {
   private socket: Socket | undefined;
   private identity: PiSessionIdentity | undefined;
   private activitySnapshot: (() => { working: boolean }) | undefined;
+  /** What a newly connected Axod is told right after the activity snapshot: Pi's state (RFD0033). */
+  private stateSnapshots: () => Array<{ name: string; data: unknown }> = () => [];
   private readonly streamId = randomUUID();
   private nextSequence = 0;
   private ownsSocketPath = false;
@@ -81,10 +83,15 @@ export class AxoPiBridgeServer {
     });
   }
 
-  bindIdentity(identity: PiSessionIdentity, activitySnapshot: () => { working: boolean }): void {
+  bindIdentity(
+    identity: PiSessionIdentity,
+    activitySnapshot: () => { working: boolean },
+    stateSnapshots: () => Array<{ name: string; data: unknown }> = () => [],
+  ): void {
     if (identity.axoSessionId !== this.axoSessionId) throw new Error("Pi bridge Session binding mismatch");
     this.identity = identity;
     this.activitySnapshot = activitySnapshot;
+    this.stateSnapshots = stateSnapshots;
     void this.sendHello().catch(() => {});
   }
 
@@ -246,6 +253,7 @@ export class AxoPiBridgeServer {
     if (activitySnapshot !== undefined) {
       await this.sendEvent("activity.snapshot", activitySnapshot, socket);
     }
+    for (const { name, data } of this.stateSnapshots()) await this.sendEvent(name, data, socket);
   }
 
   private async sendEvent(name: string, data: unknown, socket = this.socket): Promise<void> {
