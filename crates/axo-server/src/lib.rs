@@ -362,6 +362,10 @@ fn rpc_handler(
         sessions.questions(),
         Arc::clone(&sessions) as Arc<dyn axo_questions::QuestionsHost>,
     );
+    let computer = axo_computer_use::ComputerExtension::new(
+        sessions.computer(),
+        Arc::clone(&sessions) as Arc<dyn axo_computer_use::ComputerHost>,
+    );
     let daemon = Daemon {
         version: daemon_version,
         sessions: Arc::clone(&sessions),
@@ -374,6 +378,7 @@ fn rpc_handler(
         &apps,
         &assets,
         &questions,
+        &computer,
     ] {
         if let Err(conflict) = methods.add(extension) {
             panic!("{conflict}");

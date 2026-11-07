@@ -1,0 +1,30 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# The computer-use extension: input requests, the gate's questions, other Macs' calls, and
+# hiding what the person filled in (RFD0028, RFD0029).
+rust_library(
+    name = "axo_computer_use",
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    deps = [
+        "//crates/axo-computer:axo_computer",
+        "//crates/axo-ipc:axo_ipc",
+        "//crates/axo-protocol:axo_protocol",
+        "//crates/axo-questions:axo_questions",
+        "//crates/axo-relay:axo_relay",
+        "//crates/axo-seal:axo_seal",
+        "@crates//:jsonrpc-core",
+        "@crates//:log",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+    ],
+)
+
+rust_test(
+    name = "axo_computer_use_tests",
+    crate = ":axo_computer_use",
+    edition = "2024",
+)

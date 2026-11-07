@@ -88,7 +88,7 @@ export const Agent = defineActor({
       label: "Request the card number",
       description: "The agent asks for the card number for Safari's card field.",
       when: (s) => !s.waiting,
-      sources: ["crates/axo-server/src/session/input.rs#SessionManager.request_input", "crates/axo-computer/src/form.rs#Form.read"],
+      sources: ["crates/axo-computer-use/src/lib.rs#ComputerUse.request_input", "crates/axo-computer/src/form.rs#Form.read"],
       sends: [Ask],
       run(state, _i, ctx) {
         state.waiting = true;
@@ -203,7 +203,7 @@ export const Axod = defineActor({
     forwardedAnswer: {
       on: ForwardedAnswer,
       description: "An answer from a signed-in client, through the cloud: opens a sealed value and fills it, or confirms.",
-      sources: ["crates/axo-questions/src/lib.rs#Questions.resolve", "crates/axo-questions/src/lib.rs#input_values", "crates/axo-server/src/session/input.rs#SessionManager.fill", "crates/axo-seal/src/lib.rs#InputKey.open"],
+      sources: ["crates/axo-questions/src/lib.rs#Questions.resolve", "crates/axo-questions/src/lib.rs#input_values", "crates/axo-computer-use/src/lib.rs#ComputerUse.fill", "crates/axo-seal/src/lib.rs#InputKey.open"],
       sends: [Asked, Resolved, LocalResolved, Fill],
       run(state, m, ctx) {
         const request = state.requests[m.id];

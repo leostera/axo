@@ -101,7 +101,7 @@ export const Tool = defineActor({
     call: {
       on: Call,
       description: "Refuses approvals as arguments; asks when confirm is true or the gate flags the action; otherwise acts.",
-      sources: ["crates/axo-mcp/src/lib.rs#McpServer.call_computer", "crates/axo-server/src/session/computer.rs#SessionManager.remote_computer", "crates/axo-computer/src/gate.rs#Gate.check"],
+      sources: ["crates/axo-mcp/src/lib.rs#McpServer.call_computer", "crates/axo-computer-use/src/lib.rs#ComputerUse.remote", "crates/axo-computer/src/gate.rs#Gate.check"],
       sends: [Returned, Ask, Act],
       run(state, m, ctx) {
         if (state.waiting) return ctx.reply(Returned, { action: m.action, result: "busy" });

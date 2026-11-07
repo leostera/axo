@@ -29,7 +29,7 @@ mod computer;
 mod devices;
 mod events;
 mod handlers;
-mod input;
+mod input_key;
 mod lifecycle;
 mod peer_views;
 mod pi_bridge;
@@ -182,8 +182,8 @@ pub struct SessionManager {
     /// from where the host credential is kept.
     input_key: std::sync::OnceLock<axo_seal::InputKey>,
     input_key_store: std::sync::OnceLock<Arc<dyn axo_relay::credential::HostCredentialStore>>,
-    /// Salted hashes of values the person filled in, hidden from every later read (RFD0029).
-    redactions: input::Redactions,
+    /// Computer use here: what the person filled in, hidden from every later read (RFD0029).
+    computer: Arc<axo_computer_use::ComputerUse>,
 }
 
 impl SessionManager {
@@ -260,7 +260,7 @@ impl SessionManager {
             asset_source: Default::default(),
             input_key: Default::default(),
             input_key_store: Default::default(),
-            redactions: Default::default(),
+            computer: Default::default(),
         });
 
         // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see

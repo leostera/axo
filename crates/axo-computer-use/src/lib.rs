@@ -1,3 +1,7 @@
+//! The computer-use extension (RFD0028, RFD0029, RFD0034): what axod itself does around the
+//! computer tools. Input requests, the gate's questions, other Macs' calls, and hiding what the
+//! person filled in.
+//!
 //! Input requests (RFD0029, the side channel for input): the computer tool `request_input` asks
 //! the person for values the agent must not see, such as a password, and axod fills them into the
 //! window itself. The agent gets a receipt; the values never reach `axod mcp`, the agent, the
@@ -23,23 +27,25 @@ use axo_protocol::elicitation::{
     MAX_MESSAGE_CHARS, TIMEOUT_MS,
 };
 use axo_protocol::rpc::method::{COMPUTER_INPUT, COMPUTER_REDACTIONS};
+use axo_relay::computer::ComputerParams;
 use jsonrpc_core::IoHandler;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::SessionManager;
+use axo_ipc::Extension;
+use axo_protocol::elicitation::ElicitationOutcome;
 use axo_questions::Values;
+use jsonrpc_core::Error as RpcError;
 
 /// Where this Mac's input key is kept, beside the host credential, under a fixed id.
-const INPUT_KEY_ID: &str = "a5c1e7d0-5e4b-4c1f-9d3a-1f0b2c3d4e5f";
 /// Values remembered for redaction at most; the oldest go first.
 const MAX_REDACTIONS: usize = 256;
 /// Shorter values are too common to hide wherever they appear.
 const SHORTEST_REDACTED: usize = 4;
 
 /// Salted hashes of the values the person filled in.
-pub(crate) struct Redactions {
+struct Redactions {
     salt: [u8; 16],
     hashes: Mutex<Vec<[u8; 32]>>,
 }
@@ -78,7 +84,7 @@ impl Redactions {
     }
 
     /// Hides every remembered value in a computer tool's result.
-    pub(crate) fn apply(&self, result: &mut Value) {
+    fn apply(&self, result: &mut Value) {
         let Ok(hashes) = self.hashes.lock() else {
             return;
         };
@@ -102,7 +108,7 @@ impl Redactions {
     }
 }
 
-pub(crate) fn hash(salt: &[u8], value: &str) -> [u8; 32] {
+fn hash(salt: &[u8], value: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(salt);
     hasher.update(value.as_bytes());
@@ -165,52 +171,40 @@ fn listed(labels: &[String]) -> String {
     }
 }
 
-impl SessionManager {
-    /// Where this Mac's input key is kept; it is read, or made, on the first input request, so
-    /// axod touches the Keychain only then.
-    pub(crate) fn keep_input_key_in(
+/// What computer use needs of the rest of axod.
+pub trait ComputerHost: Send + Sync {
+    /// Asks the person in `session_id` and waits, for a form when `input` is given.
+    fn ask_with(
         &self,
-        store: Arc<dyn axo_relay::credential::HostCredentialStore>,
-    ) {
-        let _ = self.input_key_store.set(store);
-    }
+        session_id: SessionId,
+        message: &str,
+        asked_by: Asker,
+        input: Option<InputRequest>,
+        timeout: Duration,
+    ) -> Result<(ElicitationOutcome, Option<Values>), RpcError>;
+    /// This Mac's input key, which forms are sealed to.
+    fn input_key(&self) -> Option<&axo_seal::InputKey>;
+    /// axod's socket, where the gate's state lives (`axo_computer::gate`).
+    fn agent_socket(&self) -> Option<std::path::PathBuf>;
+}
 
-    /// This Mac's input key, made and kept on first use.
-    pub(crate) fn input_key(&self) -> Option<&axo_seal::InputKey> {
-        if let Some(key) = self.input_key.get() {
-            return Some(key);
-        }
-        let store = self.input_key_store.get()?;
-        let key = match store
-            .load(INPUT_KEY_ID)
-            .ok()
-            .and_then(|bytes| axo_seal::InputKey::from_secret_bytes(&bytes))
-        {
-            Some(key) => key,
-            None => {
-                let key = axo_seal::InputKey::generate();
-                if let Err(error) = store.store(INPUT_KEY_ID, &key.to_secret_bytes()) {
-                    // A key that is not kept would change on restart; clients would refuse it.
-                    log::warn!("event=input.key_unsaved error={error}");
-                    return None;
-                }
-                log::info!("event=input.key_created");
-                key
-            }
-        };
-        let _ = self.input_key.set(key);
-        self.input_key.get()
-    }
+/// What computer use keeps: the values the person filled in, hidden from every later read.
+#[derive(Default)]
+pub struct ComputerUse {
+    redactions: Redactions,
+}
 
+impl ComputerUse {
     /// Hides values the person filled in from a computer tool's result.
-    pub(crate) fn redact(&self, result: &mut Value) {
+    pub fn redact(&self, result: &mut Value) {
         self.redactions.apply(result);
     }
 
     /// `request_input`, for an agent's Session here or another Mac's script (`from` names its
     /// Mac). Answers like a computer tool: a receipt, or an error saying why nothing was filled.
-    pub(crate) fn request_input(
+    pub fn request_input(
         &self,
+        host: &dyn ComputerHost,
         session_id: SessionId,
         from: Option<&str>,
         args: Value,
@@ -227,7 +221,7 @@ impl SessionManager {
         if args.fields.is_empty() || args.fields.len() > MAX_INPUT_FIELDS {
             return refused(format!("ask for 1 to {MAX_INPUT_FIELDS} fields"));
         }
-        let Some(key) = self.input_key() else {
+        let Some(key) = host.input_key() else {
             return refused("this Mac could not make or read its input key");
         };
         let form = match Form::read(args.pid, args.window_id) {
@@ -317,7 +311,7 @@ impl SessionManager {
             key: key.public_key(),
         };
         let timeout = timeout.min(Duration::from_millis(TIMEOUT_MS));
-        let (outcome, values) = match self.ask_with(
+        let (outcome, values) = match host.ask_with(
             session_id,
             &message,
             Asker::ComputerUse,
@@ -433,29 +427,164 @@ const AXOD_ONLY: Only = Only {
     message: "only axod's own tools ask for input",
 };
 
-/// Registers `axo.computer.input` and `axo.computer.redactions`, for axod's own `axod mcp`.
-pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler) {
-    let asking = Arc::clone(manager);
-    handler.add_typed_only(
-        AXOD_ONLY,
-        COMPUTER_INPUT,
-        "expected {sessionId, args}",
-        move |request: ComputerInput| {
-            Ok(asking.request_input(
+/// `axo.computer.input` and `axo.computer.redactions`, for axod's own `axod mcp`.
+pub struct ComputerExtension {
+    computer: Arc<ComputerUse>,
+    host: Arc<dyn ComputerHost>,
+}
+
+impl ComputerExtension {
+    pub fn new(computer: Arc<ComputerUse>, host: Arc<dyn ComputerHost>) -> Self {
+        Self { computer, host }
+    }
+}
+
+impl Extension for ComputerExtension {
+    fn name(&self) -> &'static str {
+        "computer"
+    }
+
+    fn register(&self, handler: &mut IoHandler) {
+        let (asking, host) = (Arc::clone(&self.computer), Arc::clone(&self.host));
+        handler.add_typed_only(
+            AXOD_ONLY,
+            COMPUTER_INPUT,
+            "expected {sessionId, args}",
+            move |request: ComputerInput| {
+                Ok(asking.request_input(
+                    host.as_ref(),
+                    request.session_id,
+                    None,
+                    request.args,
+                    Duration::from_millis(TIMEOUT_MS),
+                ))
+            },
+        );
+        let hiding = Arc::clone(&self.computer);
+        handler.add_typed_only(
+            AXOD_ONLY,
+            COMPUTER_REDACTIONS,
+            "expected no parameters",
+            move |_: Value| Ok(hiding.redactions.export()),
+        );
+    }
+}
+
+/// Why a computer call did not run; the script's call fails with it.
+pub const NOT_ALLOWED: i64 = -32031;
+/// Kept back from the call's time, so the question ends before the account stops waiting.
+const ANSWER_MARGIN: Duration = Duration::from_secs(10);
+/// The shortest question worth asking.
+const SHORTEST_QUESTION: Duration = Duration::from_secs(15);
+
+/// Calls from other Macs' scripts (RFD0028, Computer use from anywhere). A call runs the same
+/// gate as the local `computer` tool. When it must ask, this Mac asks in the *calling* Session:
+/// its card shows in that chat on the web and the phone, and the answer comes back here. The
+/// tool runs only on the person's Accept or the gate passing it.
+impl ComputerUse {
+    /// One computer-use tool for another Mac's script. `Err` fails the script's call.
+
+    pub fn remote(
+        &self,
+        host: &dyn ComputerHost,
+        request: &ComputerParams,
+    ) -> Result<Value, (i64, String)> {
+        if !axo_computer::AVAILABLE {
+            return Err((-32601, "this Mac has no computer use".into()));
+        }
+        if request.tool == axo_computer::REQUEST_INPUT {
+            let timeout = Duration::from_millis(request.timeout_ms).saturating_sub(ANSWER_MARGIN);
+            if timeout < SHORTEST_QUESTION {
+                return Err((
+                    NOT_ALLOWED,
+                    "Not done: no time left to ask the person.".into(),
+                ));
+            }
+            return Ok(self.request_input(
+                host,
                 request.session_id,
-                None,
-                request.args,
-                Duration::from_millis(TIMEOUT_MS),
-            ))
-        },
-    );
-    let hiding = Arc::clone(manager);
-    handler.add_typed_only(
-        AXOD_ONLY,
-        COMPUTER_REDACTIONS,
-        "expected no parameters",
-        move |_: Value| Ok(hiding.redactions.export()),
-    );
+                Some(&request.from),
+                request.args.clone(),
+                timeout,
+            ));
+        }
+        let socket = host
+            .agent_socket()
+            .ok_or_else(|| (-32603, "axod has no socket yet".to_owned()))?;
+        let gate = axo_computer::gate::for_socket(&socket);
+        if let axo_computer::gate::Verdict::Ask(question) =
+            gate.check(&request.tool, &request.args, request.confirm)
+        {
+            ask_for_computer(host, request, &question)?;
+        }
+        let mut result = axo_computer::call(&request.tool, request.args.clone());
+        gate.remember(&request.tool, &result);
+        self.redact(&mut result);
+        log::info!(
+            "event=computer.remote_called tool={} outcome={}",
+            request.tool,
+            if result["isError"] == json!(true) {
+                "error"
+            } else {
+                "ok"
+            }
+        );
+        Ok(result)
+    }
+
+    /// Whether this Mac can do computer use now, from Cua's own probe.
+    pub fn status() -> Value {
+        let (accessibility, screen_recording) = axo_computer::permissions();
+        json!({
+            "available": axo_computer::AVAILABLE && accessibility && screen_recording,
+            "accessibility": accessibility,
+            "screenRecording": screen_recording,
+        })
+    }
+}
+
+/// Asks the person in the calling Session; `Ok` only on Accept.
+fn ask_for_computer(
+    host: &dyn ComputerHost,
+    request: &ComputerParams,
+    question: &str,
+) -> Result<(), (i64, String)> {
+    let available = Duration::from_millis(request.timeout_ms).saturating_sub(ANSWER_MARGIN);
+    let timeout = available.min(Duration::from_millis(TIMEOUT_MS));
+    if timeout < SHORTEST_QUESTION {
+        return Err((
+            NOT_ALLOWED,
+            "Not done: no time left to ask the person.".into(),
+        ));
+    }
+    let from = format!("\nAsked from {}'s Session.", request.from);
+    let room = MAX_MESSAGE_CHARS.saturating_sub(from.chars().count());
+    let message: String = question.chars().take(room).collect::<String>() + &from;
+    let outcome = host
+        .ask_with(
+            request.session_id,
+            &message,
+            Asker::ComputerUse,
+            None,
+            timeout,
+        )
+        .map(|(outcome, _)| outcome)
+        .map_err(|error| {
+            (
+                NOT_ALLOWED,
+                format!(
+                    "Not done: the person could not be asked ({}).",
+                    error.message
+                ),
+            )
+        })?;
+    match outcome.action {
+        ElicitationAction::Accept => Ok(()),
+        ElicitationAction::Decline => Err((NOT_ALLOWED, "Not done: the person declined.".into())),
+        ElicitationAction::Cancel => {
+            Err((NOT_ALLOWED, "Not done: nobody answered in time.".into()))
+        }
+    }
 }
 
 #[cfg(test)]
