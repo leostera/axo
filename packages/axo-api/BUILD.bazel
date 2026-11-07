@@ -41,6 +41,7 @@ node_test(
 node_test(
     name = "test",
     data = glob(["src/**/*.ts"]) + [
+        ":node_modules/@leostera/atxf",
         ":node_modules/json-rpc-2.0",
         ":node_modules/zod",
         "//schemas/axo.leostera.dev/v1:js",

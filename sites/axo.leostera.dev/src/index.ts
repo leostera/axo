@@ -1,5 +1,6 @@
 import api from "@axo/api-worker";
 import { installScriptResponse, macAppManifestResponse, macAppResponse } from "./install.ts";
+import { readSnapshot, sharePageHtml, shareRoute, transcriptResponse, type ShareRoute } from "./share-page.ts";
 
 export {
   AxoAccountDirectory,
@@ -16,7 +17,7 @@ export {
 } from "@axo/api-worker";
 
 type WorkerEnvironment = Env & {
-  ASSETS: Fetcher;
+  ASSETS: Fetcher | undefined;
 };
 
 const SHARE_ID = /^[A-Za-z0-9_-]{22}$/;
@@ -43,6 +44,38 @@ async function publicSessionSnapshot(request: Request, env: WorkerEnvironment): 
   return new Response(request.method === "HEAD" ? null : snapshot.body, { headers });
 }
 
+/**
+ * A share's page, with its snapshot inlined, or its ATXF transcript. A share that is missing (or
+ * that this version can't read) gets the app's page with a 404, which says so.
+ */
+async function sharePage(request: Request, env: WorkerEnvironment, route: ShareRoute): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
+  }
+  const stored = await env.PUBLIC_SESSIONS.get(`shares/${route.shareId}.json`);
+  const snapshot = stored ? readSnapshot(await stored.text()) : null;
+  if (route.kind === "transcript") {
+    return snapshot
+      ? transcriptResponse(route.shareId, snapshot, request.method)
+      : new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  }
+  const url = new URL(request.url);
+  // Under `cf dev` Vite serves the page itself and there is no ASSETS binding to ask.
+  const index = env.ASSETS ? await env.ASSETS.fetch(new Request(new URL("/", url))) : await fetch(new URL("/", url));
+  if (!snapshot) {
+    return new Response(index.body, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+  const html = sharePageHtml(await index.text(), url.origin, route.shareId, snapshot);
+  return new Response(request.method === "HEAD" ? null : html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": SHARE_CACHE_CONTROL,
+      "X-Content-Type-Options": "nosniff",
+      "Link": `<${url.origin}${url.pathname.replace(/\/$/, "")}.jsonl>; rel="alternate"; type="application/jsonl"`,
+    },
+  });
+}
+
 const AUTH_PATH = "/api/auth";
 function unavailable(): Response {
   return new Response("Axo account-scoped API is not enabled yet", {
@@ -58,6 +91,8 @@ export default {
     if (pathname === "/cdn/Axo.app" || pathname === "/cdn/Axo.app.zip")
       return await macAppResponse(request, env.CDN);
     if (pathname === "/cdn/Axo.app.json") return await macAppManifestResponse(request, env.CDN);
+    const share = shareRoute(pathname);
+    if (share) return await sharePage(request, env, share);
     if (pathname.startsWith("/api/public-sessions/")) {
       return await publicSessionSnapshot(request, env) ?? new Response("Not found", { status: 404 });
     }
@@ -70,6 +105,6 @@ export default {
       return await api.fetch(request, env, executionContext);
     if (pathname === "/api" || pathname.startsWith("/api/"))
       return unavailable();
-    return await env.ASSETS.fetch(request);
+    return await env.ASSETS!.fetch(request);
   },
 };

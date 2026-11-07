@@ -17,6 +17,7 @@ _CONFIG = [
 
 _NODE_MODULES = [
     ":node_modules/@axo/api-worker",
+    ":node_modules/@axo/protocol",
     ":node_modules/@axo/web-app",
     ":node_modules/@cloudflare/vite-plugin",
     ":node_modules/@vitejs/plugin-react",
@@ -94,9 +95,12 @@ node_test(
     tags = ["no-sandbox"],
     tests = glob(["tests/*.test.mjs"]),
     tests_in_data = True,
+    # share-page.test.mjs imports the Worker's TypeScript, and through it @axo/protocol's.
+    tsx = True,
 )
 
 js_library(
     name = "site_test_files",
     srcs = glob(["tests/*.test.mjs"]),
+    deps = [":node_modules/tsx"],
 )

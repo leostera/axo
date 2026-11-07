@@ -13,7 +13,7 @@ export default defineConfig(({ isPreview }) => ({
     previewUrls: isPreview,
     assets: {
       notFoundHandling: "single-page-application",
-      runWorkerFirst: ["/api", "/api/*", "/install", "/cdn/*"],
+      runWorkerFirst: ["/api", "/api/*", "/install", "/cdn/*", "/s/*"],
     },
     observability: {
       enabled: true,

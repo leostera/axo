@@ -3,6 +3,7 @@ export * from "./rpc.ts";
 export * from "./fragments.ts";
 export * from "./v1.ts";
 export * from "./share.ts";
+export * from "./share-atxf.ts";
 export {
   JSONRPCClient,
   JSONRPCServer,

@@ -93,9 +93,13 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   assert.equal(legacyProductApi.status, 503);
   assert.match(await legacyProductApi.text(), /not enabled yet/);
 
+  // A missing share is still the app's page, which says so, but with a 404; its transcript is just a 404.
   const sharePage = await fetch(`${url}/s/AAAAAAAAAAAAAAAAAAAAAA/shared-chat`);
-  assert.equal(sharePage.status, 200);
+  assert.equal(sharePage.status, 404);
   assert.match(await sharePage.text(), /axo — your agentic experience olotl/);
+  const shareTranscript = await fetch(`${url}/s/AAAAAAAAAAAAAAAAAAAAAA/shared-chat.jsonl`);
+  assert.equal(shareTranscript.status, 404);
+  await shareTranscript.body?.cancel();
 
   const missingShare = await fetch(`${url}/api/public-sessions/AAAAAAAAAAAAAAAAAAAAAA`);
   assert.equal(missingShare.status, 404);
