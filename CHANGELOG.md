@@ -2,6 +2,14 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.28 (Mac app build 299, axod 51)
+
+### Fixed
+
+- The x on "Thinking…" in the web app and on the phone stops the reply in more cases. It didn't in a long run, whose latest messages are all tool output, or right after sending, before the conversation had caught up. A stop now names everything the client saw of the run.
+- Tapping the x while Pi is in fact idle clears a "Thinking…" that was stuck, instead of doing nothing.
+- On the web, "Restarting…" no longer disappears at once on an idle chat.
+
 ## 0.27 (Mac app build 298, axod 50)
 
 ### Added
