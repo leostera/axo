@@ -22,6 +22,7 @@ use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::cancel::Cancellation;
+use crate::peer::Signer;
 
 /// Largest accepted request line; larger requests close the connection.
 const MAX_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
@@ -42,6 +43,19 @@ pub trait TypedMethods {
     /// A synchronous handler, run on the blocking pool.
     fn add_typed<P, R, F>(&mut self, name: &str, expected: &'static str, method: F)
     where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static;
+
+    /// [`Self::add_typed`] for one kind of caller: anyone else is refused with `only`'s error
+    /// before the parameters are read, and the handler never runs.
+    fn add_typed_only<P, R, F>(
+        &mut self,
+        only: Only,
+        name: &str,
+        expected: &'static str,
+        method: F,
+    ) where
         P: DeserializeOwned + 'static,
         R: Serialize + 'static,
         F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static;
@@ -68,6 +82,20 @@ impl TypedMethods for IoHandler {
         });
     }
 
+    fn add_typed_only<P, R, F>(&mut self, only: Only, name: &str, expected: &'static str, method: F)
+    where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static,
+    {
+        let method_name = name.to_owned();
+        self.add_blocking_method(name, move |params: Params| {
+            only.admit(&method_name)?;
+            let params = parse_params::<P>(params, expected)?;
+            method(params).and_then(encode_result)
+        });
+    }
+
     fn add_typed_async<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
     where
         P: DeserializeOwned + 'static,
@@ -83,6 +111,32 @@ impl TypedMethods for IoHandler {
                 method(params).await.and_then(encode_result)
             }
         });
+    }
+}
+
+/// The one kind of caller a method answers, and what everyone else is told.
+#[derive(Clone, Copy, Debug)]
+pub struct Only {
+    pub signer: Signer,
+    pub code: i64,
+    pub message: &'static str,
+}
+
+impl Only {
+    /// Whether the request being handled comes from `signer`; the refusal if not.
+    pub fn admit(&self, method: &str) -> Result<(), RpcError> {
+        if crate::peer::current().is(self.signer) {
+            return Ok(());
+        }
+        log::warn!(
+            "event=rpc.refused method={method} required={:?}",
+            self.signer
+        );
+        Err(RpcError {
+            code: ErrorCode::ServerError(self.code),
+            message: self.message.to_owned(),
+            data: None,
+        })
     }
 }
 
@@ -379,6 +433,35 @@ mod tests {
             Ok("cancelled")
         );
         stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_method_for_one_caller_refuses_others_before_reading_their_parameters() {
+        let mut handler = IoHandler::new();
+        let ran = Arc::new(AtomicBool::new(false));
+        let running = Arc::clone(&ran);
+        handler.add_typed_only(
+            Only {
+                signer: Signer::AxoApp,
+                code: -32099,
+                message: "only Axo.app",
+            },
+            "only",
+            "expected {answer}",
+            move |_: serde_json::Map<String, Value>| {
+                running.store(true, Ordering::Relaxed);
+                Ok(true)
+            },
+        );
+        // Outside a connection nobody is Axo.app; malformed parameters are not reached.
+        let reply = handler
+            .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"only","params":[1]}"#)
+            .unwrap();
+        assert!(
+            reply.contains("-32099") && reply.contains("only Axo.app"),
+            "{reply}"
+        );
+        assert!(!ran.load(Ordering::Relaxed));
     }
 
     #[test]

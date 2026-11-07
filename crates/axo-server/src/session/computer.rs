@@ -8,8 +8,8 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use axo_ipc::TypedMethods;
-use axo_ipc::peer::{self, Signer};
+use axo_ipc::peer::Signer;
+use axo_ipc::{Only, TypedMethods};
 use axo_protocol::asset::{Attachments, FetchedAttachment};
 use axo_protocol::elicitation::{Asker, ElicitationAction, MAX_MESSAGE_CHARS, TIMEOUT_MS};
 use axo_relay::assets::{AssetSource, FetchError};
@@ -187,17 +187,15 @@ struct FetchedFile {
 /// agent the images a connections script returned.
 pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler) {
     let manager = Arc::clone(manager);
-    handler.add_typed(
+    handler.add_typed_only(
+        Only {
+            signer: Signer::ThisBinary,
+            code: -32003,
+            message: "only axod's own tools fetch assets here",
+        },
         ASSETS_FETCH,
         "expected {attachments}",
         move |request: FetchAssets| {
-            if !peer::current().is(Signer::ThisBinary) {
-                return Err(RpcError {
-                    code: ErrorCode::ServerError(-32003),
-                    message: "only axod's own tools fetch assets here".into(),
-                    data: None,
-                });
-            }
             let fetched = manager.fetch_assets(&request.attachments)?;
             Ok(Fetched {
                 files: fetched

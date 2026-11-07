@@ -15,15 +15,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axo_computer::form::{FieldKind, Form, pick_field};
-use axo_ipc::TypedMethods;
-use axo_ipc::peer::{self, Signer};
+use axo_ipc::peer::Signer;
+use axo_ipc::{Only, TypedMethods};
 use axo_protocol::SessionId;
 use axo_protocol::elicitation::{
     Asker, ElicitationAction, InputField, InputFieldKind, InputRequest, MAX_INPUT_FIELDS,
     MAX_MESSAGE_CHARS, TIMEOUT_MS,
 };
 use axo_protocol::rpc::method::{COMPUTER_INPUT, COMPUTER_REDACTIONS};
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+use jsonrpc_core::IoHandler;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -427,24 +427,20 @@ struct ComputerInput {
     args: Value,
 }
 
-fn not_axod() -> RpcError {
-    RpcError {
-        code: ErrorCode::ServerError(-32003),
-        message: "only axod's own tools ask for input".into(),
-        data: None,
-    }
-}
+const AXOD_ONLY: Only = Only {
+    signer: Signer::ThisBinary,
+    code: -32003,
+    message: "only axod's own tools ask for input",
+};
 
 /// Registers `axo.computer.input` and `axo.computer.redactions`, for axod's own `axod mcp`.
 pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler) {
     let asking = Arc::clone(manager);
-    handler.add_typed(
+    handler.add_typed_only(
+        AXOD_ONLY,
         COMPUTER_INPUT,
         "expected {sessionId, args}",
         move |request: ComputerInput| {
-            if !peer::current().is(Signer::ThisBinary) {
-                return Err(not_axod());
-            }
             Ok(asking.request_input(
                 request.session_id,
                 None,
@@ -454,15 +450,11 @@ pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler
         },
     );
     let hiding = Arc::clone(manager);
-    handler.add_typed(
+    handler.add_typed_only(
+        AXOD_ONLY,
         COMPUTER_REDACTIONS,
         "expected no parameters",
-        move |_: Value| {
-            if !peer::current().is(Signer::ThisBinary) {
-                return Err(not_axod());
-            }
-            Ok(hiding.redactions.export())
-        },
+        move |_: Value| Ok(hiding.redactions.export()),
     );
 }
 

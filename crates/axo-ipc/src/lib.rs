@@ -9,4 +9,4 @@ mod server;
 
 pub use event_queue::{EventQueue, PushOutcome};
 pub use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
-pub use server::{TypedMethods, serve};
+pub use server::{Only, TypedMethods, serve};

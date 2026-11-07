@@ -4,7 +4,7 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-11-07
-- Updated: 2026-11-07 (steps 1 and 3 built)
+- Updated: 2026-11-07 (steps 1 and 3 built; per-method callers on the local socket)
 - Document Type: Proposal
 - Amends: [RFD0016](RFD0016-connections-and-tools.md), [RFD0029](RFD0029-ask-the-person.md)
 
@@ -172,8 +172,8 @@ These talk by messages and services, not by holding each other's locks. The spli
 Each step is one or a few commits on main. Each lands only with `bazel test //crates/...`, `//crates/axod:all` (conformance), the Worker's `:test` and `:relay_test`, and the Swift client interop tests green. A coverage run (`bazel/coverage/axod-coverage.sh`) must not lose lines.
 
 1. **`axo-mcp`** (built, `b751505`): move `mcp.rs` out of `axo-server`. It only uses the socket. The computer-use gate goes to `axo_computer::gate`, since the hub-routed computer calls ask it too.
-2. **The core**: grows in `axo-ipc`, which already sits below everything. It takes the `axo-server` name once the Session manager has moved out, so that extensions never depend on the crate that holds it. Introduce `Caller`, then per-method callers, which replace the inline `peer::current()` checks.
-3. **Cancellation** (built for questions): the transport cancels a connection's unanswered requests when it closes (`axo_ipc::cancel`). `axod mcp` closes a call's connections when its client cancels the call, or when its stdin ends. A question wakes on its request's cancellation and is withdrawn. The other waiting handlers (forwarded connections, Pi prompts that wait for start) follow.
+2. **The core**: grows in `axo-ipc`, which already sits below everything. It takes the `axo-server` name once the Session manager has moved out, so that extensions never depend on the crate that holds it. Introduce `Caller`, then per-method callers, which replace the inline `peer::current()` checks. Per-method callers are built for the local socket: a method registered with `add_typed_only(Only { signer, .. })` refuses anyone else before its parameters are read. `Caller` itself waits for step 6, when the relay's calls reach the same methods.
+3. **Cancellation** (built for questions): the transport cancels a connection's unanswered requests when it closes (`axo_ipc::cancel`). `axod mcp` closes a call's connections when its client cancels the call, or when its stdin ends. A question wakes on its request's cancellation and is withdrawn. A forwarded connections call stops waiting too (the cloud's call runs on). Pi prompts that wait for Pi to start follow.
 4. **The extension API**, with the current `SessionManager` as its only implementation of `Sessions`.
 5. **Extensions out, smallest first:** assets, connections, questions, computer, terminal, agent, sessions. Each takes its handlers, its tests and its part of `SessionState`.
 6. **The relay as a transport**: delete `dispatch.rs` and the `RelayHost` methods it used.

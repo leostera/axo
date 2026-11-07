@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axo_ipc::TypedMethods;
-use axo_ipc::peer::{self, Signer};
+use axo_ipc::peer::Signer;
+use axo_ipc::{Only, TypedMethods};
 use axo_protocol::elicitation::{
     Asker, BAD_INPUT, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind,
     ElicitationOutcome, InputRequest, MAX_INPUT_CHARS, MAX_MESSAGE_CHARS, MAX_PENDING,
@@ -417,12 +417,14 @@ pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler
         method::ELICITATION_REQUEST,
         "expected {sessionId, message, askedBy?}",
         move |request: RequestElicitation| {
-            if request.asked_by != Asker::Agent && !peer::current().is(Signer::ThisBinary) {
-                log::warn!("event=elicitation.refused reason=not_a_tool");
-                return Err(server_error(
-                    NOT_A_TOOL,
-                    "only Axo's own tools ask as a tool; ask as the agent",
-                ));
+            // Anyone may ask as the agent; only axod's own tools ask as a tool.
+            if request.asked_by != Asker::Agent {
+                Only {
+                    signer: Signer::ThisBinary,
+                    code: NOT_A_TOOL,
+                    message: "only Axo's own tools ask as a tool; ask as the agent",
+                }
+                .admit(method::ELICITATION_REQUEST)?;
             }
             asking.request_elicitation(request, Duration::from_millis(TIMEOUT_MS))
         },
@@ -438,17 +440,15 @@ pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler
         },
     );
     let answering = Arc::clone(manager);
-    handler.add_typed(
+    handler.add_typed_only(
+        Only {
+            signer: Signer::AxoApp,
+            code: NOT_A_PERSON,
+            message: "only the person answers: on this Mac, from Axo.app",
+        },
         method::ELICITATION_RESOLVE,
         "expected {elicitationId, action}",
         move |request: ResolveElicitation| {
-            if !peer::current().is(Signer::AxoApp) {
-                log::warn!("event=elicitation.refused reason=not_axo_app");
-                return Err(server_error(
-                    NOT_A_PERSON,
-                    "only the person answers: on this Mac, from Axo.app",
-                ));
-            }
             let reply = request.values.map_or(Reply::Bare, Reply::Values);
             answering
                 .resolve_elicitation(&request.elicitation_id, request.action, reply)
