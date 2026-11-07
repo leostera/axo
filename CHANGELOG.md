@@ -2,6 +2,26 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.22 (Mac app build 293, axod 45)
+
+### Added
+
+- **Pin chats to the top** on the phone and the web. Chats list as on the Mac: Pinned, Active and Earlier, set up in Settings › Chats.
+- **Shared conversations have their own page**, with link previews, the Session's emoji and model, and a download as an ATXF transcript.
+
+### Changed
+
+- The message box on the phone and the web is one card: the words on top, a bar under them.
+- **An agent's question goes away when the agent stops waiting for it**: when it cancels the call, or its Pi quits. It used to wait five minutes on every device.
+- An agent can wait for several answers at once: `axod mcp` runs tool calls side by side.
+
+### Fixed
+
+- On the phone, new messages append without moving the conversation, and the conversation stays in its column.
+- On the web, selecting a message's text no longer swipes to another pane.
+- Home Sessions reopen when your home folder is reached through a symlink.
+- `axod mcp` no longer lingers after its Pi has quit.
+
 ## 0.21 (Mac app build 292, axod 44)
 
 ### Fixed
