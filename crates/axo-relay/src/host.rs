@@ -68,6 +68,46 @@ pub enum PiKey {
     Enter,
 }
 
+/// When a remote person's prompt reaches a working Pi (RFD0033): once the turn ends, or within it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClientDelivery {
+    #[default]
+    FollowUp,
+    Steer,
+}
+
+/// A model a remote person picks for a Session, as Pi's registry names it (RFD0033).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelChoice {
+    pub provider: ModelName,
+    pub id: ModelName,
+}
+
+/// A provider or model id: 1 to 128 characters, no control characters.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(try_from = "String")]
+pub struct ModelName(String);
+
+impl ModelName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ModelName {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if (1..=128).contains(&value.chars().count()) && !value.chars().any(char::is_control) {
+            Ok(Self(value))
+        } else {
+            Err("a model name has 1 to 128 characters")
+        }
+    }
+}
+
 /// The daemon's sessions, as seen by the cloud relay. Implemented by Axod's session manager.
 ///
 /// Identifiers arrive already parsed (positive); implementations still check that they name
@@ -186,13 +226,37 @@ pub trait RelayHost: Send + Sync {
     /// With a `command_id`, the prompt is taken at most once and written after a receipt
     /// (RFD0024).
     /// `attachments` are already fetched and checked (RFD0030); with any, `text` may be empty.
+    /// It returns once Pi has written the prompt to its log (RFD0033), so it may wait for a Pi
+    /// that is starting: call it off the relay's socket loop.
     fn remote_prompt_pi(
         &self,
         session_id: SessionId,
         text: &str,
         command_id: Option<&CommandId>,
         attachments: &[axo_protocol::asset::FetchedAttachment],
+        delivery: ClientDelivery,
     ) -> io::Result<()>;
+    /// The slash commands the Session's Pi runs when a client sends them, as it last said.
+    /// Fails with `NotFound` for a Session that is not open.
+    fn remote_pi_commands(
+        &self,
+        session_id: SessionId,
+    ) -> io::Result<Vec<axo_protocol::PiCommandInfo>>;
+    /// The models the Session's Pi could switch to, as it last said.
+    fn remote_pi_models(&self, session_id: SessionId) -> io::Result<Vec<axo_protocol::PiModelInfo>>;
+    /// Switches the Session's model, thinking level, or both. Fails with `InvalidInput` for a
+    /// model Pi doesn't have, `PermissionDenied` for one without credentials, and `NotFound` if
+    /// Pi is not running.
+    fn remote_set_pi_model(
+        &self,
+        session_id: SessionId,
+        model: Option<&ModelChoice>,
+        thinking_level: Option<axo_protocol::ThinkingLevel>,
+    ) -> io::Result<()>;
+    /// Restarts the Session's Pi, running, stuck or gone, keeping its conversation; a turn it is
+    /// running stops. Returns once the new Pi is starting; may take seconds, so call it off the
+    /// relay's socket loop.
+    fn remote_restart_pi(&self, session_id: SessionId) -> io::Result<()>;
     /// Stops the Session's running turn if it is the one `turn_id` names; says whether it did.
     /// Fails with `NotFound` if Pi is not running.
     fn remote_stop_pi_turn(&self, session_id: SessionId, turn_id: &TurnId) -> io::Result<bool>;

@@ -187,15 +187,28 @@ fn pi_shell(state: &SessionState, session_id: SessionId) -> Option<ShellId> {
 }
 
 fn pi_bridge(state: &SessionState, session_id: SessionId) -> io::Result<PiBridge> {
+    pi_command_sender(state, session_id).map(PiBridge)
+}
+
+/// The running Pi's bridge worker: `NotFound` with no running Pi, `NotConnected` before its
+/// worker starts.
+pub(super) fn pi_command_sender(
+    state: &SessionState,
+    session_id: SessionId,
+) -> io::Result<CommandSender> {
     let shell_id = pi_shell(state, session_id)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
     state
         .panes
         .running(shell_id)
         .and_then(|running| running.pi_commands.clone())
-        .map(PiBridge)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Pi's bridge is not running"))
 }
+
+/// How long a client's prompt waits for a starting Pi to bind its bridge. With Pi's own answer
+/// (`PROMPT_ANSWER_TIMEOUT`) it stays inside the cloud's 10 s command deadline; a Pi slower than
+/// that is answered as still starting, and the client retries with the same commandId.
+const CLIENT_PROMPT_START_WAIT: Duration = Duration::from_secs(4);
 
 impl SessionManager {
     /// Sends `request.text` to the Session's Pi. Returns whether it waits for Pi to finish
@@ -227,12 +240,7 @@ impl SessionManager {
                 target
             );
         }
-        // A prompt of attachments alone may have no text (RFD0030).
-        if (text.trim().is_empty() && attachments.is_empty()) || text.len() > MAX_PI_PROMPT_BYTES {
-            return Err(PromptError::Invalid(
-                "a prompt must contain 1 to 16000 bytes of text",
-            ));
-        }
+        check_prompt(text, attachments)?;
         let (bridge, text) =
             match self.admit_prompt(target, text, delivery, from, command_id, attachments) {
                 Ok(Admitted::Queued) => {
@@ -319,27 +327,70 @@ impl SessionManager {
         Ok(Admitted::Send { bridge, text })
     }
 
-    /// A person away from the Mac prompts the Session's Pi. With a `command_id`, pi-axo holds it
-    /// while Pi works (RFD0024); without one it steers, as Enter in Pi's editor would.
+    /// A person away from the Mac prompts the Session's Pi with their `command_id`: pi-axo takes
+    /// it once, and queues it in the log while Pi works, for `delivery` (RFD0024, RFD0033). This
+    /// returns once Pi has it in its log, so a Pi still starting is waited for, briefly; nothing
+    /// a client was told is accepted waits only in axod's memory.
     pub(super) fn prompt_pi(
         self: &Arc<Self>,
         session_id: SessionId,
         text: &str,
-        command_id: Option<&CommandId>,
+        command_id: &CommandId,
         attachments: &[FetchedAttachment],
+        delivery: PromptDelivery,
     ) -> io::Result<()> {
-        self.prompt_session_as(
-            &PromptSession {
-                session_id,
-                text: text.to_owned(),
-                delivery: PromptDelivery::Steer,
-                from_session_id: None,
-            },
-            command_id,
-            attachments,
-        )
-        .map(drop)
-        .map_err(io::Error::from)
+        check_prompt(text, attachments)?;
+        if let Err(error) = self.wake_dormant_pi(session_id) {
+            log::warn!("event=session.pi_wake_failed session_id={session_id} reason={error}");
+        }
+        self.wait_for_pi_bridge(session_id, CLIENT_PROMPT_START_WAIT)?;
+        let accepted = self
+            .prompt_session_as(
+                &PromptSession {
+                    session_id,
+                    text: text.to_owned(),
+                    delivery,
+                    from_session_id: None,
+                },
+                Some(command_id),
+                attachments,
+            )
+            .map_err(io::Error::from)?;
+        if accepted.queued {
+            // Pi's bridge dropped after the wait: what was queued here goes when it binds again,
+            // and the client, told to try again, sends the same commandId, which Pi takes once.
+            return Err(still_starting());
+        }
+        Ok(())
+    }
+
+    /// Waits up to `timeout` for the Session's Pi to bind its bridge: `NotFound` if it has no Pi
+    /// that runs or is starting, `TimedOut` if it is still starting.
+    fn wait_for_pi_bridge(&self, session_id: SessionId, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            {
+                let state = self.lock_state()?;
+                let connected = state
+                    .pi_activity
+                    .get(&session_id)
+                    .is_some_and(|activity| activity.connected);
+                if connected && pi_shell(&state, session_id).is_some() {
+                    return Ok(());
+                }
+                let starting = state.panes.in_session(session_id).any(|(_, pane)| match pane {
+                    axo_panes::Pane::Running(shell) => shell.role == PaneRole::Pi,
+                    axo_panes::Pane::Unavailable(pane) => pane.is_recovering(),
+                });
+                if !starting {
+                    return Err(PromptError::NoPi.into());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(still_starting());
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Stops the Session's running turn if it is the one `turn_id` names, and says whether it
@@ -392,6 +443,20 @@ impl SessionManager {
             })?;
         Ok(())
     }
+}
+
+/// A prompt of attachments alone may have no text (RFD0030).
+fn check_prompt(text: &str, attachments: &[FetchedAttachment]) -> Result<(), PromptError> {
+    if (text.trim().is_empty() && attachments.is_empty()) || text.len() > MAX_PI_PROMPT_BYTES {
+        return Err(PromptError::Invalid(
+            "a prompt must contain 1 to 16000 bytes of text",
+        ));
+    }
+    Ok(())
+}
+
+fn still_starting() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "Pi is still starting")
 }
 
 enum Admitted {

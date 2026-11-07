@@ -22,10 +22,17 @@ const INVALID_PARAMS: i64 = -32602;
 
 /// An axod linked to `hub`, connected, and the target the account names it by.
 fn linked(hub: &FakeHub, pi: Pi) -> (Axod, Value) {
-    let axod = Axod::with(Options {
+    linked_with(hub, Options {
         pi,
-        relay_url: Some(hub.url()),
         ..Options::default()
+    })
+}
+
+/// [`linked`], with axod started as `options` say.
+fn linked_with(hub: &FakeHub, options: Options) -> (Axod, Value) {
+    let axod = Axod::with(Options {
+        relay_url: Some(hub.url()),
+        ..options
     });
     let link = axod.ok("axo.relay.link", json!({ "code": CODE }));
     assert_eq!(link["linked"], true, "{link}");
@@ -212,6 +219,186 @@ fn a_prompt_from_the_account_reaches_pi() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// How often `needle` is in the fake Pi's log.
+fn logged(axod: &Axod, needle: &str) -> usize {
+    axod.pi_log().matches(needle).count()
+}
+
+fn the_session(axod: &Axod, session: &Value) -> Value {
+    axod.sessions()
+        .into_iter()
+        .find(|listed| listed["id"] == *session)
+        .unwrap()
+}
+
+#[test]
+fn a_prompt_from_the_account_says_when_a_working_pi_takes_it() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+    let session = axod.wait_for_pi(&axod.sessions()[0])["id"].clone();
+
+    hub.ok(
+        "axo.remote.session.prompt",
+        json!({ "target": target, "sessionId": session, "text": "after this", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" }),
+    );
+    hub.ok(
+        "axo.remote.session.prompt",
+        json!({ "target": target, "sessionId": session, "text": "look here", "delivery": "steer", "commandId": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d" }),
+    );
+    let log = axod.pi_log();
+    assert!(log.contains("DELIVERY:followUp:after this"), "a follow-up unless it says otherwise:\n{log}");
+    assert!(log.contains("DELIVERY:steer:look here"), "{log}");
+
+    let refused = hub
+        .call(
+            "axo.remote.session.prompt",
+            json!({ "target": target, "sessionId": session, "text": "x", "delivery": "now" }),
+        )
+        .unwrap_err();
+    assert_eq!(refused["code"], INVALID_PARAMS, "{refused}");
+}
+
+#[test]
+fn a_prompt_to_a_starting_pi_is_answered_once_pi_has_it_in_its_log() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked_with(&hub, Options {
+        env: vec![("AXO_FAKE_PI_STARTUP_MS".into(), "1500".into())],
+        ..Options::default()
+    });
+    let session = axod.sessions()[0]["id"].clone();
+    let accepted = hub.ok(
+        "axo.remote.session.prompt",
+        json!({ "target": target, "sessionId": session, "text": "early", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" }),
+    );
+    assert_eq!(accepted["accepted"], true, "{accepted}");
+    // Accepted means Pi has it: nothing waits in axod's memory for the client to trust.
+    assert_eq!(logged(&axod, "SENT:early"), 1, "{}", axod.pi_log());
+}
+
+#[test]
+fn a_pi_too_slow_to_start_is_answered_as_starting_and_the_retry_is_taken_once() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked_with(&hub, Options {
+        env: vec![("AXO_FAKE_PI_STARTUP_MS".into(), "6000".into())],
+        ..Options::default()
+    });
+    let listed = axod.sessions()[0].clone();
+    let prompt = json!({ "target": target, "sessionId": listed["id"], "text": "patient", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" });
+    let starting = hub.call("axo.remote.session.prompt", prompt.clone()).unwrap_err();
+    assert_eq!(starting["code"], -32008, "{starting}");
+    assert_eq!(logged(&axod, "SENT:patient"), 0, "refused, so nothing is kept for later");
+
+    axod.wait_for_pi(&listed);
+    hub.ok("axo.remote.session.prompt", prompt.clone());
+    hub.ok("axo.remote.session.prompt", prompt);
+    assert_eq!(logged(&axod, "SENT:patient"), 1, "{}", axod.pi_log());
+}
+
+#[test]
+fn the_account_sees_the_model_pi_runs_and_switches_it() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked(&hub, Pi::Fake);
+    let session = axod.wait_for_pi(&axod.sessions()[0])["id"].clone();
+    let pi = axod.wait_for("Pi to say what it runs", || {
+        let pi = the_session(&axod, &session)["pi"].clone();
+        pi.is_object().then_some(pi)
+    });
+    assert_eq!(
+        pi,
+        json!({ "model": { "provider": "fake", "id": "fake-1", "name": "Fake One" }, "thinkingLevel": "medium" })
+    );
+
+    let commands = hub.ok(
+        "axo.remote.session.commands",
+        json!({ "target": target, "sessionId": session }),
+    );
+    assert_eq!(
+        commands["commands"],
+        json!([
+            { "name": "review", "description": "Review the change", "source": "prompt" },
+            { "name": "axo-share", "description": "Share this conversation", "source": "extension" },
+        ])
+    );
+    let models = hub.ok(
+        "axo.remote.session.models",
+        json!({ "target": target, "sessionId": session }),
+    );
+    let names: Vec<&str> = models["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Fake One", "Fake Two"]);
+    assert_eq!(models["models"][1]["thinkingLevels"], json!(["off", "low", "medium", "high"]));
+
+    let saved = hub.ok(
+        "axo.remote.session.model.set",
+        json!({ "target": target, "sessionId": session, "model": { "provider": "fake", "id": "fake-2" }, "thinkingLevel": "high" }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    axod.wait_for("the switch to reach the Session's snapshot", || {
+        (the_session(&axod, &session)["pi"]
+            == json!({ "model": { "provider": "fake", "id": "fake-2", "name": "Fake Two" }, "thinkingLevel": "high" }))
+        .then_some(())
+    });
+
+    let unknown = hub
+        .call(
+            "axo.remote.session.model.set",
+            json!({ "target": target, "sessionId": session, "model": { "provider": "fake", "id": "fake-9" } }),
+        )
+        .unwrap_err();
+    assert_eq!(unknown["code"], INVALID_PARAMS, "{unknown}");
+    for nothing in [
+        json!({ "target": target, "sessionId": session }),
+        json!({ "target": target, "sessionId": session, "thinkingLevel": "extreme" }),
+    ] {
+        let refused = hub.call("axo.remote.session.model.set", nothing).unwrap_err();
+        assert_eq!(refused["code"], INVALID_PARAMS, "{refused}");
+    }
+}
+
+#[test]
+fn the_account_restarts_a_working_pi_on_the_same_conversation() {
+    let hub = FakeHub::start();
+    let (axod, target) = linked_with(&hub, Options {
+        env: vec![("AXO_FAKE_PI_TURN_MS".into(), "60000".into())],
+        ..Options::default()
+    });
+    let before = axod.wait_for_pi(&axod.sessions()[0]);
+    let session = before["id"].clone();
+    hub.ok(
+        "axo.remote.session.prompt",
+        json!({ "target": target, "sessionId": session, "text": "a long job" }),
+    );
+    axod.wait_for("Pi to be working", || {
+        (the_session(&axod, &session)["status"] == "working").then_some(())
+    });
+
+    let restarted = hub.ok(
+        "axo.remote.session.restart",
+        json!({ "target": target, "sessionId": session }),
+    );
+    assert_eq!(restarted["restarted"], true, "{restarted}");
+    axod.wait_for("a second Pi to start and be ready", || {
+        let listed = the_session(&axod, &session);
+        (logged(&axod, "STARTED:") == 2 && listed["status"] == "ready").then_some(())
+    });
+    assert_eq!(
+        the_session(&axod, &session)["piSessionFile"], before["piSessionFile"],
+        "the same conversation"
+    );
+
+    let missing = hub
+        .call(
+            "axo.remote.session.restart",
+            json!({ "target": target, "sessionId": "00000000-0000-4000-8000-000000000000" }),
+        )
+        .unwrap_err();
+    assert_eq!(missing["code"], -32004, "{missing}");
 }
 
 #[test]

@@ -63,6 +63,18 @@
           "$ref": "#/$defs/RemoteStopCall"
         },
         {
+          "$ref": "#/$defs/RemoteSessionRestartCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteSessionCommandsCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteSessionModelsCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteSessionModelSetCall"
+        },
+        {
           "$ref": "#/$defs/RemoteTerminalResizeCall"
         }
       ]
@@ -602,6 +614,14 @@
                   "items": {
                     "$ref": "common.schema.json#/$defs/Attachment"
                   }
+                },
+                "delivery": {
+                  "description": "When a working Pi takes it: once the turn ends (followUp, the default) or within it (steer). Either way it is in the Session's log before it is accepted (RFD0033).",
+                  "type": "string",
+                  "enum": [
+                    "followUp",
+                    "steer"
+                  ]
                 }
               },
               "anyOf": [
@@ -1042,6 +1062,235 @@
               }
             }
           }
+        }
+      }
+    },
+    "RemoteSessionRestartCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.restart"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ],
+      "description": "Restarts the Session's Pi, running, stuck or gone, on the same conversation; a turn it is running stops (RFD0033)."
+    },
+    "RemoteSessionCommandsCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.commands"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ],
+      "description": "The slash commands the Session's Pi runs when a client sends them (RFD0033)."
+    },
+    "RemoteSessionModelsCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.models"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ],
+      "description": "The models the Session's Pi could switch to, each with its thinking levels (RFD0033)."
+    },
+    "RemoteSessionModelSetCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.model.set"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "model": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "provider",
+                    "id"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  }
+                },
+                "thinkingLevel": {
+                  "$ref": "common.schema.json#/$defs/ThinkingLevel"
+                }
+              },
+              "anyOf": [
+                {
+                  "required": [
+                    "model"
+                  ],
+                  "properties": {
+                    "model": {
+                      "type": "object"
+                    }
+                  }
+                },
+                {
+                  "required": [
+                    "thinkingLevel"
+                  ],
+                  "properties": {
+                    "thinkingLevel": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ],
+      "description": "Switches the Session's model, thinking level, or both (RFD0033)."
+    },
+    "RemoteSessionCommandsResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "common.schema.json#/$defs/PiCommand"
+          }
+        }
+      }
+    },
+    "RemoteSessionModelsResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "models"
+      ],
+      "properties": {
+        "models": {
+          "type": "array",
+          "maxItems": 300,
+          "items": {
+            "$ref": "common.schema.json#/$defs/PiModel"
+          }
+        }
+      }
+    },
+    "RemoteSessionRestartResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "restarted"
+      ],
+      "properties": {
+        "restarted": {
+          "const": true
         }
       }
     }

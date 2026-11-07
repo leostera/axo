@@ -290,6 +290,7 @@ impl SessionManager {
                 ),
                 shells,
                 layout: None,
+                pi: None,
             },
         }
     }

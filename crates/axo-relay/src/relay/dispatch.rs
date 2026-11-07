@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::session::current_timestamp;
 use super::wire::{
-    ErrorBody, IncomingMessage, JSONRPC, KeyParams, LayoutSetParams, OutgoingError,
+    ErrorBody, IncomingMessage, JSONRPC, KeyParams, LayoutSetParams, ModelSetParams, OutgoingError,
     OutgoingResponse, OutgoingResult, PromptParams, RemoteResult, RenameSessionParams,
     SessionTargetParams, ShellTargetParams, StopParams, TargetParams, TerminalInputParams,
     TerminalResizeParams, WorkspaceSessionTargetParams,
@@ -160,9 +160,49 @@ fn dispatch_remote_call(
                     &request.text,
                     request.command_id.as_ref(),
                     &[],
+                    request.delivery,
                 )
                 .map_err(map_operation_error)?;
             Ok(RemoteResult::PromptAccepted { accepted: true })
+        }
+        "axo.remote.session.commands" => {
+            let request = parsed!(SessionTargetParams);
+            target_ok!(request.target);
+            let commands = sessions
+                .remote_pi_commands(request.session_id)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::Commands { commands })
+        }
+        "axo.remote.session.models" => {
+            let request = parsed!(SessionTargetParams);
+            target_ok!(request.target);
+            let models = sessions
+                .remote_pi_models(request.session_id)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::Models { models })
+        }
+        "axo.remote.session.model.set" => {
+            let request = parsed!(ModelSetParams);
+            target_ok!(request.target);
+            if request.model.is_none() && request.thinking_level.is_none() {
+                return Err((-32602, "Invalid params"));
+            }
+            sessions
+                .remote_set_pi_model(
+                    request.session_id,
+                    request.model.as_ref(),
+                    request.thinking_level,
+                )
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::Saved { saved: true })
+        }
+        "axo.remote.session.restart" => {
+            let request = parsed!(SessionTargetParams);
+            target_ok!(request.target);
+            sessions
+                .remote_restart_pi(request.session_id)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::Restarted { restarted: true })
         }
         "axo.remote.session.stop" => {
             let request = parsed!(StopParams);
@@ -206,6 +246,8 @@ pub(super) fn map_operation_error(error: io::Error) -> (i64, &'static str) {
         io::ErrorKind::InvalidInput => (-32602, "Invalid params"),
         io::ErrorKind::NotFound => (-32004, "Resource not found"),
         io::ErrorKind::AddrInUse | io::ErrorKind::WouldBlock => (-32006, "Resource busy"),
+        io::ErrorKind::PermissionDenied => (-32007, "Not signed in to that model's provider"),
+        io::ErrorKind::TimedOut => (-32008, "Pi is still starting; try again"),
         _ => (-32003, "Operation failed"),
     }
 }

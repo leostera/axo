@@ -77,6 +77,10 @@ export const hostRemoteMethods = {
   "axo.remote.session.prompt": hostV1Methods["axo.remote.session.prompt"],
   "axo.remote.session.key": hostV1Methods["axo.remote.session.key"],
   "axo.remote.session.stop": hostV1Methods["axo.remote.session.stop"],
+  "axo.remote.session.restart": hostV1Methods["axo.remote.session.restart"],
+  "axo.remote.session.commands": hostV1Methods["axo.remote.session.commands"],
+  "axo.remote.session.models": hostV1Methods["axo.remote.session.models"],
+  "axo.remote.session.model.set": hostV1Methods["axo.remote.session.model.set"],
   "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],
 } as const;
 export type HostRemoteMethod = keyof typeof hostRemoteMethods;

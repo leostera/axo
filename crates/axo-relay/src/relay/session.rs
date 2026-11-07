@@ -16,7 +16,7 @@ use super::dispatch::remote_request_reply;
 use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
-use super::jobs::{start_bash, start_computer, start_prompt_with_attachments, start_sign_in};
+use super::jobs::{start_bash, start_computer, start_prompt, start_sign_in};
 use super::socket::{RelaySocket, read_message, send_json};
 use super::status::RelayControl;
 use super::wire::{HostIdentity, IncomingMessage, JSONRPC, OutgoingRequest, RequestId};
@@ -190,15 +190,11 @@ pub(super) fn relay_session(
             }
             continue;
         }
-        // A prompt with attachments waits for them on a thread of its own (RFD0030).
-        if value.get("method").and_then(Value::as_str) == Some("axo.remote.session.prompt")
-            && value["params"]
-                .get("attachments")
-                .and_then(Value::as_array)
-                .is_some_and(|attachments| !attachments.is_empty())
-        {
+        // A prompt is answered once Pi has it in its log, after its attachments are fetched
+        // (RFD0030) and Pi has started (RFD0033): on a thread of its own.
+        if value.get("method").and_then(Value::as_str) == Some("axo.remote.session.prompt") {
             if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
-                start_prompt_with_attachments(id.clone(), &value["params"], &context);
+                start_prompt(id.clone(), &value["params"], &context);
             }
             continue;
         }

@@ -368,6 +368,20 @@ impl SessionManager {
         data: &Value,
     ) -> io::Result<bool> {
         let session_id = binding.session_id;
+        // What Pi runs (RFD0033): kept for clients; only its model and level are in the snapshot.
+        if let Some(control) = super::pi_controls::PiControlEvent::parse(name, data) {
+            let changed = {
+                let mut state = self.lock_state()?;
+                if !binding.is_current(&state) {
+                    return Ok(false);
+                }
+                control.apply(&mut state, session_id)
+            };
+            if changed {
+                self.publish_session_snapshot(session_id)?;
+            }
+            return Ok(true);
+        }
         let event = PiCatalogEvent::parse(name, data);
         let settled = matches!(event, PiCatalogEvent::AgentSettled);
         let (changed, settled_in) = {

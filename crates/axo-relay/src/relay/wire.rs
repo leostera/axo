@@ -156,6 +156,15 @@ pub(super) enum RemoteResult {
     Stopped {
         stopped: bool,
     },
+    Commands {
+        commands: Vec<axo_protocol::PiCommandInfo>,
+    },
+    Models {
+        models: Vec<axo_protocol::PiModelInfo>,
+    },
+    Restarted {
+        restarted: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +185,20 @@ pub(super) struct PromptParams {
     pub(super) command_id: Option<crate::CommandId>,
     #[serde(default)]
     pub(super) attachments: axo_protocol::asset::Attachments,
+    /// When a working Pi takes it (RFD0033); a follow-up when absent.
+    #[serde(default)]
+    pub(super) delivery: crate::ClientDelivery,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ModelSetParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    #[serde(default)]
+    pub(super) model: Option<crate::ModelChoice>,
+    #[serde(default)]
+    pub(super) thinking_level: Option<axo_protocol::ThinkingLevel>,
 }
 
 #[derive(Debug, Deserialize)]

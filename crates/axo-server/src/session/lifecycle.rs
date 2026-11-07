@@ -101,6 +101,7 @@ pub(super) fn close_session(
 
     archive_session(&mut state.database, id, "explicit_close")?;
     state.pi_activity.remove(&id);
+    state.pi_controls.remove(&id);
     state.queued_pi_prompts.remove(&id);
     state.prompt_provenance.forget(id);
     let shells = remove_session_shells(state, id);
@@ -625,6 +626,7 @@ impl SessionManager {
                 if removed_sessions.insert(*session_id) {
                     archive_session(&mut state.database, *session_id, "shell_exited")?;
                     state.pi_activity.remove(session_id);
+                    state.pi_controls.remove(session_id);
                     state.queued_pi_prompts.remove(session_id);
                     state.prompt_provenance.forget(*session_id);
                 }

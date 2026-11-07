@@ -1,4 +1,4 @@
-//! Requests that outlive a single reply: shell commands, prompts with attachments, and sign-ins.
+//! Requests that outlive a single reply: shell commands, prompts, and sign-ins.
 //! Each runs on its own thread, bounded per Mac, and replies on the socket it came from.
 
 use std::sync::Arc;
@@ -93,13 +93,14 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
     }
 }
 
-/// Prompts fetching their attachments on one Mac at once; more are refused until one ends.
-const MAX_ATTACHMENT_FETCHES: usize = 4;
-static ATTACHMENT_FETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Prompts on their way to Pi on one Mac at once; more are refused until one ends.
+const MAX_PROMPTS: usize = 16;
+static PROMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Fetches a prompt's attachments, all of them or none, then gives it to Pi; the reply goes back
-/// on this socket once Pi has it, or with why it was refused (RFD0030).
-pub(super) fn start_prompt_with_attachments(
+/// Fetches a prompt's attachments, all of them or none (RFD0030), then gives it to Pi; the reply
+/// goes back on this socket once Pi has written it to its log (RFD0033), or with why it was
+/// refused.
+pub(super) fn start_prompt(
     id: Value,
     params: &Value,
     context: &RelaySessionContext<'_>,
@@ -124,29 +125,36 @@ pub(super) fn start_prompt_with_attachments(
             .replies
             .reply(&id, Err((-32602, "Invalid params".into())));
     }
-    let Some(source) = context.assets.clone() else {
+    if request.text.is_empty() && request.attachments.is_empty() {
+        return context
+            .replies
+            .reply(&id, Err((-32602, "Invalid params".into())));
+    }
+    let source = context.assets.clone();
+    if source.is_none() && !request.attachments.is_empty() {
         return context.replies.reply(
             &id,
             Err((-32003, "this Mac can't fetch attachments".into())),
         );
-    };
-    if ATTACHMENT_FETCHES.fetch_add(1, Ordering::SeqCst) >= MAX_ATTACHMENT_FETCHES {
-        ATTACHMENT_FETCHES.fetch_sub(1, Ordering::SeqCst);
+    }
+    if PROMPTS.fetch_add(1, Ordering::SeqCst) >= MAX_PROMPTS {
+        PROMPTS.fetch_sub(1, Ordering::SeqCst);
         return context.replies.reply(
             &id,
-            Err((
-                -32006,
-                "too many prompts are fetching attachments on this Mac".into(),
-            )),
+            Err((-32006, "too many prompts are on their way on this Mac".into())),
         );
     }
     let replies = context.replies.clone();
     let sessions = Arc::clone(context.sessions);
     let spawned = thread::Builder::new()
-        .name("axo-prompt-attachments".to_owned())
+        .name("axo-prompt".to_owned())
         .spawn(move || {
-            let fetched = crate::assets::fetch_all(&source, &request.attachments);
-            ATTACHMENT_FETCHES.fetch_sub(1, Ordering::SeqCst);
+            let fetched = match &source {
+                Some(source) if !request.attachments.is_empty() => {
+                    crate::assets::fetch_all(source, &request.attachments)
+                }
+                _ => Ok(Vec::new()),
+            };
             let outcome = match fetched {
                 Err(error) => Err((
                     -32010,
@@ -169,6 +177,7 @@ pub(super) fn start_prompt_with_attachments(
                         &request.text,
                         request.command_id.as_ref(),
                         &fetched,
+                        request.delivery,
                     )
                     .map(|()| serde_json::json!({ "accepted": true }))
                     .map_err(|error| {
@@ -176,10 +185,11 @@ pub(super) fn start_prompt_with_attachments(
                         (code, message.to_owned())
                     }),
             };
+            PROMPTS.fetch_sub(1, Ordering::SeqCst);
             replies.reply(&id, outcome);
         });
     if spawned.is_err() {
-        ATTACHMENT_FETCHES.fetch_sub(1, Ordering::SeqCst);
+        PROMPTS.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

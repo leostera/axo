@@ -84,6 +84,21 @@ pub enum Action<'a> {
     /// Stops the running turn if `turn_id`, the entry id of one of its user records, belongs to
     /// it; otherwise answers `idle`.
     Stop { turn_id: &'a str },
+    /// Switches this Session's model, thinking level, or both (RFD0033). Pi answers `invalid`
+    /// for a model it does not have and `unavailable` for one it has no credentials for.
+    SetModel {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<ModelChoice<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking_level: Option<&'a str>,
+    },
+}
+
+/// A model, as Pi's registry names it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct ModelChoice<'a> {
+    pub provider: &'a str,
+    pub id: &'a str,
 }
 
 /// How a working Pi takes a message: `steer` after the current tool calls, `followUp` once the
@@ -255,6 +270,25 @@ mod tests {
             })
             .unwrap(),
             json!({ "kind": "send", "text": "yes", "delivery": "steer", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::SetModel {
+                model: Some(ModelChoice {
+                    provider: "anthropic",
+                    id: "claude-opus-4-1"
+                }),
+                thinking_level: Some("high"),
+            })
+            .unwrap(),
+            json!({ "kind": "setModel", "model": { "provider": "anthropic", "id": "claude-opus-4-1" }, "thinkingLevel": "high" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::SetModel {
+                model: None,
+                thinking_level: Some("low"),
+            })
+            .unwrap(),
+            json!({ "kind": "setModel", "thinkingLevel": "low" })
         );
         assert_eq!(
             serde_json::to_value(Action::Stop {

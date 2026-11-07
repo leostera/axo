@@ -55,6 +55,23 @@ const layoutSchema: z.ZodType<Layout> = z.lazy(() => z.discriminatedUnion("kind"
 ]));
 export { layoutSchema };
 
+/** Pi's thinking levels, lowest first. */
+export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export type ThinkingLevel = z.infer<typeof thinkingLevelSchema>;
+const modelNameSchema = z.string().min(1).max(128);
+export const piModelRefSchema = z.object({ provider: modelNameSchema, id: modelNameSchema, name: modelNameSchema }).strict();
+/** What a Session's Pi runs, once it has said (RFD0033). */
+export const piRuntimeSchema = z.object({ model: piModelRefSchema.nullable(), thinkingLevel: thinkingLevelSchema }).strict();
+export type PiRuntime = z.infer<typeof piRuntimeSchema>;
+export const piCommandSchema = z.object({
+  name: z.string().min(1).max(128),
+  description: z.string().max(200),
+  source: z.enum(["extension", "prompt", "skill"]),
+}).strict();
+export type PiCommand = z.infer<typeof piCommandSchema>;
+export const piModelSchema = piModelRefSchema.extend({ thinkingLevels: z.array(thinkingLevelSchema).max(7) }).strict();
+export type PiModel = z.infer<typeof piModelSchema>;
+
 export const sessionSnapshotSchema = z.object({
   hostId: hostIdSchema,
   sessionId: sessionIdSchema,
@@ -72,6 +89,7 @@ export const sessionSnapshotSchema = z.object({
   lastMessageAt: z.number().int().nonnegative().nullable().optional(),
   /** Unix seconds when the Session was created. */
   createdAt: z.number().int().nonnegative().optional(),
+  pi: piRuntimeSchema.optional(),
 }).strict();
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 
@@ -201,10 +219,20 @@ export const hostV1Methods = {
     text: z.string().max(16_000),
     commandId: commandIdSchema.optional(),
     attachments: attachmentsSchema.optional(),
+    // When a working Pi takes it; it is in the Session's log before it is accepted (RFD0033).
+    delivery: z.enum(["followUp", "steer"]).optional(),
   }).strict().refine((prompt) => prompt.text.length > 0 || (prompt.attachments?.length ?? 0) > 0, "a prompt has text or attachments"),
   "axo.remote.session.key": sessionTargetSchema.extend({ key: z.enum(["escape", "enter"]) }).strict(),
   // Stops the turn the client showed running, named by one of its user records, and no other.
   "axo.remote.session.stop": sessionTargetSchema.extend({ turnId: turnIdSchema }).strict(),
+  // Restarts the Session's Pi on the same conversation, stopping a turn it runs (RFD0033).
+  "axo.remote.session.restart": sessionTargetSchema,
+  "axo.remote.session.commands": sessionTargetSchema,
+  "axo.remote.session.models": sessionTargetSchema,
+  "axo.remote.session.model.set": sessionTargetSchema.extend({
+    model: z.object({ provider: modelNameSchema, id: modelNameSchema }).strict().optional(),
+    thinkingLevel: thinkingLevelSchema.optional(),
+  }).strict().refine((change) => change.model !== undefined || change.thinkingLevel !== undefined, "a model, a thinking level, or both"),
   "axo.remote.terminal.resize": shellTargetSchema.extend({
     rows: z.number().int().min(1).max(65_535),
     columns: z.number().int().min(1).max(65_535),
@@ -229,6 +257,8 @@ export const hostMutationMethods = [
   "axo.remote.session.prompt",
   "axo.remote.session.key",
   "axo.remote.session.stop",
+  "axo.remote.session.restart",
+  "axo.remote.session.model.set",
   "axo.remote.terminal.resize",
 ] as const;
 
@@ -275,6 +305,9 @@ export const remoteTerminalInputResultSchema = z.object({
 export const remotePromptResultSchema = z.object({ accepted: z.literal(true) }).strict();
 /** Whether the turn the stop named was running, and is stopping. */
 export const remoteStopResultSchema = z.object({ stopped: z.boolean() }).strict();
+export const remoteRestartResultSchema = z.object({ restarted: z.literal(true) }).strict();
+export const remoteCommandsResultSchema = z.object({ commands: z.array(piCommandSchema).max(500) }).strict();
+export const remoteModelsResultSchema = z.object({ models: z.array(piModelSchema).max(300) }).strict();
 export const remoteTerminalResizeResultSchema = z.object({
   accepted: z.literal(true),
   rows: z.number().int().min(1).max(65_535),
@@ -301,6 +334,10 @@ export const hostV1Results = {
   "axo.remote.session.prompt": remotePromptResultSchema,
   "axo.remote.session.key": remotePromptResultSchema,
   "axo.remote.session.stop": remoteStopResultSchema,
+  "axo.remote.session.restart": remoteRestartResultSchema,
+  "axo.remote.session.commands": remoteCommandsResultSchema,
+  "axo.remote.session.models": remoteModelsResultSchema,
+  "axo.remote.session.model.set": remoteLayoutSetResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;
 

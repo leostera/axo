@@ -64,6 +64,11 @@ enum OwnedAction {
     Stop {
         turn_id: String,
     },
+    Shutdown,
+    SetModel {
+        model: Option<(String, String)>,
+        thinking_level: Option<String>,
+    },
 }
 
 impl OwnedAction {
@@ -81,6 +86,16 @@ impl OwnedAction {
                 attachments,
             },
             Self::Stop { turn_id } => Action::Stop { turn_id },
+            Self::Shutdown => Action::Shutdown,
+            Self::SetModel {
+                model,
+                thinking_level,
+            } => Action::SetModel {
+                model: model
+                    .as_ref()
+                    .map(|(provider, id)| super::protocol::ModelChoice { provider, id }),
+                thinking_level: thinking_level.as_deref(),
+            },
         }
     }
 }
@@ -131,6 +146,28 @@ impl CommandSender {
         self.command(
             OwnedAction::Stop {
                 turn_id: turn_id.to_owned(),
+            },
+            timeout,
+        )
+    }
+
+    /// Asks Pi to exit now, stopping any turn in progress; see [`Action::Shutdown`].
+    pub fn shutdown(&self, timeout: Duration) -> io::Result<CommandResult> {
+        self.command(OwnedAction::Shutdown, timeout)
+    }
+
+    /// Switches the model (`provider`, `id`), the thinking level, or both; see
+    /// [`Action::SetModel`].
+    pub fn set_model(
+        &self,
+        model: Option<(&str, &str)>,
+        thinking_level: Option<&str>,
+        timeout: Duration,
+    ) -> io::Result<CommandResult> {
+        self.command(
+            OwnedAction::SetModel {
+                model: model.map(|(provider, id)| (provider.to_owned(), id.to_owned())),
+                thinking_level: thinking_level.map(str::to_owned),
             },
             timeout,
         )

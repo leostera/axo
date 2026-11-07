@@ -135,6 +135,81 @@ pub struct SessionRecord {
     pub initial_pwd: PathBuf,
     pub shells: Vec<ShellRecord>,
     pub layout: Option<Layout>,
+    /// What the Session's Pi runs, once it has said (RFD0033).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi: Option<PiRuntime>,
+}
+
+/// What a Session's Pi runs, as pi-axo publishes it in `pi.state` (RFD0033).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiRuntime {
+    /// `None` when Pi has no model yet (no credentials anywhere).
+    pub model: Option<PiModelRef>,
+    pub thinking_level: ThinkingLevel,
+}
+
+/// A model as Pi's registry names it, with the name people read.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiModelRef {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+}
+
+/// Pi's thinking levels, lowest first.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThinkingLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ThinkingLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// A slash command a client's prompt can run in the Session's Pi (RFD0033).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiCommandInfo {
+    pub name: String,
+    pub description: String,
+    pub source: PiCommandSource,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PiCommandSource {
+    Extension,
+    Prompt,
+    Skill,
+}
+
+/// A model the Session's Pi could switch to, with the thinking levels it supports (RFD0033).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiModelInfo {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+    pub thinking_levels: Vec<ThinkingLevel>,
 }
 
 impl ShellRecord {
@@ -181,6 +256,9 @@ pub struct RemoteSessionSnapshot {
     /// Unix seconds when the Session was created; absent when the store does not know.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
+    /// What the Session's Pi runs, once it has said (RFD0033).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi: Option<PiRuntime>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -214,6 +292,7 @@ impl RemoteSessionSnapshot {
             updated_at: updated_at.to_owned(),
             last_message_at: record.last_message_at,
             created_at: (record.created_at > 0).then_some(record.created_at),
+            pi: record.pi.clone(),
         }
     }
 }
@@ -366,6 +445,7 @@ mod tests {
             initial_pwd: "/private/path".into(),
             shells: vec![shell(11, PaneRole::Pi), shell(12, PaneRole::Terminal)],
             layout: Some(Layout::single(ShellId::new(12).unwrap())),
+            pi: None,
         };
         let remote = RemoteSessionSnapshot::from_record(&record, "host", "now");
         let wire = serde_json::to_value(&remote).unwrap();
@@ -374,6 +454,38 @@ mod tests {
         let text = wire.to_string();
         for secret in ["/private/path", "/dev/ttys001", "1234", "pi.jsonl"] {
             assert!(!text.contains(secret), "{secret} leaked");
+        }
+    }
+
+    #[test]
+    fn a_remote_snapshot_says_what_pi_runs_once_it_has_said() {
+        let mut record: SessionRecord = serde_json::from_value(json!({
+            "id": SessionId::from_u128(5), "piSessionFile": null, "piSessionId": null,
+            "workspaceId": null, "workspaceName": null, "name": "Fix", "manualName": null,
+            "emoji": null, "status": "ready", "initialPwd": "/", "shells": [], "layout": null,
+        }))
+        .unwrap();
+        let wire = serde_json::to_value(RemoteSessionSnapshot::from_record(&record, "host", "now"))
+            .unwrap();
+        assert!(wire.get("pi").is_none(), "old clients see nothing new");
+
+        record.pi = Some(PiRuntime {
+            model: Some(PiModelRef {
+                provider: "anthropic".to_owned(),
+                id: "claude-opus-4-1".to_owned(),
+                name: "Opus 4.1".to_owned(),
+            }),
+            thinking_level: ThinkingLevel::Xhigh,
+        });
+        let wire = serde_json::to_value(RemoteSessionSnapshot::from_record(&record, "host", "now"))
+            .unwrap();
+        assert_eq!(
+            wire["pi"],
+            json!({ "model": { "provider": "anthropic", "id": "claude-opus-4-1", "name": "Opus 4.1" }, "thinkingLevel": "xhigh" })
+        );
+        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let parsed: ThinkingLevel = serde_json::from_value(json!(level)).unwrap();
+            assert_eq!(parsed.as_str(), level);
         }
     }
 
@@ -394,6 +506,7 @@ mod tests {
             initial_pwd: "/".into(),
             shells: vec![shell(12, PaneRole::Terminal)],
             layout: None,
+            pi: None,
         };
         assert_eq!(
             RemoteSessionSnapshot::from_record(&record, "h", "t").name,

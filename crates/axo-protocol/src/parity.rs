@@ -94,11 +94,11 @@ pub const PARITY: &[Parity] = &[
     ),
     row(
         method::SESSION_PI_RESTART_FORCE,
-        Remote::Planned("axo.remote.session.pi.restart.force"),
+        Remote::Call("axo.remote.session.restart"),
     ),
     row(
         method::SESSION_PI_RESTART_AUTO,
-        Remote::Planned("axo.remote.session.pi.restart.auto"),
+        Remote::Call("axo.remote.session.restart"),
     ),
     row(
         method::SESSION_LAYOUT_SET,
@@ -261,6 +261,10 @@ pub const REMOTE_ONLY: &[&str] = &[
     "axo.remote.session.key",
     // Stops the turn a client showed running, and no other (RFD0024).
     "axo.remote.session.stop",
+    // What the Session's Pi can run and switch to, and switching it (RFD0033).
+    "axo.remote.session.commands",
+    "axo.remote.session.models",
+    "axo.remote.session.model.set",
 ];
 
 /// The remote methods that must exist now: every [`Remote::Call`] and [`Remote::Events`] name,

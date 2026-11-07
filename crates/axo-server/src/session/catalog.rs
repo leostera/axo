@@ -270,6 +270,10 @@ pub(super) fn session_metadata(
         initial_pwd,
         shells,
         layout,
+        pi: state
+            .pi_controls
+            .get(&id)
+            .and_then(|controls| controls.runtime().cloned()),
     })
 }
 

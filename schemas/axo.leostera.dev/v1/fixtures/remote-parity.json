@@ -6,6 +6,7 @@
     "axo.remote.workspace.session.create",
     "axo.remote.session.close",
     "axo.remote.session.rename",
+    "axo.remote.session.restart",
     "axo.remote.session.layout.set",
     "axo.host.subscribe",
     "axo.host.unsubscribe",
@@ -15,10 +16,10 @@
     "axo.remote.terminal.resize",
     "axo.remote.session.prompt",
     "axo.remote.session.key",
-    "axo.remote.session.stop"
+    "axo.remote.session.stop",
+    "axo.remote.session.commands",
+    "axo.remote.session.models",
+    "axo.remote.session.model.set"
   ],
-  "planned": [
-    "axo.remote.session.pi.restart.force",
-    "axo.remote.session.pi.restart.auto"
-  ]
+  "planned": []
 }

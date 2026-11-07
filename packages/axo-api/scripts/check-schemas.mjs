@@ -15,6 +15,7 @@ import {
   hostPairingRedeemResultSchema,
   hostV1Methods,
   hostV1Results,
+  piRuntimeSchema,
   sessionIdSchema,
 } from "../src/v1.ts";
 import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS, APPS_METHODS, appsParams, appsResults, BASH_METHOD, bashParamsSchema, bashResultSchema } from "../src/index.ts";
@@ -345,6 +346,29 @@ assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(stopCall.params)
 stopCall.params.turnId = "two words";
 assert.equal(ajv.getSchema(hostCallSchema)(stopCall), false, "a turnId is an entry id");
 assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(stopCall.params).success, false);
+// A prompt says when a working Pi takes it; Pi's controls are calls of their own (RFD0033).
+const steer = await fixture("session-prompt.call.json");
+steer.params.delivery = "steer";
+validateWith(hostCallSchema, steer);
+assert.equal(hostV1Methods["axo.remote.session.prompt"].safeParse(steer.params).success, true);
+steer.params.delivery = "now";
+assert.equal(ajv.getSchema(hostCallSchema)(steer), false, "a delivery is followUp or steer");
+assert.equal(hostV1Methods["axo.remote.session.prompt"].safeParse(steer.params).success, false);
+const modelSet = await fixture("session-model-set.call.json");
+validateWith(hostCallSchema, modelSet);
+assert.equal(hostV1Methods["axo.remote.session.model.set"].safeParse(modelSet.params).success, true);
+for (const method of ["axo.remote.session.restart", "axo.remote.session.commands", "axo.remote.session.models"]) {
+  const call = { ...modelSet, method, params: { target: modelSet.params.target, sessionId: modelSet.params.sessionId } };
+  validateWith(hostCallSchema, call);
+  assert.equal(hostV1Methods[method].safeParse(call.params).success, true, method);
+}
+const neither = { ...modelSet, params: { target: modelSet.params.target, sessionId: modelSet.params.sessionId } };
+assert.equal(ajv.getSchema(hostCallSchema)(neither), false, "a model, a thinking level, or both");
+assert.equal(hostV1Methods["axo.remote.session.model.set"].safeParse(neither.params).success, false);
+const piRuntime = { model: { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1" }, thinkingLevel: "high" };
+validateWith("https://schemas.axo.leostera.dev/v1/common.schema.json#/$defs/PiRuntime", piRuntime);
+assert.equal(piRuntimeSchema.safeParse(piRuntime).success, true);
+assert.equal(piRuntimeSchema.safeParse({ ...piRuntime, thinkingLevel: "extreme" }).success, false);
 const validateHostCall = ajv.getSchema(hostCallSchema);
 remoteCreate.params.target.hostId = "not-a-uuid";
 assert.equal(validateHostCall(remoteCreate), false, "malformed host identities must be rejected");

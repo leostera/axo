@@ -42,6 +42,9 @@ import {
   remoteTerminalInputResultSchema,
   remotePromptResultSchema,
   remoteStopResultSchema,
+  remoteRestartResultSchema,
+  remoteCommandsResultSchema,
+  remoteModelsResultSchema,
   remoteTerminalResizeResultSchema,
   type HostMethodParams,
 } from "@axo/protocol/v1";
@@ -151,6 +154,10 @@ const appRemoteResults = {
   "axo.remote.session.prompt": remotePromptResultSchema,
   "axo.remote.session.key": remotePromptResultSchema,
   "axo.remote.session.stop": remoteStopResultSchema,
+  "axo.remote.session.restart": remoteRestartResultSchema,
+  "axo.remote.session.commands": remoteCommandsResultSchema,
+  "axo.remote.session.models": remoteModelsResultSchema,
+  "axo.remote.session.model.set": remoteLayoutSetResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
   // Every remote method the protocol has must be here: `command` parses its result by method.
 } as const satisfies Record<Extract<keyof typeof hostV1Results, `axo.remote.${string}`>, z.ZodType>;

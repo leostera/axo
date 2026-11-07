@@ -33,6 +33,7 @@ mod input_key;
 mod lifecycle;
 mod peer_views;
 mod pi_bridge;
+mod pi_controls;
 mod pi_recovery;
 mod prompts;
 mod questions;
@@ -128,6 +129,8 @@ struct SessionState {
     panes: Panes<RunningShell>,
     shutting_down: bool,
     pi_activity: HashMap<SessionId, axo_agent::Activity>,
+    /// What each Session's Pi last said it runs; see `pi_controls`.
+    pi_controls: HashMap<SessionId, pi_controls::PiControls>,
     /// Pi panes left unstarted because their Session wasn't active when Axod started; each is
     /// also an unavailable pane in `panes`, and starts when the Session is wanted (see
     /// `stop_notice`'s `wake_dormant_pi`).
@@ -230,6 +233,7 @@ impl SessionManager {
                 panes: Panes::default(),
                 shutting_down: false,
                 pi_activity: HashMap::new(),
+                pi_controls: HashMap::new(),
                 dormant_pis: HashSet::new(),
                 launch: readiness::Launch::default(),
                 queued_pi_prompts: HashMap::new(),

@@ -290,22 +290,53 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         text: &str,
         command_id: Option<&axo_relay::CommandId>,
         attachments: &[axo_protocol::asset::FetchedAttachment],
+        delivery: axo_relay::ClientDelivery,
     ) -> io::Result<()> {
-        // A client that sends no commandId still gets one, so pi-axo holds its prompt while Pi
-        // works rather than steering it into a queue a stop would empty (RFD0024).
-        let generated = match command_id {
-            Some(_) => None,
-            None => Some(
-                axo_relay::CommandId::try_from(axo_protocol::new_uuid_v4()?)
-                    .map_err(io::Error::other)?,
-            ),
+        // A client that sends no commandId still gets one, so pi-axo queues its prompt in the log
+        // while Pi works rather than steering it into a queue a stop would empty (RFD0024).
+        let generated;
+        let command_id = match command_id {
+            Some(command_id) => command_id,
+            None => {
+                generated = axo_relay::CommandId::try_from(axo_protocol::new_uuid_v4()?)
+                    .map_err(io::Error::other)?;
+                &generated
+            }
         };
-        self.0.prompt_pi(
+        let delivery = match delivery {
+            axo_relay::ClientDelivery::FollowUp => rpc::PromptDelivery::FollowUp,
+            axo_relay::ClientDelivery::Steer => rpc::PromptDelivery::Steer,
+        };
+        self.0
+            .prompt_pi(session_id, text, command_id, attachments, delivery)
+    }
+
+    fn remote_pi_commands(
+        &self,
+        session_id: SessionId,
+    ) -> io::Result<Vec<axo_protocol::PiCommandInfo>> {
+        self.0.pi_commands(session_id)
+    }
+
+    fn remote_pi_models(&self, session_id: SessionId) -> io::Result<Vec<axo_protocol::PiModelInfo>> {
+        self.0.pi_models(session_id)
+    }
+
+    fn remote_set_pi_model(
+        &self,
+        session_id: SessionId,
+        model: Option<&axo_relay::ModelChoice>,
+        thinking_level: Option<axo_protocol::ThinkingLevel>,
+    ) -> io::Result<()> {
+        self.0.set_pi_model(
             session_id,
-            text,
-            command_id.or(generated.as_ref()),
-            attachments,
+            model.map(|model| (model.provider.as_str(), model.id.as_str())),
+            thinking_level,
         )
+    }
+
+    fn remote_restart_pi(&self, session_id: SessionId) -> io::Result<()> {
+        self.0.restart_pi_for_client(session_id)
     }
 
     fn remote_stop_pi_turn(

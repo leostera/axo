@@ -351,7 +351,31 @@ pub(crate) mod testing {
             _: &str,
             _: Option<&crate::CommandId>,
             _: &[axo_protocol::asset::FetchedAttachment],
+            _: crate::ClientDelivery,
         ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_pi_commands(
+            &self,
+            _: axo_protocol::SessionId,
+        ) -> std::io::Result<Vec<axo_protocol::PiCommandInfo>> {
+            unreachable!()
+        }
+        fn remote_pi_models(
+            &self,
+            _: axo_protocol::SessionId,
+        ) -> std::io::Result<Vec<axo_protocol::PiModelInfo>> {
+            unreachable!()
+        }
+        fn remote_set_pi_model(
+            &self,
+            _: axo_protocol::SessionId,
+            _: Option<&crate::ModelChoice>,
+            _: Option<axo_protocol::ThinkingLevel>,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_restart_pi(&self, _: axo_protocol::SessionId) -> std::io::Result<()> {
             unreachable!()
         }
         fn remote_stop_pi_turn(

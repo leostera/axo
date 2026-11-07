@@ -218,6 +218,38 @@ test("a client's commandId and a stop naming its turn reach the host as sent (RF
   assert.ok("error" in malformed);
 });
 
+test("a prompt's delivery and Pi's controls reach the host as sent, and malformed ones stop at the edge (RFD0033)", async (t) => {
+  const { h, session, daemon, transcript, host } = await fixture(t);
+  const { client } = await connectClient(h, session);
+  t.after(() => client.close());
+  const target = { hostId: host.hostId, hostGeneration: host.hostGeneration };
+  const forward = async (method: string, params: Record<string, unknown>, result: unknown) => {
+    const call = client.call("axo.client.command", { hostId: host.hostId, method, params });
+    const forwarded = (await daemon.next()) as { id: string; method: string; params: unknown };
+    assert.equal(forwarded.method, method);
+    assert.deepEqual(forwarded.params, params);
+    daemon.send({ jsonrpc: "2.0", id: forwarded.id, result });
+    const answered = await call;
+    assert.ok("result" in answered, `${method}: ${JSON.stringify(answered)}`);
+    assert.deepEqual(answered.result, result);
+  };
+  const sessionTarget = { target, sessionId: transcript.sessionId };
+  await forward("axo.remote.session.prompt", { ...sessionTarget, text: "look here", commandId: crypto.randomUUID(), delivery: "steer" }, { accepted: true });
+  await forward("axo.remote.session.restart", sessionTarget, { restarted: true });
+  await forward("axo.remote.session.commands", sessionTarget, { commands: [{ name: "review", description: "Review the change", source: "prompt" }] });
+  await forward("axo.remote.session.models", sessionTarget, { models: [{ provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1", thinkingLevels: ["off", "high"] }] });
+  await forward("axo.remote.session.model.set", { ...sessionTarget, model: { provider: "anthropic", id: "claude-opus-4-1" }, thinkingLevel: "high" }, { saved: true });
+
+  for (const [method, params] of [
+    ["axo.remote.session.prompt", { ...sessionTarget, text: "x", delivery: "now" }],
+    ["axo.remote.session.model.set", sessionTarget],
+    ["axo.remote.session.model.set", { ...sessionTarget, thinkingLevel: "extreme" }],
+  ] as const) {
+    const refused = await client.call("axo.client.command", { hostId: host.hostId, method, params });
+    assert.ok("error" in refused, `${method} ${JSON.stringify(params)} reached the host`);
+  }
+});
+
 test("a Session the host stops listing is archived, never deleted, and metadata only moves forward", async (t) => {
   const { h, session, daemon, transcript, host } = await fixture(t);
   const { client } = await connectClient(h, session);

@@ -7,11 +7,15 @@
 //! - It answers commands as Pi does: `send` starts a turn (or is queued, or is `busy`), `stop`
 //!   ends the turn whose user record it names (or is `idle`), `shutdown` exits, and
 //!   `shutdownIfIdle` exits only when idle. A `commandId` runs at most once.
+//! - Right after saying who it is, it publishes what it runs (RFD0033): `pi.state` (the model
+//!   "Fake One" at `medium`), `pi.commands` and `pi.models` ("Fake One", "Fake Two"). `setModel`
+//!   switches between those two, or answers `invalid`, and publishes `pi.state` again.
 //! - A turn records the user's message and a reply in its session file (`AXO_PI_SESSION_FILE`)
 //!   before saying so over the bridge, and streams the reply as it grows. It lasts
 //!   `AXO_FAKE_PI_TURN_MS` (default 0).
 //! - Everything it is typed (its PTY, raw) and sent is appended to `AXO_FAKE_PI_LOG`, if set, as
-//!   `TYPED:`, `SENT:`, `STOPPED:` and `ATTACHED:` lines, so tests can read what reached Pi.
+//!   `TYPED:`, `SENT:`, `DELIVERY:`, `STOPPED:`, `ATTACHED:`, `MODEL:` and `STARTED:` lines, so
+//!   tests can read what reached Pi.
 //!
 //! `AXO_FAKE_PI_FAIL=start` makes it exit at once with status 3, as a Pi that cannot start.
 
@@ -37,6 +41,22 @@ struct Pi {
     commands: HashSet<String>,
     last_entry: Option<String>,
     entries: u64,
+    model: Option<&'static str>,
+    thinking_level: Option<String>,
+}
+
+/// The models this Pi has: (id, name).
+const MODELS: [(&str, &str); 2] = [("fake-1", "Fake One"), ("fake-2", "Fake Two")];
+
+impl Pi {
+    fn state(&self) -> Value {
+        let id = self.model.unwrap_or(MODELS[0].0);
+        let name = MODELS.iter().find(|(known, _)| *known == id).map_or(id, |(_, name)| name);
+        json!({
+            "model": { "provider": "fake", "id": id, "name": name },
+            "thinkingLevel": self.thinking_level.as_deref().unwrap_or("medium"),
+        })
+    }
 }
 
 fn env(name: &str) -> Option<String> {
@@ -228,6 +248,22 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                 "{}",
                 json!({ "type": "hello", "protocolVersion": 1, "identity": identity })
             );
+            let mut state = pi.lock().unwrap();
+            let current = state.state();
+            state.publish(&events, "pi.state", current);
+            state.publish(
+                &events,
+                "pi.commands",
+                json!({ "commands": [
+                    { "name": "review", "description": "Review the change", "source": "prompt" },
+                    { "name": "axo-share", "description": "Share this conversation", "source": "extension" },
+                ] }),
+            );
+            let models: Vec<Value> = MODELS
+                .iter()
+                .map(|(id, name)| json!({ "provider": "fake", "id": id, "name": name, "thinkingLevels": ["off", "low", "medium", "high"] }))
+                .collect();
+            state.publish(&events, "pi.models", json!({ "models": models }));
             continue;
         }
         if !authenticated || record["type"] != "command" {
@@ -255,6 +291,9 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                     continue;
                 }
                 log(&format!("SENT:{prompt}\n"));
+                if let Some(delivery) = action["delivery"].as_str() {
+                    log(&format!("DELIVERY:{delivery}:{prompt}\n"));
+                }
                 if let Some(attachments) = action.get("attachments") {
                     log(&format!("ATTACHED:{attachments}\n"));
                 }
@@ -285,6 +324,28 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                         json!({ "accepted": false, "reason": "idle" }),
                     );
                 }
+            }
+            "setModel" => {
+                let mut state = pi.lock().unwrap();
+                let model = match action["model"]["id"].as_str() {
+                    None => state.model,
+                    Some(id) => match MODELS.iter().find(|(known, _)| *known == id) {
+                        Some((known, _)) => Some(*known),
+                        None => {
+                            drop(state);
+                            answer(&mut stream, &record, json!({ "accepted": false, "reason": "invalid" }));
+                            continue;
+                        }
+                    },
+                };
+                state.model = model;
+                if let Some(level) = action["thinkingLevel"].as_str() {
+                    state.thinking_level = Some(level.to_owned());
+                }
+                let current = state.state();
+                log(&format!("MODEL:{current}\n"));
+                answer(&mut stream, &record, json!({ "accepted": true }));
+                state.publish(&events, "pi.state", current);
             }
             "shutdown" => {
                 answer(&mut stream, &record, json!({ "accepted": true }));
@@ -350,6 +411,7 @@ fn main() {
         std::process::exit(3);
     }
     raw_stdin();
+    log(&format!("STARTED:{}\n", std::process::id()));
     let pi = Arc::new(Mutex::new(Pi::default()));
     let session = uuid(1);
     let events = uuid(2);
