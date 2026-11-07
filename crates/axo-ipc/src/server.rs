@@ -311,3 +311,87 @@ fn log_if_slow(request: &str, elapsed: Duration) {
         elapsed.as_millis()
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream as StdUnixStream;
+
+    /// A handler that waits until its request is cancelled, and says so on `cancelled`.
+    fn serving(
+        name: &str,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::mpsc::Receiver<&'static str>,
+        Arc<AtomicBool>,
+    ) {
+        // Under /tmp: socket paths are limited to 104 bytes, and Bazel's TMPDIR is long.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "axo-ipc-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("s.sock");
+        let listener = StdUnixListener::bind(&socket).unwrap();
+        let (seen, cancelled) = std::sync::mpsc::channel();
+        let mut handler = IoHandler::new();
+        handler.add_typed("wait", "expected {}", move |_: Value| {
+            let (woken, wake) = std::sync::mpsc::channel();
+            crate::cancel::current().on_cancel(move || {
+                let _ = woken.send(());
+            });
+            let outcome = match wake.recv_timeout(Duration::from_secs(10)) {
+                Ok(()) => "cancelled",
+                Err(_) => "timed out",
+            };
+            let _ = seen.send(outcome);
+            Ok(outcome)
+        });
+        handler.add_typed("quick", "expected {}", |_: Value| {
+            Ok(crate::cancel::current().is_cancelled())
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        std::thread::spawn(move || serve(listener, handler, stopping));
+        (socket, cancelled, stop)
+    }
+
+    fn send(stream: &mut StdUnixStream, method: &str) {
+        writeln!(
+            stream,
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{method}\",\"params\":{{}}}}"
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_connection_that_closes_cancels_what_it_still_waits_for() {
+        let (socket, cancelled, stop) = serving("closes");
+        let mut stream = StdUnixStream::connect(&socket).unwrap();
+        send(&mut stream, "wait");
+        std::thread::sleep(Duration::from_millis(100));
+        drop(stream);
+        assert_eq!(
+            cancelled.recv_timeout(Duration::from_secs(5)),
+            Ok("cancelled")
+        );
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_request_answered_on_an_open_connection_is_not_cancelled() {
+        let (socket, _cancelled, stop) = serving("open");
+        let mut stream = StdUnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        send(&mut stream, "quick");
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        assert!(line.contains("\"result\":false"), "{line}");
+        stop.store(true, Ordering::Relaxed);
+    }
+}
