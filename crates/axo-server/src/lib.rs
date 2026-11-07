@@ -217,6 +217,7 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let runtime = axod_runtime()?;
+    let stop = axo_ipc::Stop::default();
     session::set_agent_socket(&socket_path.0);
     let sessions_directory = sessions_directory_for(server_directory);
     let sessions = session::SessionManager::open(server_directory, &sessions_directory)?;
@@ -226,20 +227,24 @@ pub fn serve_ipc(
     // What the peers socket follows, shared with the remote panes' handlers (RFD0024).
     let peer_live = axo_relay::peers::PeerLive::new();
     sessions.attach_peers(Arc::clone(&peer_live), server_directory.join("peers.json"));
-    let mut remote_relay = match axo_relay::RelayWorker::start(axo_relay::RelayDependencies {
-        host: host.clone(),
-        endpoint: remote_access.endpoint.clone(),
-        links: host.clone(),
-        credentials: Arc::clone(&credentials),
-        // Every Mac's transcripts by host, this Mac's beside the copies (RFD0022).
-        peers: Some(axo_relay::peers::PeersPaths {
-            sessions_directory: sessions_directory.clone(),
-            index: server_directory.join("peers.json"),
-            live: peer_live,
-        }),
-        // Prompts' attachments, beside the Sessions (RFD0030).
-        assets_directory: sessions_directory.parent().map(|axo| axo.join("assets")),
-    }) {
+    let mut remote_relay = match axo_relay::RelayWorker::start(
+        axo_relay::RelayDependencies {
+            host: host.clone(),
+            endpoint: remote_access.endpoint.clone(),
+            links: host.clone(),
+            credentials: Arc::clone(&credentials),
+            // Every Mac's transcripts by host, this Mac's beside the copies (RFD0022).
+            peers: Some(axo_relay::peers::PeersPaths {
+                sessions_directory: sessions_directory.clone(),
+                index: server_directory.join("peers.json"),
+                live: peer_live,
+            }),
+            // Prompts' attachments, beside the Sessions (RFD0030).
+            assets_directory: sessions_directory.parent().map(|axo| axo.join("assets")),
+        },
+        runtime.handle().clone(),
+        stop.clone(),
+    ) {
         Ok(worker) => Some(worker),
         Err(error) => {
             log::error!("event=relay.worker_unavailable reason={error}");
@@ -257,7 +262,6 @@ pub fn serve_ipc(
     let listener = std::os::unix::net::UnixListener::bind(&socket_path.0)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
     let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
-    let stop = axo_ipc::Stop::default();
     let signalled = {
         // Signal streams register with the runtime they are made in.
         let _inside = runtime.enter();

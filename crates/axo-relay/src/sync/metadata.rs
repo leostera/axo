@@ -203,8 +203,17 @@ mod tests {
         };
         let mut now = listed(None);
         now.keep_workspace_state(&before);
-        assert_eq!(now.pi, Some(opus), "a Pi that has not said yet keeps its last model");
-        assert!(serde_json::to_value(listed(None)).unwrap().get("pi").is_none());
+        assert_eq!(
+            now.pi,
+            Some(opus),
+            "a Pi that has not said yet keeps its last model"
+        );
+        assert!(
+            serde_json::to_value(listed(None))
+                .unwrap()
+                .get("pi")
+                .is_none()
+        );
     }
 
     #[test]

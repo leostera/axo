@@ -46,24 +46,39 @@ pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, (i64, Str
         return Err((-32003, "this Mac belongs to another account".into()));
     }
     let invalid = |message: &str| Err((-32602, message.to_owned()));
-    if !params.authorize_url.starts_with("https://") || params.authorize_url.len() > 8192 || params.authorize_url.contains(char::is_whitespace) {
+    if !params.authorize_url.starts_with("https://")
+        || params.authorize_url.len() > 8192
+        || params.authorize_url.contains(char::is_whitespace)
+    {
         return invalid("authorizeUrl must be an https URL of at most 8192 bytes");
     }
-    if params.ports.is_empty() || params.ports.len() > 8 || params.ports.iter().any(|&port| port < 1024) {
+    if params.ports.is_empty()
+        || params.ports.len() > 8
+        || params.ports.iter().any(|&port| port < 1024)
+    {
         return invalid("ports must be 1 to 8 ports from 1024");
     }
     let path_ok = params.path.starts_with('/')
         && params.path.len() <= 128
-        && params.path.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'));
+        && params
+            .path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'));
     if !path_ok {
         return invalid("path must start with / and use letters, digits and - _ . /");
     }
     let state_ok = (16..=256).contains(&params.state.len())
-        && params.state.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'));
+        && params
+            .state
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'));
     if !state_ok {
         return invalid("state must be 16 to 256 URL-safe characters");
     }
-    if !params.authorize_url.contains(&format!("state={}", params.state)) {
+    if !params
+        .authorize_url
+        .contains(&format!("state={}", params.state))
+    {
         return invalid("authorizeUrl must carry the state");
     }
     if params.timeout_ms == 0 || params.timeout_ms > axo_signin::MAX_TIMEOUT.as_millis() as u64 {
@@ -73,7 +88,10 @@ pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, (i64, Str
 }
 
 /// Runs the sign-in to its callback or its timeout.
-pub fn run(params: &SignInParams, open_browser: impl FnOnce(&str) -> std::io::Result<()>) -> Result<SignInResult, (i64, String)> {
+pub fn run(
+    params: &SignInParams,
+    open_browser: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<SignInResult, (i64, String)> {
     let request = axo_signin::SignIn {
         authorize_url: params.authorize_url.clone(),
         ports: params.ports.clone(),
@@ -88,7 +106,9 @@ pub fn run(params: &SignInParams, open_browser: impl FnOnce(&str) -> std::io::Re
             error: callback.error,
             error_description: callback.error_description,
         }),
-        Err(axo_signin::SignInError::TimedOut) => Err((-32008, "the sign-in was not finished in time".into())),
+        Err(axo_signin::SignInError::TimedOut) => {
+            Err((-32008, "the sign-in was not finished in time".into()))
+        }
         Err(error) => Err((-32009, error.to_string())),
     }
 }
@@ -122,10 +142,23 @@ mod tests {
 
     #[test]
     fn anything_else_is_refused() {
-        let refused = |overrides: Value, account: &str| parse(&params(overrides), account).unwrap_err().1;
+        let refused =
+            |overrides: Value, account: &str| parse(&params(overrides), account).unwrap_err().1;
         assert!(refused(json!({}), "other").contains("another account"));
-        assert!(refused(json!({"authorizeUrl": "http://www.kraken.com/?state=0123456789abcdef"}), "acct").contains("https"));
-        assert!(refused(json!({"authorizeUrl": "https://www.kraken.com/oauth/authorize"}), "acct").contains("state"));
+        assert!(
+            refused(
+                json!({"authorizeUrl": "http://www.kraken.com/?state=0123456789abcdef"}),
+                "acct"
+            )
+            .contains("https")
+        );
+        assert!(
+            refused(
+                json!({"authorizeUrl": "https://www.kraken.com/oauth/authorize"}),
+                "acct"
+            )
+            .contains("state")
+        );
         assert!(refused(json!({"ports": [80]}), "acct").contains("ports"));
         assert!(refused(json!({"ports": []}), "acct").contains("ports"));
         assert!(refused(json!({"path": "callback"}), "acct").contains("path"));

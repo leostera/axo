@@ -186,11 +186,13 @@ pub trait RelayHost: Send + Sync {
     fn next_sync_round(&self) -> io::Result<u64>;
     /// Subscribes to local events (including terminal output); returns the subscription ID.
     fn subscribe_remote_events(&self) -> io::Result<String>;
-    fn next_remote_event(
-        &self,
-        subscription_id: &str,
+    /// The next local events, waiting up to `timeout` without holding a thread; none if it ran
+    /// out. Dropping the wait loses nothing.
+    fn next_remote_events<'a>(
+        &'a self,
+        subscription_id: &'a str,
         timeout: Duration,
-    ) -> io::Result<Option<Event>>;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<Vec<Event>>> + Send + 'a>>;
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()>;
 
     /// What agents here are asking the person now (RFD0029), sent again on every connection.
@@ -278,7 +280,8 @@ pub trait RelayHost: Send + Sync {
         session_id: SessionId,
     ) -> io::Result<Vec<axo_protocol::PiCommandInfo>>;
     /// The models the Session's Pi could switch to, as it last said.
-    fn remote_pi_models(&self, session_id: SessionId) -> io::Result<Vec<axo_protocol::PiModelInfo>>;
+    fn remote_pi_models(&self, session_id: SessionId)
+    -> io::Result<Vec<axo_protocol::PiModelInfo>>;
     /// Switches the Session's model, thinking level, or both. Fails with `InvalidInput` for a
     /// model Pi doesn't have, `PermissionDenied` for one without credentials, and `NotFound` if
     /// Pi is not running.

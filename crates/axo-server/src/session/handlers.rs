@@ -36,6 +36,9 @@ impl axo_relay::HostLinkStore for RelayHostAdapter {
     }
 }
 
+/// Local events the relay takes in one wait.
+const REMOTE_EVENTS_PER_WAIT: usize = 64;
+
 impl axo_relay::RelayHost for RelayHostAdapter {
     fn host_id(&self) -> &str {
         &self.0.host_id
@@ -204,15 +207,19 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         self.0.subscribe(None, true)
     }
 
-    fn next_remote_event(
-        &self,
-        subscription_id: &str,
+    fn next_remote_events<'a>(
+        &'a self,
+        subscription_id: &'a str,
         timeout: Duration,
-    ) -> io::Result<Option<Event>> {
-        Ok(self
-            .0
-            .next_event(subscription_id, timeout)?
-            .map(Arc::unwrap_or_clone))
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<Vec<Event>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let events = self
+                .0
+                .next_events_async(subscription_id, timeout, REMOTE_EVENTS_PER_WAIT)
+                .await?;
+            Ok(events.into_iter().map(Arc::unwrap_or_clone).collect())
+        })
     }
 
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()> {

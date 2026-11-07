@@ -34,7 +34,6 @@ pub use mirror::{ClientRecord, CopyRead, CopyState, Mirror, Place, read_copy};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -77,7 +76,7 @@ pub struct PeersWorker {
 }
 
 impl PeersWorker {
-    pub fn start(dependencies: PeersDependencies, stop: Arc<AtomicBool>) -> io::Result<Self> {
+    pub fn start(dependencies: PeersDependencies, stop: axo_ipc::Stop) -> io::Result<Self> {
         let thread = thread::Builder::new()
             .name("axo-peers".to_owned())
             .spawn(move || run(dependencies, stop))?;
@@ -93,10 +92,10 @@ impl PeersWorker {
     }
 }
 
-fn run(dependencies: PeersDependencies, stop: Arc<AtomicBool>) {
+fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
     let mut mirror = Mirror::new(dependencies.sessions_directory.clone());
     let mut delay = Duration::from_secs(1);
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.is_stopped() {
         let account = match dependencies.links.load_link() {
             Ok(link) => link.account().cloned(),
             Err(error) => {
@@ -106,7 +105,7 @@ fn run(dependencies: PeersDependencies, stop: Arc<AtomicBool>) {
         };
         let Some(account) = account else {
             // Not paired: nothing to follow until it is.
-            sleep_unless_stopped(&stop, Duration::from_secs(5));
+            stop.wait(Duration::from_secs(5));
             continue;
         };
         let started = Instant::now();
@@ -134,7 +133,7 @@ fn run(dependencies: PeersDependencies, stop: Arc<AtomicBool>) {
         } else {
             (delay * 2).min(MAX_RETRY_DELAY)
         };
-        sleep_unless_stopped(&stop, delay);
+        stop.wait(delay);
     }
 }
 
@@ -145,11 +144,4 @@ pub fn restore_directory(index: &Path) -> PathBuf {
         || PathBuf::from("restoring"),
         |server| server.join("restoring"),
     )
-}
-
-fn sleep_unless_stopped(stop: &AtomicBool, delay: Duration) {
-    let until = Instant::now() + delay;
-    while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-        thread::sleep(Duration::from_millis(100));
-    }
 }

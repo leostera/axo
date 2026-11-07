@@ -21,7 +21,6 @@ mod uploader;
 pub use metadata::{SessionMetadata, StoredSyncState, SyncSession, WorkspaceState};
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -65,13 +64,13 @@ impl SyncWorker {
         host: Arc<dyn RelayHost>,
         channel: Arc<RelayChannel>,
         waker: SyncWaker,
-        stop: Arc<AtomicBool>,
+        stop: axo_ipc::Stop,
     ) -> io::Result<Self> {
         let thread = thread::Builder::new()
             .name("axo-cloud-sync".to_owned())
             .spawn(move || {
                 let mut uploader = Uploader::new(host, channel);
-                while !stop.load(Ordering::Relaxed) {
+                while !stop.is_stopped() {
                     let delay = uploader.turn();
                     if !delay.is_zero() {
                         waker.wait(delay);

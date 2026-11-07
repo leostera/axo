@@ -33,7 +33,7 @@ struct RemoteTarget {
 
 pub(super) fn resolve_elicitation(
     params: &Value,
-    context: &RelaySessionContext<'_>,
+    context: &RelaySessionContext,
 ) -> Result<(), (i64, String)> {
     let request = serde_json::from_value::<ResolveElicitation>(params.clone())
         .map_err(|_| (-32602, "Invalid params".to_owned()))?;

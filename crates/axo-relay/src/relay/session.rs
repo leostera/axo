@@ -3,14 +3,15 @@
 
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use axo_ipc::Stop;
 use axo_protocol::Event;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::MissedTickBehavior;
 use tungstenite::Message;
 
@@ -32,8 +33,8 @@ use crate::sync::SyncWaker;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often half-received messages are checked for expiry.
 const REASSEMBLY_CHECK: Duration = Duration::from_secs(1);
-/// How long the event forwarder waits for an event before looking at its flag again.
-const EVENT_WAIT: Duration = Duration::from_millis(200);
+/// How long one wait for local events lasts; well inside the subscription's idle expiry.
+const EVENT_WAIT: Duration = Duration::from_secs(30);
 
 // The handshake answers the relay's own requests while it waits, so it needs the host too.
 #[allow(clippy::too_many_arguments)]
@@ -74,8 +75,17 @@ pub(super) async fn rpc_call(
                     .map(drop)
                     .ok_or_else(|| io::Error::other("relay RPC request was rejected"));
             }
-            if let Some(reply) = remote_request_reply(&response, sessions, host_id, host_generation)
-            {
+            let (sessions, host_id, host_generation) = (
+                Arc::clone(sessions),
+                host_id.to_owned(),
+                host_generation.to_owned(),
+            );
+            let reply = tokio::task::spawn_blocking(move || {
+                remote_request_reply(&response, &sessions, &host_id, &host_generation)
+            })
+            .await
+            .map_err(io::Error::other)?;
+            if let Some(reply) = reply {
                 send_json_async(sink, &reply).await?;
             }
         }
@@ -90,18 +100,19 @@ pub(super) async fn rpc_call(
         })?
 }
 
-pub(super) struct RelaySessionContext<'a> {
-    pub(super) sessions: &'a Arc<dyn RelayHost>,
-    pub(super) host_id: &'a str,
-    pub(super) host_generation: &'a str,
-    pub(super) subscription_id: &'a str,
-    pub(super) stop: &'a AtomicBool,
-    pub(super) control: &'a RelayControl,
-    pub(super) channel: &'a RelayChannel,
+/// What one connected socket's loop, its answers and its jobs share.
+pub(super) struct RelaySessionContext {
+    pub(super) sessions: Arc<dyn RelayHost>,
+    pub(super) host_id: String,
+    pub(super) host_generation: String,
+    pub(super) subscription_id: String,
+    pub(super) stop: Stop,
+    pub(super) control: Arc<RelayControl>,
+    pub(super) channel: Arc<RelayChannel>,
     /// Replies to the cloud's requests on this socket, from threads that answer them later.
     pub(super) replies: ReplySender,
     /// Tells the uploader a Session changed, so its new lines go up at once.
-    pub(super) waker: &'a SyncWaker,
+    pub(super) waker: SyncWaker,
     pub(super) socket_id: String,
     /// The account this Mac is linked to; a command for any other is refused.
     pub(super) account_id: String,
@@ -118,18 +129,18 @@ pub(super) enum HostRequest {
 
 /// Serves one connected socket until it closes, axod stops, or a reconnect is asked for.
 ///
-/// The loop waits on everything at once: the cloud's messages, what threads queued to send
-/// (`outgoing`), the heartbeat, and the control's wake-up. Requests the host answers at once go
-/// to `requests`, answered in order on a thread of their own; slower ones (bash, computer use,
-/// prompts, sign-ins) start their jobs. Neither holds up the socket.
+/// The loop waits on everything at once: the cloud's messages, local events, what threads queued
+/// to send (`outgoing`), the heartbeat, stopping and the control's wake-up. Requests the host
+/// answers at once go to `requests`, answered in order on the blocking pool; slower ones (bash,
+/// computer use, prompts, sign-ins) start their jobs. Neither holds up the socket.
 pub(super) async fn relay_session(
     sink: &mut RelaySink,
     stream: &mut RelayStream,
     reassembler: &mut Reassembler,
     request_number: &mut u64,
-    context: &RelaySessionContext<'_>,
+    context: &RelaySessionContext,
     mut outgoing: UnboundedReceiver<Outgoing>,
-    requests: std::sync::mpsc::Sender<HostRequest>,
+    requests: UnboundedSender<HostRequest>,
 ) -> io::Result<()> {
     let start = tokio::time::Instant::now();
     let mut heartbeat = tokio::time::interval_at(start + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
@@ -141,11 +152,16 @@ pub(super) async fn relay_session(
             log::warn!("event=relay.outbound_refused reason=too_large_or_full");
         }
     };
-    while !context.stop.load(Ordering::Relaxed)
-        && !context.control.reconnect_requested.load(Ordering::Relaxed)
+    while !context.stop.is_stopped() && !context.control.reconnect_requested.load(Ordering::Relaxed)
     {
         tokio::select! {
+            () = context.stop.stopped() => {}
             () = context.control.woken() => {}
+            events = context.sessions.next_remote_events(&context.subscription_id, EVENT_WAIT) => {
+                for event in events? {
+                    forward_event(event, context);
+                }
+            }
             queued = outgoing.recv() => {
                 let Some(queued) = queued else { break };
                 queue(&mut outbox, queued);
@@ -177,8 +193,8 @@ pub(super) async fn relay_session(
                         id: &format!("axod-{}", *request_number),
                         method: "axo.host.heartbeat",
                         params: HostIdentity {
-                            host_id: context.host_id,
-                            host_generation: context.host_generation,
+                            host_id: &context.host_id,
+                            host_generation: &context.host_generation,
                         },
                     },
                 )
@@ -200,8 +216,8 @@ pub(super) async fn relay_session(
 /// for the host to answer.
 fn take_message(
     raw: &str,
-    context: &RelaySessionContext<'_>,
-    requests: &std::sync::mpsc::Sender<HostRequest>,
+    context: &RelaySessionContext,
+    requests: &UnboundedSender<HostRequest>,
 ) -> io::Result<()> {
     let value: Value = serde_json::from_str(raw)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
@@ -262,58 +278,41 @@ fn take_message(
     Ok(())
 }
 
-/// Answers the host's requests in the order they came, until the socket's loop ends.
-pub(super) fn answer_requests(
-    requests: std::sync::mpsc::Receiver<HostRequest>,
-    context: &RelaySessionContext<'_>,
+/// Answers the host's requests in the order they came, each on the blocking pool, until the
+/// socket's loop ends.
+pub(super) async fn answer_requests(
+    mut requests: UnboundedReceiver<HostRequest>,
+    context: Arc<RelaySessionContext>,
 ) {
-    for request in requests {
-        match request {
-            HostRequest::ComputerStatus { id, params } => {
-                let outcome = crate::computer::parse_status(&params, &context.account_id)
-                    .map(|()| context.sessions.computer_status());
-                context.replies.reply(&id, outcome);
-            }
-            HostRequest::ResolveElicitation { id, params } => {
-                let outcome = resolve_elicitation(&params, context)
-                    .map(|()| serde_json::json!({ "resolved": true }));
-                context.replies.reply(&id, outcome);
-            }
-            HostRequest::Call(message) => {
-                if let Some(reply) = remote_request_reply(
-                    &message,
-                    context.sessions,
-                    context.host_id,
-                    context.host_generation,
-                ) {
-                    match serde_json::to_string(&reply) {
-                        Ok(text) => context.replies.send(text),
-                        Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),
-                    }
-                }
-            }
-        }
+    while let Some(request) = requests.recv().await {
+        let context = Arc::clone(&context);
+        let _ = tokio::task::spawn_blocking(move || answer(request, &context)).await;
     }
 }
 
-/// Forwards local events to the cloud while `done` is unset. If events cannot be read, the
-/// socket is reconnected, which subscribes again.
-pub(super) fn forward_events(context: &RelaySessionContext<'_>, done: &AtomicBool) {
-    while !done.load(Ordering::Relaxed) {
-        match context
-            .sessions
-            .next_remote_event(context.subscription_id, EVENT_WAIT)
-        {
-            Ok(Some(event)) => forward_event(event, context),
-            Ok(None) => {}
-            Err(error) => {
-                log::warn!("event=relay.events_unreadable error={error}");
-                context
-                    .control
-                    .reconnect_requested
-                    .store(true, Ordering::Relaxed);
-                context.control.wake();
-                return;
+fn answer(request: HostRequest, context: &RelaySessionContext) {
+    match request {
+        HostRequest::ComputerStatus { id, params } => {
+            let outcome = crate::computer::parse_status(&params, &context.account_id)
+                .map(|()| context.sessions.computer_status());
+            context.replies.reply(&id, outcome);
+        }
+        HostRequest::ResolveElicitation { id, params } => {
+            let outcome = resolve_elicitation(&params, context)
+                .map(|()| serde_json::json!({ "resolved": true }));
+            context.replies.reply(&id, outcome);
+        }
+        HostRequest::Call(message) => {
+            if let Some(reply) = remote_request_reply(
+                &message,
+                &context.sessions,
+                &context.host_id,
+                &context.host_generation,
+            ) {
+                match serde_json::to_string(&reply) {
+                    Ok(text) => context.replies.send(text),
+                    Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),
+                }
             }
         }
     }
@@ -323,7 +322,7 @@ pub(super) fn forward_events(context: &RelaySessionContext<'_>, done: &AtomicBoo
 /// an event only wakes the uploader; Pi's progress (`message.update`, `tool.update`, already
 /// throttled by pi-axo) goes up as an ephemeral snapshot, the newest replacing the last. Terminal
 /// output and everything else stays on the Mac.
-fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
+fn forward_event(event: Event, context: &RelaySessionContext) {
     match event {
         Event::PiEvent {
             session_id,

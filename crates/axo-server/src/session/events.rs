@@ -227,6 +227,8 @@ impl SessionManager {
         Ok(subscription_id)
     }
 
+    /// Blocks a thread; tests only. axod waits with `next_events_async`.
+    #[cfg(test)]
     pub(super) fn next_event(&self, id: &str, timeout: Duration) -> io::Result<Option<Arc<Event>>> {
         Ok(self.next_events(id, timeout, 1)?.into_iter().next())
     }
@@ -245,6 +247,7 @@ impl SessionManager {
 
     /// Blocks up to `timeout` for the first event, then drains up to `max_events` already queued.
     /// For the relay thread and tests; RPC uses `next_events_async`.
+    #[cfg(test)]
     pub(super) fn next_events(
         &self,
         id: &str,

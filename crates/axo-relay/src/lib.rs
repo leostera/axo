@@ -18,8 +18,8 @@ mod sync;
 
 pub use endpoint::{DEFAULT_RELAY_URL, RelayEndpoint};
 pub use host::{
-    ClientDelivery, CommandId, MAX_STOP_COMMANDS, ModelChoice, ModelName, PiKey, RelayHost, StopTarget,
-    TurnId,
+    ClientDelivery, CommandId, MAX_STOP_COMMANDS, ModelChoice, ModelName, PiKey, RelayHost,
+    StopTarget, TurnId,
 };
 pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
 pub use outbound::{Priority, RelayCallError, RelayChannel, ReplySender};

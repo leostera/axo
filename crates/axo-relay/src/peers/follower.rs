@@ -4,7 +4,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -47,7 +46,7 @@ pub(super) struct Follower<'a> {
     own_host_id: &'a str,
     index_path: &'a Path,
     live: &'a PeerLive,
-    stop: &'a AtomicBool,
+    stop: &'a axo_ipc::Stop,
     next_id: u64,
     pending: HashMap<u64, Pending>,
     /// Sessions waiting to be opened, and those open on this socket, by Session id.
@@ -73,7 +72,7 @@ impl<'a> Follower<'a> {
         mut socket: RelaySocket,
         mirror: &'a mut Mirror,
         dependencies: &'a PeersDependencies,
-        stop: &'a AtomicBool,
+        stop: &'a axo_ipc::Stop,
     ) -> io::Result<Self> {
         set_read_timeout(&mut socket, READ_TIMEOUT)?;
         Ok(Self {
@@ -123,7 +122,7 @@ impl<'a> Follower<'a> {
             "axo.client.hello",
             json!({ "protocolVersion": axo_protocol::rpc::PROTOCOL_VERSION, "clientId": client_id }),
         )?;
-        while !self.stop.load(Ordering::Relaxed) && opened.elapsed() < SOCKET_LIFETIME {
+        while !self.stop.is_stopped() && opened.elapsed() < SOCKET_LIFETIME {
             self.follow_panes()?;
             self.start_restores()?;
             self.open_more()?;

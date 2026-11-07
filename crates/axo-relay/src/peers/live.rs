@@ -256,7 +256,10 @@ impl PeerLive {
 
     /// The socket ended: what it never sent was not sent, and what it sent is unknown. Progress
     /// is forgotten, since nothing keeps it current now.
-    pub(super) fn disconnected(&self, in_flight: Vec<mpsc::Sender<Result<Value, PeerCommandError>>>) {
+    pub(super) fn disconnected(
+        &self,
+        in_flight: Vec<mpsc::Sender<Result<Value, PeerCommandError>>>,
+    ) {
         let mut unsent = Vec::new();
         self.update(|state| {
             state.connected = false;

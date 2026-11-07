@@ -276,11 +276,17 @@ pub(crate) mod testing {
         fn subscribe_remote_events(&self) -> std::io::Result<String> {
             unreachable!()
         }
-        fn next_remote_event(
-            &self,
-            _: &str,
+        fn next_remote_events<'a>(
+            &'a self,
+            _: &'a str,
             _: std::time::Duration,
-        ) -> std::io::Result<Option<axo_protocol::Event>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::io::Result<Vec<axo_protocol::Event>>>
+                    + Send
+                    + 'a,
+            >,
+        > {
             unreachable!()
         }
         fn unsubscribe_remote_events(&self, _: &str) -> std::io::Result<()> {
