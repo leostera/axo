@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::fragments;
 
-pub const METHOD: &str = "axo.connections.bash";
+pub const METHOD: &str = "axo.apps.bash";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// Output kept per stream; the rest is read and thrown away.
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn the_schema_fixtures_match_these_types() {
         let call: Value = serde_json::from_str(include_str!(
-            "../../../schemas/axo.leostera.dev/v1/fixtures/connections-bash.call.json"
+            "../../../schemas/axo.leostera.dev/v1/fixtures/apps-bash.call.json"
         ))
         .unwrap();
         assert_eq!(call["method"], METHOD);
@@ -273,7 +273,7 @@ mod tests {
         let parsed = parse(&call["params"], account).unwrap();
         assert_eq!(parsed.timeout_ms, Some(60_000));
         let result: Value = serde_json::from_str(include_str!(
-            "../../../schemas/axo.leostera.dev/v1/fixtures/connections-bash.result.json"
+            "../../../schemas/axo.leostera.dev/v1/fixtures/apps-bash.result.json"
         ))
         .unwrap();
         let typed: BashResult = serde_json::from_value(result.clone()).unwrap();

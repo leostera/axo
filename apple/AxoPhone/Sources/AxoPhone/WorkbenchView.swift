@@ -86,7 +86,7 @@ struct WorkbenchView: View {
     #if DEBUG && targetEnvironment(simulator)
       if PreviewFixture.requested {
         pairingIssuer = PreviewPairing()
-        _apps = State(initialValue: AppsModel(service: PreviewConnections()))
+        _apps = State(initialValue: AppsModel(service: PreviewApps()))
         let feed = AccountConnection(transport: PreviewTransport(), clientID: .random())
         _workbench = State(initialValue: PhoneWorkbench(
           hosts: HostsModel(profile: PreviewPairing()), feed: feed, account: account,
@@ -98,7 +98,7 @@ struct WorkbenchView: View {
       }
     #endif
     pairingIssuer = client
-    _apps = State(initialValue: AppsModel(service: ConnectionsClient(endpoint: endpoint, tokens: account.tokens)))
+    _apps = State(initialValue: AppsModel(service: AppsClient(endpoint: endpoint, tokens: account.tokens)))
     // One socket for the whole account, as this install's client (RFD0018).
     let feed = AccountConnection(endpoint: endpoint, clientID: .installed(), tokens: account.tokens)
     // Photos and files go to the account's assets before the message that carries them (RFD0030).

@@ -1,4 +1,4 @@
-//! Terminal I/O: the attach socket and its connections, input, resize and the busy check.
+//! Terminal I/O: the attach socket and its apps, input, resize and the busy check.
 
 use std::fs;
 use std::io::{self, Write};

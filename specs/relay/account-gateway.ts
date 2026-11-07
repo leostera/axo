@@ -2,14 +2,14 @@ import { atMost, budget, crash, defineActor, defineCall, defineGroup, defineLimi
 
 // RFD0020: the account gateway. One AxoGateway per Axo account holds every credential the account
 // gave Axo for other services and makes every call to them; AxoAccountManager keeps identity and
-// the account's Macs. An account that had connections in its account manager moves them to its
+// the account's Macs. An account that had apps in its account manager moves them to its
 // gateway once, on the gateway's first request: export, store, confirm, and only then delete.
 //
 // Not built yet, so no step has sources. Modelled: the move, the gateway's list of the account's
 // Macs (pushed by the account manager, pulled on a miss), and who calls out. Left out: how a
-// script runs and its limits (connections.ts), sign-in (connection-sign-in.ts), tool lists
+// script runs and its limits (apps.ts), sign-in (connection-sign-in.ts), tool lists
 // (tool-lists.ts). A Session's call reaches the gateway through axod and its AxoHostDO, as in
-// connections.ts; here it is one call, since that path does not change. One account (Ada's), one
+// apps.ts; here it is one call, since that path does not change. One account (Ada's), one
 // Gmail grant, a call log with one call from before the move ("c0"); the log's chain head is
 // modelled as the log itself, joined, which changes whenever the log does, as a hash would.
 
@@ -23,16 +23,16 @@ type Waiting = { request: string; script: Script; from: string; pulled: boolean 
 /** Faults on one path: lost messages and restarts (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
 
-// Session -> AxoGateway (through axod and the Session's AxoHostDO, as in connections.ts)
-const ConnectionsCall = defineCall("ConnectionsCall", { request: String, script: oneOf("gmail", "bash:studio", "bash:laptop") }, { name: "axo.connections.execute", over: "rpc" });
+// Session -> AxoGateway (through axod and the Session's AxoHostDO, as in apps.ts)
+const AppsCall = defineCall("AppsCall", { request: String, script: oneOf("gmail", "bash:studio", "bash:laptop") }, { name: "axo.apps.execute", over: "rpc" });
 const Result = defineMessage("Result", { request: String, output: String }, { name: "execute result", over: "rpc", tone: "reply" });
 const CallFailed = defineMessage("CallFailed", { request: String, error: String }, { name: "execute failed", over: "rpc", tone: "refused" });
 // AxoGateway <-> AxoAccountManager (Durable Object RPC)
-const ExportConnections = defineCall("ExportConnections", {}, { name: "exportConnections", over: "rpc" });
+const ExportApps = defineCall("ExportApps", {}, { name: "exportApps", over: "rpc" });
 const Snapshot = defineMessage("Snapshot", { grants: listOf(String), log: listOf(String), head: String }, { name: "snapshot", over: "rpc", tone: "reply" });
 const AlreadyMoved = defineMessage("AlreadyMoved", { head: String }, { name: "moved", over: "rpc", tone: "reply" });
 const NothingToMove = defineMessage("NothingToMove", {}, { name: "none", over: "rpc", tone: "reply" });
-const ConfirmMoved = defineCall("ConfirmMoved", { head: String }, { name: "confirmConnectionsMoved", over: "rpc" });
+const ConfirmMoved = defineCall("ConfirmMoved", { head: String }, { name: "confirmAppsMoved", over: "rpc" });
 const Confirmed = defineMessage("Confirmed", {}, { name: "deleted", over: "rpc", tone: "reply" });
 const Mismatch = defineMessage("Mismatch", {}, { name: "mismatch", over: "rpc", tone: "refused" });
 const GatewayMacs = defineCall("GatewayMacs", {}, { name: "gatewayMacs", over: "rpc" });
@@ -54,9 +54,9 @@ const services = defineZone({ name: "Other services", description: "Google, MCP 
 
 const macListAge = defineLimit({ name: "Mac list pulled when older than", value: 1, unit: "minute" });
 
-/** RFD0020, Moving connections state: the account manager deletes only when the gateway confirms the head it stored. */
+/** RFD0020, Moving apps state: the account manager deletes only when the gateway confirms the head it stored. */
 const deleteOnConfirmedHead = defineRule("deleteOnConfirmedHead", {
-  description: "The account manager keeps its connections until the gateway confirms it stored them, with the chain head it exported.",
+  description: "The account manager keeps its apps until the gateway confirms it stored them, with the chain head it exported.",
 });
 /** RFD0013, kept by RFD0020: a revoked Mac's socket owner refuses its commands, whatever the gateway's list says. */
 const hostRefusesRevoked = defineRule("hostRefusesRevoked", {
@@ -69,7 +69,7 @@ export const Manager = defineActor({
   zone: cloudflare,
   singleton: true,
   initialState: () => ({
-    /** Connections state from before RFD0020, until it is handed off; null once deleted. */
+    /** Apps state from before RFD0020, until it is handed off; null once deleted. */
     conns: { grants: [GRANT], log: [...OLD_LOG] } as null | { grants: string[]; log: string[] },
     /** The head the gateway confirmed, once handed off: the record of the move. */
     handoff: null as string | null,
@@ -78,11 +78,11 @@ export const Manager = defineActor({
   }),
   display: {
     icon: "shield",
-    status: (s) => (s.handoff ? "connections moved" : s.conns ? "holds connections" : "no connections"),
+    status: (s) => (s.handoff ? "apps moved" : s.conns ? "holds apps" : "no apps"),
     mood: (s) => (s.handoff ? "ok" : s.conns ? "info" : "off"),
     rows: (s) => [
-      ...(s.conns ? [{ group: "Connections (before the move)", label: `${s.conns.grants.length} grant(s)`, detail: `log head ${headOf(s.conns.log)}` }] : []),
-      ...(s.handoff ? [{ group: "Connections", label: "handed off", detail: `head ${s.handoff}`, mood: "ok" as const }] : []),
+      ...(s.conns ? [{ group: "Apps (before the move)", label: `${s.conns.grants.length} grant(s)`, detail: `log head ${headOf(s.conns.log)}` }] : []),
+      ...(s.handoff ? [{ group: "Apps", label: "handed off", detail: `head ${s.handoff}`, mood: "ok" as const }] : []),
       ...s.macs.map((m) => ({ group: "Paired Macs", label: m, detail: `list v${s.macsVersion}` })),
     ],
   },
@@ -117,9 +117,9 @@ export const Manager = defineActor({
     },
   },
   transitions: {
-    exportConnections: {
-      on: ExportConnections,
-      description: "Answers with every connections row and the chain head, keeping its copy; or says it already handed off, or that there is nothing.",
+    exportApps: {
+      on: ExportApps,
+      description: "Answers with every apps row and the chain head, keeping its copy; or says it already handed off, or that there is nothing.",
       sends: [Snapshot, AlreadyMoved, NothingToMove],
       run(state, _m, ctx) {
         if (state.conns) {
@@ -156,7 +156,7 @@ export const Manager = defineActor({
       run: (state, _m, ctx) => ctx.reply(MacsList, { version: state.macsVersion, macs: [...state.macs] }),
     },
     // Faults: what the network and restarts may do here. Its storage survives a restart.
-    exportConnectionsLost: lose(ExportConnections, { spend: faults }),
+    exportAppsLost: lose(ExportApps, { spend: faults }),
     confirmMovedLost: lose(ConfirmMoved, { spend: faults }),
     gatewayMacsLost: lose(GatewayMacs, { spend: faults }),
     crash: crash({ keeps: ["conns", "handoff", "macs", "macsVersion"], spend: faults }),
@@ -196,7 +196,7 @@ export const Gateway = defineActor({
   initialState: () => gatewayStart(),
   display: {
     icon: "key",
-    status: (s) => (s.lost ? "connections lost" : s.moving ? "moving connections" : !s.imported ? "not moved yet" : s.confirmed ? `${s.grants.length} grant(s), ${s.log.length} call(s) logged` : "moved, confirming"),
+    status: (s) => (s.lost ? "apps lost" : s.moving ? "moving apps" : !s.imported ? "not moved yet" : s.confirmed ? `${s.grants.length} grant(s), ${s.log.length} call(s) logged` : "moved, confirming"),
     mood: (s) => (s.lost || s.mismatch ? "bad" : s.moving || (s.imported && !s.confirmed) ? "busy" : s.imported ? "ok" : "off"),
     rows: (s) => [
       ...s.grants.map((g) => ({ group: "Grants (sealed)", label: g.replace(/^grant:/, ""), detail: "held here" })),
@@ -205,19 +205,19 @@ export const Gateway = defineActor({
     ],
   },
   transitions: {
-    connectionsCall: {
-      on: ConnectionsCall,
-      description: "Takes a Session's call; before the first request is served, the gateway moves the account's connections from the account manager, and every other request waits for that.",
-      sends: [ExportConnections, ConfirmMoved, GmailCall, CallHost, GatewayMacs, CallFailed],
+    appsCall: {
+      on: AppsCall,
+      description: "Takes a Session's call; before the first request is served, the gateway moves the account's apps from the account manager, and every other request waits for that.",
+      sends: [ExportApps, ConfirmMoved, GmailCall, CallHost, GatewayMacs, CallFailed],
       say: (s, m) => (s.moving ? `Waiting for the move to end before ${m.script}` : `Serving ${m.script}`),
       run(state, m, ctx) {
         const request: Waiting = { request: m.request, script: m.script, from: ctx.from.id, pulled: false };
-        if (state.lost) return ctx.reply(CallFailed, { request: m.request, error: "connections are unavailable" });
+        if (state.lost) return ctx.reply(CallFailed, { request: m.request, error: "apps are unavailable" });
         if (!state.imported) {
           state.waiting.push(request);
           if (!state.moving) {
             state.moving = true;
-            ctx.send(ctx.the(Manager), ExportConnections, {});
+            ctx.send(ctx.the(Manager), ExportApps, {});
           }
           return;
         }
@@ -242,7 +242,7 @@ export const Gateway = defineActor({
     },
     nothingToMove: {
       on: NothingToMove,
-      description: "The account never had connections: the gateway starts empty and serves.",
+      description: "The account never had apps: the gateway starts empty and serves.",
       sends: [ConfirmMoved, GmailCall, CallHost, GatewayMacs, CallFailed],
       run(state, _m, ctx) {
         state.moving = false;
@@ -259,16 +259,16 @@ export const Gateway = defineActor({
         state.moving = false;
         if (state.imported) return serveWaiting(state, ctx);
         state.lost = true;
-        failWaiting(state, "connections are unavailable", ctx);
+        failWaiting(state, "apps are unavailable", ctx);
       },
     },
     exportFailed: {
-      on: failed(ExportConnections),
+      on: failed(ExportApps),
       description: "The account manager did not answer; nothing changed on either side, and the requests that waited fail with try again.",
       sends: [CallFailed],
       run(state, _f, ctx) {
         state.moving = false;
-        failWaiting(state, "connections are moving; try again", ctx);
+        failWaiting(state, "apps are moving; try again", ctx);
       },
     },
     confirmed: {
@@ -317,7 +317,7 @@ export const Gateway = defineActor({
       on: failed(GatewayMacs),
       description: "The account manager did not answer; requests that waited for the list fail with try again.",
       sends: [CallFailed],
-      run: (state, _f, ctx) => failWaiting(state, "connections are unavailable; try again", ctx),
+      run: (state, _f, ctx) => failWaiting(state, "apps are unavailable; try again", ctx),
     },
     gmailResult: {
       on: GmailResult,
@@ -375,8 +375,8 @@ export const Gateway = defineActor({
       },
     },
     // Faults: what the network and restarts may do here. Its storage survives a restart.
-    connectionsCallLost: lose(ConnectionsCall, { spend: faults }),
-    snapshotLost: lose(Snapshot, { fails: ExportConnections, spend: faults }),
+    appsCallLost: lose(AppsCall, { spend: faults }),
+    snapshotLost: lose(Snapshot, { fails: ExportApps, spend: faults }),
     confirmedLost: lose(Confirmed, { fails: ConfirmMoved, spend: faults }),
     macsChangedLost: lose(MacsChanged, { spend: faults }),
     macsListLost: lose(MacsList, { fails: GatewayMacs, spend: faults }),
@@ -492,7 +492,7 @@ export const Gmail = defineActor({
 
 export const Session = defineActor({
   name: "Session",
-  description: "Ada's agent in an Axo Session, calling her connections.",
+  description: "Ada's agent in an Axo Session, calling her apps.",
   zone: macs,
   initialState: () => ({ pending: null as null | { request: string; script: Script }, last: null as string | null }),
   display: {
@@ -509,12 +509,12 @@ export const Session = defineActor({
       description: "The agent calls Gmail, or runs a command on one of Ada's Macs.",
       inputs: { script: input(String, { examples: SCRIPTS }) },
       when: (s) => s.pending === null,
-      sends: [ConnectionsCall],
+      sends: [AppsCall],
       starts: ["deadline"],
       run(state, { script }, ctx) {
         const request = ctx.fresh("req");
         state.pending = { request, script: script as Script };
-        ctx.send(ctx.the(Gateway), ConnectionsCall, { request, script: script as Script });
+        ctx.send(ctx.the(Gateway), AppsCall, { request, script: script as Script });
         ctx.start("deadline");
       },
     },
@@ -541,7 +541,7 @@ export const Session = defineActor({
       },
     },
     unanswered: {
-      on: failed(ConnectionsCall),
+      on: failed(AppsCall),
       description: "The gateway did not answer: the call failed, and may have run.",
       run(state, f, ctx) {
         if (state.pending?.request !== f.payload.request) return;
@@ -559,22 +559,22 @@ export const Session = defineActor({
         state.pending = null;
       },
     },
-    resultLost: lose(Result, { fails: ConnectionsCall, spend: faults }),
+    resultLost: lose(Result, { fails: AppsCall, spend: faults }),
   },
 });
 
 const grants = (w: any): string[] => [...(w.the(Manager).state.conns?.grants ?? []), ...w.the(Gateway).state.grants];
-/** Whether the account had connections to move: the account manager holds them, handed them off, or the gateway stored them. */
-const hadConnections = (w: any): boolean => w.the(Manager).state.conns !== null || w.the(Manager).state.handoff !== null || w.the(Gateway).state.importedHead !== null;
+/** Whether the account had apps to move: the account manager holds them, handed them off, or the gateway stored them. */
+const hadApps = (w: any): boolean => w.the(Manager).state.conns !== null || w.the(Manager).state.handoff !== null || w.the(Gateway).state.importedHead !== null;
 const logs = (w: any): string[][] => [w.the(Manager).state.conns?.log ?? [], w.the(Gateway).state.log];
 
 const credentialsNeverLost = defineProperty("credentialsNeverLost", {
   description: "Ada's Gmail grant is always held by the account manager, the gateway, or both while the move runs.",
-  always: (w) => !hadConnections(w) || grants(w).includes(GRANT),
+  always: (w) => !hadApps(w) || grants(w).includes(GRANT),
   needs: [deleteOnConfirmedHead],
 });
 const oneHomeOnceMoved = defineProperty("oneHomeOnceMoved", {
-  description: "Once the account manager records the hand-off, it holds no connections, and the gateway holds the grant and the head it confirmed.",
+  description: "Once the account manager records the hand-off, it holds no apps, and the gateway holds the grant and the head it confirmed.",
   always: (w) => {
     const m = w.the(Manager).state;
     const g = w.the(Gateway).state;
@@ -590,7 +590,7 @@ const confirmedMeansDeleted = defineProperty("confirmedMeansDeleted", {
 const logKeptWhole = defineProperty("logKeptWhole", {
   description: "The call log from before the move survives it: one of the two objects always holds it from its first record, and the gateway's log starts with it.",
   always: (w) => {
-    if (!hadConnections(w)) return true;
+    if (!hadApps(w)) return true;
     const g = w.the(Gateway).state;
     const kept = logs(w).some((log) => OLD_LOG.every((c, i) => log[i] === c));
     return kept && (!g.imported || OLD_LOG.every((c, i) => g.log[i] === c));
@@ -609,11 +609,11 @@ const onlyAfterTheMove = defineProperty("onlyAfterTheMove", {
   always: (w) => {
     const g = w.the(Gateway).state;
     const anything = w.the(Gmail).state.calls.length > 0 || w.all(HostDO).some((h) => h.state.ran.length > 0);
-    return !anything || (g.imported && (!hadConnections(w) || g.log[0] === OLD_LOG[0]));
+    return !anything || (g.imported && (!hadApps(w) || g.log[0] === OLD_LOG[0]));
   },
 });
 const accountManagerCallsNothing = defineProperty("accountManagerCallsNothing", {
-  description: "The account manager never holds runs, sent calls or a call log of its own: only identity, Macs, and connections waiting to be handed off.",
+  description: "The account manager never holds runs, sent calls or a call log of its own: only identity, Macs, and apps waiting to be handed off.",
   always: (w) => Object.keys(w.the(Manager).state).every((k) => ["conns", "handoff", "macs", "macsVersion"].includes(k)),
 });
 const revokedMacsRunNothingNew = defineProperty("revokedMacsRunNothingNew", {
@@ -660,7 +660,7 @@ const theExportIsLost = defineScenario("The export is lost", {
     const session = s.world.all(Session)[0]!;
     s.act(session, "call", { script: "gmail" });
     s.settle({ until: (w) => w.the(Gateway).state.moving });
-    s.step(s.the(Manager), "exportConnectionsLost");
+    s.step(s.the(Manager), "exportAppsLost");
     s.settle();
     s.act(session, "call", { script: "gmail" });
     s.settle();
@@ -695,7 +695,7 @@ const aRevokedMacWithAStaleList = defineScenario("A revoked Mac with a stale lis
   },
 });
 
-const anAccountWithNoConnections = defineScenario("An account with no connections", {
+const anAccountWithNoApps = defineScenario("An account with no apps", {
   description: "An account that never added an app or a server: the gateway starts empty, with nothing to move, and asks for sign-in.",
   setup(w) {
     w.set(Manager, { conns: null });
@@ -713,10 +713,10 @@ const accountGroup = defineGroup({ name: "Ada's account", actors: [Manager, Gate
 export default defineSpec({
   name: "Account gateway",
   description:
-    "How one Durable Object per account, AxoGateway, comes to hold every credential and make every call to another service or a Mac, and how an account's connections move there from AxoAccountManager without being lost or kept twice.",
+    "How one Durable Object per account, AxoGateway, comes to hold every credential and make every call to another service or a Mac, and how an account's apps move there from AxoAccountManager without being lost or kept twice.",
   actors: [Manager, Gateway, HostDO, Gmail, Session],
   groups: [macGroup, accountGroup],
   limits: [macListAge],
   properties: [credentialsNeverLost, oneHomeOnceMoved, confirmedMeansDeleted, logKeptWhole, loggedBeforeSent, onlyAfterTheMove, accountManagerCallsNothing, revokedMacsRunNothingNew, sessionsGetAnAnswer],
-  scenarios: [theFirstCallMovesTheAccount, theGatewayRestartsBeforeConfirming, theExportIsLost, aMacPairedAfterTheMove, aRevokedMacWithAStaleList, anAccountWithNoConnections],
+  scenarios: [theFirstCallMovesTheAccount, theGatewayRestartsBeforeConfirming, theExportIsLost, aMacPairedAfterTheMove, aRevokedMacWithAStaleList, anAccountWithNoApps],
 });

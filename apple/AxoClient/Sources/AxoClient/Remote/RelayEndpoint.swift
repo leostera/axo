@@ -59,9 +59,9 @@ public struct RelayEndpoint: Equatable, Sendable {
     return components.url!
   }
 
-  /// Settings › Apps' API: `/api/v1/account/connections` and the routes under it.
-  public func connectionsURL(_ path: String = "", query: [URLQueryItem] = []) -> URL {
-    var components = URLComponents(url: url("/api/v1/account/connections" + path), resolvingAgainstBaseURL: false)!
+  /// Settings › Apps' API: `/api/v1/account/apps` and the routes under it.
+  public func appsURL(_ path: String = "", query: [URLQueryItem] = []) -> URL {
+    var components = URLComponents(url: url("/api/v1/account/apps" + path), resolvingAgainstBaseURL: false)!
     components.queryItems = query.isEmpty ? nil : query
     return components.url!
   }

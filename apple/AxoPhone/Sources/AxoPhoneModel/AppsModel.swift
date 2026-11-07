@@ -3,8 +3,8 @@ import AxoProtocol
 import Foundation
 import Observation
 
-/// Settings › Apps' API, as the phone needs it (`ConnectionsClient`; a stand-in in tests).
-public protocol ConnectionsService: Sendable {
+/// Settings › Apps' API, as the phone needs it (`AppsClient`; a stand-in in tests).
+public protocol AppsService: Sendable {
   func list() async throws -> [Connection]
   func log(service: String?, limit: Int, before: String?) async throws -> [CallRecord]
   func integrity() async throws -> CallLogIntegrity
@@ -20,7 +20,7 @@ public protocol ConnectionsService: Sendable {
   func webPage(for app: AppConnection?) -> URL
 }
 
-extension ConnectionsClient: ConnectionsService {}
+extension AppsClient: AppsService {}
 
 /// What the account's Sessions can use, as Settings › Apps shows it (RFD0016): the apps Axo
 /// provides with their accounts, the MCP servers the person added, and what Sessions did with
@@ -60,7 +60,7 @@ public final class AppsModel {
   public private(set) var phase: Phase = .idle
   public private(set) var apps: [AppConnection] = []
   public private(set) var servers: [ServerConnection] = []
-  /// The account's Macs, as connections (by their connection names); a Mac sign-in runs on one.
+  /// The account's Macs, as apps (by their connection names); a Mac sign-in runs on one.
   public private(set) var macs: [HostConnectionInfo] = []
   public private(set) var notice: Notice?
   /// Something is on its way; buttons wait.
@@ -68,13 +68,13 @@ public final class AppsModel {
   public private(set) var deviceFlow: DeviceFlow?
   public private(set) var macFlow: MacFlow?
 
-  private let service: any ConnectionsService
+  private let service: any AppsService
   /// Waits between polls; tests make it immediate.
   private let pause: @Sendable (Duration) async throws -> Void
   private var pollTask: Task<Void, Never>?
 
   public init(
-    service: any ConnectionsService,
+    service: any AppsService,
     pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   ) {
     self.service = service
@@ -103,11 +103,11 @@ public final class AppsModel {
     }
   }
 
-  private func adopt(_ connections: [Connection]) {
+  private func adopt(_ entries: [Connection]) {
     var apps: [AppConnection] = []
     var servers: [ServerConnection] = []
     var macs: [HostConnectionInfo] = []
-    for connection in connections {
+    for connection in entries {
       switch connection {
       case .app(let app): apps.append(app)
       case .server(let server): servers.append(server)
@@ -309,7 +309,7 @@ public final class AppsModel {
 
   static func describe(_ error: Error) -> String {
     switch error {
-    case let refusal as ConnectionsRefusal: refusal.message
+    case let refusal as AppsRefusal: refusal.message
     case AxoClientError.invalidResponse:
       "Axo answered in a way this version of the app does not understand. Update the app, or use the web."
     default: error.localizedDescription

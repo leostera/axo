@@ -2,7 +2,7 @@ import AxoProtocol
 import Foundation
 
 /// What Axo said when it refused an Apps request: its own words, for the person.
-public struct ConnectionsRefusal: Error, Equatable, LocalizedError {
+public struct AppsRefusal: Error, Equatable, LocalizedError {
   public let status: Int
   public let message: String
 
@@ -18,7 +18,7 @@ public struct ConnectionsRefusal: Error, Equatable, LocalizedError {
 /// apps and MCP servers, adding and removing their accounts, and what Sessions did with them.
 /// A browser sign-in (an OAuth app, an MCP server) runs on the web, where the provider sends the
 /// browser back to a page signed in to the same account; `webPage(for:)` says which.
-public struct ConnectionsClient: Sendable {
+public struct AppsClient: Sendable {
   private let endpoint: RelayEndpoint
   private let tokens: any SessionTokenProvider
   private let loader: any HTTPDataLoading
@@ -37,9 +37,9 @@ public struct ConnectionsClient: Sendable {
 
   /// Every app, MCP server and Mac the account's Sessions can use.
   public func list() async throws -> [Connection] {
-    struct Listing: Decodable { let connections: [Connection] }
+    struct Listing: Decodable { let apps: [Connection] }
     let listing: Listing = try await send("GET", path: "")
-    return listing.connections
+    return listing.apps
   }
 
   /// Recent calls, newest first: of everything, or of one app or server (`service`).
@@ -188,7 +188,7 @@ public struct ConnectionsClient: Sendable {
   private func sendData(
     _ method: String, path: String, query: [URLQueryItem] = [], body: (some Encodable)?
   ) async throws -> Data {
-    var request = URLRequest(url: endpoint.connectionsURL(path, query: query))
+    var request = URLRequest(url: endpoint.appsURL(path, query: query))
     request.httpMethod = method
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     if let body {
@@ -217,7 +217,7 @@ public struct ConnectionsClient: Sendable {
     case let status:
       // Axo's refusals say what was wrong ({ error }); anything else is just a status.
       if let refusal = try? JSONDecoder().decode(Refusal.self, from: data) {
-        throw ConnectionsRefusal(status: status, message: refusal.error)
+        throw AppsRefusal(status: status, message: refusal.error)
       }
       throw RelayError.httpStatus(status)
     }

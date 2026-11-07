@@ -1,7 +1,7 @@
 import Foundation
 
 // Settings › Apps over HTTPS (RFD0016): what the account's Sessions can use. These mirror
-// `@axo/protocol`'s connections schemas (packages/axo-api/src/connections.ts). A reader takes what
+// `@axo/protocol`'s apps schemas (packages/axo-api/src/apps.ts). A reader takes what
 // it knows and leaves the rest: an app or a sign-in kind newer than this build is kept as
 // `.unknown` rather than failing the whole listing, as Workers roll out ahead of the app.
 

@@ -184,7 +184,7 @@ struct FetchedFile {
 }
 
 /// Registers `axo.assets.fetch`, for axod's own `axod mcp` (by code signature): it shows the
-/// agent the images a connections script returned.
+/// agent the images a apps script returned.
 pub(crate) fn add_methods(manager: &Arc<SessionManager>, handler: &mut IoHandler) {
     let manager = Arc::clone(manager);
     handler.add_typed_only(

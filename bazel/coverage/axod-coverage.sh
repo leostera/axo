@@ -47,7 +47,7 @@ bazel test //crates/axod:all --nocache_test_results --test_tag_filters=-manual \
 if (( worker )); then
   echo "== 4. the Worker's end-to-end tests through the cloud"
   (cd packages/axo-api-worker && AXOD_BINARY="$binary" npx tsx --test --test-concurrency=1 \
-    tests/axod-relay.test.ts tests/phone-path.test.ts tests/connections-e2e.test.ts tests/axod-peers.test.ts \
+    tests/axod-relay.test.ts tests/phone-path.test.ts tests/apps-e2e.test.ts tests/axod-peers.test.ts \
     tests/attachments-e2e.test.ts tests/elicitations-e2e.test.ts 2>&1 | grep -E '^ℹ (pass|fail)|^✖' || true)
 fi
 

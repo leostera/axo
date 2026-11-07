@@ -58,7 +58,7 @@ export { APP_DEFINITIONS, macCommand, toolsOf };
  * names the account it acts as: nothing is read or sent from a guessed one.
  *
  * Grants and tokens are sealed with the account's key and never leave this Durable Object. Sign-in reuses
- * the connections callback and its checks: a flow is a one-time nonce that works for ten
+ * the apps callback and its checks: a flow is a one-time nonce that works for ten
  * minutes, only in a browser signed in to this account. Each provider account's grant carries a
  * generation, and a renewal lands only on the generation it renewed.
  */
@@ -118,7 +118,7 @@ export type AppsDeps = {
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
   now?: () => number;
-  /** The account's Macs, by their names as connections: the accounts of a Mac app (1Password). */
+  /** The account's Macs, by their names as apps: the accounts of a Mac app (1Password). */
   macs?: () => string[];
   /**
    * Runs a command on one of them, for a Mac app's tool; the call is logged as the app's.
@@ -145,9 +145,9 @@ const PHONE_FLOW_LIFETIME_MS = 10 * 60_000;
 const PHONE_FLOW_ATTEMPTS = 5;
 
 const accountInput = z.string().min(3).max(320)
-  .describe("The account to act as: one of this app's accounts, by its name in connections_list (an email, a username, an account number or a Mac, depending on the app).");
+  .describe("The account to act as: one of this app's accounts, by its name in apps_list (an email, a username, an account number or a Mac, depending on the app).");
 
-export class AppConnections {
+export class BuiltinApps {
   private readonly refreshing = new Map<string, Promise<Grant | null>>();
 
   constructor(private readonly deps: AppsDeps) {
@@ -290,7 +290,7 @@ export class AppConnections {
     const definition = APP_DEFINITIONS[flow.app as AppName];
     const client = definition?.signIn === "oauth" ? await this.client(definition.provider) : null;
     if (!client || definition?.signIn !== "oauth") return null;
-    const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
+    const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
     return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await pkceChallenge(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}` };
   }

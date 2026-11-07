@@ -1,6 +1,6 @@
 //! Load test for axod: drives an isolated daemon with background load (catalog and terminal-output
 //! subscribers, output floods, attach churn, shell/session lifecycle) while probe threads measure
-//! control-plane latency on persistent connections. Exits non-zero when any request fails or a
+//! control-plane latency on persistent apps. Exits non-zero when any request fails or a
 //! latency budget is exceeded.
 //!
 //! Never point this at a user's daemon: it always starts its own axod with a temporary HOME and

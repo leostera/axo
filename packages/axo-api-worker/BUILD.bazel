@@ -47,7 +47,7 @@ ts_project(
 _RELAY_TESTS = [
     "tests/axod-relay.test.ts",
     "tests/phone-path.test.ts",
-    "tests/connections-e2e.test.ts",
+    "tests/apps-e2e.test.ts",
     "tests/axod-peers.test.ts",
     "tests/elicitations-e2e.test.ts",
     "tests/attachments-e2e.test.ts",

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BASH_METHOD, COMPUTER_METHOD, COMPUTER_STATUS_METHOD, CONNECTIONS_ERRORS, connectionsResults } from "@axo/protocol";
+import { BASH_METHOD, COMPUTER_METHOD, COMPUTER_STATUS_METHOD, APPS_ERRORS, appsResults } from "@axo/protocol";
 import { harness, signIn } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 
 /**
- * RFD0016: a Session's `axo.connections.*` calls cross its Mac's socket to the account, and a
+ * RFD0016: a Session's `axo.apps.*` calls cross its Mac's socket to the account, and a
  * script's `bash.run` or `computer.run` (RFD0028) crosses the target Mac's socket back. Scripts
  * run in a Dynamic Worker.
  */
@@ -39,8 +39,8 @@ function error(reply: Reply): { code: number; message: string } {
 
 test("every paired Mac is a host connection, named after its label, online while connected", async (t) => {
   const { laptop, studio, call } = await fixture(t);
-  const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
-  assert.deepEqual(listed.connections.filter((c) => c.kind === "host"), [
+  const listed = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list")));
+  assert.deepEqual(listed.apps.filter((c) => c.kind === "host"), [
     { kind: "host", name: "leo_s_laptop", hostId: laptop.hostId, state: "online" },
     { kind: "host", name: "studio", hostId: studio.hostId, state: "offline" },
   ]);
@@ -51,7 +51,7 @@ test("a script runs a command on another Mac, through that Mac's socket, and the
   const studioDaemon = await connectHost(h, session, studio);
   t.after(() => studioDaemon.close());
 
-  const running = call("axo.connections.execute", {
+  const running = call("axo.apps.execute", {
     code: `async () => {
       console.log("asking the studio");
       const r = await codemode.bash.run({ host: "studio", command: "uptime", cwd: "/tmp" });
@@ -71,7 +71,7 @@ test("a script runs a command on another Mac, through that Mac's socket, and the
   });
   assert.deepEqual(result(await running), { result: { out: "up 3 days\n", code: 0 }, logs: ["asking the studio"] });
 
-  const log = connectionsResults["axo.connections.log"].parse(result(await call("axo.connections.log")));
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.equal(log.records.length, 1);
   const [record] = log.records;
   assert.equal(record!.callId, sent.params.callId);
@@ -83,12 +83,12 @@ test("a script runs a command on another Mac, through that Mac's socket, and the
 
 test("a command on an offline Mac fails naming the online ones, with nothing sent or logged", async (t) => {
   const { call } = await fixture(t);
-  const failed = error(await call("axo.connections.execute", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
-  assert.equal(failed.code, CONNECTIONS_ERRORS.scriptFailed);
+  const failed = error(await call("axo.apps.execute", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
+  assert.equal(failed.code, APPS_ERRORS.scriptFailed);
   assert.match(failed.message, /studio is offline; online now: leo_s_laptop/);
-  const unknown = error(await call("axo.connections.execute", { code: `async () => codemode.computer.run({ host: "workbench", tool: "click" })` }));
+  const unknown = error(await call("axo.apps.execute", { code: `async () => codemode.computer.run({ host: "workbench", tool: "click" })` }));
   assert.match(unknown.message, /no Mac named workbench; the account's Macs: leo_s_laptop, studio/);
-  const log = connectionsResults["axo.connections.log"].parse(result(await call("axo.connections.log")));
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.deepEqual(log.records, []);
 });
 
@@ -96,7 +96,7 @@ test("hosts.list names every Mac, says which one the script runs from, and asks 
   const { h, session, studio, laptopDaemon, call } = await fixture(t);
   const studioDaemon = await connectHost(h, session, studio);
   t.after(() => studioDaemon.close());
-  const listing = call("axo.connections.execute", { code: `async () => codemode.hosts.list()` });
+  const listing = call("axo.apps.execute", { code: `async () => codemode.hosts.list()` });
   // Both Macs are online; the laptop (an older Axo) says nothing, the studio answers.
   const asked = (await studioDaemon.next()) as Sent;
   assert.equal(asked.method, COMPUTER_STATUS_METHOD);
@@ -117,7 +117,7 @@ test("computer.run drives another Mac: the Mac gets the tool, the calling Sessio
   const { h, session, studio, laptop, sessionId, call } = await fixture(t);
   const studioDaemon = await connectHost(h, session, studio);
   t.after(() => studioDaemon.close());
-  const running = call("axo.connections.execute", {
+  const running = call("axo.apps.execute", {
     code: `async () => codemode.computer.run({ host: "studio", tool: "click", args: { pid: 7, element_token: "s1:4" }, confirm: true })`,
   });
   const sent = (await studioDaemon.next()) as Sent;
@@ -129,7 +129,7 @@ test("computer.run drives another Mac: the Mac gets the tool, the calling Sessio
   const image = { type: "image", attachment: { asset: `sha256:${"a".repeat(64)}`, name: "click-1.png", mimeType: "image/png", size: 1234 } };
   studioDaemon.send({ jsonrpc: "2.0", id: sent.id, result: { content: [{ type: "text", text: "clicked" }, image] } });
   assert.deepEqual((result(await running) as { result: unknown }).result, { content: [{ type: "text", text: "clicked" }, image] });
-  const log = connectionsResults["axo.connections.log"].parse(result(await call("axo.connections.log")));
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.deepEqual(
     log.records.map((r) => ({ service: r.service, tool: r.tool, hostId: r.hostId, target: r.targetHostId, outcome: r.outcome, input: r.input })),
     [{ service: "computer", tool: "click", hostId: laptop.hostId, target: studio.hostId, outcome: "ok", input: { host: "studio", tool: "click", args: { pid: 7, element_token: "s1:4" }, confirm: true } }],
@@ -138,42 +138,42 @@ test("computer.run drives another Mac: the Mac gets the tool, the calling Sessio
 
 test("a Mac's name is no longer a service, and the namespaces are reserved", async (t) => {
   const { call } = await fixture(t);
-  const old = error(await call("axo.connections.execute", { code: `async () => codemode.studio.bash({ command: "true" })` }));
+  const old = error(await call("axo.apps.execute", { code: `async () => codemode.studio.bash({ command: "true" })` }));
   assert.match(old.message, /studio is a Mac: call codemode.bash.run/);
   for (const name of ["hosts", "computer", "bash", "apps"]) {
-    assert.equal(error(await call("axo.connections.add", { name, url: "https://mcp.example.com/mcp" })).code, CONNECTIONS_ERRORS.nameTaken, name);
+    assert.equal(error(await call("axo.apps.add", { name, url: "https://mcp.example.com/mcp" })).code, APPS_ERRORS.nameTaken, name);
   }
 });
 
 test("a command whose Mac drops mid-run fails as may-have-run and is not sent again", async (t) => {
   const { h, session, studio, call } = await fixture(t);
   const studioDaemon = await connectHost(h, session, studio);
-  const running = call("axo.connections.execute", { code: `async () => codemode.bash.run({ host: "studio", command: "sleep 5" })` });
+  const running = call("axo.apps.execute", { code: `async () => codemode.bash.run({ host: "studio", command: "sleep 5" })` });
   await studioDaemon.next();
   studioDaemon.close();
   const failed = error(await running);
   assert.match(failed.message, /may have run/);
-  const log = connectionsResults["axo.connections.log"].parse(result(await call("axo.connections.log")));
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.deepEqual(log.records.map((r) => r.outcome), ["unknown"]);
 });
 
 test("a search reads every tool's definition and calls none", async (t) => {
   const { call } = await fixture(t);
   assert.deepEqual(
-    result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service + "." + t.name)` })),
+    result(await call("axo.apps.search", { code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service + "." + t.name)` })),
     { result: ["hosts.list", "bash.run", "computer.run"] },
   );
-  const refused = error(await call("axo.connections.search", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
+  const refused = error(await call("axo.apps.search", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
   assert.match(refused.message, /cannot call tools/);
 });
 
-test("a script has no network of its own, and names only its own account's connections", async (t) => {
+test("a script has no network of its own, and names only its own account's apps", async (t) => {
   const { call } = await fixture(t);
-  const fetched = error(await call("axo.connections.execute", { code: `async () => (await fetch("https://example.com")).status` }));
-  assert.equal(fetched.code, CONNECTIONS_ERRORS.scriptFailed);
-  const unknown = error(await call("axo.connections.execute", { code: `async () => codemode.workbench.list_issues({})` }));
+  const fetched = error(await call("axo.apps.execute", { code: `async () => (await fetch("https://example.com")).status` }));
+  assert.equal(fetched.code, APPS_ERRORS.scriptFailed);
+  const unknown = error(await call("axo.apps.execute", { code: `async () => codemode.workbench.list_issues({})` }));
   assert.match(unknown.message, /no connection named workbench/);
-  const notAFunction = error(await call("axo.connections.execute", { code: `42` }));
+  const notAFunction = error(await call("axo.apps.execute", { code: `42` }));
   assert.match(notAFunction.message, /must be a function/);
 });
 
@@ -183,23 +183,23 @@ test("another account's Mac is not a connection, and its daemon never hears the 
   const theirs = await pairHost(h, other, "Workbench");
   const theirDaemon = await connectHost(h, other, theirs);
   t.after(() => theirDaemon.close());
-  const failed = error(await call("axo.connections.execute", { code: `async () => codemode.bash.run({ host: "workbench", command: "true" })` }));
+  const failed = error(await call("axo.apps.execute", { code: `async () => codemode.bash.run({ host: "workbench", command: "true" })` }));
   assert.match(failed.message, /no Mac named workbench/);
   const heard = await Promise.race([theirDaemon.next().then(() => true), new Promise((r) => setTimeout(() => r(false), 300))]);
   assert.equal(heard, false);
 });
 
-test("bad params, unknown methods and unknown connections are refused", async (t) => {
+test("bad params, unknown methods and unknown apps are refused", async (t) => {
   const { call } = await fixture(t);
-  assert.equal(error(await call("axo.connections.execute", { code: "" })).code, -32602);
-  assert.equal(error(await call("axo.connections.add", { name: "linear", url: "http://mcp.linear.app/mcp" })).code, -32602);
-  assert.equal(error(await call("axo.connections.remove", { name: "linear" })).code, CONNECTIONS_ERRORS.notFound);
+  assert.equal(error(await call("axo.apps.execute", { code: "" })).code, -32602);
+  assert.equal(error(await call("axo.apps.add", { name: "linear", url: "http://mcp.linear.app/mcp" })).code, -32602);
+  assert.equal(error(await call("axo.apps.remove", { name: "linear" })).code, APPS_ERRORS.notFound);
 });
 
 test("a script error longer than a reply may carry reaches the Session cut short, not as a lost reply", async (t) => {
   const { call } = await fixture(t);
-  const failed = error(await call("axo.connections.execute", { code: `async () => { throw new Error("x".repeat(2000)); }` }));
-  assert.equal(failed.code, CONNECTIONS_ERRORS.scriptFailed);
+  const failed = error(await call("axo.apps.execute", { code: `async () => { throw new Error("x".repeat(2000)); }` }));
+  assert.equal(failed.code, APPS_ERRORS.scriptFailed);
   assert.equal(failed.message.length, 256);
   assert.match(failed.message, /^Error: x+$/);
 });
@@ -208,12 +208,12 @@ test("1Password runs op on the Mac a call names, through that Mac's socket, logg
   const { h, session, studio, laptop, sessionId, call } = await fixture(t);
   const studioDaemon = await connectHost(h, session, studio);
   t.after(() => studioDaemon.close());
-  const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
-  const onepassword = listed.connections.find((c) => c.name === "apps.onepassword");
+  const listed = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list")));
+  const onepassword = listed.apps.find((c) => c.name === "apps.onepassword");
   assert.ok(onepassword?.kind === "app");
   assert.deepEqual(onepassword.accounts.map((a) => a.account), ["leo_s_laptop", "studio"]);
 
-  const running = call("axo.connections.execute", { code: `async () => codemode.apps.onepassword.list_vaults({ account: "studio" })` });
+  const running = call("axo.apps.execute", { code: `async () => codemode.apps.onepassword.list_vaults({ account: "studio" })` });
   const sent = (await studioDaemon.next()) as Sent;
   assert.equal(sent.method, BASH_METHOD);
   assert.equal(sent.params.command, `'op' 'vault' 'list' '--format' 'json'`);
@@ -223,6 +223,6 @@ test("1Password runs op on the Mac a call names, through that Mac's socket, logg
     result: { exitCode: 0, signal: null, stdout: `[{"id":"v1","name":"Private"}]`, stderr: "", stdoutTruncated: false, stderrTruncated: false, timedOut: false, durationMs: 40 },
   });
   assert.deepEqual(result(await running), { result: [{ id: "v1", name: "Private" }], logs: [] });
-  const log = connectionsResults["axo.connections.log"].parse(result(await call("axo.connections.log")));
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.deepEqual(log.records.map((r) => [r.service, r.tool, r.outcome, r.sessionId, r.hostId]), [["apps.onepassword", "list_vaults", "ok", sessionId, laptop.hostId]]);
 });

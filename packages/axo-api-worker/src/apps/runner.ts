@@ -1,8 +1,8 @@
 import { RpcTarget } from "cloudflare:workers";
-import { CONNECTIONS_LIMITS, type ToolDefinition } from "@axo/protocol";
+import { APPS_LIMITS, type ToolDefinition } from "@axo/protocol";
 
 /**
- * Runs a connections script in a Dynamic Worker (RFD0016, One execution place).
+ * Runs a apps script in a Dynamic Worker (RFD0016, One execution place).
  *
  * The script is an async JavaScript function. It runs in a Worker loaded for it with no network
  * of its own (`globalOutbound: null`) and no bindings; its only way out is the `codemode` proxy,
@@ -42,9 +42,9 @@ export class ToolDispatcher extends RpcTarget {
   /** Inputs and outputs cross as JSON text, so nothing but plain data reaches either side. */
   async call(service: string, tool: string, inputJson: string): Promise<string> {
     if (this.closed) throw new Error("the script has ended");
-    if (!this.caller) throw new Error("connections_search cannot call tools; use connections_execute");
-    if (this.calls >= CONNECTIONS_LIMITS.callsPerScript) {
-      this.limitBroken ??= new LimitError("callsPerScript", `a script may make at most ${CONNECTIONS_LIMITS.callsPerScript} tool calls`);
+    if (!this.caller) throw new Error("apps_search cannot call tools; use apps_execute");
+    if (this.calls >= APPS_LIMITS.callsPerScript) {
+      this.limitBroken ??= new LimitError("callsPerScript", `a script may make at most ${APPS_LIMITS.callsPerScript} tool calls`);
       throw new Error(this.limitBroken.message);
     }
     this.calls += 1;
@@ -54,7 +54,7 @@ export class ToolDispatcher extends RpcTarget {
     } catch {
       throw new Error("tool input must be JSON");
     }
-    while (this.running >= CONNECTIONS_LIMITS.concurrentCallsPerScript) await new Promise<void>((go) => this.waiting.push(go));
+    while (this.running >= APPS_LIMITS.concurrentCallsPerScript) await new Promise<void>((go) => this.waiting.push(go));
     if (this.closed) throw new Error("the script has ended");
     this.running += 1;
     try {
@@ -128,10 +128,10 @@ export async function runScript(
   script: string,
   tools: ToolDefinition[],
   caller: ToolCaller | null,
-  wallMs: number = CONNECTIONS_LIMITS.scriptWallMs,
+  wallMs: number = APPS_LIMITS.scriptWallMs,
 ): Promise<ScriptOutcome> {
-  if (new TextEncoder().encode(script).byteLength > CONNECTIONS_LIMITS.scriptBytes)
-    return { ok: false, error: `a script may be at most ${CONNECTIONS_LIMITS.scriptBytes} bytes`, limit: "scriptBytes", logs: [] };
+  if (new TextEncoder().encode(script).byteLength > APPS_LIMITS.scriptBytes)
+    return { ok: false, error: `a script may be at most ${APPS_LIMITS.scriptBytes} bytes`, limit: "scriptBytes", logs: [] };
   const source = WORKER_SOURCE.replace("__SCRIPT__", () => `\n${script}\n`);
   const name = `script:${await digest(source)}`;
   const worker = loader.get(name, () => ({
@@ -165,8 +165,8 @@ export async function runScript(
     ]);
     if (dispatcher.limitBroken && outcome.ok)
       return { ok: false, error: dispatcher.limitBroken.message, limit: dispatcher.limitBroken.limit, logs: outcome.logs };
-    if (outcome.ok && JSON.stringify(outcome.result).length > CONNECTIONS_LIMITS.resultBytes)
-      return { ok: false, error: `a script's result may be at most ${CONNECTIONS_LIMITS.resultBytes} bytes of JSON`, limit: "resultBytes", logs: outcome.logs };
+    if (outcome.ok && JSON.stringify(outcome.result).length > APPS_LIMITS.resultBytes)
+      return { ok: false, error: `a script's result may be at most ${APPS_LIMITS.resultBytes} bytes of JSON`, limit: "resultBytes", logs: outcome.logs };
     return outcome;
   } finally {
     clearTimeout(timer);

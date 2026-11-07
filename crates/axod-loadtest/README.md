@@ -1,6 +1,6 @@
 # axod-loadtest
 
-Load test for axod. It starts its own isolated daemon (temporary HOME and server directory, the Pi fixture instead of Pi), puts background load on it (catalog and terminal-output subscribers, output floods, attach churn, Session and shell lifecycle), and measures control-plane latency from probe threads on persistent connections. It exits non-zero when a request fails or a latency budget is exceeded.
+Load test for axod. It starts its own isolated daemon (temporary HOME and server directory, the Pi fixture instead of Pi), puts background load on it (catalog and terminal-output subscribers, output floods, attach churn, Session and shell lifecycle), and measures control-plane latency from probe threads on persistent apps. It exits non-zero when a request fails or a latency budget is exceeded.
 
 Never point it at a person's daemon; it never connects to one.
 

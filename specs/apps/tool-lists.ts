@@ -7,13 +7,13 @@ const HOUR = 60 * 60 * 1_000;
 // tool-list-changed notification, starts a background refresh; a failing server leaves its list
 // stale with the error recorded.
 //
-// Not built yet, so no step has sources. One connection and one Session; host connections have a
+// Not built yet, so no step has sources. One connection and one Session; host apps have a
 // fixed tool list and need no sync. Staleness is a timer that flips state: specs have no clock.
 
 /** Faults on one path: lost messages and crashes (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
 
-const Search = defineCall("Search", {}, { name: "connections_search", over: "relay" });
+const Search = defineCall("Search", {}, { name: "apps_search", over: "relay" });
 const Results = defineMessage("Results", { tools: listOf(String), stale: Boolean }, { name: "search results", over: "relay", tone: "reply" });
 const ListTools = defineCall("ListTools", {}, { name: "tools/list", over: "https" });
 const Tools = defineMessage("Tools", { tools: listOf(String) }, { name: "tools/list result", over: "https", tone: "reply" });
@@ -51,7 +51,7 @@ export const Manager = defineActor({
     search: {
       on: Search,
       description: "Answers from the stored list at once; a stale list also starts a refresh.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.tools"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.tools"],
       sends: [Results, ListTools],
       run(state, _m, ctx) {
         state.answered = !state.answered;
@@ -76,7 +76,7 @@ export const Manager = defineActor({
     tools: {
       on: Tools,
       description: "Stores the new list; if a change was heard meanwhile, it stays stale and lists again.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.sync"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.sync"],
       sends: [ListTools],
       starts: ["ageing"],
       run(state, m, ctx) {
@@ -94,7 +94,7 @@ export const Manager = defineActor({
     listToolsFailed: {
       on: failed(ListTools),
       description: "The refresh failed; the old list stays, marked stale, with the error. The next search retries.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.requestSync"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.requestSync"],
       run(state) {
         state.syncing = false;
         state.again = false;
@@ -104,7 +104,7 @@ export const Manager = defineActor({
     },
     ageing: {
       description: "The stored list is now older than an hour.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.tools"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.tools"],
       after: "1 hour",
       run: (state) => void (state.stale = true),
     },

@@ -478,7 +478,7 @@ test(
 );
 
 test(
-  "upgrade deadline, header/frame limits, invalid credits and slow consumers release connections",
+  "upgrade deadline, header/frame limits, invalid credits and slow consumers release apps",
   { timeout: 20000 },
   async (t) => {
     const f = await fixture(t);

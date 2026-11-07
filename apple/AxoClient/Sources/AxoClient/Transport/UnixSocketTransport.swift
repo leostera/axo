@@ -19,7 +19,7 @@ extension Duration {
   }
 }
 
-/// Connections to a local axod: newline-delimited JSON over a Unix socket.
+/// Apps to a local axod: newline-delimited JSON over a Unix socket.
 public struct UnixSocketTransport: AxoTransport {
   public let socketPath: UnixSocketPath
 

@@ -30,14 +30,14 @@ pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContex
     }
     let replies = context.replies.clone();
     let spawned = thread::Builder::new()
-        .name("axo-connections-bash".to_owned())
+        .name("axo-apps-bash".to_owned())
         .spawn(move || {
-            log::info!("event=connections.bash_started call={}", params.call_id);
+            log::info!("event=apps.bash_started call={}", params.call_id);
             let outcome = crate::bash::run(&params)
                 .map(|result| serde_json::to_value(result).expect("a bash result serializes"));
             BASH_JOBS.fetch_sub(1, Ordering::SeqCst);
             log::info!(
-                "event=connections.bash_finished call={} outcome={}",
+                "event=apps.bash_finished call={} outcome={}",
                 params.call_id,
                 if outcome.is_ok() { "ok" } else { "error" }
             );
@@ -70,10 +70,10 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
     let sessions = Arc::clone(context.sessions);
     let assets = context.assets.clone();
     let spawned = thread::Builder::new()
-        .name("axo-connections-computer".to_owned())
+        .name("axo-apps-computer".to_owned())
         .spawn(move || {
             log::info!(
-                "event=connections.computer_started call={} tool={}",
+                "event=apps.computer_started call={} tool={}",
                 params.call_id,
                 params.tool
             );
@@ -82,7 +82,7 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
                 .map(|result| crate::computer::to_account(result, assets.as_ref(), &params.tool));
             COMPUTER_JOBS.fetch_sub(1, Ordering::SeqCst);
             log::info!(
-                "event=connections.computer_finished call={} outcome={}",
+                "event=apps.computer_finished call={} outcome={}",
                 params.call_id,
                 if outcome.is_ok() { "ok" } else { "error" }
             );
@@ -205,15 +205,15 @@ pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionCon
     }
     let replies = context.replies.clone();
     let spawned = thread::Builder::new()
-        .name("axo-connections-sign-in".to_owned())
+        .name("axo-apps-sign-in".to_owned())
         .spawn(move || {
             // The code and the URL's parameters are never logged.
-            log::info!("event=connections.sign_in_started call={}", params.call_id);
+            log::info!("event=apps.sign_in_started call={}", params.call_id);
             let outcome = crate::signin::run(&params, axo_signin::open_in_browser)
                 .map(|result| serde_json::to_value(result).expect("a sign-in result serializes"));
             SIGN_INS.fetch_sub(1, Ordering::SeqCst);
             log::info!(
-                "event=connections.sign_in_finished call={} outcome={}",
+                "event=apps.sign_in_finished call={} outcome={}",
                 params.call_id,
                 if outcome.is_ok() { "ok" } else { "error" }
             );

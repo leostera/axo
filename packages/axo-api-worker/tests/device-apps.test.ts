@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { appDeviceSignInSchema, connectionSchema } from "@axo/protocol";
-import { AppConnections } from "../src/connections/apps";
+import { BuiltinApps } from "../src/apps/builtin";
 import { FakeOpenAI } from "./fake-openai";
 import { sqlStorage } from "./sql-storage";
 
@@ -22,7 +22,7 @@ function fixture() {
     return answer;
   }) as typeof fetch;
   const background: Promise<unknown>[] = [];
-  const apps = new AppConnections({
+  const apps = new BuiltinApps({
     sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: (p) => background.push(p), now: () => clock,
   });
   const settled = () => Promise.all(background);

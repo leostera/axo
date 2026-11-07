@@ -25,7 +25,7 @@ export function CloudflareSignInApp() {
   const meUrl = useMemo(() => new URL("/api/auth/me", authBaseUrl).href, []);
   const logoutUrl = useMemo(() => new URL("/api/auth/logout", authBaseUrl).href, []);
   const pairingUrl = useMemo(() => new URL("/api/v1/account/host-pairings", authBaseUrl).href, []);
-  const connectionsUrl = useMemo(() => new URL("/api/v1/account/connections", authBaseUrl).href, []);
+  const appsUrl = useMemo(() => new URL("/api/v1/account/apps", authBaseUrl).href, []);
 
   const refreshSession = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -73,7 +73,7 @@ export function CloudflareSignInApp() {
   if (!loading && session) {
     return (
       <Suspense fallback={<main className="app-loading" role="status">Opening your chats…</main>}>
-        <ChatApp profile={session.profile} pairingUrl={pairingUrl} connectionsUrl={connectionsUrl} onSignOut={() => void signOut()} />
+        <ChatApp profile={session.profile} pairingUrl={pairingUrl} appsUrl={appsUrl} onSignOut={() => void signOut()} />
       </Suspense>
     );
   }

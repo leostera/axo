@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { appDeviceSignInSchema, appMacSignInSchema, appPhoneSignInSchema, connectionsResults, type AppDeviceSignIn, type AppPhoneSignIn, type CallRecord, type Connection } from "@axo/protocol";
+import { appDeviceSignInSchema, appMacSignInSchema, appPhoneSignInSchema, appsResults, type AppDeviceSignIn, type AppPhoneSignIn, type CallRecord, type Connection } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
@@ -49,15 +49,15 @@ export function signInNotice(search: string): Notice {
   return error ? { kind: "error", text: error.slice(0, 300) } : null;
 }
 
-/** The page a sign-in that came back to `<base>/connections` belongs on. */
+/** The page a sign-in that came back to `<base>/apps` belongs on. */
 export function signInPage(search: string): SettingsRoute {
   const signedIn = new URLSearchParams(search).get("signedIn");
   if (signedIn?.startsWith("apps.")) return { kind: "app", app: signedIn.slice("apps.".length) };
   return signedIn ? { kind: "servers" } : { kind: "apps" };
 }
 
-export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate, onClose, hrefOf }: {
-  connectionsUrl: string;
+export function AppsSettings({ appsUrl, route, initialNotice, onNavigate, onClose, hrefOf }: {
+  appsUrl: string;
   route: SettingsRoute;
   initialNotice: Notice;
   onNavigate: (route: SettingsRoute) => void;
@@ -65,18 +65,18 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
   /** The URL of a settings page, so its links open in a new tab too. */
   hrefOf: (route: SettingsRoute) => string;
 }) {
-  const [connections, setConnections] = useState<Connection[] | null>(null);
+  const [entries, setEntries] = useState<Connection[] | null>(null);
   const [notice, setNotice] = useState<Notice>(initialNotice);
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
 
   const load = useCallback(async () => {
     try {
-      setConnections(connectionsResults["axo.connections.list"].parse(await request(connectionsUrl, "GET")).connections);
+      setEntries(appsResults["axo.apps.list"].parse(await request(appsUrl, "GET")).apps);
     } catch (error) {
       setNotice({ kind: "error", text: message(error) });
     }
-  }, [connectionsUrl]);
+  }, [appsUrl]);
   useEffect(() => { void load(); }, [load]);
 
   const act = async (work: () => Promise<void>) => {
@@ -107,29 +107,29 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
-  const apps = (connections ?? []).filter((c): c is App => c.kind === "app");
-  const servers = (connections ?? []).filter((c): c is Server => c.kind === "thirdParty");
-  const macs = (connections ?? []).flatMap((c) => (c.kind === "host" ? [{ name: c.name, online: c.state === "online" }] : []));
-  const shared: Shared = { connectionsUrl, busy, act, setNotice };
+  const apps = (entries ?? []).filter((c): c is App => c.kind === "app");
+  const servers = (entries ?? []).filter((c): c is Server => c.kind === "thirdParty");
+  const macs = (entries ?? []).flatMap((c) => (c.kind === "host" ? [{ name: c.name, online: c.state === "online" }] : []));
+  const shared: Shared = { appsUrl, busy, act, setNotice };
 
   let title = "Apps";
   let body: ReactNode;
   if (route.kind === "app") {
     const app = apps.find((a) => a.name === `apps.${route.app}`);
     title = app?.title ?? "App";
-    body = app ? <AppPage key={app.name} app={app} macs={macs} version={version} {...shared} /> : <p className="settings-muted">{connections ? "This app is not available." : "Loading…"}</p>;
+    body = app ? <AppPage key={app.name} app={app} macs={macs} version={version} {...shared} /> : <p className="settings-muted">{entries ? "This app is not available." : "Loading…"}</p>;
   } else if (route.kind === "server") {
     const known = KNOWN_SERVERS.find((s) => s.id === route.server);
     title = known?.title ?? "MCP server";
-    body = known ? <ServerPage key={known.id} known={known} servers={servers} loaded={connections !== null} version={version} {...shared} /> : <p className="settings-muted">This server is not one Axo knows.</p>;
+    body = known ? <ServerPage key={known.id} known={known} servers={servers} loaded={entries !== null} version={version} {...shared} /> : <p className="settings-muted">This server is not one Axo knows.</p>;
   } else if (route.kind === "servers") {
     title = "MCP servers";
-    body = <div className="settings-narrow"><ServersPage servers={servers} loaded={connections !== null} {...shared} /></div>;
+    body = <div className="settings-narrow"><ServersPage servers={servers} loaded={entries !== null} {...shared} /></div>;
   } else if (route.kind === "activity") {
     title = "Activity";
-    body = <div className="settings-narrow"><ActivityPage connectionsUrl={connectionsUrl} /></div>;
+    body = <div className="settings-narrow"><ActivityPage appsUrl={appsUrl} /></div>;
   } else {
-    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} link={link} />;
+    body = <AppsHome apps={apps} servers={servers} loaded={entries !== null} appsUrl={appsUrl} link={link} />;
   }
 
   return (
@@ -145,8 +145,8 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
         <button className="circle-button" onClick={onClose} aria-label="Close settings"><Icon name="close" size={16} /></button>
       </header>
       <div className="settings-body">
-        {notice ? <p className={notice.kind === "ok" ? "connections-notice" : "connections-notice error"} role="status">{notice.text}</p> : null}
-        <div className="connections">{body}</div>
+        {notice ? <p className={notice.kind === "ok" ? "apps-notice" : "apps-notice error"} role="status">{notice.text}</p> : null}
+        <div className="apps">{body}</div>
       </div>
     </div>
   );
@@ -186,8 +186,8 @@ function AppCardFace({ tile }: { tile: { look: ReactNode; title: string; connect
 
 
 /** Apps: filters, a grid of every app and MCP server, and what Sessions used lately. */
-function AppsHome({ apps, servers, loaded, connectionsUrl, link }: {
-  apps: App[]; servers: Server[]; loaded: boolean; connectionsUrl: string; link: Link;
+function AppsHome({ apps, servers, loaded, appsUrl, link }: {
+  apps: App[]; servers: Server[]; loaded: boolean; appsUrl: string; link: Link;
 }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Status>("all");
@@ -264,8 +264,8 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, link }: {
           <h2 className="settings-section">Recent activity</h2>
           <a className="link" {...link({ kind: "activity" })}>See all</a>
         </div>
-        <Integrity connectionsUrl={connectionsUrl} />
-        <Calls connectionsUrl={connectionsUrl} limit={12} compact />
+        <Integrity appsUrl={appsUrl} />
+        <Calls appsUrl={appsUrl} limit={12} compact />
       </aside>
     </div>
   );
@@ -280,15 +280,15 @@ function FilterChip({ label, count, selected, onClick }: { label: string; count:
 }
 
 /** Whether the call log is as it was written: its hash chain, replayed in the cloud. */
-function Integrity({ connectionsUrl }: { connectionsUrl: string }) {
+function Integrity({ appsUrl }: { appsUrl: string }) {
   const [check, setCheck] = useState<{ verified: boolean; events: number; head: string | null; reason: string | null } | null | "failed">(null);
   useEffect(() => {
     let live = true;
-    request(`${connectionsUrl}/log/integrity`, "GET")
+    request(`${appsUrl}/log/integrity`, "GET")
       .then((answer) => { if (live) setCheck(answer as { verified: boolean; events: number; head: string | null; reason: string | null }); })
       .catch(() => { if (live) setCheck("failed"); });
     return () => { live = false; };
-  }, [connectionsUrl]);
+  }, [appsUrl]);
   if (check === null || check === "failed") return null;
   return (
     <p className={`integrity${check.verified ? "" : " broken"}`} title={check.head ? `Chain head ${check.head}` : undefined}>
@@ -299,13 +299,13 @@ function Integrity({ connectionsUrl }: { connectionsUrl: string }) {
 }
 
 type Shared = {
-  connectionsUrl: string;
+  appsUrl: string;
   busy: boolean;
   act: (work: () => Promise<void>) => Promise<void>;
   setNotice: (notice: Notice) => void;
 };
 
-function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: Shared & { app: App; macs: Mac[]; version: number }) {
+function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared & { app: App; macs: Mac[]; version: number }) {
   // A token app's Add account is a form on this page; an OAuth app's opens the provider's sign-in.
   const [adding, setAdding] = useState<{ account: string } | null>(null);
   const [device, setDevice] = useState<{ flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }> } | null>(null);
@@ -322,14 +322,14 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
     }
     if (app.signIn.kind === "device") {
       void act(async () => {
-        const { flow, ...answer } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/device`, "POST")) as { flow: string };
+        const { flow, ...answer } = (await request(`${appsUrl}/${encodeURIComponent(app.name)}/device`, "POST")) as { flow: string };
         const shown = appDeviceSignInSchema.parse(answer);
         if (shown.state === "pending") setDevice({ flow, shown });
       });
       return;
     }
     void act(async () => {
-      const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/sign-in`, "POST")) as { signInUrl: string };
+      const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(app.name)}/sign-in`, "POST")) as { signInUrl: string };
       window.location.assign(signInUrl);
     });
   };
@@ -343,7 +343,7 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
   const signOut = (account: string) => {
     if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it. ${revoked}`)) return;
     void act(async () => {
-      await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/remove`, "POST", { account });
+      await request(`${appsUrl}/${encodeURIComponent(app.name)}/remove`, "POST", { account });
       setNotice({ kind: "ok", text: `Removed ${account}.` });
     });
   };
@@ -360,12 +360,12 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
 
       <section className="app-main">
         {settingUp && client ? (
-          <ClientForm app={app} client={client} busy={busy} act={act} connectionsUrl={connectionsUrl}
+          <ClientForm app={app} client={client} busy={busy} act={act} appsUrl={appsUrl}
             onDone={() => { setChangingClient(false); setNotice({ kind: "ok", text: `${app.provider || app.title} is set up. Add an account.` }); }}
             onCancel={client.ready ? () => setChangingClient(false) : undefined} />
         ) : null}
         {settingUp && phone ? (
-          <PhoneClientForm app={app} signIn={phone} busy={busy} act={act} connectionsUrl={connectionsUrl}
+          <PhoneClientForm app={app} signIn={phone} busy={busy} act={act} appsUrl={appsUrl}
             onDone={() => { setChangingClient(false); setNotice({ kind: "ok", text: `${app.provider || app.title} is set up. Add an account.` }); }}
             onCancel={phone.clientReady ? () => setChangingClient(false) : undefined} />
         ) : null}
@@ -402,19 +402,19 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
         {app.signIn.kind === "mac"
           ? <p className="sheet-note">Your Macs are its accounts. {app.signIn.setup} <a href={app.signIn.helpUrl} target="_blank" rel="noreferrer">Learn more</a>.</p>
           : null}
-        {device ? <DeviceCode app={app} flow={device.flow} shown={device.shown} connectionsUrl={connectionsUrl}
+        {device ? <DeviceCode app={app} flow={device.flow} shown={device.shown} appsUrl={appsUrl}
           onDone={(result) => {
             setDevice(null);
             setNotice(result.state === "done" ? { kind: "ok", text: `Added ${result.account}.` } : { kind: "error", text: result.error });
             void act(async () => undefined);
           }} onCancel={() => setDevice(null)} /> : null}
         {adding !== null && app.signIn.kind === "token"
-          ? <TokenForm app={app} signIn={app.signIn} macs={macs} account={adding.account} busy={busy} act={act} connectionsUrl={connectionsUrl}
+          ? <TokenForm app={app} signIn={app.signIn} macs={macs} account={adding.account} busy={busy} act={act} appsUrl={appsUrl}
             onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); void act(async () => undefined); }}
             onFailed={(error) => setNotice({ kind: "error", text: error })} onCancel={() => setAdding(null)} />
           : null}
         {adding !== null && app.signIn.kind === "phone"
-          ? <PhoneSignInForm app={app} busy={busy} act={act} connectionsUrl={connectionsUrl}
+          ? <PhoneSignInForm app={app} busy={busy} act={act} appsUrl={appsUrl}
             onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); void act(async () => undefined); }}
             onFailed={(error) => { setAdding(null); setNotice({ kind: "error", text: error }); }} onCancel={() => setAdding(null)} />
           : null}
@@ -430,7 +430,7 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
 
       <aside className="app-activity">
         <h2 className="settings-section">Recent activity</h2>
-        <Calls connectionsUrl={connectionsUrl} service={app.name} version={version} />
+        <Calls appsUrl={appsUrl} service={app.name} version={version} />
       </aside>
     </div>
   );
@@ -440,8 +440,8 @@ function AppPage({ app, macs, version, connectionsUrl, busy, act, setNotice }: S
  * A device sign-in (ChatGPT): the code to enter at the provider, while the page asks Axo every
  * few seconds whether the person has.
  */
-function DeviceCode({ app, flow, shown, connectionsUrl, onDone, onCancel }: {
-  app: App; flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }>; connectionsUrl: string;
+function DeviceCode({ app, flow, shown, appsUrl, onDone, onCancel }: {
+  app: App; flow: string; shown: Extract<AppDeviceSignIn, { state: "pending" }>; appsUrl: string;
   onDone: (result: Exclude<AppDeviceSignIn, { state: "pending" }>) => void; onCancel: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -453,7 +453,7 @@ function DeviceCode({ app, flow, shown, connectionsUrl, onDone, onCancel }: {
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const answer = appDeviceSignInSchema.parse(await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/device/poll`, "POST", { flow }));
+        const answer = appDeviceSignInSchema.parse(await request(`${appsUrl}/${encodeURIComponent(app.name)}/device/poll`, "POST", { flow }));
         if (!live) return;
         if (answer.state !== "pending") return done.current(answer);
       } catch {
@@ -463,7 +463,7 @@ function DeviceCode({ app, flow, shown, connectionsUrl, onDone, onCancel }: {
     };
     timer = setTimeout(() => void poll(), shown.intervalSeconds * 1000);
     return () => { live = false; clearTimeout(timer); };
-  }, [app.name, connectionsUrl, flow, shown.intervalSeconds]);
+  }, [app.name, appsUrl, flow, shown.intervalSeconds]);
   const copy = () => {
     void navigator.clipboard?.writeText(shown.userCode).then(() => setCopied(true), () => undefined);
   };
@@ -504,15 +504,15 @@ function needsClient(app: App): boolean {
  * them encrypted with the account; the secret is never shown again. One serves every app of the
  * provider (all of Google's).
  */
-function ClientForm({ app, client, busy, act, connectionsUrl, onDone, onCancel }: {
-  app: App; client: OAuthClient; busy: boolean; connectionsUrl: string;
+function ClientForm({ app, client, busy, act, appsUrl, onDone, onCancel }: {
+  app: App; client: OAuthClient; busy: boolean; appsUrl: string;
   act: Shared["act"]; onDone: () => void; onCancel?: () => void;
 }) {
   const [fields, setFields] = useState({ clientId: "", clientSecret: "" });
   const [copied, setCopied] = useState(false);
   const provider = app.provider || app.title;
   const submit = () => act(async () => {
-    await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/client`, "POST", { clientId: fields.clientId.trim(), clientSecret: fields.clientSecret.trim() });
+    await request(`${appsUrl}/${encodeURIComponent(app.name)}/client`, "POST", { clientId: fields.clientId.trim(), clientSecret: fields.clientSecret.trim() });
     setFields({ clientId: "", clientSecret: "" });
     onDone();
   });
@@ -561,14 +561,14 @@ type PhoneSignIn = Extract<App["signIn"], { kind: "phone" }>;
  * Sets up a phone app's API client (Telegram's): the person creates one at the service and enters
  * its ID and hash here once. Axo keeps the hash encrypted with the account.
  */
-function PhoneClientForm({ app, signIn, busy, act, connectionsUrl, onDone, onCancel }: {
-  app: App; signIn: PhoneSignIn; busy: boolean; connectionsUrl: string;
+function PhoneClientForm({ app, signIn, busy, act, appsUrl, onDone, onCancel }: {
+  app: App; signIn: PhoneSignIn; busy: boolean; appsUrl: string;
   act: Shared["act"]; onDone: () => void; onCancel?: () => void;
 }) {
   const [fields, setFields] = useState({ apiId: "", apiHash: "" });
   const provider = app.provider || app.title;
   const submit = () => act(async () => {
-    await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/client`, "POST", { clientId: fields.apiId.trim(), clientSecret: fields.apiHash.trim() });
+    await request(`${appsUrl}/${encodeURIComponent(app.name)}/client`, "POST", { clientId: fields.apiId.trim(), clientSecret: fields.apiHash.trim() });
     setFields({ apiId: "", apiHash: "" });
     onDone();
   });
@@ -608,15 +608,15 @@ function PhoneClientForm({ app, signIn, busy, act, connectionsUrl, onDone, onCan
  * service sends, then their password if the account has one. Axo keeps the service's state between
  * steps; this form only holds the flow.
  */
-function PhoneSignInForm({ app, busy, act, connectionsUrl, onDone, onFailed, onCancel }: {
-  app: App; busy: boolean; connectionsUrl: string;
+function PhoneSignInForm({ app, busy, act, appsUrl, onDone, onFailed, onCancel }: {
+  app: App; busy: boolean; appsUrl: string;
   act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onCancel: () => void;
 }) {
   const [step, setStep] = useState<Extract<AppPhoneSignIn, { state: "code" | "password" }> | null>(null);
   const [value, setValue] = useState("");
   const provider = app.provider || app.title;
   const send = (body: Record<string, string>) => act(async () => {
-    const answer = appPhoneSignInSchema.parse(await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/phone-sign-in`, "POST", body));
+    const answer = appPhoneSignInSchema.parse(await request(`${appsUrl}/${encodeURIComponent(app.name)}/phone-sign-in`, "POST", body));
     setValue("");
     if (answer.state === "done") return onDone(answer.account);
     if (answer.state === "failed") return onFailed(answer.error);
@@ -650,25 +650,25 @@ function PhoneSignInForm({ app, busy, act, connectionsUrl, onDone, onFailed, onC
 }
 
 /** Adds an account to a token app: signed in on a Mac where the app offers it, or pasted. */
-function TokenForm({ app, signIn, macs, account, busy, act, connectionsUrl, onDone, onFailed, onCancel }: {
-  app: App; signIn: TokenSignIn; macs: Mac[]; account: string; busy: boolean; connectionsUrl: string;
+function TokenForm({ app, signIn, macs, account, busy, act, appsUrl, onDone, onFailed, onCancel }: {
+  app: App; signIn: TokenSignIn; macs: Mac[]; account: string; busy: boolean; appsUrl: string;
   act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onCancel: () => void;
 }) {
   // An app that signs in on a Mac offers that first, and pasting a key beside it.
   const [pasting, setPasting] = useState(!signIn.mac);
   if (signIn.mac && !pasting) {
-    return <MacSignInForm app={app} signIn={signIn} offer={signIn.mac} macs={macs} account={account} busy={busy} act={act} connectionsUrl={connectionsUrl}
+    return <MacSignInForm app={app} signIn={signIn} offer={signIn.mac} macs={macs} account={account} busy={busy} act={act} appsUrl={appsUrl}
       onDone={onDone} onFailed={onFailed} onPaste={() => setPasting(true)} onCancel={onCancel} />;
   }
-  return <PasteForm app={app} signIn={signIn} account={account} busy={busy} act={act} connectionsUrl={connectionsUrl} onDone={onDone} onCancel={onCancel} />;
+  return <PasteForm app={app} signIn={signIn} account={account} busy={busy} act={act} appsUrl={appsUrl} onDone={onDone} onCancel={onCancel} />;
 }
 
 /**
  * A token app's sign-in on one of the person's Macs (Kraken's): the Mac opens the service's
  * sign-in page in its browser, and this page waits until Axo has the key.
  */
-function MacSignInForm({ app, signIn, offer, macs, account, busy, act, connectionsUrl, onDone, onFailed, onPaste, onCancel }: {
-  app: App; signIn: TokenSignIn; offer: NonNullable<TokenSignIn["mac"]>; macs: Mac[]; account: string; busy: boolean; connectionsUrl: string;
+function MacSignInForm({ app, signIn, offer, macs, account, busy, act, appsUrl, onDone, onFailed, onPaste, onCancel }: {
+  app: App; signIn: TokenSignIn; offer: NonNullable<TokenSignIn["mac"]>; macs: Mac[]; account: string; busy: boolean; appsUrl: string;
   act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onPaste: () => void; onCancel: () => void;
 }) {
   const online = macs.filter((m) => m.online);
@@ -685,7 +685,7 @@ function MacSignInForm({ app, signIn, offer, macs, account, busy, act, connectio
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const answer = appMacSignInSchema.parse(await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/mac-sign-in/poll`, "POST", { flow: waiting.flow }));
+        const answer = appMacSignInSchema.parse(await request(`${appsUrl}/${encodeURIComponent(app.name)}/mac-sign-in/poll`, "POST", { flow: waiting.flow }));
         if (!live) return;
         if (answer.state === "done") return done.current.onDone(answer.account);
         if (answer.state === "failed") {
@@ -699,10 +699,10 @@ function MacSignInForm({ app, signIn, offer, macs, account, busy, act, connectio
     };
     timer = setTimeout(() => void poll(), 2000);
     return () => { live = false; clearTimeout(timer); };
-  }, [app.name, connectionsUrl, waiting]);
+  }, [app.name, appsUrl, waiting]);
   const submit = () => act(async () => {
     const body = { mac, preset, ...(signIn.named ? { account: name.trim().toLowerCase() } : {}) };
-    const { flow } = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/mac-sign-in`, "POST", body)) as { flow: string };
+    const { flow } = (await request(`${appsUrl}/${encodeURIComponent(app.name)}/mac-sign-in`, "POST", body)) as { flow: string };
     setWaiting({ flow, mac });
   });
   if (waiting) {
@@ -761,15 +761,15 @@ function MacSignInForm({ app, signIn, offer, macs, account, busy, act, connectio
  * Adds an account to a token app: what the service issued, pasted once. It is sent to Axo, which
  * checks it with the service and seals it; this page never sees it again.
  */
-function PasteForm({ app, signIn, account, busy, act, connectionsUrl, onDone, onCancel }: {
-  app: App; signIn: TokenSignIn; account: string; busy: boolean; connectionsUrl: string;
+function PasteForm({ app, signIn, account, busy, act, appsUrl, onDone, onCancel }: {
+  app: App; signIn: TokenSignIn; account: string; busy: boolean; appsUrl: string;
   act: Shared["act"]; onDone: (account: string) => void; onCancel: () => void;
 }) {
   const [name, setName] = useState(account);
   const [fields, setFields] = useState<Record<string, string>>({});
   const submit = () => act(async () => {
     const body = { ...(signIn.named ? { account: name.trim().toLowerCase() } : {}), fields };
-    const added = (await request(`${connectionsUrl}/${encodeURIComponent(app.name)}/token`, "POST", body)) as { account: string };
+    const added = (await request(`${appsUrl}/${encodeURIComponent(app.name)}/token`, "POST", body)) as { account: string };
     setFields({});
     onDone(added.account);
   });
@@ -800,26 +800,26 @@ function PasteForm({ app, signIn, account, busy, act, connectionsUrl, onDone, on
 }
 
 /** Adding a remote MCP server, signing in to it, its client when it registers none itself, and removing it. */
-function useServers({ connectionsUrl, act, setNotice }: Shared) {
+function useServers({ appsUrl, act, setNotice }: Shared) {
   const [clientFor, setClientFor] = useState<string | null>(null);
   const [client, setClient] = useState({ clientId: "", clientSecret: "" });
   const nameOf = (server: Pick<Server, "name" | "title">) => server.title ?? server.name;
 
   const add = (draft: { name: string; url: string }, then: () => void) => act(async () => {
-    const result = connectionsResults["axo.connections.add"].parse(await request(connectionsUrl, "POST", { name: draft.name.trim(), url: draft.url }));
+    const result = appsResults["axo.apps.add"].parse(await request(appsUrl, "POST", { name: draft.name.trim(), url: draft.url }));
     then();
     if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
     else if (result.connection.kind === "thirdParty" && result.connection.state === "needsSignIn") setClientFor(result.connection.name);
     else if (result.connection.kind === "thirdParty") setNotice({ kind: "ok", text: `Added ${nameOf(result.connection)}.` });
   });
   const signIn = (name: string) => act(async () => {
-    const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(name)}/sign-in`, "POST")) as { signInUrl: string };
+    const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(name)}/sign-in`, "POST")) as { signInUrl: string };
     if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
     else setClientFor(name);
   });
   const saveClient = (name: string) => act(async () => {
     const body = { clientId: client.clientId.trim(), clientSecret: client.clientSecret.trim() || null };
-    const { signInUrl } = (await request(`${connectionsUrl}/${encodeURIComponent(name)}/client`, "POST", body)) as { signInUrl: string };
+    const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(name)}/client`, "POST", body)) as { signInUrl: string };
     setClient({ clientId: "", clientSecret: "" });
     setClientFor(null);
     if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
@@ -827,7 +827,7 @@ function useServers({ connectionsUrl, act, setNotice }: Shared) {
   const remove = (server: Server) => {
     if (!window.confirm(`Remove ${nameOf(server)}? Your Sessions can no longer use it.`)) return;
     void act(async () => {
-      await request(`${connectionsUrl}/${encodeURIComponent(server.name)}/remove`, "POST");
+      await request(`${appsUrl}/${encodeURIComponent(server.name)}/remove`, "POST");
       setNotice({ kind: "ok", text: `Removed ${nameOf(server)}.` });
     });
   };
@@ -874,7 +874,7 @@ function ServerClient({ name, busy, actions, consoleUrl }: { name: string; busy:
 
 /** A server Axo knows: what it is, each of it the person added under a name of theirs, and adding another. */
 function ServerPage({ known, servers, loaded, version, ...shared }: Shared & { known: KnownServer; servers: Server[]; loaded: boolean; version: number }) {
-  const { busy, connectionsUrl } = shared;
+  const { busy, appsUrl } = shared;
   const actions = useServers(shared);
   const added = servers.filter((server) => knownServerOf(server.url)?.id === known.id);
   const [adding, setAdding] = useState<string | null>(null);
@@ -916,7 +916,7 @@ function ServerPage({ known, servers, loaded, version, ...shared }: Shared & { k
         {added.length ? added.map((server) => (
           <div key={server.name}>
             {added.length > 1 ? <h3 className="settings-subsection">{actions.nameOf(server)}</h3> : null}
-            <Calls connectionsUrl={connectionsUrl} service={server.name} version={version} limit={added.length > 1 ? 5 : undefined} />
+            <Calls appsUrl={appsUrl} service={server.name} version={version} limit={added.length > 1 ? 5 : undefined} />
           </div>
         )) : <p className="settings-muted">Nothing yet.</p>}
       </aside>
@@ -962,31 +962,31 @@ function ServersPage({ servers, loaded, ...shared }: Shared & { servers: Server[
   );
 }
 
-function ActivityPage({ connectionsUrl }: { connectionsUrl: string }) {
+function ActivityPage({ appsUrl }: { appsUrl: string }) {
   return (
     <>
       <header className="settings-hero">
         <h1>Activity</h1>
         <p>What your Sessions used in the last 30 days.</p>
       </header>
-      <Integrity connectionsUrl={connectionsUrl} />
-      <Calls connectionsUrl={connectionsUrl} />
+      <Integrity appsUrl={appsUrl} />
+      <Calls appsUrl={appsUrl} />
     </>
   );
 }
 
 /** Recent calls, of every app and server or of one. */
-function Calls({ connectionsUrl, service, version = 0, limit, compact = false }: { connectionsUrl: string; service?: string; version?: number; limit?: number; compact?: boolean }) {
+function Calls({ appsUrl, service, version = 0, limit, compact = false }: { appsUrl: string; service?: string; version?: number; limit?: number; compact?: boolean }) {
   const [records, setRecords] = useState<CallRecord[] | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
     const query = new URLSearchParams({ limit: String(limit ?? (service ? 20 : 50)), ...(service ? { service } : {}) });
-    request(`${connectionsUrl}/log?${query}`, "GET")
-      .then((log) => { if (live) setRecords(connectionsResults["axo.connections.log"].parse(log).records); })
+    request(`${appsUrl}/log?${query}`, "GET")
+      .then((log) => { if (live) setRecords(appsResults["axo.apps.log"].parse(log).records); })
       .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
-  }, [connectionsUrl, service, version, limit]);
+  }, [appsUrl, service, version, limit]);
   return (
     <div className={`grouped${compact ? " compact-calls" : ""}`}>
       {records === null ? <p className="grouped-row muted">{failed ? "Activity is unavailable." : "Loading…"}</p> : null}

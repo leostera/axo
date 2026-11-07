@@ -9,7 +9,7 @@ import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts"
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
 import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon, upgradeHostPeers } from "./account-hosts";
 import { serveAccountAssets, serveHostAssets, type AssetRoute } from "./assets";
-import { completeConnectionSignIn, serveConnections, startConnectionSignIn, type ConnectionsRoute } from "./connections";
+import { completeConnectionSignIn, serveApps, startConnectionSignIn, type AppsRoute } from "./apps";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
@@ -137,9 +137,9 @@ app.all("/api/v1/account/hosts/:host/revoke", context =>
   ),
 );
 
-// Connections (RFD0016): the Connections page, and the browser side of a third-party sign-in.
-const connectionsRoute = (route: ConnectionsRoute) => (context: Context<Api>) =>
-  serveConnections(
+// Apps (RFD0016): the Apps page, and the browser side of a third-party sign-in.
+const appsRoute = (route: AppsRoute) => (context: Context<Api>) =>
+  serveApps(
     context.req.raw,
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
@@ -147,19 +147,19 @@ const connectionsRoute = (route: ConnectionsRoute) => (context: Context<Api>) =>
     route,
     context.req.param("name"),
   );
-app.get("/api/v1/account/connections", connectionsRoute("list"));
-app.post("/api/v1/account/connections", connectionsRoute("add"));
-app.get("/api/v1/account/connections/log", connectionsRoute("log"));
-app.get("/api/v1/account/connections/log/integrity", connectionsRoute("integrity"));
-app.post("/api/v1/account/connections/:name/remove", connectionsRoute("remove"));
-app.post("/api/v1/account/connections/:name/client", connectionsRoute("client"));
-app.post("/api/v1/account/connections/:name/sign-in", connectionsRoute("signIn"));
-app.post("/api/v1/account/connections/:name/token", connectionsRoute("token"));
-app.post("/api/v1/account/connections/:name/device", connectionsRoute("device"));
-app.post("/api/v1/account/connections/:name/device/poll", connectionsRoute("devicePoll"));
-app.post("/api/v1/account/connections/:name/mac-sign-in", connectionsRoute("macSignIn"));
-app.post("/api/v1/account/connections/:name/mac-sign-in/poll", connectionsRoute("macSignInPoll"));
-app.post("/api/v1/account/connections/:name/phone-sign-in", connectionsRoute("phoneSignIn"));
+app.get("/api/v1/account/apps", appsRoute("list"));
+app.post("/api/v1/account/apps", appsRoute("add"));
+app.get("/api/v1/account/apps/log", appsRoute("log"));
+app.get("/api/v1/account/apps/log/integrity", appsRoute("integrity"));
+app.post("/api/v1/account/apps/:name/remove", appsRoute("remove"));
+app.post("/api/v1/account/apps/:name/client", appsRoute("client"));
+app.post("/api/v1/account/apps/:name/sign-in", appsRoute("signIn"));
+app.post("/api/v1/account/apps/:name/token", appsRoute("token"));
+app.post("/api/v1/account/apps/:name/device", appsRoute("device"));
+app.post("/api/v1/account/apps/:name/device/poll", appsRoute("devicePoll"));
+app.post("/api/v1/account/apps/:name/mac-sign-in", appsRoute("macSignIn"));
+app.post("/api/v1/account/apps/:name/mac-sign-in/poll", appsRoute("macSignInPoll"));
+app.post("/api/v1/account/apps/:name/phone-sign-in", appsRoute("phoneSignIn"));
 // Assets (RFD0030): a person's, and a Mac's with its host credential.
 const assetsRoute = (route: AssetRoute) => (context: Context<Api>) =>
   serveAccountAssets(

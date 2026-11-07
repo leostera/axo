@@ -174,9 +174,9 @@ final class AccountClientTests: XCTestCase {
 }
 
 /// Settings › Apps over HTTPS: each route, signed in with the session token, and Axo's refusals.
-final class ConnectionsClientTests: XCTestCase {
-  private func client(_ loader: StubLoader) -> ConnectionsClient {
-    ConnectionsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
+final class AppsClientTests: XCTestCase {
+  private func client(_ loader: StubLoader) -> AppsClient {
+    AppsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
   }
 
   private func body(_ request: URLRequest) throws -> [String: Any] {
@@ -200,18 +200,18 @@ final class ConnectionsClientTests: XCTestCase {
     do {
       _ = try await full.upload(Data("x".utf8), name: "x", mimeType: "image/svg+xml")
       XCTFail("a refusal is an error")
-    } catch let refusal as ConnectionsRefusal {
+    } catch let refusal as AppsRefusal {
       XCTAssertEqual(refusal.message, "The account's assets are full")
     }
   }
 
   func testTheListingIsReadWithTheSessionToken() async throws {
-    let loader = StubLoader(status: 200, body: #"{"connections":[{"kind":"host","name":"studio","hostId":"18355f00-95fd-4c93-8586-a71a8a52bf73","state":"online"}]}"#)
-    let connections = try await client(loader).list()
-    XCTAssertEqual(connections.count, 1)
+    let loader = StubLoader(status: 200, body: #"{"apps":[{"kind":"host","name":"studio","hostId":"18355f00-95fd-4c93-8586-a71a8a52bf73","state":"online"}]}"#)
+    let apps = try await client(loader).list()
+    XCTAssertEqual(apps.count, 1)
     let request = try XCTUnwrap(loader.requests.first)
     XCTAssertEqual(request.httpMethod, "GET")
-    XCTAssertEqual(request.url?.absoluteString, "https://axo.leostera.dev/api/v1/account/connections")
+    XCTAssertEqual(request.url?.absoluteString, "https://axo.leostera.dev/api/v1/account/apps")
     XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(SessionToken.fixture().value)")
     XCTAssertFalse(request.httpShouldHandleCookies, "no cookie: a bearer token needs no Origin to change things")
   }
@@ -220,7 +220,7 @@ final class ConnectionsClientTests: XCTestCase {
     let loader = StubLoader(status: 200, body: #"{"records":[]}"#)
     _ = try await client(loader).log(service: "apps.gmail", limit: 20, before: nil)
     let url = try XCTUnwrap(loader.requests.first?.url)
-    XCTAssertEqual(url.path, "/api/v1/account/connections/log")
+    XCTAssertEqual(url.path, "/api/v1/account/apps/log")
     let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
     XCTAssertEqual(query.first { $0.name == "service" }?.value, "apps.gmail")
     XCTAssertEqual(query.first { $0.name == "limit" }?.value, "20")
@@ -232,7 +232,7 @@ final class ConnectionsClientTests: XCTestCase {
     XCTAssertEqual(added, "personal")
     let request = try XCTUnwrap(loader.requests.first)
     XCTAssertEqual(request.httpMethod, "POST")
-    XCTAssertEqual(request.url?.path, "/api/v1/account/connections/apps.hetzner/token")
+    XCTAssertEqual(request.url?.path, "/api/v1/account/apps/apps.hetzner/token")
     XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
     let sent = try body(request)
     XCTAssertEqual(sent["account"] as? String, "personal")
@@ -249,7 +249,7 @@ final class ConnectionsClientTests: XCTestCase {
         .addToken(app: "apps.hetzner", account: nil, fields: ["token": "bad"])
       XCTFail("a refusal must not pass")
     } catch {
-      XCTAssertEqual(error as? ConnectionsRefusal, ConnectionsRefusal(status: 400, message: "Hetzner refused that token."))
+      XCTAssertEqual(error as? AppsRefusal, AppsRefusal(status: 400, message: "Hetzner refused that token."))
       XCTAssertEqual(error.localizedDescription, "Hetzner refused that token.")
     }
     do {
@@ -269,7 +269,7 @@ final class ConnectionsClientTests: XCTestCase {
     guard case .pending(let code, _, 5, _) = state else { return XCTFail("\(state)") }
     XCTAssertEqual(code, "WDJB-MJHT")
     let request = try XCTUnwrap(loader.requests.first)
-    XCTAssertEqual(request.url?.path, "/api/v1/account/connections/apps.chatgpt/device")
+    XCTAssertEqual(request.url?.path, "/api/v1/account/apps/apps.chatgpt/device")
     XCTAssertEqual(request.httpBody, Data("{}".utf8), "a POST with nothing to say still sends JSON")
   }
 
@@ -278,7 +278,7 @@ final class ConnectionsClientTests: XCTestCase {
     try await client(loader).remove("apps.gmail", account: "a@b.c")
     try await client(loader).remove("emdash_leostera_com", account: nil)
     XCTAssertEqual(loader.requests.map { $0.url?.path }, [
-      "/api/v1/account/connections/apps.gmail/remove", "/api/v1/account/connections/emdash_leostera_com/remove",
+      "/api/v1/account/apps/apps.gmail/remove", "/api/v1/account/apps/emdash_leostera_com/remove",
     ])
     XCTAssertEqual(try body(loader.requests[0])["account"] as? String, "a@b.c")
     XCTAssertTrue(try body(loader.requests[1]).isEmpty)

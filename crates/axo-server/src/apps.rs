@@ -1,4 +1,4 @@
-//! `axo.connections.*` on `axod.sock` (RFD0016): a Session's connections calls go to its account.
+//! `axo.apps.*` on `axod.sock` (RFD0016): a Session's apps calls go to its account.
 //!
 //! Axod does not interpret them. Each call is forwarded unchanged over the relay, where the
 //! host's HostDO hands it to the account, and the account's answer, or its error, comes back
@@ -15,7 +15,7 @@ use jsonrpc_core::IoHandler;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
-/// Error codes shared with `@axo/protocol`'s `CONNECTIONS_ERRORS`.
+/// Error codes shared with `@axo/protocol`'s `APPS_ERRORS`.
 pub const OUTCOME_UNKNOWN: i64 = -32004;
 pub const LIMIT_EXCEEDED: i64 = -32020;
 pub const NOT_CONNECTED: i64 = -32024;
@@ -60,7 +60,7 @@ fn forward(
         |abandon| cancellation.on_cancel(move || abandon.abandon()),
     );
     log::info!(
-        "event=connections.forwarded method={name} outcome={} duration_ms={}",
+        "event=apps.forwarded method={name} outcome={} duration_ms={}",
         match &outcome {
             Ok(_) => "result".to_owned(),
             Err(RelayCallError::Rejected { code, .. }) => code.to_string(),
@@ -132,12 +132,12 @@ mod tests {
     #[test]
     fn a_call_needs_a_session_and_fails_as_not_connected_without_a_relay() {
         let unlinked = handler(None);
-        let missing = call(&unlinked, method::CONNECTIONS_LIST, json!({}));
+        let missing = call(&unlinked, method::APPS_LIST, json!({}));
         assert_eq!(missing["error"]["code"], -32602);
         let session = "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49";
         let offline = call(
             &unlinked,
-            method::CONNECTIONS_LIST,
+            method::APPS_LIST,
             json!({ "sessionId": session }),
         );
         assert_eq!(offline["error"]["code"], NOT_CONNECTED);
@@ -146,7 +146,7 @@ mod tests {
         let idle = handler(Some(RelayChannel::new()));
         let refused = call(
             &idle,
-            method::CONNECTIONS_EXECUTE,
+            method::APPS_EXECUTE,
             json!({ "sessionId": session, "code": "async () => 1" }),
         );
         assert_eq!(refused["error"]["code"], NOT_CONNECTED);

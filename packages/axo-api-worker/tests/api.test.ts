@@ -102,7 +102,7 @@ test("Worker does not require or validate Access JWTs", async (t) => {
   assert.deepEqual((await h.list(await h.token("client"))).result.machines, []);
 });
 
-test("daemon WebSocket connections reach the Worker without Access JWT headers", async (t) => {
+test("daemon WebSocket apps reach the Worker without Access JWT headers", async (t) => {
   const h = await harness();
   t.after(() => h.close());
   const socket = new WebSocket(

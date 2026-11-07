@@ -17,7 +17,7 @@ import {
   hostV1Results,
   sessionIdSchema,
 } from "../src/v1.ts";
-import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS, CONNECTIONS_METHODS, connectionsParams, connectionsResults, BASH_METHOD, bashParamsSchema, bashResultSchema } from "../src/index.ts";
+import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS, APPS_METHODS, appsParams, appsResults, BASH_METHOD, bashParamsSchema, bashResultSchema } from "../src/index.ts";
 
 const schemaRoot = resolve(import.meta.dirname, "../../../schemas/axo.leostera.dev/v1");
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictTypes: false });
@@ -29,7 +29,7 @@ const schemaNames = [
   "local-rpc.schema.json",
   "host-relay.schema.json",
   "pairing.schema.json",
-  "connections.schema.json",
+  "apps.schema.json",
 ];
 for (const name of schemaNames) {
   const schema = JSON.parse(await readFile(resolve(schemaRoot, name), "utf8"));
@@ -279,40 +279,40 @@ falselyFresh.status = "offline";
 falselyFresh.stale = false;
 assert.equal(hostSnapshotSchema.safeParse(falselyFresh).success, false, "offline hosts must be explicitly stale");
 const fragment = await fixture("transport-fragment.relay.json");
-validateWith("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportFragment", fragment);
+validateWith("https://schemas.axo.leostera.dev/v1/apps.schema.json#/$defs/TransportFragment", fragment);
 assert.equal(fragmentSchema.safeParse(fragment).success, true, "Zod must accept the fragment fixture");
 assert.equal(MAX_FRAGMENTS, 365, "the schema's fragment bounds must match the runtime's");
 const oversizedFragment = structuredClone(fragment);
 oversizedFragment.params.count = MAX_FRAGMENTS + 1;
 assert.equal(fragmentSchema.safeParse(oversizedFragment).success, false, "too many fragments are refused at runtime");
-assert.equal(ajv.getSchema("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportFragment")(oversizedFragment), false, "and by the schema");
+assert.equal(ajv.getSchema("https://schemas.axo.leostera.dev/v1/apps.schema.json#/$defs/TransportFragment")(oversizedFragment), false, "and by the schema");
 const discard = await fixture("transport-discard.relay.json");
-validateWith("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportDiscard", discard);
+validateWith("https://schemas.axo.leostera.dev/v1/apps.schema.json#/$defs/TransportDiscard", discard);
 assert.equal(discardSchema.safeParse(discard).success, true, "Zod must accept the discard fixture");
-const connectionsSchema = (name) => `https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/${name}`;
-for (const [name, method, file] of [["List", CONNECTIONS_METHODS.list, "connections-list"], ["Execute", CONNECTIONS_METHODS.execute, "connections-execute"]]) {
+const appsSchema = (name) => `https://schemas.axo.leostera.dev/v1/apps.schema.json#/$defs/${name}`;
+for (const [name, method, file] of [["List", APPS_METHODS.list, "apps-list"], ["Execute", APPS_METHODS.execute, "apps-execute"]]) {
   const call = await fixture(`${file}.call.json`);
-  validateWith(connectionsSchema(`${name}Call`), call);
+  validateWith(appsSchema(`${name}Call`), call);
   assert.equal(call.method, method);
-  assert.equal(connectionsParams[method].safeParse(call.params).success, true, `Zod must accept ${file}.call.json`);
+  assert.equal(appsParams[method].safeParse(call.params).success, true, `Zod must accept ${file}.call.json`);
   const result = await fixture(`${file}.result.json`);
-  validateWith(connectionsSchema(`${name}Result`), result);
-  assert.equal(connectionsResults[method].safeParse(result).success, true, `Zod must accept ${file}.result.json`);
+  validateWith(appsSchema(`${name}Result`), result);
+  assert.equal(appsResults[method].safeParse(result).success, true, `Zod must accept ${file}.result.json`);
 }
-const connectionsLog = await fixture("connections-log.result.json");
-validateWith(connectionsSchema("LogResult"), connectionsLog);
-assert.equal(connectionsResults[CONNECTIONS_METHODS.log].safeParse(connectionsLog).success, true, "Zod must accept the call log fixture");
-const bashCall = await fixture("connections-bash.call.json");
-validateWith(connectionsSchema("BashCall"), bashCall);
+const appsLog = await fixture("apps-log.result.json");
+validateWith(appsSchema("LogResult"), appsLog);
+assert.equal(appsResults[APPS_METHODS.log].safeParse(appsLog).success, true, "Zod must accept the call log fixture");
+const bashCall = await fixture("apps-bash.call.json");
+validateWith(appsSchema("BashCall"), bashCall);
 assert.equal(bashCall.method, BASH_METHOD);
 assert.equal(bashParamsSchema.safeParse(bashCall.params).success, true, "Zod must accept the bash call fixture");
-const bashResult = await fixture("connections-bash.result.json");
-validateWith(connectionsSchema("BashResult"), bashResult);
+const bashResult = await fixture("apps-bash.result.json");
+validateWith(appsSchema("BashResult"), bashResult);
 assert.equal(bashResultSchema.safeParse(bashResult).success, true, "Zod must accept the bash result fixture");
 const relativeBash = structuredClone(bashCall);
 relativeBash.params.cwd = "tmp";
 assert.equal(bashParamsSchema.safeParse(relativeBash.params).success, false, "a relative working directory is refused at runtime");
-assert.equal(ajv.getSchema(connectionsSchema("BashCall"))(relativeBash), false, "and by the schema");
+assert.equal(ajv.getSchema(appsSchema("BashCall"))(relativeBash), false, "and by the schema");
 const remoteCreate = await fixture("host-session-create.call.json");
 const hostCallSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/Call";
 validateWith(hostCallSchema, remoteCreate);

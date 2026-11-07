@@ -7,7 +7,7 @@ import { attachmentsIn, ChatTranscript } from "../src/chat/transcript.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
-import { connectionsResults } from "@axo/protocol";
+import { appsResults } from "@axo/protocol";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
 import { memoryDevice } from "../src/chat/device.ts";
 import { chatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
@@ -333,7 +333,7 @@ test("settings pages have their own URLs: Apps, each app, MCP servers and activi
     assert.equal(settingsPath("/app", route), path);
     assert.deepEqual(parseRoute("/app", path), { kind: "new" }, "a settings page is not a chat");
   }
-  assert.deepEqual(parseSettingsRoute("/app", "/app/connections"), { kind: "apps" }, "where sign-ins used to come back");
+  assert.deepEqual(parseSettingsRoute("/app", "/app/apps"), { kind: "apps" }, "where sign-ins used to come back");
   assert.deepEqual(parseSettingsRoute("/app", "/app/settings"), { kind: "apps" });
   for (const path of ["/app", `/app/${hostId}/${sid(1)}`, "/app/settings/apps/Gmail", "/app/settings/apps/gmail/more", "/elsewhere/settings/apps"]) {
     assert.equal(parseSettingsRoute("/app", path), null, path);
@@ -341,8 +341,8 @@ test("settings pages have their own URLs: Apps, each app, MCP servers and activi
 });
 
 test("Apps reads a listing from a Worker one release older, without the newest display fields", () => {
-  const older = { connections: [{ kind: "app", name: "apps.gmail", title: "Gmail", state: "ready", accounts: [], tools: ["request"], lastError: null }] };
-  const [app] = connectionsResults["axo.connections.list"].parse(older).connections;
+  const older = { apps: [{ kind: "app", name: "apps.gmail", title: "Gmail", state: "ready", accounts: [], tools: ["request"], lastError: null }] };
+  const [app] = appsResults["axo.apps.list"].parse(older).apps;
   assert.deepEqual(app?.kind === "app" && [app.description, app.provider, app.category, app.permissions], ["", "", "", []]);
 });
 

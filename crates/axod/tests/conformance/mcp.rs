@@ -168,20 +168,20 @@ fn an_agent_opens_types_into_reads_and_closes_a_terminal() {
 }
 
 #[test]
-fn without_an_account_the_connections_tools_say_so() {
+fn without_an_account_the_apps_tools_say_so() {
     let axod = Axod::start();
     let (_, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
     for message in [
-        mcp.err("connections_list", json!({})),
-        mcp.err("connections_search", json!({ "query": "linear issues" })),
-        mcp.err("connections_execute", json!({ "code": "async () => 1" })),
+        mcp.err("apps_list", json!({})),
+        mcp.err("apps_search", json!({ "query": "linear issues" })),
+        mcp.err("apps_execute", json!({ "code": "async () => 1" })),
         mcp.err(
-            "connections_add",
+            "apps_add",
             json!({ "name": "linear", "url": "https://mcp.linear.app/mcp" }),
         ),
-        mcp.err("connections_remove", json!({ "name": "linear" })),
-        mcp.err("connections_log", json!({})),
+        mcp.err("apps_remove", json!({ "name": "linear" })),
+        mcp.err("apps_log", json!({})),
     ] {
         assert!(
             message.to_lowercase().contains("account") || message.contains("link"),

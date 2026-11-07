@@ -1,6 +1,6 @@
 //! Computer use on this Mac from another Mac's script (RFD0028, Computer use from anywhere).
 //!
-//! The account sends `axo.connections.computer` down this Mac's socket. The host (axod's session
+//! The account sends `axo.apps.computer` down this Mac's socket. The host (axod's session
 //! manager) runs the gate, asks the person in the calling Session if it must, and runs the tool;
 //! this module checks the request, and swaps the images in the answer for attachments uploaded
 //! to the account's assets (RFD0030), so the answer stays small and the images show wherever
@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::assets::AssetSource;
 
-pub const METHOD: &str = "axo.connections.computer";
-pub const STATUS_METHOD: &str = "axo.connections.computer.status";
+pub const METHOD: &str = "axo.apps.computer";
+pub const STATUS_METHOD: &str = "axo.apps.computer.status";
 /// Images uploaded per answer; more are dropped with a note.
 const MAX_IMAGES: usize = 8;
 /// `structuredContent` larger than this is dropped with a note: it would not fit a reply.

@@ -126,8 +126,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const phoneSteps = [];
   /** A ChatGPT device sign-in: polls so far, and whether the person has entered the code. */
   const device = { polls: 0, entered: false };
-  // The account's connections (RFD0016), as the Worker lists them.
-  const connections = [
+  // The account's apps (RFD0016), as the Worker lists them.
+  const apps = [
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
     { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, icon: "https://linear.app/static/apple-touch-icon.png", syncedAt: now, lastError: null },
     { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
@@ -200,57 +200,57 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       json(response, { code: "B26A-NRKT", expiresAt: new Date(Date.now() + 600_000).toISOString() }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === "/api/v1/account/connections") {
-      json(response, { connections }, origin);
+    if (request.method === "GET" && url.pathname === "/api/v1/account/apps") {
+      json(response, { apps }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log/integrity") {
+    if (request.method === "GET" && url.pathname === "/api/v1/account/apps/log/integrity") {
       json(response, { verified: true, events: callLog.length * 2, head: "ab".repeat(32), brokenAt: null, reason: null }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === "/api/v1/account/connections/log") {
+    if (request.method === "GET" && url.pathname === "/api/v1/account/apps/log") {
       const service = url.searchParams.get("service");
       json(response, { records: service ? callLog.filter((record) => record.service === service) : callLog }, origin);
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.chatgpt/device") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.chatgpt/device") {
       json(response, { flow: "flow-1", state: "pending", userCode: "ABCD-1234", verificationUrl: "https://auth.openai.com/codex/device", intervalSeconds: 1, expiresAt: new Date(Date.now() + 900_000).toISOString() }, origin);
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.chatgpt/device/poll") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.chatgpt/device/poll") {
       device.polls++;
       if (!device.entered) {
         json(response, { state: "pending", userCode: "ABCD-1234", verificationUrl: "https://auth.openai.com/codex/device", intervalSeconds: 1, expiresAt: new Date(Date.now() + 900_000).toISOString() }, origin);
         return;
       }
-      const chatgpt = connections.find((c) => c.name === "apps.chatgpt");
+      const chatgpt = apps.find((c) => c.name === "apps.chatgpt");
       chatgpt.accounts = [{ account: "ada@example.com", state: "ready", lastError: null }];
       chatgpt.state = "ready";
       json(response, { state: "done", account: "ada@example.com" }, origin);
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.github/client") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.github/client") {
       // Setting up an OAuth app's client: sent once, and the secret never comes back.
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
         clientRequests.push(JSON.parse(body));
-        connections.find((c) => c.name === "apps.github").signIn.client.ready = true;
+        apps.find((c) => c.name === "apps.github").signIn.client.ready = true;
         json(response, { provider: "github" }, origin);
       });
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.telegram/client") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.telegram/client") {
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
         clientRequests.push(JSON.parse(body));
-        connections.find((c) => c.name === "apps.telegram").signIn.clientReady = true;
+        apps.find((c) => c.name === "apps.telegram").signIn.clientReady = true;
         json(response, { provider: "telegram" }, origin);
       });
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.telegram/phone-sign-in") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.telegram/phone-sign-in") {
       // Telegram's sign-in, a step at a time: the number, a code (wrong once), then the password.
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
@@ -260,16 +260,16 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         if (step.step === "start") return json(response, { state: "code", flow: "telegram-flow-0001", via: "app" }, origin);
         if (step.step === "code" && step.code !== "12345") return json(response, { state: "code", flow: step.flow, via: "app", error: "That code is not right." }, origin);
         if (step.step === "code") return json(response, { state: "password", flow: step.flow, hint: "pet" }, origin);
-        connections.find((c) => c.name === "apps.telegram").accounts.push({ account: "@ada", state: "ready", lastError: null });
+        apps.find((c) => c.name === "apps.telegram").accounts.push({ account: "@ada", state: "ready", lastError: null });
         json(response, { state: "done", account: "@ada" }, origin);
       });
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.github/sign-in") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.github/sign-in") {
       json(response, { signInUrl: "/app/settings/apps/github?signedIn=apps.github" }, origin);
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.kraken/mac-sign-in") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.kraken/mac-sign-in") {
       // Kraken's sign-in on a Mac: the page sends the Mac and the choice, then polls until it is done.
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
@@ -279,18 +279,18 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       });
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.kraken/mac-sign-in/poll") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.kraken/mac-sign-in/poll") {
       macPolls++;
       if (macPolls < 2) {
         json(response, { state: "pending", mac: "browser_fixture_mac", expiresAt: now }, origin);
         return;
       }
-      const kraken = connections.find((c) => c.name === "apps.kraken");
+      const kraken = apps.find((c) => c.name === "apps.kraken");
       kraken.accounts.push({ account: "main", state: "ready", lastError: null });
       json(response, { state: "done", account: "main", expiresAt: now }, origin);
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections/apps.hetzner/token") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.hetzner/token") {
       // Adding a token app's account: Hetzner accepts only its own tokens, and the token is never sent back.
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
@@ -301,14 +301,14 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
           json(response, { error: "Hetzner did not accept this token" }, origin, 400);
           return;
         }
-        const hetzner = connections.find((c) => c.name === "apps.hetzner");
+        const hetzner = apps.find((c) => c.name === "apps.hetzner");
         hetzner.accounts.push({ account, state: "ready", lastError: null });
         hetzner.state = "ready";
         json(response, { name: "apps.hetzner", account }, origin);
       });
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/v1/account/connections") {
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps") {
       let body = "";
       request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
@@ -316,7 +316,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         const { name: title, url: serverUrl } = JSON.parse(body);
         const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
         const connection = { kind: "thirdParty", name, title: name === title ? null : title, url: serverUrl, state: "ready", tools: 3, syncedAt: now, lastError: null };
-        connections.push(connection);
+        apps.push(connection);
         json(response, { connection, signInUrl: null }, origin);
       });
       return;
@@ -1085,7 +1085,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("apps-onepassword");
 
     // Where sign-ins used to come back still works: on the app's page.
-    await page.goto(`${appUrl}/app/connections?signedIn=apps.gmail`, { waitUntil: "networkidle" });
+    await page.goto(`${appUrl}/app/apps?signedIn=apps.gmail`, { waitUntil: "networkidle" });
     await expect(page.getByRole("region", { name: "Gmail" }).getByText("Account added."));
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps/gmail");
     await page.getByRole("button", { name: "Close settings" }).click();

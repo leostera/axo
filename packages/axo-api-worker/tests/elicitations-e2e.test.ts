@@ -34,7 +34,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
 
   let daemon: ChildProcess | undefined;
   let mcp: ChildProcess | undefined;
-  const connections: Array<{ close(): void }> = [];
+  const apps: Array<{ close(): void }> = [];
   try {
     daemon = spawn(axodBinary, [
       "--server-dir", serverDirectory, "--socket", socketPath, "--relay-url", api.url, "--host-credentials", "files",
@@ -59,7 +59,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
         elicitationRequested: (hostId, elicitation) => asked.push({ device, hostId, elicitation }),
         elicitationResolved: (_hostId, resolved) => settled.push({ device, resolved }),
       });
-      connections.push(connection);
+      apps.push(connection);
       return connection;
     };
     const phone = await open("phone");
@@ -160,7 +160,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
     assert.equal(declined.result?.isError, true);
     assert.equal(text(declined), "Not done: the person declined.");
   } finally {
-    for (const connection of connections) connection.close();
+    for (const connection of apps) connection.close();
     mcp?.kill();
     if (daemon) await terminate(daemon);
     await api.close();

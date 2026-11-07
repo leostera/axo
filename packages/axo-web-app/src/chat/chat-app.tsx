@@ -3,7 +3,7 @@ import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
-import { AppsSettings, signInNotice, signInPage } from "./connections.tsx";
+import { AppsSettings, signInNotice, signInPage } from "./apps.tsx";
 import { ChatList, ChatListSettings } from "./chat-list.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
@@ -100,15 +100,15 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: 
 }
 
 /** The signed-in app: chats with Axo on your Macs, as on the phone. */
-export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUrl, basePath = "/app" }: {
+export function ChatApp({ profile, backend, onSignOut, pairingUrl, appsUrl, basePath = "/app" }: {
   profile?: AccountProfile;
   /** Tests give their own; otherwise the account's API. */
   backend?: ChatBackend;
   onSignOut?: () => void;
   /** Where pairing codes are made; no pairing without it. */
   pairingUrl?: string;
-  /** The account's connections API; no Connections page without it. */
-  connectionsUrl?: string;
+  /** The account's apps API; no Apps page without it. */
+  appsUrl?: string;
   /** The app's own path: chats are at `<basePath>/<hostId>/<sessionId>`. */
   basePath?: string;
 }) {
@@ -119,11 +119,11 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
   const [infoOpen, setInfoOpen] = useState(false);
   const [sheet, setSheet] = useState<"settings" | "pair" | "search" | null>(null);
   // Settings › Apps is a page with its own URL. A sign-in comes back to an app's page (or, from
-  // before, to `<base>/connections`) with how it went in the query, which is then dropped.
+  // before, to `<base>/apps`) with how it went in the query, which is then dropped.
   const [settings, setSettings] = useState<SettingsRoute | null>(() => {
-    if (!connectionsUrl) return null;
+    if (!appsUrl) return null;
     const route = parseSettingsRoute(basePath, window.location.pathname);
-    return route && window.location.pathname.replace(/\/+$/, "") === `${basePath}/connections` ? signInPage(window.location.search) : route;
+    return route && window.location.pathname.replace(/\/+$/, "") === `${basePath}/apps` ? signInPage(window.location.search) : route;
   });
   const [settingsNotice] = useState(() => (settings ? signInNotice(window.location.search) : null));
   useEffect(() => {
@@ -131,10 +131,10 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
     else if (parseSettingsRoute(basePath, window.location.pathname)) window.history.replaceState(null, "", basePath);
   }, []);
   useEffect(() => {
-    const onPopState = () => setSettings(connectionsUrl ? parseSettingsRoute(basePath, window.location.pathname) : null);
+    const onPopState = () => setSettings(appsUrl ? parseSettingsRoute(basePath, window.location.pathname) : null);
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [basePath, connectionsUrl]);
+  }, [basePath, appsUrl]);
   const openSettings = (route: SettingsRoute) => {
     window.history.pushState(null, "", settingsPath(basePath, route));
     setSettings(route);
@@ -187,7 +187,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
             }}
             onShowChats={() => show("chats")}
             onPair={pairingUrl ? () => setSheet("pair") : undefined}
-            onConnections={connectionsUrl ? () => openSettings({ kind: "apps" }) : undefined}
+            onApps={appsUrl ? () => openSettings({ kind: "apps" }) : undefined}
             onSettings={() => setSheet("settings")}
           />
         </div>
@@ -209,7 +209,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
         </div>
         <div className="layer layer-conversation" inert={!wide && layer !== "conversation"}>
           <Conversation workbench={workbench} wide={wide} onShowChats={() => show("chats")} onToggleInfo={toggleInfo}
-            onApps={connectionsUrl ? () => openSettings({ kind: "apps" }) : undefined} />
+            onApps={appsUrl ? () => openSettings({ kind: "apps" }) : undefined} />
         </div>
         {!wide && (layer === "chats" || layer === "account") ? (
           // The strip of the next layer is a way back to it, as on the phone.
@@ -231,10 +231,10 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
         }} />
       ) : null}
       {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut}
-        onApps={connectionsUrl ? () => { setSheet(null); openSettings({ kind: "apps" }); } : undefined} /> : null}
+        onApps={appsUrl ? () => { setSheet(null); openSettings({ kind: "apps" }); } : undefined} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
-      {settings && connectionsUrl ? (
-        <AppsSettings connectionsUrl={connectionsUrl} route={settings} initialNotice={settingsNotice} onNavigate={openSettings} onClose={closeSettings} hrefOf={(route) => settingsPath(basePath, route)} />
+      {settings && appsUrl ? (
+        <AppsSettings appsUrl={appsUrl} route={settings} initialNotice={settingsNotice} onNavigate={openSettings} onClose={closeSettings} hrefOf={(route) => settingsPath(basePath, route)} />
       ) : null}
     </main>
   );
@@ -357,13 +357,13 @@ function MacRow({ host, selected, onOpen, onRename }: {
   );
 }
 
-function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onConnections, onSettings }: {
+function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onApps, onSettings }: {
   workbench: ChatWorkbench;
   profile?: AccountProfile;
   onOpenMac: (hostId: string) => void;
   onShowChats: () => void;
   onPair?: () => void;
-  onConnections?: () => void;
+  onApps?: () => void;
   onSettings: () => void;
 }) {
   const name = profile?.name || profile?.email || "Signed in";
@@ -390,10 +390,10 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onCo
             onOpen={() => onOpenMac(host.hostId)} onRename={name => workbench.renameHost(host.hostId, name)} />
         ))}
         {workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? <p className="panel-note">No Macs yet. Pair one to chat with it from here.</p> : null}
-        {onConnections ? (
+        {onApps ? (
           <>
             <h2 className="section-title"><span>Apps</span></h2>
-            <button className="mac-row" onClick={onConnections}>
+            <button className="mac-row" onClick={onApps}>
               <Icon name="plug" size={22} />
               <span className="mac-copy">
                 <strong>Apps</strong>

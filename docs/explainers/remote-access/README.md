@@ -8,7 +8,7 @@ An interactive visualization showing how Axo's remote access system works: how M
 - **Full-screen playground** - uses 100% of viewport
 - **Drag and drop** - drag people onto devices to sign in
 - **Click interactions** - click devices and Macs for context menus
-- **Live simulation** - watch packets fly, connections animate, state changes
+- **Live simulation** - watch packets fly, apps animate, state changes
 - **Time controls** - play/pause, speed up (¼×, 1×, 5×, 25×), step forward
 - **Dark/light mode** - theme toggle in top-right corner
 
@@ -65,7 +65,7 @@ Run the tests with `bazel test //docs/explainers/remote-access/...`.
 2. **Drag people** from top-left onto devices to sign in through Access
 3. **Click devices** to generate pairing codes or connect to Macs
 4. **Click Macs** to simulate Wi-Fi drops, restarts, or terminals
-5. **Watch the relay** show accounts, Macs, and connections in real-time
+5. **Watch the relay** show accounts, Macs, and apps in real-time
 6. **Use the timeline** to jump back to any moment
 7. **Share the URL** to show someone a specific state
 

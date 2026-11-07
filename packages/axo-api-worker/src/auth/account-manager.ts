@@ -3,11 +3,11 @@ import { LIMITS, type ClientHost } from "@axo/protocol";
 import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
-import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
-import type { DeviceSignIn } from "../connections/apps";
-import { googleClient } from "../connections/apps/google";
+import { AccountApps, type CallOutcome, type AppsCall } from "../apps/account";
+import type { DeviceSignIn } from "../apps/builtin";
+import { googleClient } from "../apps/builtin/google";
 import type { AppMacSignIn, AppPhoneSignIn, AppPhoneSignInRequest, CallRecord, Connection } from "@axo/protocol";
-import type { ChainCheck } from "../connections/call-log";
+import type { ChainCheck } from "../apps/call-log";
 
 import type { AccountProfile } from "./account-access";
 type PairingRow = {
@@ -360,94 +360,94 @@ export class AxoAccountManager extends DurableObject<Env> {
   }
 
   /**
-   * An `axo.connections.*` call from one of the account's Macs, forwarded by its HostDO
-   * (RFD0016). Connections state stays here; the HostDO only carries calls.
+   * An `axo.apps.*` call from one of the account's Macs, forwarded by its HostDO
+   * (RFD0016). Apps state stays here; the HostDO only carries calls.
    */
-  async connectionsCall(call: ConnectionsCall): Promise<CallOutcome> {
-    const connections = this.connections();
-    if (!connections) return { error: { code: -32002, message: "Stale host" } };
-    return connections.call(call);
+  async appsCall(call: AppsCall): Promise<CallOutcome> {
+    const apps = this.apps();
+    if (!apps) return { error: { code: -32002, message: "Stale host" } };
+    return apps.call(call);
   }
 
-  // ─── Connections on the web (RFD0016, Connections page) ──────────────────────
+  // ─── Apps on the web (RFD0016, Apps page) ──────────────────────
 
-  async listConnections(): Promise<{ connections: Connection[] }> {
-    return this.requireConnections().list();
+  async listApps(): Promise<{ apps: Connection[] }> {
+    return this.requireApps().list();
   }
 
   async addConnection(name: string, url: string): Promise<CallOutcome> {
-    return this.requireConnections().add(name, url);
+    return this.requireApps().add(name, url);
   }
 
   /** Removes a third-party connection, or signs `account` out of an app. */
   async removeConnection(name: string, account?: string): Promise<CallOutcome> {
-    return this.requireConnections().remove(name, account);
+    return this.requireApps().remove(name, account);
   }
 
-  /** A client the person registered with the provider, typed on the Connections page only. */
+  /** A client the person registered with the provider, typed on the Apps page only. */
   async setConnectionClient(name: string, clientId: string, clientSecret: string | null): Promise<{ signInUrl: string }> {
-    return this.requireConnections().setClient(name, { clientId, clientSecret });
+    return this.requireApps().setClient(name, { clientId, clientSecret });
   }
 
   /** A token app's account, from what the person pasted on its page (RFD0016). */
   async addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }> {
-    return this.requireConnections().addAppToken(name, account, fields);
+    return this.requireApps().addAppToken(name, account, fields);
   }
 
   async startAppDevice(name: string): Promise<({ flow: string } & Extract<DeviceSignIn, { state: "pending" }>) | { error: string }> {
-    return this.requireConnections().startAppDevice(name);
+    return this.requireApps().startAppDevice(name);
   }
 
   async pollAppDevice(name: string, flow: string): Promise<DeviceSignIn> {
-    return this.requireConnections().pollAppDevice(name, flow);
+    return this.requireApps().pollAppDevice(name, flow);
   }
 
   async startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<({ flow: string } & AppMacSignIn) | { error: string }> {
-    return this.requireConnections().startAppMacSignIn(name, mac, preset, account);
+    return this.requireApps().startAppMacSignIn(name, mac, preset, account);
   }
 
   async pollAppMacSignIn(name: string, flow: string): Promise<AppMacSignIn> {
-    return this.requireConnections().pollAppMacSignIn(name, flow);
+    return this.requireApps().pollAppMacSignIn(name, flow);
   }
 
   async appPhoneSignIn(name: string, request: AppPhoneSignInRequest): Promise<AppPhoneSignIn> {
-    return this.requireConnections().appPhoneSignIn(name, request);
+    return this.requireApps().appPhoneSignIn(name, request);
   }
 
   async connectionSignInLink(name: string): Promise<string> {
-    return this.requireConnections().signInLink(name);
+    return this.requireApps().signInLink(name);
   }
 
   async openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
-    return this.requireConnections().openFlow(nonce);
+    return this.requireApps().openFlow(nonce);
   }
 
   async completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }> {
-    return this.requireConnections().completeFlow(nonce, code);
+    return this.requireApps().completeFlow(nonce, code);
   }
 
-  async connectionsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }> {
-    return { records: await this.requireConnections().readLog(limit, before, service) };
+  async appsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }> {
+    return { records: await this.requireApps().readLog(limit, before, service) };
   }
 
-  async connectionsLogIntegrity(): Promise<ChainCheck> {
-    return this.requireConnections().verifyLog();
+  async appsLogIntegrity(): Promise<ChainCheck> {
+    return this.requireApps().verifyLog();
   }
 
-  private requireConnections(): AccountConnections {
-    const connections = this.connections();
-    if (!connections) throw new Error("This account has no connections yet");
-    return connections;
+  private requireApps(): AccountApps {
+    const apps = this.apps();
+    if (!apps) throw new Error("This account has no apps yet");
+    return apps;
   }
 
-  private connectionsState: AccountConnections | null = null;
+  private appsState: AccountApps | null = null;
 
-  private connections(): AccountConnections | null {
-    if (this.connectionsState) return this.connectionsState;
+  private apps(): AccountApps | null {
+    if (this.appsState) return this.appsState;
     const accountId = this.accountId();
     const secret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
     if (!accountId || !secret) return null;
-    return this.connectionsState = new AccountConnections({
+    return this.appsState = new AccountApps({
       sql: this.ctx.storage.sql,
       secret,
       accountId,

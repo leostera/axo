@@ -21,13 +21,13 @@ import {
 } from "./oauth";
 
 /**
- * The account's third-party connections (RFD0016): remote MCP servers it calls from the cloud
+ * The account's third-party apps (RFD0016): remote MCP servers it calls from the cloud
  * with grants that never leave this Durable Object.
  *
  * Grants carry a generation that goes up with every completed sign-in, and a refresh only lands
- * on the generation it renewed (specs/connections/connection-sign-in.ts). Tool lists are cached; at most one
+ * on the generation it renewed (specs/apps/connection-sign-in.ts). Tool lists are cached; at most one
  * refresh per connection runs, and a change heard meanwhile queues exactly one more
- * (specs/connections/tool-lists.ts). Searches never wait on a server.
+ * (specs/apps/tool-lists.ts). Searches never wait on a server.
  */
 
 /** A tool list older than this is refreshed in the background when a search reads it. */
@@ -71,7 +71,7 @@ export type ThirdPartyDeps = {
   now?: () => number;
 };
 
-export class ThirdPartyConnections {
+export class ThirdPartyApps {
   /** Per connection: the refresh in flight, and whether a change was heard during it. */
   private readonly syncing = new Map<string, { running: Promise<void>; again: boolean }>();
   private readonly refreshing = new Map<string, Promise<Grant | null>>();
@@ -84,7 +84,7 @@ export class ThirdPartyConnections {
       tools_json TEXT NOT NULL DEFAULT '[]', synced_at REAL, last_error TEXT,
       needs_sign_in INTEGER NOT NULL DEFAULT 0)`);
     // A server's icon, for its tile: looked up once a week, when its tools are.
-    // The name the person typed, as typed (`name` is its slug); null for connections from before.
+    // The name the person typed, as typed (`name` is its slug); null for apps from before.
     for (const column of ["icon_url TEXT", "icon_checked_at REAL", "title TEXT"]) {
       try {
         deps.sql.exec(`ALTER TABLE third_party_connections ADD COLUMN ${column}`);
@@ -140,7 +140,7 @@ export class ThirdPartyConnections {
 
   /**
    * Adds a connection and tries it without a grant. A server that needs sign-in gets a client
-   * (registered, or to be entered on the Connections page) and a sign-in link.
+   * (registered, or to be entered on the Apps page) and a sign-in link.
    */
   async add(name: string, url: string, title: string | null = null): Promise<{ signInUrl: string | null }> {
     this.deps.sql.exec("INSERT INTO third_party_connections (name, url, created_at, title) VALUES (?, ?, ?, ?)", name, url, this.now(), title);
@@ -163,7 +163,7 @@ export class ThirdPartyConnections {
     return removed;
   }
 
-  /** A client the person registered with the provider themselves, entered on the Connections page. */
+  /** A client the person registered with the provider themselves, entered on the Apps page. */
   async setClient(name: string, client: Client): Promise<{ signInUrl: string }> {
     if (!this.has(name)) throw new Error(`no connection named ${name}`);
     this.deps.sql.exec("UPDATE third_party_connections SET client_sealed = ? WHERE name = ?", await this.seal("client", client), name);
@@ -189,7 +189,7 @@ export class ThirdPartyConnections {
     }
     this.deps.sql.exec("UPDATE third_party_connections SET needs_sign_in = 1 WHERE name = ?", name);
     if (!this.row(name)!.client_sealed) {
-      this.setError(name, new Error("the server does not register clients itself; enter a client ID on the Connections page"));
+      this.setError(name, new Error("the server does not register clients itself; enter a client ID on the Apps page"));
       return startUrl(null);
     }
     const nonce = crypto.randomUUID();
@@ -211,7 +211,7 @@ export class ThirdPartyConnections {
     const client = row?.client_sealed ? await this.unseal<Client>("client", row.client_sealed) : null;
     if (!row?.discovery_json || !client) return null;
     const challenge = await pkceChallenge(flow.verifier);
-    const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
+    const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
     return { authorizeUrl: authorizationUrl(JSON.parse(row.discovery_json) as Discovery, client, challenge, state), name: flow.name };
   }
 
@@ -241,7 +241,7 @@ export class ThirdPartyConnections {
   async call(name: string, tool: string, input: unknown): Promise<unknown> {
     const row = this.row(name);
     if (!row) throw new Error(`no connection named ${name}`);
-    if (row.needs_sign_in) throw new Error(`${name} needs sign-in; open the Connections page or ask for a new link with connections_add`);
+    if (row.needs_sign_in) throw new Error(`${name} needs sign-in; open the Apps page or ask for a new link with apps_add`);
     const stored = this.storedTools(row).find((t) => t.name === tool);
     if (!stored) throw new Error(`${name} has no tool named ${tool}`);
     for (let attempt = 0; ; attempt++) {
@@ -287,7 +287,7 @@ export class ThirdPartyConnections {
     this.deps.waitUntil(entry.running);
   }
 
-  /** Waits for a refresh in flight, if any. For tests and the Connections page. */
+  /** Waits for a refresh in flight, if any. For tests and the Apps page. */
   async settled(name: string): Promise<void> {
     await this.syncing.get(this.key(name))?.running;
   }
@@ -379,7 +379,7 @@ export class ThirdPartyConnections {
   /**
    * A tool that answers "401 Unauthorized" as its own error: the server took the grant, but the
    * service behind it did not (PayPal's server, once its sign-in with PayPal lapsed). Axo cannot
-   * renew that, so the connection says so on its page and in connections_list, and the agent is
+   * renew that, so the connection says so on its page and in apps_list, and the agent is
    * told what the person can do; the next call that works clears it.
    */
   private refusedUpstream(name: string, failed: unknown): unknown {
@@ -387,7 +387,7 @@ export class ThirdPartyConnections {
     if (!/\b401\b|\bunauthori[sz]ed\b|\binvalid[_ ]token\b|\btoken (has )?expired\b/i.test(message)) return failed;
     const note = `${REFUSED_UPSTREAM}: ${message.replace(/\s+/g, " ").slice(0, 200)}`;
     this.deps.sql.exec("UPDATE third_party_connections SET last_error = ? WHERE name = ?", note, name);
-    return new Error(`${message.slice(0, 3000)}\n(${name} refused this account. If its other tools say the same, the person signs in to ${name} again: remove it at ${SERVERS_PAGE} and add it back, or connections_remove then connections_add.)`);
+    return new Error(`${message.slice(0, 3000)}\n(${name} refused this account. If its other tools say the same, the person signs in to ${name} again: remove it at ${SERVERS_PAGE} and add it back, or apps_remove then apps_add.)`);
   }
 
   private setError(name: string, error: unknown): void {
@@ -418,11 +418,11 @@ export class ThirdPartyConnections {
   }
 
   private seal(kind: "client" | "grant", value: unknown): Promise<string> {
-    return seal(this.deps.secret, `connections-${kind}\0${this.deps.accountId}`, value);
+    return seal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, value);
   }
 
   private async unseal<T>(kind: "client" | "grant", sealed: string): Promise<T | null> {
-    return (await unseal(this.deps.secret, `connections-${kind}\0${this.deps.accountId}`, sealed, 65_536)) as T | null;
+    return (await unseal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, sealed, 65_536)) as T | null;
   }
 }
 

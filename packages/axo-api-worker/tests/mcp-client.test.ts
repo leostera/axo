@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callTool, initialize, listTools, McpAuthRequired, McpError, McpOutcomeUnknown } from "../src/connections/mcp-client";
+import { callTool, initialize, listTools, McpAuthRequired, McpError, McpOutcomeUnknown } from "../src/apps/mcp-client";
 
 /**
- * RFD0016, third-party connections: the MCP client is the official SDK's, with Axo's fetch around
+ * RFD0016, third-party apps: the MCP client is the official SDK's, with Axo's fetch around
  * it. These pin what that fetch adds: the credential, no held-open stream, no redirects, a bounded
  * answer, and which failures leave a call's outcome unknown.
  */

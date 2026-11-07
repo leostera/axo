@@ -4,11 +4,11 @@ const MIN = 60 * 1_000;
 
 // RFD0016: how an account gets and keeps a grant for a third-party connection. An agent adds the
 // connection; the account's Durable Object registers itself with the service's authorization server,
-// or waits for a client typed on the Connections page; the person signs in through Axo's one
+// or waits for a client typed on the Apps page; the person signs in through Axo's one
 // callback; the Durable Object keeps the grant and refreshes it.
 //
 // Not built yet, so no step has sources. Left out: the relay between the agent and the cloud
-// (connections.ts models it; here the Session talks to the account directly), expiry of links,
+// (apps.ts models it; here the Session talks to the account directly), expiry of links,
 // flows and cookies (an expired one is refused like a mismatched one), discovery (one known
 // authorization server), and scopes. Replies name the request they answer: in the code that is the
 // awaiting call's own context.
@@ -36,15 +36,15 @@ const unsealState = (state: string) => {
 /** Faults on one path: lost messages and crashes (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
 
-// Session agent -> AxoAccountManager (over the relay, see connections.ts)
-const Add = defineMessage("Add", { account: String, name: String }, { name: "connections_add", over: "relay" });
+// Session agent -> AxoAccountManager (over the relay, see apps.ts)
+const Add = defineMessage("Add", { account: String, name: String }, { name: "apps_add", over: "relay" });
 const Link = defineMessage("Link", { name: String, link: String }, { name: "sign-in link", over: "relay", tone: "reply" });
-const NeedsClient = defineMessage("NeedsClient", { name: String }, { name: "enter a client on the Connections page", over: "relay", tone: "reply" });
+const NeedsClient = defineMessage("NeedsClient", { name: String }, { name: "enter a client on the Apps page", over: "relay", tone: "reply" });
 const NameTaken = defineMessage("NameTaken", { name: String }, { name: "a connection with this name exists", over: "relay", tone: "refused" });
 // Person's browser <-> Worker
-const EnterClient = defineMessage("EnterClient", { account: String, name: String, client: String, secret: String }, { name: "POST …/connections/:name/client", over: "https" });
+const EnterClient = defineMessage("EnterClient", { account: String, name: String, client: String, secret: String }, { name: "POST …/apps/:name/client", over: "https" });
 const ClientSaved = defineMessage("ClientSaved", { name: String, link: String }, { name: "client saved, sign-in link", over: "https", tone: "reply" });
-const Start = defineMessage("Start", { account: String, link: String }, { name: "GET …/connections/oauth/start", over: "https" });
+const Start = defineMessage("Start", { account: String, link: String }, { name: "GET …/apps/oauth/start", over: "https" });
 const ToAuthorize = defineMessage("ToAuthorize", { state: String, nonce: String, client: String }, { name: "302 to the consent page, flow cookie set", over: "https", tone: "reply" });
 const Callback = defineMessage("Callback", { state: String, code: String, cookie: nullable(String) }, { name: "GET /api/v1/connections/oauth/callback", over: "https" });
 const Connected = defineMessage("Connected", { name: String }, { name: "signing in", over: "https", tone: "reply" });
@@ -82,7 +82,7 @@ const limit2 = defineLimit({ name: "The Durable Object refreshes a grant this lo
 
 export const Manager = defineActor({
   name: "AxoAccountManager",
-  description: "The account's Durable Object: it holds connections, OAuth clients and grants, and runs each sign-in.",
+  description: "The account's Durable Object: it holds apps, OAuth clients and grants, and runs each sign-in.",
   zone: cloudflare,
   singleton: true,
   initialState: () => ({
@@ -100,7 +100,7 @@ export const Manager = defineActor({
     rows: (s) =>
       Object.entries(s.conns).flatMap(([account, cs]) =>
         Object.entries(cs).map(([name, c]) => ({
-          group: `${cap(who(account))}'s connections`,
+          group: `${cap(who(account))}'s apps`,
           owner: cap(who(account)),
           label: name,
           detail: c.grant ? `${c.status}, grant for ${c.grant.upstream} at the service` : c.status,
@@ -112,7 +112,7 @@ export const Manager = defineActor({
     add: {
       on: Add,
       description: "Records the connection and asks the service to register Axo as an OAuth client.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.add"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.add"],
       sends: [Register, NameTaken],
       say: (_s, m) => `${cap(who(m.account))} adds ${m.name}; registering Axo with the service`,
       run(state, m, ctx) {
@@ -126,7 +126,7 @@ export const Manager = defineActor({
     registered: {
       on: Registered,
       description: "Keeps the registered client and gives the agent a sign-in link to hand to the person.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.prepareSignIn", "packages/axo-api-worker/src/connections/oauth.ts#register"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.prepareSignIn", "packages/axo-api-worker/src/apps/oauth.ts#register"],
       sends: [Link],
       run(state, m, ctx) {
         const conn = state.conns[m.account]?.[m.name];
@@ -142,8 +142,8 @@ export const Manager = defineActor({
     },
     noRegistration: {
       on: NoRegistration,
-      description: "The service does not register clients; the connection waits for one typed on the Connections page.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.prepareSignIn"],
+      description: "The service does not register clients; the connection waits for one typed on the Apps page.",
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.prepareSignIn"],
       sends: [NeedsClient],
       run(state, m, ctx) {
         const agent = ctx.all(Session).find((x) => x.id === state.adding[`${m.account}/${m.name}`]);
@@ -153,8 +153,8 @@ export const Manager = defineActor({
     },
     registerFailed: {
       on: failed(Register),
-      description: "Registration did not answer; the connection waits for a client typed on the Connections page.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.prepareSignIn"],
+      description: "Registration did not answer; the connection waits for a client typed on the Apps page.",
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.prepareSignIn"],
       sends: [NeedsClient],
       run(state, f, ctx) {
         const key = `${f.payload.account}/${f.payload.name}`;
@@ -166,7 +166,7 @@ export const Manager = defineActor({
     saveClient: {
       on: SaveClient,
       description: "Seals and keeps the typed client, and returns a sign-in link; the secret is never sent back.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.setClient"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.setClient"],
       sends: [Saved],
       run(state, m, ctx) {
         const conn = state.conns[m.account]?.[m.name];
@@ -182,7 +182,7 @@ export const Manager = defineActor({
     begin: {
       on: Begin,
       description: "Uses up the link and starts a flow: a PKCE verifier kept here, and a nonce for the browser's flow cookie.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.openFlow"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.openFlow"],
       sends: [Begun, NoSuchLink],
       run(state, m, ctx) {
         const entry = state.links[ctx.hash(m.link)];
@@ -198,7 +198,7 @@ export const Manager = defineActor({
     complete: {
       on: Complete,
       description: "Ends the flow and redeems the code with its PKCE verifier.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.completeFlow"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.completeFlow"],
       sends: [Token, Completed, NotCompleted],
       run(state, m, ctx) {
         const flow = state.flows[m.flow];
@@ -212,7 +212,7 @@ export const Manager = defineActor({
     tokens: {
       on: Tokens,
       description: "Stores the grant on the connection that started this flow, and schedules its refresh.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.completeFlow", "packages/axo-api-worker/src/connections/oauth.ts#redeemCode"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.completeFlow", "packages/axo-api-worker/src/apps/oauth.ts#redeemCode"],
       starts: ["refreshDue"],
       say: (_s, m) => `${m.name} is ready for ${cap(who(m.account))}, with ${m.upstream}'s grant`,
       run(state, m, ctx) {
@@ -227,18 +227,18 @@ export const Manager = defineActor({
     codeRejected: {
       on: CodeRejected,
       description: "The service refused the code; the person signs in again.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.completeFlow"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.completeFlow"],
       run: () => {},
     },
     tokenFailed: {
       on: failed(Token),
       description: "Redeeming the code failed or its answer was lost; the code is spent, so the person signs in again.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.completeFlow"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.completeFlow"],
       run: () => {},
     },
     refreshDue: {
       description: "A grant nears expiry; the Durable Object refreshes it.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.renew"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.renew"],
       after: "5 minutes before the access token expires",
       sends: [Refresh],
       run(state, _, ctx) {
@@ -253,7 +253,7 @@ export const Manager = defineActor({
     refreshed: {
       on: Refreshed,
       description: "Keeps the rotated refresh token, if it is for the grant the connection still holds; the connection is ready again.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.renew"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.renew"],
       starts: ["refreshDue"],
       run(state, m, ctx) {
         const conn = state.conns[m.account]?.[m.name];
@@ -266,7 +266,7 @@ export const Manager = defineActor({
     refreshRejected: {
       on: RefreshRejected,
       description: "The service refused the refresh; if the connection still holds that grant, it is dropped and the connection needs sign-in.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.renew", "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.dropGrant"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.renew", "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.dropGrant"],
       run(state, m) {
         const conn = state.conns[m.account]?.[m.name];
         if (!conn?.grant || conn.grant.generation !== m.generation) return;
@@ -277,7 +277,7 @@ export const Manager = defineActor({
     refreshFailed: {
       on: failed(Refresh),
       description: "The refresh did not answer; the old refresh token may be spent, so if the connection still holds that grant it is dropped and the connection needs sign-in.",
-      sources: ["packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.renew", "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.dropGrant"],
+      sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.renew", "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.dropGrant"],
       run(state, f) {
         const conn = state.conns[f.payload.account]?.[f.payload.name];
         if (!conn?.grant || conn.grant.generation !== f.payload.generation) return;
@@ -301,7 +301,7 @@ export const Manager = defineActor({
 
 export const Worker = defineActor({
   name: "Worker",
-  description: "The Axo API Worker: it serves the Connections page and the one OAuth callback, and checks the flow cookie.",
+  description: "The Axo API Worker: it serves the Apps page and the one OAuth callback, and checks the flow cookie.",
   zone: cloudflare,
   singleton: true,
   initialState: () => ({}),
@@ -310,14 +310,14 @@ export const Worker = defineActor({
     enterClient: {
       on: EnterClient,
       description: "Passes the typed client to the account.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#serveConnections"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#serveApps"],
       sends: [SaveClient],
       run: (_s, m, ctx) => ctx.send(ctx.the(Manager), SaveClient, { ...m, browser: ctx.from.id }),
     },
     saved: {
       on: Saved,
-      description: "Shows the sign-in link on the Connections page.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#serveConnections"],
+      description: "Shows the sign-in link on the Apps page.",
+      sources: ["packages/axo-api-worker/src/http/apps.ts#serveApps"],
       sends: [ClientSaved],
       run(_s, m, ctx) {
         const browser = ctx.all(Browser).find((b) => b.id === m.browser);
@@ -328,14 +328,14 @@ export const Worker = defineActor({
     start: {
       on: Start,
       description: "Opens a sign-in for the signed-in account.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#startConnectionSignIn"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#startConnectionSignIn"],
       sends: [Begin],
       run: (_s, m, ctx) => ctx.send(ctx.the(Manager), Begin, { account: m.account, link: m.link, browser: ctx.from.id }),
     },
     begun: {
       on: Begun,
       description: "Sets the flow cookie and sends the browser to the service's consent page.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#startConnectionSignIn"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#startConnectionSignIn"],
       sends: [ToAuthorize],
       run(_s, m, ctx) {
         const browser = ctx.all(Browser).find((b) => b.id === m.browser);
@@ -345,7 +345,7 @@ export const Worker = defineActor({
     noSuchLink: {
       on: NoSuchLink,
       description: "The link is unknown, used, or another account's.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#startConnectionSignIn"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#startConnectionSignIn"],
       sends: [Refused],
       run(_s, m, ctx) {
         const browser = ctx.all(Browser).find((b) => b.id === m.browser);
@@ -356,7 +356,7 @@ export const Worker = defineActor({
     callback: {
       on: Callback,
       description: "Unseals the state and checks that this browser's flow cookie started it, before the account redeems the code.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#completeConnectionSignIn"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#completeConnectionSignIn"],
       sends: [Complete, Refused],
       run(_s, m, ctx) {
         const sealed = unsealState(m.state);
@@ -368,7 +368,7 @@ export const Worker = defineActor({
     completed: {
       on: Completed,
       description: "Tells the person the connection is being signed in.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#completeConnectionSignIn"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#completeConnectionSignIn"],
       sends: [Connected],
       run(_s, m, ctx) {
         const browser = ctx.all(Browser).find((b) => b.id === m.browser);
@@ -378,7 +378,7 @@ export const Worker = defineActor({
     notCompleted: {
       on: NotCompleted,
       description: "The sign-in was unknown or used.",
-      sources: ["packages/axo-api-worker/src/http/connections.ts#completeConnectionSignIn"],
+      sources: ["packages/axo-api-worker/src/http/apps.ts#completeConnectionSignIn"],
       sends: [Refused],
       run(_s, m, ctx) {
         const browser = ctx.all(Browser).find((b) => b.id === m.browser);
@@ -491,14 +491,14 @@ export const Session = defineActor({
       with: [atMost(2)],
       label: "Add Linear",
       description: "The agent adds a third-party connection mid-task.",
-      sources: ["crates/axo-server/src/connections.rs#forward"],
+      sources: ["crates/axo-server/src/apps.rs#forward"],
       sends: [Add],
       run: (state, _i, ctx) => ctx.send(ctx.the(Manager), Add, { account: state.account, name: "linear" }),
     },
   },
   transitions: {
     link: { on: Link, description: "Gives the person the sign-in link.", run: (s, m) => void (s.links.push(m.link), s.heard.push("sign-in link ready")) },
-    needsClient: { on: NeedsClient, description: "Tells the person to enter a client on the Connections page.", run: (s) => void s.heard.push("needs a client") },
+    needsClient: { on: NeedsClient, description: "Tells the person to enter a client on the Apps page.", run: (s) => void s.heard.push("needs a client") },
     nameTaken: { on: NameTaken, description: "Tells the person the name is taken.", run: (s) => void s.heard.push("name taken") },
     // Faults: what the network and restarts may do here.
     linkLost: lose(Link, { spend: faults }),
@@ -536,7 +536,7 @@ export const Browser = defineActor({
       with: [atMost(2)],
       label: "Enter a client",
       description: "On Apps, MCP servers, the person types a client they registered with the service.",
-      sources: ["packages/axo-web-app/src/chat/connections.tsx#ServersPage"],
+      sources: ["packages/axo-web-app/src/chat/apps.tsx#ServersPage"],
       sends: [EnterClient],
       run: (state, _i, ctx) => ctx.send(ctx.the(Worker), EnterClient, { account: state.account, name: "linear", client: "client-by-hand", secret: "secret-by-hand" }),
     },
@@ -641,7 +641,7 @@ const addLinearMidTask = defineScenario("Add Linear mid-task", {
   },
 });
 const aServiceThatDoesNotRegisterClients = defineScenario("A service that does not register clients", {
-  description: "The server has no client registration, so Alice types a client on the Connections page and signs in with it.",
+  description: "The server has no client registration, so Alice types a client on the Apps page and signs in with it.",
   setup(w) {
     w.set(AuthServer, { dcr: false });
     w.spawn(Session, "Alice's session");
@@ -702,7 +702,7 @@ const axoCloudGroup = defineGroup({ name: "Axo cloud", actors: [Worker, Manager]
 export default defineSpec({
   name: "Connection sign-in",
   description:
-    "How an Axo account gets and keeps a grant for a third-party MCP server: an agent adds the connection, Axo registers as an OAuth client or takes one typed on the Connections page, the person signs in through Axo's one callback, and the account's Durable Object refreshes the grant.",
+    "How an Axo account gets and keeps a grant for a third-party MCP server: an agent adds the connection, Axo registers as an OAuth client or takes one typed on the Apps page, the person signs in through Axo's one callback, and the account's Durable Object refreshes the grant.",
   actors: [Manager, Worker, AuthServer, Session, Browser],
   groups: [axoCloudGroup],
   limits: [limit1, limit2],

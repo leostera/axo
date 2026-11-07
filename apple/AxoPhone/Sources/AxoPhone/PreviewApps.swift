@@ -8,7 +8,7 @@
   /// servers and some activity, kept in memory. Adding and removing accounts works; a token
   /// spelled "bad" is refused, as a service would; device and Mac sign-ins finish on the second
   /// poll.
-  final class PreviewConnections: ConnectionsService, @unchecked Sendable {
+  final class PreviewApps: AppsService, @unchecked Sendable {
     private let lock = NSLock()
     private var accounts: [String: [AppAccount]] = [
       "apps.gmail": [AppAccount(account: "leandro@example.com")],
@@ -112,7 +112,7 @@
 
     func addToken(app: String, account: String?, fields: [String: String]) async throws -> String {
       try await Task.sleep(for: .milliseconds(150))
-      if fields.values.contains("bad") { throw ConnectionsRefusal(status: 400, message: "Hetzner refused that token.") }
+      if fields.values.contains("bad") { throw AppsRefusal(status: 400, message: "Hetzner refused that token.") }
       return locked {
         let name = account ?? "account"
         var list = accounts[app] ?? []

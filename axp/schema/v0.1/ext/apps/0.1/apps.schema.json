@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axp.leostera.dev/schema/v0.1/ext/connections/0.1/connections.schema.json",
-  "title": "AXP extension `connections` 0.1",
-  "description": "Tools an account connects at its hub. See extensions/connections.md.",
+  "$id": "https://axp.leostera.dev/schema/v0.1/ext/apps/0.1/apps.schema.json",
+  "title": "AXP extension `apps` 0.1",
+  "description": "Tools an account connects at its hub. See extensions/apps.md.",
   "$defs": {
     "tool": {
       "type": "object",
@@ -108,13 +108,13 @@
         "isError"
       ]
     },
-    "connections.list.params": {
+    "apps.list.params": {
       "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
     },
-    "connections.list.result": {
+    "apps.list.result": {
       "type": "object",
       "properties": {
-        "connections": {
+        "apps": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/connection"
@@ -123,10 +123,10 @@
       },
       "additionalProperties": false,
       "required": [
-        "connections"
+        "apps"
       ]
     },
-    "connections.search.params": {
+    "apps.search.params": {
       "type": "object",
       "properties": {
         "query": {
@@ -145,7 +145,7 @@
         "query"
       ]
     },
-    "connections.search.result": {
+    "apps.search.result": {
       "type": "object",
       "properties": {
         "tools": {
@@ -173,7 +173,7 @@
         "tools"
       ]
     },
-    "connections.execute.params": {
+    "apps.execute.params": {
       "type": "object",
       "properties": {
         "sessionId": {
@@ -199,7 +199,7 @@
         "arguments"
       ]
     },
-    "connections.execute.result": {
+    "apps.execute.result": {
       "type": "object",
       "properties": {
         "content": {
@@ -221,7 +221,7 @@
         "isError"
       ]
     },
-    "connections.script.params": {
+    "apps.script.params": {
       "type": "object",
       "properties": {
         "sessionId": {
@@ -244,7 +244,7 @@
         "source"
       ]
     },
-    "connections.script.result": {
+    "apps.script.result": {
       "type": "object",
       "properties": {
         "result": true,
@@ -261,7 +261,7 @@
         "logs"
       ]
     },
-    "connections.log.params": {
+    "apps.log.params": {
       "type": "object",
       "properties": {
         "sessionId": {
@@ -278,7 +278,7 @@
       },
       "additionalProperties": false
     },
-    "connections.log.result": {
+    "apps.log.result": {
       "type": "object",
       "properties": {
         "calls": {
@@ -293,7 +293,7 @@
         "calls"
       ]
     },
-    "connections.add.params": {
+    "apps.add.params": {
       "type": "object",
       "properties": {
         "kind": {
@@ -314,7 +314,7 @@
         "kind"
       ]
     },
-    "connections.add.result": {
+    "apps.add.result": {
       "type": "object",
       "properties": {
         "connection": {
@@ -326,7 +326,7 @@
         "connection"
       ]
     },
-    "connections.remove.params": {
+    "apps.remove.params": {
       "type": "object",
       "properties": {
         "id": {
@@ -339,10 +339,10 @@
         "id"
       ]
     },
-    "connections.remove.result": {
+    "apps.remove.result": {
       "$ref": "https://axp.leostera.dev/schema/v0.1/axp.schema.json#/$defs/empty"
     },
-    "connections.signIn.params": {
+    "apps.signIn.params": {
       "type": "object",
       "properties": {
         "id": {
@@ -355,7 +355,7 @@
         "id"
       ]
     },
-    "connections.signIn.result": {
+    "apps.signIn.result": {
       "type": "object",
       "properties": {
         "url": {
@@ -368,10 +368,10 @@
         "url"
       ]
     },
-    "connections.changed.params": {
+    "apps.changed.params": {
       "type": "object",
       "properties": {
-        "connections": {
+        "apps": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/connection"
@@ -380,7 +380,7 @@
       },
       "additionalProperties": false,
       "required": [
-        "connections"
+        "apps"
       ]
     }
   }

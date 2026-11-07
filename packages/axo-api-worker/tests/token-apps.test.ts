@@ -2,7 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema } from "@axo/protocol";
-import { AppAccountRefused, AppConnections } from "../src/connections/apps";
+import { AppAccountRefused, BuiltinApps } from "../src/apps/builtin";
 import { FakeHetzner } from "./fake-hetzner";
 import { sqlStorage } from "./sql-storage";
 
@@ -21,7 +21,7 @@ function fixture() {
     if (!answer) throw new Error(`unexpected request to ${request.url}`);
     return answer;
   }) as typeof fetch;
-  const apps = new AppConnections({ sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { hetzner, sql, apps };
 }
 
@@ -173,7 +173,7 @@ function services() {
     }
     return json({ error: "not found" }, 404);
   }) as typeof fetch;
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen };
 }
 
@@ -226,7 +226,7 @@ function signedServices() {
     }
     return json({ error: ["not found"] }, 404);
   }) as typeof fetch;
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen, krakenSecret };
 }
 
@@ -288,7 +288,7 @@ function moreServices() {
     }
     return json({ message: "not found" }, 404);
   }) as typeof fetch;
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen };
 }
 

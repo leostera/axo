@@ -88,7 +88,7 @@ public final class AccountConnection: Sendable {
   }
 
   /// Names a Mac for the whole account: every client shows the name at once, and the Mac keeps it
-  /// across reconnections. An empty name goes back to the Mac's own. Returns the name it now has.
+  /// across reapps. An empty name goes back to the Mac's own. Returns the name it now has.
   public func renameHost(_ host: UUID, to name: String) async throws -> String {
     let renamed: HostRenamed = try await rpc.call(
       "axo.client.host.rename", params: RenameHostParams(hostId: host.uuidString.lowercased(), name: name),

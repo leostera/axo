@@ -17,7 +17,7 @@ import { accountApi, listHosts, localCall, terminate, waitFor, trustedDevice } f
  *
  *   Session ──axod.sock──▶ axod ──WSS──▶ HostDO ──RPC──▶ AxoAccountManager ──▶ script Worker
  *                           ▲                                   │
- *                           └──── axo.connections.bash ◀── HostDO.callHost
+ *                           └──── axo.apps.bash ◀── HostDO.callHost
  */
 test("a Session's script runs bash and computer use on a Mac through the account, and the calls are logged", async () => {
   const binary = process.env.AXOD_BINARY;
@@ -26,7 +26,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
   assert.ok(existsSync(axodBinary), `axod binary must exist at ${axodBinary}`);
 
   const api = await harness();
-  const root = await mkdtemp(join(tmpdir(), "axo-connections-"));
+  const root = await mkdtemp(join(tmpdir(), "axo-apps-"));
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
@@ -44,7 +44,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
     await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
 
     // Before it is linked, a Mac has no account to reach.
-    await assert.rejects(localCall(socketPath, "axo.connections.list", { sessionId }), /not connected to its Axo account/);
+    await assert.rejects(localCall(socketPath, "axo.apps.list", { sessionId }), /not connected to its Axo account/);
 
     const account = await signIn(api);
     const pairing = await fetch(new URL("api/v1/account/host-pairings", api.url), { method: "POST", headers: account.headers });
@@ -53,17 +53,17 @@ test("a Session's script runs bash and computer use on a Mac through the account
     const host = await waitFor("the Mac coming online", 20_000, async () =>
       (await listHosts(api.url, account)).find((candidate) => candidate.status === "online"), daemon);
 
-    const listed = (await localCall(socketPath, "axo.connections.list", { sessionId })) as {
-      connections: Array<{ kind: string; name: string; hostId: string; state: string }>;
+    const listed = (await localCall(socketPath, "axo.apps.list", { sessionId })) as {
+      apps: Array<{ kind: string; name: string; hostId: string; state: string }>;
     };
     // The Mac, beside the apps every account lists.
-    const connections = listed.connections.filter((c) => c.kind === "host");
-    assert.equal(connections.length, 1);
-    assert.deepEqual({ ...connections[0], name: typeof connections[0]!.name }, { kind: "host", name: "string", hostId: host.hostId, state: "online" });
-    const service = connections[0]!.name;
+    const apps = listed.apps.filter((c) => c.kind === "host");
+    assert.equal(apps.length, 1);
+    assert.deepEqual({ ...apps[0], name: typeof apps[0]!.name }, { kind: "host", name: "string", hostId: host.hostId, state: "online" });
+    const service = apps[0]!.name;
 
     // A command's output larger than one relay frame comes back whole, as fragments.
-    const executed = (await localCall(socketPath, "axo.connections.execute", {
+    const executed = (await localCall(socketPath, "axo.apps.execute", {
       sessionId,
       code: `async () => {
         const small = await codemode.bash.run({ host: ${JSON.stringify(service)}, command: "echo hello-$((40 + 2)); pwd", cwd: ${JSON.stringify(root)} });
@@ -73,11 +73,11 @@ test("a Session's script runs bash and computer use on a Mac through the account
       }`,
     })) as { result: { small: string; large: number; truncated: boolean }; logs: string[] };
     assert.equal(executed.result.small.split("\n")[0], "hello-42");
-    assert.match(executed.result.small, /axo-connections-/);
+    assert.match(executed.result.small, /axo-apps-/);
     assert.deepEqual([executed.result.large, executed.result.truncated], [300_000, false]);
     assert.deepEqual(executed.logs, ["ran 0 0"]);
 
-    const { records } = (await localCall(socketPath, "axo.connections.log", { sessionId })) as {
+    const { records } = (await localCall(socketPath, "axo.apps.log", { sessionId })) as {
       records: Array<{ sessionId: string; hostId: string; targetHostId: string; tool: string; outcome: string; input: { command: string } }>;
     };
     assert.deepEqual(records.map((r) => [r.sessionId, r.hostId, r.targetHostId, r.tool, r.outcome]), [
@@ -87,7 +87,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
     assert.deepEqual(records.map((r) => r.input.command).sort(), ["echo hello-$((40 + 2)); pwd", "head -c 300000 /dev/zero | tr '\\0' a"]);
 
     // The Mac lists itself, and says whether it can do computer use now.
-    const hosts = (await localCall(socketPath, "axo.connections.execute", { sessionId, code: `async () => codemode.hosts.list()` })) as {
+    const hosts = (await localCall(socketPath, "axo.apps.execute", { sessionId, code: `async () => codemode.hosts.list()` })) as {
       result: Array<{ name: string; online: boolean; self: boolean; computerUse: { available: boolean } | null }>;
     };
     assert.deepEqual(hosts.result.map((h) => [h.name, h.online, h.self, typeof h.computerUse?.available]), [[service, true, true, "boolean"]]);
@@ -98,7 +98,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
       elicitationRequested: (_hostId, elicitation) => asked.push(elicitation),
     });
     try {
-      const pay = localCall(socketPath, "axo.connections.execute", {
+      const pay = localCall(socketPath, "axo.apps.execute", {
         sessionId,
         code: `async () => codemode.computer.run({ host: "self", tool: "click", args: { role: "AXButton", name: "Pay now" }, confirm: true })`,
       });
@@ -112,7 +112,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
     } finally {
       phone.close();
     }
-    const after = (await localCall(socketPath, "axo.connections.log", { sessionId })) as { records: Array<{ service: string; tool: string; outcome: string }> };
+    const after = (await localCall(socketPath, "axo.apps.log", { sessionId })) as { records: Array<{ service: string; tool: string; outcome: string }> };
     assert.deepEqual(after.records.map((r) => [r.service, r.tool, r.outcome])[0], ["computer", "click", "error"]);
   } finally {
     if (daemon) await terminate(daemon);

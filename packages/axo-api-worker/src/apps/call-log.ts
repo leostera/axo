@@ -1,4 +1,4 @@
-import { CONNECTIONS_LIMITS, type CallRecord } from "@axo/protocol";
+import { APPS_LIMITS, type CallRecord } from "@axo/protocol";
 import { seal, unseal } from "../auth/crypto";
 
 /**
@@ -73,18 +73,18 @@ export class CallLog {
   }
 
   private get purpose(): string {
-    return `connections-call-input\0${this.accountId}`;
+    return `apps-call-input\0${this.accountId}`;
   }
 
   async start(call: CallStart, now = Date.now()): Promise<void> {
     const text = JSON.stringify(call.input ?? null);
     // A third-party input may be large; the log keeps its first 64 KiB, marked as cut.
-    const kept = text.length <= CONNECTIONS_LIMITS.scriptBytes
+    const kept = text.length <= APPS_LIMITS.scriptBytes
       ? call.input ?? null
-      : { truncated: true, length: text.length, head: text.slice(0, CONNECTIONS_LIMITS.scriptBytes) };
+      : { truncated: true, length: text.length, head: text.slice(0, APPS_LIMITS.scriptBytes) };
     const sealed = await seal(this.secret, this.purpose, kept);
     await this.serial(async () => {
-      this.forget(now - CONNECTIONS_LIMITS.logDays * DAY_MS);
+      this.forget(now - APPS_LIMITS.logDays * DAY_MS);
       this.sql.exec(`INSERT INTO connection_calls (call_id, at, session_id, host_id, service, tool, target_host_id, input_sealed)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, call.callId, now, call.sessionId, call.hostId, call.service, call.tool, call.targetHostId, sealed);
       await this.append({ kind: "start", callId: call.callId, at: now, sessionId: call.sessionId, hostId: call.hostId, service: call.service, tool: call.tool, targetHostId: call.targetHostId, input: sealed });
@@ -192,10 +192,10 @@ export class CallLog {
   }
 
   /** Newest first, of every service or only `service`. A call still running reads as `unknown`. */
-  async read(limit: number = CONNECTIONS_LIMITS.logPage, before?: string, service?: string, now = Date.now()): Promise<CallRecord[]> {
+  async read(limit: number = APPS_LIMITS.logPage, before?: string, service?: string, now = Date.now()): Promise<CallRecord[]> {
     const until = before ? Date.parse(before) : Number.MAX_SAFE_INTEGER;
-    const page = Math.min(Math.max(limit, 1), CONNECTIONS_LIMITS.logPage);
-    const since = now - CONNECTIONS_LIMITS.logDays * DAY_MS;
+    const page = Math.min(Math.max(limit, 1), APPS_LIMITS.logPage);
+    const since = now - APPS_LIMITS.logDays * DAY_MS;
     const rows = (service
       ? this.sql.exec<Row>("SELECT * FROM connection_calls WHERE service = ? AND at < ? AND at >= ? ORDER BY at DESC, call_id LIMIT ?", service, until, since, page)
       : this.sql.exec<Row>("SELECT * FROM connection_calls WHERE at < ? AND at >= ? ORDER BY at DESC, call_id LIMIT ?", until, since, page)
@@ -211,7 +211,7 @@ export class CallLog {
       durationMs: row.duration_ms ?? Math.max(0, Math.floor(now - row.at)),
       outcome: row.outcome ?? "unknown",
       error: row.error,
-      input: (await unseal(this.secret, this.purpose, row.input_sealed, 4 * CONNECTIONS_LIMITS.scriptBytes + 1024)) ?? null,
+      input: (await unseal(this.secret, this.purpose, row.input_sealed, 4 * APPS_LIMITS.scriptBytes + 1024)) ?? null,
     })));
   }
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema } from "@axo/protocol";
 import { PhoneRefused, ProviderOutcomeUnknown, type PhoneClient, type PhoneSignIn, type PhoneStep } from "@axo/apps";
-import { AppConnections } from "../src/connections/apps";
+import { BuiltinApps } from "../src/apps/builtin";
 import { sqlStorage } from "./sql-storage";
 
 /**
@@ -94,7 +94,7 @@ function fixture() {
   const telegram = new FakeTelegram();
   const sql = sqlStorage();
   const background: Promise<unknown>[] = [];
-  const apps = new AppConnections({
+  const apps = new BuiltinApps({
     sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
     fetcher: (async () => { throw new Error("a phone app makes no HTTP calls"); }) as typeof fetch,
     waitUntil: (p) => void background.push(p),
@@ -210,9 +210,9 @@ test("Telegram bot accounts from before Telegram was the person's own are remove
   sql.exec("CREATE TABLE app_accounts (app TEXT NOT NULL, account TEXT NOT NULL, grant_sealed TEXT, grant_generation INTEGER NOT NULL DEFAULT 1, last_error TEXT, created_at REAL NOT NULL, PRIMARY KEY (app, account))");
   sql.exec("INSERT INTO app_accounts VALUES ('telegram', '@adabot', 'sealed-bot-token', 1, NULL, 0), ('hetzner', 'main', 'sealed', 1, NULL, 0)");
   const deps = { sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined };
-  new AppConnections(deps);
+  new BuiltinApps(deps);
   assert.deepEqual(sql.exec<{ app: string; account: string }>("SELECT app, account FROM app_accounts").toArray().map((r) => `${r.app}/${r.account}`), ["hetzner/main"]);
   sql.exec("INSERT INTO app_accounts VALUES ('telegram', '@ada', 'sealed-session', 1, NULL, 0)");
-  new AppConnections(deps);
+  new BuiltinApps(deps);
   assert.equal(sql.exec("SELECT 1 FROM app_accounts WHERE app = 'telegram'").toArray().length, 1, "a later account stays");
 });

@@ -5,9 +5,9 @@ import XCTest
 @testable import AxoPhoneModel
 
 /// Settings › Apps' API, answered from memory, recording what was asked.
-private final class FakeConnections: ConnectionsService, @unchecked Sendable {
+private final class FakeApps: AppsService, @unchecked Sendable {
   private let lock = NSLock()
-  var connections: [Connection] = []
+  var apps: [Connection] = []
   var failList: Error?
   var refuseTokens = false
   var deviceAnswers: [DeviceSignIn] = []
@@ -21,13 +21,13 @@ private final class FakeConnections: ConnectionsService, @unchecked Sendable {
   func list() async throws -> [Connection] {
     note("list")
     if let failList { throw failList }
-    return connections
+    return apps
   }
   func log(service: String?, limit: Int, before: String?) async throws -> [CallRecord] { [] }
   func integrity() async throws -> CallLogIntegrity { CallLogIntegrity(verified: true, events: 0) }
   func addToken(app: String, account: String?, fields: [String: String]) async throws -> String {
     note("token \(app) \(account ?? "-") \(fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","))")
-    if refuseTokens { throw ConnectionsRefusal(status: 400, message: "Hetzner refused that token.") }
+    if refuseTokens { throw AppsRefusal(status: 400, message: "Hetzner refused that token.") }
     return account ?? "a@b.c"
   }
   func startDeviceSignIn(app: String) async throws -> (flow: String, state: DeviceSignIn) {
@@ -76,9 +76,9 @@ final class AppsModelTests: XCTestCase {
   private let chatgpt = AppConnection(name: "apps.chatgpt", title: "ChatGPT", provider: "OpenAI", signIn: .device)
 
   /// A model whose polls do not wait, and the fake behind it.
-  private func world(_ connections: [Connection] = []) -> (AppsModel, FakeConnections) {
-    let fake = FakeConnections()
-    fake.connections = connections
+  private func world(_ apps: [Connection] = []) -> (AppsModel, FakeApps) {
+    let fake = FakeApps()
+    fake.apps = apps
     return (AppsModel(service: fake, pause: { _ in await Task.yield() }), fake)
   }
 
@@ -96,9 +96,9 @@ final class AppsModelTests: XCTestCase {
 
   func testAFirstListingThatFailsSaysWhyAndALaterOneKeepsWhatIsShown() async {
     let (model, fake) = world([.app(hetzner)])
-    fake.failList = ConnectionsRefusal(status: 503, message: "Connections are unavailable")
+    fake.failList = AppsRefusal(status: 503, message: "Apps are unavailable")
     await model.refresh()
-    XCTAssertEqual(model.phase, .failed("Connections are unavailable"))
+    XCTAssertEqual(model.phase, .failed("Apps are unavailable"))
     fake.failList = nil
     await model.refresh()
     fake.failList = RelayError.unreachable("offline")

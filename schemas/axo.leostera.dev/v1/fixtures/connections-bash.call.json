@@ -1,1 +1,0 @@
-{ "jsonrpc": "2.0", "id": "b-1", "method": "axo.connections.bash", "params": { "accountId": "4c2e8f10-9b7a-4d3c-a1e2-f3a4b5c6d7e8", "callId": "call-7", "command": "uptime", "cwd": "/Users/leo", "timeoutMs": 60000 } }

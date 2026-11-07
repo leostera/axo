@@ -4,10 +4,10 @@ import { pkceVerifier } from "@axo/apps";
 
 /**
  * The account as an OAuth client of a third-party MCP server (RFD0016, Third-party connection
- * sign-in; modelled in specs/connections/connection-sign-in.ts). Discovery follows the MCP authorization
+ * sign-in; modelled in specs/apps/connection-sign-in.ts). Discovery follows the MCP authorization
  * spec: the server's protected resource metadata (RFC 9728) names its authorization server,
  * whose metadata (RFC 8414) names the endpoints. A client is registered dynamically (RFC 7591)
- * when the server allows it; otherwise the person enters one on the Connections page.
+ * when the server allows it; otherwise the person enters one on the Apps page.
  *
  * Every step is the official MCP SDK's (`@modelcontextprotocol/sdk/client/auth`), the code the
  * MCP clients most servers are tried with run, so it bends where servers do. This file keeps
@@ -62,7 +62,7 @@ export async function discover(serverUrl: string, wwwAuthenticate: string | null
 
 /** Registers Axo as a public client with the one callback it ever uses. */
 export async function register(discovery: Discovery, fetcher: typeof fetch = fetch): Promise<Client> {
-  if (!discovery.registrationEndpoint) throw new OAuthError("the server does not register clients itself; enter a client ID on the Connections page");
+  if (!discovery.registrationEndpoint) throw new OAuthError("the server does not register clients itself; enter a client ID on the Apps page");
   try {
     const client = await registerClient(issuerOf(discovery), {
       metadata: metadataOf(discovery),

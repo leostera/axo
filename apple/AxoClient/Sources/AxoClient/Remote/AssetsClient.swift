@@ -68,7 +68,7 @@ public struct AssetsClient: Sendable {
   /// already has these bytes.
   public func upload(_ data: Data, name: String, mimeType: String) async throws -> Attachment {
     guard data.count <= Attachment.maxBytes else {
-      throw ConnectionsRefusal(status: 413, message: "Files can be at most 100 MB.")
+      throw AppsRefusal(status: 413, message: "Files can be at most 100 MB.")
     }
     let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     let name = Attachment.safeName(name)
@@ -105,7 +105,7 @@ public struct AssetsClient: Sendable {
       throw RelayError.signInRequired
     default:
       let message = (try? JSONDecoder().decode(Refusal.self, from: body).error) ?? "Upload failed (\(response.statusCode))"
-      throw ConnectionsRefusal(status: response.statusCode, message: message)
+      throw AppsRefusal(status: response.statusCode, message: message)
     }
   }
 }

@@ -8,7 +8,7 @@ interface Env {
   AXO_ASSETS: R2Bucket;
   /** Shared conversations' snapshots. */
   PUBLIC_SESSIONS: R2Bucket;
-  /** Runs connections scripts in Dynamic Workers (RFD0016). */
+  /** Runs scripts in Dynamic Workers (RFD0016). */
   LOADER: WorkerLoader;
   OAUTH_CLIENT_ID: string;
   OAUTH_CLIENT_SECRET: string;

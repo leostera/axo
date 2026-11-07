@@ -1,5 +1,5 @@
 //! What axod offers that needs the person's account, on a Mac that has none: the relay, the
-//! account's connections, other Macs, assets, sharing. Each answers plainly that it cannot, and
+//! account's apps, other Macs, assets, sharing. Each answers plainly that it cannot, and
 //! nothing waits or hangs. The Worker's relay tests (`//packages/axo-api-worker:relay_test`)
 //! drive the same methods on a linked Mac.
 //!
@@ -60,7 +60,7 @@ fn linking_with_a_relay_that_is_not_there_fails_and_leaves_the_mac_unlinked() {
 }
 
 #[test]
-fn the_accounts_connections_are_not_connected_without_an_account() {
+fn the_accounts_apps_are_not_connected_without_an_account() {
     let axod = Axod::start();
     let session = axod.sessions()[0]["id"].clone();
     let quickly = |started: Instant| {
@@ -72,22 +72,22 @@ fn the_accounts_connections_are_not_connected_without_an_account() {
     };
     let started = Instant::now();
     let refused = [
-        axod.err("axo.connections.list", json!({ "sessionId": session })),
+        axod.err("axo.apps.list", json!({ "sessionId": session })),
         axod.err(
-            "axo.connections.search",
+            "axo.apps.search",
             json!({ "sessionId": session, "code": "return 1" }),
         ),
         axod.err(
-            "axo.connections.execute",
+            "axo.apps.execute",
             json!({ "sessionId": session, "code": "return 1" }),
         ),
-        axod.err("axo.connections.log", json!({ "sessionId": session })),
+        axod.err("axo.apps.log", json!({ "sessionId": session })),
         axod.err(
-            "axo.connections.add",
+            "axo.apps.add",
             json!({ "sessionId": session, "url": "https://example.com/mcp" }),
         ),
         axod.err(
-            "axo.connections.remove",
+            "axo.apps.remove",
             json!({ "sessionId": session, "name": "example" }),
         ),
     ];

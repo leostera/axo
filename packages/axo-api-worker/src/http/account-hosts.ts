@@ -85,7 +85,7 @@ type HostAuthorizer = { authorizeHost(hostId: string, credentialId: string, cred
 /**
  * A paired Mac following the account's other Macs (RFD0022): the same client socket a browser
  * tab opens, served by a ClientDO named for the Mac, but signed in with the host credential.
- * Pairing is the sign-in; a Mac can already run commands on the others through connections.
+ * Pairing is the sign-in; a Mac can already run commands on the others through apps.
  */
 export async function upgradeHostPeers(
   request: Request,

@@ -2,7 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { appMacSignInSchema, appSignInSchema } from "@axo/protocol";
-import { AppAccountRefused, AppConnections, type MacSignInCallback } from "../src/connections/apps";
+import { AppAccountRefused, BuiltinApps, type MacSignInCallback } from "../src/apps/builtin";
 import { sqlStorage } from "./sql-storage";
 
 /**
@@ -92,7 +92,7 @@ function fixture(options: { macAnswer?: (request: { authorizeUrl: string; ports:
   const background: Promise<unknown>[] = [];
   let now = Date.parse("2026-05-01T12:00:00Z");
   const macRequests: Array<{ mac: string; authorizeUrl: string; ports: readonly number[]; path: string; state: string; timeoutMs: number }> = [];
-  const apps = new AppConnections({
+  const apps = new BuiltinApps({
     sql: sqlStorage(),
     secret: "test-secret-of-at-least-thirty-two-bytes",
     accountId: crypto.randomUUID(),

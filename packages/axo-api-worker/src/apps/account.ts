@@ -14,51 +14,51 @@ import {
   type ComputerStatus,
   SIGN_IN_METHOD,
   signInResultSchema,
-  CONNECTIONS_ERRORS,
-  CONNECTIONS_LIMITS,
-  CONNECTIONS_METHODS,
+  APPS_ERRORS,
+  APPS_LIMITS,
+  APPS_METHODS,
   connectionSlug,
   bashResultSchema,
-  connectionsParams,
-  isConnectionsMethod,
+  appsParams,
+  isAppsMethod,
   type BashResult,
   type AppMacSignIn,
   type AppPhoneSignIn,
   type AppPhoneSignInRequest,
   type Connection,
-  type ConnectionsMethod,
-  type ConnectionsParams,
-  type ConnectionsResult,
+  type AppsMethod,
+  type AppsParams,
+  type AppsResult,
   type ToolDefinition,
 } from "@axo/protocol";
 import { recordApiEvent } from "../observability";
 import { CallLog } from "./call-log";
 import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller } from "./runner";
-import { ThirdPartyConnections } from "./third-party";
+import { ThirdPartyApps } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
-import { AppAccountRefused, AppConnections, appPage, type DeviceSignIn, type MacSignInCallback } from "./apps";
+import { AppAccountRefused, BuiltinApps, appPage, type DeviceSignIn, type MacSignInCallback } from "./builtin";
 import { ProviderError, ProviderOutcomeUnknown } from "@axo/apps";
-import type { GoogleClient } from "./apps/google";
+import type { GoogleClient } from "./builtin/google";
 
 /**
- * An account's connections (RFD0016): what `axo.connections.*` calls from its Macs reach. It
- * lives inside the account's AxoAccountManager and keeps all connections state there; a Mac's
+ * An account's apps (RFD0016): what `axo.apps.*` calls from its Macs reach. It
+ * lives inside the account's AxoAccountManager and keeps all apps state there; a Mac's
  * socket owner (its HostDO) only forwards calls here and carries `bash` to a Mac for it.
  *
- * Connections are the account's paired Macs, reached with the Mac as an argument through
+ * Apps are the account's paired Macs, reached with the Mac as an argument through
  * `hosts.list`, `bash.run` and `computer.run` (RFD0028), the remote MCP servers it added
- * (third-party connections), and the apps Axo provides (`apps.<app>`), the last two called from
+ * (third-party apps), and the apps Axo provides (`apps.<app>`), the last two called from
  * here with grants kept here.
  */
 
 /** What a HostDO forwards: the calling Mac, the boot it called from, and its request. */
-export type ConnectionsCall = { hostId: string; hostGeneration: string; method: string; params: unknown };
+export type AppsCall = { hostId: string; hostGeneration: string; method: string; params: unknown };
 export type CallOutcome = { result: unknown } | { error: { code: number; message: string } };
 
 export type HostLink = { hostId: string; hostGeneration: string; label: string; linkedAt: number };
 
-export type ConnectionsDeps = {
+export type AppsDeps = {
   sql: SqlStorage;
   secret: string;
   accountId: string;
@@ -91,9 +91,9 @@ const hostField = z.string().min(1).max(64).describe('A Mac\'s name from codemod
 
 const bashInputSchema = z.object({
   host: hostField,
-  command: z.string().min(1).max(CONNECTIONS_LIMITS.scriptBytes),
+  command: z.string().min(1).max(APPS_LIMITS.scriptBytes),
   cwd: z.string().regex(/^\//, "cwd must be an absolute path").max(4096).optional(),
-  timeoutMs: z.number().int().min(1).max(CONNECTIONS_LIMITS.bashMaxTimeoutMs).optional(),
+  timeoutMs: z.number().int().min(1).max(APPS_LIMITS.bashMaxTimeoutMs).optional(),
 }).strict();
 
 const computerInputSchema = z.object({
@@ -115,17 +115,17 @@ export type HostEntry = {
 
 type Caller = { hostId: string; sessionId: string };
 
-export class AccountConnections {
+export class AccountApps {
   private readonly log: CallLog;
-  readonly thirdParty: ThirdPartyConnections;
-  readonly apps: AppConnections;
+  readonly thirdParty: ThirdPartyApps;
+  readonly apps: BuiltinApps;
 
-  constructor(private readonly deps: ConnectionsDeps) {
+  constructor(private readonly deps: AppsDeps) {
     this.log = new CallLog(deps.sql, deps.secret, deps.accountId);
-    this.thirdParty = new ThirdPartyConnections({
+    this.thirdParty = new ThirdPartyApps({
       sql: deps.sql, secret: deps.secret, accountId: deps.accountId, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
     });
-    this.apps = new AppConnections({
+    this.apps = new BuiltinApps({
       sql: deps.sql, secret: deps.secret, accountId: deps.accountId, legacyGoogle: deps.google, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
       // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
       macs: () => this.named().map((entry) => entry.name),
@@ -134,11 +134,11 @@ export class AccountConnections {
     });
   }
 
-  async call(call: ConnectionsCall): Promise<CallOutcome> {
+  async call(call: AppsCall): Promise<CallOutcome> {
     const host = this.deps.hosts().find((h) => h.hostId === call.hostId);
     if (!host || host.hostGeneration !== call.hostGeneration) return failure(-32002, "Stale host");
-    if (!isConnectionsMethod(call.method)) return failure(-32601, "Method not found");
-    const parsed = connectionsParams[call.method].safeParse(call.params);
+    if (!isAppsMethod(call.method)) return failure(-32601, "Method not found");
+    const parsed = appsParams[call.method].safeParse(call.params);
     if (!parsed.success) return failure(-32602, `Invalid params: ${z.prettifyError(parsed.error)}`.slice(0, 512));
     const caller = { hostId: call.hostId, sessionId: (parsed.data as { sessionId: string }).sessionId };
     const started = Date.now();
@@ -149,7 +149,7 @@ export class AccountConnections {
       outcome = failure(-32603, error instanceof Error ? error.message.slice(0, 512) : "Internal error");
     }
     recordApiEvent({
-      event: "connections_call",
+      event: "apps_call",
       method: call.method,
       outcome: "result" in outcome ? "result" : String(outcome.error.code),
       durationMs: Date.now() - started,
@@ -157,31 +157,31 @@ export class AccountConnections {
     return outcome;
   }
 
-  private async dispatch(method: ConnectionsMethod, params: unknown, caller: Caller): Promise<CallOutcome> {
+  private async dispatch(method: AppsMethod, params: unknown, caller: Caller): Promise<CallOutcome> {
     switch (method) {
-      case CONNECTIONS_METHODS.list:
+      case APPS_METHODS.list:
         return { result: await this.list() };
-      case CONNECTIONS_METHODS.search: {
-        const { code } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.search>;
+      case APPS_METHODS.search: {
+        const { code } = params as AppsParams<typeof APPS_METHODS.search>;
         return scriptOutcome(await runScript(this.deps.loader, code, this.tools(), null), (o) => ({ result: o.result }));
       }
-      case CONNECTIONS_METHODS.execute: {
-        const { code } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.execute>;
-        const deadline = Date.now() + CONNECTIONS_LIMITS.scriptWallMs;
+      case APPS_METHODS.execute: {
+        const { code } = params as AppsParams<typeof APPS_METHODS.execute>;
+        const deadline = Date.now() + APPS_LIMITS.scriptWallMs;
         const outcome = await runScript(this.deps.loader, code, this.tools(), this.caller(caller, deadline));
         return scriptOutcome(outcome, (o) => ({ result: o.result, logs: o.logs }));
       }
-      case CONNECTIONS_METHODS.log: {
-        const { limit, before, service } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.log>;
-        const result: ConnectionsResult<typeof CONNECTIONS_METHODS.log> = { records: await this.log.read(limit, before, service) };
+      case APPS_METHODS.log: {
+        const { limit, before, service } = params as AppsParams<typeof APPS_METHODS.log>;
+        const result: AppsResult<typeof APPS_METHODS.log> = { records: await this.log.read(limit, before, service) };
         return { result };
       }
-      case CONNECTIONS_METHODS.add: {
-        const { name, url } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.add>;
+      case APPS_METHODS.add: {
+        const { name, url } = params as AppsParams<typeof APPS_METHODS.add>;
         return this.add(name, url);
       }
-      case CONNECTIONS_METHODS.remove: {
-        const { name, account } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.remove>;
+      case APPS_METHODS.remove: {
+        const { name, account } = params as AppsParams<typeof APPS_METHODS.remove>;
         return await this.remove(name, account);
       }
     }
@@ -195,26 +195,26 @@ export class AccountConnections {
   async add(title: string, url: string): Promise<CallOutcome> {
     const name = connectionSlug(title);
     if (!name) return failure(-32602, "a name needs a letter or a digit");
-    if (RESERVED_NAMES.includes(name)) return failure(CONNECTIONS_ERRORS.nameTaken, `${name} is reserved for what Axo provides; choose another name`);
+    if (RESERVED_NAMES.includes(name)) return failure(APPS_ERRORS.nameTaken, `${name} is reserved for what Axo provides; choose another name`);
     if (this.thirdParty.has(name))
-      return failure(CONNECTIONS_ERRORS.nameTaken, name === title ? `a connection named ${name} already exists` : `a connection named ${name} already exists (the name of "${title}"); choose another name`);
+      return failure(APPS_ERRORS.nameTaken, name === title ? `a connection named ${name} already exists` : `a connection named ${name} already exists (the name of "${title}"); choose another name`);
     const { signInUrl } = await this.thirdParty.add(name, url, title.trim() === name ? null : title.trim());
     const connection = this.thirdParty.list().find((c) => c.name === name)!;
-    const result: ConnectionsResult<typeof CONNECTIONS_METHODS.add> = { connection, signInUrl };
+    const result: AppsResult<typeof APPS_METHODS.add> = { connection, signInUrl };
     return { result };
   }
 
   /** Removes a third-party connection, or signs one account out of an app. */
   async remove(name: string, account?: string): Promise<CallOutcome> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (app) {
       if (!account) return failure(-32602, `name the account to sign out of ${name}`);
-      if (!(await this.apps.disconnect(app, account))) return failure(CONNECTIONS_ERRORS.notFound, `${account} is not signed in to ${name}`);
-      const result: ConnectionsResult<typeof CONNECTIONS_METHODS.remove> = { removed: true };
+      if (!(await this.apps.disconnect(app, account))) return failure(APPS_ERRORS.notFound, `${account} is not signed in to ${name}`);
+      const result: AppsResult<typeof APPS_METHODS.remove> = { removed: true };
       return { result };
     }
-    if (!this.thirdParty.remove(name)) return failure(CONNECTIONS_ERRORS.notFound, `no connection named ${name}`);
-    const result: ConnectionsResult<typeof CONNECTIONS_METHODS.remove> = { removed: true };
+    if (!this.thirdParty.remove(name)) return failure(APPS_ERRORS.notFound, `no connection named ${name}`);
+    const result: AppsResult<typeof APPS_METHODS.remove> = { removed: true };
     return { result };
   }
 
@@ -223,7 +223,7 @@ export class AccountConnections {
    * which needs a secret. An app's answer is its page, where the person adds an account.
    */
   async setClient(name: string, client: Client): Promise<{ signInUrl: string }> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return this.thirdParty.setClient(name, client);
     if (!client.clientSecret) throw new AppAccountRefused("Enter the client secret too");
     await this.apps.setClient(app, client.clientId, client.clientSecret);
@@ -235,7 +235,7 @@ export class AccountConnections {
    * refusal (the service did not take the token, a field is missing) is an answer, not a failure.
    */
   async addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return { error: `${name} is not an app` };
     try {
       return await this.apps.addToken(app, account, fields);
@@ -247,7 +247,7 @@ export class AccountConnections {
 
   /** Starts an app's device sign-in (ChatGPT): the code the person enters at the provider. */
   async startAppDevice(name: string): Promise<({ flow: string } & Extract<DeviceSignIn, { state: "pending" }>) | { error: string }> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return { error: `${name} is not an app` };
     try {
       return await this.apps.startDevice(app);
@@ -259,14 +259,14 @@ export class AccountConnections {
 
   /** Whether the person entered a device sign-in's code yet. */
   async pollAppDevice(name: string, flow: string): Promise<DeviceSignIn> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return { state: "failed", error: `${name} is not an app` };
     return this.apps.pollDevice(app, flow);
   }
 
   /** A fresh sign-in link for a third-party connection or an app. */
   async signInLink(name: string): Promise<string> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     return app ? this.apps.signInLink(app) : this.thirdParty.signInLink(name);
   }
 
@@ -288,14 +288,14 @@ export class AccountConnections {
     return this.log.verify();
   }
 
-  async list(): Promise<ConnectionsResult<typeof CONNECTIONS_METHODS.list>> {
+  async list(): Promise<AppsResult<typeof APPS_METHODS.list>> {
     const named = this.named();
-    const connections = await Promise.all(named.map(async ({ name, host }): Promise<Connection> => {
+    const apps = await Promise.all(named.map(async ({ name, host }): Promise<Connection> => {
       const presence = await this.deps.presence(host.hostId).catch(() => null);
       const online = Boolean(presence?.online && presence.hostGeneration === host.hostGeneration);
       return { kind: "host", name, hostId: host.hostId, state: online ? "online" : "offline" };
     }));
-    return { connections: [...connections, ...this.thirdParty.list(), ...this.apps.list()] };
+    return { apps: [...apps, ...this.thirdParty.list(), ...this.apps.list()] };
   }
 
   /** Every tool a script can reach, as `codemode.tools()` shows them. */
@@ -325,8 +325,8 @@ export class AccountConnections {
         description:
           "Runs one non-interactive command on one of the account's Macs as the user axod runs as, with its login shell, " +
           "and returns { exitCode, signal, stdout, stderr, stdoutTruncated, stderrTruncated, timedOut, durationMs }. " +
-          `Each output stream keeps ${CONNECTIONS_LIMITS.bashOutputBytes} bytes, then is marked truncated. ` +
-          `timeoutMs defaults to ${CONNECTIONS_LIMITS.bashDefaultTimeoutMs} and may be at most ${CONNECTIONS_LIMITS.bashMaxTimeoutMs}.`,
+          `Each output stream keeps ${APPS_LIMITS.bashOutputBytes} bytes, then is marked truncated. ` +
+          `timeoutMs defaults to ${APPS_LIMITS.bashDefaultTimeoutMs} and may be at most ${APPS_LIMITS.bashMaxTimeoutMs}.`,
         inputSchema: z.toJSONSchema(bashInputSchema) as Record<string, unknown>,
         call: `codemode.${BASH_NAMESPACE}.run`,
       },
@@ -369,7 +369,7 @@ export class AccountConnections {
    */
   private caller(from: Caller, deadline: number): ToolCaller {
     return async (service, tool, input) => {
-      const app = AppConnections.appOf(service);
+      const app = BuiltinApps.appOf(service);
       if (app) return this.callApp(from, app, tool, input);
       if (service === HOSTS_NAMESPACE) {
         if (tool !== "list") throw new Error(`hosts has no tool named ${tool}; it has list`);
@@ -391,7 +391,7 @@ export class AccountConnections {
       const target = await this.resolveHost(parsed.data.host, from);
       const remaining = deadline - Date.now();
       if (remaining <= 1_000) throw new LimitError("scriptWallMs", "the script has no time left for another command");
-      const timeoutMs = Math.min(parsed.data.timeoutMs ?? CONNECTIONS_LIMITS.bashDefaultTimeoutMs, remaining);
+      const timeoutMs = Math.min(parsed.data.timeoutMs ?? APPS_LIMITS.bashDefaultTimeoutMs, remaining);
       const callId = crypto.randomUUID();
       await this.log.start({
         callId,
@@ -404,7 +404,7 @@ export class AccountConnections {
       });
       const outcome = await this.sendBash(target.host, target.name, callId, parsed.data.command, parsed.data.cwd, timeoutMs);
       if ("error" in outcome) {
-        const unknown = outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown;
+        const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
         await this.log.finish(callId, unknown ? "unknown" : "error", outcome.error.message);
         throw new Error(`bash.run on ${target.name}: ${outcome.error.message}`);
       }
@@ -488,11 +488,11 @@ export class AccountConnections {
         deadlineMs: timeoutMs + BASH_GRACE_MS,
       });
     } catch {
-      outcome = failure(CONNECTIONS_ERRORS.outcomeUnknown, "did not answer; the action may have run");
+      outcome = failure(APPS_ERRORS.outcomeUnknown, "did not answer; the action may have run");
     }
     if ("error" in outcome) {
       const old = outcome.error.code === -32601;
-      const unknown = outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown;
+      const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
       const message = old ? "runs an Axo too old for computer use from other Macs; update Axo there" : outcome.error.message;
       await this.log.finish(callId, unknown ? "unknown" : "error", message);
       throw new Error(`computer.run on ${target.name}: ${message}`);
@@ -515,7 +515,7 @@ export class AccountConnections {
         deadlineMs: timeoutMs + BASH_GRACE_MS,
       });
     } catch {
-      return failure(CONNECTIONS_ERRORS.outcomeUnknown, `${service} did not answer; the command may have run`);
+      return failure(APPS_ERRORS.outcomeUnknown, `${service} did not answer; the command may have run`);
     }
   }
 
@@ -528,7 +528,7 @@ export class AccountConnections {
     if (!target) throw new ProviderError(0, `no Mac named ${mac}`);
     const outcome = await this.sendBash(target.host, mac, crypto.randomUUID(), command, undefined, timeoutMs);
     if ("error" in outcome) {
-      if (outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown) throw new ProviderOutcomeUnknown(`${mac}: ${outcome.error.message}`);
+      if (outcome.error.code === APPS_ERRORS.outcomeUnknown) throw new ProviderOutcomeUnknown(`${mac}: ${outcome.error.message}`);
       throw new ProviderError(0, `${mac}: ${outcome.error.message}`);
     }
     const result = bashResultSchema.safeParse(outcome.result);
@@ -565,7 +565,7 @@ export class AccountConnections {
 
   /** Starts a token app's sign-in on one of the account's Macs (Kraken). */
   async startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<({ flow: string } & AppMacSignIn) | { error: string }> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return { error: `${name} is not an app` };
     try {
       return await this.apps.startMacSignIn(app, mac, preset, account);
@@ -577,14 +577,14 @@ export class AccountConnections {
 
   /** Whether a sign-in on a Mac finished. */
   async pollAppMacSignIn(name: string, flow: string): Promise<AppMacSignIn> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return { state: "failed", error: `${name} is not an app` };
     return this.apps.pollMacSignIn(app, flow);
   }
 
   /** One step of a phone app's sign-in (Telegram): the number, the code, then a password. */
   async appPhoneSignIn(name: string, request: AppPhoneSignInRequest): Promise<AppPhoneSignIn> {
-    const app = AppConnections.appOf(name);
+    const app = BuiltinApps.appOf(name);
     if (!app) return { state: "failed", error: `${name} is not an app` };
     try {
       return await this.apps.phoneSignIn(app, request);
@@ -595,7 +595,7 @@ export class AccountConnections {
   }
 
   /** Calls an app's tool from here, with the account's grant; logged before it is sent. */
-  private async callApp(from: Caller, app: NonNullable<ReturnType<typeof AppConnections.appOf>>, tool: string, input: unknown): Promise<unknown> {
+  private async callApp(from: Caller, app: NonNullable<ReturnType<typeof BuiltinApps.appOf>>, tool: string, input: unknown): Promise<unknown> {
     const service = `${APPS_NAMESPACE}.${app}`;
     const callId = crypto.randomUUID();
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
@@ -640,6 +640,6 @@ function failure(code: number, message: string): CallOutcome {
 function scriptOutcome(outcome: ScriptOutcome, result: (ok: Extract<ScriptOutcome, { ok: true }>) => unknown): CallOutcome {
   if (outcome.ok) return { result: result(outcome) };
   const logs = outcome.logs.length ? `\n\nconsole output:\n${outcome.logs.join("\n")}` : "";
-  const code = outcome.limit ? CONNECTIONS_ERRORS.limitExceeded : CONNECTIONS_ERRORS.scriptFailed;
+  const code = outcome.limit ? APPS_ERRORS.limitExceeded : APPS_ERRORS.scriptFailed;
   return failure(code, `${outcome.error}${logs}`.slice(0, 16_384));
 }

@@ -20,8 +20,8 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// hold up the real redirect.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(50);
-/// Connections answered in one sign-in; past this many, more are dropped.
-const MAX_CONNECTIONS: usize = 64;
+/// Apps answered in one sign-in; past this many, more are dropped.
+const MAX_APPS: usize = 64;
 
 /// One sign-in: where to send the person, and where they come back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +100,7 @@ pub fn sign_in(request: &SignIn, open_browser: impl FnOnce(&str) -> io::Result<(
             match listener.accept() {
                 Ok((stream, _)) => {
                     accepted = true;
-                    if serving >= MAX_CONNECTIONS {
+                    if serving >= MAX_APPS {
                         continue; // dropped: a browser makes a handful, not hundreds
                     }
                     serving += 1;

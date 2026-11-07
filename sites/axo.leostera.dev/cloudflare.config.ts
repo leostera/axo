@@ -38,7 +38,7 @@ export default defineConfig(({ isPreview }) => ({
       // Axo's Google OAuth client, for the Gmail app (codemode.apps.gmail.*). Optional: without it apps are unavailable.
       GOOGLE_CLIENT_ID: bindings.secret(),
       GOOGLE_CLIENT_SECRET: bindings.secret(),
-      // Runs connections scripts in Dynamic Workers with no network of their own (RFD0016).
+      // Runs scripts in Dynamic Workers with no network of their own (RFD0016).
       LOADER: bindings.workerLoader(),
     },
     exports: {

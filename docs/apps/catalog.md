@@ -6,7 +6,7 @@ plan; RFD0016's app table lists what has shipped.
 Kinds:
 
 - **MCP**: the service has an official remote MCP server. Axo lists it in Apps as a suggested
-  server and adds it by URL (RFD0016, third-party connections). No Axo code per service.
+  server and adds it by URL (RFD0016, third-party apps). No Axo code per service.
 - **OAuth**: Axo registers its own OAuth client with the provider, like the Google apps.
 - **Token**: the person pastes a key, token or password the service issues them. Axo seals it
   like an OAuth grant and never shows it again. Calls go to the service's REST API.
@@ -17,7 +17,7 @@ Kinds:
 
 ## Framework
 
-1. **Token apps** (`connections/apps/token.ts`). An app definition says how it signs in:
+1. **Token apps** (`apps/builtin/token.ts`). An app definition says how it signs in:
    `{ kind: "oauth", provider }` or `{ kind: "token", fields, auth }`.
    - `fields`: what the person pastes, each with a plain label and a link to where to find it
      (for example "API token" with Hetzner's page).
@@ -42,7 +42,7 @@ Kinds:
      them sealed (`app_clients`, one per provider), so they can be changed or rotated at any time
      without a deploy. No `<PROVIDER>_CLIENT_ID` Worker secrets. (Google's from the environment is
      used until an account sets up its own.)
-   - The page posts to `POST /api/v1/account/connections/apps.<app>/client` with
+   - The page posts to `POST /api/v1/account/apps/apps.<app>/client` with
      `{ clientId, clientSecret }`; that route goes in with the gateway (RFD0020).
 3. **Device sign-in.** For providers whose client only allows a device code (ChatGPT): Apps shows
    a code and a link, and the gateway polls the provider until the person approves.
@@ -50,7 +50,7 @@ Kinds:
    logo.
 
 What each app is lives in `packages/axo-apps` (`@axo/apps`); what is stateful (grants, clients,
-sign-ins, calls) in the gateway, `packages/axo-api-worker/src/connections/apps`, and the web app. The routes and RPC methods for adding a
+sign-ins, calls) in the gateway, `packages/axo-api-worker/src/apps/builtin`, and the web app. The routes and RPC methods for adding a
 token or starting a device sign-in go in once AxoGateway (RFD0020) is on main.
 
 ## Priorities

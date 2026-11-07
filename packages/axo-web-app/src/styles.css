@@ -733,10 +733,10 @@ button.grouped-row:hover { background: var(--fill); }
 .signin-build { margin: 0; color: var(--signin-tertiary); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* Connections (RFD0016) */
-.connections .grouped + .sheet-note { margin-bottom: 4px; }
-.connections-notice { margin: 0 0 8px; padding: 10px 12px; border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--green) 14%, transparent); font-size: 14px; line-height: 1.4; }
-.connections-notice.error { background: color-mix(in srgb, var(--orange) 16%, transparent); }
+/* Apps (RFD0016) */
+.apps .grouped + .sheet-note { margin-bottom: 4px; }
+.apps-notice { margin: 0 0 8px; padding: 10px 12px; border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--green) 14%, transparent); font-size: 14px; line-height: 1.4; }
+.apps-notice.error { background: color-mix(in srgb, var(--orange) 16%, transparent); }
 .connection-row, .call-row { gap: 10px; padding-block: 8px; }
 .connection-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .connection-copy strong { overflow: hidden; font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
@@ -751,7 +751,7 @@ button.grouped-row:hover { background: var(--fill); }
 .call-outcome.error { color: var(--red); }
 .call-outcome.unknown { color: var(--orange); }
 .call-age { flex: none; color: var(--tertiary); font-size: 12px; }
-.connections .grouped + .grouped { margin-top: 16px; }
+.apps .grouped + .grouped { margin-top: 16px; }
 .nav-row { cursor: pointer; }
 .nav-row > svg:last-child { flex: none; color: var(--tertiary); }
 .nav-detail { flex: none; color: var(--secondary); font-size: 13px; }
@@ -780,7 +780,7 @@ button.grouped-row:hover { background: var(--fill); }
 .app-hero { display: flex; align-items: center; gap: 16px; }
 .settings-section { margin: 24px 0 6px; padding-left: 4px; color: var(--secondary); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .settings-muted { color: var(--secondary); }
-.settings-body .connections .grouped + .grouped { margin-top: 0; }
+.settings-body .apps .grouped + .grouped { margin-top: 0; }
 .app-tile { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border-radius: 8px; color: #fff; }
 .app-tile.neutral { color: var(--text); background: var(--fill-strong); }
 .app-tile.large { width: 64px; height: 64px; border-radius: 16px; box-shadow: 0 6px 20px color-mix(in srgb, var(--text) 12%, transparent); }

@@ -1,5 +1,5 @@
 import {
-  CONNECTIONS_LIMITS,
+  APPS_LIMITS,
   ELICITATION_ERRORS,
   ELICITATION_LIMITS,
   ELICITATION_METHODS,
@@ -9,7 +9,7 @@ import {
   hostElicitationResolveParamsSchema,
   HOST_SYNC_METHODS,
   LIMITS,
-  isConnectionsMethod,
+  isAppsMethod,
   SYNC,
   JSONRPCErrorException,
   appendParamsSchema,
@@ -83,9 +83,9 @@ export type HostSubscription = {
 export type HostCommandOutcome = { result: unknown } | { error: { code: number; message: string } };
 
 /** The longest a `callHost` waits for its reply: the longest a bash may run, and a margin. */
-export const CALL_HOST_MAX_MS = CONNECTIONS_LIMITS.bashMaxTimeoutMs + 30_000;
+export const CALL_HOST_MAX_MS = APPS_LIMITS.bashMaxTimeoutMs + 30_000;
 
-export type ConnectionsCall = { hostId: string; hostGeneration: string; method: string; params: unknown };
+export type AppsCall = { hostId: string; hostGeneration: string; method: string; params: unknown };
 export type CallHostRequest = { method: string; params: unknown; deadlineMs: number };
 
 const outcomeSchema = z.union([
@@ -108,7 +108,7 @@ type AccountStub = {
   authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean>;
   registerHost(registration: unknown, now: number): Promise<HostSnapshot>;
   touchHost(hostId: string, hostGeneration: string, now: number): Promise<{ acknowledged: true; lastSeenAt: string }>;
-  connectionsCall(call: ConnectionsCall): Promise<HostCommandOutcome>;
+  appsCall(call: AppsCall): Promise<HostCommandOutcome>;
 };
 
 /**
@@ -136,8 +136,8 @@ export class AxoHostDO extends AxoHostRelay {
   private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `callHost` hops waiting for the daemon's reply, with the socket they were sent on. */
   private readonly hops = new Map<string, { connectionId: string; resolve: (outcome: HostCommandOutcome) => void }>();
-  /** `axo.connections.*` calls from the daemon waiting for the account. */
-  private connectionsCalls = 0;
+  /** `axo.apps.*` calls from the daemon waiting for the account. */
+  private appsCalls = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -515,7 +515,7 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   /**
-   * Calls `method` on the host and waits for its reply, for the account (RFD0016, Connections).
+   * Calls `method` on the host and waits for its reply, for the account (RFD0016, Apps).
    * It is sent once, never retried: a socket that ends or a deadline that passes first leaves the
    * outcome unknown, and a reply that comes later, on another socket, is ignored.
    */
@@ -548,12 +548,12 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   /**
-   * An `axo.connections.*` call from the daemon goes to the account unchanged, and its outcome
+   * An `axo.apps.*` call from the daemon goes to the account unchanged, and its outcome
    * back to the daemon. It is awaited without holding the socket: other messages keep flowing
    * while a slow one (an execute) runs.
    */
   protected override async receiveHostCall(socket: WebSocket, peer: Peer, call: Call): Promise<boolean> {
-    if (!isConnectionsMethod(call.method)) return false;
+    if (!isAppsMethod(call.method)) return false;
     const answer = (outcome: HostCommandOutcome) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       this.send(socket, "result" in outcome
@@ -563,28 +563,28 @@ export class AxoHostDO extends AxoHostRelay {
     };
     const route = this.ready(peer) ? this.admittedDaemon(peer) : undefined;
     if (!route?.generation) {
-      recordApiEvent({ event: "host_connections_call", outcome: "refused" });
+      recordApiEvent({ event: "host_apps_call", outcome: "refused" });
       answer({ error: { code: -32002, message: "Stale lease" } });
       return true;
     }
-    if (this.connectionsCalls >= LIMITS.pendingPerMachine) {
-      recordApiEvent({ event: "host_connections_call", outcome: "refused" });
+    if (this.appsCalls >= LIMITS.pendingPerMachine) {
+      recordApiEvent({ event: "host_apps_call", outcome: "refused" });
       answer({ error: { code: -32006, message: "Pending capacity" } });
       return true;
     }
-    this.connectionsCalls += 1;
+    this.appsCalls += 1;
     let outcome: HostCommandOutcome;
     try {
-      const reply = outcomeSchema.safeParse(await this.account().connectionsCall({
+      const reply = outcomeSchema.safeParse(await this.account().appsCall({
         hostId: peer.machineId, hostGeneration: route.generation, method: call.method, params: call.params,
       }));
       outcome = reply.success ? reply.data as HostCommandOutcome : { error: { code: -32004, message: "Outcome unknown; the call may have run" } };
     } catch {
       outcome = { error: { code: -32004, message: "Outcome unknown; the call may have run" } };
     } finally {
-      this.connectionsCalls -= 1;
+      this.appsCalls -= 1;
     }
-    recordApiEvent({ event: "host_connections_call", outcome: "result" in outcome ? "result" : outcome.error.code === -32004 ? "unknown" : "error" });
+    recordApiEvent({ event: "host_apps_call", outcome: "result" in outcome ? "result" : outcome.error.code === -32004 ? "unknown" : "error" });
     answer(outcome);
     return true;
   }

@@ -420,7 +420,7 @@ fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Err
     );
     let message = match error.kind() {
         io::ErrorKind::ConnectionRefused => {
-            "The previous Pi process is not accepting control connections. Its transcript was left untouched."
+            "The previous Pi process is not accepting control apps. Its transcript was left untouched."
         }
         io::ErrorKind::PermissionDenied => {
             "Axo could not verify the previous Pi process for this pane, so it was not terminated."

@@ -44,14 +44,14 @@ pub mod method {
     pub const RELAY_STATUS: &str = "axo.relay.status";
     pub const RELAY_CONNECT: &str = "axo.relay.connect";
     pub const SESSION_SHARE: &str = "axo.session.share";
-    /// Connections (RFD0016): forwarded unchanged to the account over the relay, so their names
-    /// and parameters are those of `connections.schema.json`.
-    pub const CONNECTIONS_LIST: &str = "axo.connections.list";
-    pub const CONNECTIONS_SEARCH: &str = "axo.connections.search";
-    pub const CONNECTIONS_EXECUTE: &str = "axo.connections.execute";
-    pub const CONNECTIONS_LOG: &str = "axo.connections.log";
-    pub const CONNECTIONS_ADD: &str = "axo.connections.add";
-    pub const CONNECTIONS_REMOVE: &str = "axo.connections.remove";
+    /// Apps (RFD0016): forwarded unchanged to the account over the relay, so their names
+    /// and parameters are those of `apps.schema.json`.
+    pub const APPS_LIST: &str = "axo.apps.list";
+    pub const APPS_SEARCH: &str = "axo.apps.search";
+    pub const APPS_EXECUTE: &str = "axo.apps.execute";
+    pub const APPS_LOG: &str = "axo.apps.log";
+    pub const APPS_ADD: &str = "axo.apps.add";
+    pub const APPS_REMOVE: &str = "axo.apps.remove";
     /// Other Macs' Sessions, opened here in a pane (RFD0024).
     pub const PEER_SESSIONS_LIST: &str = "axo.peer.sessions.list";
     pub const PEER_SESSION_OPEN: &str = "axo.peer.session.open";
@@ -106,12 +106,12 @@ pub mod method {
         RELAY_STATUS,
         RELAY_CONNECT,
         SESSION_SHARE,
-        CONNECTIONS_LIST,
-        CONNECTIONS_SEARCH,
-        CONNECTIONS_EXECUTE,
-        CONNECTIONS_LOG,
-        CONNECTIONS_ADD,
-        CONNECTIONS_REMOVE,
+        APPS_LIST,
+        APPS_SEARCH,
+        APPS_EXECUTE,
+        APPS_LOG,
+        APPS_ADD,
+        APPS_REMOVE,
         PEER_SESSIONS_LIST,
         PEER_SESSION_OPEN,
         PEER_SESSION_CLOSE,
@@ -126,7 +126,7 @@ pub mod method {
     ];
 }
 
-/// The account's connections (RFD0016), which axod forwards unchanged over the relay, and how
+/// The account's apps (RFD0016), which axod forwards unchanged over the relay, and how
 /// long axod waits for each one's answer. A client must wait longer than that: see
 /// [`forwarded::client_timeout`].
 pub mod forwarded {
@@ -140,13 +140,13 @@ pub mod forwarded {
 
     /// Every forwarded method and how long axod waits for its answer.
     pub const METHODS: &[(&str, Duration)] = &[
-        (method::CONNECTIONS_LIST, QUICK),
-        (method::CONNECTIONS_SEARCH, SCRIPT),
-        (method::CONNECTIONS_EXECUTE, SCRIPT),
-        (method::CONNECTIONS_LOG, QUICK),
+        (method::APPS_LIST, QUICK),
+        (method::APPS_SEARCH, SCRIPT),
+        (method::APPS_EXECUTE, SCRIPT),
+        (method::APPS_LOG, QUICK),
         // Adding tries the server and may register a client with it.
-        (method::CONNECTIONS_ADD, Duration::from_secs(60)),
-        (method::CONNECTIONS_REMOVE, QUICK),
+        (method::APPS_ADD, Duration::from_secs(60)),
+        (method::APPS_REMOVE, QUICK),
     ];
 
     /// How long a caller of `method` should wait for axod's answer, beyond axod's own wait;

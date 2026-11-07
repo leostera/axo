@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connectionsResults } from "@axo/protocol";
+import { appsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { FakeMcp } from "./fake-mcp";
-import { iconsIn } from "../src/connections/site-icon";
+import { iconsIn } from "../src/apps/site-icon";
 
 /**
- * RFD0016, third-party connections: an agent adds a remote MCP server, the person signs in to it
+ * RFD0016, third-party apps: an agent adds a remote MCP server, the person signs in to it
  * in a browser signed in to their Axo account, and scripts call its tools from the cloud with a
  * grant that never leaves the account's Durable Object.
  */
@@ -49,7 +49,7 @@ async function signInThroughBrowser(h: Harness, server: FakeMcp, session: Accoun
 
 test("an agent adds a server that needs sign-in, the person signs in, and a script calls its tools with the grant", async (t) => {
   const { server, h, session, call } = await fixture(t);
-  const added = connectionsResults["axo.connections.add"].parse(result(await call("axo.connections.add", { name: "linear", url: server.url })));
+  const added = appsResults["axo.apps.add"].parse(result(await call("axo.apps.add", { name: "linear", url: server.url })));
   assert.equal(added.connection.state, "needsSignIn");
   assert.match(added.signInUrl!, /^https:\/\/axo\.leostera\.dev\/api\/v1\/connections\/oauth\/start\?flow=/);
   assert.equal(server.clients.size, 1, "Axo registered itself as a client");
@@ -68,24 +68,24 @@ test("an agent adds a server that needs sign-in, the person signs in, and a scri
     { service: "linear", name: "create_issue", title: "create_issue" },
   ]);
 
-  const executed = result(await call("axo.connections.execute", { code: `async () => codemode.linear.list_issues({ team: "AXO" })` }));
+  const executed = result(await call("axo.apps.execute", { code: `async () => codemode.linear.list_issues({ team: "AXO" })` }));
   assert.deepEqual(executed.result, { tool: "list-issues", args: { team: "AXO" } });
   assert.equal(server.calls.length, 1);
   assert.ok(server.calls[0]!.token, "the call carried the account's grant");
 
   // The grant stays in the cloud: nothing a Mac or the web reads contains it.
-  const listed = await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers });
+  const listed = await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers });
   const listedText = await listed.text();
-  const logText = JSON.stringify(result(await call("axo.connections.log")));
-  for (const text of [listedText, logText, JSON.stringify(executed), JSON.stringify(result(await call("axo.connections.list")))])
+  const logText = JSON.stringify(result(await call("axo.apps.log")));
+  for (const text of [listedText, logText, JSON.stringify(executed), JSON.stringify(result(await call("axo.apps.list")))])
     assert.equal(server.leaks(text), false);
-  assert.deepEqual(JSON.parse(listedText).connections.filter((c: { kind: string }) => c.kind !== "app").map((c: { name: string; state: string }) => [c.name, c.state]), [["studio", "online"], ["linear", "ready"]]);
+  assert.deepEqual(JSON.parse(listedText).apps.filter((c: { kind: string }) => c.kind !== "app").map((c: { name: string; state: string }) => [c.name, c.state]), [["studio", "online"], ["linear", "ready"]]);
   assert.match(logText, /"service":"linear","tool":"list_issues"/);
 });
 
 test("a sign-in link works once, only in a browser signed in to the same account, and only with its flow cookie", async (t) => {
   const { server, h, session, call } = await fixture(t);
-  const added = result(await call("axo.connections.add", { name: "linear", url: server.url }));
+  const added = result(await call("axo.apps.add", { name: "linear", url: server.url }));
   const path = added.signInUrl.replace("https://axo.leostera.dev/", "");
 
   // Not signed in to Axo: nothing happens.
@@ -111,11 +111,11 @@ test("a sign-in link works once, only in a browser signed in to the same account
 test("a grant about to expire is renewed before the call, and the rotated refresh token is used once", async (t) => {
   const { server, h, session, call } = await fixture(t);
   server.tokenLifetime = 30; // inside the renewal margin
-  const added = result(await call("axo.connections.add", { name: "linear", url: server.url }));
+  const added = result(await call("axo.apps.add", { name: "linear", url: server.url }));
   await signInThroughBrowser(h, server, session, added.signInUrl);
   await waitForTools(call);
   const before = server.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length;
-  result(await call("axo.connections.execute", { code: `async () => codemode.linear.create_issue({ title: "a" })` }));
+  result(await call("axo.apps.execute", { code: `async () => codemode.linear.create_issue({ title: "a" })` }));
   const refreshes = server.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length;
   assert.ok(refreshes > before, "the grant was renewed");
   assert.equal(server.calls.length, 1);
@@ -124,64 +124,64 @@ test("a grant about to expire is renewed before the call, and the rotated refres
 test("a server that needs no sign-in is ready at once; a Mac's name is free for a server, the namespaces are not", async (t) => {
   const { server, call } = await fixture(t);
   server.requireAuth = false;
-  const added = result(await call("axo.connections.add", { name: "docs", url: server.url }));
+  const added = result(await call("axo.apps.add", { name: "docs", url: server.url }));
   assert.deepEqual([added.connection.state, added.signInUrl, added.connection.tools], ["ready", null, 2]);
-  const taken = await call("axo.connections.add", { name: "computer", url: server.url });
+  const taken = await call("axo.apps.add", { name: "computer", url: server.url });
   assert.ok("error" in taken && taken.error.code === -32022, JSON.stringify(taken));
   // Macs are reached as bash.run({ host }), not by name, so a server may be called "studio".
-  const studio = result(await call("axo.connections.add", { name: "studio", url: server.url }));
+  const studio = result(await call("axo.apps.add", { name: "studio", url: server.url }));
   assert.equal(studio.connection.name, "studio");
-  assert.deepEqual(result(await call("axo.connections.remove", { name: "studio" })), { removed: true });
-  assert.deepEqual(result(await call("axo.connections.remove", { name: "docs" })), { removed: true });
-  const gone = await call("axo.connections.execute", { code: `async () => codemode.docs.list_issues({})` });
+  assert.deepEqual(result(await call("axo.apps.remove", { name: "studio" })), { removed: true });
+  assert.deepEqual(result(await call("axo.apps.remove", { name: "docs" })), { removed: true });
+  const gone = await call("axo.apps.execute", { code: `async () => codemode.docs.list_issues({})` });
   assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
 });
 
 test("a server is added under any name, reached by its slug, and may be added again under another, each signing in on its own", async (t) => {
   const { server, h, session, call } = await fixture(t);
-  const first = result(await call("axo.connections.add", { name: "emdash: leostera.com", url: server.url }));
+  const first = result(await call("axo.apps.add", { name: "emdash: leostera.com", url: server.url }));
   assert.deepEqual([first.connection.name, first.connection.title], ["emdash_leostera_com", "emdash: leostera.com"]);
-  const second = result(await call("axo.connections.add", { name: "Emdash — ocaml.ai", url: server.url }));
+  const second = result(await call("axo.apps.add", { name: "Emdash — ocaml.ai", url: server.url }));
   assert.deepEqual([second.connection.name, second.connection.title], ["emdash_ocaml_ai", "Emdash — ocaml.ai"]);
   assert.notEqual(first.signInUrl, second.signInUrl, "each has its own sign-in");
   assert.equal(server.clients.size, 2, "and its own client");
-  const taken = await call("axo.connections.add", { name: "Emdash: leostera.com!", url: server.url });
+  const taken = await call("axo.apps.add", { name: "Emdash: leostera.com!", url: server.url });
   assert.ok("error" in taken && /emdash_leostera_com already exists \(the name of "Emdash: leostera.com!"\); choose another name/.test(taken.error.message), JSON.stringify(taken));
-  const empty = await call("axo.connections.add", { name: " — ", url: server.url });
+  const empty = await call("axo.apps.add", { name: " — ", url: server.url });
   assert.ok("error" in empty && /a letter or a digit/.test(empty.error.message), JSON.stringify(empty));
-  const plain = result(await call("axo.connections.add", { name: "linear", url: server.url }));
+  const plain = result(await call("axo.apps.add", { name: "linear", url: server.url }));
   assert.deepEqual([plain.connection.name, plain.connection.title], ["linear", null], "a name that is already its slug keeps no title");
 
   await signInThroughBrowser(h, server, session, first.signInUrl);
   await waitForTools(call);
-  const executed = result(await call("axo.connections.execute", { code: `async () => (await codemode.emdash_leostera_com.list_issues({ team: "AXO" })).tool` }));
+  const executed = result(await call("axo.apps.execute", { code: `async () => (await codemode.emdash_leostera_com.list_issues({ team: "AXO" })).tool` }));
   assert.equal(executed.result, "list-issues");
-  const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "thirdParty").map((c: { name: string; state: string }) => [c.name, c.state]);
+  const listed = result(await call("axo.apps.list")).apps.filter((c: { kind: string }) => c.kind === "thirdParty").map((c: { name: string; state: string }) => [c.name, c.state]);
   assert.deepEqual(listed, [["emdash_leostera_com", "ready"], ["emdash_ocaml_ai", "needsSignIn"], ["linear", "needsSignIn"]]);
 });
 
 test("a server whose tools answer 401 says so on its page and to the agent, until a call works again", async (t) => {
   const { server, call } = await fixture(t);
   server.requireAuth = false;
-  result(await call("axo.connections.add", { name: "paypal", url: server.url }));
+  result(await call("axo.apps.add", { name: "paypal", url: server.url }));
   const state = async () => {
-    const listed = result(await call("axo.connections.list")).connections.find((c: { name: string }) => c.name === "paypal");
+    const listed = result(await call("axo.apps.list")).apps.find((c: { name: string }) => c.name === "paypal");
     return [listed.state, listed.lastError];
   };
   server.upstreamRefuses = true;
-  const refused = await call("axo.connections.execute", { code: `async () => codemode.paypal.list_issues({})` });
+  const refused = await call("axo.apps.execute", { code: `async () => codemode.paypal.list_issues({})` });
   assert.ok("error" in refused, JSON.stringify(refused));
   assert.match(refused.error.message, /401 Unauthorized/);
   assert.match(refused.error.message, /signs in to paypal again: remove it at https:\/\/axo\.leostera\.dev\/app\/settings\/apps\/mcp and add it back/);
   assert.deepEqual(await state(), ["ready", "its tools answered Unauthorized: Failed to fetch transactions: 401 Unauthorized"]);
   server.upstreamRefuses = false;
-  result(await call("axo.connections.execute", { code: `async () => codemode.paypal.list_issues({})` }));
+  result(await call("axo.apps.execute", { code: `async () => codemode.paypal.list_issues({})` }));
   assert.deepEqual(await state(), ["ready", null], "a call that works clears it");
 });
 
 async function waitForTools(call: (method: string, params?: Record<string, unknown>) => Promise<Reply>) {
   for (let i = 0; i < 50; i++) {
-    const found = result(await call("axo.connections.search", {
+    const found = result(await call("axo.apps.search", {
       // Apps that need no client of Axo's (Hetzner) are always listed; these tests are about servers.
       code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => ["hosts", "bash", "computer"].includes(t.service) ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
     })).result as Array<{ service: string }>;
@@ -216,11 +216,11 @@ test("a server's tile shows the icon it names for itself, or else the one its si
   const daemon = await connectHost(h, session, host);
   t.after(() => daemon.close());
   const call = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId: crypto.randomUUID(), ...params }) as Promise<Reply>;
-  result(await call("axo.connections.add", { name: "linear", url: named.url }));
-  result(await call("axo.connections.add", { name: "notion", url: plain.url }));
+  result(await call("axo.apps.add", { name: "linear", url: named.url }));
+  result(await call("axo.apps.add", { name: "notion", url: plain.url }));
   let icons: Record<string, string | null> = {};
   for (let i = 0; i < 50; i++) {
-    const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections;
+    const listed = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list"))).apps;
     icons = Object.fromEntries(listed.flatMap((c) => (c.kind === "thirdParty" ? [[c.name, c.icon]] : [])));
     if (icons.linear && icons.notion) break;
     await new Promise((r) => setTimeout(r, 50));

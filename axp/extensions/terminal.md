@@ -41,7 +41,7 @@ All are routed (SPEC §10.1) and take `hostId`, `sessionId` and, except `termina
 
 ## 3. Notifications
 
-`terminal.output` (host → client) `{ "hostId", "sessionId", "shellId", "seq", "data" }`, `data` being base64url bytes. A hub forwards it only to the connections that attached to that shell. It is in the `ephemeral` priority class (SPEC §4.1), and a hub MUST NOT store it. A hub MAY drop output for a slow connection and send `terminal.gap` `{ "hostId", "sessionId", "shellId", "seq" }` instead, after which the client calls `terminal.screen`.
+`terminal.output` (host → client) `{ "hostId", "sessionId", "shellId", "seq", "data" }`, `data` being base64url bytes. A hub forwards it only to the apps that attached to that shell. It is in the `ephemeral` priority class (SPEC §4.1), and a hub MUST NOT store it. A hub MAY drop output for a slow connection and send `terminal.gap` `{ "hostId", "sessionId", "shellId", "seq" }` instead, after which the client calls `terminal.screen`.
 
 ## 4. Errors
 

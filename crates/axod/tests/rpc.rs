@@ -189,7 +189,7 @@ fn rpc_with_params(socket: &std::path::Path, method: &str, params: Value) -> Val
     let mut stream = UnixStream::connect(socket).unwrap_or_else(|error| {
         let log_path = socket.parent().unwrap().join("server/stderr.log");
         let log = std::fs::read_to_string(log_path).unwrap_or_default();
-        panic!("daemon socket should accept connections: {error}\naxod log:\n{log}")
+        panic!("daemon socket should accept apps: {error}\naxod log:\n{log}")
     });
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))

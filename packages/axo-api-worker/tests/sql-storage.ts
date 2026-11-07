@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 /**
  * A Durable Object's `SqlStorage` on node:sqlite, for testing what is built on it (such as
- * AppConnections) without a Worker: `exec` with bindings, `toArray`, `one` and `rowsWritten`.
+ * BuiltinApps) without a Worker: `exec` with bindings, `toArray`, `one` and `rowsWritten`.
  */
 export function sqlStorage(): SqlStorage {
   const db = new DatabaseSync(":memory:");

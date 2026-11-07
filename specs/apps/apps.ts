@@ -3,15 +3,15 @@ import { atMost, budget, crash, defineActor, defineCall, defineGroup, defineLimi
 const SEC = 1_000;
 const MIN = 60 * SEC;
 
-// RFD0016: an agent in an Axo Session runs a connections script. The script runs in the account's
+// RFD0016: an agent in an Axo Session runs a apps script. The script runs in the account's
 // cloud Dynamic Worker; third-party tools are called from the cloud with the account's grant, and
 // `bash` travels over the host relay to the Mac it names.
 //
 // Each Mac's relay socket ends in its own Durable Object, HostDO: axod connects to
 // api.axo.leostera.dev and the Worker routes the socket to HostDO by host ID (relay data flow
-// redesign; until it lands, AxoAccountManager owns the socket itself). Connections state lives
+// redesign; until it lands, AxoAccountManager owns the socket itself). Apps state lives
 // only in the account's AxoAccountManager, one RPC hop away: the socket owner forwards a Mac's
-// connections calls to it, and sends it `bash` for its Mac. The model holds whichever object owns
+// apps calls to it, and sends it `bash` for its Mac. The model holds whichever object owns
 // the socket. Names match the relay data flow specs: zones "Host Mac" and "Cloudflare"; actors
 // "axod relay", "HostDO", "AxoAccountManager".
 //
@@ -62,21 +62,21 @@ type LogRecord = { account: string; request: string; service: string; tool: stri
 const faults = budget("faults", 1);
 
 // Session agent -> axod (axod mcp over axod.sock)
-const Execute = defineMessage("Execute", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "connections_execute", over: "unix socket" });
+const Execute = defineMessage("Execute", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "apps_execute", over: "unix socket" });
 const Done = defineMessage("Done", { request: String, results: listOf(String) }, { name: "script result", over: "unix socket", tone: "reply" });
 const Failed = defineMessage("Failed", { request: String, error: String }, { name: "script failed", over: "unix socket", tone: "refused" });
 const RelayDown = defineMessage("RelayDown", { request: String }, { name: "this Mac is not connected to its account", over: "unix socket", tone: "refused" });
 // axod <-> the Durable Object that owns its relay socket
-const Forward = defineMessage("Forward", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3"), epoch: Number }, { name: "axo.connections.execute", over: "websocket" });
+const Forward = defineMessage("Forward", { request: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3"), epoch: Number }, { name: "axo.apps.execute", over: "websocket" });
 const Answer = defineMessage("Answer", { request: String, results: listOf(String), epoch: Number }, { name: "execute result", over: "websocket", tone: "reply" });
 const Refused = defineMessage("Refused", { request: String, error: String, epoch: Number }, { name: "execute failed", over: "websocket", tone: "refused" });
-const Bash = defineMessage("Bash", { call: String, account: String, command: String, epoch: Number }, { name: "axo.connections.bash", over: "websocket" });
+const Bash = defineMessage("Bash", { call: String, account: String, command: String, epoch: Number }, { name: "axo.apps.bash", over: "websocket" });
 const BashDone = defineMessage("BashDone", { call: String, output: String, epoch: Number }, { name: "bash result", over: "websocket", tone: "reply" });
 const Disconnected = defineMessage("Disconnected", { host: String, epoch: Number }, { name: "relay socket closed", over: "websocket", tone: "refused" });
 const Reconnected = defineMessage("Reconnected", { host: String, epoch: Number }, { name: "relay socket open", over: "websocket" });
 const Revoked = defineMessage("Revoked", { epoch: Number }, { name: "close 4003: host revoked", over: "websocket", tone: "refused" });
 // The socket owner <-> AxoAccountManager (Durable Object RPC)
-const ExecuteFor = defineCall("ExecuteFor", { request: String, account: String, host: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "executeConnections", over: "rpc" });
+const ExecuteFor = defineCall("ExecuteFor", { request: String, account: String, host: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "executeApps", over: "rpc" });
 const Finished = defineMessage("Finished", { request: String, results: listOf(String) }, { name: "script finished", over: "rpc", tone: "reply" });
 const NotFinished = defineMessage("NotFinished", { request: String, error: String }, { name: "script failed", over: "rpc", tone: "refused" });
 const CallHost = defineCall("CallHost", { call: String, account: String, host: String, command: String }, { name: "callHost", over: "rpc" });
@@ -100,15 +100,15 @@ const macs = defineZone({ name: "Host Mac", description: "each runs axod and Axo
 const cloudflare = defineZone({ name: "Cloudflare", description: "the host's socket owner, the account's Durable Object and its script Worker", place: { column: 1, region: true } });
 const services = defineZone({ name: "Third-party services", description: "remote MCP servers", place: { column: 2 } });
 
-const limit1 = defineLimit({ name: "Script wall time", value: 5 * MIN, sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
-const limit2 = defineLimit({ name: "Tool calls per script", value: 100, unit: "calls", sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
-const limit3 = defineLimit({ name: "Concurrent tool calls per script", value: 4, unit: "calls", sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
-const limit4 = defineLimit({ name: "bash default timeout", value: 60 * SEC, sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
+const limit1 = defineLimit({ name: "Script wall time", value: 5 * MIN, sources: ["packages/axo-api/src/apps.ts#APPS_LIMITS"] });
+const limit2 = defineLimit({ name: "Tool calls per script", value: 100, unit: "calls", sources: ["packages/axo-api/src/apps.ts#APPS_LIMITS"] });
+const limit3 = defineLimit({ name: "Concurrent tool calls per script", value: 4, unit: "calls", sources: ["packages/axo-api/src/apps.ts#APPS_LIMITS"] });
+const limit4 = defineLimit({ name: "bash default timeout", value: 60 * SEC, sources: ["packages/axo-api/src/apps.ts#APPS_LIMITS"] });
 const limit5 = defineLimit({ name: "Call log retention", value: 30, unit: "days" });
 
 export const Ingress = defineActor({
   name: "HostDO",
-  description: "The Durable Object that owns each Mac's relay socket. It knows which sockets are open, forwards a Mac's connections calls to the account, and sends the account's commands down the right socket. It holds no connections state.",
+  description: "The Durable Object that owns each Mac's relay socket. It knows which sockets are open, forwards a Mac's apps calls to the account, and sends the account's commands down the right socket. It holds no apps state.",
   zone: cloudflare,
   singleton: true,
   initialState: () => ({
@@ -270,11 +270,11 @@ export const Ingress = defineActor({
 
 export const Manager = defineActor({
   name: "AxoAccountManager",
-  description: "The account's Durable Object: it holds connections and grants, runs scripts in a Worker, and dispatches their tool calls.",
+  description: "The account's Durable Object: it holds apps and grants, runs scripts in a Worker, and dispatches their tool calls.",
   zone: cloudflare,
   singleton: true,
   initialState: () => ({
-    connections: Object.fromEntries(
+    apps: Object.fromEntries(
       ACCOUNTS.map((account) => [
         account,
         {
@@ -293,9 +293,9 @@ export const Manager = defineActor({
     icon: "cloud",
     status: (s) => `${Object.keys(s.runs).length} script(s) running`,
     rows: (s) => [
-      ...Object.entries(s.connections).flatMap(([account, cs]) =>
+      ...Object.entries(s.apps).flatMap(([account, cs]) =>
         Object.entries(cs).map(([name, c]) => ({
-          group: `${cap(who(account))}'s connections`,
+          group: `${cap(who(account))}'s apps`,
           owner: cap(who(account)),
           label: name,
           detail: c.kind === "host" ? "host" : "third-party, grant held here",
@@ -311,10 +311,10 @@ export const Manager = defineActor({
       description: "The person revokes a Mac (RFD0013): its host connection is removed, commands sent to it fail, and its socket is closed.",
       sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.revokeHost"],
       inputs: { host: input(String, { examples: ["studio"] }) },
-      when: (s) => Object.values(s.connections).some((cs) => "studio" in cs),
+      when: (s) => Object.values(s.apps).some((cs) => "studio" in cs),
       sends: [ToolError, Unpair],
       run(state, { host }, ctx) {
-        for (const cs of Object.values(state.connections)) delete cs[host];
+        for (const cs of Object.values(state.apps)) delete cs[host];
         state.unpairedAt[host] = state.log.length;
         failCommandsTo(state, host, `${host} was unpaired; the command may have run`, ctx);
         ctx.send(ctx.the(Ingress), Unpair, { host });
@@ -325,7 +325,7 @@ export const Manager = defineActor({
     executeFor: {
       on: ExecuteFor,
       description: "Starts the script in the account's Worker, under the script's wall time.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.call", "packages/axo-api-worker/src/connections/runner.ts#runScript"],
+      sources: ["packages/axo-api-worker/src/apps/account.ts#AccountApps.call", "packages/axo-api-worker/src/apps/runner.ts#runScript"],
       sends: [RunScript],
       starts: ["wallTime"],
       say: (_s, m) => `Running ${m.script} for ${cap(who(m.account))} in a Dynamic Worker`,
@@ -337,7 +337,7 @@ export const Manager = defineActor({
     },
     wallTime: {
       description: "A script ran past its wall time: it is aborted, its calls in flight are abandoned, and the Mac that asked hears so.",
-      sources: ["packages/axo-api-worker/src/connections/runner.ts#runScript"],
+      sources: ["packages/axo-api-worker/src/apps/runner.ts#runScript"],
       after: "5 minutes",
       sends: [Abort, NotFinished],
       run(state, _, ctx) {
@@ -356,15 +356,15 @@ export const Manager = defineActor({
     },
     toolCall: {
       on: ToolCall,
-      description: "Counts the call against the script's limit, looks the service up among the account's own connections, logs the call, and sends it to the service or, through the Mac's socket owner, to the Mac.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller", "packages/axo-api-worker/src/connections/runner.ts#ToolDispatcher.call"],
+      description: "Counts the call against the script's limit, looks the service up among the account's own apps, logs the call, and sends it to the service or, through the Mac's socket owner, to the Mac.",
+      sources: ["packages/axo-api-worker/src/apps/account.ts#AccountApps.caller", "packages/axo-api-worker/src/apps/runner.ts#ToolDispatcher.call"],
       sends: [McpCall, CallHost, ToolError],
       run(state, m, ctx) {
         const run = state.runs[m.request];
         if (!run) return;
         if (run.calls >= MAX_CALLS) return ctx.reply(ToolError, { request: m.request, error: `a script may make at most ${MAX_CALLS} tool calls` });
         run.calls += 1;
-        const connection = state.connections[run.account]?.[m.call.service];
+        const connection = state.apps[run.account]?.[m.call.service];
         if (!connection) return ctx.reply(ToolError, { request: m.request, error: `no connection named ${m.call.service}` });
         const call = ctx.fresh("call");
         state.log.push({ account: run.account, request: m.request, service: m.call.service, tool: m.call.tool, input: m.call.input, call });
@@ -398,7 +398,7 @@ export const Manager = defineActor({
     callHostFailed: {
       on: failed(CallHost),
       description: "The socket owner did not answer; the command may have been sent, so it fails and is not sent again.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller"],
+      sources: ["packages/axo-api-worker/src/apps/account.ts#AccountApps.caller"],
       sends: [ToolError],
       run(state, failure, ctx) {
         const d = state.dispatched[failure.payload.call];
@@ -410,7 +410,7 @@ export const Manager = defineActor({
     bashResult: {
       on: BashResult,
       description: "Hands the command's output back to the script.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller"],
+      sources: ["packages/axo-api-worker/src/apps/account.ts#AccountApps.caller"],
       sends: [ToolResult],
       run(state, m, ctx) {
         const d = state.dispatched[m.call];
@@ -422,7 +422,7 @@ export const Manager = defineActor({
     hostOffline: {
       on: HostOffline,
       description: "The command failed before or after reaching the Mac; the tool call fails with the reason and is not sent again.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller"],
+      sources: ["packages/axo-api-worker/src/apps/account.ts#AccountApps.caller"],
       sends: [ToolError],
       run(state, m, ctx) {
         const d = state.dispatched[m.call];
@@ -434,7 +434,7 @@ export const Manager = defineActor({
     scriptDone: {
       on: ScriptDone,
       description: "Returns the script's result to the socket owner of the Mac that asked.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#scriptOutcome"],
+      sources: ["packages/axo-api-worker/src/apps/account.ts#scriptOutcome"],
       sends: [Finished],
       run(state, m, ctx) {
         if (!state.runs[m.request]) return;
@@ -446,7 +446,7 @@ export const Manager = defineActor({
     scriptFailed: {
       on: ScriptFailed,
       description: "Returns the script's error to the socket owner of the Mac that asked.",
-      sources: ["packages/axo-api-worker/src/connections/account.ts#scriptOutcome"],
+      sources: ["packages/axo-api-worker/src/apps/account.ts#scriptOutcome"],
       sends: [NotFinished],
       run(state, m, ctx) {
         if (!state.runs[m.request]) return;
@@ -486,7 +486,7 @@ function failCommandsTo(state: any, host: string, error: string, ctx: any): void
 
 export const Worker = defineActor({
   name: "Script Worker",
-  description: "The Dynamic Worker that runs connections scripts. It has no network of its own; every tool call goes back to the account's Durable Object.",
+  description: "The Dynamic Worker that runs scripts. It has no network of its own; every tool call goes back to the account's Durable Object.",
   zone: cloudflare,
   singleton: true,
   initialState: () => ({ runs: {} as Record<string, { calls: Call[]; next: number; results: string[] }> }),
@@ -499,7 +499,7 @@ export const Worker = defineActor({
     runScript: {
       on: RunScript,
       description: "Runs the script up to its first tool call.",
-      sources: ["packages/axo-api-worker/src/connections/runner.ts#WORKER_SOURCE"],
+      sources: ["packages/axo-api-worker/src/apps/runner.ts#WORKER_SOURCE"],
       sends: [ToolCall],
       run(state, m, ctx) {
         state.runs[m.request] = { calls: m.calls, next: 1, results: [] };
@@ -509,7 +509,7 @@ export const Worker = defineActor({
     toolResult: {
       on: ToolResult,
       description: "Continues the script with the result: makes the next call, or returns.",
-      sources: ["packages/axo-api-worker/src/connections/runner.ts#WORKER_SOURCE"],
+      sources: ["packages/axo-api-worker/src/apps/runner.ts#WORKER_SOURCE"],
       sends: [ToolCall, ScriptDone],
       run(state, m, ctx) {
         const run = state.runs[m.request];
@@ -527,13 +527,13 @@ export const Worker = defineActor({
     abort: {
       on: Abort,
       description: "The Durable Object aborted the script; it stops where it is.",
-      sources: ["packages/axo-api-worker/src/connections/runner.ts#ToolDispatcher.close"],
+      sources: ["packages/axo-api-worker/src/apps/runner.ts#ToolDispatcher.close"],
       run: (state, m) => void delete state.runs[m.request],
     },
     toolError: {
       on: ToolError,
       description: "The tool call threw; the script does not catch it, so it fails.",
-      sources: ["packages/axo-api-worker/src/connections/runner.ts#WORKER_SOURCE"],
+      sources: ["packages/axo-api-worker/src/apps/runner.ts#WORKER_SOURCE"],
       sends: [ScriptFailed],
       run(state, m, ctx) {
         if (!state.runs[m.request]) return;
@@ -625,7 +625,7 @@ export const Axod = defineActor({
     execute: {
       on: Execute,
       description: "Forwards a Session's script over the relay, or refuses at once when the relay is down.",
-      sources: ["crates/axo-server/src/connections.rs#forward"],
+      sources: ["crates/axo-server/src/apps.rs#forward"],
       sends: [Forward, RelayDown],
       run(state, m, ctx) {
         if (!state.connected || !state.account) return ctx.reply(RelayDown, { request: m.request });
@@ -636,7 +636,7 @@ export const Axod = defineActor({
     answer: {
       on: Answer,
       description: "Hands the script's result to the Session that asked.",
-      sources: ["crates/axo-server/src/connections.rs#forward"],
+      sources: ["crates/axo-server/src/apps.rs#forward"],
       sends: [Done],
       run(state, m, ctx) {
         if (m.epoch !== state.epoch) return;
@@ -648,7 +648,7 @@ export const Axod = defineActor({
     refused: {
       on: Refused,
       description: "Hands the script's error to the Session that asked.",
-      sources: ["crates/axo-server/src/connections.rs#forward"],
+      sources: ["crates/axo-server/src/apps.rs#forward"],
       sends: [Failed],
       run(state, m, ctx) {
         if (m.epoch !== state.epoch) return;
@@ -711,7 +711,7 @@ function failWaiting(state: any, ctx: any): void {
 
 export const Session = defineActor({
   name: "Session",
-  description: "The Pi agent in an Axo Session, calling connections_execute through axod mcp.",
+  description: "The Pi agent in an Axo Session, calling apps_execute through axod mcp.",
   zone: macs,
   initialState: (ctx) => ({
     host: hostOf(ctx.label),
@@ -730,7 +730,7 @@ export const Session = defineActor({
     execute: {
       with: [atMost(2)],
       label: "Run a script",
-      description: "The agent runs a connections script.",
+      description: "The agent runs a apps script.",
       sources: ["crates/axo-mcp/src/lib.rs#McpServer.call_tool"],
       inputs: { script: input(String, { examples: Object.keys(CALLS) }) },
       when: (s) => s.pending === null,
@@ -837,8 +837,8 @@ const everyCallIsLogged = defineProperty("everyCallIsLogged", {
     return w.all(Axod).every((a) => a.state.ran.every((r) => logged.has(r.call))) && w.the(Linear).state.calls.every((c) => logged.has(c.call));
   },
 });
-const connectionsStateStaysInTheAccount = defineProperty("connectionsStateStaysInTheAccount", {
-  description: "The socket owner never holds connections, runs or the call log: it only knows sockets, what it forwarded, and the callHost RPCs waiting on a socket.",
+const appsStateStaysInTheAccount = defineProperty("appsStateStaysInTheAccount", {
+  description: "The socket owner never holds apps, runs or the call log: it only knows sockets, what it forwarded, and the callHost RPCs waiting on a socket.",
   always: (w) => Object.keys(w.the(Ingress).state).every((k) => ["sockets", "revoked", "forwarded", "calling"].includes(k)),
 });
 const sessionsGetAnAnswer = defineProperty("sessionsGetAnAnswer", {
@@ -940,12 +940,12 @@ const macGroup = defineGroup({ name: "Mac", actors: { daemon: Axod, session: Ses
 const axoCloudGroup = defineGroup({ name: "Axo cloud", actors: [Ingress, Manager, Worker], icon: "cloud", collapsed: false });
 
 export default defineSpec({
-  name: "Connections",
+  name: "Apps",
   description:
-    "How an agent in an Axo Session runs a script over its account's connections: third-party tools are called from the cloud with the account's grant, and bash runs on the Mac it names, reached over that Mac's relay.",
+    "How an agent in an Axo Session runs a script over its account's apps: third-party tools are called from the cloud with the account's grant, and bash runs on the Mac it names, reached over that Mac's relay.",
   actors: [Ingress, Manager, Worker, Linear, Axod, Session],
   groups: [macGroup, axoCloudGroup],
   limits: [limit1, limit2, limit3, limit4, limit5],
-  properties: [bashOnlyOnOwnMacs, grantsOnlyFromTheirAccount, grantsStayInTheCloud, noThirdPartyCallRunsTwice, revokedMacsRunNothingNew, scriptsStayWithinLimit, noCommandRunsTwice, everyCallIsLogged, connectionsStateStaysInTheAccount, sessionsGetAnAnswer],
+  properties: [bashOnlyOnOwnMacs, grantsOnlyFromTheirAccount, grantsStayInTheCloud, noThirdPartyCallRunsTwice, revokedMacsRunNothingNew, scriptsStayWithinLimit, noCommandRunsTwice, everyCallIsLogged, appsStateStaysInTheAccount, sessionsGetAnAnswer],
   scenarios: [readLinearFromASession, runACommandOnAnotherMac, linearThenACommandInOneScript, bobSMacIsNotAliceSConnection, theStudioDropsMidCommand, aScriptThatMakesTooManyCalls, theStudioIsUnpairedMidCommand, aScriptRunsOutOfTime, theLaptopSRelayIsDown],
 });

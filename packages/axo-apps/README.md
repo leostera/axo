@@ -12,14 +12,14 @@ This package says what each app is, and holds no state:
   provider), and ChatGPT's device sign-in (`openai.ts`).
 - `src/catalog.ts`: every app by name, and each app's tools (its own, then `request`).
 
-The account's gateway (`packages/axo-api-worker/src/connections/apps`) does everything stateful
+The account's gateway (`packages/axo-api-worker/src/apps/builtin`) does everything stateful
 with these: it stores the OAuth clients the person set up and the grants and tokens of each
 account, sealed; it runs sign-ins; and it makes every call, through the `ProviderApi` a tool is
 given, which only reaches the app's own hosts.
 
 ## Adding an app
 
-1. Add its name to `APPS` in `packages/axo-api/src/connections.ts`.
+1. Add its name to `APPS` in `packages/axo-api/src/apps.ts`.
 2. Write `src/apps/<app>.ts` and add it to `src/catalog.ts`.
 3. For an OAuth app of a new provider, write `src/oauth/<provider>.ts`, add the provider to
    `OAUTH_PROVIDERS` and `src/oauth/providers.ts`, and a fake of it in

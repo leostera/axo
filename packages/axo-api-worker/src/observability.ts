@@ -17,10 +17,10 @@ type ApiEvent =
   /** What a Mac asked its person, and how it ended (RFD0029); never the words. */
   | { event: "elicitation_requested"; kind: "confirm" | "input" }
   | { event: "elicitation_resolved"; outcome: "accept" | "decline" | "cancel" }
-  | { event: "host_connections_call"; outcome: "result" | "error" | "unknown" | "refused" }
+  | { event: "host_apps_call"; outcome: "result" | "error" | "unknown" | "refused" }
   | { event: "host_call"; outcome: "result" | "error" | "offline" | "disconnected" | "timeout" }
-  /** One `axo.connections.*` call the account answered; `outcome` is "result" or the error code. */
-  | { event: "connections_call"; method: string; outcome: string; durationMs: number }
+  /** One `axo.apps.*` call the account answered; `outcome` is "result" or the error code. */
+  | { event: "apps_call"; method: string; outcome: string; durationMs: number }
   | {
       event: "relay_reply";
       method: RemoteMethod;

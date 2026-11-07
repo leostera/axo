@@ -277,7 +277,7 @@ write("terminal", [
   { from: "hub", to: "host", message: req(71, "terminal.input", { hostId: HOST_ID, sessionId: SESSION, shellId: SHELL, seq: 0, data: b64url(Buffer.from("git status\r")), from: { device: PHONE_DEVICE } }) },
   { from: "host", to: "hub", message: ok(71, { seq: 11 }) },
   { from: "hub", to: "client", message: ok(11, { seq: 11 }) },
-  { from: "host", to: "hub", note: "Output goes only to attached connections and is never stored.", message: notify("terminal.output", { hostId: HOST_ID, sessionId: SESSION, shellId: SHELL, seq: 4096, data: b64url(Buffer.from("git status\r\nOn branch main\r\n$ ")) }) },
+  { from: "host", to: "hub", note: "Output goes only to attached apps and is never stored.", message: notify("terminal.output", { hostId: HOST_ID, sessionId: SESSION, shellId: SHELL, seq: 4096, data: b64url(Buffer.from("git status\r\nOn branch main\r\n$ ")) }) },
   { from: "hub", to: "client", message: notify("terminal.output", { hostId: HOST_ID, sessionId: SESSION, shellId: SHELL, seq: 4096, data: b64url(Buffer.from("git status\r\nOn branch main\r\n$ ")) }) },
 ]);
 

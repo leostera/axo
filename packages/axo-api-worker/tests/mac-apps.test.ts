@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema } from "@axo/protocol";
-import { AppConnections, macCommand } from "../src/connections/apps";
+import { BuiltinApps, macCommand } from "../src/apps/builtin";
 import { ProviderOutcomeUnknown } from "@axo/apps";
 import { sqlStorage } from "./sql-storage";
 
@@ -38,7 +38,7 @@ function fixture(macs = ["studio", "leo_s_laptop"]) {
       fields: [{ id: "username", label: "username", type: "STRING", purpose: "USERNAME", value: "leostera", reference: "op://Private/GitHub/username" },
         { id: "password", label: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2", reference: "op://Private/GitHub/password" }] },
   };
-  const apps = new AppConnections({
+  const apps = new BuiltinApps({
     sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
     fetcher: (async () => { throw new Error("no network"); }) as typeof fetch, waitUntil: () => undefined,
     macs: () => macs,
@@ -91,7 +91,7 @@ test("1Password's accounts are the account's Macs; it is listed only where Macs 
   assert.equal(listed.signIn.kind, "mac");
   assert.ok(!listed.tools.includes("request"), "a Mac app has no HTTP API");
   assert.ok(listed.tools.includes("op"));
-  const bare = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
+  const bare = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
   assert.equal(bare.list().some((c) => c.name === "apps.onepassword"), false);
 });
 

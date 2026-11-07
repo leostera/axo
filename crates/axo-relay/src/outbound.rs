@@ -21,7 +21,7 @@ use crate::fragments;
 /// The order in which the relay spends its sending budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
-    /// Replies, commands and connections calls.
+    /// Replies, commands and apps calls.
     Control = 0,
     /// Transcript upload, paced by the cloud's commit acknowledgements (RFD0018).
     Durable = 1,

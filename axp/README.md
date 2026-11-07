@@ -38,7 +38,7 @@ AXP specifies the answers once, with a small core and extensions, so that any ho
 
 | Path | What |
 | --- | --- |
-| [`SPEC.md`](SPEC.md) | The core: roles, transports, connections, trust and pairing, hosts and Sessions, logs and replication, routed calls and commands, ephemeral state, errors, limits |
+| [`SPEC.md`](SPEC.md) | The core: roles, transports, apps, trust and pairing, hosts and Sessions, logs and replication, routed calls and commands, ephemeral state, errors, limits |
 | [`extensions/`](extensions) | The extension registry and one document per extension |
 | [`schema/v0.1/axp.schema.json`](schema/v0.1/axp.schema.json) | JSON Schema (draft 2020-12) for the core's methods and notifications |
 | [`schema/v0.1/ext/`](schema/v0.1/ext) | One JSON Schema per extension |

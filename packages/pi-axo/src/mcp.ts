@@ -35,10 +35,10 @@ export function registerAxoMcpServer(pi: ExtensionAPI, config: AxoMcpConfig): vo
     args: ["mcp"],
     env: { AXO_SOCKET: config.socket, AXO_SESSION_ID: config.sessionId },
     exposure: "codemode",
-    // A question to the person (elicitation_request) and a script (connections_execute) each wait
+    // A question to the person (elicitation_request) and a script (apps_execute) each wait
     // up to 5 minutes; axod answers within that plus a margin.
     timeout: 330,
     description:
-      "Axo, the app this agent runs in: list Sessions and their transcript files, start and prompt Sessions (including this one), type into and read terminal panes, and reach the account's connections (bash on any paired Mac, remote MCP servers such as Linear, and apps Axo provides: Gmail, Google Calendar, Drive, Docs, Sheets, Slides, Contacts, Tasks, Meet and Google Cloud) with connections_*.",
+      "Axo, the app this agent runs in: list Sessions and their transcript files, start and prompt Sessions (including this one), type into and read terminal panes, and reach the account's apps (bash on any paired Mac, remote MCP servers such as Linear, and apps Axo provides: Gmail, Google Calendar, Drive, Docs, Sheets, Slides, Contacts, Tasks, Meet and Google Cloud) with apps_*.",
   });
 }

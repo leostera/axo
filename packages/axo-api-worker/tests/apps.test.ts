@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { APPS, connectionsResults } from "@axo/protocol";
+import { APPS, appsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { FakeGoogle } from "./fake-google";
@@ -9,7 +9,7 @@ import { FakeOpenAI } from "./fake-openai";
 
 /**
  * RFD0016, apps: Gmail is a service Axo provides itself. The person signs in to Google with Axo's
- * own client from the Connections page, or from a link an agent got when a call needed it, and
+ * own client from the Apps page, or from a link an agent got when a call needed it, and
  * scripts call `codemode.apps.gmail.*` from the cloud with a grant that never leaves the account.
  */
 
@@ -28,7 +28,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   t.after(() => daemon.close());
   const sessionId = crypto.randomUUID();
   const call = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params }) as Promise<Reply>;
-  const execute = (code: string) => call("axo.connections.execute", { code });
+  const execute = (code: string) => call("axo.apps.execute", { code });
   return { google, h, session, call, execute };
 }
 
@@ -42,9 +42,9 @@ function failure(reply: Reply): string {
   return reply.error.message;
 }
 
-/** The Connections page's Sign in button for Gmail: a sign-in link from the account's API. */
+/** The Apps page's Sign in button for Gmail: a sign-in link from the account's API. */
 async function signInLink(h: Harness, session: AccountSession, app = "apps.gmail"): Promise<string> {
-  const response = await fetch(new URL(`api/v1/account/connections/${app}/sign-in`, h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
+  const response = await fetch(new URL(`api/v1/account/apps/${app}/sign-in`, h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
   assert.equal(response.status, 200, await response.clone().text());
   return ((await response.json()) as { signInUrl: string }).signInUrl;
 }
@@ -69,15 +69,15 @@ async function signedIn(t: { after(fn: () => unknown): void }) {
 
 test("Gmail is listed needing sign-in; a call before it hands the agent a sign-in link, and after it the tools work", async (t) => {
   const { google, h, session, call, execute } = await fixture(t);
-  const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
+  const listed = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list")));
   const gmailTools = ["get_profile", "search_messages", "get_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message", "delete_message",
     "list_filters", "create_filter", "delete_filter", "get_vacation", "set_vacation", "list_send_as", "request"];
-  const gmail = listed.connections.find((c) => c.kind === "app");
+  const gmail = listed.apps.find((c) => c.kind === "app");
   assert.deepEqual({ ...gmail, description: undefined, permissions: undefined }, {
     kind: "app", name: "apps.gmail", title: "Gmail", description: undefined, provider: "Google", category: "communication", permissions: undefined, signIn: { kind: "oauth", client: { provider: "google", ready: true, consoleUrl: "https://console.cloud.google.com/apis/credentials", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback" } }, state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
   });
   assert.ok(gmail?.kind === "app" && gmail.description && gmail.permissions.length >= 3, "an app says what it is for and what it may do");
-  const tools = result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => [t.call, t.inputSchema.required])` })).result;
+  const tools = result(await call("axo.apps.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => [t.call, t.inputSchema.required])` })).result;
   assert.deepEqual(tools.map(([c]: [string]) => c), gmailTools.map((t) => `codemode.apps.gmail.${t}`));
   assert.ok(tools.every(([, required]: [string, string[]]) => required[0] === "account"), "every tool needs an account");
 
@@ -88,9 +88,9 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
   const landed = await signInThroughBrowser(h, google, session, link);
   assert.equal(landed.pathname, "/app/settings/apps/gmail");
   assert.equal(landed.searchParams.get("signedIn"), "apps.gmail");
-  const ready = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections.find((c) => c.kind === "app");
+  const ready = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list"))).apps.find((c) => c.kind === "app");
   assert.deepEqual([ready?.state, ready?.kind === "app" && ready.accounts], ["ready", [{ account: "ada@example.com", state: "ready", lastError: null }]]);
-  const described = result(await call("axo.connections.search", { code: `async () => codemode.tools().find((t) => t.name === "search_messages").description` })).result;
+  const described = result(await call("axo.apps.search", { code: `async () => codemode.tools().find((t) => t.name === "search_messages").description` })).result;
   assert.match(described, /Signed-in accounts: ada@example\.com\./);
 
   const found = result(await execute(`async () => {
@@ -110,8 +110,8 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
   assert.equal(found.html, "Hello & welcome", "a message with no plain text reads as its HTML, as text");
 
   // The grant stays in the cloud.
-  const page = await (await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers })).text();
-  for (const text of [page, JSON.stringify(found), JSON.stringify(result(await call("axo.connections.log")))]) assert.equal(google.leaks(text), false);
+  const page = await (await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers })).text();
+  for (const text of [page, JSON.stringify(found), JSON.stringify(result(await call("axo.apps.log")))]) assert.equal(google.leaks(text), false);
 });
 
 test("send_message builds the MIME message, threads a reply, and is logged under apps.gmail", async (t) => {
@@ -136,7 +136,7 @@ test("send_message builds the MIME message, threads a reply, and is logged under
   assert.match(smuggled, /line breaks/);
   assert.equal(google.sent.length, 2);
 
-  const records = result(await call("axo.connections.log")).records as Array<{ service: string; tool: string; outcome: string }>;
+  const records = result(await call("axo.apps.log")).records as Array<{ service: string; tool: string; outcome: string }>;
   assert.deepEqual(records.slice(0, 3).map((r) => [r.service, r.tool, r.outcome]), [
     ["apps.gmail", "send_message", "error"],
     ["apps.gmail", "send_message", "ok"],
@@ -153,7 +153,7 @@ test("a send that fails on Google's side is logged as may-have-run; labels chang
   assert.deepEqual(archived, { id: "m1", threadId: "t1", labelIds: ["STARRED"] });
   const missing = failure(await execute(`async () => codemode.apps.gmail.get_message({ account: "ada@example.com", id: "nope" })`));
   assert.match(missing, /Gmail: Requested entity was not found/);
-  const records = result(await call("axo.connections.log")).records as Array<{ tool: string; outcome: string }>;
+  const records = result(await call("axo.apps.log")).records as Array<{ tool: string; outcome: string }>;
   assert.deepEqual(records.slice(0, 3).map((r) => [r.tool, r.outcome]), [["get_message", "error"], ["modify_message", "ok"], ["send_message", "unknown"]]);
 });
 
@@ -166,7 +166,7 @@ test("a rejected access token is renewed once and the call sent again; a refused
   google.expireAccessTokens();
   google.refuseRefresh = true;
   assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile({ account: "ada@example.com", account: "ada@example.com" })`)), /needs sign-in/);
-  const app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  const app = result(await call("axo.apps.list")).apps.find((c: { kind: string }) => c.kind === "app");
   assert.equal(app.state, "needsSignIn");
   assert.deepEqual(app.accounts, [{ account: "ada@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], "the account stays listed, to sign in to again");
 });
@@ -177,36 +177,36 @@ test("a sign-in without Gmail access does not land, and signing out revokes the 
   const refused = await signInThroughBrowser(h, google, session, await signInLink(h, session));
   assert.match(refused.searchParams.get("error") ?? "", /did not grant Gmail access/);
   assert.equal(google.revoked.length, 1, "the useless grant is revoked");
-  let app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  let app = result(await call("axo.apps.list")).apps.find((c: { kind: string }) => c.kind === "app");
   assert.equal(app.state, "needsSignIn");
 
   google.grantScopes = null;
   await signInThroughBrowser(h, google, session, await signInLink(h, session));
-  assert.match(failure(await call("axo.connections.remove", { name: "apps.gmail" })), /name the account/);
-  assert.deepEqual(result(await call("axo.connections.remove", { name: "apps.gmail", account: "ada@example.com" })), { removed: true });
-  app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  assert.match(failure(await call("axo.apps.remove", { name: "apps.gmail" })), /name the account/);
+  assert.deepEqual(result(await call("axo.apps.remove", { name: "apps.gmail", account: "ada@example.com" })), { removed: true });
+  app = result(await call("axo.apps.list")).apps.find((c: { kind: string }) => c.kind === "app");
   assert.deepEqual([app.state, app.accounts], ["needsSignIn", []]);
   for (let i = 0; i < 20 && google.revoked.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
   assert.equal(google.revoked.length, 2);
-  assert.match(failure(await call("axo.connections.remove", { name: "apps.gmail", account: "ada@example.com" })), /not signed in/);
+  assert.match(failure(await call("axo.apps.remove", { name: "apps.gmail", account: "ada@example.com" })), /not signed in/);
 });
 
 test("apps is a reserved name, and an account without a Google client lists Google's apps waiting for one, without their tools", async (t) => {
   const { call } = await fixture(t);
-  assert.match(failure(await call("axo.connections.add", { name: "apps", url: "https://mcp.example.test/mcp" })), /reserved/);
+  assert.match(failure(await call("axo.apps.add", { name: "apps", url: "https://mcp.example.test/mcp" })), /reserved/);
 
   const bare = await harness();
   t.after(() => bare.close());
   const session = await signIn(bare);
   const daemon = await connectHost(bare, session, await pairHost(bare, session, "Studio"));
   t.after(() => daemon.close());
-  const listed = (await daemon.call("axo.connections.list", { sessionId: crypto.randomUUID() })) as Reply;
-  const connections = connectionsResults["axo.connections.list"].parse(result(listed)).connections;
-  assert.deepEqual(connections.map((c) => c.name), ["studio", ...APPS.map((app) => `apps.${app}`)], "every app is listed, so its client can be set up on its page");
-  const gmail = connections.find((c) => c.name === "apps.gmail");
+  const listed = (await daemon.call("axo.apps.list", { sessionId: crypto.randomUUID() })) as Reply;
+  const apps = appsResults["axo.apps.list"].parse(result(listed)).apps;
+  assert.deepEqual(apps.map((c) => c.name), ["studio", ...APPS.map((app) => `apps.${app}`)], "every app is listed, so its client can be set up on its page");
+  const gmail = apps.find((c) => c.name === "apps.gmail");
   assert.ok(gmail?.kind === "app" && gmail.signIn.kind === "oauth");
   assert.equal(gmail.signIn.client?.ready, false);
-  const tools = result((await daemon.call("axo.connections.search", { sessionId: crypto.randomUUID(), code: `async () => [...new Set(codemode.tools().map((t) => t.service))]` })) as Reply).result;
+  const tools = result((await daemon.call("axo.apps.search", { sessionId: crypto.randomUUID(), code: `async () => [...new Set(codemode.tools().map((t) => t.service))]` })) as Reply).result;
   assert.deepEqual(tools.filter((s: string) => s.startsWith("apps.")), ["apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.kraken", "apps.discord", "apps.unifi"],
     "an app waiting for its client has no tools; one that needs none does");
 });
@@ -215,7 +215,7 @@ test("several Google accounts sign in to Gmail; each call acts as the account it
   const { google, h, session, call, execute } = await signedIn(t);
   google.email = "Grace@Example.com";
   await signInThroughBrowser(h, google, session, await signInLink(h, session));
-  const app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  const app = result(await call("axo.apps.list")).apps.find((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(app.accounts.map((a: { account: string }) => a.account), ["ada@example.com", "grace@example.com"]);
 
   const profiles = result(await execute(`async () => Promise.all(["ada@example.com", "GRACE@example.com"].map(async (account) =>
@@ -228,11 +228,11 @@ test("several Google accounts sign in to Gmail; each call acts as the account it
   // Signing in again to an account replaces its grant rather than adding a second one.
   google.email = "ada@example.com";
   await signInThroughBrowser(h, google, session, await signInLink(h, session));
-  const again = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  const again = result(await call("axo.apps.list")).apps.find((c: { kind: string }) => c.kind === "app");
   assert.equal(again.accounts.length, 2);
 
   // Signing one out leaves the other.
-  result(await call("axo.connections.remove", { name: "apps.gmail", account: "grace@example.com" }));
+  result(await call("axo.apps.remove", { name: "apps.gmail", account: "grace@example.com" }));
   assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile({ account: "grace@example.com" })`)), /signed in: ada@example\.com\n/);
   assert.equal(result(await execute(`async () => (await codemode.apps.gmail.get_profile({ account: "ada@example.com" })).emailAddress`)).result, "ada@example.com");
 });
@@ -265,8 +265,8 @@ test("a grant stored when Gmail held one account carries over as that account", 
     }
     assert.equal(migrated, 1);
   });
-  const after = await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers });
-  const app = ((await after.json()) as { connections: Array<{ kind: string; accounts: Array<{ account: string; state: string }> }> }).connections.find((c) => c.kind === "app");
+  const after = await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers });
+  const app = ((await after.json()) as { apps: Array<{ kind: string; accounts: Array<{ account: string; state: string }> }> }).apps.find((c) => c.kind === "app");
   assert.deepEqual(app?.accounts.map((a) => [a.account, a.state]), [["ada@example.com", "ready"]]);
 });
 
@@ -283,7 +283,7 @@ async function workspace(t: { after(fn: () => unknown): void }, app: string) {
 
 test("every Workspace app is listed, signs in with full access to its own service only, and keeps its own accounts", async (t) => {
   const { google, h, session, call } = await signedIn(t);
-  const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "app");
+  const listed = result(await call("axo.apps.list")).apps.filter((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
     ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.slides", 0],
     ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.github", 0], ["apps.discord", 0], ["apps.unifi", 0], ["apps.spotify", 0], ["apps.withings", 0],
@@ -514,7 +514,7 @@ test("every app's request tool reaches any endpoint of its own API, and only its
   assert.equal(google.workspaceCalls.length, 1, "nothing refused went out");
 
   // Each app's activity is its own.
-  const log = async (service?: string) => result(await call("axo.connections.log", service ? { service } : {}));
+  const log = async (service?: string) => result(await call("axo.apps.log", service ? { service } : {}));
   const tasks = (await log("apps.tasks")).records as Array<{ service: string }>;
   assert.ok(tasks.length >= 1 && tasks.every((r) => r.service === "apps.tasks"));
   assert.deepEqual((await log("apps.gmail")).records, []);
@@ -524,7 +524,7 @@ test("the call log is a hash chain: it verifies as written, and an edited, remov
   const { h, session, execute } = await signedIn(t);
   for (const id of ["m1", "m2"]) await execute(`async () => codemode.apps.gmail.get_message({ account: "ada@example.com", id: "${id}" })`);
   await execute(`async () => codemode.apps.gmail.get_message({ account: "nobody@example.com", id: "m1" })`).catch(() => undefined);
-  const integrity = async () => (await (await fetch(new URL("api/v1/account/connections/log/integrity", h.url), { headers: session.headers })).json()) as
+  const integrity = async () => (await (await fetch(new URL("api/v1/account/apps/log/integrity", h.url), { headers: session.headers })).json()) as
     { verified: boolean; events: number; head: string | null; reason: string | null };
   const clean = await integrity();
   assert.equal(clean.verified, true, clean.reason ?? "");
@@ -578,16 +578,16 @@ test("a call logged while the chain is cut past 30 days still verifies from the 
     }
   });
   await execute(`async () => codemode.apps.gmail.get_profile({ account: "ada@example.com" })`);
-  const check = (await (await fetch(new URL("api/v1/account/connections/log/integrity", h.url), { headers: session.headers })).json()) as { verified: boolean; events: number; reason: string | null };
+  const check = (await (await fetch(new URL("api/v1/account/apps/log/integrity", h.url), { headers: session.headers })).json()) as { verified: boolean; events: number; reason: string | null };
   assert.deepEqual([check.verified, check.events], [true, 2], check.reason ?? "");
 });
 
 test("an app's OAuth client is set on its page through the client route, kept by the account, and never returned", async (t) => {
   const { h, session, call } = await fixture(t);
-  const post = (body: unknown) => fetch(new URL("api/v1/account/connections/apps.github/client", h.url), {
+  const post = (body: unknown) => fetch(new URL("api/v1/account/apps/apps.github/client", h.url), {
     method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev", "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  const github = async () => connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections.find((c) => c.name === "apps.github");
+  const github = async () => appsResults["axo.apps.list"].parse(result(await call("axo.apps.list"))).apps.find((c) => c.name === "apps.github");
   const before = await github();
   assert.ok(before?.kind === "app" && before.signIn.kind === "oauth" && before.signIn.client?.ready === false);
   assert.equal((await post({ clientId: "Ov23li" })).status, 503, "an app's client needs its secret");
@@ -596,9 +596,9 @@ test("an app's OAuth client is set on its page through the client route, kept by
   assert.deepEqual(await set.json(), { signInUrl: "https://axo.leostera.dev/app/settings/apps/github" });
   const after = await github();
   assert.ok(after?.kind === "app" && after.signIn.kind === "oauth" && after.signIn.client?.ready === true);
-  const page = await (await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers })).text();
+  const page = await (await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers })).text();
   assert.equal(page.includes("gh-secret-value"), false);
-  const link = await fetch(new URL("api/v1/account/connections/apps.github/sign-in", h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
+  const link = await fetch(new URL("api/v1/account/apps/apps.github/sign-in", h.url), { method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev" } });
   assert.match(((await link.json()) as { signInUrl: string }).signInUrl, /\/api\/v1\/connections\/oauth\/start\?flow=/, "GitHub can be signed in to now");
 });
 
@@ -608,7 +608,7 @@ test("a token app's account is added, and ChatGPT signed in with a code, through
   const h = await harness({ outbound: async (request) => (await hetzner.handle(request)) ?? openai.handle(request) });
   t.after(() => h.close());
   const session = await signIn(h);
-  const post = (path: string, body?: unknown) => fetch(new URL(`api/v1/account/connections/${path}`, h.url), {
+  const post = (path: string, body?: unknown) => fetch(new URL(`api/v1/account/apps/${path}`, h.url), {
     method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
   });
   const refused = await post("apps.hetzner/token", { account: "personal", fields: { token: "hz-wrong" } });
@@ -617,7 +617,7 @@ test("a token app's account is added, and ChatGPT signed in with a code, through
   const added = await post("apps.hetzner/token", { account: "personal", fields: { token: "hz-personal-token" } });
   assert.equal(added.status, 200, await added.clone().text());
   assert.deepEqual(await added.json(), { name: "apps.hetzner", account: "personal" });
-  const listed = await (await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers })).text();
+  const listed = await (await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers })).text();
   assert.ok(listed.includes('"account":"personal"') && !hetzner.leaks(listed), "listed, and the token never comes back");
   assert.equal((await post("apps.gmail/token", { fields: { token: "x" } })).status, 400, "an OAuth app takes no token");
   assert.equal((await post("linear/token", { fields: { token: "x" } })).status, 400, "only apps take tokens");

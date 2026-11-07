@@ -1,10 +1,10 @@
 /**
- * Connections and tools (RFD0016; modelled in specs/connections/connections.ts).
+ * Apps and tools (RFD0016; modelled in specs/apps/apps.ts).
  *
- * A Session reaches its account's connections through `axod mcp`: the local axod forwards each
- * `axo.connections.*` request on its relay socket, the host's HostDO hands it to the account's
+ * A Session reaches its account's apps through `axod mcp`: the local axod forwards each
+ * `axo.apps.*` request on its relay socket, the host's HostDO hands it to the account's
  * AxoAccountManager by RPC, and the answer comes back the same way. The account sends
- * `axo.connections.bash` the other way, down the target Mac's socket.
+ * `axo.apps.bash` the other way, down the target Mac's socket.
  *
  * Every request from a Mac names the Session that asked, so the call log can say who called.
  */
@@ -12,31 +12,31 @@ import { z } from "zod";
 import { uuid } from "./identity.ts";
 import { attachmentSchema } from "./assets.ts";
 
-export const CONNECTIONS_METHODS = {
-  list: "axo.connections.list",
-  search: "axo.connections.search",
-  execute: "axo.connections.execute",
-  add: "axo.connections.add",
-  remove: "axo.connections.remove",
-  log: "axo.connections.log",
+export const APPS_METHODS = {
+  list: "axo.apps.list",
+  search: "axo.apps.search",
+  execute: "axo.apps.execute",
+  add: "axo.apps.add",
+  remove: "axo.apps.remove",
+  log: "axo.apps.log",
 } as const;
-export type ConnectionsMethod = (typeof CONNECTIONS_METHODS)[keyof typeof CONNECTIONS_METHODS];
+export type AppsMethod = (typeof APPS_METHODS)[keyof typeof APPS_METHODS];
 
 /** Sent by the account to a Mac; never by a Mac. */
-export const BASH_METHOD = "axo.connections.bash";
+export const BASH_METHOD = "axo.apps.bash";
 /**
  * One computer-use tool on a Mac, from another Mac's script (RFD0028, Computer use from
  * anywhere). The Mac's gate checks it and, if it must, asks the person in the calling Session.
  */
-export const COMPUTER_METHOD = "axo.connections.computer";
+export const COMPUTER_METHOD = "axo.apps.computer";
 /** Whether a Mac can do computer use now, for `codemode.hosts.list()`. */
-export const COMPUTER_STATUS_METHOD = "axo.connections.computer.status";
+export const COMPUTER_STATUS_METHOD = "axo.apps.computer.status";
 /**
  * A loopback sign-in on a Mac (axo-relay's signin.rs): axod opens the sign-in page in the
  * person's browser, waits for the redirect to `http://localhost:<port><path>`, and answers with
  * the code. For services that send sign-ins back only to localhost (Kraken's public client).
  */
-export const SIGN_IN_METHOD = "axo.connections.signIn";
+export const SIGN_IN_METHOD = "axo.apps.signIn";
 /** What the Mac answers a sign-in with: the redirect it used, and the code or the service's error. */
 export const signInResultSchema = z.object({
   redirectUri: z.string().regex(/^http:\/\/localhost:\d{4,5}\/[A-Za-z0-9/_.-]*$/),
@@ -45,7 +45,7 @@ export const signInResultSchema = z.object({
   errorDescription: z.string().max(1024).optional(),
 }).strict();
 
-export const CONNECTIONS_LIMITS = {
+export const APPS_LIMITS = {
   scriptWallMs: 5 * 60_000,
   callsPerScript: 100,
   concurrentCallsPerScript: 4,
@@ -58,8 +58,8 @@ export const CONNECTIONS_LIMITS = {
   logPage: 100,
 } as const;
 
-/** Errors a connections call may end with, beyond JSON-RPC's own. */
-export const CONNECTIONS_ERRORS = {
+/** Errors a apps call may end with, beyond JSON-RPC's own. */
+export const APPS_ERRORS = {
   /** The call went out and no answer came back: it may have run. */
   outcomeUnknown: -32004,
   /** The target Mac is offline; nothing was sent. */
@@ -241,7 +241,7 @@ export type AppPhoneSignIn = z.infer<typeof appPhoneSignInSchema>;
 export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
 
 const sessionId = uuid;
-const script = z.string().min(1).max(CONNECTIONS_LIMITS.scriptBytes);
+const script = z.string().min(1).max(APPS_LIMITS.scriptBytes);
 
 export const connectionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -317,50 +317,50 @@ export const callRecordSchema = z.object({
 }).strict();
 export type CallRecord = z.infer<typeof callRecordSchema>;
 
-export const connectionsParams = {
-  [CONNECTIONS_METHODS.list]: z.object({ sessionId }).strict(),
-  [CONNECTIONS_METHODS.search]: z.object({ sessionId, code: script }).strict(),
-  [CONNECTIONS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
+export const appsParams = {
+  [APPS_METHODS.list]: z.object({ sessionId }).strict(),
+  [APPS_METHODS.search]: z.object({ sessionId, code: script }).strict(),
+  [APPS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
   /** `name` is what to call it, any text; the connection's name is its slug (connectionSlug). */
-  [CONNECTIONS_METHODS.add]: z.object({ sessionId, name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
+  [APPS_METHODS.add]: z.object({ sessionId, name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
   /** Removes a third-party connection, or signs out of an app (`apps.<app>`). */
-  [CONNECTIONS_METHODS.remove]: z.object({
+  [APPS_METHODS.remove]: z.object({
     sessionId,
     name: serviceSchema,
     /** For an app: the account to sign out of. */
     account: z.string().min(3).max(320).optional(),
   }).strict(),
-  [CONNECTIONS_METHODS.log]: z.object({
+  [APPS_METHODS.log]: z.object({
     sessionId,
-    limit: z.number().int().min(1).max(CONNECTIONS_LIMITS.logPage).optional(),
+    limit: z.number().int().min(1).max(APPS_LIMITS.logPage).optional(),
     before: z.iso.datetime().optional(),
     /** Only calls to this service, such as `apps.gmail` or `linear`. */
     service: serviceSchema.optional(),
   }).strict(),
 } as const;
 
-export const connectionsResults = {
-  [CONNECTIONS_METHODS.list]: z.object({ connections: z.array(connectionSchema) }).strict(),
-  [CONNECTIONS_METHODS.search]: z.object({ result: z.unknown() }).strict(),
-  [CONNECTIONS_METHODS.execute]: z.object({ result: z.unknown(), logs: z.array(z.string()) }).strict(),
-  [CONNECTIONS_METHODS.add]: z.object({ connection: connectionSchema, signInUrl: z.url().nullable() }).strict(),
-  [CONNECTIONS_METHODS.remove]: z.object({ removed: z.literal(true) }).strict(),
-  [CONNECTIONS_METHODS.log]: z.object({ records: z.array(callRecordSchema) }).strict(),
+export const appsResults = {
+  [APPS_METHODS.list]: z.object({ apps: z.array(connectionSchema) }).strict(),
+  [APPS_METHODS.search]: z.object({ result: z.unknown() }).strict(),
+  [APPS_METHODS.execute]: z.object({ result: z.unknown(), logs: z.array(z.string()) }).strict(),
+  [APPS_METHODS.add]: z.object({ connection: connectionSchema, signInUrl: z.url().nullable() }).strict(),
+  [APPS_METHODS.remove]: z.object({ removed: z.literal(true) }).strict(),
+  [APPS_METHODS.log]: z.object({ records: z.array(callRecordSchema) }).strict(),
 } as const;
 
-export type ConnectionsParams<M extends ConnectionsMethod> = z.infer<(typeof connectionsParams)[M]>;
-export type ConnectionsResult<M extends ConnectionsMethod> = z.infer<(typeof connectionsResults)[M]>;
+export type AppsParams<M extends AppsMethod> = z.infer<(typeof appsParams)[M]>;
+export type AppsResult<M extends AppsMethod> = z.infer<(typeof appsResults)[M]>;
 
-export function isConnectionsMethod(method: string): method is ConnectionsMethod {
-  return Object.hasOwn(connectionsParams, method);
+export function isAppsMethod(method: string): method is AppsMethod {
+  return Object.hasOwn(appsParams, method);
 }
 
 export const bashParamsSchema = z.object({
   accountId: uuid,
   callId: z.string().min(1).max(64),
-  command: z.string().min(1).max(CONNECTIONS_LIMITS.scriptBytes),
+  command: z.string().min(1).max(APPS_LIMITS.scriptBytes),
   cwd: z.string().regex(/^\//).max(4096).optional(),
-  timeoutMs: z.number().int().min(1).max(CONNECTIONS_LIMITS.bashMaxTimeoutMs).optional(),
+  timeoutMs: z.number().int().min(1).max(APPS_LIMITS.bashMaxTimeoutMs).optional(),
 }).strict();
 export type BashParams = z.infer<typeof bashParamsSchema>;
 

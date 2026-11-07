@@ -651,7 +651,7 @@ final class PhoneWorkbenchTests: XCTestCase {
   func testAFailedUploadHoldsTheMessageUntilItIsTakenOut() async throws {
     let studio = Mac("Studio", online: true, sessions: [3])
     let world = PhoneWorld([studio], uploadAsset: { _, _, _ in
-      throw ConnectionsRefusal(status: 413, message: "The account's assets are full")
+      throw AppsRefusal(status: 413, message: "The account's assets are full")
     })
     try await world.start()
     let workbench = world.workbench!

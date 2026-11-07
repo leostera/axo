@@ -24,7 +24,7 @@ export function routePath(base: string, hostId: string | null, selection: Select
 /**
  * Settings pages, over the chats: `<base>/settings/apps` lists the apps, `<base>/settings/apps/<app>`
  * is one app (`gmail` for `apps.gmail`), `<base>/settings/apps/mcp` the MCP servers and
- * `<base>/settings/apps/mcp/<server>` a known MCP server (servers.ts), `<base>/settings/apps/activity` everything Sessions used. `<base>/connections`, where sign-ins
+ * `<base>/settings/apps/mcp/<server>` a known MCP server (servers.ts), `<base>/settings/apps/activity` everything Sessions used. `<base>/apps`, where sign-ins
  * used to come back, is Apps.
  */
 export type SettingsRoute = { kind: "apps" } | { kind: "app"; app: string } | { kind: "servers" } | { kind: "server"; server: string } | { kind: "activity" };
@@ -32,7 +32,7 @@ export type SettingsRoute = { kind: "apps" } | { kind: "app"; app: string } | { 
 export function parseSettingsRoute(base: string, pathname: string): SettingsRoute | null {
   if (!pathname.startsWith(`${base}/`)) return null;
   const rest = pathname.slice(base.length).replace(/\/+$/, "");
-  if (rest === "/settings" || rest === "/settings/apps" || rest === "/connections") return { kind: "apps" };
+  if (rest === "/settings" || rest === "/settings/apps" || rest === "/apps") return { kind: "apps" };
   const server = /^\/settings\/apps\/mcp\/([a-z][a-z0-9-]{0,47})$/.exec(rest)?.[1];
   if (server) return { kind: "server", server };
   const page = /^\/settings\/apps\/([a-z][a-z0-9_]{0,31})$/.exec(rest)?.[1];

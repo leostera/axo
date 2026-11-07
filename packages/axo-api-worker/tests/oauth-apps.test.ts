@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema, type AppName } from "@axo/protocol";
-import { AppConnections } from "../src/connections/apps";
+import { BuiltinApps } from "../src/apps/builtin";
 import type { FakeOAuth } from "./fake-oauth";
 import { FakeGitHub } from "./fake-github";
 import { FakeSpotify } from "./fake-spotify";
@@ -14,7 +14,7 @@ import { sqlStorage } from "./sql-storage";
  * gateway, through the same flow as Google's. Each provider's quirks are in
  * its config: how it authenticates the token request, reads its answer, rotates refresh tokens and
  * names the account. The HTTP side of the flow (start page, cookie, callback) is Google's, tested
- * in apps.test.ts; here the flow is driven on AppConnections itself.
+ * in apps.test.ts; here the flow is driven on BuiltinApps itself.
  */
 
 type Fake = { oauth: FakeOAuth; handle(request: Request): Promise<Response | undefined> };
@@ -28,7 +28,7 @@ async function fixture<F extends Fake>(fake: F, app: AppName) {
     return answer;
   }) as typeof fetch;
   const background: Promise<unknown>[] = [];
-  const apps = new AppConnections({
+  const apps = new BuiltinApps({
     sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
     fetcher, waitUntil: (p) => background.push(p), now: () => clock,
   });
@@ -58,7 +58,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 }
 
 test("an OAuth app is listed before its provider's client is set up, with where to register one, and its tools appear once it is", async () => {
-  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
   const listed = () => connectionSchema.parse(apps.list().find((c) => c.name === "apps.github"));
   const before = listed();
   assert.deepEqual(before.kind === "app" && before.signIn, { kind: "oauth", client: {

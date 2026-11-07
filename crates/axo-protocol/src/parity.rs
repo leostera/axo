@@ -168,39 +168,39 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("this Mac publishes its own redacted conversation to the cloud"),
     ),
     row(
-        method::CONNECTIONS_LIST,
+        method::APPS_LIST,
         Remote::LocalOnly(
-            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+            "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),
     ),
     row(
-        method::CONNECTIONS_SEARCH,
+        method::APPS_SEARCH,
         Remote::LocalOnly(
-            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+            "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),
     ),
     row(
-        method::CONNECTIONS_EXECUTE,
+        method::APPS_EXECUTE,
         Remote::LocalOnly(
-            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+            "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),
     ),
     row(
-        method::CONNECTIONS_LOG,
+        method::APPS_LOG,
         Remote::LocalOnly(
-            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+            "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),
     ),
     row(
-        method::CONNECTIONS_ADD,
+        method::APPS_ADD,
         Remote::LocalOnly(
-            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+            "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),
     ),
     row(
-        method::CONNECTIONS_REMOVE,
+        method::APPS_REMOVE,
         Remote::LocalOnly(
-            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+            "a Session on this Mac reaches its account's apps; the cloud already holds them",
         ),
     ),
     row(
@@ -247,7 +247,7 @@ pub const PARITY: &[Parity] = &[
     ),
     row(
         method::COMPUTER_INPUT,
-        Remote::LocalOnly("another Mac's script asks through axo.connections.computer"),
+        Remote::LocalOnly("another Mac's script asks through axo.apps.computer"),
     ),
     row(
         method::COMPUTER_REDACTIONS,

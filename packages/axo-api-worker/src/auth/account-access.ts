@@ -9,7 +9,7 @@ export type AccountProfile = { email: string | null; name: string | null };
 export type AccountCaller = {
   readonly accountId: string;
   readonly profile: AccountProfile;
-  /** When this sign-in ends; relay connections end by then. */
+  /** When this sign-in ends; relay apps end by then. */
   readonly expiresAt: number;
   /** Which credential carried the request: a browser's cookie or an app's bearer token. */
   readonly via: "cookie" | "bearer";

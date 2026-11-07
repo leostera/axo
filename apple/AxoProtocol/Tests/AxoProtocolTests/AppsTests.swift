@@ -2,8 +2,8 @@ import XCTest
 
 @testable import AxoProtocol
 
-/// Settings › Apps' listing and log, as the Worker sends them (packages/axo-api/src/connections.ts).
-final class ConnectionsTests: XCTestCase {
+/// Settings › Apps' listing and log, as the Worker sends them (packages/axo-api/src/apps.ts).
+final class AppsTests: XCTestCase {
   private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     try JSONDecoder().decode(T.self, from: Data(json.utf8))
   }
@@ -31,39 +31,39 @@ final class ConnectionsTests: XCTestCase {
       {"kind":"robot","name":"r2d2"}
       ]
       """
-    let connections = try decode([Connection].self, json)
-    XCTAssertEqual(connections.count, 8)
+    let apps = try decode([Connection].self, json)
+    XCTAssertEqual(apps.count, 8)
 
-    guard case .host(let mac) = connections[0] else { return XCTFail("\(connections[0])") }
+    guard case .host(let mac) = apps[0] else { return XCTFail("\(apps[0])") }
     XCTAssertTrue(mac.isOnline)
 
-    guard case .server(let server) = connections[1] else { return XCTFail() }
+    guard case .server(let server) = apps[1] else { return XCTFail() }
     XCTAssertEqual(server.displayName, "emdash: leostera.com")
     XCTAssertEqual(server.state, .needsSignIn)
 
-    guard case .app(let gmail) = connections[2] else { return XCTFail() }
+    guard case .app(let gmail) = apps[2] else { return XCTFail() }
     XCTAssertEqual(gmail.slug, "gmail")
     XCTAssertTrue(gmail.needsClient, "its Google client is not set up yet")
     XCTAssertFalse(gmail.isConnected)
 
-    guard case .app(let kraken) = connections[3], case .token(let signIn) = kraken.signIn else { return XCTFail() }
+    guard case .app(let kraken) = apps[3], case .token(let signIn) = kraken.signIn else { return XCTFail() }
     XCTAssertTrue(signIn.named)
     XCTAssertEqual(signIn.fields.map(\.secret), [false, true])
     XCTAssertEqual(signIn.mac?.presets.map(\.id), ["read"])
     XCTAssertTrue(kraken.isConnected)
     XCTAssertEqual(kraken.accounts.last?.lastError, "Kraken refused the key.")
 
-    guard case .app(let chatgpt) = connections[4] else { return XCTFail() }
+    guard case .app(let chatgpt) = apps[4] else { return XCTFail() }
     XCTAssertEqual(chatgpt.signIn, .device)
     XCTAssertEqual(chatgpt.description, "", "a listing from an older Worker leaves these out")
     XCTAssertEqual(chatgpt.permissions, [])
 
-    guard case .app(let onepassword) = connections[5] else { return XCTFail() }
+    guard case .app(let onepassword) = apps[5] else { return XCTFail() }
     XCTAssertEqual(onepassword.signIn, .mac(setup: "Install the CLI.", helpUrl: "https://developer.1password.com"))
 
-    guard case .app(let signal) = connections[6] else { return XCTFail() }
+    guard case .app(let signal) = apps[6] else { return XCTFail() }
     XCTAssertEqual(signal.signIn, .unknown, "a sign-in this build does not know is added on the web")
-    XCTAssertEqual(connections[7], .unknown, "a kind this build does not know is left aside, not a failed listing")
+    XCTAssertEqual(apps[7], .unknown, "a kind this build does not know is left aside, not a failed listing")
   }
 
   func testAnOAuthAppFromBeforeClientsWereThePersonsSignsInDirectly() throws {
