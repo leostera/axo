@@ -25,6 +25,8 @@ export default defineConfig(({ isPreview }) => ({
     },
     // Sign-in with Cloudflare OAuth. The values are set on the Worker, never in this file.
     env: {
+      // The site's own files, for the pages the Worker serves itself (a share's page is index.html).
+      ASSETS: bindings.assets(),
       PUBLIC_SESSIONS: bindings.r2({ name: "axo-public-sessions" }),
       // The Mac app `/cdn/Axo.app` serves and `/install` downloads; `scripts/publish-mac.sh` uploads it.
       CDN: bindings.r2({ name: "axo-cdn" }),

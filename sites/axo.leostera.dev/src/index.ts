@@ -65,6 +65,7 @@ async function sharePage(request: Request, env: WorkerEnvironment, route: ShareR
   if (!snapshot) {
     return new Response(index.body, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
   }
+  if (!index.ok) return new Response("The page is unavailable", { status: 502, headers: { "Cache-Control": "no-store" } });
   const html = sharePageHtml(await index.text(), url.origin, route.shareId, snapshot);
   return new Response(request.method === "HEAD" ? null : html, {
     headers: {
