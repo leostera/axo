@@ -64,7 +64,13 @@ struct WorkbenchView: View {
   @State private var chatPrefs = ChatListPreferences(defaults: Self.chatListDefaults())
   /// The groups as they were when the chats showed, so a chat that just finished a message does
   /// not move under a finger reaching for a row; it moves into place the next time they show.
-  @State private var heldGroups: [ChatGroupSection]?
+  /// Held, not observed: taking hold as the menu opens is what that redraw just showed, so it
+  /// redraws nothing more (twice per swipe otherwise); a pin or a change of mode redraws anyway.
+  @State private var held = HeldGroups()
+
+  private final class HeldGroups {
+    var groups: [ChatGroupSection]?
+  }
   /// Whether Earlier is folded away, and whether it shows past its limit. Not kept: each launch
   /// starts as Settings › Chats says.
   @State private var earlierFolded: Bool?
@@ -138,7 +144,7 @@ struct WorkbenchView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
       }
       // The list holds still while the chats show, and catches up when they show again.
-      heldGroups = layer == .chats ? liveGroups(now: .now) : nil
+      held.groups = layer == .chats ? liveGroups(now: .now) : nil
     }
     // The open chat's messages are seen as they arrive.
     .onChange(of: currentSession.map { ChatMenu.activity($0) }, initial: true) {
@@ -357,7 +363,7 @@ struct WorkbenchView: View {
 
   private var groupedItems: [GroupedItem] {
     let settings = chatPrefs.settings
-    let groups = ChatGrouping.holding(heldGroups, live: liveGroups(now: .now))
+    let groups = ChatGrouping.holding(held.groups, live: liveGroups(now: .now))
     var items: [GroupedItem] = []
     for section in groups {
       let folded = section.group == .earlier && (earlierFolded ?? settings.earlierCollapsed)
@@ -548,7 +554,7 @@ struct WorkbenchView: View {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
           chatPrefs.togglePin(entry.session.sessionId)
           // A pin applies at once, even while the list holds still.
-          if heldGroups != nil { heldGroups = liveGroups(now: .now) }
+          if held.groups != nil { held.groups = liveGroups(now: .now) }
         }
       }
     }
@@ -592,7 +598,7 @@ struct WorkbenchView: View {
       Spacer(minLength: 8)
       Button {
         chatListMode = chatListMode == .workspaces ? .recent : .workspaces
-        heldGroups = liveGroups(now: .now)
+        held.groups = liveGroups(now: .now)
       } label: {
         Image(systemName: chatListMode == .workspaces ? "clock" : "list.bullet.indent")
           .font(.system(size: 18, weight: .medium))
