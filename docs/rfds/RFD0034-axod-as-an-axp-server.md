@@ -1,7 +1,7 @@
 # RFD0034 - Axo: axod as an AXP Server with Extensions
 
 - Feature Name: `axo-axod-as-an-axp-server`
-- Status: Draft
+- Status: Accepted (provisionally, 2026-11-07, to unblock the work; revisit on review)
 - Author: leostera
 - Start Date: 2026-11-07
 - Updated: 2026-11-07 (steps 1 and 3 built; per-method callers on the local socket)
@@ -223,9 +223,9 @@ Steps 1 to 3 are small and can start at once. Step 4 is the one that needs revie
 
 ## Unresolved questions
 
-- **Before acceptance:**
-  - Do the crate names read well? `axo-ext-*` or plain `axo-sessions`, `axo-questions`?
-  - Should the ATXF step (step 3 of the big plan) also move the wire to AXP (RFD0025), or only the records? I suggest records first and the wire later.
+- **Settled provisionally:**
+  - Extensions get plain names: `axo-sessions`, `axo-questions`, `axo-apps` (connections become apps, RFD0016), and so on. `axo-ext-*` in this document means those.
+  - The ATXF step moves the records only; the wire moves to AXP later.
 - **During implementation:**
   - Where do the services' traits live: in `axo-server`, or in the extension that exports them?
   - Which limits move from static atomics to per-method declarations without changing behaviour that clients rely on?
