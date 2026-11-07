@@ -24,6 +24,10 @@ pub struct SessionMetadata {
     /// means not known yet; the last known state is then kept, never erased.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_state: Option<WorkspaceState>,
+    /// What the Session's Pi runs, as it last said (RFD0033). Absent means not known now; the
+    /// last known state is then kept, as a workspace state is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi: Option<axo_protocol::PiRuntime>,
 }
 
 /// A Session's folder and its repository, so another Mac can tell what it would need to continue
@@ -99,10 +103,14 @@ impl SessionMetadata {
         self
     }
 
-    /// A state not known now (axod restarted, or the Session is archived) is the one known before.
+    /// A state not known now (axod restarted, or the Session is archived) is the one known before:
+    /// the workspace's, and what its Pi runs.
     pub(super) fn keep_workspace_state(&mut self, before: &SessionMetadata) {
         if self.workspace_state.is_none() {
             self.workspace_state = before.workspace_state.clone();
+        }
+        if self.pi.is_none() {
+            self.pi = before.pi.clone();
         }
     }
 }
@@ -160,6 +168,7 @@ mod tests {
             last_message_at: None,
             archived: false,
             workspace_state,
+            pi: None,
         }
     }
 
@@ -176,6 +185,26 @@ mod tests {
             Some(state("9e01b2c")),
             "a new read replaces it"
         );
+    }
+
+    #[test]
+    fn what_pi_runs_not_known_now_is_what_it_ran_before() {
+        let opus = axo_protocol::PiRuntime {
+            model: Some(axo_protocol::PiModelRef {
+                provider: "anthropic".into(),
+                id: "claude-opus-4-1".into(),
+                name: "Opus 4.1".into(),
+            }),
+            thinking_level: axo_protocol::ThinkingLevel::High,
+        };
+        let before = SessionMetadata {
+            pi: Some(opus.clone()),
+            ..listed(None)
+        };
+        let mut now = listed(None);
+        now.keep_workspace_state(&before);
+        assert_eq!(now.pi, Some(opus), "a Pi that has not said yet keeps its last model");
+        assert!(serde_json::to_value(listed(None)).unwrap().get("pi").is_none());
     }
 
     #[test]
@@ -205,6 +234,7 @@ mod tests {
             last_message_at: Some(5),
             archived: false,
             workspace_state: None,
+            pi: None,
         }
         .bounded();
         assert_eq!(metadata.name, None);

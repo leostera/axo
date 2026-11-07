@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { attachmentsSchema } from "./assets.ts";
+import { piCommandSchema, piModelSchema, piRuntimeSchema, thinkingLevelSchema } from "./pi.ts";
+export * from "./pi.ts";
 
 export const protocolVersion = 2 as const;
 export const hostIdSchema = z.uuid();
@@ -54,23 +56,6 @@ const layoutSchema: z.ZodType<Layout> = z.lazy(() => z.discriminatedUnion("kind"
   }).strict(),
 ]));
 export { layoutSchema };
-
-/** Pi's thinking levels, lowest first. */
-export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-export type ThinkingLevel = z.infer<typeof thinkingLevelSchema>;
-const modelNameSchema = z.string().min(1).max(128);
-export const piModelRefSchema = z.object({ provider: modelNameSchema, id: modelNameSchema, name: modelNameSchema }).strict();
-/** What a Session's Pi runs, once it has said (RFD0033). */
-export const piRuntimeSchema = z.object({ model: piModelRefSchema.nullable(), thinkingLevel: thinkingLevelSchema }).strict();
-export type PiRuntime = z.infer<typeof piRuntimeSchema>;
-export const piCommandSchema = z.object({
-  name: z.string().min(1).max(128),
-  description: z.string().max(200),
-  source: z.enum(["extension", "prompt", "skill"]),
-}).strict();
-export type PiCommand = z.infer<typeof piCommandSchema>;
-export const piModelSchema = piModelRefSchema.extend({ thinkingLevels: z.array(thinkingLevelSchema).max(7) }).strict();
-export type PiModel = z.infer<typeof piModelSchema>;
 
 export const sessionSnapshotSchema = z.object({
   hostId: hostIdSchema,
@@ -230,7 +215,7 @@ export const hostV1Methods = {
   "axo.remote.session.commands": sessionTargetSchema,
   "axo.remote.session.models": sessionTargetSchema,
   "axo.remote.session.model.set": sessionTargetSchema.extend({
-    model: z.object({ provider: modelNameSchema, id: modelNameSchema }).strict().optional(),
+    model: z.object({ provider: z.string().min(1).max(128), id: z.string().min(1).max(128) }).strict().optional(),
     thinkingLevel: thinkingLevelSchema.optional(),
   }).strict().refine((change) => change.model !== undefined || change.thinkingLevel !== undefined, "a model, a thinking level, or both"),
   "axo.remote.terminal.resize": shellTargetSchema.extend({

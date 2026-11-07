@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { uuid } from "./identity.ts";
 import { PI3_FORMAT } from "./pi3.ts";
+import { piRuntimeSchema } from "./pi.ts";
 
 export const SYNC = {
   /** Records and bytes of lines in one append batch. */
@@ -95,6 +96,8 @@ export const sessionMetadataSchema = z.object({
   archived: z.boolean(),
   /** Absent until the Mac has read it; older Macs never send it. */
   workspaceState: workspaceStateSchema.optional(),
+  /** What the Session's Pi runs, as it last said (RFD0033); absent until it has. */
+  pi: piRuntimeSchema.optional(),
 }).strict();
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 
