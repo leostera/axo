@@ -555,20 +555,33 @@ public final class HostWorkbenchModel {
     }
   }
 
-  /// Stops the turn the chat shows running, named by its newest user message: a turn that started
-  /// after it, by the time the stop arrives, carries on (RFD0024).
+  /// Stops the turn the chat shows running, named by what the phone saw of it (RFD0024): its
+  /// newest user message when the pages held have one, the newest record held (a long run's
+  /// newest page may hold only its tools), and the messages sent here not recorded yet (a stop
+  /// right after Send). A turn that started after it, by the time the stop arrives, carries on.
+  /// One the Mac says ran nothing it names leaves the chat not stopping, so a tap can try again.
   public func stopReply(in id: SessionID) async {
     let chat = chat(id)
-    guard chat.transcript?.activity == .working, let turnId = chat.transcript?.lastUserEntry, !chat.isStopping
-    else { return }
+    guard let transcript = chat.transcript, transcript.activity == .working, !chat.isStopping else { return }
+    let turnId = transcript.lastUserEntry
+    let seen = transcript.records.last?.id
+    let commandIds = chat.pending.suffix(32).map { $0.id.uuidString.lowercased() }
+    guard turnId != nil || seen != nil || !commandIds.isEmpty else { return }
     chat.isStopping = true
-    var sent = false
+    var stopped = false
     await attempt {
-      try await connection.stopPiTurn(in: id, turnId: turnId)
-      sent = true
+      do {
+        stopped = try await connection.stopPiTurn(in: id, turnId: turnId, seen: seen, commandIds: commandIds)
+      } catch AxoClientError.serverRejected(Self.invalidParams, _) where turnId != nil {
+        // A Mac from before 0.28 knows only turnId.
+        stopped = try await connection.stopPiTurn(in: id, turnId: turnId)
+      }
     }
-    if !sent { chat.isStopping = false }
+    if !stopped { chat.isStopping = false }
   }
+
+  /// JSON-RPC's invalid params: how a Mac refuses fields it doesn't know yet.
+  static let invalidParams = -32602
 
   // MARK: - Pi's controls (RFD0033)
 

@@ -92,12 +92,20 @@ public struct HostConnection: Sendable {
     }
   }
 
-  /// Stops the Session's running turn, if it is still the one `turnId` (the entry id of its user
-  /// message) names; a turn that started since carries on. Says whether one stopped.
+  /// Stops the Session's running turn if it is the one the client saw (RFD0024): named by the
+  /// entry id of its user message (`turnId`), by the newest record the client holds (`seen`), or
+  /// by prompts the client sent whose records haven't arrived (`commandIds`, at most 32). At least
+  /// one must be given; a turn that started since carries on. Says whether one stopped. Macs from
+  /// before 0.28 know only `turnId`, and refuse the others as invalid params (-32602).
   @discardableResult
-  public func stopPiTurn(in id: SessionID, turnId: String) async throws -> Bool {
+  public func stopPiTurn(
+    in id: SessionID, turnId: String?, seen: String? = nil, commandIds: [String] = []
+  ) async throws -> Bool {
     let result: StopResult = try await call(
-      "axo.remote.session.stop", StopTarget(target: host, sessionId: id, turnId: turnId))
+      "axo.remote.session.stop",
+      StopTarget(
+        target: host, sessionId: id, turnId: turnId, seen: seen,
+        commandIds: commandIds.isEmpty ? nil : Array(commandIds.suffix(32))))
     return result.stopped
   }
 
@@ -280,7 +288,20 @@ private struct Models: Decodable, Sendable { let models: [PiModel] }
 private struct StopTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let sessionId: SessionID
-  let turnId: String
+  let turnId: String?
+  let seen: String?
+  let commandIds: [String]?
+
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(target, forKey: .target)
+    try container.encode(sessionId, forKey: .sessionId)
+    try container.encodeIfPresent(turnId, forKey: .turnId)
+    try container.encodeIfPresent(seen, forKey: .seen)
+    try container.encodeIfPresent(commandIds, forKey: .commandIds)
+  }
+
+  enum CodingKeys: String, CodingKey { case target, sessionId, turnId, seen, commandIds }
 }
 private struct StopResult: Decodable, Sendable {
   let stopped: Bool

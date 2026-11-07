@@ -126,6 +126,107 @@ final class HostWorkbenchLiveTests: XCTestCase {
     XCTAssertNotNil(model.failure)
   }
 
+  /// A long run's newest page holds only its tools: the stop names the newest record held.
+  func testAStopInALongRunWhoseUserMessageIsNotHeldNamesTheNewestRecord() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([said(7, "still going", role: "assistant"), said(8, "and more", role: "assistant")]))
+    listed(.working, in: world)
+    let stopping = Task { await model.stopReply(in: 1) }
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest("axo.remote.session.stop")
+    XCTAssertNil(request.params["turnId"])
+    XCTAssertEqual(request.params["seen"] as? String, "e8")
+    XCTAssertNil(request.params["commandIds"], "nothing sent from here")
+    channel.reply(to: request.id, result: #"{"stopped":true}"#)
+    await stopping.value
+    XCTAssertTrue(model.stopping.contains(1), "stopping until Pi is idle")
+  }
+
+  /// A stop right after Send names the message, whose records haven't arrived yet.
+  func testAStopRightAfterSendNamesTheMessagesOnTheirWay() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([]))
+    listed(.working, in: world)
+    let sending = Task { await model.sendPrompt("deploy it") }
+    let channel = try await world.channel()
+    let prompt = try await channel.nextRequest("axo.remote.session.prompt")
+    let stopping = Task { await model.stopReply(in: 1) }
+    let stop = try await channel.nextRequest("axo.remote.session.stop")
+    XCTAssertNil(stop.params["turnId"])
+    XCTAssertNil(stop.params["seen"])
+    XCTAssertEqual(stop.params["commandIds"] as? [String], [try XCTUnwrap(prompt.params["commandId"] as? String)])
+    channel.reply(to: stop.id, result: #"{"stopped":true}"#)
+    channel.reply(to: prompt.id, result: #"{"accepted":true}"#)
+    await stopping.value
+    _ = await sending.value
+  }
+
+  func testAStopThatFindsNothingItSawRunningLetsTheNextTapTryAgain() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([said(1, "go")]))
+    listed(.working, in: world)
+    let stopping = Task { await model.stopReply(in: 1) }
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest("axo.remote.session.stop")
+    XCTAssertEqual(request.params["turnId"] as? String, "e1")
+    XCTAssertEqual(request.params["seen"] as? String, "e1")
+    channel.reply(to: request.id, result: #"{"stopped":false}"#)
+    await stopping.value
+    XCTAssertFalse(model.stopping.contains(1), "not left stopping")
+    let again = Task { await model.stopReply(in: 1) }
+    channel.reply(to: try await channel.nextRequest("axo.remote.session.stop").id, result: #"{"stopped":true}"#)
+    await again.value
+    XCTAssertTrue(model.stopping.contains(1))
+  }
+
+  func testAMacFromBefore028IsAskedAgainWithTheTurnAlone() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([said(1, "go"), said(2, "on it", role: "assistant")]))
+    listed(.working, in: world)
+    let stopping = Task { await model.stopReply(in: 1) }
+    let channel = try await world.channel()
+    let first = try await channel.nextRequest("axo.remote.session.stop")
+    XCTAssertEqual(first.params["seen"] as? String, "e2")
+    channel.reply(to: first.id, error: -32602, message: "Invalid params")
+    let second = try await channel.nextRequest("axo.remote.session.stop")
+    XCTAssertEqual(second.params["turnId"] as? String, "e1")
+    XCTAssertNil(second.params["seen"])
+    XCTAssertNil(second.params["commandIds"])
+    channel.reply(to: second.id, result: #"{"stopped":true}"#)
+    await stopping.value
+    XCTAssertTrue(model.stopping.contains(1))
+    XCTAssertNil(model.failure)
+  }
+
+  func testWithoutATurnAnOldMacsRefusalIsNotRetriedAndNotLeftStopping() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([said(4, "tools only", role: "assistant")]))
+    listed(.working, in: world)
+    let stopping = Task { await model.stopReply(in: 1) }
+    let channel = try await world.channel()
+    channel.reply(to: try await channel.nextRequest("axo.remote.session.stop").id, error: -32602, message: "Invalid params")
+    await stopping.value
+    XCTAssertFalse(channel.hasRequest, "nothing to retry with")
+    XCTAssertFalse(model.stopping.contains(1))
+    XCTAssertNotNil(model.failure)
+  }
+
+  func testAWorkingChatThePhoneHoldsNothingOfSendsNoStop() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([]))
+    listed(.working, in: world)
+    await model.stopReply(in: 1)
+    let channel = try await world.channel()
+    XCTAssertFalse(channel.hasRequest)
+    XCTAssertFalse(model.stopping.contains(1))
+  }
+
   func testAnswersAreEnterEscapeOrTypedWords() async throws {
     let world = HostWorld()
     let model = world.model
