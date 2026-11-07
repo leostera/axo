@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.29 (Mac app build 300, axod 52)
+
+### Changed
+
+- Your phone and the web reach this Mac faster: axod answers the moment a request arrives instead of checking every 20ms, and stays idle when nothing happens.
+
 ## 0.28 (Mac app build 299, axod 51)
 
 ### Fixed
