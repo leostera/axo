@@ -305,7 +305,8 @@ struct ChatEmptyState: View {
   }
 }
 
-/// Pi is busy; says so quietly under the last message, with a way to stop it.
+/// Pi is busy; says so quietly under the last message, with a way to stop it: the x stops it at
+/// once, without asking, as on the web.
 struct AgentActivityView: View {
   /// A tool is running, as opposed to Pi only thinking.
   let callingTools: Bool
@@ -315,7 +316,6 @@ struct AgentActivityView: View {
   var stopping = false
   var canStop = true
   var stop: () -> Void = {}
-  @State private var confirmingStop = false
 
   private var title: String {
     if stopping { return "Stopping…" }
@@ -329,7 +329,7 @@ struct AgentActivityView: View {
       Text(title).font(.subheadline.weight(.medium))
       Spacer(minLength: 0)
       ProgressView().controlSize(.small).tint(.secondary)
-      Button { confirmingStop = true } label: {
+      Button(action: stop) {
         Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary)
           .frame(width: 44, height: 44).contentShape(Rectangle())
       }
@@ -340,12 +340,6 @@ struct AgentActivityView: View {
     .padding(.vertical, -4)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("agentActivity")
-    .alert("Stop the reply?", isPresented: $confirmingStop) {
-      Button("Stop", role: .destructive, action: stop)
-      Button("Keep going", role: .cancel) {}
-    } message: {
-      Text("This stops everything the agent is doing now, including the tools it is running.")
-    }
   }
 }
 

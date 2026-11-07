@@ -525,18 +525,14 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
-  func testStoppingAReplyAsksFirstThenSaysItIsStopping() {
+  func testTheXStopsTheReplyAtOnceWithoutAsking() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "reply"])
     let stop = app.buttons["Stop the reply"]
     XCTAssertTrue(stop.waitForExistence(timeout: 10))
+    XCTAssertTrue(app.staticTexts["Using tools…"].exists)
     stop.tap()
-    let alert = app.alerts["Stop the reply?"]
-    XCTAssertTrue(alert.waitForExistence(timeout: 5))
-    alert.buttons["Keep going"].tap()
-    XCTAssertTrue(app.staticTexts["Using tools…"].exists, "keeping going changes nothing")
-    stop.tap()
-    app.alerts["Stop the reply?"].buttons["Stop"].tap()
-    XCTAssertTrue(app.staticTexts["Stopping…"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["Stopping…"].waitForExistence(timeout: 2), "stopping at once")
+    XCTAssertEqual(app.alerts.count, 0, "nothing asks first")
     XCTAssertFalse(stop.isEnabled, "one stop at a time")
   }
 
