@@ -6,6 +6,8 @@ import { Conversation } from "./conversation.tsx";
 import { AppsSettings, signInNotice, signInPage } from "./apps.tsx";
 import { ChatList, ChatListSettings } from "./chat-list.tsx";
 import { Icon } from "./icons.tsx";
+import { Alert } from "./alert.tsx";
+import { runtimeLabel } from "./pi-controls.ts";
 import { relativeTime } from "./message-views.tsx";
 import { parseRoute, parseSettingsRoute, routePath, settingsPath, type ChatRoute, type SettingsRoute } from "./route.ts";
 import {
@@ -425,6 +427,9 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
     ? `${chat.transcript.messages.length}${chat.history.kind === "loadingOlder" || (chat.history.kind === "loaded" && chat.history.hasOlder) ? "+" : ""}`
     : "Not loaded";
   const updated = session ? lastActivity(session) || Number.NaN : Number.NaN;
+  const [confirmingRestart, setConfirmingRestart] = useState(false);
+  const restarting = Boolean(chat?.restarting);
+  const runs = runtimeLabel(session?.pi);
   return (
     <aside className="panel info-panel" aria-label="Chat info">
       <header className="layer-bar top panel-header">
@@ -437,7 +442,8 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
         <p className="info-subtitle">{subtitle}</p>
         {session && host ? (
           <dl className="facts">
-            <div><dt>Status</dt><dd>{session.status ? statusNames[session.status] : "Unknown"}</dd></div>
+            <div><dt>Status</dt><dd>{restarting ? "Restarting…" : session.status ? statusNames[session.status] : "Unknown"}</dd></div>
+            {runs ? <div><dt>Model</dt><dd>{runs}</dd></div> : null}
             <div><dt>Mac</dt><dd>{host.label}, {host.status === "online" ? "online" : "offline"}</dd></div>
             {session.workspaceName ? <div><dt>Workspace</dt><dd>{session.workspaceName}</dd></div> : null}
             <div><dt>Messages</dt><dd>{messages}</dd></div>
@@ -447,7 +453,31 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
         ) : (
           <p className="panel-note centered">Nothing here yet. Send a message and this chat starts on your Mac.</p>
         )}
+        {session && host ? (
+          <div className="grouped info-actions">
+            <button className="grouped-row nav-row" disabled={restarting || host.status !== "online"} onClick={() => setConfirmingRestart(true)}>
+              {restarting ? <span className="spinner" aria-hidden="true" /> : <Icon name="restart" size={18} />}
+              <span className="grouped-label">{restarting ? "Restarting Pi…" : "Restart Pi"}</span>
+            </button>
+          </div>
+        ) : null}
       </div>
+      {confirmingRestart && session ? (
+        <Alert
+          title="Restart Pi?"
+          message={session.status === "working"
+            ? "The reply it is writing stops. The conversation and the messages waiting for it are kept."
+            : "Pi starts again on the same conversation. Messages waiting for it are kept."}
+          confirm="Restart"
+          cancel="Cancel"
+          destructive={session.status === "working"}
+          onConfirm={() => {
+            setConfirmingRestart(false);
+            void workbench.restart(session.sessionId);
+          }}
+          onCancel={() => setConfirmingRestart(false)}
+        />
+      ) : null}
     </aside>
   );
 }

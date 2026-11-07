@@ -13,9 +13,9 @@ import type {
 } from "@axo/app";
 import { sealInput, type DeviceProof } from "@axo/app";
 import { browserDevice, type AnswerDevice } from "./device.ts";
-import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type Sealed } from "@axo/protocol";
+import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
-import { ChatTranscript, type TranscriptRecord } from "./transcript.ts";
+import { ChatTranscript, type Delivery, type TranscriptRecord } from "./transcript.ts";
 
 /**
  * The browser's chats: a port of the phone's `PhoneWorkbench` and `HostWorkbenchModel`, on the
@@ -47,6 +47,8 @@ export interface Session {
   readonly lastMessageAt: number | null;
   readonly archived: boolean;
   readonly status: SessionStatus | null;
+  /** The model and thinking level its Pi runs, once Pi has said (RFD0033). */
+  readonly pi?: PiRuntime;
 }
 
 /** A Mac of the account, with its chats. */
@@ -81,7 +83,11 @@ export interface AccountLink {
   command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
-  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[] }): Promise<unknown>;
+  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
+  command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
+  command(method: "axo.remote.session.commands", params: { target: HostRef; sessionId: string }): Promise<{ commands: PiCommand[] }>;
+  command(method: "axo.remote.session.models", params: { target: HostRef; sessionId: string }): Promise<{ models: PiModel[] }>;
+  command(method: "axo.remote.session.model.set", params: { target: HostRef; sessionId: string } & ModelChange): Promise<unknown>;
   command(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
   command(method: "axo.remote.session.stop", params: { target: HostRef; sessionId: string; turnId: string }): Promise<unknown>;
   close(): void;
@@ -132,8 +138,10 @@ export type PendingState =
   | "sending"
   /** The Mac took it; the agent will record it shortly. */
   | "sent"
-  /** Taken while the agent was busy: answered after the current reply. */
+  /** Taken while the agent was busy: in the log, waiting for the reply to end or for its next step. */
   | "queued"
+  /** The agent is still starting and could not take it yet: sent again, with its commandId, until it can. */
+  | "waking"
   /** The Mac did not say whether it took it: it is sent again, with its commandId, until it does. */
   | "uncertain";
 
@@ -143,8 +151,28 @@ export interface PendingPrompt {
   readonly text: string;
   /** Files already in the account's assets, fetched by the Mac before Pi gets the prompt (RFD0030). */
   readonly attachments: readonly Attachment[];
+  /** Whether a busy agent takes it after its reply or at its next step. */
+  readonly delivery: Delivery;
   state: PendingState;
 }
+
+/** A message the agent has not recorded yet, as the conversation shows it. */
+export interface WaitingPrompt {
+  /** Its commandId. */
+  readonly id: string;
+  readonly text: string;
+  readonly files: readonly string[];
+  readonly delivery: Delivery;
+  readonly state: PendingState;
+  /** Sent from this tab: it can be taken off the screen once its fate is unknown. */
+  readonly mine: boolean;
+}
+
+/** A new model, thinking level, or both, for a Session's Pi. */
+export type ModelChange = { model?: { provider: string; id: string }; thinkingLevel?: ThinkingLevel };
+
+/** What a Session's Pi can run or switch to, as last read, while it is read, or why it could not be. */
+export type Loadable<T> = { kind: "loading" } | { kind: "loaded"; items: T[] } | { kind: "failed"; message: string };
 
 /** A file in the message box: uploading to the account, ready to send, or refused. */
 export interface DraftAttachment {
@@ -174,10 +202,36 @@ export class Chat {
   pending: PendingPrompt[] = [];
   history: HistoryState = { kind: "none" };
   stopping = false;
+  /** A restart was asked for and the agent is not ready again yet. */
+  restarting = false;
+  /** The slash commands its Pi runs, read when the `/` list opens. */
+  commands: Loadable<PiCommand> | null = null;
+  /** The models its Pi can switch to, read when the model menu opens. */
+  models: Loadable<PiModel> | null = null;
   /** The epoch the records held belong to. */
   epoch: number | null = null;
   /** The `before` of the next older page, or null when the start is held. */
   older: number | null = null;
+
+  /**
+   * The person's messages the agent has not recorded yet: the ones sent from here, then the ones the
+   * log holds as queued (sent from another device, or before a reload), each once.
+   */
+  get waiting(): WaitingPrompt[] {
+    const queued = this.transcript?.queued ?? [];
+    const inLog = new Set(queued.map(prompt => prompt.commandId));
+    const mine = new Set(this.pending.map(prompt => prompt.id));
+    return [
+      ...this.pending.map(prompt => ({
+        id: prompt.id, text: prompt.text, files: prompt.attachments.map(file => file.name), delivery: prompt.delivery,
+        state: prompt.state === "sent" && inLog.has(prompt.id) ? "queued" as const : prompt.state,
+        mine: true,
+      })),
+      ...queued.filter(prompt => !mine.has(prompt.commandId)).map(prompt => ({
+        id: prompt.commandId, text: prompt.text, files: prompt.files, delivery: prompt.delivery, state: "queued" as const, mine: false,
+      })),
+    ];
+  }
 }
 
 /**
@@ -255,6 +309,11 @@ function deliveryUncertain(error: unknown): boolean {
   const code = (error as { code?: unknown }).code;
   if (typeof code === "number") return code === -32004;
   return /timed out|closed|WebSocket/i.test(error.message);
+}
+
+/** The agent is starting and took nothing: the same commandId can go again. */
+function agentWaking(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === -32008;
 }
 
 function hostOffline(error: unknown): boolean {
@@ -552,6 +611,8 @@ export class ChatWorkbench {
         chat.transcript.settle(working);
         if (!working) chat.stopping = false;
       }
+      // A restart is over once the agent is back; until then it starts, or is still on its way down.
+      if (chat?.restarting && session.status === "ready") chat.restarting = false;
     }
     this.rebuildHosts();
     this.changed();
@@ -852,10 +913,10 @@ export class ChatWorkbench {
    * Sends what is typed. On a new chat the first message brings the chat into being: in the
    * Workspace chosen for it, or in the Mac's Home Workspace.
    */
-  async send(): Promise<SendOutcome> {
+  async send(delivery: Delivery = "followUp"): Promise<SendOutcome> {
     const selection = this.selection;
     if (this.isSending || !selection || !this.canSendDraft) return { kind: "failed" };
-    if (selection.kind === "chat") return this.sending(() => this.prompt(selection));
+    if (selection.kind === "chat") return this.sending(() => this.prompt(selection, delivery));
     return this.startChat(selection);
   }
 
@@ -939,14 +1000,14 @@ export class ChatWorkbench {
    * in the log; one whose fate is unknown is sent again with the same id, which the Mac takes at
    * most once.
    */
-  private async prompt(selection: Selection & { kind: "chat" }): Promise<SendOutcome> {
+  private async prompt(selection: Selection & { kind: "chat" }, delivery: Delivery = "followUp"): Promise<SendOutcome> {
     const host = this.openHost;
     const text = this.draft(selection).trim();
     const files = this.attachments(selection);
     if (!host || !this.canSendDraft || !this.ready()) return { kind: "failed" };
     const chat = this.chat(selection.sessionId);
     const attachments = files.flatMap(file => file.uploaded ? [file.uploaded] : []);
-    const pending: PendingPrompt = { id: this.newId(), text, attachments, state: "sending" };
+    const pending: PendingPrompt = { id: this.newId(), text, attachments, delivery, state: "sending" };
     chat.pending = [...chat.pending, pending];
     this.setDraft("", selection);
     this.setAttachments([], selection);
@@ -968,16 +1029,27 @@ export class ChatWorkbench {
       await this.connection!.command("axo.remote.session.prompt", {
         target: this.reference(host), sessionId, text: pending.text, commandId: pending.id,
         ...(pending.attachments.length ? { attachments: [...pending.attachments] } : {}),
+        ...(pending.delivery === "steer" ? { delivery: "steer" as const } : {}),
       });
       this.failure = null;
       outcome = { kind: "sent" };
     } catch (error) {
       // A refusal after an unknown outcome proves nothing: the first try may still land.
-      const unknown = deliveryUncertain(error) || (attempt > 0 && hostOffline(error));
+      const waking = agentWaking(error);
+      const unknown = waking || deliveryUncertain(error) || (attempt > 0 && hostOffline(error));
       outcome = unknown ? { kind: "uncertain" } : { kind: "failed" };
-      this.failure = unknown
+      this.failure = waking ? null : unknown
         ? `${host.label} has not said whether it got your message; trying again.`
         : `Not sent: ${describe(error)}`;
+      if (waking) {
+        const current = this.chats.get(sessionId)?.pending.find(candidate => candidate.id === pending.id);
+        // A try that may have landed stays uncertain: only a first answer says nothing was kept.
+        if (current && current.state !== "uncertain") {
+          current.state = "waking";
+          if (attempt < MAX_RETRIES) this.scheduleRetry(host, sessionId, current, attempt + 1);
+          return { kind: "sent" };
+        }
+      }
     }
     const current = this.chats.get(sessionId)?.pending.find(candidate => candidate.id === pending.id);
     if (!current) return outcome;
@@ -1033,6 +1105,78 @@ export class ChatWorkbench {
       this.failure = describe(error);
     }
     this.changed();
+  }
+
+  /**
+   * Restarts the chat's agent on the same conversation (RFD0033). A reply it is writing stops; the
+   * messages waiting for it are in the log, so they survive. "Restarting…" shows until it is ready.
+   */
+  async restart(sessionId: string): Promise<void> {
+    const host = this.openHost;
+    const chat = this.chat(sessionId);
+    if (!host || chat.restarting || !this.ready()) return;
+    chat.restarting = true;
+    chat.commands = null;
+    chat.models = null;
+    this.changed();
+    try {
+      await this.connection!.command("axo.remote.session.restart", { target: this.reference(host), sessionId });
+    } catch (error) {
+      chat.restarting = false;
+      this.failure = `Could not restart the agent: ${describe(error)}`;
+    }
+    this.changed();
+  }
+
+  /** Reads the slash commands the chat's Pi runs, each time the `/` list opens: they change as skills do. */
+  async loadCommands(sessionId: string): Promise<void> {
+    await this.load(sessionId, "commands", async (target) =>
+      (await this.connection!.command("axo.remote.session.commands", { target, sessionId })).commands);
+  }
+
+  /** Reads the models the chat's Pi can switch to, each time the model menu opens. */
+  async loadModels(sessionId: string): Promise<void> {
+    await this.load(sessionId, "models", async (target) =>
+      (await this.connection!.command("axo.remote.session.models", { target, sessionId })).models);
+  }
+
+  private async load<K extends "commands" | "models">(sessionId: string, key: K, read: (target: HostRef) => Promise<(K extends "commands" ? PiCommand : PiModel)[]>): Promise<void> {
+    const host = this.openHost;
+    const chat = this.chat(sessionId);
+    if (!host || host.status !== "online" || !this.connection?.active) {
+      chat[key] = { kind: "failed", message: `${host?.label ?? "The Mac"} is offline.` };
+      this.changed();
+      return;
+    }
+    // What was read last stays on screen while it is read again.
+    if (chat[key]?.kind !== "loaded") chat[key] = { kind: "loading" };
+    this.changed();
+    try {
+      const items = await read(this.reference(host));
+      chat[key] = { kind: "loaded", items } as Chat[K];
+    } catch (error) {
+      chat[key] = { kind: "failed", message: describe(error) };
+    }
+    this.changed();
+  }
+
+  /**
+   * Switches the chat's Pi to another model or thinking level. What it runs then comes back with
+   * the chat's listing, from Pi itself, so the box only ever names what Pi says it runs.
+   */
+  async setModel(sessionId: string, change: ModelChange): Promise<boolean> {
+    const host = this.openHost;
+    if (!host || !this.ready()) return false;
+    try {
+      await this.connection!.command("axo.remote.session.model.set", { target: this.reference(host), sessionId, ...change });
+      return true;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      this.failure = code === -32007 ? "Pi is not signed in to that model's provider on your Mac."
+        : code === -32602 ? "Pi does not have that model." : `Could not switch the model: ${describe(error)}`;
+      this.changed();
+      return false;
+    }
   }
 
   /** What the Macs ask now, oldest first; with `sessionId`, only what that chat's agent asks. */

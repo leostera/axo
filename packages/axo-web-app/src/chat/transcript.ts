@@ -97,10 +97,28 @@ export interface TranscriptRecord {
  */
 export const RECEIPT_ENTRY = "axo.command";
 
-/** A record as the conversation sees it: a message, a client's receipt, or nothing to show. */
+/**
+ * The custom entry the Session's Pi writes when it accepts a client's prompt it cannot take at
+ * once (RFD0033). Until its receipt follows, the prompt waits: after the reply, or as a steer.
+ */
+export const QUEUED_ENTRY = "axo.command.queued";
+
+export type Delivery = "followUp" | "steer";
+
+/** A client's prompt the log holds, waiting for Pi. */
+export interface QueuedPrompt {
+  readonly commandId: string;
+  readonly delivery: Delivery;
+  readonly text: string;
+  /** The names of the files that go with it. */
+  readonly files: readonly string[];
+}
+
+/** A record as the conversation sees it: a message, a client's receipt or queued prompt, or nothing to show. */
 type Entry =
   | { kind: "message"; id: string; message: Record<string, unknown> }
   | { kind: "receipt"; commandId: string }
+  | { kind: "queued"; prompt: QueuedPrompt }
   | { kind: "other" };
 
 /** The format adapter for `pi/3`: Pi's session file entries. */
@@ -116,6 +134,21 @@ export function entryOf(record: TranscriptRecord): Entry {
   if (entry?.type === "custom" && entry.customType === RECEIPT_ENTRY) {
     const commandId = asObject(entry.data)?.commandId;
     return typeof commandId === "string" ? { kind: "receipt", commandId } : { kind: "other" };
+  }
+  if (entry?.type === "custom" && entry.customType === QUEUED_ENTRY) {
+    const data = asObject(entry.data);
+    if (typeof data?.commandId !== "string") return { kind: "other" };
+    const files = (Array.isArray(data.attachments) ? data.attachments : [])
+      .map(raw => asObject(raw)?.name).filter((name): name is string => typeof name === "string");
+    return {
+      kind: "queued",
+      prompt: {
+        commandId: data.commandId,
+        delivery: data.delivery === "steer" ? "steer" : "followUp",
+        text: typeof data.text === "string" ? data.text : "",
+        files,
+      },
+    };
   }
   const message = asObject(entry?.message);
   if (entry?.type !== "message" || !message) return { kind: "other" };
@@ -133,6 +166,8 @@ export class ChatTranscript {
   records: TranscriptRecord[] = [];
   /** The clients' prompts whose user message the log holds, by commandId (RFD0024). */
   delivered = new Set<string>();
+  /** The clients' prompts the log holds that Pi has not taken yet, oldest first (RFD0033). */
+  queued: QueuedPrompt[] = [];
   /** The entry id of the newest user message: the turn a stop names while Pi works. */
   lastUserEntry: string | null = null;
   /** A receipt whose user message has not been read yet. */
@@ -232,6 +267,7 @@ export class ChatTranscript {
     this.results = new Map();
     this.recordedReplies = new Set();
     this.delivered = new Set();
+    this.queued = [];
     this.lastUserEntry = null;
     this.receipt = null;
     for (const record of this.records) this.applyRecord(record);
@@ -241,6 +277,13 @@ export class ChatTranscript {
     const entry = entryOf(record);
     if (entry.kind === "receipt") {
       this.receipt = entry.commandId;
+      if (this.queued.some(prompt => prompt.commandId === entry.commandId)) {
+        this.queued = this.queued.filter(prompt => prompt.commandId !== entry.commandId);
+      }
+      return;
+    }
+    if (entry.kind === "queued") {
+      if (!this.queued.some(prompt => prompt.commandId === entry.prompt.commandId)) this.queued = [...this.queued, entry.prompt];
       return;
     }
     if (entry.kind !== "message") return;

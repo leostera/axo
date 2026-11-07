@@ -61,9 +61,12 @@ function record(cursor, message) {
   const id = `entry-${cursor}`;
   const parentId = cursor > 1 ? `entry-${cursor - 1}` : null;
   // A client's receipt is a custom entry, as the Session's Pi writes it (RFD0024).
+  // A prompt Pi could not take at once is in the log as queued until its receipt (RFD0033).
   const entry = message.receipt
     ? { type: "custom", id, parentId, timestamp: now, customType: "axo.command", data: { commandId: message.receipt } }
-    : { type: "message", id, parentId, timestamp: now, message };
+    : message.queued
+      ? { type: "custom", id, parentId, timestamp: now, customType: "axo.command.queued", data: message.queued }
+      : { type: "message", id, parentId, timestamp: now, message };
   return { cursor, id, format: "pi/3", hash: `sha256:${cursor.toString(16).padStart(64, "0")}`, line: JSON.stringify(entry) };
 }
 
@@ -82,6 +85,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     name: "Browser Agent",
     emoji: "🦀",
     head: 4,
+    pi: { model: { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1" }, thinkingLevel: "high" },
     // Active a minute ago: listed. The next chat has been quiet for weeks.
     lastMessageAt: Math.floor(Date.now() / 1000) - 60,
   }), listed({
@@ -114,6 +118,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const prompts = [];
   const keys = [];
   const stops = [];
+  /** Steers sent, held in the log until Pi takes them (RFD0033). */
+  const steers = [];
+  const restarts = [];
+  const modelSets = [];
   const answers = [];
   let finishOnStop = null;
   let sessionCreateCount = 0;
@@ -403,6 +411,44 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         sessions.push(created);
         reply({ session: { hostId, sessionId: sid(2), workspaceId: homeWorkspaceId, workspaceName: "Home", name: "Session 2", status: "starting", createdAt, hasAgent: true, shells: [], layout: null, updatedAt: new Date().toISOString() } });
         setTimeout(() => notify(socket, "axo.client.sessions", { hostId, sessions: [created] }), 10);
+      } else if (method === "axo.remote.session.prompt" && params.delivery === "steer") {
+        // Pi is busy elsewhere in this fixture: the steer waits in the log, and a restart delivers it.
+        steers.push({ sessionId: params.sessionId, text: params.text, commandId: params.commandId });
+        write(params.sessionId, { queued: { commandId: params.commandId, delivery: "steer", text: params.text, attachments: [] } });
+        reply({ accepted: true });
+      } else if (method === "axo.remote.session.commands") {
+        reply({ commands: [
+          { name: "review", description: "Review the diff", source: "prompt" },
+          { name: "axo-share", description: "Share this conversation", source: "extension" },
+          { name: "hivemind", description: "Search the team's memory", source: "skill" },
+        ] });
+      } else if (method === "axo.remote.session.models") {
+        reply({ models: [
+          { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1", thinkingLevels: ["off", "low", "medium", "high"] },
+          { provider: "openai", id: "gpt-5", name: "GPT-5", thinkingLevels: ["minimal", "low", "medium", "high"] },
+        ] });
+      } else if (method === "axo.remote.session.model.set") {
+        modelSets.push(params);
+        const index = sessions.findIndex((session) => session.sessionId === params.sessionId);
+        const pi = sessions[index].metadata.pi;
+        const model = params.model ? { ...params.model, name: params.model.id === "gpt-5" ? "GPT-5" : "Opus 4.1" } : pi.model;
+        sessions[index] = { ...sessions[index], metadata: { ...sessions[index].metadata, pi: { model, thinkingLevel: params.thinkingLevel ?? pi.thinkingLevel } } };
+        reply({ saved: true });
+        setTimeout(() => notify(socket, "axo.client.sessions", { hostId, sessions: [sessions[index]] }), 20);
+      } else if (method === "axo.remote.session.restart") {
+        restarts.push(params.sessionId);
+        reply({ restarted: true });
+        const sessionId = params.sessionId;
+        setTimeout(() => status(sessionId, "starting"), 50);
+        setTimeout(() => {
+          // Pi comes back and takes what waited for it, once.
+          for (const steer of steers.filter((candidate) => candidate.sessionId === sessionId)) {
+            write(sessionId, { receipt: steer.commandId });
+            write(sessionId, { role: "user", content: [{ type: "text", text: steer.text }] });
+            write(sessionId, { role: "assistant", timestamp: Date.now(), content: [{ type: "text", text: `Done with: ${steer.text}` }] });
+          }
+          status(sessionId, "ready");
+        }, 1_200);
       } else if (method === "axo.remote.session.prompt") {
         prompts.push({ sessionId: params.sessionId, text: params.text });
         reply({ accepted: true });
@@ -703,6 +749,74 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
     assert.equal(await box.inputValue(), "");
 
+    // `/` lists what this chat's Pi runs, narrows as it is typed, and Enter puts the command in the box (RFD0033).
+    await box.fill("/");
+    const slash = page.getByRole("listbox", { name: "Commands" });
+    await expect(slash.getByRole("option", { name: /\/review/ }));
+    assert.deepEqual(await slash.locator(".slash-name").allTextContents(), ["/review", "/axo-share", "/hivemind"]);
+    await shot("composer-slash");
+    await box.pressSequentially("sh");
+    assert.deepEqual(await slash.locator(".slash-name").allTextContents(), ["/axo-share"]);
+    await box.press("Enter");
+    assert.equal(await box.inputValue(), "/axo-share ", "Enter picks; it does not send");
+    assert.equal(await slash.count(), 0, "arguments close the list");
+    await box.fill("/");
+    await expect(slash.getByRole("option").first());
+    await box.press("ArrowDown");
+    assert.equal(await slash.getByRole("option", { name: /\/axo-share/ }).getAttribute("aria-selected"), "true");
+    await box.press("Escape");
+    assert.equal(await slash.count(), 0, "Escape closes it");
+    assert.equal(await box.inputValue(), "/");
+
+    // Holding Send offers how a working agent takes the message: Steer waits in the log, shown as Steering.
+    await box.fill("use bun");
+    await page.getByRole("button", { name: "Send" }).click({ button: "right" });
+    const sendAs = page.getByRole("menu", { name: "Send as" });
+    assert.deepEqual(await sendAs.getByRole("menuitem").evaluateAll(items => items.map(item => item.querySelector(".send-menu-text").firstChild.textContent)), ["Follow up", "Steer"]);
+    await shot("composer-send-as");
+    await sendAs.getByRole("menuitem", { name: /Steer/ }).click();
+    await expect(page.getByTestId("pending-prompt").getByText("Steering · read at the agent's next step"));
+    assert.deepEqual(steers.map(({ text }) => text), ["use bun"]);
+    assert.equal(prompts.length, 1, "a steer is not also a follow-up");
+    // Reloaded, it is still there: from the log alone.
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.getByTestId("pending-prompt").getByText("Steering · read at the agent's next step"));
+    assert.equal(await page.getByTestId("pending-prompt").count(), 1);
+
+    // The model and thinking level, beside Send: picking either asks Pi, and the box names what Pi then says it runs.
+    const model = page.getByRole("button", { name: "Model: Opus 4.1 · High" });
+    await model.click();
+    const modelMenu = page.getByRole("menu", { name: "Model" });
+    await expect(modelMenu.getByRole("menuitemradio", { name: "GPT-5" }));
+    assert.equal(await modelMenu.getByRole("menuitemradio", { name: "Opus 4.1" }).getAttribute("aria-checked"), "true");
+    assert.deepEqual(await modelMenu.locator(".menu-section").allTextContents(), ["anthropic", "openai", "Thinking"]);
+    await shot("composer-model-menu");
+    await modelMenu.getByRole("menuitemradio", { name: "GPT-5" }).click();
+    await expect(page.getByRole("button", { name: "Model: GPT-5 · High" }));
+    await page.getByRole("button", { name: "Model: GPT-5 · High" }).click();
+    await modelMenu.getByRole("menuitemradio", { name: "Low" }).click();
+    await expect(page.getByRole("button", { name: "Model: GPT-5 · Low" }));
+    assert.deepEqual(modelSets.map(({ model, thinkingLevel }) => [model?.id, thinkingLevel]), [["gpt-5", undefined], [undefined, "low"]]);
+
+    // Restart, from the chat's info: it asks first, says Restarting until Pi is back, and what waited is then delivered.
+    await page.getByRole("button", { name: "Chat info" }).click();
+    const chatInfo = page.getByRole("complementary", { name: "Chat info" });
+    await expect(chatInfo.getByText("GPT-5 · Low"));
+    await chatInfo.getByRole("button", { name: "Restart Pi" }).click();
+    const confirmRestart = page.getByRole("alertdialog", { name: "Restart Pi?" });
+    await confirmRestart.getByRole("button", { name: "Cancel" }).click();
+    assert.equal(restarts.length, 0, "cancel restarts nothing");
+    await chatInfo.getByRole("button", { name: "Restart Pi" }).click();
+    await confirmRestart.getByRole("button", { name: "Restart" }).click();
+    await expect(chatInfo.getByText("Restarting…"));
+    await expect(page.getByText("Restarting Pi…").first());
+    await shot("info-restarting");
+    assert.deepEqual(restarts, [sid(1)]);
+    await expect(page.getByText("Done with: use bun", { exact: true }));
+    await expect(chatInfo.getByRole("button", { name: "Restart Pi" }));
+    assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the steer is delivered once, and is no longer waiting");
+    await chatInfo.getByRole("button", { name: "Close chat info" }).click();
+
     // The agent asks the person yes or no (RFD0029): a card in its chat, answered from here.
     const elicitationId = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a";
     for (const socket of sockets) notify(socket, "axo.elicitation.requested", { hostId, elicitation: {
@@ -803,7 +917,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("phone-chat");
     // Nothing swipes the panes: a sideways drag over a message, by finger or by mouse to select
     // its text, leaves the conversation where it is; only the bars' buttons move the panes.
-    const message = page.locator(".layer-conversation .message p").first();
+    // The newest message: the chat opens at its end, so the oldest may be scrolled away.
+    const message = page.locator(".layer-conversation .message p").last();
     const messageBox = await message.boundingBox();
     await message.evaluate((element, { y }) => {
       for (const [type, x] of [["pointerdown", 320], ["pointermove", 200], ["pointermove", 60], ["pointerup", 20]]) {

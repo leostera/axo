@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { attachmentsIn, ChatTranscript } from "../src/chat/transcript.ts";
+import { levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
@@ -26,6 +27,10 @@ function said(cursor: number, role: string, content: unknown, extra: Record<stri
 /** The receipt the Session's Pi writes just before a client's prompt (RFD0024). */
 function receipt(cursor: number, commandId: string): ClientRecord {
   return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "custom", id: `e${cursor}`, parentId: null, timestamp: "2026-10-16T12:00:00.000Z", customType: "axo.command", data: { commandId } }) };
+}
+/** What the Session's Pi writes when it accepts a client's prompt it cannot take at once (RFD0033). */
+function queued(cursor: number, commandId: string, text: string, delivery: "followUp" | "steer" = "followUp", attachments: unknown[] = []): ClientRecord {
+  return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "custom", id: `e${cursor}`, parentId: null, timestamp: "2026-10-16T12:00:00.000Z", customType: "axo.command.queued", data: { commandId, delivery, text, attachments } }) };
 }
 function other(cursor: number): ClientRecord {
   return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "model_change", id: `e${cursor}`, parentId: null, provider: "x", modelId: "y" }) };
@@ -439,6 +444,8 @@ class FakeAccount implements AccountLink {
   /** The commands' failures after `failNext`, in turn. */
   failAfter: Error[] = [];
   workspaces = [{ workspaceId, name: "Axo" }];
+  /** What a method answers, when not just `{accepted: true}`. */
+  answers = new Map<string, unknown>();
   /** Each Session's records in the cloud. */
   records = new Map<string, ClientRecord[]>();
   events: AccountEvents = {};
@@ -487,6 +494,7 @@ class FakeAccount implements AccountLink {
       this.failNext = this.failAfter.shift() ?? null;
       throw error;
     }
+    if (this.answers.has(method)) return this.answers.get(method) as never;
     if (method === "axo.remote.workspace.list") return { workspaces: this.workspaces } as never;
     if (method.endsWith("session.create")) return { session: { sessionId: sid(7), name: "Chat 7" } } as never;
     return { accepted: true } as never;
@@ -874,4 +882,133 @@ test("a browser names itself by its browser and system", async () => {
   const { browserName } = await import("../src/chat/device.ts");
   assert.equal(browserName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"), "Safari on Mac");
   assert.equal(browserName("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"), "Chrome on Windows");
+});
+
+// MARK: - Session controls (RFD0033)
+
+const opus = { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1" };
+const models = [
+  { ...opus, thinkingLevels: ["off", "low", "medium", "high"] as const },
+  { provider: "anthropic", id: "claude-haiku", name: "Haiku", thinkingLevels: ["off"] as const },
+  { provider: "openai", id: "gpt-5", name: "GPT-5", thinkingLevels: ["minimal", "low", "medium", "high"] as const },
+].map(model => ({ ...model, thinkingLevels: [...model.thinkingLevels] }));
+const commands = [
+  { name: "review", description: "Review the diff", source: "prompt" as const },
+  { name: "axo-share", description: "Share this conversation", source: "extension" as const },
+  { name: "hivemind", description: "Search the team's memory", source: "skill" as const },
+];
+
+test("a prompt queued in the log waits, as a follow-up or a steer, until its receipt; a reload sees it from the log alone", () => {
+  const transcript = transcriptOf([said(1, "user", "go"), queued(2, "c-1", "and tests", "followUp", [{ asset: hash, name: "a.png", mimeType: "image/png", size: 3 }]), queued(3, "c-2", "use bun", "steer")]);
+  assert.deepEqual(transcript.queued.map(prompt => [prompt.commandId, prompt.delivery, prompt.text, prompt.files]),
+    [["c-1", "followUp", "and tests", ["a.png"]], ["c-2", "steer", "use bun", []]]);
+  assert.deepEqual(transcript.messages.map(message => message.text), ["go"], "a queued prompt is not a message yet");
+  transcript.append([receipt(4, "c-2"), said(5, "user", "use bun")]);
+  assert.deepEqual(transcript.queued.map(prompt => prompt.commandId), ["c-1"]);
+  // Read again from the start, as after a reload: the same is still waiting.
+  const reloaded = transcriptOf(transcript.records as ClientRecord[]);
+  assert.deepEqual(reloaded.queued.map(prompt => prompt.commandId), ["c-1"]);
+  assert.equal(pendingLabel({ state: "queued", delivery: "steer" }), "Steering · read at the agent's next step");
+  assert.equal(pendingLabel({ state: "queued", delivery: "followUp" }), "Queued · answered after the current reply");
+});
+
+test("the chat shows each waiting message once: sent from here, or queued in the log from anywhere", async () => {
+  const { workbench, account } = await workbenchWith();
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("mine");
+  await workbench.send("steer");
+  const prompt = account.commands.find(call => call.method === "axo.remote.session.prompt")!;
+  assert.equal(prompt.params.delivery, "steer");
+  account.push(sid(1), [queued(1, "pending-1", "mine", "steer"), queued(2, "phone-1", "from the phone")]);
+  const waiting = workbench.chat(sid(1)).waiting;
+  assert.deepEqual(waiting.map(prompt => [prompt.id, prompt.state, prompt.delivery, prompt.mine]),
+    [["pending-1", "queued", "steer", true], ["phone-1", "queued", "followUp", false]]);
+  account.push(sid(1), [receipt(3, "phone-1"), said(4, "user", "from the phone")]);
+  assert.deepEqual(workbench.chat(sid(1)).waiting.map(prompt => prompt.id), ["pending-1"]);
+  workbench.dispose();
+});
+
+test("a follow-up goes without a delivery, as before; a prompt to a waking agent is sent again with its commandId, quietly", async () => {
+  const { workbench, account } = await workbenchWith(new FakeAccount(), 0);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("hello");
+  account.failNext = Object.assign(new Error("Pi is still starting"), { code: -32008 });
+  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  assert.equal(workbench.draft(), "", "the words are not handed back");
+  assert.equal(workbench.failure, null);
+  assert.equal(workbench.chat(sid(1)).pending[0]?.state, "waking");
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const prompts = account.commands.filter(call => call.method === "axo.remote.session.prompt");
+  assert.deepEqual(prompts.map(call => [call.params.commandId, "delivery" in call.params]), [["pending-1", false], ["pending-1", false]]);
+  assert.equal(workbench.chat(sid(1)).pending[0]?.state, "sent");
+  workbench.dispose();
+});
+
+test("restart asks the Mac once and says Restarting until the agent is ready again", async () => {
+  const { workbench, account } = await workbenchWith();
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
+  await Promise.all([workbench.restart(sid(1)), workbench.restart(sid(1))]);
+  assert.equal(account.commands.filter(call => call.method === "axo.remote.session.restart").length, 1);
+  const chat = workbench.chat(sid(1));
+  assert.equal(chat.restarting, true);
+  account.events.sessions?.(hostId, [clientSession(1, { status: "starting" })]);
+  assert.equal(chat.restarting, true, "starting is not ready");
+  account.events.sessions?.(hostId, [clientSession(1, { status: "ready" })]);
+  assert.equal(chat.restarting, false);
+
+  account.failNext = Object.assign(new Error("Host offline"), { code: -32005 });
+  await workbench.restart(sid(1));
+  assert.equal(chat.restarting, false);
+  assert.match(workbench.failure ?? "", /Could not restart/);
+  workbench.dispose();
+});
+
+test("what Pi runs comes with the chat's listing; its models and commands are read when their menus open", async () => {
+  const account = new FakeAccount();
+  account.hello.sessions = [clientSession(1, { metadata: { ...clientSession(1).metadata, pi: { model: opus, thinkingLevel: "high" } } })];
+  account.answers.set("axo.remote.session.models", { models });
+  account.answers.set("axo.remote.session.commands", { commands });
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  const session = workbench.selectedSession!;
+  assert.equal(runtimeLabel(session.pi), "Opus 4.1 · High");
+  assert.equal(runtimeLabel({ model: opus, thinkingLevel: "off" }), "Opus 4.1");
+  assert.equal(runtimeLabel(undefined), null, "nothing shows until Pi has said");
+
+  await workbench.loadModels(sid(1));
+  const read = workbench.chat(sid(1)).models;
+  assert.equal(read?.kind, "loaded");
+  const items = read?.kind === "loaded" ? read.items : [];
+  assert.deepEqual(modelsByProvider(items).map(group => [group.provider, group.models.map(model => model.id)]),
+    [["anthropic", ["claude-opus-4-1", "claude-haiku"]], ["openai", ["gpt-5"]]]);
+  assert.deepEqual(levelsOf(items, session.pi), ["off", "low", "medium", "high"]);
+
+  assert.equal(await workbench.setModel(sid(1), { model: { provider: "openai", id: "gpt-5" } }), true);
+  assert.deepEqual(account.commands.at(-1), { method: "axo.remote.session.model.set", params: { target: { hostId, hostGeneration }, sessionId: sid(1), model: { provider: "openai", id: "gpt-5" } } });
+  account.failNext = Object.assign(new Error("no credentials"), { code: -32007 });
+  assert.equal(await workbench.setModel(sid(1), { thinkingLevel: "low" }), false);
+  assert.match(workbench.failure ?? "", /not signed in/);
+
+  await workbench.loadCommands(sid(1));
+  assert.equal(workbench.chat(sid(1)).commands?.kind, "loaded");
+  account.failNext = new Error("Pi is not running");
+  await workbench.loadCommands(sid(1));
+  assert.deepEqual(workbench.chat(sid(1)).commands, { kind: "failed", message: "Pi is not running" });
+  workbench.dispose();
+});
+
+test("the / list opens only while a command is being named, and narrows as it is typed", () => {
+  assert.equal(slashQuery("/"), "");
+  assert.equal(slashQuery("/rev"), "rev");
+  assert.equal(slashQuery("/review the diff"), null, "arguments close it");
+  assert.equal(slashQuery("see /review"), null, "only at the start");
+  assert.deepEqual(matchingCommands(commands, "").map(command => command.name), ["review", "axo-share", "hivemind"]);
+  assert.deepEqual(matchingCommands(commands, "sh").map(command => command.name), ["axo-share"]);
+  assert.deepEqual(matchingCommands(commands, "memory").map(command => command.name), ["hivemind"], "a description matches last");
+  assert.deepEqual(matchingCommands(commands, "zzz"), []);
+  assert.equal(withCommand(commands[0]!), "/review ");
 });

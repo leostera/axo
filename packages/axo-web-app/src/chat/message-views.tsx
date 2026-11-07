@@ -1,7 +1,8 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
 import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
-import type { AskedQuestion, PendingPrompt } from "./workbench.ts";
+import type { AskedQuestion, WaitingPrompt } from "./workbench.ts";
+import { pendingLabel } from "./pi-controls.ts";
 import { Icon, type IconName } from "./icons.tsx";
 import { highlight } from "./highlight.ts";
 import type { InputFieldKind } from "@axo/protocol";
@@ -319,28 +320,21 @@ function ToolCard({ tool, working, enter }: { tool: ToolActivity; working: boole
   );
 }
 
-const pendingLabels: Record<PendingPrompt["state"], string> = {
-  sending: "Sending…",
-  sent: "Sent",
-  queued: "Queued · answered after the current reply",
-  uncertain: "Not confirmed yet · trying again",
-};
-
-/** A message sent from here that the agent has not recorded yet. */
-export function PendingView({ prompt, onDismiss }: { prompt: PendingPrompt; onDismiss: () => void }) {
+/** A message the agent has not recorded yet: sent from here, or queued in the log. */
+export function PendingView({ prompt, onDismiss }: { prompt: WaitingPrompt; onDismiss: () => void }) {
   return (
     <div className={`message user-message pending pending-${prompt.state}`} data-testid="pending-prompt">
-      {prompt.attachments.length ? (
+      {prompt.files.length ? (
         <div className="pending-files">
-          {prompt.attachments.map(file => <span key={file.asset} className="pending-file"><Icon name="paperclip" size={13} />{file.name}</span>)}
+          {prompt.files.map((name, index) => <span key={`${index}:${name}`} className="pending-file"><Icon name="paperclip" size={13} />{name}</span>)}
         </div>
       ) : null}
       {prompt.text ? <div className="user-bubble">{prompt.text}</div> : null}
       <div className="pending-label">
         {prompt.state === "uncertain" ? <Icon name="warning" size={14} /> : null}
-        {pendingLabels[prompt.state]}
+        {pendingLabel(prompt)}
       </div>
-      {prompt.state === "uncertain" ? (
+      {prompt.state === "uncertain" && prompt.mine ? (
         <div className="pending-actions">
           <button onClick={onDismiss}>Remove</button>
         </div>

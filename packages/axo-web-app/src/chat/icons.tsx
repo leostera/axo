@@ -3,7 +3,7 @@ export type IconName =
   | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "laptop" | "copy" | "check"
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
   | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud" | "paperclip"
-  | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown";
+  | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown" | "restart";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -45,6 +45,7 @@ const paths: Record<IconName, string> = {
   paperclip: "M20 11.5 12 19.5a4.6 4.6 0 0 1-6.5-6.5l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.3-7.3",
   chevronLeft: "m15 5-7 7 7 7",
   chevronDown: "m5 9 7 7 7-7",
+  restart: "M20 12a8 8 0 1 1-2.3-5.7M20 4v4.5h-4.5",
   pin: "M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7",
   pinFill: "M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7",
   plus: "M12 4v16M4 12h16",

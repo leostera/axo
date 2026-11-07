@@ -6,6 +6,9 @@ import { Alert } from "./alert.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
+import { ModelPicker, SendButton, SlashMenu } from "./composer-controls.tsx";
+import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
+import type { Delivery } from "./transcript.ts";
 
 /** How close to the bottom still counts as following the conversation. */
 const FOLLOW_SLACK_PX = 80;
@@ -149,17 +152,18 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   };
 
-  const send = async () => {
+  const send = async (delivery: Delivery = "followUp") => {
     following.current = true;
-    await workbench.send();
+    await workbench.send(delivery);
   };
 
   const working = Boolean(transcript?.working);
   const canStop = online && working && !chat?.stopping;
   const history = chat?.history ?? { kind: "none" as const };
-  const empty = !session || (messageCount === 0 && !transcript?.live.length && !chat?.pending.length);
+  const empty = !session || (messageCount === 0 && !transcript?.live.length && !chat?.waiting.length);
   const trouble = !host ? null
     : host.status !== "online" ? `${host.label} is offline`
+      : chat?.restarting ? "Restarting Pi…"
       : workbench.link === "reconnecting" ? `Reconnecting to ${host.label}…` : null;
   const activityTitle = chat?.stopping ? "Stopping…"
     : transcript?.question ? "Waiting for your answer"
@@ -204,7 +208,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           {shown.map(({ message, live, enter, reveal }) => (
             <MessageView key={message.key} message={message} working={Boolean(transcript?.working)} live={live} enter={enter} reveal={reveal} />
           ))}
-          {session && chat?.pending.map(prompt => (
+          {session && chat?.waiting.map(prompt => (
             <PendingView
               key={prompt.id}
               prompt={prompt}
@@ -260,7 +264,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           voice={voice}
           placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
           canSend={Boolean(host && host.status === "online")}
-          onSend={() => void send()}
+          onSend={delivery => void send(delivery)}
           onEscape={() => { if (canStop) setConfirmingStop(true); }}
           onApps={onApps}
         />
@@ -300,7 +304,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
   voice: VoicePrompt | null;
   placeholder: string;
   canSend: boolean;
-  onSend: () => void;
+  onSend: (delivery: Delivery) => void;
   /** Escape with nothing to cancel: asks to stop the reply. */
   onEscape: () => void;
   onApps?: () => void;
@@ -350,14 +354,49 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     if (!voice || !transcript) return;
     voice.consume(transcript);
     workbench.setDraft(appendTranscript(workbench.draft(), transcript.text));
-    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend();
+    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("followUp");
     else if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
   }, [voice?.version]);
 
+  // The `/` list, for a chat whose Pi can be asked what it runs.
+  const session = workbench.selectedSession;
+  const query = session ? slashQuery(draft) : null;
+  const [dismissedSlash, setDismissedSlash] = useState<string | null>(null);
+  const [highlighted, setHighlighted] = useState(0);
+  const slashOpen = query !== null && dismissedSlash !== draft;
+  const commands = session ? workbench.chat(session.sessionId).commands : null;
+  const matches = slashOpen && commands?.kind === "loaded" ? matchingCommands(commands.items, query) : [];
+  useEffect(() => {
+    if (slashOpen && session) void workbench.loadCommands(session.sessionId);
+  }, [slashOpen, session?.sessionId]);
+  useEffect(() => setHighlighted(0), [query]);
+  const pickCommand = (command: (typeof matches)[number]) => {
+    workbench.setDraft(withCommand(command));
+    field.current?.focus();
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen && matches.length && !event.nativeEvent.isComposing) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setHighlighted((highlighted + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length);
+        return;
+      }
+      if ((event.key === "Enter" && !event.shiftKey && !touchTyping()) || event.key === "Tab") {
+        event.preventDefault();
+        pickCommand(matches[Math.min(highlighted, matches.length - 1)]!);
+        return;
+      }
+    }
+    if (slashOpen && event.key === "Escape") {
+      event.preventDefault();
+      setDismissedSlash(draft);
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !touchTyping()) {
       event.preventDefault();
-      if (ready) onSend();
+      // ⌘↵ steers a working agent; ↵ follows up.
+      if (ready) onSend(event.metaKey || event.ctrlKey ? "steer" : "followUp");
     } else if (event.key === "Escape" && !hasDraft) {
       event.preventDefault();
       onEscape();
@@ -391,10 +430,13 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
           {files.map(file => <AttachmentChip key={file.id} file={file} onRemove={() => workbench.detach(file.id)} />)}
         </ul>
       ) : null}
+      {slashOpen && !(voice && listening) ? (
+        <SlashMenu state={commands} matches={matches} highlighted={highlighted} onHighlight={setHighlighted} onPick={pickCommand} />
+      ) : null}
       {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
         <form className={dragging ? "composer dragging" : "composer"} onSubmit={event => {
           event.preventDefault();
-          if (ready) onSend();
+          if (ready) onSend("followUp");
         }}
         onDragOver={event => {
           if (!canSend || !event.dataTransfer.types.includes("Files")) return;
@@ -414,6 +456,8 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
             value={draft}
             placeholder={placeholder}
             aria-label="Message"
+            aria-controls={slashOpen ? "slash-menu" : undefined}
+            aria-activedescendant={slashOpen && matches.length ? `slash-${highlighted}` : undefined}
             enterKeyHint={touchTyping() ? "enter" : "send"}
             disabled={!canSend}
             onChange={event => workbench.setDraft(event.target.value)}
@@ -441,6 +485,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
             }} plugins={Boolean(onApps)} />
             {wide ? <HostPicker workbench={workbench} /> : null}
             <span className="spacer" />
+            {session ? <ModelPicker workbench={workbench} session={session} disabled={!canSend} /> : null}
             {voice ? (
               <button type="button" className="round-button composer-mic"
                 disabled={!canSend || voice.isBusy} onClick={() => void voice.start()}
@@ -448,9 +493,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
                 {voiceState === "requestingPermission" ? <span className="spinner" aria-hidden="true" /> : <Icon name="mic" size={20} />}
               </button>
             ) : null}
-            <button className={ready ? "round-button send-button ready" : "round-button send-button"} disabled={!ready} aria-label="Send">
-              <Icon name="arrowUp" size={20} />
-            </button>
+            <SendButton ready={ready} onSend={onSend} />
           </div>
         </form>
       )}
