@@ -491,7 +491,7 @@ export const Session = defineActor({
       with: [atMost(2)],
       label: "Add Linear",
       description: "The agent adds a third-party connection mid-task.",
-      sources: ["crates/axo-server/src/apps.rs#forward"],
+      sources: ["crates/axo-apps/src/lib.rs#forward"],
       sends: [Add],
       run: (state, _i, ctx) => ctx.send(ctx.the(Manager), Add, { account: state.account, name: "linear" }),
     },

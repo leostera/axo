@@ -10,11 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use axo_ipc::{ErrorCode, RpcError, TypedMethods};
+use axo_ipc::{ErrorCode, Extension, Methods, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
-mod apps;
 pub mod permissions;
 mod session;
 mod workspace_access;
@@ -350,22 +349,75 @@ impl Drop for SignalHandlers {
     }
 }
 
+/// axod's methods, from its extensions (RFD0034). Each method has one owner; two claiming the
+/// same name is a bug, found when axod starts.
 fn rpc_handler(
     sessions: Arc<session::SessionManager>,
     daemon_version: &'static str,
     relay: Option<RelayContext>,
 ) -> IoHandler {
-    let mut handler = IoHandler::new();
-    add_protocol_negotiate_method(&mut handler);
-    let ready = Arc::clone(&sessions);
-    add_health_method(&mut handler, daemon_version, move || ready.is_ready());
-    apps::add_methods(
-        &mut handler,
-        relay.as_ref().map(|relay| Arc::clone(&relay.channel)),
-    );
-    add_relay_methods(&mut handler, relay);
-    sessions.register_rpc_methods(&mut handler);
-    handler
+    let apps = axo_apps::Apps::new(relay.as_ref().map(|relay| Arc::clone(&relay.channel)));
+    let daemon = Daemon {
+        version: daemon_version,
+        sessions: Arc::clone(&sessions),
+    };
+    let mut methods = Methods::new();
+    for extension in [
+        &daemon as &dyn Extension,
+        &Relay(relay),
+        &Sessions(sessions),
+        &apps,
+    ] {
+        if let Err(conflict) = methods.add(extension) {
+            panic!("{conflict}");
+        }
+    }
+    methods.into_handler()
+}
+
+/// The daemon's own methods: negotiating the protocol, and its health.
+struct Daemon {
+    version: &'static str,
+    sessions: Arc<session::SessionManager>,
+}
+
+impl Extension for Daemon {
+    fn name(&self) -> &'static str {
+        "daemon"
+    }
+
+    fn register(&self, methods: &mut IoHandler) {
+        add_protocol_negotiate_method(methods);
+        let ready = Arc::clone(&self.sessions);
+        add_health_method(methods, self.version, move || ready.is_ready());
+    }
+}
+
+/// Linking this Mac, its relay's status, and sharing through it.
+struct Relay(Option<RelayContext>);
+
+impl Extension for Relay {
+    fn name(&self) -> &'static str {
+        "relay"
+    }
+
+    fn register(&self, methods: &mut IoHandler) {
+        add_relay_methods(methods, self.0.clone());
+    }
+}
+
+/// Sessions, Workspaces, panes, Pi, questions, computer use: the Session manager's methods,
+/// until they move into extensions of their own (RFD0034 step 5).
+struct Sessions(Arc<session::SessionManager>);
+
+impl Extension for Sessions {
+    fn name(&self) -> &'static str {
+        "sessions"
+    }
+
+    fn register(&self, methods: &mut IoHandler) {
+        self.0.register_rpc_methods(methods);
+    }
 }
 
 fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {

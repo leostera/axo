@@ -56,7 +56,7 @@
     "crates/axo-relay/src/sync/uploader.rs#Uploader::upload_next": "b9d6c1a0771d",
     "crates/axo-seal/src/lib.rs#InputKey.open": "54406730d42e",
     "crates/axo-seal/src/lib.rs#verify_answer": "7760fb4a0f83",
-    "crates/axo-server/src/apps.rs#forward": "0cdf47a9779e",
+    "crates/axo-apps/src/lib.rs#forward": "0cdf47a9779e",
     "crates/axo-server/src/lib.rs#request_shutdown": "d05ec0cbad46",
     "crates/axo-server/src/lib.rs:347-363": "ad42dd909f90",
     "crates/axo-server/src/lib.rs:360-363": "6a6732d40bc9",

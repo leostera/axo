@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# The apps extension: a Session's axo.apps.* calls, forwarded to the account (RFD0016).
+rust_library(
+    name = "axo_apps",
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    deps = [
+        "//crates/axo-ipc:axo_ipc",
+        "//crates/axo-protocol:axo_protocol",
+        "//crates/axo-relay:axo_relay",
+        "@crates//:jsonrpc-core",
+        "@crates//:log",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "axo_apps_tests",
+    crate = ":axo_apps",
+    edition = "2024",
+)

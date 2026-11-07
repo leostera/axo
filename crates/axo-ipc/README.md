@@ -18,3 +18,5 @@ Axod's local IPC: newline-delimited JSON-RPC over a Unix socket, and the bounded
 bazel build //crates/axo-ipc
 bazel test //crates/axo-ipc:axo_ipc_tests
 ```
+
+`extension` is the extension API (RFD0034 step 4): an `Extension` registers its methods into `Methods`, which keeps one owner per method and refuses a name two extensions claim.

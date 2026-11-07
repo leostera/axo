@@ -625,7 +625,7 @@ export const Axod = defineActor({
     execute: {
       on: Execute,
       description: "Forwards a Session's script over the relay, or refuses at once when the relay is down.",
-      sources: ["crates/axo-server/src/apps.rs#forward"],
+      sources: ["crates/axo-apps/src/lib.rs#forward"],
       sends: [Forward, RelayDown],
       run(state, m, ctx) {
         if (!state.connected || !state.account) return ctx.reply(RelayDown, { request: m.request });
@@ -636,7 +636,7 @@ export const Axod = defineActor({
     answer: {
       on: Answer,
       description: "Hands the script's result to the Session that asked.",
-      sources: ["crates/axo-server/src/apps.rs#forward"],
+      sources: ["crates/axo-apps/src/lib.rs#forward"],
       sends: [Done],
       run(state, m, ctx) {
         if (m.epoch !== state.epoch) return;
@@ -648,7 +648,7 @@ export const Axod = defineActor({
     refused: {
       on: Refused,
       description: "Hands the script's error to the Session that asked.",
-      sources: ["crates/axo-server/src/apps.rs#forward"],
+      sources: ["crates/axo-apps/src/lib.rs#forward"],
       sends: [Failed],
       run(state, m, ctx) {
         if (m.epoch !== state.epoch) return;
