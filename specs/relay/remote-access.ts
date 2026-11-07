@@ -939,7 +939,7 @@ export const Axod = defineActor({
     connectRefused: {
       on: ConnectRefused,
       description: "The relay refused the socket; axod waits and tries again, longer each time.",
-      sources: ["crates/axo-relay/src/relay/socket.rs#connect_websocket", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
+      sources: ["crates/axo-relay/src/relay/socket.rs#connect_websocket_async", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
       run(state, m, ctx) {
         if (state.connId !== m.conn || state.conn === "idle") return;
         state.conn = "idle";
@@ -961,7 +961,7 @@ export const Axod = defineActor({
     },
     connectTimeout: {
       description: "Bringing the socket up took too long; axod drops it and waits before trying again.",
-      sources: ["crates/axo-relay/src/relay/socket.rs#CONNECT_TIMEOUT", "crates/axo-relay/src/relay/socket.rs#connect_websocket"],
+      sources: ["crates/axo-relay/src/relay/socket.rs#CONNECT_TIMEOUT", "crates/axo-relay/src/relay/socket.rs#connect_websocket_async"],
       sends: [Disconnect],
       run(state, _, ctx) {
         if (state.conn !== "connecting" && state.conn !== "registering") return;
@@ -975,7 +975,7 @@ export const Axod = defineActor({
     socketClosed: {
       on: SocketClosed,
       description: "The relay hung up; axod waits and reconnects.",
-      sources: ["crates/axo-relay/src/relay/socket.rs#read_text", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
+      sources: ["crates/axo-relay/src/relay/socket.rs#receive", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
       run(state, m, ctx) {
         if (state.connId !== m.conn || state.conn === "idle") return;
         state.conn = "idle";
