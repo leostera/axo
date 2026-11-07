@@ -121,7 +121,7 @@ pub struct SessionRecord {
     pub pi_session_id: Option<String>,
     pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,
-    /// The title shown to the user: the manual name if set, otherwise Pi's.
+    /// Pi's title for the Session. Clients show `manual_name` when it is set, and this otherwise.
     pub name: String,
     pub manual_name: Option<String>,
     pub emoji: Option<String>,
