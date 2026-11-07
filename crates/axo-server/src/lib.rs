@@ -476,7 +476,9 @@ fn share_session(
                 }
                 RelayCallError::TooLarge => "the conversation is too large to share",
                 RelayCallError::Rejected { .. } => "Axo's cloud refused the conversation",
-                RelayCallError::Disconnected | RelayCallError::TimedOut => {
+                RelayCallError::Disconnected
+                | RelayCallError::TimedOut
+                | RelayCallError::Abandoned => {
                     "the connection to Axo's cloud dropped; the conversation may have been published"
                 }
             })

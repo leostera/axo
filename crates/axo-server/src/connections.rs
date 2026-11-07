@@ -50,7 +50,15 @@ fn forward(
         return Err(not_connected());
     };
     let started = std::time::Instant::now();
-    let outcome = channel.request(name, Value::Object(params), Priority::Control, timeout);
+    // A caller that gives up (an agent that left) stops the wait; the cloud's call runs on.
+    let cancellation = axo_ipc::cancel::current();
+    let outcome = channel.request_abandonable(
+        name,
+        Value::Object(params),
+        Priority::Control,
+        timeout,
+        |abandon| cancellation.on_cancel(move || abandon.abandon()),
+    );
     log::info!(
         "event=connections.forwarded method={name} outcome={} duration_ms={}",
         match &outcome {
@@ -74,6 +82,10 @@ fn forward(
         RelayCallError::TimedOut => server_error(
             OUTCOME_UNKNOWN,
             "Axo's cloud did not answer in time; the call may have run".into(),
+        ),
+        RelayCallError::Abandoned => server_error(
+            OUTCOME_UNKNOWN,
+            "the caller stopped waiting; the call may have run".into(),
         ),
     })
 }

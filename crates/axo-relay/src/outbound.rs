@@ -52,6 +52,8 @@ pub enum RelayCallError {
     Rejected { code: i64, message: String },
     /// The message is larger than the relay carries, or too much is queued. Nothing was sent.
     TooLarge,
+    /// The caller gave up waiting (RFD0034). It may have run; nothing waits for it here.
+    Abandoned,
 }
 
 impl std::fmt::Display for RelayCallError {
@@ -65,6 +67,7 @@ impl std::fmt::Display for RelayCallError {
             Self::TimedOut => write!(f, "no answer in time; the request may have run"),
             Self::Rejected { message, .. } => write!(f, "{message}"),
             Self::TooLarge => write!(f, "the request is too large for the relay"),
+            Self::Abandoned => write!(f, "the caller stopped waiting; the request may have run"),
         }
     }
 }
@@ -78,6 +81,15 @@ pub(crate) struct Outgoing {
 }
 
 type Waiter = SyncSender<Result<Value, RelayCallError>>;
+
+/// Stops a request's wait from another thread: its caller answers `Abandoned` at once.
+pub struct Abandon(Waiter);
+
+impl Abandon {
+    pub fn abandon(&self) {
+        let _ = self.0.try_send(Err(RelayCallError::Abandoned));
+    }
+}
 
 struct Live {
     epoch: u64,
@@ -129,10 +141,24 @@ impl RelayChannel {
         priority: Priority,
         timeout: Duration,
     ) -> Result<Value, RelayCallError> {
+        self.request_abandonable(method, params, priority, timeout, |_| {})
+    }
+
+    /// [`Self::request`], handing `abandon` a way to stop the wait before it starts.
+    pub fn request_abandonable(
+        &self,
+        method: &str,
+        params: Value,
+        priority: Priority,
+        timeout: Duration,
+        abandon: impl FnOnce(Abandon),
+    ) -> Result<Value, RelayCallError> {
         let id = format!("axod-c-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let text =
             json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string();
-        let (waiter, answer) = mpsc::sync_channel(1);
+        // Room for the answer and an abandon racing it.
+        let (waiter, answer) = mpsc::sync_channel(2);
+        abandon(Abandon(waiter.clone()));
         {
             let live = self.live.lock().map_err(|_| RelayCallError::NotConnected)?;
             let Some(live) = live.as_ref() else {
@@ -151,6 +177,10 @@ impl RelayChannel {
             }
         }
         match answer.recv_timeout(timeout) {
+            Ok(Err(RelayCallError::Abandoned)) => {
+                self.forget(&id);
+                Err(RelayCallError::Abandoned)
+            }
             Ok(outcome) => outcome,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 self.forget(&id);
@@ -448,6 +478,32 @@ mod tests {
         channel.detach(epoch);
         assert_eq!(caller.join().unwrap(), Err(RelayCallError::Disconnected));
         assert!(!channel.connected());
+    }
+
+    #[test]
+    fn an_abandoned_request_stops_waiting_and_its_late_reply_is_dropped() {
+        let channel = RelayChannel::new();
+        let (_epoch, rx, _replies) = channel.attach();
+        let (handed, abandon) = mpsc::channel();
+        let caller = {
+            let channel = Arc::clone(&channel);
+            thread::spawn(move || {
+                channel.request_abandonable(
+                    "m",
+                    json!({}),
+                    Priority::Control,
+                    Duration::from_secs(30),
+                    |abandon| handed.send(abandon).unwrap(),
+                )
+            })
+        };
+        let sent: Value = serde_json::from_str(&rx.recv().unwrap().text).unwrap();
+        abandon.recv().unwrap().abandon();
+        assert_eq!(caller.join().unwrap(), Err(RelayCallError::Abandoned));
+        assert!(
+            !channel.resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": {} })),
+            "nobody waits for it any more"
+        );
     }
 
     #[test]
