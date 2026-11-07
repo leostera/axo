@@ -36,10 +36,11 @@ ts_project(
     srcs = glob(["src/**/*.ts", "tests/**/*.ts", "testing/**/*.ts", "scripts/**/*.ts"]),
     no_emit = True,
     tsconfig = "tsconfig.json",
-    # tsconfig.json includes the site's generated Worker types (cloudflare:workers, Env).
+    # tsconfig.json includes the site's generated runtime types (cloudflare:workers, Request, ...);
+    # Env is src/env.d.ts, the bindings this Worker uses.
     deps = _DEPS + [
         ":node_modules/@axo/pi-axo",
-        "//sites/axo.leostera.dev:worker_types",
+        "//sites/axo.leostera.dev:worker_runtime_types",
     ],
 )
 

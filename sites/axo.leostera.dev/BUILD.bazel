@@ -55,10 +55,27 @@ cf_bin.cf(
     chdir = package_name(),
 )
 
-# The types refer to cloudflare.config.ts, so they come with the site's files.
+# The runtime's types without the Env inferred from cloudflare.config.ts, for @axo/api-worker's own
+# typecheck: the Worker declares the bindings it uses, and this site's typecheck, which reads the
+# Worker's source with the inferred Env, checks that the config provides them.
+genrule(
+    name = "worker_runtime_types_d_ts",
+    srcs = [":worker_types_d_ts"],
+    outs = [".cloudflare/types/runtime.d.ts"],
+    cmd = "sed -n '/^\\/\\/ Begin runtime types/,$$p' $< > $@ && grep -q 'interface Request' $@",
+)
+
+js_library(
+    name = "worker_runtime_types",
+    srcs = [":worker_runtime_types_d_ts"],
+)
+
+# The types refer to cloudflare.config.ts, and it to the Worker's source, so those come as types:
+# ts_project reads only the types of what it depends on, and without them Env is `any`.
 js_library(
     name = "worker_types",
     srcs = [":worker_types_d_ts"],
+    types = _CONFIG + glob(["src/**/*.ts"]),
     deps = [":app_files"],
 )
 

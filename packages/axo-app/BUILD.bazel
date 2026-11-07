@@ -29,7 +29,7 @@ ts_project(
 
 node_test(
     name = "test",
-    data = glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx"],
+    data = glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx", "//crates/axo-seal:vectors"],
     tests = glob(["test/*.test.mjs"]),
     # Node strips types only outside node_modules, where Bazel links @axo/protocol.
     tsx = True,

@@ -1,6 +1,13 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
+
+# The cases every sealer agrees on: the browser's tests (packages/axo-app, axo-web-app) read them too.
+js_library(
+    name = "vectors",
+    srcs = ["testdata/vectors.json"],
+)
 
 rust_library(
     name = "axo_seal",

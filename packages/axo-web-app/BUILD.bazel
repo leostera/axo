@@ -46,7 +46,7 @@ ts_project(
 
 node_test(
     name = "test",
-    data = _SRCS + _DEPS + [":node_modules/tsx"],
+    data = _SRCS + _DEPS + [":node_modules/tsx", "//crates/axo-seal:vectors"],
     tests = ["test/chat-model.test.ts"],
     tsx = True,
 )
