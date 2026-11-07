@@ -216,8 +216,8 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::time::Instant;
     use std::thread;
+    use std::time::Instant;
 
     fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
         let deadline = Instant::now() + Duration::from_secs(5);

@@ -110,6 +110,7 @@ impl RelayWorker {
             Arc::clone(&dependencies.host),
             Arc::clone(&channel),
             waker.clone(),
+            runtime.clone(),
             stop.clone(),
         )?;
         let peers = match dependencies.peers.clone() {
