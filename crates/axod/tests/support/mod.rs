@@ -121,8 +121,10 @@ pub fn fresh_directory(tag: &str) -> PathBuf {
         .unwrap()
         .as_nanos()
         % 1_000_000_000;
-    let directory =
-        PathBuf::from("/tmp").join(format!("axt-{tag}-{}-{index}-{nanos}", std::process::id()));
+    // Short: a Pi bridge socket inside it (`server/pi-sessions/<session>.sock`, under
+    // `/private/tmp`) must fit too, or Pi's socket falls back to one in `/tmp` that outlives it.
+    let unique = (u64::from(std::process::id()) << 32 | u64::from(nanos as u32)) % 0xffff_ffff;
+    let directory = PathBuf::from("/tmp").join(format!("axt-{tag}-{index}{unique:08x}"));
     std::fs::create_dir_all(directory.join("home")).unwrap();
     directory
 }

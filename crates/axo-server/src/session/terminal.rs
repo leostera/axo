@@ -999,10 +999,7 @@ mod tests {
     #[test]
     fn a_prompt_reaches_pi_over_its_bridge_once_pi_is_up() {
         use crate::session::prompts::{MAX_PI_PROMPT_BYTES, PromptError};
-        let directory = std::path::PathBuf::from("/tmp").join(format!(
-            "axo-prompt-{}",
-            axo_protocol::new_uuid_v4().unwrap()
-        ));
+        let directory = test_directory("axo-prompt");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
@@ -1156,8 +1153,7 @@ mod tests {
 
     #[test]
     fn a_remote_key_press_reaches_only_the_pi_pane() {
-        let directory = std::path::PathBuf::from("/tmp")
-            .join(format!("axo-key-{}", axo_protocol::new_uuid_v4().unwrap()));
+        let directory = test_directory("axo-key");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
@@ -1219,10 +1215,7 @@ mod tests {
 
     #[test]
     fn a_clients_prompt_carries_its_command_id_and_a_stop_names_its_turn() {
-        let directory = std::path::PathBuf::from("/tmp").join(format!(
-            "axo-commands-{}",
-            axo_protocol::new_uuid_v4().unwrap()
-        ));
+        let directory = test_directory("axo-commands");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, _log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
