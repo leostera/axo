@@ -293,6 +293,14 @@ impl SessionManager {
     fn stop_background_workers(&self) {
         self.stop_workers.store(true, Ordering::Relaxed);
         self.reaper.wake();
+        // Pi bridge workers sleep until Pi writes or they are woken.
+        if let Ok(mut state) = self.state.lock() {
+            for (_, running) in state.panes.running_iter_mut() {
+                if let Some(commands) = &running.pi_commands {
+                    commands.wake();
+                }
+            }
+        }
         if let Ok(mut acceptor) = self.stop_acceptor.lock() {
             acceptor.take();
         }

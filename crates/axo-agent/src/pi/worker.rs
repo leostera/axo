@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +23,6 @@ use crate::pi::protocol::{
 use crate::takeover::BRIDGE_REQUEST_TIMEOUT;
 
 const RECONNECT_DELAY: Duration = Duration::from_millis(100);
-const READ_POLL: Duration = Duration::from_millis(200);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What the worker reports to whoever owns the pane.
@@ -115,8 +115,15 @@ impl OwnedAction {
 
 /// Sends commands to a running Pi over its worker's bridge connection. Pi's bridge serves one
 /// Axod connection at a time, so commands cannot open their own while the worker holds it.
+///
+/// The worker sleeps until Pi writes or a sender wakes it, with no timeout: each command writes
+/// a byte to a socket the worker waits on beside Pi's. When every sender is gone that socket
+/// ends, which also wakes it, to see whether it still follows the pane's Pi.
 #[derive(Clone, Debug)]
-pub struct CommandSender(mpsc::Sender<WorkerCommand>);
+pub struct CommandSender {
+    commands: mpsc::Sender<WorkerCommand>,
+    wake: Arc<UnixStream>,
+}
 
 impl std::fmt::Debug for WorkerCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,11 +132,28 @@ impl std::fmt::Debug for WorkerCommand {
 }
 
 /// The worker's end of a [`CommandSender`].
-pub struct CommandReceiver(mpsc::Receiver<WorkerCommand>);
+pub struct CommandReceiver {
+    commands: mpsc::Receiver<WorkerCommand>,
+    /// Readable when a command waits, when the worker is asked to look again, or (at its end)
+    /// when no sender is left; `None` once it has ended.
+    woken: Option<UnixStream>,
+}
 
-pub fn command_channel() -> (CommandSender, CommandReceiver) {
+pub fn command_channel() -> io::Result<(CommandSender, CommandReceiver)> {
     let (sender, receiver) = mpsc::channel();
-    (CommandSender(sender), CommandReceiver(receiver))
+    let (wake, woken) = UnixStream::pair()?;
+    wake.set_nonblocking(true)?;
+    woken.set_nonblocking(true)?;
+    Ok((
+        CommandSender {
+            commands: sender,
+            wake: Arc::new(wake),
+        },
+        CommandReceiver {
+            commands: receiver,
+            woken: Some(woken),
+        },
+    ))
 }
 
 impl CommandSender {
@@ -181,14 +205,23 @@ impl CommandSender {
         )
     }
 
+    /// Wakes the worker to look at its stop flag and its Pi again, as when axod stops.
+    pub fn wake(&self) {
+        // A full buffer already wakes it; a closed one means it has gone.
+        let _ = io::Write::write(&mut &*self.wake, &[1]);
+    }
+
     fn command(&self, action: OwnedAction, timeout: Duration) -> io::Result<CommandResult> {
         let (reply, answer) = mpsc::channel();
-        self.0.send(WorkerCommand { action, reply }).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::NotConnected,
-                "Pi's bridge worker has stopped",
-            )
-        })?;
+        self.commands
+            .send(WorkerCommand { action, reply })
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "Pi's bridge worker has stopped",
+                )
+            })?;
+        self.wake();
         answer.recv_timeout(timeout).unwrap_or_else(|_| {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -201,8 +234,52 @@ impl CommandSender {
 impl CommandReceiver {
     /// Refuses every command waiting now: there is no bound connection to send it on.
     fn refuse_waiting(&self) {
-        while let Ok(WorkerCommand { reply, .. }) = self.0.try_recv() {
+        while let Ok(WorkerCommand { reply, .. }) = self.commands.try_recv() {
             let _ = reply.send(Err(not_bound()));
+        }
+    }
+
+    /// Sleeps until Pi writes on `stream` or a sender wakes the worker. `true` when Pi wrote.
+    fn wait(&mut self, stream: &UnixStream) -> io::Result<bool> {
+        let woken = self.woken.as_ref().map_or(-1, |woken| woken.as_raw_fd());
+        // A descriptor of -1 is ignored: once every sender has gone, only Pi wakes it.
+        let mut descriptors = [stream.as_raw_fd(), woken].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        loop {
+            // SAFETY: poll reads two initialized pollfds for the duration of the call.
+            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+            if ready >= 0 {
+                break;
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        if descriptors[1].revents != 0 {
+            self.drain_wakes();
+        }
+        Ok(descriptors[0].revents != 0)
+    }
+
+    fn drain_wakes(&mut self) {
+        let Some(woken) = self.woken.as_mut() else {
+            return;
+        };
+        let mut bytes = [0_u8; 64];
+        loop {
+            match woken.read(&mut bytes) {
+                Ok(0) => {
+                    self.woken = None;
+                    return;
+                }
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return,
+            }
         }
     }
 }
@@ -228,7 +305,7 @@ pub struct WorkerConfig {
 
 /// Connects (and reconnects while Pi restarts its listener) until `stop` is set, the Pi is
 /// replaced, or a connection breaks the protocol.
-pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &WorkerConfig) {
+pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &mut WorkerConfig) {
     let context = &config.log_context;
     let mut has_connected = false;
     while !stop.load(Ordering::Relaxed) && host.is_current() {
@@ -256,7 +333,7 @@ pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &WorkerConfig
             has_connected = true;
         }
         if stream
-            .set_read_timeout(Some(READ_POLL))
+            .set_read_timeout(None)
             .and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT)))
             .is_err()
         {
@@ -282,7 +359,7 @@ pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &WorkerConfig
             stop,
             &mut stream,
             &mut connection,
-            &config.commands,
+            &mut config.commands,
             context,
         );
         if connection.is_bound() {
@@ -309,7 +386,7 @@ fn follow(
     stop: &AtomicBool,
     stream: &mut UnixStream,
     connection: &mut Connection<'_>,
-    commands: &CommandReceiver,
+    commands: &mut CommandReceiver,
     context: &str,
 ) -> Outcome {
     // Commands sent and not answered yet; dropping a reply fails its caller's wait.
@@ -344,7 +421,7 @@ fn send_waiting(
         commands.refuse_waiting();
         return true;
     }
-    while let Ok(WorkerCommand { action, reply }) = commands.0.try_recv() {
+    while let Ok(WorkerCommand { action, reply }) = commands.commands.try_recv() {
         let request_id = match axo_protocol::new_uuid_v4() {
             Ok(uuid) => format!("axod-{uuid}"),
             Err(error) => {
@@ -371,7 +448,7 @@ fn follow_records(
     stop: &AtomicBool,
     stream: &mut UnixStream,
     connection: &mut Connection<'_>,
-    commands: &CommandReceiver,
+    commands: &mut CommandReceiver,
     pending: &mut HashMap<String, mpsc::Sender<io::Result<CommandResult>>>,
     context: &str,
 ) -> Outcome {
@@ -384,6 +461,11 @@ fn follow_records(
         }
         if !send_waiting(stream, connection, commands, pending, &session_uuid) {
             return Outcome::Closed;
+        }
+        match commands.wait(stream) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(_) => return Outcome::Closed,
         }
         let length = match stream.read(&mut chunk) {
             Ok(0) => return Outcome::Closed,

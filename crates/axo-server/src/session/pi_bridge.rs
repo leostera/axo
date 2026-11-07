@@ -262,7 +262,7 @@ impl SessionManager {
                 io::Error::new(io::ErrorKind::InvalidData, "Pi history path is missing")
             })?;
             let running = state.panes.running_mut(shell_id).ok_or_else(not_running)?;
-            let (command_sender, commands) = worker::command_channel();
+            let (command_sender, commands) = worker::command_channel()?;
             running.pi_commands = Some(command_sender);
             (
                 running.session_id,
@@ -307,7 +307,10 @@ impl SessionManager {
         let stop = Arc::clone(&self.stop_workers);
         let worker = thread::Builder::new()
             .name(format!("axo-pi-bridge-{}", shell_id.get()))
-            .spawn(move || worker::run(&host, &stop, &config))?;
+            .spawn(move || {
+                let mut config = config;
+                worker::run(&host, &stop, &mut config)
+            })?;
         self.workers
             .lock()
             .map_err(|_| io::Error::other("session worker lock was poisoned"))?
