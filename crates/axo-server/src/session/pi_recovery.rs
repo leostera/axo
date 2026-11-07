@@ -589,7 +589,12 @@ impl SessionManager {
                 workspace_directory(&self.lock_state()?.database, workspace_id)?;
             let access =
                 WorkspaceDirectoryAccess::open(Path::new(&directory_path), bookmark.as_deref())?;
-            if !initial_pwd.starts_with(access.path()) {
+            // The access holds the root canonical; so must the Session's directory, which is
+            // stored as given (`$HOME` may lead through a symlink, as `/tmp` does).
+            let canonical_pwd = initial_pwd
+                .canonicalize()
+                .unwrap_or_else(|_| initial_pwd.clone());
+            if !canonical_pwd.starts_with(access.path()) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "Session working directory is outside its Workspace",
