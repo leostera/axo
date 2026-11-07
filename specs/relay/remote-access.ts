@@ -847,7 +847,7 @@ export const Axod = defineActor({
     linkHost: {
       on: LinkHost,
       description: "Reserves a credential in the Keychain and database, then sends the code to the Worker.",
-      sources: ["crates/axo-server/src/lib.rs:347-363", "crates/axo-relay/src/link.rs#link_host", "crates/axo-relay/src/pairing.rs#validate_code", "crates/axo-relay/src/pairing.rs#prepare_credential"],
+      sources: ["crates/axo-server/src/lib.rs#add_relay_methods", "crates/axo-relay/src/link.rs#link_host", "crates/axo-relay/src/pairing.rs#validate_code", "crates/axo-relay/src/pairing.rs#prepare_credential"],
       sends: [RedeemCode, LinkFailed],
       run(state, m, ctx) {
         // A malformed code is refused before anything is reserved or sent.
@@ -865,7 +865,7 @@ export const Axod = defineActor({
     linked: {
       on: Linked,
       description: "Saves the link, deletes the old credential, and asks the relay thread to reconnect.",
-      sources: ["crates/axo-relay/src/link.rs#link_host", "crates/axo-server/src/lib.rs:364-371", "crates/axo-relay/src/relay/status.rs#RelayControl::request_connect"],
+      sources: ["crates/axo-relay/src/link.rs#link_host", "crates/axo-server/src/lib.rs#add_relay_methods", "crates/axo-relay/src/relay/status.rs#RelayControl::request_connect"],
       sends: [HostLinked, Disconnect],
       say: (_s, m) => `Linked to ${who(m.account)}`,
       run(state, m, ctx) {
@@ -889,7 +889,7 @@ export const Axod = defineActor({
     codeRejected: {
       on: CodeRejected,
       description: "The pairing service said no; axod keeps the reserved credential for the next try.",
-      sources: ["crates/axo-relay/src/pairing.rs#redeem", "crates/axo-server/src/lib.rs:360-363"],
+      sources: ["crates/axo-relay/src/pairing.rs#redeem", "crates/axo-server/src/lib.rs#add_relay_methods"],
       sends: [LinkFailed],
       run(state, m, ctx) {
         if (!state.redeeming || m.credentialId !== state.pending) return;

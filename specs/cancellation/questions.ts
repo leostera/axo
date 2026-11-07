@@ -6,8 +6,9 @@ import { atMost, defineActor, defineMessage, defineProperty, defineRule, defineS
 // device, and the slot (at most 16 wait on a Mac) is free again.
 //
 // Built: everything here. The transport cancels a connection's unanswered requests when it
-// closes (axo-ipc), `axod mcp` closes a call's connections when its client cancels the call or
-// leaves (axo-mcp), and a question wakes on its request's cancellation (axo-server). The
+// closes (axo-ipc). The MCP server runs in axod on the connection `axod mcp` opens; it fires the
+// cancellation of a call's in-process requests when its client cancels the call or leaves
+// (axo-mcp, `axo_ipc::Local`), and a question wakes on its request's cancellation. The
 // conformance tests `an_asker_that_goes_away_withdraws_its_question`,
 // `an_agent_that_leaves_withdraws_its_questions` and `cancelling_a_call_withdraws_its_question`
 // check it against the real binaries.
@@ -108,7 +109,7 @@ export const Axod = defineActor({
     cancelled: {
       on: Cancelled,
       description: "The asker cancelled its request: the question is withdrawn, and the asker told.",
-      sources: ["crates/axo-mcp/src/calls.rs#Calls.give_up", "crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-questions/src/lib.rs#Questions.ask_with"],
+      sources: ["crates/axo-mcp/src/calls.rs#Calls.give_up", "crates/axo-ipc/src/local.rs#Local.call", "crates/axo-questions/src/lib.rs#Questions.ask_with"],
       sends: [Dismiss, Outcome],
       run(state, m, ctx) {
         if (!withdrawOnCancel.on) return;

@@ -283,7 +283,13 @@ pub fn serve_ipc(
         })?;
 
     log::info!("event=daemon.ready pid={}", std::process::id());
-    let served = axo_ipc::serve(listener, handler, axo_ipc::Upgrades::default(), stop_server);
+    // `axod mcp` opens the MCP server for its Session on its connection (RFD0034).
+    let mut upgrades = axo_ipc::Upgrades::default();
+    let mcp_socket = socket_path.0.clone();
+    upgrades.add(axo_mcp::OPEN, move |upgraded| {
+        axo_mcp::upgrade(upgraded, mcp_socket.clone())
+    });
+    let served = axo_ipc::serve(listener, handler, upgrades, stop_server);
     stop_watcher.store(true, Ordering::Relaxed);
     let _ = signal_watcher.join();
     if let Some(relay) = remote_relay.as_mut() {

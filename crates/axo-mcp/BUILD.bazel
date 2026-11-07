@@ -2,8 +2,9 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# `axod mcp`: one Session's agent reaching axod as an MCP server over stdio (RFD0015). A client
-# of axod's socket; it knows nothing of the server's insides (RFD0034).
+# The MCP server for one Session's agent (RFD0015). It runs inside axod on the connection
+# `axod mcp` opens, and calls axod's methods in process as that connection's peer; it knows
+# nothing of the server's insides (RFD0034).
 rust_library(
     name = "axo_mcp",
     srcs = glob(["src/**/*.rs"]),
@@ -12,7 +13,9 @@ rust_library(
     rustc_env_files = ["@axo_config//:axod.env"],
     deps = [
         "//crates/axo-computer:axo_computer",
+        "//crates/axo-ipc:axo_ipc",
         "//crates/axo-protocol:axo_protocol",
+        "@crates//:log",
         "@crates//:serde_json",
         "@crates//:sha2",
     ],
@@ -22,4 +25,5 @@ rust_test(
     name = "axo_mcp_tests",
     crate = ":axo_mcp",
     edition = "2024",
+    deps = ["@crates//:tokio"],
 )
