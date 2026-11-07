@@ -9,6 +9,8 @@
 
 > Drafting in progress. Sections marked _(open)_ are not yet decided.
 
+> **Renamed (2026-11-07, 0.23):** connections are now **apps** everywhere: tools `apps_*`, methods `axo.apps.*`, routes `/api/v1/account/apps`, code in `src/apps`, specs in `specs/apps`. This document keeps the old word. The OAuth paths `/api/v1/connections/oauth/*` and the `third_party_connections` table keep theirs, because provider settings and stored data hold them.
+
 ## Summary
 
 _(open)_ Axo gains connections: credentials and tool sources an Axo account adds once and its agents use from anywhere. The account's cloud Durable Object holds connections to remote services, its paired Macs contribute tools only they can provide, and agents reach both through one tool catalog.
