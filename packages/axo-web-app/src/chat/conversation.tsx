@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Icon } from "./icons.tsx";
 import { ElicitationCard, MessageView, PendingView, QuestionCard, type Reveal } from "./message-views.tsx";
-import { Alert } from "./alert.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
@@ -44,7 +43,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const lastScrollTop = useRef(0);
   const [showJump, setShowJump] = useState(false);
   const [hasNew, setHasNew] = useState(false);
-  const [confirmingStop, setConfirmingStop] = useState(false);
   /**
    * The message at the top of the view and how far down the view it sat. Whatever goes in above it
    * (an older page, a loading note) moves the scroll by as much, so what is read stays put.
@@ -159,6 +157,11 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
 
   const working = Boolean(transcript?.working);
   const canStop = online && working && !chat?.stopping;
+  // A stop goes at once, without asking: interrupting has to be quick, and a reply stopped by
+  // mistake costs only sending the message again.
+  const stopReply = () => {
+    if (canStop && session) void workbench.stop(session.sessionId);
+  };
   const history = chat?.history ?? { kind: "none" as const };
   const empty = !session || (messageCount === 0 && !transcript?.live.length && !chat?.waiting.length);
   const trouble = !host ? null
@@ -236,7 +239,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
               <span className="agent-activity-title">{activityTitle}</span>
               <span className="spacer" />
               <span className="spinner" aria-hidden="true" />
-              <button className="plain-icon-button agent-activity-stop" onClick={() => setConfirmingStop(true)}
+              <button className="plain-icon-button agent-activity-stop" onClick={() => stopReply()}
                 disabled={!canStop} aria-label="Stop the reply">
                 <Icon name="closeCircle" size={22} />
               </button>
@@ -265,24 +268,10 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
           canSend={Boolean(host && host.status === "online")}
           onSend={delivery => void send(delivery)}
-          onEscape={() => { if (canStop) setConfirmingStop(true); }}
+          onEscape={stopReply}
           onApps={onApps}
         />
       </footer>
-      {confirmingStop ? (
-        <Alert
-          title="Stop the reply?"
-          message="This stops everything the agent is doing now, including the tools it is running."
-          confirm="Stop"
-          cancel="Keep going"
-          destructive
-          onConfirm={() => {
-            setConfirmingStop(false);
-            if (session) void workbench.stop(session.sessionId);
-          }}
-          onCancel={() => setConfirmingStop(false)}
-        />
-      ) : null}
     </section>
   );
 }
@@ -305,7 +294,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
   placeholder: string;
   canSend: boolean;
   onSend: (delivery: Delivery) => void;
-  /** Escape with nothing to cancel: asks to stop the reply. */
+  /** Escape with nothing to cancel: stops the reply. */
   onEscape: () => void;
   onApps?: () => void;
 }) {

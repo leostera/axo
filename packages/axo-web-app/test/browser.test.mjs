@@ -733,13 +733,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // Once recorded, the reply carries on as the same message on screen: it is not shown again.
     const writing = await page.locator(".assistant-message", { hasText: "Working on it now" }).elementHandle();
     await shot("working");
+    // The x stops at once: no question first.
     await activity.getByRole("button", { name: "Stop the reply" }).click();
-    const confirmStop = page.getByRole("alertdialog", { name: "Stop the reply?" });
-    await confirmStop.getByRole("button", { name: "Keep going" }).click();
-    assert.equal(stops.length, 0, "keeping going stops nothing");
-    await box.press("Escape");
-    await confirmStop.getByRole("button", { name: "Stop" }).click();
     await expect(activity.getByText("Stopping…"));
+    assert.equal(await page.getByRole("alertdialog").count(), 0, "a stop does not ask");
     assert.equal(stops.length, 1, "the stop names the turn the chat shows running");
     assert.match(stops[0], /^entry-\d+$/);
     assert.deepEqual(keys, [], "a stop is not a key press");
