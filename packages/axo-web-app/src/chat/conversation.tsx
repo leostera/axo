@@ -17,11 +17,13 @@ const OLDER_SLACK_PX = 400;
  * still hear it), the menu button, the Mac's trouble when it has any, the transcript, what Axo is
  * doing with a way to stop it, and the message box.
  */
-export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice: givenVoice }: {
+export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApps, voice: givenVoice }: {
   workbench: ChatWorkbench;
   wide: boolean;
   onShowChats: () => void;
   onToggleInfo: () => void;
+  /** Settings › Apps: what the Session can use, from the box's + menu (Plugins). */
+  onApps?: () => void;
   /** Tests give their own; otherwise the browser's speech recognition, where there is one. */
   voice?: VoicePrompt | null;
 }) {
@@ -260,6 +262,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
           canSend={Boolean(host && host.status === "online")}
           onSend={() => void send()}
           onEscape={() => { if (canStop) setConfirmingStop(true); }}
+          onApps={onApps}
         />
       </footer>
       {confirmingStop ? (
@@ -285,11 +288,12 @@ export const maxMessageBytes = 16_000;
 const encoder = new TextEncoder();
 
 /**
- * The message box, as on the phone. An empty box offers voice where Send goes; once something is
- * typed, Send. While listening the box becomes the listening bar. With a keyboard, Enter sends and
+ * The message box, as on the phone: one card, the words on top and a bar under them with + (photos,
+ * files, the camera, plugins) on the left and the Mac, voice and Send on the right. It grows with
+ * the words. While listening the box becomes the listening bar. With a keyboard, Enter sends and
  * Shift-Enter starts a new line; on a touch screen Return starts a new line and Send sends.
  */
-function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEscape }: {
+function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEscape, onApps }: {
   workbench: ChatWorkbench;
   /** Wide, the Mac is chosen inside the box; narrow, from a chip floating above it. */
   wide: boolean;
@@ -299,11 +303,14 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
   onSend: () => void;
   /** Escape with nothing to cancel: asks to stop the reply. */
   onEscape: () => void;
+  onApps?: () => void;
 }) {
   const draft = workbench.draft();
   const files = workbench.attachments();
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
+  const photoPicker = useRef<HTMLInputElement>(null);
+  const cameraPicker = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const hasDraft = draft.trim().length > 0 || files.length > 0;
   const bytes = encoder.encode(draft).length;
@@ -401,15 +408,6 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
           setDragging(false);
           attach(event.dataTransfer.files);
         }}>
-          {wide ? <HostPicker workbench={workbench} /> : null}
-          <input ref={picker} type="file" multiple hidden onChange={event => {
-            attach(event.target.files);
-            event.target.value = "";
-          }} />
-          <button type="button" className="round-button attach-button" disabled={!canSend}
-            onClick={() => picker.current?.click()} aria-label="Attach files" title="Attach photos or files">
-            <Icon name="paperclip" size={19} />
-          </button>
           <textarea
             ref={field}
             rows={1}
@@ -422,17 +420,38 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
             onKeyDown={onKeyDown}
             onPaste={onPaste}
           />
-          {voice && !hasDraft ? (
-            <button type="button" className={canSend ? "round-button primary" : "round-button"}
-              disabled={!canSend || voice.isBusy} onClick={() => void voice.start()}
-              aria-label="Talk" title="Say your message; stop to read it first, or send it straight away">
-              {voiceState === "requestingPermission" ? <span className="spinner inverse" aria-hidden="true" /> : <Icon name="waveform" size={20} />}
-            </button>
-          ) : (
-            <button className={ready ? "round-button primary" : "round-button"} disabled={!ready} aria-label="Send">
+          <input ref={picker} type="file" multiple hidden onChange={event => {
+            attach(event.target.files);
+            event.target.value = "";
+          }} />
+          <input ref={photoPicker} type="file" accept="image/*,video/*" multiple hidden onChange={event => {
+            attach(event.target.files);
+            event.target.value = "";
+          }} />
+          <input ref={cameraPicker} type="file" accept="image/*" capture="environment" hidden onChange={event => {
+            attach(event.target.files);
+            event.target.value = "";
+          }} />
+          <div className="composer-toolbar">
+            <AddMenu disabled={!canSend} onPick={choice => {
+              if (choice === "camera") cameraPicker.current?.click();
+              else if (choice === "photos") photoPicker.current?.click();
+              else if (choice === "files") picker.current?.click();
+              else onApps?.();
+            }} plugins={Boolean(onApps)} />
+            {wide ? <HostPicker workbench={workbench} /> : null}
+            <span className="spacer" />
+            {voice ? (
+              <button type="button" className="round-button composer-mic"
+                disabled={!canSend || voice.isBusy} onClick={() => void voice.start()}
+                aria-label="Talk" title="Say your message; stop to read it first, or send it straight away">
+                {voiceState === "requestingPermission" ? <span className="spinner" aria-hidden="true" /> : <Icon name="mic" size={20} />}
+              </button>
+            ) : null}
+            <button className={ready ? "round-button send-button ready" : "round-button send-button"} disabled={!ready} aria-label="Send">
               <Icon name="arrowUp" size={20} />
             </button>
-          )}
+          </div>
         </form>
       )}
     </div>
@@ -440,6 +459,69 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
 }
 
 const noSubscribe = () => () => {};
+
+type AddChoice = "camera" | "photos" | "files" | "plugins";
+
+/**
+ * The box's +: a menu above it of what can go with a message. The camera only where there is one
+ * to point (a touch screen); plugins open Settings › Apps. Arrow keys move, Enter picks, Escape
+ * closes.
+ */
+function AddMenu({ disabled, plugins, onPick }: { disabled: boolean; plugins: boolean; onPick: (choice: AddChoice) => void }) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const choices: { id: AddChoice; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
+    ...(touchTyping() ? [{ id: "camera" as const, label: "Camera", icon: "camera" as const }] : []),
+    { id: "photos", label: "Photos", icon: "photo" },
+    { id: "files", label: "Files", icon: "folder" },
+    ...(plugins ? [{ id: "plugins" as const, label: "Plugins", icon: "plug" as const }] : []),
+  ];
+  useEffect(() => {
+    if (!open) return;
+    menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const close = (event: PointerEvent) => {
+      if (!menu.current?.contains(event.target as Node) && !button.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [open]);
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      button.current?.focus();
+    }
+  };
+  return (
+    <div className="add-menu-anchor">
+      <button ref={button} type="button" className="round-button add-button" disabled={disabled}
+        aria-label="Add photos, files and more" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name="plus" size={20} />
+      </button>
+      {open ? (
+        <div ref={menu} className="add-menu" role="menu" aria-label="Add" onKeyDown={onKeyDown}>
+          {choices.map(choice => (
+            <button key={choice.id} type="button" role="menuitem" className="add-menu-item" onClick={() => {
+              setOpen(false);
+              onPick(choice.id);
+            }}>
+              <span className="add-menu-well"><Icon name={choice.icon} size={20} /></span>
+              {choice.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** A file in the message box: a thumbnail for an image, its name otherwise, and how it is going. */
 function AttachmentChip({ file, onRemove }: { file: DraftAttachment; onRemove: () => void }) {

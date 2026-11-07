@@ -208,7 +208,8 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
           />
         </div>
         <div className="layer layer-conversation" inert={!wide && layer !== "conversation"}>
-          <Conversation workbench={workbench} wide={wide} onShowChats={() => show("chats")} onToggleInfo={toggleInfo} />
+          <Conversation workbench={workbench} wide={wide} onShowChats={() => show("chats")} onToggleInfo={toggleInfo}
+            onApps={connectionsUrl ? () => openSettings({ kind: "apps" }) : undefined} />
         </div>
         {!wide && (layer === "chats" || layer === "account") ? (
           // The strip of the next layer is a way back to it, as on the phone.

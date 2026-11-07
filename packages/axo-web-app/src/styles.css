@@ -389,17 +389,38 @@ button:disabled { cursor: default; }
 .jump-button .icon { width: 44px; }
 .jump-button.with-label { padding-right: 14px; }
 
-/* The message box: slim, round ends, a little room around one line of text. */
+/* The message box: one rounded card, the words on top with room around them, a bar of controls
+   under them; it grows with the words. */
 .composer-stack { display: flex; flex-direction: column; gap: 10px; }
 .composer {
-  display: flex; align-items: flex-end; gap: 6px; padding: 5px;
-  border: 0.5px solid color-mix(in srgb, var(--text) 6%, transparent); border-radius: 23px;
-  background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6);
+  display: flex; flex-direction: column; gap: 2px; padding: 12px 10px 10px;
+  border: 0.5px solid color-mix(in srgb, var(--text) 8%, transparent); border-radius: 26px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(30px) saturate(1.6);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.06);
 }
 .composer textarea {
-  min-height: 36px; flex: 1; padding: 7px 0 7px 14px; resize: none; border: 0; outline: none;
+  min-height: 30px; width: 100%; box-sizing: border-box; padding: 4px 8px 6px; resize: none; border: 0; outline: none;
   background: transparent; font-size: 16px; line-height: 22px;
 }
+.composer-toolbar { display: flex; align-items: center; gap: 6px; min-height: 36px; }
+.composer-toolbar .spacer { flex: 1; }
+.composer-toolbar .host-picker { align-self: center; }
+.composer .add-button, .composer .composer-mic { width: 36px !important; height: 36px; background: transparent; color: var(--secondary); }
+.composer .add-button:hover:not(:disabled), .composer .composer-mic:hover:not(:disabled) { color: var(--text); background: var(--fill); }
+.composer .add-button[aria-expanded="true"] { color: var(--text); background: var(--fill); }
+.composer .send-button { width: 36px !important; height: 36px; color: var(--tertiary); background: var(--fill); }
+.composer .send-button.ready { color: var(--background); background: var(--text); }
+/* The + menu: frosted, rounded, above the +, with big rows: an icon in a round well, a label. */
+.add-menu-anchor { position: relative; }
+.add-menu {
+  position: absolute; bottom: calc(100% + 12px); left: -4px; z-index: 30; display: flex; min-width: 230px; flex-direction: column; gap: 2px; padding: 8px;
+  border: 0.5px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 24px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent); backdrop-filter: blur(40px) saturate(1.8);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.22);
+}
+.add-menu-item { display: flex; align-items: center; gap: 14px; padding: 8px 10px; border: 0; border-radius: 16px; background: none; color: var(--text); font-size: 17px; text-align: left; }
+.add-menu-item:hover, .add-menu-item:focus-visible { background: var(--fill); outline: none; }
+.add-menu-well { display: grid; width: 40px; height: 40px; flex: none; place-items: center; border-radius: 50%; background: var(--fill-strong); }
 .composer textarea::placeholder { color: var(--tertiary); }
 /* The Mac a chat is on: in the box on a wide screen, a chip above it on a narrow one. */
 .host-picker { position: relative; flex: none; align-self: flex-end; }

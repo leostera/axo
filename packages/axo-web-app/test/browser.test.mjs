@@ -621,6 +621,24 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await box.fill("x".repeat(16_001));
     await expect(page.getByText("Too long to send", { exact: false }));
     assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), true);
+    // The box's +: Photos and Files (no camera to point on a desktop; Plugins once the account's
+    // apps are reachable, which this fixture leaves out), by keyboard too.
+    await box.fill("");
+    const add = page.getByRole("button", { name: "Add photos, files and more" });
+    await add.click();
+    const addMenu = page.getByRole("menu", { name: "Add" });
+    assert.deepEqual(await addMenu.getByRole("menuitem").allTextContents(), ["Photos", "Files"]);
+    assert.equal(await addMenu.getByRole("menuitem", { name: "Photos" }).evaluate(item => item === document.activeElement), true, "focus starts on the first");
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await addMenu.getByRole("menuitem", { name: "Files" }).evaluate(item => item === document.activeElement), true);
+    await shot("composer-add-menu");
+    await page.keyboard.press("Escape");
+    assert.equal(await addMenu.count(), 0);
+    assert.equal(await add.evaluate(button => button === document.activeElement), true, "back on the +");
+    await add.click();
+    const chooser = page.waitForEvent("filechooser");
+    await addMenu.getByRole("menuitem", { name: "Files" }).click();
+    assert.equal((await chooser).isMultiple(), true, "Files picks files");
     // Voice, as on the phone: an empty box offers it where Send goes. While listening the box
     // shows the words as heard; Stop puts them in the box to read first.
     await box.fill("");
@@ -631,7 +649,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("voice-listening");
     await listening.getByRole("button", { name: "Stop" }).click();
     await page.waitForFunction(() => document.querySelector("textarea[aria-label='Message']")?.value === "and check the logs", null, { timeout: 5_000 });
-    assert.equal(await page.getByRole("button", { name: "Talk" }).count(), 0, "once something is typed, Send takes its place");
+    assert.equal(await page.getByRole("button", { name: "Talk" }).count(), 1, "voice stays next to Send");
+    assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), false);
     // Cancel forgets what was heard.
     await box.fill("");
     await page.getByRole("button", { name: "Talk" }).click();
@@ -803,6 +822,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.match(await page.locator(".stack").getAttribute("class"), /at-conversation/, "no pane moved");
     assert.equal(await chatsLeft(), 0);
     assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".stack")).touchAction), "auto", "a long press can select text");
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
     await page.emulateMedia({ colorScheme: "dark" });
     await shot("phone-chat-dark");
     await page.setViewportSize({ width: 1440, height: 960 });
