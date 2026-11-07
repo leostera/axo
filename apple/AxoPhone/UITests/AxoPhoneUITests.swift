@@ -9,12 +9,12 @@ final class AxoPhoneUITests: XCTestCase {
 
   @MainActor
   private func launch(
-    _ environment: [String: String] = [:], appearance: String = "light"
+    _ environment: [String: String] = [:], appearance: String = "light", listing: String? = nil
   ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1"].merging(environment) { $1 }
     // NSArgumentDomain overrides AppStorage without leaving a preference behind in the simulator.
-    app.launchArguments = ["-appearance", appearance]
+    app.launchArguments = ["-appearance", appearance] + (listing.map { ["-chatListMode", $0] } ?? [])
     app.launch()
     let title = app.staticTexts["conversation-title"]
     XCTAssertTrue(title.waitForExistence(timeout: 15))
@@ -39,6 +39,7 @@ final class AxoPhoneUITests: XCTestCase {
     attachment.name = name
     attachment.lifetime = .keepAlways
     add(attachment)
+    Snapshots.save(app.screenshot().pngRepresentation, named: name)
   }
 
   // Every layer stays in the accessibility tree UI tests read (VoiceOver reads only the one
@@ -249,7 +250,7 @@ final class AxoPhoneUITests: XCTestCase {
 
   @MainActor
   func testTheMenuGroupsChatsByWorkspaceShowsEmptyOnesAndWhoIsWorking() {
-    let app = launch()
+    let app = launch(listing: "workspaces")
     app.buttons["Chats menu"].tapWhereItIs()
     XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["Home · Old iMac"].exists)
@@ -260,7 +261,7 @@ final class AxoPhoneUITests: XCTestCase {
 
   @MainActor
   func testHomeChatsAreListedUnderTheProjectsWithNoTitleOfTheirOwn() {
-    let app = launch()
+    let app = launch(listing: "workspaces")
     app.buttons["Chats menu"].tapWhereItIs()
     let lastProject = app.buttons["Website · Studio"]
     let newest = app.buttons["Plan the week"]
@@ -273,7 +274,7 @@ final class AxoPhoneUITests: XCTestCase {
 
   @MainActor
   func testChatsQuietForEightHoursWaitBehindAButtonAndAWorkspaceFoldsAway() {
-    let app = launch()
+    let app = launch(listing: "workspaces")
     app.buttons["Chats menu"].tapWhereItIs()
     let older = app.buttons["Show 1 older chat"]
     XCTAssertTrue(older.waitForExistence(timeout: 5))
@@ -293,40 +294,74 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
-  func testTheMenuCanListEveryChatByRecentActivityAsTheMacDoes() {
+  func testTheMenuListsChatsAsTheMacDoesPinnedThenActiveThenEarlier() {
     var app = launch()
-    // The choice is kept across launches: put it back for the other tests, however this one ends.
+    // The listing is kept across launches: put it back for the other tests, however this one ends.
     addTeardownBlock { @MainActor in
-      let back = XCUIApplication().buttons["Show Workspaces"]
+      let back = XCUIApplication().buttons["Show recent chats"]
       if back.exists { back.tapWhereItIs() }
     }
     app.buttons["Chats menu"].tapWhereItIs()
     let toggle = app.buttons["chat-list-mode"]
     XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-    XCTAssertEqual(toggle.label, "Show recent chats")
-    toggle.tapWhereItIs()
-    XCTAssertTrue(waitUntil(5) { !app.buttons["Axo · Studio"].exists }, "no Workspace titles")
-    // Every chat on every Mac, by its last message, offline Macs and quiet chats too.
-    let order = ["Plan the week", "Ship the remote Workbench", "Fix the sidebar spacing", "Explain the relay",
+    if toggle.label == "Show recent chats" { toggle.tapWhereItIs() }
+    XCTAssertTrue(waitUntil(5) { toggle.label == "Show Workspaces" }, "listed as the Mac lists them by default")
+    XCTAssertFalse(app.buttons["Axo · Studio"].exists, "no Workspace titles")
+    // Active: working (or waiting on the person), unseen, or active in the last 3 minutes. Then
+    // Earlier, by last message, offline Macs and quiet chats too.
+    let active = app.buttons["chat-group-active"]
+    let earlier = app.buttons["chat-group-earlier"]
+    XCTAssertTrue(active.waitForExistence(timeout: 5))
+    let order = ["Ship the remote Workbench", "Plan the week", "Fix the sidebar spacing", "Explain the relay",
       "Draft the release notes", "Photo library cleanup"]
     let rows = order.map { app.buttons[$0] }
     XCTAssertTrue(rows.last!.waitForExistence(timeout: 5))
+    XCTAssertLessThan(active.frame.minY, rows[0].frame.minY)
+    XCTAssertLessThan(rows[0].frame.minY, earlier.frame.minY, "the working chat is Active")
+    XCTAssertLessThan(earlier.frame.minY, rows[1].frame.minY, "ten minutes quiet: Earlier")
     for (above, below) in zip(rows, rows.dropFirst()) {
       XCTAssertLessThan(above.frame.minY, below.frame.minY, "\(above.label) above \(below.label)")
     }
     XCTAssertTrue(app.staticTexts["10m"].exists, "each row says how long ago")
     XCTAssertTrue(app.staticTexts["1w"].exists)
-    XCTAssertEqual(rows[1].value as? String, "on Studio, Working, 20 minutes ago", "with two Macs, each row says which")
+    XCTAssertEqual(rows[0].value as? String, "on Studio, Working, 20 minutes ago", "with two Macs, each row says which")
     XCTAssertTrue((rows[5].value as? String)?.hasPrefix("on Old iMac, ") == true, "\(rows[5].value ?? "")")
-    capture(app, named: "menu-recent-light")
+
+    // Earlier folds away, and says how many chats it holds.
+    XCTAssertEqual(earlier.value as? String, "Expanded")
+    earlier.tapWhereItIs()
+    XCTAssertTrue(waitUntil(5) { !app.buttons["Photo library cleanup"].exists }, "folded")
+    XCTAssertTrue(app.staticTexts["5"].exists)
+    earlier.tapWhereItIs()
+    XCTAssertTrue(app.buttons["Photo library cleanup"].waitForExistence(timeout: 5))
+
+    // A long press pins a chat to the top, with a pin at the end of its row.
+    rows[4].press(forDuration: 0.8)
+    let pin = app.buttons["Pin to the top"]
+    XCTAssertTrue(pin.waitForExistence(timeout: 5))
+    pin.tap()
+    let pinned = app.buttons["chat-group-pinned"]
+    XCTAssertTrue(pinned.waitForExistence(timeout: 5))
+    XCTAssertTrue(waitUntil(5) { rows[4].frame.minY < active.frame.minY }, "pinned above Active")
+    capture(app, named: "menu-grouped-light")
+    XCTAssertTrue(
+      waitUntil(5) { (rows[4].value as? String)?.hasPrefix("Pinned, on Studio") == true }, "\(rows[4].value ?? "")")
+    capture(app, named: "menu-grouped-light")
+
+    // In Workspaces, pinned chats lead too.
+    toggle.tapWhereItIs()
+    XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
+    XCTAssertLessThan(rows[4].frame.minY, app.buttons["Axo · Studio"].frame.minY)
+    rows[4].press(forDuration: 0.8)
+    XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 5))
+    app.buttons["Unpin"].tap()
+    XCTAssertTrue(waitUntil(5) { rows[4].frame.minY > app.buttons["Axo · Studio"].frame.minY }, "back in its Workspace")
 
     app.terminate()
     app = launch()
     app.buttons["Chats menu"].tapWhereItIs()
-    XCTAssertTrue(app.buttons["Show Workspaces"].waitForExistence(timeout: 5), "kept across launches")
-    XCTAssertFalse(app.buttons["Axo · Studio"].exists)
-    app.buttons["Show Workspaces"].tapWhereItIs()
-    XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["Show recent chats"].waitForExistence(timeout: 5), "kept across launches")
+    XCTAssertTrue(app.buttons["Axo · Studio"].exists)
   }
 
   @MainActor
@@ -373,7 +408,12 @@ final class AxoPhoneUITests: XCTestCase {
     XCTAssertNotNil(settings)
     settings?.tapWhereItIs()
     XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.buttons["Sign out"].exists)
+    // Settings › Chats: how the list groups chats, as the Mac sets it.
+    XCTAssertTrue(app.staticTexts["Active for"].exists || app.buttons["Active for"].exists)
+    capture(app, named: "settings-chats-light")
+    let signOut = app.buttons["Sign out"]
+    for _ in 0..<4 where !signOut.isHittable { app.swipeUp() }
+    XCTAssertTrue(signOut.isHittable)
   }
 
   // MARK: - Visual snapshots (compared against apple/AxoPhone/Snapshots/Phone, see Snapshots)

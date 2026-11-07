@@ -57,12 +57,18 @@ struct WorkbenchView: View {
   /// The Workspaces showing their older chats too. Not kept: that is a look back, not a way the
   /// menu stays.
   @State private var showingOlder: Set<String> = []
-  /// Whether the menu groups chats by Workspace or lists them by recent activity, as the Mac's
-  /// sidebar can; kept across launches.
-  @AppStorage("chatListMode") private var chatListMode: ChatListMode = .workspaces
-  /// The recent list's order while the chats are showing, so a chat that just finished a message
-  /// does not move under a finger reaching for a row; it moves into place the next time they show.
-  @State private var heldRecent: [ChatMenuEntry.Key]?
+  /// Whether the menu lists chats as the Mac's sidebar does (Pinned, Active, Earlier) or under
+  /// their Workspaces; kept across launches.
+  @AppStorage("chatListMode") private var chatListMode: ChatListMode = .recent
+  /// Pins, seen marks and how to group, kept on this phone (Settings › Chats).
+  @State private var chatPrefs = ChatListPreferences(defaults: Self.chatListDefaults())
+  /// The groups as they were when the chats showed, so a chat that just finished a message does
+  /// not move under a finger reaching for a row; it moves into place the next time they show.
+  @State private var heldGroups: [ChatGroupSection]?
+  /// Whether Earlier is folded away, and whether it shows past its limit. Not kept: each launch
+  /// starts as Settings › Chats says.
+  @State private var earlierFolded: Bool?
+  @State private var showingAllEarlier = false
   /// Voice prompting, one dictation at a time for the whole app (nil before iOS 26).
   @State private var voice = Dictation.makeVoicePrompt()
 
@@ -100,6 +106,14 @@ struct WorkbenchView: View {
       }))
   }
 
+  /// Where pins and seen marks are kept: the phone's defaults, or a blank slate for each launch of
+  /// the simulator preview, so one UI test's pins never show in the next.
+  private static func chatListDefaults() -> UserDefaults {
+    guard PreviewFixture.requested, let preview = UserDefaults(suiteName: "preview.chatList") else { return .standard }
+    preview.removePersistentDomain(forName: "preview.chatList")
+    return preview
+  }
+
   private var currentSession: RemoteSession? {
     workbench.current?.selectedSession
   }
@@ -123,9 +137,15 @@ struct WorkbenchView: View {
       if layer != .conversation {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
       }
-      // The recent list holds still while the chats show, and catches up when they show again.
-      heldRecent = layer == .chats
-        ? ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)).map(\.key) : nil
+      // The list holds still while the chats show, and catches up when they show again.
+      heldGroups = layer == .chats ? liveGroups(now: .now) : nil
+    }
+    // The open chat's messages are seen as they arrive.
+    .onChange(of: currentSession.map { ChatMenu.activity($0) }, initial: true) {
+      if let currentSession, layer == .conversation { chatPrefs.markSeen(currentSession) }
+    }
+    .onChange(of: currentSession?.sessionId) {
+      if let currentSession { chatPrefs.markSeen(currentSession) }
     }
     .overlay(alignment: .trailing) {
       if RenderCount.enabled { RenderCountLabel() }
@@ -189,7 +209,7 @@ struct WorkbenchView: View {
         refresh: { await workbench.refresh() })
     }
     .sheet(item: $settings) { opening in
-      SettingsView(account: environment.account, apps: apps, opening: opening) {
+      SettingsView(account: environment.account, apps: apps, chatList: chatPrefs, opening: opening) {
         Task {
           // End it at the relay too, so a copied token stops working; then forget it here.
           try? await AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens).signOut()
@@ -264,7 +284,10 @@ struct WorkbenchView: View {
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
         if chatListMode == .recent, !sections.isEmpty {
-          recentChats
+          groupedChats
+        } else if chatListMode == .workspaces {
+          // Pinned chats lead in Workspaces too, as in the grouped list.
+          ForEach(pinnedEntries, id: \.key) { entry in chatRow(entry, showsAge: false, pinned: true) }
         }
         ForEach(chatListMode == .workspaces ? sections : []) { section in
           switch section.kind {
@@ -306,12 +329,117 @@ struct WorkbenchView: View {
     .layerBar(edge: .bottom) { menuFooter }
   }
 
-  /// Every chat on every Mac, the most recently active first, each with how long ago.
-  private var recentChats: some View {
-    let live = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
-    return ForEach(ChatMenu.holding(heldRecent, live: live), id: \.key) { entry in
-      chatRow(entry, showsAge: true)
+  /// Every chat on every Mac in its group, as the Mac's sidebar lists them: Pinned, Active, then
+  /// Earlier (see `ChatGrouping`), each with how long ago it was active.
+  private func liveGroups(now: Date) -> [ChatGroupSection] {
+    ChatGrouping.sections(
+      ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)),
+      pins: chatPrefs.pins, seen: chatPrefs.seen, now: Int64(now.timeIntervalSince1970),
+      settings: chatPrefs.settings)
+  }
+
+  /// A line of the grouped list. One flat list rather than a ForEach per group: a lazy stack
+  /// kept showing a moved row as it was in its old group (unpinned) with nested ones.
+  private enum GroupedItem: Identifiable {
+    case header(ChatGroupSection, folded: Bool, first: Bool)
+    case chat(ChatMenuEntry, pinned: Bool)
+    case more(String, showAll: Bool)
+
+    var id: String {
+      switch self {
+      case .header(let section, _, _): "group-\(section.group.rawValue)"
+      case .chat(let entry, let pinned): "chat-\(entry.host.hostId)-\(entry.session.sessionId.rawValue)-\(pinned)"
+      case .more: "more"
+      }
     }
+  }
+
+  private var groupedItems: [GroupedItem] {
+    let settings = chatPrefs.settings
+    let groups = ChatGrouping.holding(heldGroups, live: liveGroups(now: .now))
+    var items: [GroupedItem] = []
+    for section in groups {
+      let folded = section.group == .earlier && (earlierFolded ?? settings.earlierCollapsed)
+      if settings.showsGroupTitles || section.group == .earlier {
+        items.append(.header(section, folded: folded, first: section.id == groups.first?.id))
+      }
+      guard !folded else { continue }
+      let limit = section.group == .earlier && !showingAllEarlier ? settings.earlierLimit : nil
+      items += section.chats.prefix(limit ?? .max).map { .chat($0, pinned: section.group == .pinned) }
+      if let limit, section.chats.count > limit {
+        items.append(.more("Show \(section.chats.count - limit) more", showAll: true))
+      } else if section.group == .earlier, showingAllEarlier, let limit = settings.earlierLimit, section.chats.count > limit {
+        items.append(.more("Show fewer", showAll: false))
+      }
+    }
+    return items
+  }
+
+  private var groupedChats: some View {
+    ForEach(groupedItems) { item in
+      switch item {
+      case .header(let section, let folded, let first): groupHeader(section, folded: folded, first: first)
+      case .chat(let entry, let pinned): chatRow(entry, showsAge: true, pinned: pinned)
+      case .more(let title, let showAll): showMoreButton(title) { showingAllEarlier = showAll }
+      }
+    }
+  }
+
+  /// Pinned chats, in pin order: the top of the Workspaces list.
+  private var pinnedEntries: [ChatMenuEntry] {
+    let all = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
+    return ChatGrouping.sections(
+      all.filter { chatPrefs.pins.contains($0.session.sessionId) }, pins: chatPrefs.pins, seen: chatPrefs.seen,
+      now: 0, settings: chatPrefs.settings
+    ).first?.chats ?? []
+  }
+
+  /// A group's title; Earlier's folds it away, with how many chats it holds.
+  private func groupHeader(_ section: ChatGroupSection, folded: Bool, first: Bool) -> some View {
+    let foldable = section.group == .earlier
+    return Button {
+      guard foldable else { return }
+      withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+        earlierFolded = !folded
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Text(section.group.title).lineLimit(1)
+        if foldable {
+          Image(systemName: "chevron.down")
+            .font(.caption2.weight(.bold))
+            .rotationEffect(.degrees(folded ? -90 : 0))
+          if folded { Text("\(section.chats.count)").foregroundStyle(.tertiary) }
+        }
+        Spacer(minLength: 0)
+      }
+      .font(.footnote.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+      .padding(.top, first ? 4 : MenuLayout.sectionTopSpacing)
+      .padding(.bottom, 2)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.layerRow)
+    .disabled(!foldable)
+    .accessibilityLabel(section.group.title)
+    .accessibilityValue(foldable ? (folded ? "Collapsed" : "Expanded") : "")
+    .accessibilityAddTraits(.isHeader)
+    .accessibilityIdentifier("chat-group-\(section.group.title.lowercased())")
+  }
+
+  private func showMoreButton(_ title: String, action: @escaping () -> Void) -> some View {
+    Button {
+      withAnimation(reduceMotion ? nil : .snappy(duration: 0.25), action)
+    } label: {
+      Text(title)
+        .font(.callout).foregroundStyle(.secondary)
+        .padding(.horizontal, MenuLayout.rowTextInset)
+        .frame(maxWidth: .infinity, minHeight: MenuLayout.rowHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.layerRow)
+    .padding(.horizontal, MenuLayout.rowInset)
   }
 
   private var collapsedWorkspaces: Set<String> {
@@ -361,7 +489,10 @@ struct WorkbenchView: View {
     }
     let olderCount = section.chats.count - recent.count
     let expanded = showingOlder.contains(section.id)
-    ForEach(expanded ? section.chats : recent, id: \.session.sessionId) { entry in
+    // Pinned chats are listed above the Workspaces, not again in theirs.
+    ForEach((expanded ? section.chats : recent).filter { !chatPrefs.pins.contains($0.session.sessionId) },
+      id: \.session.sessionId)
+    { entry in
       chatRow(entry, showsAge: false)
     }
     if olderCount > 0 {
@@ -387,9 +518,12 @@ struct WorkbenchView: View {
     }
   }
 
-  /// A chat in the menu, which opens it.
-  private func chatRow(_ entry: ChatMenuEntry, showsAge: Bool) -> some View {
-    Button {
+  /// A chat in the menu, which opens it; a long press pins it to the top, or unpins it.
+  private func chatRow(_ entry: ChatMenuEntry, showsAge: Bool, pinned: Bool = false) -> some View {
+    let marker = chatPrefs.settings.unseenMarker
+    let unseen = chatPrefs.seen.isUnseen(entry.session)
+      && workbench.selection != PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId)
+    return Button {
       workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
       show(.conversation)
     } label: {
@@ -400,12 +534,23 @@ struct WorkbenchView: View {
         status: entry.session.status,
         lastActive: showsAge ? ChatMenu.activity(entry.session) : nil,
         // In Workspaces the section's title names the Mac; the recent list mixes them.
-        hostLabel: showsAge && workbench.hosts.hosts.count > 1 ? entry.host.label : nil)
+        hostLabel: showsAge && workbench.hosts.hosts.count > 1 ? entry.host.label : nil,
+        pinned: pinned,
+        unseen: unseen ? marker : nil)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
     .buttonStyle(.layerRow)
     .padding(.horizontal, MenuLayout.rowInset)
+    .contextMenu {
+      Button(pinned ? "Unpin" : "Pin to the top", systemImage: pinned ? "pin.slash" : "pin") {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+          chatPrefs.togglePin(entry.session.sessionId)
+          // A pin applies at once, even while the list holds still.
+          if heldGroups != nil { heldGroups = liveGroups(now: .now) }
+        }
+      }
+    }
   }
 
   /// The chats, by Workspace, the most recently active first (see `ChatMenu`).
@@ -446,6 +591,7 @@ struct WorkbenchView: View {
       Spacer(minLength: 8)
       Button {
         chatListMode = chatListMode == .workspaces ? .recent : .workspaces
+        heldGroups = liveGroups(now: .now)
       } label: {
         Image(systemName: chatListMode == .workspaces ? "clock" : "list.bullet.indent")
           .font(.system(size: 18, weight: .medium))
@@ -521,6 +667,10 @@ private struct SessionRow: View {
   var lastActive: Date?
   /// The Mac the chat is on, when there is more than one to tell apart.
   var hostLabel: String?
+  /// Pinned to the top: a pin shows at the end of the row.
+  var pinned = false
+  /// How activity not yet seen shows, when there is some.
+  var unseen: ChatUnseenMarker?
 
   // Read here, in the row's own body, so the row redraws when the open chat changes: a lazy
   // stack does not re-run its rows for a change only the menu's body saw.
@@ -533,9 +683,13 @@ private struct SessionRow: View {
 
   var body: some View {
     HStack(spacing: 8) {
+      if unseen?.showsDot == true {
+        Circle().fill(Color.accentColor).frame(width: 6, height: 6).accessibilityHidden(true)
+      }
       Text(name)
-        .font(.callout)
+        .font(.callout.weight(unseen?.showsBold == true ? .semibold : .regular))
         .lineLimit(1)
+        .layoutPriority(1)
       Spacer(minLength: 0)
       if let hostLabel {
         Text(hostLabel)
@@ -550,7 +704,15 @@ private struct SessionRow: View {
           Text(ChatMenu.age(of: lastActive, now: context.date))
             .font(.caption.monospacedDigit())
             .foregroundStyle(.tertiary)
+            .fixedSize()
         }
+      }
+      if pinned {
+        Image(systemName: "pin.fill")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.tertiary)
+          .rotationEffect(.degrees(45))
+          .accessibilityHidden(true)
       }
     }
       .padding(.horizontal, MenuLayout.rowTextInset)
@@ -572,7 +734,7 @@ private struct SessionRow: View {
   private var spokenValue: String {
     let age = lastActive.map { $0.formatted(.relative(presentation: .named)) }
     let host = hostLabel.map { "on \($0)" }
-    return [host ?? "", SessionStatusDot.spoken(shownStatus), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
+    return [pinned ? "Pinned" : "", unseen != nil ? "Unseen" : "", host ?? "", SessionStatusDot.spoken(shownStatus), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
   }
 }
 

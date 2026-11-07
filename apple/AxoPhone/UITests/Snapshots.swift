@@ -47,7 +47,7 @@ enum Snapshots {
   }
 
   /// Into TEST_UNDECLARED_OUTPUTS_DIR/snapshots: the runner is a Mac process, so it can.
-  private static func save(_ png: Data, named name: String) {
+  static func save(_ png: Data, named name: String) {
     guard let outputs = ProcessInfo.processInfo.environment["TEST_UNDECLARED_OUTPUTS_DIR"] else { return }
     let directory = URL(fileURLWithPath: outputs).appendingPathComponent("snapshots")
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
