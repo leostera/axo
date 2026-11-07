@@ -147,7 +147,6 @@ fn an_agent_can_wait_on_several_questions_at_once() {
 }
 
 #[test]
-#[ignore = "RFD0033 cancellation: a question outlives the connection that asked it"]
 fn an_asker_that_goes_away_withdraws_its_question() {
     let axod = Axod::start();
     let session = axod.sessions()[0]["id"].clone();

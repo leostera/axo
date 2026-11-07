@@ -42,9 +42,17 @@ pub(crate) struct Settled {
     pub(crate) values: Option<Values>,
 }
 
+/// What wakes a question's waiter: how it was settled, or its asker giving up.
+pub(crate) enum Wake {
+    Settled(Settled),
+    /// The request that asked was cancelled (RFD0034): its connection closed.
+    Cancelled,
+}
+
 struct Pending {
     elicitation: Elicitation,
-    answer: SyncSender<Settled>,
+    /// Holds two: an answer can race the asker giving up, and neither is lost.
+    answer: SyncSender<Wake>,
 }
 
 /// The elicitations waiting for an answer, by id.
@@ -60,20 +68,24 @@ impl Elicitations {
             .map_err(|_| io::Error::other("elicitation lock was poisoned"))
     }
 
-    fn open(&self, elicitation: Elicitation) -> io::Result<Option<mpsc::Receiver<Settled>>> {
+    /// Opens one; its waiter's receiver, and a sender to wake it when its asker gives up.
+    fn open(
+        &self,
+        elicitation: Elicitation,
+    ) -> io::Result<Option<(mpsc::Receiver<Wake>, SyncSender<Wake>)>> {
         let mut pending = self.lock()?;
         if pending.len() >= MAX_PENDING {
             return Ok(None);
         }
-        let (answer, receiver) = mpsc::sync_channel(1);
+        let (answer, receiver) = mpsc::sync_channel(2);
         pending.insert(
             elicitation.id.clone(),
             Pending {
                 elicitation,
-                answer,
+                answer: answer.clone(),
             },
         );
-        Ok(Some(receiver))
+        Ok(Some((receiver, answer)))
     }
 
     /// Ends one with `action` if it still waits; whoever gets it first wins.
@@ -91,7 +103,7 @@ impl Elicitations {
         let Some(pending) = self.lock()?.remove(id) else {
             return Ok(None);
         };
-        let _ = pending.answer.try_send(settled);
+        let _ = pending.answer.try_send(Wake::Settled(settled));
         Ok(Some(pending.elicitation))
     }
 
@@ -181,7 +193,19 @@ impl SessionManager {
             expires_at: now + timeout.as_millis() as u64,
         };
         let id = elicitation.id.clone();
-        let Some(answer) = self
+        // The asker gave up before its question was asked: nobody sees it (RFD0034).
+        let cancellation = axo_ipc::cancel::current();
+        if cancellation.is_cancelled() {
+            log::info!("event=elicitation.withdrawn id={id} reason=asker_gone before=asked");
+            return Ok((
+                ElicitationOutcome {
+                    id,
+                    action: ElicitationAction::Cancel,
+                },
+                None,
+            ));
+        }
+        let Some((answer, waker)) = self
             .elicitations
             .open(elicitation.clone())
             .map_err(internal)?
@@ -207,24 +231,46 @@ impl SessionManager {
             }
         );
         self.publish_event(Event::ElicitationRequested { elicitation });
+        // When the asker gives up (its connection closes), the question is withdrawn.
+        cancellation.on_cancel(move || {
+            let _ = waker.try_send(Wake::Cancelled);
+        });
         let cancelled = || Settled {
             action: ElicitationAction::Cancel,
             values: None,
         };
-        let settled = match answer.recv_timeout(timeout) {
-            Ok(settled) => settled,
+        enum Ended {
+            Settled(Settled),
+            /// Nobody answered in time, or the asker gave up: why, for the log.
+            Withdrawn(&'static str),
+        }
+        let ended = match answer.recv_timeout(timeout) {
+            Ok(Wake::Settled(settled)) => Ended::Settled(settled),
+            Ok(Wake::Cancelled) => Ended::Withdrawn("asker_gone"),
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                Ended::Withdrawn("expired")
+            }
+        };
+        let settled = match ended {
+            Ended::Settled(settled) => settled,
+            Ended::Withdrawn(reason) => {
                 match self
                     .elicitations
                     .settle(&id, ElicitationAction::Cancel)
                     .map_err(internal)?
                 {
                     Some(elicitation) => {
+                        log::info!("event=elicitation.withdrawn id={id} reason={reason}");
                         self.publish_resolved(&elicitation, ElicitationAction::Cancel);
                         cancelled()
                     }
-                    // An answer won the race with the timeout: it is already sent.
-                    None => answer.try_recv().unwrap_or_else(|_| cancelled()),
+                    // An answer won the race: it is already in the channel.
+                    None => std::iter::from_fn(|| answer.try_recv().ok())
+                        .find_map(|wake| match wake {
+                            Wake::Settled(settled) => Some(settled),
+                            Wake::Cancelled => None,
+                        })
+                        .unwrap_or_else(cancelled),
                 }
             }
         };
@@ -463,7 +509,7 @@ mod tests {
     #[test]
     fn the_first_answer_wins_and_later_ones_find_nothing() {
         let elicitations = Elicitations::default();
-        let answer = elicitations.open(elicitation("a")).unwrap().unwrap();
+        let (answer, _waker) = elicitations.open(elicitation("a")).unwrap().unwrap();
         assert_eq!(elicitations.pending().len(), 1);
         assert!(
             elicitations
@@ -477,10 +523,10 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(
-            answer.try_recv().unwrap().action,
-            ElicitationAction::Decline
-        );
+        let Ok(Wake::Settled(settled)) = answer.try_recv() else {
+            panic!("the first answer wakes the asker");
+        };
+        assert_eq!(settled.action, ElicitationAction::Decline);
         assert!(answer.try_recv().is_err());
         assert!(elicitations.pending().is_empty());
     }

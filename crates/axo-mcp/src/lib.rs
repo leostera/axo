@@ -20,6 +20,8 @@ use serde_json::{Map, Value, json};
 /// axod's build number from config.json (RFD0021), which `axod mcp` is part of.
 const BUILD_NUMBER: &str = env!("AXO_BUILD_NUMBER");
 
+mod calls;
+
 /// The MCP revision this server implements; newer clients negotiate down to it.
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// A prompt can wait for Pi's bridge for a few seconds; nothing else takes this long.
@@ -325,6 +327,8 @@ impl From<io::Error> for ToolError {
 pub struct McpServer {
     socket: PathBuf,
     session_id: SessionId,
+    /// The tool calls running now, to give them up (RFD0034).
+    calls: calls::Calls,
 }
 
 impl McpServer {
@@ -336,6 +340,7 @@ impl McpServer {
         let server = Self {
             socket: socket.to_path_buf(),
             session_id,
+            calls: calls::Calls::default(),
         };
         server
             .own_session()
@@ -361,49 +366,67 @@ impl McpServer {
             output.flush()
         };
         thread::scope(|scope| {
-            for line in input.lines() {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let message = match serde_json::from_str::<Value>(&line) {
-                    Ok(message) => message,
-                    Err(_) => {
-                        respond(error_response(&Value::Null, -32700, "parse error"))?;
+            let read = (|| {
+                for line in input.lines() {
+                    let line = line?;
+                    if line.trim().is_empty() {
                         continue;
                     }
-                };
-                if message["method"] != "tools/call" || message.get("id").is_none() {
-                    if let Some(response) = self.handle(&message) {
-                        respond(response)?;
+                    let message = match serde_json::from_str::<Value>(&line) {
+                        Ok(message) => message,
+                        Err(_) => {
+                            respond(error_response(&Value::Null, -32700, "parse error"))?;
+                            continue;
+                        }
+                    };
+                    if message["method"] == "notifications/cancelled" {
+                        // The client gave up on a call: axod gives up what it waits on for it.
+                        let id = message["params"]["requestId"].to_string();
+                        let running = self.calls.give_up(&id);
+                        eprintln!("axod mcp: event=mcp.call_cancelled running={running}");
+                        continue;
                     }
-                    continue;
-                }
-                let (count, freed) = &in_flight;
-                let mut running = count
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                while *running >= MAX_CALLS_IN_FLIGHT {
-                    running = freed
-                        .wait(running)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                }
-                *running += 1;
-                drop(running);
-                let (respond, in_flight) = (&respond, &in_flight);
-                scope.spawn(move || {
-                    if let Some(response) = self.handle(&message) {
-                        // stdout gone means the agent left; the call's outcome no longer matters.
-                        let _ = respond(response);
+                    if message["method"] != "tools/call" || message.get("id").is_none() {
+                        if let Some(response) = self.handle(&message) {
+                            respond(response)?;
+                        }
+                        continue;
                     }
-                    let (count, freed) = in_flight;
-                    *count
+                    let (count, freed) = &in_flight;
+                    let mut running = count
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
-                    freed.notify_one();
-                });
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while *running >= MAX_CALLS_IN_FLIGHT {
+                        running = freed
+                            .wait(running)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                    *running += 1;
+                    drop(running);
+                    let (respond, in_flight) = (&respond, &in_flight);
+                    scope.spawn(move || {
+                        let id = message["id"].to_string();
+                        // A call given up is not answered (MCP's cancellation); nor is one whose
+                        // agent left, as stdout has gone with it.
+                        if let Some(Some(response)) = self.calls.run(id, || self.handle(&message)) {
+                            let _ = respond(response);
+                        }
+                        let (count, freed) = in_flight;
+                        *count
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
+                        freed.notify_one();
+                    });
+                }
+                Ok(())
+            })();
+            // The input ended: Pi left, so every call still running is given up, and this
+            // process exits as soon as they unwind instead of when they would have ended.
+            let given_up = self.calls.give_up_all();
+            if given_up > 0 {
+                eprintln!("axod mcp: event=mcp.calls_given_up count={given_up}");
             }
-            Ok(())
+            read
         })
     }
 
@@ -633,6 +656,10 @@ impl McpServer {
         timeout: Duration,
     ) -> Result<Value, ToolError> {
         let stream = UnixStream::connect(&self.socket)?;
+        let _attached = self
+            .calls
+            .attach(&stream)
+            .map_err(|_| ToolError("the call was cancelled".into()))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(AXOD_TIMEOUT))?;
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
@@ -1148,21 +1175,31 @@ mod tests {
         let server = McpServer {
             socket,
             session_id: SID,
+            calls: Default::default(),
         };
         let ask = |id: u64| {
             json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "elicitation_request", "arguments": { "message": format!("Question {id}?") } } }).to_string()
         };
-        let input = format!("{}\n{}\n{}\n", ask(1), ask(2), ask(3));
-        let mut output = Vec::new();
+        // Like Pi, the client keeps its end open until it has its answers: input that ends
+        // means the agent left, and its calls are given up.
+        let (mut to_server, server_input) = UnixStream::pair().unwrap();
+        let (server_output, from_server) = UnixStream::pair().unwrap();
         let started = Instant::now();
-        server.serve(input.as_bytes(), &mut output).unwrap();
+        let client = thread::spawn(move || {
+            writeln!(to_server, "{}\n{}\n{}", ask(1), ask(2), ask(3)).unwrap();
+            let responses: Vec<Value> = BufReader::new(from_server)
+                .lines()
+                .take(3)
+                .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
+                .collect();
+            drop(to_server);
+            responses
+        });
+        server
+            .serve(BufReader::new(server_input), server_output)
+            .unwrap();
         axod.join().unwrap();
-
-        let responses: Vec<Value> = String::from_utf8(output)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let responses = client.join().unwrap();
         assert_eq!(responses.len(), 3);
         for response in &responses {
             assert_eq!(
@@ -1173,6 +1210,69 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(4),
             "the questions waited for each other"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Pi leaving (its end of stdin closing) gives up the calls still waiting: their
+    /// connections to axod close, so axod withdraws what it asked for them, and this process
+    /// exits at once instead of when the person would have answered.
+    #[test]
+    fn when_the_agent_leaves_its_waiting_calls_are_given_up() {
+        use std::os::unix::net::UnixListener;
+        use std::time::Instant;
+
+        let directory =
+            std::env::temp_dir().join(format!("axo-mcp-{}", axo_protocol::new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("axod.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        // A stand-in axod that never answers, and reports when the caller hangs up.
+        let (hung_up, hang_ups) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            let mut rest = String::new();
+            let _ = reader.read_line(&mut rest);
+            hung_up.send(request).unwrap();
+        });
+        let server = McpServer {
+            socket,
+            session_id: SID,
+            calls: Default::default(),
+        };
+        let (mut to_server, server_input) = UnixStream::pair().unwrap();
+        writeln!(
+            to_server,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "elicitation_request", "arguments": { "message": "Still there?" } } })
+        )
+        .unwrap();
+        let started = Instant::now();
+        let leaving = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            drop(to_server);
+        });
+        let mut output = Vec::new();
+        server
+            .serve(BufReader::new(server_input), &mut output)
+            .unwrap();
+        leaving.join().unwrap();
+        let request = hang_ups
+            .recv_timeout(Duration::from_secs(5))
+            .expect("axod saw the hang-up");
+        assert!(request.contains("axo.elicitation.request"), "{request}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited {:?}",
+            started.elapsed()
+        );
+        assert!(
+            output.is_empty(),
+            "a given-up call is not answered: {}",
+            String::from_utf8_lossy(&output)
         );
         let _ = std::fs::remove_dir_all(&directory);
     }
@@ -1270,6 +1370,7 @@ mod tests {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
             session_id: SID,
+            calls: Default::default(),
         };
         let search = TOOLS
             .iter()
@@ -1315,6 +1416,7 @@ mod tests {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
             session_id: SID,
+            calls: Default::default(),
         };
         let initialized = server
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }))
@@ -1340,6 +1442,7 @@ mod tests {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
             session_id: SID,
+            calls: Default::default(),
         };
         let prompt = TOOLS
             .iter()
@@ -1361,6 +1464,7 @@ mod tests {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
             session_id: SID,
+            calls: Default::default(),
         };
         for tool in TOOLS
             .iter()
@@ -1408,6 +1512,7 @@ mod tests {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
             session_id: SID,
+            calls: Default::default(),
         };
         let listed = server
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))

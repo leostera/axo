@@ -5,6 +5,7 @@
 //! blocking pool via `add_blocking_method`. Waiting requests such as `axo.session.events.next`
 //! are plain futures, so thousands of them cost no threads and never delay unrelated requests.
 
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::net::UnixListener as StdUnixListener;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, mpsc};
+
+use crate::cancel::Cancellation;
 
 /// Largest accepted request line; larger requests close the connection.
 const MAX_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
@@ -127,9 +130,12 @@ impl BlockingMethods for IoHandler {
                 match tokio::runtime::Handle::try_current() {
                     Ok(runtime) => {
                         let peer = crate::peer::current();
+                        let cancellation = crate::cancel::current();
                         runtime
                             .spawn_blocking(move || {
-                                crate::peer::on_this_thread(peer, || method(params))
+                                crate::cancel::on_this_thread(cancellation, || {
+                                    crate::peer::on_this_thread(peer, || method(params))
+                                })
                             })
                             .await
                             .unwrap_or_else(|_| Err(handler_failed()))
@@ -204,6 +210,9 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
     });
 
     let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_PER_CONNECTION));
+    // Each unanswered request's cancellation, so the connection's end can cancel them.
+    let unanswered: Arc<std::sync::Mutex<HashMap<u64, Cancellation>>> = Arc::default();
+    let mut next_request = 0u64;
     let mut reader = BufReader::new(reader);
     let mut line = Vec::new();
     loop {
@@ -238,19 +247,44 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
         let request = request.to_owned();
         let handler = Arc::clone(&handler);
         let responses = responses.clone();
+        let cancellation = Cancellation::default();
+        next_request += 1;
+        let key = next_request;
+        lock(&unanswered).insert(key, cancellation.clone());
+        let unanswered = Arc::clone(&unanswered);
         tokio::spawn(async move {
             let _permit = permit;
             let started = std::time::Instant::now();
-            let response = crate::peer::scope(peer, handler.handle_request(&request)).await;
+            let handled = crate::peer::scope(peer, handler.handle_request(&request));
+            let response = crate::cancel::scope(cancellation, handled).await;
+            lock(&unanswered).remove(&key);
             log_if_slow(&request, started.elapsed());
             if let Some(response) = response {
                 let _ = responses.send(response).await;
             }
         });
     }
+    // The caller has gone (AXP §5: its unanswered requests have an unknown outcome): whatever
+    // still waits for it gives up.
+    let given_up: Vec<Cancellation> = lock(&unanswered)
+        .drain()
+        .map(|(_, cancellation)| cancellation)
+        .collect();
+    if !given_up.is_empty() {
+        log::info!("event=ipc.connection_closed unanswered={}", given_up.len());
+    }
+    for cancellation in given_up {
+        cancellation.cancel();
+    }
     // In-flight requests keep their own sender; the writer finishes after the last response.
     drop(responses);
     let _ = writer_task.await;
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(serde::Deserialize)]

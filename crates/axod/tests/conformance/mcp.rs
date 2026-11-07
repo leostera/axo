@@ -289,3 +289,56 @@ fn request_input_refuses_what_it_cannot_fill_without_asking() {
         "nobody was asked"
     );
 }
+
+fn waiting_questions(axod: &Axod) -> Vec<Value> {
+    axod.ok("axo.elicitation.list", json!({}))["elicitations"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// RFD0034: when Pi leaves, `axod mcp` gives up its calls, and axod withdraws their questions
+/// from every device, at once rather than five minutes on.
+#[test]
+fn an_agent_that_leaves_withdraws_its_questions() {
+    let axod = Axod::start();
+    let (_, id) = first_session(&axod);
+    let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
+    let mut mcp = Mcp::start(&axod, &id);
+    mcp.send_tool("elicitation_request", json!({ "message": "Still there?" }));
+    let asked = events.wait_for_type("elicitation.requested");
+    let started = std::time::Instant::now();
+    assert!(mcp.close().success());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "axod mcp lingered {:?}",
+        started.elapsed()
+    );
+    let resolved = events.wait_for_type("elicitation.resolved");
+    assert_eq!(resolved["id"], asked["elicitation"]["id"]);
+    assert_eq!(resolved["action"], "cancel");
+    assert!(waiting_questions(&axod).is_empty());
+}
+
+/// RFD0034: an MCP client that cancels a call withdraws its question; the agent goes on.
+#[test]
+fn cancelling_a_call_withdraws_its_question() {
+    let axod = Axod::start();
+    let (_, id) = first_session(&axod);
+    let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
+    let mut mcp = Mcp::start(&axod, &id);
+    let call = mcp.send_tool("elicitation_request", json!({ "message": "Deploy?" }));
+    events.wait_for_type("elicitation.requested");
+    mcp.notify(
+        "notifications/cancelled",
+        json!({ "requestId": call, "reason": "the user stopped it" }),
+    );
+    let resolved = events.wait_for_type("elicitation.resolved");
+    assert_eq!(resolved["action"], "cancel");
+    assert!(waiting_questions(&axod).is_empty());
+    assert_eq!(
+        mcp.ok("whoami", json!({}))["sessionId"],
+        json!(id),
+        "the agent goes on"
+    );
+}

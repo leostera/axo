@@ -5,10 +5,12 @@ import { atMost, defineActor, defineMessage, defineProperty, defineRule, defineS
 // sends `notifications/cancelled`), axod withdraws the question: the cards go away on every
 // device, and the slot (at most 16 wait on a Mac) is free again.
 //
-// Built: asking, answering, expiry after five minutes.
-// Not built: withdrawing when the asker hangs up or cancels (RFD0034 step 3). Today a question
-// outlives its asker until it expires; the conformance test
-// `an_asker_that_goes_away_withdraws_its_question` is ignored until this is built.
+// Built: everything here. The transport cancels a connection's unanswered requests when it
+// closes (axo-ipc), `axod mcp` closes a call's connections when its client cancels the call or
+// leaves (axo-mcp), and a question wakes on its request's cancellation (axo-server). The
+// conformance tests `an_asker_that_goes_away_withdraws_its_question`,
+// `an_agent_that_leaves_withdraws_its_questions` and `cancelling_a_call_withdraws_its_question`
+// check it against the real binaries.
 
 const Ask = defineMessage("Ask", { asker: String }, { name: "axo.elicitation.request", over: "unix socket" });
 const Outcome = defineMessage("Outcome", { action: String }, { name: "its result", over: "unix socket", tone: "reply" });
@@ -43,7 +45,7 @@ export const Axod = defineActor({
       label: "Five minutes pass",
       description: "Every question still waiting ends as cancel.",
       when: (s) => Object.values(s.questions).some((q) => q.settled === null),
-      sources: ["crates/axo-server/src/session/elicitations.rs#ask_with"],
+      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
       sends: [Dismiss, Outcome],
       run(state, _m, ctx) {
         for (const [id, question] of Object.entries(state.questions)) {
@@ -59,7 +61,7 @@ export const Axod = defineActor({
     ask: {
       on: Ask,
       description: "Opens the question and shows it to every client, unless the request was cancelled before it started.",
-      sources: ["crates/axo-server/src/session/elicitations.rs#ask_with"],
+      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
       sends: [Card, Outcome],
       run(state, m, ctx) {
         const id = `q${Object.keys(state.questions).length + 1}`;
@@ -78,7 +80,7 @@ export const Axod = defineActor({
     answer: {
       on: Answer,
       description: "The person's answer settles a question still waiting, and goes to its asker.",
-      sources: ["crates/axo-server/src/session/elicitations.rs#resolve_elicitation"],
+      sources: ["crates/axo-server/src/session/elicitations.rs#SessionManager.resolve_elicitation"],
       sends: [Dismiss, Outcome],
       run(state, m, ctx) {
         const question = state.questions[m.id];
@@ -91,6 +93,7 @@ export const Axod = defineActor({
     hungUp: {
       on: HungUp,
       description: "The asker's connection closed: its questions are withdrawn.",
+      sources: ["crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-ipc/src/cancel.rs#Cancellation.cancel", "crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
       sends: [Dismiss],
       run(state, m, ctx) {
         state.gone.push(m.asker);
@@ -105,6 +108,7 @@ export const Axod = defineActor({
     cancelled: {
       on: Cancelled,
       description: "The asker cancelled its request: the question is withdrawn, and the asker told.",
+      sources: ["crates/axo-mcp/src/calls.rs#Calls.give_up", "crates/axo-ipc/src/server.rs#serve_connection", "crates/axo-server/src/session/elicitations.rs#SessionManager.ask_with"],
       sends: [Dismiss, Outcome],
       run(state, m, ctx) {
         if (!withdrawOnCancel.on) return;

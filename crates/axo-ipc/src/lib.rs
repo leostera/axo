@@ -1,6 +1,8 @@
-//! Axo's local IPC: newline-delimited JSON-RPC over a Unix socket, and the bounded event queues
-//! behind long-polled subscriptions.
+//! Axo's local IPC: newline-delimited JSON-RPC over a Unix socket, who is calling (`peer`),
+//! when they have given up (`cancel`), and the bounded event queues behind long-polled
+//! subscriptions.
 
+pub mod cancel;
 pub mod event_queue;
 pub mod peer;
 mod server;
