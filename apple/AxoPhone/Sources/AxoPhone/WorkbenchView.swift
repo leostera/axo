@@ -1008,8 +1008,10 @@ extension ClientID {
   }
 
   /// Answers just enough of the account's socket for the app to run: it lists the sample Macs,
-  /// opens their chats, lists one Mac's Workspaces, takes key presses, and refuses prompts (there
-  /// is no agent behind it).
+  /// opens their chats, lists one Mac's Workspaces, takes key presses, and refuses prompts to a
+  /// chat whose agent is idle (there is no agent behind it). A chat listed as working takes them,
+  /// queued in its log, as a busy Pi does (RFD0033); every chat lists its Pi's commands and
+  /// models, switches them, and restarts.
   private struct PreviewTransport: AxoTransport {
     func connect() async throws -> any AxoMessageChannel { PreviewChannel() }
   }
@@ -1017,8 +1019,54 @@ extension ClientID {
   private final class PreviewChannel: AxoMessageChannel, @unchecked Sendable {
     let messages: AsyncStream<Data>
     private let sink: AsyncStream<Data>.Continuation
+    private let lock = NSLock()
+    /// Each chat's last cursor, for the records written here.
+    private var cursors: [String: Int] = [:]
 
     init() { (messages, sink) = AsyncStream.makeStream() }
+
+    /// A prompt to a working chat, written to its log as queued.
+    private func queue(_ params: [String: Any]?) -> Bool {
+      // The first chat is the one listed as working.
+      guard let params, let session = params["sessionId"] as? String, let id = SessionID(rawValue: session),
+        PreviewFixture.number(of: id) == 1
+      else { return false }
+      let data: [String: Any] = [
+        "commandId": params["commandId"] ?? "", "delivery": params["delivery"] ?? "followUp", "text": params["text"] ?? "",
+        "attachments": [],
+      ]
+      let cursor = lock.withLock {
+        let next = (cursors[session] ?? PreviewFixture.records(for: id).count) + 1
+        cursors[session] = next
+        return next
+      }
+      let entry: [String: Any] = ["type": "custom", "id": "q\(cursor)", "customType": "axo.command.queued", "data": data]
+      let line = String(data: try! JSONSerialization.data(withJSONObject: entry), encoding: .utf8)!
+      let record: [String: Any] = [
+        "cursor": cursor, "id": "q\(cursor)", "format": "pi/3", "line": line, "hash": "sha256:" + String(repeating: "0", count: 64),
+      ]
+      notify("axo.client.session.records", ["sessionId": session, "epoch": 1, "records": [record], "cursor": cursor])
+      return true
+    }
+
+    /// Lists a chat again, going away and coming back, as a restart does.
+    private func restart(_ params: [String: Any]?) {
+      guard let session = params?["sessionId"] as? String, let number = SessionID(rawValue: session).flatMap(PreviewFixture.number(of:))
+      else { return }
+      Task { [weak self] in
+        for (pause, status) in [(0.6, "unavailable"), (1.2, "starting"), (1.5, "ready")] {
+          try? await Task.sleep(for: .seconds(pause))
+          guard let self, let listed = PreviewFixture.session(number, status: status) else { return }
+          let json = #"{"hostId":"\#(listed.host.uuidString.lowercased())","sessions":[\#(listed.json)]}"#
+          self.sink.yield(Data(#"{"jsonrpc":"2.0","method":"axo.client.sessions","params":\#(json)}"#.utf8))
+        }
+      }
+    }
+
+    private func notify(_ method: String, _ params: [String: Any]) {
+      let notice: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
+      sink.yield(try! JSONSerialization.data(withJSONObject: notice))
+    }
 
     func send(_ message: Data) async throws {
       guard let request = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
@@ -1042,6 +1090,12 @@ extension ClientID {
             #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
           case "axo.remote.session.key": #"{"accepted":true}"#
           case "axo.remote.session.stop": #"{"stopped":true}"#
+          case "axo.remote.session.prompt": queue(params?["params"] as? [String: Any]) ? #"{"accepted":true}"# : nil
+          case "axo.remote.session.commands": PreviewFixture.commands
+          case "axo.remote.session.models": PreviewFixture.models
+          case "axo.remote.session.model.set": #"{"saved":true}"#
+          case "axo.remote.session.restart":
+            { restart(params?["params"] as? [String: Any]); return #"{"restarted":true}"# }()
           default: nil
           }
         default: nil

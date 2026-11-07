@@ -79,33 +79,61 @@ enum PreviewFixture {
       SessionID(rawValue: String(format: "%08x-0000-4000-8000-%012x", number, number))!
     }
 
+    /// The number of the preview chat `id`.
+    static func number(of id: SessionID) -> Int? { Int(id.rawValue.prefix(8), radix: 16) }
+
     /// The sample Macs and chats, as the account's socket lists them.
     static var listing: String {
+      """
+        {"hosts":[
+        {"hostId":"\(studio.uuidString.lowercased())","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"},
+        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","online":false,"lastSeenAt":"2026-10-15T00:00:00Z"}],
+        "sessions":[\(sessions().map(\.json).joined(separator: ","))]}
+        """
+    }
+
+    /// What the sample chats' Pis run (RFD0033).
+    static let pi = #"{"model":{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1"},"thinkingLevel":"high"}"#
+
+    /// Chat `number` as the account's socket lists it, with `status` in place of its own: the
+    /// preview's Restart lists it again, going and coming back.
+    static func session(_ number: Int, status: String) -> (host: UUID, json: String)? {
+      sessions(status: [number: status]).first { $0.number == number }.map { ($0.host, $0.json) }
+    }
+
+    /// The sample chats, as the account's socket lists them.
+    private static func sessions(status overrides: [Int: String] = [:]) -> [(number: Int, host: UUID, json: String)] {
       // The menu lists the most recently active first: in the order they are written here. Times
       // are relative to now, so the last 8 hours (what the menu lists before "older") stay put.
       func ago(_ seconds: TimeInterval) -> Int64 { Int64(Date.now.addingTimeInterval(-seconds).timeIntervalSince1970) }
-      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> String {
+      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> (number: Int, host: UUID, json: String) {
+        let status = overrides[id] ?? status
+        let hostID = host
         let host = host.uuidString.lowercased()
+        let pi = #","pi":\#(Self.pi)"#
         // The Axo chats are in the repository, with a couple of files changed; Home is no repository.
         let path = workspace == "Axo" ? "/Users/leo/Developer/axo" : "/Users/leo"
         let state = workspace == "Axo"
           ? #"{"path":"\#(path)","repoRoot":"\#(path)","remote":"https://github.com/leostera/axo","branch":"main","head":"e71752e0c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5a6","upstreamHead":"c22a4480c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5a6","dirty":["apple/AxoPhone/BUILD.bazel","README.md"],"dirtyMore":0,"at":\#(active)}"#
           : #"{"path":"\#(path)","repoRoot":null,"remote":null,"branch":null,"head":null,"upstreamHead":null,"dirty":[],"dirtyMore":0,"at":\#(active)}"#
-        return #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","workspaceId":null,"workspaceName":"\#(workspace)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false,"workspaceState":\#(state)}}"#
+        let json = #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","workspaceId":null,"workspaceName":"\#(workspace)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false,"workspaceState":\#(state)\#(pi)}}"#
+        return (id, hostID, json)
       }
-      return """
-        {"hosts":[
-        {"hostId":"\(studio.uuidString.lowercased())","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"},
-        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","online":false,"lastSeenAt":"2026-10-15T00:00:00Z"}],
-        "sessions":[\
-        \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: ago(20 * 60))),\
-        \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: ago(2 * 3600))),\
-        \(session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600))),\
-        \(session(studio, 6, "Plan the week", "🗓️", "Home", active: ago(10 * 60))),\
-        \(session(studio, 7, "Draft the release notes", "📝", "Home", active: ago(5 * 3600))),\
-        \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)))]}
-        """
+      return [
+        session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: ago(20 * 60)),
+        session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: ago(2 * 3600)),
+        session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600)),
+        session(studio, 6, "Plan the week", "🗓️", "Home", active: ago(10 * 60)),
+        session(studio, 7, "Draft the release notes", "📝", "Home", active: ago(5 * 3600)),
+        session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)),
+      ]
     }
+
+    /// The slash commands the sample chats' Pis take.
+    static let commands = #"{"commands":[{"name":"review","description":"Review the change on this branch","source":"prompt"},{"name":"axo-share","description":"Share this conversation","source":"extension"},{"name":"hivemind","description":"Search the team's shared memory","source":"skill"},{"name":"release","description":"Cut a release","source":"prompt"}]}"#
+
+    /// The models the sample chats' Pis could switch to.
+    static let models = #"{"models":[{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1","thinkingLevels":["off","low","medium","high","xhigh"]},{"provider":"anthropic","id":"claude-sonnet-4-5","name":"Sonnet 4.5","thinkingLevels":["off","low","medium","high"]},{"provider":"openai","id":"gpt-5","name":"GPT-5","thinkingLevels":["minimal","low","medium","high"]}]}"#
 
     /// The answer to opening a sample chat: all of its records.
     static func opened(_ session: SessionID) -> String {

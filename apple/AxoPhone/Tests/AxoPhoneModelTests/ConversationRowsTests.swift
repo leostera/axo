@@ -15,6 +15,7 @@ final class ConversationRowsTests: XCTestCase {
       switch row {
       case .message(let shown): shown.message.text
       case .pending(let prompt): "pending: \(prompt.text)"
+      case .queued(let prompt): "queued: \(prompt.text)"
       }
     }
   }

@@ -453,13 +453,13 @@ public final class PhoneWorkbench {
 
   /// Sends what is typed in the open chat. On a new chat, the first message brings the chat into
   /// being in the Mac's Home Workspace. The words leave the box as they go and come back if the
-  /// Mac refuses them.
-  public func send() async -> SendOutcome {
+  /// Mac refuses them. `delivery` says when a working Pi takes it (RFD0033).
+  public func send(delivery: PromptDelivery = .followUp) async -> SendOutcome {
     guard !isSending, let selection, canSendDraft else { return .failed }
     isSending = true
     defer { isSending = false }
     guard selection.session != nil else { return await startChat(in: .home, from: selection) }
-    return await prompt(from: selection)
+    return await prompt(from: selection, delivery: delivery)
   }
 
   /// Starts the new chat in `place` with what is typed in it: how a chat starts somewhere other
@@ -489,13 +489,14 @@ public final class PhoneWorkbench {
     return await prompt(from: chat)
   }
 
-  private func prompt(from selection: Selection) async -> SendOutcome {
+  private func prompt(from selection: Selection, delivery: PromptDelivery = .followUp) async -> SendOutcome {
     guard let workbench = current, workbench.reference.hostId == selection.host else { return .failed }
     let text = text(of: selection)
     let files = attachments(for: selection)
     setDraft("", for: selection)
     draftFiles[selection] = nil
-    switch await workbench.sendPrompt(text, attachments: files.compactMap { if case .ready(let a) = $0.state { a } else { nil } }) {
+    let ready = files.compactMap { if case .ready(let a) = $0.state { a } else { nil } }
+    switch await workbench.sendPrompt(text, attachments: ready, delivery: delivery) {
     case .accepted: return .sent
     case .uncertain: return .uncertain
     case .notSent:

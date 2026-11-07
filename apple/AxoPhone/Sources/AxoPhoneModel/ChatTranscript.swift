@@ -99,6 +99,21 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
   }
 }
 
+/// A client's prompt that the Session's Pi took while it was busy, and has not started on yet: the
+/// log holds it as `axo.command.queued`, so it shows from the log alone, after a relaunch too
+/// (RFD0033). Its user message takes its place, under the same key.
+public struct QueuedPrompt: Identifiable, Equatable, Sendable {
+  public let commandId: String
+  public let delivery: PromptDelivery
+  public let text: String
+  /// The names of the files that go with it.
+  public let attachments: [String]
+
+  public var id: String { commandId }
+  /// The same as its pending row's and its user message's.
+  public var key: String { HostWorkbenchModel.PendingPrompt.key(commandId: commandId) }
+}
+
 /// A conversation as the host's records tell it (RFD0018). The records are the lines of the
 /// agent's transcript, read by `entry(of:)`, the one place that knows the format. Whole messages
 /// make the conversation; progress slots show the reply being written, a running tool's output and
@@ -132,9 +147,13 @@ public struct ChatTranscript: Equatable, Sendable {
   public private(set) var lastUserEntry: String?
   /// A receipt whose user message has not been read yet.
   private var receipt: String?
+  /// Prompts the Session's Pi took while busy and has not started on, in the order it took them.
+  public private(set) var queued: [QueuedPrompt] = []
 
   /// The custom entry the Session's Pi writes just before a client's prompt: its commandId.
   static let receiptEntry = "axo.command"
+  /// The custom entry it writes for a prompt it takes while busy, before saying it took it.
+  static let queuedEntry = "axo.command.queued"
 
   public init() {}
 
@@ -172,6 +191,8 @@ public struct ChatTranscript: Equatable, Sendable {
     results.merge(page.results) { newer, _ in newer }
     recordedReplies.formUnion(page.recordedReplies)
     delivered.formUnion(page.delivered)
+    // What waited then may have been delivered since.
+    queued = page.queued.filter { !delivered.contains($0.commandId) } + queued
     if lastUserEntry == nil { lastUserEntry = page.lastUserEntry }
   }
 
@@ -186,6 +207,7 @@ public struct ChatTranscript: Equatable, Sendable {
     delivered = []
     lastUserEntry = nil
     receipt = nil
+    queued = []
     append(kept)
   }
 
@@ -245,6 +267,12 @@ public struct ChatTranscript: Equatable, Sendable {
       receipt = commandId
       return
     }
+    if case .queued(let prompt) = entry {
+      if !delivered.contains(prompt.commandId), !queued.contains(where: { $0.commandId == prompt.commandId }) {
+        queued.append(prompt)
+      }
+      return
+    }
     guard case .message(let id, let message) = entry, let role = message["role"]?.stringValue else {
       return
     }
@@ -252,7 +280,10 @@ public struct ChatTranscript: Equatable, Sendable {
     let promptKey = role == "user" ? receipt.map { HostWorkbenchModel.PendingPrompt.key(commandId: $0) } : nil
     if role == "user" {
       lastUserEntry = id
-      if let receipt { delivered.insert(receipt) }
+      if let receipt {
+        delivered.insert(receipt)
+        queued.removeAll { $0.commandId == receipt }
+      }
       receipt = nil
     }
     if role == "toolResult" {
@@ -288,6 +319,7 @@ public struct ChatTranscript: Equatable, Sendable {
   private enum Entry {
     case message(id: String, JSONValue)
     case receipt(commandId: String)
+    case queued(QueuedPrompt)
     case other
   }
 
@@ -298,6 +330,16 @@ public struct ChatTranscript: Equatable, Sendable {
     if value["type"]?.stringValue == "custom", value["customType"]?.stringValue == receiptEntry {
       guard let commandId = value["data"]?["commandId"]?.stringValue else { return .other }
       return .receipt(commandId: commandId)
+    }
+    if value["type"]?.stringValue == "custom", value["customType"]?.stringValue == queuedEntry {
+      let data = value["data"]
+      guard let commandId = data?["commandId"]?.stringValue, let text = data?["text"]?.stringValue else { return .other }
+      return .queued(
+        QueuedPrompt(
+          commandId: commandId,
+          delivery: data?["delivery"]?.stringValue == "steer" ? .steer : .followUp,
+          text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+          attachments: (data?["attachments"]?.arrayValue ?? []).compactMap { $0["name"]?.stringValue }))
     }
     guard value["type"]?.stringValue == "message", let message = value["message"], case .object = message
     else { return .other }

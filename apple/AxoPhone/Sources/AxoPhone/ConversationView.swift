@@ -76,7 +76,7 @@ struct ConversationView: View {
           if transcript.messages.isEmpty { emptyState }
           // The records, the person's messages on their way and the reply as far as it has got,
           // each in the place it keeps (see `ConversationRow`).
-          ForEach(ConversationRow.rows(shown: shownMessages, pending: pending)) { row in
+          ForEach(ConversationRow.rows(shown: shownMessages, pending: pending, queued: transcript.queued)) { row in
             switch row {
             case .message(let shown):
               ChatMessageView(
@@ -90,6 +90,8 @@ struct ConversationView: View {
                   if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) }
                 },
                 dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
+            case .queued(let prompt):
+              QueuedPromptView(prompt: prompt)
             }
           }
           if let id = session?.sessionId {
@@ -361,6 +363,7 @@ struct ConversationView: View {
   private func hostTrouble(_ workbench: HostWorkbenchModel) -> String? {
     if workbench.status != .online { return "\(workbench.hostLabel) is offline" }
     if workbench.link == .reconnecting { return "Reconnecting to \(workbench.hostLabel)…" }
+    if chat?.restart != nil { return "Restarting Pi…" }
     return nil
   }
 
@@ -374,8 +377,8 @@ struct ConversationView: View {
     return workbench.status == .online ? "Message Axo" : "\(workbench.hostLabel) is offline"
   }
 
-  private func sendDraft() {
-    Task { _ = await phone.send() }
+  private func sendDraft(_ delivery: PromptDelivery) {
+    Task { _ = await phone.send(delivery: delivery) }
   }
 
   private var bottomBar: some View {
@@ -403,7 +406,8 @@ struct ConversationView: View {
       }
       HostPicker(phone: phone)
       DraftComposer(
-        phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, showApps: showApps, send: sendDraft)
+        phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, showApps: showApps,
+        workbench: workbench, session: session?.sessionId, send: sendDraft)
     }
     // With the keyboard down the composer sits down in the home indicator's area, as the
     // system's own bars do, rather than above all of it; with the keyboard up, just above it.

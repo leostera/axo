@@ -76,13 +76,17 @@ public struct HostConnection: Sendable {
   /// the Session's Pi takes it at most once and writes a receipt carrying the id just before it
   /// (RFD0024). The host refuses it when the Session has no Pi running. `attachments` are assets
   /// already in the account (RFD0030): the Mac fetches them all before Pi gets the prompt, or
-  /// refuses it.
-  public func promptPi(in id: SessionID, text: String, commandId: UUID, attachments: [Attachment] = []) async throws {
+  /// refuses it. `delivery` says when a working Pi takes it; accepted means it is in the Session's
+  /// log (RFD0033). A Pi still starting answers `PiControlError.starting`, having kept nothing:
+  /// send it again with the same `commandId`.
+  public func promptPi(
+    in id: SessionID, text: String, commandId: UUID, attachments: [Attachment] = [], delivery: PromptDelivery = .followUp
+  ) async throws {
     let accepted: PromptAccepted = try await call(
       "axo.remote.session.prompt",
       PromptTarget(
         target: host, sessionId: id, text: text, commandId: commandId.uuidString.lowercased(),
-        attachments: attachments.isEmpty ? nil : attachments))
+        attachments: attachments.isEmpty ? nil : attachments, delivery: delivery == .followUp ? nil : delivery))
     guard accepted.accepted else {
       throw AxoClientError.invalidResponse("the host did not accept that prompt")
     }
@@ -95,6 +99,37 @@ public struct HostConnection: Sendable {
     let result: StopResult = try await call(
       "axo.remote.session.stop", StopTarget(target: host, sessionId: id, turnId: turnId))
     return result.stopped
+  }
+
+  // MARK: - Pi's controls (RFD0033)
+
+  /// Restarts the Session's Pi on the same conversation, whether it is running, stuck or gone; a
+  /// turn it is running stops. Answers at once: the Session's status goes from starting to ready
+  /// as it happens.
+  public func restartPi(in id: SessionID) async throws {
+    let result: Restarted = try await call("axo.remote.session.restart", SessionTarget(target: host, sessionId: id))
+    guard result.restarted else { throw AxoClientError.invalidResponse("the host did not restart Pi") }
+  }
+
+  /// The slash commands the Session's Pi runs when a client sends them.
+  public func piCommands(in id: SessionID) async throws -> [PiCommand] {
+    try await call("axo.remote.session.commands", SessionTarget(target: host, sessionId: id), as: Commands.self).commands
+  }
+
+  /// The models the Session's Pi has credentials for, each with the thinking levels it supports.
+  public func piModels(in id: SessionID) async throws -> [PiModel] {
+    try await call("axo.remote.session.models", SessionTarget(target: host, sessionId: id), as: Models.self).models
+  }
+
+  /// Switches the Session's model, thinking level, or both; the Session's listing then says so.
+  /// Refused as `PiControlError.unknownModel` or `.notSignedIn`.
+  public func setPiModel(in id: SessionID, model: PiModelRef? = nil, thinkingLevel: ThinkingLevel? = nil) async throws {
+    try expectSaved(
+      await call(
+        "axo.remote.session.model.set",
+        ModelSetTarget(
+          target: host, sessionId: id, model: model.map { ModelChoice(provider: $0.provider, id: $0.id) },
+          thinkingLevel: thinkingLevel)))
   }
 
   /// A key pressed in the Session's Pi, as a person at the Mac would press it.
@@ -159,6 +194,16 @@ public struct HostConnection: Sendable {
   }
 }
 
+/// How the host refuses Pi's controls (RFD0033).
+public enum PiControlError {
+  /// Pi is still starting and kept nothing: send the prompt again with the same commandId.
+  public static let starting = -32008
+  /// No such model in the Session's Pi.
+  public static let unknownModel = -32602
+  /// The Session's Pi has no credentials for that model's provider.
+  public static let notSignedIn = -32007
+}
+
 // MARK: - Wire shapes
 
 private struct Target: Encodable, Sendable { let target: RemoteHostRef }
@@ -194,6 +239,8 @@ private struct PromptTarget: Encodable, Sendable {
   let text: String
   let commandId: String
   let attachments: [Attachment]?
+  /// Left out for a follow-up, the default, so a Mac from before RFD0033 still takes it.
+  let delivery: PromptDelivery?
 
   func encode(to encoder: any Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
@@ -202,10 +249,34 @@ private struct PromptTarget: Encodable, Sendable {
     try container.encode(text, forKey: .text)
     try container.encode(commandId, forKey: .commandId)
     try container.encodeIfPresent(attachments, forKey: .attachments)
+    try container.encodeIfPresent(delivery, forKey: .delivery)
   }
 
-  enum CodingKeys: String, CodingKey { case target, sessionId, text, commandId, attachments }
+  enum CodingKeys: String, CodingKey { case target, sessionId, text, commandId, attachments, delivery }
 }
+private struct ModelChoice: Encodable, Sendable {
+  let provider: String
+  let id: String
+}
+private struct ModelSetTarget: Encodable, Sendable {
+  let target: RemoteHostRef
+  let sessionId: SessionID
+  let model: ModelChoice?
+  let thinkingLevel: ThinkingLevel?
+
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(target, forKey: .target)
+    try container.encode(sessionId, forKey: .sessionId)
+    try container.encodeIfPresent(model, forKey: .model)
+    try container.encodeIfPresent(thinkingLevel, forKey: .thinkingLevel)
+  }
+
+  enum CodingKeys: String, CodingKey { case target, sessionId, model, thinkingLevel }
+}
+private struct Restarted: Decodable, Sendable { let restarted: Bool }
+private struct Commands: Decodable, Sendable { let commands: [PiCommand] }
+private struct Models: Decodable, Sendable { let models: [PiModel] }
 private struct StopTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let sessionId: SessionID

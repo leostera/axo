@@ -59,6 +59,8 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   public let createdAt: Int64?
   /// The Session's folder and repository as its Mac last read them (RFD0022); nil until it has.
   public let workspaceState: WorkspaceState?
+  /// The model and thinking level the Session's Pi runs (RFD0033); nil until it has said.
+  public let pi: PiRuntime?
 
   public var displayName: String { name ?? "Session" }
 
@@ -66,7 +68,8 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     hostId: UUID, sessionId: SessionID, workspaceId: UUID? = nil, workspaceName: String? = nil,
     name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil,
     shells: [RemoteShell] = [], layout: SessionLayout? = nil, updatedAt: String = "",
-    lastMessageAt: Int64? = nil, createdAt: Int64? = nil, workspaceState: WorkspaceState? = nil
+    lastMessageAt: Int64? = nil, createdAt: Int64? = nil, workspaceState: WorkspaceState? = nil,
+    pi: PiRuntime? = nil
   ) {
     self.hostId = hostId
     self.sessionId = sessionId
@@ -82,6 +85,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     self.lastMessageAt = lastMessageAt
     self.createdAt = createdAt
     self.workspaceState = workspaceState
+    self.pi = pi
   }
 
   /// A Session as the account's client lists it (RFD0018): what the host says of it, without
@@ -92,7 +96,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
       workspaceName: listed.metadata.workspaceName, name: listed.metadata.name, emoji: listed.metadata.emoji,
       status: listed.status, hasAgent: listed.metadata.hasAgent,
       lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt,
-      workspaceState: listed.metadata.workspaceState)
+      workspaceState: listed.metadata.workspaceState, pi: listed.metadata.pi)
   }
 }
 
@@ -177,11 +181,13 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
   public let archived: Bool
   /// Absent until the Mac has read it; older Macs never send it.
   public let workspaceState: WorkspaceState?
+  /// What the Session's Pi runs (RFD0033); absent until it has said, and from older Macs.
+  public let pi: PiRuntime?
 
   public init(
     name: String? = nil, emoji: String? = nil, workspaceId: UUID? = nil, workspaceName: String? = nil,
     hasAgent: Bool = true, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false,
-    workspaceState: WorkspaceState? = nil
+    workspaceState: WorkspaceState? = nil, pi: PiRuntime? = nil
   ) {
     self.name = name
     self.emoji = emoji
@@ -192,6 +198,7 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
     self.lastMessageAt = lastMessageAt
     self.archived = archived
     self.workspaceState = workspaceState
+    self.pi = pi
   }
 }
 

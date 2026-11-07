@@ -28,6 +28,14 @@ public final class Chat {
   public fileprivate(set) var pending: [HostWorkbenchModel.PendingPrompt] = []
   /// The person asked to stop the reply, and Pi has not stopped yet.
   public fileprivate(set) var isStopping = false
+  /// Where a restart of the chat's Pi asked for here is (RFD0033); nil when none is.
+  public fileprivate(set) var restart: HostWorkbenchModel.Restart?
+  /// The slash commands its Pi takes, as last read; nil until they are.
+  public fileprivate(set) var commands: [PiCommand]?
+  /// The models its Pi could switch to, as last read; nil until they are.
+  public fileprivate(set) var models: [PiModel]?
+  /// A model or thinking level picked here, shown until the chat's listing says what Pi runs.
+  public fileprivate(set) var chosen: PiRuntime?
   /// The epoch the records held belong to.
   fileprivate var epoch: Int64?
   /// The `before` of the next older page; nil when the start is held.
@@ -90,6 +98,9 @@ public final class HostWorkbenchModel {
       /// The Mac has not said whether it took it. It is sent again with the same commandId, which
       /// the Mac takes at most once, until it says (RFD0024).
       case uncertain
+      /// The chat's Pi is starting and took nothing yet; it is sent again, with the same
+      /// commandId, until Pi takes it (RFD0033).
+      case waitingForPi
     }
 
     /// Its commandId: its receipt in the log retires it.
@@ -97,6 +108,8 @@ public final class HostWorkbenchModel {
     public let text: String
     /// Files already in the account, fetched by the Mac before Pi gets the prompt (RFD0030).
     public var attachments: [Attachment] = []
+    /// When a working Pi takes it (RFD0033).
+    public var delivery: PromptDelivery = .followUp
     public fileprivate(set) var state: State
     /// Sent while the agent was busy: it waits behind the reply being written, and shows below
     /// it; otherwise it starts the next reply, and shows above it.
@@ -107,14 +120,30 @@ public final class HostWorkbenchModel {
     public var key: String { Self.key(commandId: id.uuidString.lowercased()) }
     public static func key(commandId: String) -> String { "prompt:\(commandId)" }
 
-    init(id: UUID, text: String, attachments: [Attachment] = [], state: State, behindReply: Bool = false) {
+    init(
+      id: UUID, text: String, attachments: [Attachment] = [], delivery: PromptDelivery = .followUp, state: State,
+      behindReply: Bool = false
+    ) {
       self.id = id
       self.text = text
       self.attachments = attachments
+      self.delivery = delivery
       self.state = state
       self.behindReply = behindReply
     }
   }
+
+  /// A restart of a chat's Pi, asked for from this phone.
+  public enum Restart: Equatable, Sendable {
+    /// The Mac said it is restarting Pi; the chat has not stopped being ready yet.
+    case asked
+    /// The chat's Pi is gone or starting: ready again means it is done.
+    case underway
+  }
+
+  /// How long a restart waits for the chat to stop being ready before it counts as done: a Pi
+  /// restarted in a moment may never be listed as anything else.
+  @ObservationIgnored var restartGrace: Duration = .seconds(20)
 
   /// Whether the account's socket is up.
   public enum Link: Equatable, Sendable {
@@ -189,7 +218,10 @@ public final class HostWorkbenchModel {
     guard host.reference == reference else { return }
     status = host.status
     if hostLabel != host.label { hostLabel = host.label }
-    for listed in host.sessions { created[listed.sessionId] = nil }
+    for listed in host.sessions {
+      created[listed.sessionId] = nil
+      if sessions.first(where: { $0.sessionId == listed.sessionId })?.pi != listed.pi { chatStore[listed.sessionId]?.chosen = nil }
+    }
     sessions = (host.sessions + created.values).sorted(by: RemoteSession.isCreatedBefore)
     settleChats()
     if let selected = selectedSessionID, !sessions.contains(where: { $0.sessionId == selected }),
@@ -203,6 +235,8 @@ public final class HostWorkbenchModel {
   func update(_ changed: [RemoteSession]) {
     for session in changed where session.hostId == reference.hostId {
       if let index = sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
+        // What Pi runs is now as the Mac says, whatever was picked here.
+        if sessions[index].pi != session.pi { chatStore[session.sessionId]?.chosen = nil }
         sessions[index] = session
       } else {
         sessions.append(session)
@@ -215,6 +249,13 @@ public final class HostWorkbenchModel {
   /// Whether the agent is working comes from the host's listing of each Session.
   private func settleChats() {
     for session in sessions {
+      if let chat = chatStore[session.sessionId], let restart = chat.restart, let status = session.status {
+        switch (restart, status) {
+        case (_, .starting), (_, .unavailable): chat.restart = .underway
+        case (.underway, _): chat.restart = nil
+        case (.asked, _): break
+        }
+      }
       guard let status = session.status, let chat = chatStore[session.sessionId], chat.transcript != nil else { continue }
       let working = status == .working
       if (chat.transcript?.activity == .working) != working { chat.transcript?.settle(working: working) }
@@ -396,18 +437,23 @@ public final class HostWorkbenchModel {
     case accepted
     /// Not sent (or refused): nothing reached Pi, so the words can go back in the box.
     case notSent
-    /// The Mac has not said whether it took it; the message stays and is sent again.
+    /// The Mac has not said whether it took it, or its Pi is still starting: the message stays and
+    /// is sent again.
     case uncertain
   }
 
-  /// Sends a message to the selected chat, with its commandId. It shows as pending until its
-  /// receipt arrives in the log; one refused on its first try disappears.
-  public func sendPrompt(_ text: String, attachments: [Attachment] = []) async -> PromptOutcome {
+  /// Sends a message to the selected chat, with its commandId. It shows as pending until the log
+  /// holds it, queued or delivered; one refused on its first try disappears. `delivery` says when
+  /// a working Pi takes it (RFD0033).
+  public func sendPrompt(_ text: String, attachments: [Attachment] = [], delivery: PromptDelivery = .followUp) async
+    -> PromptOutcome
+  {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let session = selectedSession, !prompt.isEmpty || !attachments.isEmpty else { return .notSent }
     let id = session.sessionId
     let busy = chat(id).transcript?.activity == .working
-    let pending = PendingPrompt(id: UUID(), text: prompt, attachments: attachments, state: .sending, behindReply: busy)
+    let pending = PendingPrompt(
+      id: UUID(), text: prompt, attachments: attachments, delivery: delivery, state: .sending, behindReply: busy)
     chat(id).pending.append(pending)
     let outcome = await deliver(pending, in: id, attempt: 0)
     if outcome == .notSent { removePending(pending.id, in: id) }
@@ -417,12 +463,18 @@ public final class HostWorkbenchModel {
   /// One try at sending a pending message; an unknown outcome schedules the next.
   private func deliver(_ pending: PendingPrompt, in id: SessionID, attempt: Int) async -> PromptOutcome {
     let outcome: PromptOutcome
+    var starting = false
     do {
-      try await connection.promptPi(in: id, text: pending.text, commandId: pending.id, attachments: pending.attachments)
+      try await connection.promptPi(
+        in: id, text: pending.text, commandId: pending.id, attachments: pending.attachments, delivery: pending.delivery)
       failure = nil
       outcome = .accepted
     } catch is CancellationError {
       outcome = attempt == 0 ? .notSent : .uncertain
+    } catch AxoClientError.serverRejected(PiControlError.starting, _) {
+      // Pi kept nothing and takes it once it is up: the same commandId again, until it does.
+      starting = true
+      outcome = .uncertain
     } catch {
       account.noteFailure(error)
       // A refusal after an unknown outcome proves nothing: the first try may still land.
@@ -440,7 +492,7 @@ public final class HostWorkbenchModel {
       // this very message.
       chat.pending[index].state = pending.behindReply ? .queued : .sent
     case .uncertain:
-      chat.pending[index].state = .uncertain
+      chat.pending[index].state = starting ? .waitingForPi : .uncertain
       if attempt < Self.maxRetries { scheduleRetry(of: pending, in: id, attempt: attempt + 1) }
     case .notSent:
       // A later try refused for another reason: shown, and left for the person to remove.
@@ -518,6 +570,96 @@ public final class HostWorkbenchModel {
     if !sent { chat.isStopping = false }
   }
 
+  // MARK: - Pi's controls (RFD0033)
+
+  /// Restarts the chat's Pi on its conversation, stopping a reply it is writing. The chat shows
+  /// it restarting until it is ready again.
+  public func restartPi(in id: SessionID) async {
+    let chat = chat(id)
+    guard chat.restart == nil else { return }
+    chat.restart = .asked
+    var asked = false
+    await attempt {
+      try await connection.restartPi(in: id)
+      asked = true
+    }
+    guard asked else {
+      chat.restart = nil
+      return
+    }
+    settleChats()
+    // A Pi back before its chat was listed as anything but ready has restarted already.
+    let grace = restartGrace
+    Task { [weak self] in
+      try? await Task.sleep(for: grace)
+      guard let self, let chat = self.chatStore[id], chat.restart == .asked else { return }
+      chat.restart = nil
+    }
+  }
+
+  /// Reads the slash commands the chat's Pi takes. The last list read stays when this fails.
+  @discardableResult
+  public func loadCommands(in id: SessionID) async -> [PiCommand]? {
+    do {
+      let commands = try await connection.piCommands(in: id)
+      chat(id).commands = commands
+    } catch is CancellationError {
+    } catch {
+      account.noteFailure(error)
+    }
+    return chatStore[id]?.commands
+  }
+
+  /// Reads the models the chat's Pi could switch to. The last list read stays when this fails.
+  @discardableResult
+  public func loadModels(in id: SessionID) async -> [PiModel]? {
+    do {
+      let models = try await connection.piModels(in: id)
+      chat(id).models = models
+    } catch is CancellationError {
+    } catch {
+      account.noteFailure(error)
+      failure = Self.controlFailure(error)
+    }
+    return chatStore[id]?.models
+  }
+
+  /// What the chat's Pi runs: what was just picked here, until its listing says.
+  public func piRuntime(of id: SessionID) -> PiRuntime? {
+    chatStore[id]?.chosen ?? sessions.first { $0.sessionId == id }?.pi
+  }
+
+  /// Switches the chat's model, thinking level, or both, for this chat only. Shown at once; the
+  /// chat's listing then says what Pi runs.
+  public func setModel(_ model: PiModel? = nil, thinkingLevel: ThinkingLevel? = nil, in id: SessionID) async {
+    guard model != nil || thinkingLevel != nil else { return }
+    let before = piRuntime(of: id)
+    let ref = model.map { PiModelRef(provider: $0.provider, id: $0.id, name: $0.name) }
+    var level = thinkingLevel ?? before?.thinkingLevel
+    // Pi moves a level the new model lacks to one it has; until it says which, none is shown.
+    if let model, let current = level, !model.thinkingLevels.contains(current) { level = nil }
+    let chat = chat(id)
+    chat.chosen = PiRuntime(model: ref ?? before?.model, thinkingLevel: level)
+    do {
+      try await connection.setPiModel(in: id, model: ref, thinkingLevel: thinkingLevel)
+      failure = nil
+    } catch is CancellationError {
+      chat.chosen = nil
+    } catch {
+      account.noteFailure(error)
+      chat.chosen = nil
+      failure = Self.controlFailure(error)
+    }
+  }
+
+  static func controlFailure(_ error: Error) -> String {
+    switch error as? AxoClientError {
+    case .serverRejected(PiControlError.notSignedIn, _): "Pi isn't signed in to that model's provider on the Mac."
+    case .serverRejected(_, let message): message
+    default: error.localizedDescription
+    }
+  }
+
   /// An answer to what Pi is asking.
   public enum Answer: Equatable, Sendable {
     case yes
@@ -546,11 +688,14 @@ public final class HostWorkbenchModel {
     if chat.transcript == nil { chat.transcript = ChatTranscript() }
     change(&chat.transcript!)
     if chat.transcript?.activity == .idle, chat.isStopping { chat.isStopping = false }
-    guard !chat.pending.isEmpty, let delivered = chat.transcript?.delivered, !delivered.isEmpty else { return }
-    let landed = chat.pending.filter { delivered.contains($0.id.uuidString.lowercased()) }
+    guard !chat.pending.isEmpty, let transcript = chat.transcript else { return }
+    // Queued in the log is as good as delivered: the log shows it from here on (RFD0033).
+    let held = transcript.delivered.union(transcript.queued.map(\.commandId))
+    guard !held.isEmpty else { return }
+    let landed = chat.pending.filter { held.contains($0.id.uuidString.lowercased()) }
     guard !landed.isEmpty else { return }
     for prompt in landed { retries.removeValue(forKey: prompt.id)?.cancel() }
-    chat.pending.removeAll { delivered.contains($0.id.uuidString.lowercased()) }
+    chat.pending.removeAll { held.contains($0.id.uuidString.lowercased()) }
   }
 
   /// Shows `message` where failures are shown.

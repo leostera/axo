@@ -107,8 +107,9 @@ struct PendingPromptView: View {
     switch prompt.state {
     case .sending: "Sending…"
     case .sent: "Sent"
-    case .queued: "Queued · answered after the current reply"
+    case .queued: prompt.delivery == .steer ? QueuedPromptView.steering : QueuedPromptView.followUp
     case .uncertain: "Not confirmed yet · trying again"
+    case .waitingForPi: "Waiting for Pi to start…"
     }
   }
 
@@ -143,6 +144,41 @@ struct PendingPromptView: View {
     .frame(maxWidth: .infinity, alignment: .trailing)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("pendingPrompt")
+  }
+}
+
+/// A message Pi took while busy and has not started on, as the log holds it (RFD0033): the user's
+/// bubble, dimmed, saying whether it waits for the turn to end or joins it.
+struct QueuedPromptView: View {
+  let prompt: QueuedPrompt
+
+  static let followUp = "Queued · after the current reply"
+  static let steering = "Steering · within the current reply"
+
+  var body: some View {
+    VStack(alignment: .trailing, spacing: 12) {
+      if !prompt.attachments.isEmpty {
+        Text(prompt.attachments.map { "📎 \($0)" }.joined(separator: "\n"))
+          .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+      }
+      if !prompt.text.isEmpty {
+        Text(prompt.text)
+          .font(.body).textSelection(.enabled)
+          .padding(.horizontal, 17).padding(.vertical, 13)
+          .background(Color.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 23))
+          .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.24), lineWidth: 0.5))
+          .padding(.leading, 48)
+          .opacity(0.85)
+      }
+      HStack(spacing: 4) {
+        Image(systemName: prompt.delivery == .steer ? "arrow.turn.down.right" : "clock")
+        Text(prompt.delivery == .steer ? Self.steering : Self.followUp)
+      }
+      .font(.caption).foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, alignment: .trailing)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("queuedPrompt")
   }
 }
 

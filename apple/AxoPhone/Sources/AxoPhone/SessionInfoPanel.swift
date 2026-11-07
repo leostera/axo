@@ -30,6 +30,10 @@ struct SessionInfoPanel: View {
           .padding(.bottom, 24)
         if let session, let workbench {
           SessionFacts(workbench: workbench, session: session)
+          if session.hasAgent != false {
+            RestartPi(workbench: workbench, session: session)
+              .padding(.top, 20)
+          }
           if let state = session.workspaceState {
             WorkspaceFacts(state: state, host: workbench.hostLabel)
               .padding(.top, 20)
@@ -87,7 +91,8 @@ private struct SessionFacts: View {
   }
 
   private var status: String {
-    switch session.status {
+    if workbench.chat(session.sessionId).restart != nil { return "Restarting…" }
+    return switch session.status {
     case .starting: "Starting"
     case .ready: "Ready"
     case .working: "Working"
@@ -104,6 +109,42 @@ private struct SessionFacts: View {
     switch chat.history {
     case .loaded(_, hasOlder: true), .loadingOlder: return "\(count)+"
     default: return count.formatted()
+    }
+  }
+}
+
+/// Restarts the chat's Pi on its conversation, after asking: a reply it is writing stops
+/// (RFD0033). Says "Restarting…" until Pi is ready again.
+private struct RestartPi: View {
+  let workbench: HostWorkbenchModel
+  let session: RemoteSession
+  @State private var confirming = false
+
+  var body: some View {
+    let restarting = workbench.chat(session.sessionId).restart != nil
+    Button { confirming = true } label: {
+      HStack(spacing: 10) {
+        if restarting { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+        Text(restarting ? "Restarting…" : "Restart Pi")
+        Spacer(minLength: 0)
+      }
+      .font(.body)
+      .padding(.horizontal, 16).padding(.vertical, 13)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(restarting ? Color.secondary : Color.primary)
+    .disabled(restarting || workbench.status != .online)
+    .accessibilityIdentifier("restart-pi")
+    .confirmationDialog("Restart Pi?", isPresented: $confirming, titleVisibility: .visible) {
+      Button("Restart Pi", role: .destructive) {
+        Task { await workbench.restartPi(in: session.sessionId) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("A reply it is writing stops. The conversation is kept.")
     }
   }
 }
