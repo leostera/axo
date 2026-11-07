@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream};
+use std::os::unix::net::UnixListener as StdUnixListener;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -211,45 +211,52 @@ pub struct Upgraded {
     id: Value,
     /// The first request's parameters.
     pub params: Value,
-    /// What the client sent after its first request, read already; it comes before the stream.
-    pub pending: Vec<u8>,
-    /// The connection, blocking.
-    pub stream: StdUnixStream,
+    /// What the client sends from here on; what it sent after its first request comes first.
+    pub reader: UpgradedReader,
+    pub writer: tokio::net::unix::OwnedWriteHalf,
     /// axod's methods, called as this connection's peer.
     pub local: crate::local::Local,
 }
 
+/// The read side of an upgraded connection.
+pub type UpgradedReader =
+    BufReader<tokio::io::Chain<std::io::Cursor<Vec<u8>>, tokio::net::unix::OwnedReadHalf>>;
+
 impl Upgraded {
     /// Answers the first request; call it once, before anything else is written.
-    pub fn answer(&mut self, result: Result<Value, RpcError>) -> io::Result<()> {
-        use std::io::Write;
+    pub async fn answer(&mut self, result: Result<Value, RpcError>) -> io::Result<()> {
         let response = match result {
             Ok(result) => serde_json::json!({ "jsonrpc": "2.0", "id": self.id, "result": result }),
             Err(error) => serde_json::json!({ "jsonrpc": "2.0", "id": self.id, "error": error }),
         };
-        writeln!(self.stream, "{response}")?;
-        self.stream.flush()
-    }
-
-    /// What the client sends from here on.
-    pub fn reader(&self) -> io::Result<impl std::io::BufRead + Send + 'static> {
-        let pending = std::io::Cursor::new(self.pending.clone());
-        let rest = std::io::Read::chain(pending, self.stream.try_clone()?);
-        Ok(std::io::BufReader::new(rest))
+        let mut line = response.to_string();
+        line.push('\n');
+        self.writer.write_all(line.as_bytes()).await?;
+        self.writer.flush().await
     }
 }
 
+type Upgrade =
+    Arc<dyn Fn(Upgraded) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Methods that take over the connection they arrive on, when they are its first request. Each
-/// runs on the blocking pool for as long as it keeps the connection.
+/// runs as the connection's task for as long as it keeps the connection.
 #[derive(Clone, Default)]
-pub struct Upgrades(HashMap<String, Arc<dyn Fn(Upgraded) + Send + Sync>>);
+pub struct Upgrades(HashMap<String, Upgrade>);
 
 impl Upgrades {
-    pub fn add(&mut self, method: &str, upgrade: impl Fn(Upgraded) + Send + Sync + 'static) {
-        self.0.insert(method.to_owned(), Arc::new(upgrade));
+    pub fn add<F, Fut>(&mut self, method: &str, upgrade: F)
+    where
+        F: Fn(Upgraded) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.0.insert(
+            method.to_owned(),
+            Arc::new(move |upgraded| Box::pin(upgrade(upgraded))),
+        );
     }
 
-    fn get(&self, request: &str) -> Option<(Arc<dyn Fn(Upgraded) + Send + Sync>, Value, Value)> {
+    fn get(&self, request: &str) -> Option<(Upgrade, Value, Value)> {
         if self.0.is_empty() {
             return None;
         }
@@ -346,26 +353,17 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>, upgrades:
         .ok()
         .and_then(|request| upgrades.get(request.trim()))
     {
-        let pending = reader.buffer().to_vec();
-        let Ok(stream) = reader.into_inner().reunite(writer) else {
-            return;
-        };
-        let Ok(stream) = stream.into_std().and_then(|stream| {
-            stream.set_nonblocking(false)?;
-            Ok(stream)
-        }) else {
-            return;
-        };
-        let runtime = tokio::runtime::Handle::current();
-        let local = crate::local::Local::new(handler, runtime.clone(), peer);
+        let pending = std::io::Cursor::new(reader.buffer().to_vec());
+        let reader = BufReader::new(pending.chain(reader.into_inner()));
+        let local = crate::local::Local::new(handler, peer);
         let upgraded = Upgraded {
             id,
             params,
-            pending,
-            stream,
+            reader,
+            writer,
             local,
         };
-        let _ = runtime.spawn_blocking(move || upgrade(upgraded)).await;
+        upgrade(upgraded).await;
         return;
     }
     let mut writer = writer;
@@ -527,18 +525,27 @@ mod tests {
     /// axod's own `quick` answers it in process.
     fn upgraded() -> Upgrades {
         let mut upgrades = Upgrades::default();
-        upgrades.add("shout.open", |mut upgraded: Upgraded| {
+        upgrades.add("shout.open", |mut upgraded: Upgraded| async move {
             let params = upgraded.params.clone();
-            upgraded.answer(Ok(params)).unwrap();
-            let quick = upgraded.local.call(
-                "quick",
-                Value::Null,
-                Duration::from_secs(1),
-                &Cancellation::default(),
-            );
-            writeln!(upgraded.stream, "quick={quick:?}").unwrap();
-            for line in upgraded.reader().unwrap().lines() {
-                writeln!(upgraded.stream, "{}", line.unwrap().to_uppercase()).unwrap();
+            upgraded.answer(Ok(params)).await.unwrap();
+            let quick = upgraded
+                .local
+                .call(
+                    "quick",
+                    Value::Null,
+                    Duration::from_secs(1),
+                    &Cancellation::default(),
+                )
+                .await;
+            let mut out = upgraded.writer;
+            out.write_all(format!("quick={quick:?}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut lines = upgraded.reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                out.write_all(format!("{}\n", line.to_uppercase()).as_bytes())
+                    .await
+                    .unwrap();
             }
         });
         upgrades

@@ -11,9 +11,11 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Condvar, Mutex};
+use std::sync::Arc;
+
 use std::thread;
 use std::time::Duration;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 use axo_ipc::{Local, LocalError, Upgraded};
 use axo_protocol::SessionId;
@@ -332,27 +334,27 @@ pub const OPEN: &str = "axo.mcp.open";
 
 /// Serves MCP on an `OPEN` connection, for as long as the client keeps it. The connection's own
 /// first answer says whether the Session can be served.
-pub fn upgrade(mut upgraded: Upgraded, socket: PathBuf) {
+pub async fn upgrade(mut upgraded: Upgraded, socket: PathBuf) {
     let session_id = upgraded.params["sessionId"]
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let server = match McpServer::connect(upgraded.local.clone(), socket, &session_id) {
+    let server = match McpServer::connect(upgraded.local.clone(), socket, &session_id).await {
         Ok(server) => server,
         Err(error) => {
             let mut refusal = axo_ipc::RpcError::invalid_params(error.to_string());
             refusal.code = axo_ipc::ErrorCode::ServerError(-32002);
-            let _ = upgraded.answer(Err(refusal));
+            let _ = upgraded.answer(Err(refusal)).await;
             return;
         }
     };
-    if upgraded.answer(Ok(json!({}))).is_err() {
+    if upgraded.answer(Ok(json!({}))).await.is_err() {
         return;
     }
     log::info!("event=mcp.opened session_id={session_id}");
-    let served = upgraded
-        .reader()
-        .and_then(|input| server.serve(input, &upgraded.stream));
+    let served = Arc::new(server)
+        .serve(upgraded.reader, upgraded.writer)
+        .await;
     log::info!(
         "event=mcp.closed session_id={session_id} outcome={}",
         if served.is_ok() { "ok" } else { "error" }
@@ -372,7 +374,7 @@ pub struct McpServer {
 impl McpServer {
     /// Serves the open Session `session_id` names. Fails if it is not a Session ID, Axod is
     /// unreachable, or Axod has no such Session.
-    pub fn connect(axod: Local, socket: PathBuf, session_id: &str) -> io::Result<Self> {
+    pub async fn connect(axod: Local, socket: PathBuf, session_id: &str) -> io::Result<Self> {
         let session_id = SessionId::parse(session_id)
             .ok_or_else(|| io::Error::other(format!("{session_id:?} is not a Session ID")))?;
         let server = Self {
@@ -383,94 +385,96 @@ impl McpServer {
         };
         server
             .own_session()
+            .await
             .map_err(|ToolError(message)| io::Error::other(message))?;
         Ok(server)
     }
 
     /// Answers MCP requests on `input` until it ends.
     ///
-    /// Tool calls run side by side, each on its own thread, and answer when they finish, in any
-    /// order: a script that asks the person three questions with `Promise.all`, or runs a slow
-    /// `computer` call beside others, waits for the slowest, not the sum. At most
-    /// `MAX_CALLS_IN_FLIGHT` run at once; past that, reading waits for one to finish. Everything
-    /// else (`initialize`, `tools/list`) answers in order, before the next line is read.
-    pub fn serve(&self, input: impl BufRead, output: impl Write + Send) -> io::Result<()> {
-        let output = Mutex::new(output);
-        let in_flight = (Mutex::new(0usize), Condvar::new());
-        let respond = |response: Value| -> io::Result<()> {
-            let mut output = output
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            writeln!(output, "{response}")?;
-            output.flush()
-        };
-        thread::scope(|scope| {
-            let read = (|| {
-                for line in input.lines() {
-                    let line = line?;
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let message = match serde_json::from_str::<Value>(&line) {
-                        Ok(message) => message,
-                        Err(_) => {
-                            respond(error_response(&Value::Null, -32700, "parse error"))?;
-                            continue;
-                        }
-                    };
-                    if message["method"] == "notifications/cancelled" {
-                        // The client gave up on a call: axod gives up what it waits on for it.
-                        let id = message["params"]["requestId"].to_string();
-                        let running = self.calls.give_up(&id);
-                        log::info!("event=mcp.call_cancelled running={running}");
-                        continue;
-                    }
-                    if message["method"] != "tools/call" || message.get("id").is_none() {
-                        if let Some(response) = self.handle(&message) {
-                            respond(response)?;
-                        }
-                        continue;
-                    }
-                    let (count, freed) = &in_flight;
-                    let mut running = count
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    while *running >= MAX_CALLS_IN_FLIGHT {
-                        running = freed
-                            .wait(running)
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    }
-                    *running += 1;
-                    drop(running);
-                    let (respond, in_flight) = (&respond, &in_flight);
-                    scope.spawn(move || {
-                        let id = message["id"].to_string();
-                        // A call given up is not answered (MCP's cancellation); nor is one whose
-                        // agent left, as stdout has gone with it.
-                        if let Some(Some(response)) = self.calls.run(id, || self.handle(&message)) {
-                            let _ = respond(response);
-                        }
-                        let (count, freed) = in_flight;
-                        *count
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
-                        freed.notify_one();
-                    });
+    /// Tool calls run side by side, each as a task, and answer when they finish, in any order: a
+    /// script that asks the person three questions with `Promise.all`, or runs a slow `computer`
+    /// call beside others, waits for the slowest, not the sum. At most `MAX_CALLS_IN_FLIGHT` run
+    /// at once; past that, reading waits for one to finish. Everything else (`initialize`,
+    /// `tools/list`) answers in order, before the next line is read.
+    pub async fn serve(
+        self: Arc<Self>,
+        input: impl AsyncBufRead + Unpin,
+        output: impl AsyncWrite + Unpin + Send + 'static,
+    ) -> io::Result<()> {
+        let (responses, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let writing = tokio::spawn(async move {
+            let mut output = output;
+            while let Some(response) = outgoing.recv().await {
+                let line = format!("{response}\n");
+                if output.write_all(line.as_bytes()).await.is_err() || output.flush().await.is_err()
+                {
+                    break;
                 }
-                Ok(())
-            })();
-            // The input ended: Pi left, so every call still running is given up, and this
-            // process exits as soon as they unwind instead of when they would have ended.
-            let given_up = self.calls.give_up_all();
-            if given_up > 0 {
-                log::info!("event=mcp.calls_given_up count={given_up}");
             }
-            read
-        })
+        });
+        let in_flight = Arc::new(tokio::sync::Semaphore::new(MAX_CALLS_IN_FLIGHT));
+        let mut running = tokio::task::JoinSet::new();
+        let mut lines = input.lines();
+        let read = loop {
+            while running.try_join_next().is_some() {}
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break Ok(()),
+                Err(error) => break Err(error),
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let message = match serde_json::from_str::<Value>(&line) {
+                Ok(message) => message,
+                Err(_) => {
+                    let _ = responses.send(error_response(&Value::Null, -32700, "parse error"));
+                    continue;
+                }
+            };
+            if message["method"] == "notifications/cancelled" {
+                // The client gave up on a call: axod gives up what it waits on for it.
+                let id = message["params"]["requestId"].to_string();
+                let running = self.calls.give_up(&id);
+                log::info!("event=mcp.call_cancelled running={running}");
+                continue;
+            }
+            if message["method"] != "tools/call" || message.get("id").is_none() {
+                if let Some(response) = self.handle(&message).await {
+                    let _ = responses.send(response);
+                }
+                continue;
+            }
+            let Ok(permit) = Arc::clone(&in_flight).acquire_owned().await else {
+                break Ok(());
+            };
+            let (server, responses) = (Arc::clone(&self), responses.clone());
+            running.spawn(async move {
+                let _permit = permit;
+                let id = message["id"].to_string();
+                // A call given up is not answered (MCP's cancellation); nor is one whose agent
+                // left, as its output has gone with it.
+                if let Some(Some(response)) = server.calls.run(id, server.handle(&message)).await {
+                    let _ = responses.send(response);
+                }
+            });
+        };
+        // The input ended: Pi left, so every call still running is given up. They stop waiting
+        // at once; anything still running on the blocking pool is not waited for.
+        let given_up = self.calls.give_up_all();
+        if given_up > 0 {
+            log::info!("event=mcp.calls_given_up count={given_up}");
+        }
+        running.abort_all();
+        while running.join_next().await.is_some() {}
+        drop(responses);
+        let _ = writing.await;
+        read
     }
 
     /// One JSON-RPC message; `None` for notifications.
-    pub fn handle(&self, message: &Value) -> Option<Value> {
+    pub async fn handle(&self, message: &Value) -> Option<Value> {
         let id = message.get("id")?;
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         let result = match message["method"].as_str().unwrap_or_default() {
@@ -478,7 +482,7 @@ impl McpServer {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": "axo", "version": BUILD_NUMBER },
-                "instructions": match self.apps_summary() {
+                "instructions": match self.apps_summary().await {
                     Some(summary) => format!("{INSTRUCTIONS}\n\n{summary}"),
                     None => INSTRUCTIONS.to_string(),
                 },
@@ -487,7 +491,7 @@ impl McpServer {
             "tools/list" => {
                 // The account's apps go into the descriptions of the tools that reach
                 // them, so a search for "email" finds `apps_run` and says how to call Gmail.
-                let summary = self.apps_summary();
+                let summary = self.apps_summary().await;
                 let tools = offered_tools()
                     .map(|tool| {
                         let mut declaration = tool_declaration(tool);
@@ -503,7 +507,7 @@ impl McpServer {
                     .collect::<Vec<_>>();
                 Ok(json!({ "tools": tools }))
             }
-            "tools/call" => Ok(self.call_tool(&params)),
+            "tools/call" => Ok(self.call_tool(&params).await),
             other => Err(error_response(
                 id,
                 -32601,
@@ -516,7 +520,7 @@ impl McpServer {
         })
     }
 
-    fn call_tool(&self, params: &Value) -> Value {
+    async fn call_tool(&self, params: &Value) -> Value {
         let name = params["name"].as_str().unwrap_or_default();
         let arguments = match &params["arguments"] {
             Value::Object(arguments) => arguments.clone(),
@@ -527,21 +531,22 @@ impl McpServer {
             return tool_error(&format!("unknown tool {name}"));
         };
         match tool.name {
-            COMPUTER => return self.call_computer(&arguments),
+            COMPUTER => return self.call_computer(&arguments).await,
             COMPUTER_TOOLS => return computer_tools(&arguments),
             _ => {}
         }
         let outcome = match tool.method {
-            None => self.own_session().map(|session| {
+            None => self.own_session().await.map(|session| {
                 json!({
                     "sessionId": session["id"],
                     "workspaceId": session["workspaceId"],
                     "session": session,
                 })
             }),
-            Some(method) => self
-                .resolve(tool, arguments)
-                .and_then(|params| self.call(method, Value::Object(params))),
+            Some(method) => match self.resolve(tool, arguments).await {
+                Ok(params) => self.call(method, Value::Object(params)).await,
+                Err(error) => Err(error),
+            },
         };
         log::info!(
             "event=mcp.tool_called tool={name} outcome={}",
@@ -557,7 +562,7 @@ impl McpServer {
                 let mut content = vec![json!({ "type": "text", "text": result.to_string() })];
                 // A script's screenshots (RFD0028) are shown to the model, not only named.
                 if tool.method == Some(method::APPS_RUN) {
-                    content.extend(self.images_in(&result));
+                    content.extend(self.images_in(&result).await);
                 }
                 json!({ "content": content, "structuredContent": result })
             }
@@ -566,7 +571,7 @@ impl McpServer {
     }
 
     /// Replaces `"self"` and names this Session as a prompt's sender.
-    fn resolve(
+    async fn resolve(
         &self,
         tool: &Tool,
         mut arguments: Map<String, Value>,
@@ -575,7 +580,7 @@ impl McpServer {
             arguments.insert("sessionId".into(), json!(self.session_id));
         }
         if arguments.get("workspaceId").and_then(Value::as_str) == Some(SELF) {
-            let workspace = self.own_session()?["workspaceId"].clone();
+            let workspace = self.own_session().await?["workspaceId"].clone();
             if workspace.is_null() {
                 return Err(ToolError("this Session has no Workspace".into()));
             }
@@ -618,7 +623,7 @@ impl McpServer {
     /// The images a script returned as `{ type: "image", attachment }`, as MCP images: fetched
     /// through axod into `~/.axo/assets`, at most `MAX_SHOWN_IMAGES` and `MAX_SHOWN_BYTES` in all.
     /// Anything that can't be fetched stays a reference in the text.
-    fn images_in(&self, result: &Value) -> Vec<Value> {
+    async fn images_in(&self, result: &Value) -> Vec<Value> {
         let mut attachments = Vec::new();
         collect_image_attachments(result, &mut attachments);
         let mut total = 0;
@@ -630,7 +635,10 @@ impl McpServer {
         if attachments.is_empty() {
             return Vec::new();
         }
-        let fetched = match self.call(method::ASSETS_FETCH, json!({ "attachments": attachments })) {
+        let fetched = match self
+            .call(method::ASSETS_FETCH, json!({ "attachments": attachments }))
+            .await
+        {
             Ok(fetched) => fetched,
             Err(ToolError(why)) => {
                 log::info!("event=mcp.images_unfetched error={why}");
@@ -654,19 +662,20 @@ impl McpServer {
 
     /// What the account reaches now, as one paragraph, or `None` when this Mac is not linked or
     /// the account does not answer quickly. Asked once per `initialize` and `tools/list`.
-    fn apps_summary(&self) -> Option<String> {
+    async fn apps_summary(&self) -> Option<String> {
         let listed = self
             .call_within(
                 method::APPS_LIST,
                 json!({ "sessionId": self.session_id }),
                 SUMMARY_TIMEOUT,
             )
+            .await
             .ok()?;
         summarize_apps(&listed)
     }
 
-    fn own_session(&self) -> Result<Value, ToolError> {
-        let catalog = self.call(method::SESSION_CATALOG, json!({}))?;
+    async fn own_session(&self) -> Result<Value, ToolError> {
+        let catalog = self.call(method::SESSION_CATALOG, json!({})).await?;
         catalog["sessions"]
             .as_array()
             .and_then(|sessions| {
@@ -678,29 +687,26 @@ impl McpServer {
             .ok_or_else(|| ToolError(format!("Axod has no open Session {}", self.session_id)))
     }
 
-    /// One request to Axod on a connection of its own.
-    fn call(&self, method: &str, params: Value) -> Result<Value, ToolError> {
+    /// One request to axod, in process, as part of the tool call being run.
+    async fn call(&self, method: &str, params: Value) -> Result<Value, ToolError> {
         let timeout = if method == method::ELICITATION_REQUEST {
             Duration::from_millis(axo_protocol::elicitation::TIMEOUT_MS) + Duration::from_secs(10)
         } else {
             axo_protocol::rpc::forwarded::client_timeout(method).unwrap_or(AXOD_TIMEOUT)
         };
-        self.call_within(method, params, timeout)
+        self.call_within(method, params, timeout).await
     }
 
-    fn call_within(
+    async fn call_within(
         &self,
         method: &str,
         params: Value,
         timeout: Duration,
     ) -> Result<Value, ToolError> {
-        let cancellation = axo_ipc::cancel::Cancellation::default();
-        let _attached = self
-            .calls
-            .attach(&cancellation)
-            .map_err(|_| ToolError("the call was cancelled".into()))?;
+        let cancellation = calls::current();
         self.axod
             .call(method, params, timeout, &cancellation)
+            .await
             .map_err(|error| match error {
                 LocalError::Refused { code, message } => {
                     let message = if message.is_empty() {
@@ -992,7 +998,7 @@ impl McpServer {
     /// One computer-use tool, run in this process after the risk gate; its MCP result (text and
     /// images) goes back as it is. A call the gate flags, or one with `confirm: true`, runs only
     /// if the person allows it, asked here and answered only to this call (RFD0029).
-    fn call_computer(&self, arguments: &Map<String, Value>) -> Value {
+    async fn call_computer(&self, arguments: &Map<String, Value>) -> Value {
         if let Some(extra) = arguments
             .keys()
             .find(|key| !COMPUTER_ARGUMENTS.contains(&key.as_str()))
@@ -1010,7 +1016,10 @@ impl McpServer {
             let params = json!({ "sessionId": self.session_id, "args": args });
             let timeout = Duration::from_millis(axo_protocol::elicitation::TIMEOUT_MS)
                 + Duration::from_secs(10);
-            return match self.call_within(method::COMPUTER_INPUT, params, timeout) {
+            return match self
+                .call_within(method::COMPUTER_INPUT, params, timeout)
+                .await
+            {
                 Ok(receipt) => receipt,
                 Err(ToolError(why)) => {
                     tool_error(&format!("Not done: the person could not be asked ({why})."))
@@ -1022,20 +1031,40 @@ impl McpServer {
             Some(Value::Bool(true)) => true,
             Some(_) => return tool_error("confirm must be true or false"),
         };
-        let gate = axo_computer::gate::for_socket(&self.socket);
-        let asked = match gate.check(tool, &args, asked_for) {
+        // The gate's judge and Cua's calls block: they run on the blocking pool.
+        let verdict = {
+            let (socket, tool, args) = (self.socket.clone(), tool.to_owned(), args.clone());
+            tokio::task::spawn_blocking(move || {
+                axo_computer::gate::for_socket(&socket).check(&tool, &args, asked_for)
+            })
+            .await
+        };
+        let Ok(verdict) = verdict else {
+            return tool_error("the computer-use check failed");
+        };
+        let asked = match verdict {
             axo_computer::gate::Verdict::Allow => false,
             axo_computer::gate::Verdict::Ask(question) => {
-                if let Err(message) = self.ask_the_person(&question) {
+                if let Err(message) = self.ask_the_person(&question).await {
                     log::info!("event=mcp.computer_called tool={tool} outcome=not_allowed");
                     return tool_error(&message);
                 }
                 true
             }
         };
-        let mut result = axo_computer::call(tool, args);
-        gate.remember(tool, &result);
-        self.redact(&mut result);
+        let called = {
+            let (socket, tool) = (self.socket.clone(), tool.to_owned());
+            tokio::task::spawn_blocking(move || {
+                let result = axo_computer::call(&tool, args);
+                axo_computer::gate::for_socket(&socket).remember(&tool, &result);
+                result
+            })
+            .await
+        };
+        let Ok(mut result) = called else {
+            return tool_error("the computer call failed");
+        };
+        self.redact(&mut result).await;
         log::info!(
             "event=mcp.computer_called tool={tool} outcome={}{}",
             if result["isError"] == json!(true) {
@@ -1050,8 +1079,8 @@ impl McpServer {
 
     /// Hides what the person filled in through `request_input` from a result: axod keeps the
     /// salted hashes of those values; this process never sees the values themselves.
-    fn redact(&self, result: &mut Value) {
-        let Ok(known) = self.call(method::COMPUTER_REDACTIONS, json!({})) else {
+    async fn redact(&self, result: &mut Value) {
+        let Ok(known) = self.call(method::COMPUTER_REDACTIONS, json!({})).await else {
             return;
         };
         let hashes: Vec<&str> = known["hashes"]
@@ -1081,14 +1110,15 @@ impl McpServer {
 
     /// Asks the person on their own devices and waits; `Ok` only if they allowed it. The answer
     /// comes back on this call's own connection to axod, so nothing else can present it.
-    fn ask_the_person(&self, question: &str) -> Result<(), String> {
+    async fn ask_the_person(&self, question: &str) -> Result<(), String> {
         let params =
             json!({ "sessionId": self.session_id, "message": question, "askedBy": "computerUse" });
-        let outcome =
-            self.call(method::ELICITATION_REQUEST, params)
-                .map_err(|ToolError(why)| {
-                    format!("Not done: the person could not be asked ({why}).")
-                })?;
+        let outcome = self
+            .call(method::ELICITATION_REQUEST, params)
+            .await
+            .map_err(|ToolError(why)| {
+                format!("Not done: the person could not be asked ({why}).")
+            })?;
         match outcome["action"].as_str() {
             Some("accept") => Ok(()),
             Some("decline") => Err("Not done: the person declined.".into()),
@@ -1190,26 +1220,63 @@ fn pipe(
 mod tests {
     use super::*;
     use axo_ipc::{IoHandler, TypedMethods};
+    use std::sync::{Condvar, Mutex};
 
-    /// A server for `SID` that reaches `axod`'s methods in process, as nobody in particular.
-    fn serving(axod: IoHandler) -> (McpServer, tokio::runtime::Runtime) {
+    /// A server for `SID` that reaches `axod`'s methods in process, as nobody in particular,
+    /// with a runtime to run it on.
+    struct Served {
+        server: Arc<McpServer>,
+        runtime: tokio::runtime::Runtime,
+    }
+
+    impl Served {
+        fn handle(&self, message: &Value) -> Option<Value> {
+            self.runtime.block_on(self.server.handle(message))
+        }
+
+        fn resolve(
+            &self,
+            tool: &Tool,
+            arguments: Map<String, Value>,
+        ) -> Result<Map<String, Value>, ToolError> {
+            self.runtime.block_on(self.server.resolve(tool, arguments))
+        }
+
+        fn connect(&self, session_id: &str) -> io::Result<McpServer> {
+            let axod = self.server.axod.clone();
+            self.runtime
+                .block_on(McpServer::connect(axod, PathBuf::new(), session_id))
+        }
+
+        /// Serves MCP from `input` to `output` until `input` ends.
+        fn serve(&self, input: UnixStream, output: UnixStream) -> io::Result<()> {
+            self.runtime.block_on(async {
+                let [input, output] = [input, output].map(|stream| {
+                    stream.set_nonblocking(true).unwrap();
+                    tokio::net::UnixStream::from_std(stream).unwrap()
+                });
+                let input = tokio::io::BufReader::new(input);
+                Arc::clone(&self.server).serve(input, output).await
+            })
+        }
+    }
+
+    fn serving(axod: IoHandler) -> Served {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
+            .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
-        let local = Local::new(
-            std::sync::Arc::new(axod),
-            runtime.handle().clone(),
-            axo_ipc::peer::Peer::default(),
-        );
         let server = McpServer {
-            axod: local,
+            axod: Local::new(Arc::new(axod), axo_ipc::peer::Peer::default()),
             socket: PathBuf::from("/nonexistent/axod.sock"),
             session_id: SID,
             calls: Default::default(),
         };
-        (server, runtime)
+        Served {
+            server: Arc::new(server),
+            runtime,
+        }
     }
 
     /// Three questions asked together are all asked at once: each tool call runs beside the
@@ -1237,7 +1304,7 @@ mod tests {
             }
             Ok(json!({ "together": *seen }))
         });
-        let (server, _axod) = serving(axod);
+        let server = serving(axod);
         let ask = |id: u64| {
             json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "elicitation_request", "arguments": { "message": format!("Question {id}?") } } }).to_string()
         };
@@ -1256,9 +1323,7 @@ mod tests {
             drop(to_server);
             responses
         });
-        server
-            .serve(BufReader::new(server_input), server_output)
-            .unwrap();
+        server.serve(server_input, server_output).unwrap();
         let responses = client.join().unwrap();
         assert_eq!(responses.len(), 3);
         for response in &responses {
@@ -1296,7 +1361,7 @@ mod tests {
                 .send(axo_ipc::cancel::current().is_cancelled());
             Ok(json!({}))
         });
-        let (server, _axod) = serving(axod);
+        let server = serving(axod);
         let (mut to_server, server_input) = UnixStream::pair().unwrap();
         writeln!(
             to_server,
@@ -1309,11 +1374,11 @@ mod tests {
             thread::sleep(Duration::from_millis(200));
             drop(to_server);
         });
-        let mut output = Vec::new();
-        server
-            .serve(BufReader::new(server_input), &mut output)
-            .unwrap();
+        let (server_output, mut from_server) = UnixStream::pair().unwrap();
+        server.serve(server_input, server_output).unwrap();
         leaving.join().unwrap();
+        let mut output = Vec::new();
+        io::Read::read_to_end(&mut from_server, &mut output).unwrap();
         assert_eq!(
             cancellations.recv_timeout(Duration::from_secs(5)),
             Ok(true),
@@ -1375,8 +1440,8 @@ mod tests {
         axod.add_typed(method::SESSION_CATALOG, "", |_: Value| {
             Ok(json!({ "sessions": [{ "id": SID }] }))
         });
-        let (probe, _runtime) = serving(axod);
-        let connect = |id: &str| McpServer::connect(probe.axod.clone(), PathBuf::new(), id);
+        let probe = serving(axod);
+        let connect = |id: &str| probe.connect(id);
         assert_eq!(
             connect("not-an-id").err().unwrap().to_string(),
             "\"not-an-id\" is not a Session ID"
@@ -1479,7 +1544,7 @@ mod tests {
 
     #[test]
     fn a_search_takes_words_or_code_but_not_both() {
-        let (server, _axod) = serving(IoHandler::new());
+        let server = serving(IoHandler::new());
         let search = TOOLS
             .iter()
             .find(|tool| tool.name == "apps_search")
@@ -1521,7 +1586,7 @@ mod tests {
 
     #[test]
     fn requests_without_axod_still_get_protocol_answers() {
-        let (server, _axod) = serving(IoHandler::new());
+        let server = serving(IoHandler::new());
         let initialized = server
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }))
             .unwrap();
@@ -1543,7 +1608,7 @@ mod tests {
 
     #[test]
     fn self_and_the_sender_are_filled_in() {
-        let (server, _axod) = serving(IoHandler::new());
+        let server = serving(IoHandler::new());
         let prompt = TOOLS
             .iter()
             .find(|tool| tool.name == "session_prompt")
@@ -1561,7 +1626,7 @@ mod tests {
 
     #[test]
     fn apps_calls_name_this_session_whatever_the_agent_passes() {
-        let (server, _axod) = serving(IoHandler::new());
+        let server = serving(IoHandler::new());
         for tool in TOOLS.iter().filter(|tool| tool.name.starts_with("apps_")) {
             let declaration = tool_declaration(tool);
             assert!(
@@ -1602,7 +1667,7 @@ mod tests {
 
     #[test]
     fn without_axod_the_tools_are_listed_as_declared() {
-        let (server, _axod) = serving(IoHandler::new());
+        let server = serving(IoHandler::new());
         let listed = server
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();

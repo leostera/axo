@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use jsonrpc_core::IoHandler;
 use serde_json::{Value, json};
-use tokio::runtime::Handle;
 
 use crate::cancel::Cancellation;
 use crate::peer::Peer;
@@ -25,7 +24,6 @@ use crate::peer::Peer;
 #[derive(Clone)]
 pub struct Local {
     handler: Arc<IoHandler>,
-    runtime: Handle,
     peer: Peer,
 }
 
@@ -41,13 +39,9 @@ pub enum LocalError {
 }
 
 impl Local {
-    /// Calls `handler`'s methods on `runtime` as `peer`.
-    pub fn new(handler: Arc<IoHandler>, runtime: Handle, peer: Peer) -> Self {
-        Self {
-            handler,
-            runtime,
-            peer,
-        }
+    /// Calls `handler`'s methods as `peer`.
+    pub fn new(handler: Arc<IoHandler>, peer: Peer) -> Self {
+        Self { handler, peer }
     }
 
     /// The peer calls are made as.
@@ -56,8 +50,8 @@ impl Local {
     }
 
     /// Calls `method` and waits for its answer, at most `timeout`, or until `cancellation`
-    /// fires. Blocks the calling thread, which must not be one of the runtime's own.
-    pub fn call(
+    /// fires.
+    pub async fn call(
         &self,
         method: &str,
         params: Value,
@@ -81,10 +75,8 @@ impl Local {
                 async move { handler.handle_request(&request).await },
             ),
         );
-        let answer = self.runtime.block_on(async move {
-            let within = tokio::time::timeout(timeout, handled);
-            first(within, cancelled).await
-        });
+        let within = tokio::time::timeout(timeout, handled);
+        let answer = first(within, cancelled).await;
         let response = match answer {
             First::Left(Ok(Some(response))) => response,
             // A request with an id always has a response; none would be a handler bug.
@@ -176,19 +168,15 @@ mod tests {
     #[test]
     fn a_call_reaches_the_method_and_brings_back_its_result_or_error() {
         let runtime = runtime();
-        let local = Local::new(
-            Arc::new(handler()),
-            runtime.handle().clone(),
-            Peer::default(),
-        );
+        let local = Local::new(Arc::new(handler()), Peer::default());
         let never = Cancellation::default();
         let second = Duration::from_secs(1);
         assert_eq!(
-            local.call("echo", json!({ "said": "hi" }), second, &never),
+            runtime.block_on(local.call("echo", json!({ "said": "hi" }), second, &never)),
             Ok(json!({ "said": "hi" }))
         );
         assert_eq!(
-            local.call("nope", json!({}), second, &never),
+            runtime.block_on(local.call("nope", json!({}), second, &never)),
             Err(LocalError::Refused {
                 code: -32601,
                 message: "Method not found".into()
@@ -199,18 +187,14 @@ mod tests {
     #[test]
     fn a_call_is_checked_as_the_peer_it_acts_for() {
         let runtime = runtime();
-        let local = Local::new(
-            Arc::new(handler()),
-            runtime.handle().clone(),
-            Peer::default(),
-        );
+        let local = Local::new(Arc::new(handler()), Peer::default());
         assert_eq!(
-            local.call(
+            runtime.block_on(local.call(
                 "only",
                 json!({}),
                 Duration::from_secs(1),
                 &Cancellation::default()
-            ),
+            )),
             Err(LocalError::Refused {
                 code: -32003,
                 message: "axod only".into()
@@ -221,11 +205,7 @@ mod tests {
     #[test]
     fn giving_up_stops_the_wait_and_tells_the_method() {
         let runtime = runtime();
-        let local = Local::new(
-            Arc::new(handler()),
-            runtime.handle().clone(),
-            Peer::default(),
-        );
+        let local = Local::new(Arc::new(handler()), Peer::default());
         let cancellation = Cancellation::default();
         let giving_up = {
             let cancellation = cancellation.clone();
@@ -236,7 +216,7 @@ mod tests {
         };
         let started = Instant::now();
         assert_eq!(
-            local.call("wait", json!({}), Duration::from_secs(10), &cancellation),
+            runtime.block_on(local.call("wait", json!({}), Duration::from_secs(10), &cancellation)),
             Err(LocalError::Cancelled)
         );
         assert!(
@@ -246,7 +226,7 @@ mod tests {
         );
         giving_up.join().unwrap();
         assert_eq!(
-            local.call("echo", json!({}), Duration::from_secs(1), &cancellation),
+            runtime.block_on(local.call("echo", json!({}), Duration::from_secs(1), &cancellation)),
             Err(LocalError::Cancelled),
             "nothing more is asked for a call given up"
         );
@@ -255,19 +235,15 @@ mod tests {
     #[test]
     fn a_call_waits_no_longer_than_its_time() {
         let runtime = runtime();
-        let local = Local::new(
-            Arc::new(handler()),
-            runtime.handle().clone(),
-            Peer::default(),
-        );
+        let local = Local::new(Arc::new(handler()), Peer::default());
         let started = Instant::now();
         assert_eq!(
-            local.call(
+            runtime.block_on(local.call(
                 "wait",
                 json!({}),
                 Duration::from_millis(100),
                 &Cancellation::default()
-            ),
+            )),
             Err(LocalError::TimedOut)
         );
         assert!(started.elapsed() < Duration::from_secs(2));
