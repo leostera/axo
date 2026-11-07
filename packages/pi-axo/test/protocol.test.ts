@@ -123,11 +123,23 @@ test("parses a client's prompt with its commandId, and a stop naming its turn (R
     ok: true,
     command: { requestId: "stop-1", axoSessionId: sessionId, action: { kind: "stop", turnId: "a1b2c3d4" } },
   });
+  // What else a client saw of the run: the newest entry it held, its own prompts.
+  assert.deepEqual(parsePiControlCommand({
+    type: "command", requestId: "stop-2", axoSessionId: sessionId,
+    action: { kind: "stop", seen: "e9f8", commandIds: [commandId] },
+  }, sessionId), {
+    ok: true,
+    command: { requestId: "stop-2", axoSessionId: sessionId, action: { kind: "stop", seen: "e9f8", commandIds: [commandId.toLowerCase()] } },
+  });
   for (const action of [
     { kind: "send", text: "yes", commandId: "not-a-uuid" },
     { kind: "stop" },
     { kind: "stop", turnId: "has spaces" },
     { kind: "stop", turnId: "a1", extra: true },
+    { kind: "stop", commandIds: [] },
+    { kind: "stop", commandIds: ["not-a-uuid"] },
+    { kind: "stop", seen: "has spaces" },
+    { kind: "stop", commandIds: Array(33).fill(commandId) },
   ]) {
     assert.deepEqual(parsePiControlCommand({ type: "command", requestId: "bad-1", axoSessionId: sessionId, action }, sessionId), { ok: false, reason: "invalid" });
   }

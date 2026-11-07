@@ -206,7 +206,12 @@ pub(super) struct ModelSetParams {
 pub(super) struct StopParams {
     pub(super) target: HostRef,
     pub(super) session_id: SessionId,
-    pub(super) turn_id: crate::TurnId,
+    #[serde(default)]
+    pub(super) turn_id: Option<crate::TurnId>,
+    #[serde(default)]
+    pub(super) seen: Option<crate::TurnId>,
+    #[serde(default)]
+    pub(super) command_ids: Vec<crate::CommandId>,
 }
 
 #[derive(Debug, Deserialize)]

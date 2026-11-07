@@ -207,8 +207,10 @@ fn dispatch_remote_call(
         "axo.remote.session.stop" => {
             let request = parsed!(StopParams);
             target_ok!(request.target);
+            let stop = crate::StopTarget::new(request.turn_id, request.seen, request.command_ids)
+                .map_err(|_| (-32602, "Invalid params"))?;
             let stopped = sessions
-                .remote_stop_pi_turn(request.session_id, &request.turn_id)
+                .remote_stop_pi_turn(request.session_id, &stop)
                 .map_err(map_operation_error)?;
             Ok(RemoteResult::Stopped { stopped })
         }

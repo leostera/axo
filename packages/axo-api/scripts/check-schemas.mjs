@@ -346,6 +346,18 @@ assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(stopCall.params)
 stopCall.params.turnId = "two words";
 assert.equal(ajv.getSchema(hostCallSchema)(stopCall), false, "a turnId is an entry id");
 assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(stopCall.params).success, false);
+// A stop may name only what the client saw of the run, but must name something.
+const seenStop = structuredClone(stopCall);
+delete seenStop.params.turnId;
+seenStop.params.seen = "e9f8";
+seenStop.params.commandIds = ["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"];
+validateWith(hostCallSchema, seenStop);
+assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(seenStop.params).success, true);
+const blankStop = structuredClone(seenStop);
+delete blankStop.params.seen;
+blankStop.params.commandIds = [];
+assert.equal(ajv.getSchema(hostCallSchema)(blankStop), false, "a stop names something");
+assert.equal(hostV1Methods["axo.remote.session.stop"].safeParse(blankStop.params).success, false);
 // A prompt says when a working Pi takes it; Pi's controls are calls of their own (RFD0033).
 const steer = await fixture("session-prompt.call.json");
 steer.params.delivery = "steer";

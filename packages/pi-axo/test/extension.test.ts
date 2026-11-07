@@ -252,6 +252,17 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       thinkingLevel: "low",
     }]);
 
+    // A stop that names the running run by the newest entry the client held goes through.
+    socket.write(`${JSON.stringify({
+      type: "command",
+      requestId: "stop-seen",
+      axoSessionId,
+      action: { kind: "stop", commandIds: [commandId] },
+    })}\n`);
+    assert.deepEqual(await next(), { type: "commandResult", requestId: "stop-seen", result: { accepted: true } });
+    assert.equal(aborted, 1);
+    aborted = 0;
+
     socket.write(`${JSON.stringify({
       type: "command",
       requestId: "cancel-1",
@@ -276,6 +287,19 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.equal(shutdowns, 0);
 
     idle = true;
+    // A stop finding Pi idle: the client was shown it working, so Axod is told again that it is not.
+    socket.write(`${JSON.stringify({
+      type: "command",
+      requestId: "stop-idle",
+      axoSessionId,
+      action: { kind: "stop", seen: "e1" },
+    })}\n`);
+    const answers = [await next(), await next()];
+    assert.deepEqual(answers.find(record => record.type === "commandResult"), { type: "commandResult", requestId: "stop-idle", result: { accepted: false, reason: "idle" } });
+    const corrected = answers.find(record => record.type === "event");
+    assert.deepEqual(corrected?.type === "event" && [corrected.name, corrected.data], ["activity.snapshot", { working: false }]);
+    assert.equal(aborted, 1);
+
     socket.write(`${JSON.stringify({
       type: "command",
       requestId: "automatic-takeover-idle",

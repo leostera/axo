@@ -89,7 +89,7 @@ export interface AccountLink {
   command(method: "axo.remote.session.models", params: { target: HostRef; sessionId: string }): Promise<{ models: PiModel[] }>;
   command(method: "axo.remote.session.model.set", params: { target: HostRef; sessionId: string } & ModelChange): Promise<unknown>;
   command(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
-  command(method: "axo.remote.session.stop", params: { target: HostRef; sessionId: string; turnId: string }): Promise<unknown>;
+  command(method: "axo.remote.session.stop", params: { target: HostRef; sessionId: string; turnId?: string; seen?: string; commandIds?: string[] }): Promise<{ stopped: boolean }>;
   close(): void;
 }
 
@@ -1097,18 +1097,36 @@ export class ChatWorkbench {
   }
 
   /**
-   * Stops the turn the chat shows running, named by its newest user message: a turn that started
-   * after it, by the time the stop arrives, carries on (RFD0024).
+   * Stops the run the chat shows running, named by everything this tab saw of it: its newest user
+   * message, the newest record held (there however long the run), and the messages sent from here,
+   * which name a run before any of its records arrive. A run none of them belongs to, one that
+   * started elsewhere since, carries on (RFD0024). A stop that stopped nothing ends at once, so the
+   * next tap tries again with what has arrived by then.
    */
   async stop(sessionId: string): Promise<void> {
     const host = this.openHost;
     const chat = this.chat(sessionId);
-    const turnId = chat.transcript?.lastUserEntry;
-    if (!host || !chat.transcript?.working || !turnId || chat.stopping || !this.ready()) return;
+    const transcript = chat.transcript;
+    if (!host || !transcript?.working || chat.stopping || !this.ready()) return;
+    const turnId = transcript.lastUserEntry ?? undefined;
+    const seen = transcript.records.at(-1)?.id ?? undefined;
+    const commandIds = chat.pending.map(prompt => prompt.id).slice(-32);
+    if (!turnId && !seen && !commandIds.length) return;
     chat.stopping = true;
     this.changed();
+    const target = this.reference(host);
+    const ask = (params: { turnId?: string; seen?: string; commandIds?: string[] }) =>
+      this.connection!.command("axo.remote.session.stop", { target, sessionId, ...params });
     try {
-      await this.connection!.command("axo.remote.session.stop", { target: this.reference(host), sessionId, turnId });
+      const { stopped } = await ask({
+        ...(turnId ? { turnId } : {}), ...(seen ? { seen } : {}), ...(commandIds.length ? { commandIds } : {}),
+      }).catch(error => {
+        // A Mac from before 0.28 knows only turnId.
+        if ((error as { code?: unknown }).code === -32602 && turnId) return ask({ turnId });
+        throw error;
+      });
+      // Nothing ran that this tab saw: Pi says it is idle, or a newer run goes on.
+      if (!stopped) chat.stopping = false;
     } catch (error) {
       chat.stopping = false;
       this.failure = describe(error);

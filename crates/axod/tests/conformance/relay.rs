@@ -595,6 +595,22 @@ fn the_account_drives_a_sessions_panes_keys_and_layout() {
         Ok(stopped) => assert_eq!(stopped["stopped"], false, "{stopped}"),
         Err(error) => assert!(error["code"].as_i64().is_some_and(|c| c < 0), "{error}"),
     }
+    // A stop may name only what the client saw of the run; it must name something.
+    let seen = hub.call(
+        "axo.remote.session.stop",
+        json!({ "target": target, "sessionId": session, "seen": "no-such-entry", "commandIds": ["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"] }),
+    );
+    match seen {
+        Ok(stopped) => assert_eq!(stopped["stopped"], false, "{stopped}"),
+        Err(error) => assert!(error["code"].as_i64().is_some_and(|c| c < 0 && c != INVALID_PARAMS), "{error}"),
+    }
+    let nothing = hub
+        .call(
+            "axo.remote.session.stop",
+            json!({ "target": target, "sessionId": session }),
+        )
+        .unwrap_err();
+    assert_eq!(nothing["code"], INVALID_PARAMS, "{nothing}");
     let unknown_key = hub
         .call(
             "axo.remote.session.key",

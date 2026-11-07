@@ -381,7 +381,7 @@ pub(crate) mod testing {
         fn remote_stop_pi_turn(
             &self,
             _: axo_protocol::SessionId,
-            _: &crate::TurnId,
+            _: &crate::StopTarget,
         ) -> std::io::Result<bool> {
             unreachable!()
         }

@@ -667,8 +667,12 @@
               "additionalProperties": false,
               "required": [
                 "target",
-                "sessionId",
-                "turnId"
+                "sessionId"
+              ],
+              "anyOf": [
+                { "required": ["turnId"], "properties": { "turnId": true } },
+                { "required": ["seen"], "properties": { "seen": true } },
+                { "required": ["commandIds"], "properties": { "commandIds": { "minItems": 1 } } }
               ],
               "properties": {
                 "target": {
@@ -678,9 +682,23 @@
                   "$ref": "common.schema.json#/$defs/SessionId"
                 },
                 "turnId": {
-                  "description": "The entry id of a user record of the turn the client showed running (RFD0024).",
+                  "description": "The entry id of a user record of the run the client showed running (RFD0024).",
                   "type": "string",
                   "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                },
+                "seen": {
+                  "description": "The newest entry the client held: of the running run, however long, once its records reached the client.",
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                },
+                "commandIds": {
+                  "description": "The client's own prompts it shows as sent or queued: they name a run before any of its records reach the client.",
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
                 }
               }
             }

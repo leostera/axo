@@ -8,6 +8,8 @@ const MAX_TEXT_BYTES = 64 * 1024;
 const ID_PATTERN = /^[a-zA-Z0-9._:-]{1,128}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 /** A client's commandId: any hyphenated hexadecimal UUID, as axod checks it. */
+/** The most of a client's own prompts a stop names: the ones it shows as sent or queued. */
+const MAX_STOP_COMMANDS = 32;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 export interface PiSessionIdentity {
@@ -28,7 +30,7 @@ export type PiControlAction =
   | { kind: "send"; text: string; delivery?: "steer" | "followUp"; commandId?: string; attachments?: PromptAttachment[] }
   | { kind: "cancel" }
   /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
-  | { kind: "stop"; turnId: string }
+  | { kind: "stop"; turnId?: string; seen?: string; commandIds?: string[] }
   | { kind: "shutdown" }
   | { kind: "shutdownIfIdle" }
   /** Switches this Session's model, thinking level, or both (RFD0033). */
@@ -119,8 +121,19 @@ function parseAction(value: unknown): PiControlAction | null {
   }
 
   if (value.kind === "stop") {
-    if (!hasOnlyKeys(value, ["kind", "turnId"]) || !isRequestId(value.turnId)) return null;
-    return { kind: "stop", turnId: value.turnId };
+    if (!hasOnlyKeys(value, ["kind", "turnId", "seen", "commandIds"])) return null;
+    if (value.turnId !== undefined && !isRequestId(value.turnId)) return null;
+    if (value.seen !== undefined && !isRequestId(value.seen)) return null;
+    const commandIds = value.commandIds;
+    if (commandIds !== undefined && (!Array.isArray(commandIds) || commandIds.length > MAX_STOP_COMMANDS
+      || !commandIds.every(id => typeof id === "string" && COMMAND_ID_PATTERN.test(id)))) return null;
+    if (value.turnId === undefined && value.seen === undefined && !commandIds?.length) return null;
+    return {
+      kind: "stop",
+      ...(value.turnId === undefined ? {} : { turnId: value.turnId }),
+      ...(value.seen === undefined ? {} : { seen: value.seen }),
+      ...(commandIds?.length ? { commandIds: (commandIds as string[]).map(id => id.toLowerCase()) } : {}),
+    };
   }
 
   if (value.kind === "setModel") {

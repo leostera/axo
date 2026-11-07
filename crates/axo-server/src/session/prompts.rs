@@ -22,7 +22,7 @@ use axo_agent::pi::worker::CommandSender;
 use axo_protocol::asset::FetchedAttachment;
 use axo_protocol::rpc::{PromptAccepted, PromptDelivery, PromptSession};
 use axo_protocol::{PaneRole, SessionId, ShellId};
-use axo_relay::{CommandId, TurnId};
+use axo_relay::{CommandId, StopTarget};
 
 pub(super) const MAX_PI_PROMPT_BYTES: usize = 16_000;
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
@@ -163,9 +163,14 @@ impl PiBridge {
         }
     }
 
-    /// Whether the turn `turn_id` names was running and is stopping.
-    fn stop(&self, turn_id: &TurnId) -> Result<bool, PromptError> {
-        match self.0.stop_turn(turn_id.as_str(), PROMPT_ANSWER_TIMEOUT) {
+    /// Whether the run `stop` names was running and is stopping.
+    fn stop(&self, stop: &StopTarget) -> Result<bool, PromptError> {
+        let stop = axo_agent::pi::worker::TurnStop {
+            turn_id: stop.turn_id.as_ref().map(|id| id.as_str().to_owned()),
+            seen: stop.seen.as_ref().map(|id| id.as_str().to_owned()),
+            command_ids: stop.command_ids.iter().map(|id| id.as_str().to_owned()).collect(),
+        };
+        match self.0.stop_turn(stop, PROMPT_ANSWER_TIMEOUT) {
             Ok(CommandResult::Accepted) => Ok(true),
             Ok(CommandResult::Rejected(RejectReason::Idle)) => Ok(false),
             Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(
@@ -393,14 +398,18 @@ impl SessionManager {
         }
     }
 
-    /// Stops the Session's running turn if it is the one `turn_id` names, and says whether it
+    /// Stops the Session's running run if anything in `stop` belongs to it, and says whether it
     /// did.
-    pub(super) fn stop_pi_turn(&self, session_id: SessionId, turn_id: &TurnId) -> io::Result<bool> {
+    pub(super) fn stop_pi_turn(
+        &self,
+        session_id: SessionId,
+        stop: &StopTarget,
+    ) -> io::Result<bool> {
         let bridge = {
             let state = self.lock_state()?;
             pi_bridge(&state, session_id)?
         };
-        let stopped = bridge.stop(turn_id).map_err(io::Error::from)?;
+        let stopped = bridge.stop(stop).map_err(io::Error::from)?;
         log::info!(
             "event=session.pi_turn_stop session_id={} stopped={stopped}",
             session_id

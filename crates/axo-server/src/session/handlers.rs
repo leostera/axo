@@ -344,9 +344,9 @@ impl axo_relay::RelayHost for RelayHostAdapter {
     fn remote_stop_pi_turn(
         &self,
         session_id: SessionId,
-        turn_id: &axo_relay::TurnId,
+        stop: &axo_relay::StopTarget,
     ) -> io::Result<bool> {
-        self.0.stop_pi_turn(session_id, turn_id)
+        self.0.stop_pi_turn(session_id, stop)
     }
 
     fn remote_press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {

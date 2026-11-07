@@ -53,6 +53,17 @@ struct WorkerCommand {
     reply: mpsc::Sender<io::Result<CommandResult>>,
 }
 
+/// What a client saw of the run it asks to stop (see [`Action::Stop`]), checked by the caller.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TurnStop {
+    /// A user record of the run, by entry id.
+    pub turn_id: Option<String>,
+    /// The newest entry the client held.
+    pub seen: Option<String>,
+    /// The client's own prompts, sent or queued.
+    pub command_ids: Vec<String>,
+}
+
 /// An [`Action`] that owns its strings, to cross to the worker's thread.
 enum OwnedAction {
     Send {
@@ -61,9 +72,7 @@ enum OwnedAction {
         command_id: Option<String>,
         attachments: Vec<axo_protocol::asset::FetchedAttachment>,
     },
-    Stop {
-        turn_id: String,
-    },
+    Stop(TurnStop),
     Shutdown,
     SetModel {
         model: Option<(String, String)>,
@@ -85,7 +94,11 @@ impl OwnedAction {
                 command_id: command_id.as_deref(),
                 attachments,
             },
-            Self::Stop { turn_id } => Action::Stop { turn_id },
+            Self::Stop(stop) => Action::Stop {
+                turn_id: stop.turn_id.as_deref(),
+                seen: stop.seen.as_deref(),
+                command_ids: &stop.command_ids,
+            },
             Self::Shutdown => Action::Shutdown,
             Self::SetModel {
                 model,
@@ -141,14 +154,9 @@ impl CommandSender {
         )
     }
 
-    /// Stops the running turn if `turn_id` is one of its user records; see [`Action::Stop`].
-    pub fn stop_turn(&self, turn_id: &str, timeout: Duration) -> io::Result<CommandResult> {
-        self.command(
-            OwnedAction::Stop {
-                turn_id: turn_id.to_owned(),
-            },
-            timeout,
-        )
+    /// Stops the running run if anything in `stop` belongs to it; see [`Action::Stop`].
+    pub fn stop_turn(&self, stop: TurnStop, timeout: Duration) -> io::Result<CommandResult> {
+        self.command(OwnedAction::Stop(stop), timeout)
     }
 
     /// Asks Pi to exit now, stopping any turn in progress; see [`Action::Shutdown`].

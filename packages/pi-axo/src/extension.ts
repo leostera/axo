@@ -109,7 +109,11 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     }
 
     if (command.action.kind === "stop") {
-      return remote.stop(command.action.turnId) === "stopped"
+      const { kind: _, ...request } = command.action;
+      const outcome = remote.stop(request);
+      // A client that asks to stop an idle Pi was shown it working: say again that it is not.
+      if (outcome === "idle") void publish("activity.snapshot", { working: false });
+      return outcome === "stopped"
         ? { accepted: true as const }
         : { accepted: false as const, reason: "idle" as const };
     }

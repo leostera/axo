@@ -209,7 +209,13 @@ export const hostV1Methods = {
   }).strict().refine((prompt) => prompt.text.length > 0 || (prompt.attachments?.length ?? 0) > 0, "a prompt has text or attachments"),
   "axo.remote.session.key": sessionTargetSchema.extend({ key: z.enum(["escape", "enter"]) }).strict(),
   // Stops the turn the client showed running, named by one of its user records, and no other.
-  "axo.remote.session.stop": sessionTargetSchema.extend({ turnId: turnIdSchema }).strict(),
+  // Stops the running run if anything the client saw of it belongs to it: a user record, the
+  // newest entry it held, or the receipt of one of its own prompts; a run it never saw goes on.
+  "axo.remote.session.stop": sessionTargetSchema.extend({
+    turnId: turnIdSchema.optional(),
+    seen: turnIdSchema.optional(),
+    commandIds: z.array(commandIdSchema).max(32).optional(),
+  }).strict().refine((stop) => stop.turnId !== undefined || stop.seen !== undefined || (stop.commandIds?.length ?? 0) > 0, "a stop names what the client saw of the run"),
   // Restarts the Session's Pi on the same conversation, stopping a turn it runs (RFD0033).
   "axo.remote.session.restart": sessionTargetSchema,
   "axo.remote.session.commands": sessionTargetSchema,

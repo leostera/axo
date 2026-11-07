@@ -58,6 +58,41 @@ impl TryFrom<String> for TurnId {
     }
 }
 
+/// The most of a client's own prompts one stop names.
+pub const MAX_STOP_COMMANDS: usize = 32;
+
+/// What a client saw of the run it asks to stop (RFD0024, as amended): Pi stops its running run
+/// only if one of these belongs to it, so a run the client never saw goes on. At least one is set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StopTarget {
+    /// A user record of the run.
+    pub turn_id: Option<TurnId>,
+    /// The newest entry the client held: of the run however long it is, once its records arrive.
+    pub seen: Option<TurnId>,
+    /// The client's own prompts, sent or queued: they name a run before any of its records arrive.
+    pub command_ids: Vec<CommandId>,
+}
+
+impl StopTarget {
+    pub fn new(
+        turn_id: Option<TurnId>,
+        seen: Option<TurnId>,
+        command_ids: Vec<CommandId>,
+    ) -> Result<Self, &'static str> {
+        if turn_id.is_none() && seen.is_none() && command_ids.is_empty() {
+            return Err("a stop names a turnId, the entry seen, or commandIds");
+        }
+        if command_ids.len() > MAX_STOP_COMMANDS {
+            return Err("a stop names at most 32 commandIds");
+        }
+        Ok(Self {
+            turn_id,
+            seen,
+            command_ids,
+        })
+    }
+}
+
 /// A key a remote person presses in a Session's Pi: what answering it on the Mac would take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -257,9 +292,9 @@ pub trait RelayHost: Send + Sync {
     /// running stops. Returns once the new Pi is starting; may take seconds, so call it off the
     /// relay's socket loop.
     fn remote_restart_pi(&self, session_id: SessionId) -> io::Result<()>;
-    /// Stops the Session's running turn if it is the one `turn_id` names; says whether it did.
+    /// Stops the Session's running run if anything in `stop` belongs to it; says whether it did.
     /// Fails with `NotFound` if Pi is not running.
-    fn remote_stop_pi_turn(&self, session_id: SessionId, turn_id: &TurnId) -> io::Result<bool>;
+    fn remote_stop_pi_turn(&self, session_id: SessionId, stop: &StopTarget) -> io::Result<bool>;
     /// Presses `key` in the Session's Pi pane. Fails with `NotFound` if Pi is not running.
     fn remote_press_pi_key(&self, session_id: SessionId, key: PiKey) -> io::Result<()>;
     fn remote_terminal_resize(

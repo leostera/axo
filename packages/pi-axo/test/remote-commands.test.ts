@@ -124,7 +124,7 @@ test("a prompt during a turn is written to the log before it is accepted, surviv
   assert.deepEqual(written(pi), [`receipt ${first}`, "user one", `queued ${second} followUp`], "in the log by the time it is answered");
 
   const turn = pi.log[1]!.id;
-  assert.equal(remote.stop(turn), "stopped");
+  assert.equal(remote.stop({ turnId: turn }), "stopped");
   assert.equal(pi.aborts, 1);
   runEnds(pi, remote);
   runStarts(pi, remote);
@@ -221,7 +221,7 @@ test("a steer to an idle Pi starts a turn at once", () => {
 test("a stop names its turn: another turn, or none, is left alone", () => {
   const pi = fakePi();
   const remote = new RemoteCommands(pi);
-  assert.equal(remote.stop("u0"), "ignored", "nothing runs");
+  assert.equal(remote.stop({ turnId: "u0" }), "idle", "nothing runs");
 
   send(remote, first, "one");
   runStarts(pi, remote);
@@ -230,10 +230,47 @@ test("a stop names its turn: another turn, or none, is left alone", () => {
 
   send(remote, second, "two");
   runStarts(pi, remote);
-  assert.equal(remote.stop(oldTurn), "ignored", "the turn it named has ended");
+  assert.equal(remote.stop({ turnId: oldTurn }), "ignored", "the turn it named has ended");
+  assert.equal(remote.stop({ seen: oldTurn, commandIds: [first] }), "ignored", "nor does what the client saw of it, or its prompt");
   assert.equal(pi.aborts, 0);
-  assert.equal(remote.stop(pi.log.at(-1)!.id), "stopped");
+  assert.equal(remote.stop({ turnId: pi.log.at(-1)!.id }), "stopped");
   assert.equal(pi.aborts, 1);
+});
+
+test("a stop goes through on what the client saw of the run: its newest entry, however long the run, or its own prompt", () => {
+  const pi = fakePi();
+  const remote = new RemoteCommands(pi);
+  send(remote, first, "one");
+  runStarts(pi, remote);
+  // A long run: the client's newest page holds none of its user records.
+  for (let index = 0; index < 80; index += 1) {
+    pi.log.push({ type: "message", id: `t${index}`, parentId: null, timestamp: "", message: { role: "toolResult", content: [], toolCallId: `c${index}`, toolName: "bash", isError: false, timestamp: 0 } } as unknown as SessionEntry);
+  }
+  assert.equal(remote.stop({ seen: "t79" }), "stopped", "the newest entry held is of this run");
+  runEnds(pi, remote);
+
+  // Its own prompt, before any record of the run reached the client: named by its commandId,
+  // whose receipt is the entry just before the run's own.
+  send(remote, second, "two");
+  runStarts(pi, remote);
+  assert.equal(remote.stop({ seen: "t79", commandIds: [third] }), "ignored", "another client's run goes on");
+  assert.equal(remote.stop({ seen: "t79", commandIds: [second] }), "stopped");
+  assert.equal(pi.aborts, 2);
+});
+
+test("a run this extension did not see start is the log from its last user record", () => {
+  const pi = fakePi();
+  const remote = new RemoteCommands(pi);
+  send(remote, first, "one");
+  runStarts(pi, remote);
+  const old = pi.log.at(-1)!.id;
+  runEnds(pi, remote);
+  // Reloaded mid-run: no runStarted.
+  const reloaded = new RemoteCommands(pi);
+  pi.idle = false;
+  pi.log.push({ type: "message", id: "u-new", parentId: null, timestamp: "", message: { role: "user", content: "typed on the Mac", timestamp: 0 } } as SessionEntry);
+  assert.equal(reloaded.stop({ turnId: old }), "ignored");
+  assert.equal(reloaded.stop({ turnId: "u-new" }), "stopped");
 });
 
 test("a prompt handed to Pi holds up the next until its run starts", () => {

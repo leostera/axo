@@ -18,8 +18,11 @@ import { parseAttachments, type PromptAttachment } from "./attachments.js";
  *   of a turn that goes on, right before Pi reads its steering queue, so its receipt is still the
  *   entry before its user message. Pi's own queue is never left holding a client's prompt: its
  *   terminal UI moves the queue into the editor on any stop, where the prompt is lost.
- * - **Stops name their turn.** A stop carries the id of a user record of the turn the client
- *   showed running, and stops nothing if another turn runs now.
+ * - **Stops name what the client saw.** A stop carries what the client knew of the run it showed
+ *   running: a user record of it, the newest entry it held, or the commandIds of its own prompts.
+ *   Any of them being part of the running run stops it; a run the client never saw any of goes
+ *   on. The newest entry is always there, however long the run, and a commandId names a run the
+ *   client started before any of its records reached it.
  */
 export const RECEIPT_ENTRY = "axo.command";
 /** A client's prompt, accepted and waiting for Pi: `{commandId, delivery, text, attachments}`. */
@@ -66,7 +69,18 @@ export interface RemoteCommandPi {
 }
 
 export type PromptOutcome = "taken" | "held" | "busy";
-export type StopOutcome = "stopped" | "ignored";
+/** Pi was idle, or the run going on is one the client did not see. */
+export type StopOutcome = "stopped" | "idle" | "ignored";
+
+/** What a client knew of the run it asked to stop; at least one is set. */
+export interface StopRequest {
+  /** A user record of the run, by entry id. */
+  turnId?: string;
+  /** The newest entry the client held. */
+  seen?: string;
+  /** The client's own prompts, sent or queued. */
+  commandIds?: readonly string[];
+}
 
 interface HeldPrompt {
   commandId: string;
@@ -79,8 +93,10 @@ export class RemoteCommands {
   private held: HeldPrompt[] = [];
   /** A steer handed to Pi whose user message has not been written yet. */
   private steering: HeldPrompt | null = null;
-  /** Entries before the running turn's first: its user records come after. */
+  /** Entries before the running run's first (its prompt's receipt, if a client sent it). */
   private turnStart: number | null = null;
+  /** Where the entries of the prompt last handed to Pi begin, until its run starts. */
+  private deliveredFrom: number | null = null;
   /** When the last prompt was handed to Pi, until its run starts. */
   private deliveredAt: number | null = null;
 
@@ -130,18 +146,26 @@ export class RemoteCommands {
     return this.isHeld(commandId) ? "held" : "taken";
   }
 
-  stop(turnId: string): StopOutcome {
-    if (this.pi.isIdle() || this.turnStart === null) return "ignored";
-    const ofThisTurn = this.pi.entries().slice(this.turnStart).some(entry => isUserMessage(entry) && entry.id === turnId);
-    if (!ofThisTurn) return "ignored";
+  stop(request: StopRequest): StopOutcome {
+    if (this.pi.isIdle()) return "idle";
+    const entries = this.pi.entries();
+    // A run this extension did not see start (it was reloaded mid-run) began at the last user record.
+    const run = entries.slice(this.turnStart ?? Math.max(0, entries.findLastIndex(isUserMessage)));
+    const commandIds = new Set(request.commandIds ?? []);
+    const seen = run.some(entry =>
+      (request.turnId !== undefined && isUserMessage(entry) && entry.id === request.turnId)
+      || (request.seen !== undefined && entry.id === request.seen)
+      || (commandIds.size > 0 && commandIds.has(receiptOf(entry) ?? "")));
+    if (!seen) return "ignored";
     this.pi.abort();
     return "stopped";
   }
 
-  /** A run starts: what it writes from here on is its own. */
+  /** A run starts: what it writes from here on is its own, and so is its prompt's receipt. */
   runStarted(): void {
+    this.turnStart = this.deliveredAt !== null && this.deliveredFrom !== null ? this.deliveredFrom : this.pi.entries().length;
     this.deliveredAt = null;
-    this.turnStart = this.pi.entries().length;
+    this.deliveredFrom = null;
   }
 
   /**
@@ -171,6 +195,7 @@ export class RemoteCommands {
   settled(): void {
     this.turnStart = null;
     this.deliveredAt = null;
+    this.deliveredFrom = null;
     if (this.steering !== null) {
       this.held.unshift(this.steering);
       this.steering = null;
@@ -198,10 +223,12 @@ export class RemoteCommands {
 
   private deliver(command: HeldPrompt): void {
     this.deliveredAt = this.pi.now();
+    this.deliveredFrom = this.pi.entries().length;
     this.pi.appendReceipt({ commandId: command.commandId });
     // A command starts no run, so nothing would release the prompts held behind it.
     if (this.pi.prompt(command.prompt, "turn") === "command") {
       this.deliveredAt = null;
+      this.deliveredFrom = null;
       this.deliverNext();
     }
   }

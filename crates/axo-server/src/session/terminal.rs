@@ -1128,13 +1128,27 @@ mod tests {
             serde_json::json!({ "kind": "send", "text": "yes", "delivery": "steer", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" })
         );
 
-        let running = axo_relay::TurnId::try_from("turn-running".to_owned()).unwrap();
-        let ended = axo_relay::TurnId::try_from("turn-ended".to_owned()).unwrap();
+        let turn = |id: &str| axo_relay::TurnId::try_from(id.to_owned()).unwrap();
+        let running = axo_relay::StopTarget::new(Some(turn("turn-running")), None, vec![]).unwrap();
+        let ended = axo_relay::StopTarget::new(Some(turn("turn-ended")), None, vec![]).unwrap();
         assert!(manager.stop_pi_turn(session.id, &running).unwrap());
         assert!(!manager.stop_pi_turn(session.id, &ended).unwrap());
         assert_eq!(
             actions.recv_timeout(Duration::from_secs(5)).unwrap(),
             serde_json::json!({ "kind": "stop", "turnId": "turn-running" })
+        );
+        // What else the client saw of the run goes to Pi as it is.
+        let seen = axo_relay::StopTarget::new(
+            None,
+            Some(turn("e9")),
+            vec![command_id.clone()],
+        )
+        .unwrap();
+        manager.stop_pi_turn(session.id, &seen).unwrap();
+        let _ended = actions.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            serde_json::json!({ "kind": "stop", "seen": "e9", "commandIds": ["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"] })
         );
         let _ = std::fs::remove_dir_all(&directory);
     }

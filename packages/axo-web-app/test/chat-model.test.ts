@@ -1014,3 +1014,50 @@ test("the / list opens only while a command is being named, and narrows as it is
   assert.deepEqual(matchingCommands(commands, "zzz"), []);
   assert.equal(withCommand(commands[0]!), "/review ");
 });
+
+test("a stop names what this tab saw of the run: its newest record however long the run, and its own messages before any record", async () => {
+  const account = new FakeAccount();
+  account.answers.set("axo.remote.session.stop", { stopped: true });
+  // A long run: the newest page holds tool records only, no user message.
+  account.records.set(sid(1), Array.from({ length: 60 }, (_, index) => said(index + 1, "assistant", `step ${index + 1}`)));
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
+  assert.equal(workbench.chat(sid(1)).transcript?.lastUserEntry, null);
+  await workbench.stop(sid(1));
+  const stops = () => account.commands.filter(call => call.method === "axo.remote.session.stop").map(call => call.params);
+  assert.deepEqual(stops().map(({ turnId, seen, commandIds }) => ({ turnId, seen, commandIds })), [{ turnId: undefined, seen: "e60", commandIds: undefined }]);
+  assert.equal(workbench.chat(sid(1)).stopping, true, "stopping until Pi says it is idle");
+  account.events.sessions?.(hostId, [clientSession(1, { status: "ready" })]);
+
+  // A message from here, then at once the stop: none of the new run's records are here yet.
+  workbench.setDraft("go");
+  await workbench.send();
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
+  await workbench.stop(sid(1));
+  assert.deepEqual(stops().at(-1)!.commandIds, ["pending-1"]);
+  workbench.dispose();
+});
+
+test("a stop that stopped nothing ends at once, so the next tap tries again", async () => {
+  const account = new FakeAccount();
+  account.answers.set("axo.remote.session.stop", { stopped: false });
+  account.records.set(sid(1), [said(1, "user", "go")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
+  await workbench.stop(sid(1));
+  assert.equal(workbench.chat(sid(1)).stopping, false);
+  await workbench.stop(sid(1));
+  assert.equal(account.commands.filter(call => call.method === "axo.remote.session.stop").length, 2);
+
+  // A Mac from before `seen` and commandIds refuses them: the stop goes again with the turn alone.
+  account.failNext = Object.assign(new Error("Invalid params"), { code: -32602 });
+  await workbench.stop(sid(1));
+  const stops = account.commands.filter(call => call.method === "axo.remote.session.stop").map(call => call.params);
+  assert.deepEqual(stops.slice(-2).map(params => Object.keys(params).sort()), [["seen", "sessionId", "target", "turnId"], ["sessionId", "target", "turnId"]]);
+  assert.equal(workbench.failure, null);
+  workbench.dispose();
+});

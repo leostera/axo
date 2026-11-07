@@ -81,9 +81,17 @@ pub enum Action<'a> {
         #[serde(skip_serializing_if = "<[_]>::is_empty")]
         attachments: &'a [axo_protocol::asset::FetchedAttachment],
     },
-    /// Stops the running turn if `turn_id`, the entry id of one of its user records, belongs to
-    /// it; otherwise answers `idle`.
-    Stop { turn_id: &'a str },
+    /// Stops the running run if anything the client saw of it belongs to it: a user record
+    /// (`turn_id`), the newest entry the client held (`seen`), or the receipt of one of its own
+    /// prompts (`command_ids`). Otherwise answers `idle`; an idle Pi also says again that it is.
+    Stop {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seen: Option<&'a str>,
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        command_ids: &'a [String],
+    },
     /// Switches this Session's model, thinking level, or both (RFD0033). Pi answers `invalid`
     /// for a model it does not have and `unavailable` for one it has no credentials for.
     SetModel {
@@ -292,10 +300,21 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(Action::Stop {
-                turn_id: "a1b2c3d4"
+                turn_id: Some("a1b2c3d4"),
+                seen: None,
+                command_ids: &[],
             })
             .unwrap(),
             json!({ "kind": "stop", "turnId": "a1b2c3d4" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::Stop {
+                turn_id: None,
+                seen: Some("e9"),
+                command_ids: &["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b".to_owned()],
+            })
+            .unwrap(),
+            json!({ "kind": "stop", "seen": "e9", "commandIds": ["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"] })
         );
     }
 
