@@ -42,14 +42,20 @@ const record = (entry) => {
   appendFileSync(file, `${JSON.stringify({ ...entry, id, parentId: lastEntry, timestamp: new Date().toISOString() })}\n`);
   lastEntry = id;
 };
-const reply = (prompt) => {
+// A reply grows over time, as Pi's does: progress is the relay's lossy class, and updates sent
+// all at once may be dropped behind the oversized one, which no client could then see grow.
+const pause = () => new Promise((resume) => setTimeout(resume, 150));
+const reply = async (prompt) => {
   const text = (words) => ({ message: { role: "assistant", content: [{ type: "text", text: words }] } });
   record({ type: "message", message: { role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() } });
   publish("message.end", { message: { role: "user", content: [{ type: "text", text: prompt }] } });
   publish("agent.start", {});
   publish("message.update", text("Running"));
+  await pause();
   publish("message.update", text("x".repeat(70_000)));
+  await pause();
   publish("message.update", text("Running the tests"));
+  await pause();
   record({ type: "message", message: { ...text("Running the tests now.").message, timestamp: Date.now() } });
   publish("message.end", text("Running the tests now."));
   publish("agent.end", {});
@@ -85,7 +91,7 @@ setTimeout(() => {
           socket.write(`${JSON.stringify({ type: "commandResult", requestId: record.requestId, result: { accepted: true } })}\n`);
           if (!replied) {
             replied = true;
-            reply(record.action.text);
+            void reply(record.action.text);
           }
           continue;
         }
