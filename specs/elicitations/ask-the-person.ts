@@ -74,7 +74,7 @@ export const Agent = defineActor({
       label: "Click \"Pay now\"",
       description: "The agent clicks Pay now; the gate flags it and asks the person instead of refusing.",
       when: (s) => !s.waiting,
-      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
+      sources: ["crates/axo-mcp/src/lib.rs#McpServer.call_computer", "crates/axo-computer/src/gate.rs#Gate.check"],
       sends: [Ask],
       say: () => "The gate flags \"click Pay now\" and asks the person",
       run(state, _i, ctx) {
@@ -122,7 +122,7 @@ export const Agent = defineActor({
     window: {
       on: Window,
       description: "Sees the window, with values the person filled redacted by the hashes axod has now.",
-      sources: ["crates/axo-server/src/mcp.rs#McpServer.redact", "crates/axo-computer/src/lib.rs#redact"],
+      sources: ["crates/axo-mcp/src/lib.rs#McpServer.redact", "crates/axo-computer/src/lib.rs#redact"],
       run(state, m, ctx) {
         const hidden = ctx.the(Axod).state.hidden;
         const matches = hidden !== null && hidden === ctx.hash(m.field);

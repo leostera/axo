@@ -17,6 +17,9 @@ use axo_protocol::SessionId;
 use axo_protocol::rpc::method;
 use serde_json::{Map, Value, json};
 
+/// axod's build number from config.json (RFD0021), which `axod mcp` is part of.
+const BUILD_NUMBER: &str = env!("AXO_BUILD_NUMBER");
+
 /// The MCP revision this server implements; newer clients negotiate down to it.
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// A prompt can wait for Pi's bridge for a few seconds; nothing else takes this long.
@@ -412,7 +415,7 @@ impl McpServer {
             "initialize" => Ok(json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": "axo", "version": crate::build_number().to_string() },
+                "serverInfo": { "name": "axo", "version": BUILD_NUMBER },
                 "instructions": match self.connections_summary() {
                     Some(summary) => format!("{INSTRUCTIONS}\n\n{summary}"),
                     None => INSTRUCTIONS.to_string(),
@@ -530,7 +533,7 @@ impl McpServer {
         // Connections calls name the Session that made them, for the account's call log.
         if tool
             .method
-            .is_some_and(|method| crate::connections::timeout_for(method).is_some())
+            .is_some_and(|method| axo_protocol::rpc::forwarded::client_timeout(method).is_some())
         {
             arguments.insert("sessionId".into(), json!(self.session_id));
         }
@@ -618,7 +621,7 @@ impl McpServer {
         let timeout = if method == method::ELICITATION_REQUEST {
             Duration::from_millis(axo_protocol::elicitation::TIMEOUT_MS) + Duration::from_secs(10)
         } else {
-            crate::connections::timeout_for(method).unwrap_or(AXOD_TIMEOUT)
+            axo_protocol::rpc::forwarded::client_timeout(method).unwrap_or(AXOD_TIMEOUT)
         };
         self.call_within(method, params, timeout)
     }
@@ -958,10 +961,10 @@ impl McpServer {
             Some(Value::Bool(true)) => true,
             Some(_) => return tool_error("confirm must be true or false"),
         };
-        let gate = crate::computer_gate::for_socket(&self.socket);
+        let gate = axo_computer::gate::for_socket(&self.socket);
         let asked = match gate.check(tool, &args, asked_for) {
-            crate::computer_gate::Verdict::Allow => false,
-            crate::computer_gate::Verdict::Ask(question) => {
+            axo_computer::gate::Verdict::Allow => false,
+            axo_computer::gate::Verdict::Ask(question) => {
                 if let Err(message) = self.ask_the_person(&question) {
                     eprintln!(
                         "axod mcp: event=mcp.computer_called tool={tool} outcome=not_allowed"

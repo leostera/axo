@@ -69,8 +69,8 @@ impl SessionManager {
         }
         let socket = super::spawn::agent_socket()
             .ok_or_else(|| (-32603, "axod has no socket yet".to_owned()))?;
-        let gate = crate::computer_gate::for_socket(socket);
-        if let crate::computer_gate::Verdict::Ask(question) =
+        let gate = axo_computer::gate::for_socket(socket);
+        if let axo_computer::gate::Verdict::Ask(question) =
             gate.check(&request.tool, &request.args, request.confirm)
         {
             self.ask_for_computer(request, &question)?;

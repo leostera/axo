@@ -101,7 +101,7 @@ export const Tool = defineActor({
     call: {
       on: Call,
       description: "Refuses approvals as arguments; asks when confirm is true or the gate flags the action; otherwise acts.",
-      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_computer", "crates/axo-server/src/session/computer.rs#SessionManager.remote_computer", "crates/axo-server/src/computer_gate.rs#Gate.check"],
+      sources: ["crates/axo-mcp/src/lib.rs#McpServer.call_computer", "crates/axo-server/src/session/computer.rs#SessionManager.remote_computer", "crates/axo-computer/src/gate.rs#Gate.check"],
       sends: [Returned, Ask, Act],
       run(state, m, ctx) {
         if (state.waiting) return ctx.reply(Returned, { action: m.action, result: "busy" });
@@ -136,7 +136,7 @@ export const Tool = defineActor({
     answered: {
       on: Answered,
       description: "An outcome for a request it made: runs the action it asked for, if the window is still the one shown.",
-      sources: ["crates/axo-server/src/mcp.rs#McpServer.ask_the_person"],
+      sources: ["crates/axo-mcp/src/lib.rs#McpServer.ask_the_person"],
       sends: [OwnAnswer, Act, Returned],
       run(state, m, ctx) {
         const asker = ctx.the(Axod).state.requests[m.id]?.asker;

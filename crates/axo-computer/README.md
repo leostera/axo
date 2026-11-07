@@ -7,7 +7,7 @@ Computer use on this Mac, embedded in `axod mcp`: seeing and operating apps thro
 - The runtime is built on first use, since every Pi starts its own `axod mcp` and most never touch the screen.
 - On anything but macOS, `AVAILABLE` is `false` and there are no tools.
 
-`axo-server`'s `computer_gate` decides which calls need the person's agreement; this crate only runs them.
+`gate` decides which calls need the person's agreement (RFD0029): a word filter first, then Clef through `axod-infer` for what it flags. `axod mcp` and axod's hub-routed computer calls both ask it; it only decides, and the caller asks the person.
 
 ## Build
 

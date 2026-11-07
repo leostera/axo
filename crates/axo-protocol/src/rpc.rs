@@ -126,6 +126,39 @@ pub mod method {
     ];
 }
 
+/// The account's connections (RFD0016), which axod forwards unchanged over the relay, and how
+/// long axod waits for each one's answer. A client must wait longer than that: see
+/// [`forwarded::client_timeout`].
+pub mod forwarded {
+    use std::time::Duration;
+
+    use super::method;
+
+    /// A script may run for five minutes; its answer then has this long to arrive.
+    const SCRIPT: Duration = Duration::from_secs(5 * 60 + 30);
+    const QUICK: Duration = Duration::from_secs(30);
+
+    /// Every forwarded method and how long axod waits for its answer.
+    pub const METHODS: &[(&str, Duration)] = &[
+        (method::CONNECTIONS_LIST, QUICK),
+        (method::CONNECTIONS_SEARCH, SCRIPT),
+        (method::CONNECTIONS_EXECUTE, SCRIPT),
+        (method::CONNECTIONS_LOG, QUICK),
+        // Adding tries the server and may register a client with it.
+        (method::CONNECTIONS_ADD, Duration::from_secs(60)),
+        (method::CONNECTIONS_REMOVE, QUICK),
+    ];
+
+    /// How long a caller of `method` should wait for axod's answer, beyond axod's own wait;
+    /// `None` for a method axod does not forward.
+    pub fn client_timeout(method: &str) -> Option<Duration> {
+        METHODS
+            .iter()
+            .find(|(name, _)| *name == method)
+            .map(|(_, timeout)| *timeout + Duration::from_secs(5))
+    }
+}
+
 /// The only protocol version.
 pub const PROTOCOL_VERSION: u32 = 2;
 /// Upper bound for `NextEvents::timeout_ms`.

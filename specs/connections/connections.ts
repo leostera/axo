@@ -731,7 +731,7 @@ export const Session = defineActor({
       with: [atMost(2)],
       label: "Run a script",
       description: "The agent runs a connections script.",
-      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_tool"],
+      sources: ["crates/axo-mcp/src/lib.rs#McpServer.call_tool"],
       inputs: { script: input(String, { examples: Object.keys(CALLS) }) },
       when: (s) => s.pending === null,
       sends: [Execute],

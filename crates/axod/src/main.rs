@@ -84,7 +84,7 @@ fn main() {
             return;
         }
         Some(AxodCommand::Mcp) => {
-            if let Err(error) = axo_server::mcp::serve_stdio() {
+            if let Err(error) = axo_mcp::serve_stdio() {
                 eprintln!("axod mcp: {error}");
                 std::process::exit(1);
             }

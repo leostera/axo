@@ -11,6 +11,7 @@
 use serde_json::{Value, json};
 
 pub mod form;
+pub mod gate;
 
 /// Cua tools agents may call. Left out: process killing, updates, extensions, configuration,
 /// recordings and replays, the clipboard, and attaching to the person's logged-in browser.

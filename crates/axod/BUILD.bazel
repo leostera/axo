@@ -15,6 +15,7 @@ rust_binary(
     # Cargo versions are full semver: major.minor.0 from config.json's major.minor.
     version = AXO["version"] + ".0",
     deps = [
+        "//crates/axo-mcp:axo_mcp",
         "//crates/axo-pty:axo_pty",
         "//crates/axo-server:axo_server",
         "@crates//:clap",

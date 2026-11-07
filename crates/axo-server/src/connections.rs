@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axo_ipc::{ErrorCode, RpcError, TypedMethods};
 use axo_protocol::SessionId;
-use axo_protocol::rpc::method;
+use axo_protocol::rpc::forwarded;
 use axo_relay::{Priority, RelayCallError, RelayChannel};
 use jsonrpc_core::IoHandler;
 use serde_json::{Map, Value};
@@ -20,32 +20,9 @@ pub const OUTCOME_UNKNOWN: i64 = -32004;
 pub const LIMIT_EXCEEDED: i64 = -32020;
 pub const NOT_CONNECTED: i64 = -32024;
 
-/// A script may run for five minutes; its answer then has this long to arrive.
-const SCRIPT_TIMEOUT: Duration = Duration::from_secs(5 * 60 + 30);
-const QUICK_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Every forwarded method and how long axod waits for its answer.
-pub const FORWARDED: &[(&str, Duration)] = &[
-    (method::CONNECTIONS_LIST, QUICK_TIMEOUT),
-    (method::CONNECTIONS_SEARCH, SCRIPT_TIMEOUT),
-    (method::CONNECTIONS_EXECUTE, SCRIPT_TIMEOUT),
-    (method::CONNECTIONS_LOG, QUICK_TIMEOUT),
-    // Adding tries the server and may register a client with it.
-    (method::CONNECTIONS_ADD, Duration::from_secs(60)),
-    (method::CONNECTIONS_REMOVE, QUICK_TIMEOUT),
-];
-
-/// How long a caller of `method` should wait for axod's answer, beyond axod's own wait.
-pub fn timeout_for(method: &str) -> Option<Duration> {
-    FORWARDED
-        .iter()
-        .find(|(name, _)| *name == method)
-        .map(|(_, timeout)| *timeout + Duration::from_secs(5))
-}
-
 /// Registers the forwarded methods. Without a relay worker, each fails as not connected.
 pub fn add_methods(handler: &mut IoHandler, channel: Option<Arc<RelayChannel>>) {
-    for &(name, timeout) in FORWARDED {
+    for &(name, timeout) in forwarded::METHODS {
         let channel = channel.clone();
         handler.add_typed(
             name,
@@ -119,6 +96,7 @@ fn server_error(code: i64, message: String) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axo_protocol::rpc::method;
     use serde_json::json;
 
     fn handler(channel: Option<Arc<RelayChannel>>) -> IoHandler {
@@ -134,7 +112,7 @@ mod tests {
 
     #[test]
     fn every_forwarded_method_is_advertised() {
-        for (name, _) in FORWARDED {
+        for (name, _) in forwarded::METHODS {
             assert!(method::ADVERTISED.contains(name), "{name}");
         }
     }
