@@ -483,7 +483,6 @@ const SHORTEST_QUESTION: Duration = Duration::from_secs(15);
 /// tool runs only on the person's Accept or the gate passing it.
 impl ComputerUse {
     /// One computer-use tool for another Mac's script. `Err` fails the script's call.
-
     pub fn remote(
         &self,
         host: &dyn ComputerHost,
@@ -611,5 +610,233 @@ mod tests {
             "Email and Password"
         );
         assert_eq!(listed(&["A".into(), "B".into(), "C".into()]), "A, B and C");
+    }
+
+    /// A host that answers every question as told and records what was asked.
+    struct Host {
+        answer: Result<ElicitationAction, &'static str>,
+        key: Option<axo_seal::InputKey>,
+        asked: Mutex<Vec<(String, Duration, bool)>>,
+    }
+
+    impl Host {
+        fn answering(answer: Result<ElicitationAction, &'static str>) -> Self {
+            Self {
+                answer,
+                key: Some(axo_seal::InputKey::generate()),
+                asked: Mutex::default(),
+            }
+        }
+
+        fn asked(&self) -> Vec<(String, Duration, bool)> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl ComputerHost for Host {
+        fn ask_with(
+            &self,
+            _session_id: SessionId,
+            message: &str,
+            asked_by: Asker,
+            input: Option<InputRequest>,
+            timeout: Duration,
+        ) -> Result<(ElicitationOutcome, Option<Values>), RpcError> {
+            assert_eq!(asked_by, Asker::ComputerUse);
+            self.asked
+                .lock()
+                .unwrap()
+                .push((message.to_owned(), timeout, input.is_some()));
+            match self.answer {
+                Ok(action) => Ok((
+                    ElicitationOutcome {
+                        id: "e-1".into(),
+                        action,
+                    },
+                    None,
+                )),
+                Err(message) => Err(RpcError::invalid_params(message)),
+            }
+        }
+
+        fn input_key(&self) -> Option<&axo_seal::InputKey> {
+            self.key.as_ref()
+        }
+
+        fn agent_socket(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+    }
+
+    const SESSION: SessionId = SessionId::from_u128(7);
+
+    fn call(tool: &str, timeout_ms: u64) -> ComputerParams {
+        ComputerParams {
+            account_id: "account".into(),
+            call_id: "call".into(),
+            tool: tool.into(),
+            args: json!({}),
+            confirm: true,
+            session_id: SESSION,
+            from: "Leo's MacBook".into(),
+            timeout_ms,
+        }
+    }
+
+    fn refusal(result: &Value) -> String {
+        assert_eq!(result["isError"], json!(true), "{result}");
+        result["content"][0]["text"].as_str().unwrap().to_owned()
+    }
+
+    fn ask(host: &Host, question: &str, timeout_ms: u64) -> Result<(), (i64, String)> {
+        ask_for_computer(host, &call("click", timeout_ms), question)
+    }
+
+    #[test]
+    fn the_gates_question_runs_the_tool_only_on_accept() {
+        let minute = 60_000;
+        assert_eq!(
+            ask(
+                &Host::answering(Ok(ElicitationAction::Accept)),
+                "Click?",
+                minute
+            ),
+            Ok(())
+        );
+        for (answer, said) in [
+            (
+                Ok(ElicitationAction::Decline),
+                "Not done: the person declined.",
+            ),
+            (
+                Ok(ElicitationAction::Cancel),
+                "Not done: nobody answered in time.",
+            ),
+            (
+                Err("no such Session"),
+                "Not done: the person could not be asked (no such Session).",
+            ),
+        ] {
+            assert_eq!(
+                ask(&Host::answering(answer), "Click?", minute),
+                Err((NOT_ALLOWED, said.into()))
+            );
+        }
+    }
+
+    #[test]
+    fn the_question_names_the_calling_mac_and_fits_the_limit() {
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        ask(&host, &"x".repeat(MAX_MESSAGE_CHARS * 2), 60_000).unwrap();
+        let (message, timeout, form) = host.asked().remove(0);
+        assert!(
+            message.ends_with("\nAsked from Leo's MacBook's Session."),
+            "{message}"
+        );
+        assert_eq!(message.chars().count(), MAX_MESSAGE_CHARS);
+        assert_eq!(
+            timeout,
+            Duration::from_secs(50),
+            "the call's time less the margin"
+        );
+        assert!(!form, "the gate asks yes or no");
+    }
+
+    #[test]
+    fn a_question_never_outlasts_its_own_limit() {
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        ask(&host, "Click?", TIMEOUT_MS * 10).unwrap();
+        assert_eq!(host.asked()[0].1, Duration::from_millis(TIMEOUT_MS));
+    }
+
+    #[test]
+    fn with_no_time_left_nobody_is_asked() {
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        let short = (ANSWER_MARGIN + SHORTEST_QUESTION).as_millis() as u64 - 1;
+        assert_eq!(
+            ask(&host, "Click?", short),
+            Err((
+                NOT_ALLOWED,
+                "Not done: no time left to ask the person.".into()
+            ))
+        );
+        if axo_computer::AVAILABLE {
+            assert_eq!(
+                ComputerUse::default().remote(&host, &call(axo_computer::REQUEST_INPUT, short)),
+                Err((
+                    NOT_ALLOWED,
+                    "Not done: no time left to ask the person.".into()
+                ))
+            );
+        }
+        assert!(host.asked().is_empty());
+    }
+
+    #[test]
+    fn a_mac_without_computer_use_says_so_and_a_missing_socket_fails_the_call() {
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        let outcome = ComputerUse::default().remote(&host, &call("click", 60_000));
+        if axo_computer::AVAILABLE {
+            assert_eq!(outcome, Err((-32603, "axod has no socket yet".into())));
+        } else {
+            assert_eq!(
+                outcome,
+                Err((-32601, "this Mac has no computer use".into()))
+            );
+        }
+        assert!(host.asked().is_empty());
+    }
+
+    #[test]
+    fn input_requests_that_cannot_be_filled_are_refused_before_asking() {
+        let computer = ComputerUse::default();
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        let request = |host: &Host, args: Value| {
+            refusal(&computer.request_input(host, SESSION, None, args, Duration::from_secs(60)))
+        };
+        assert!(request(&host, json!({ "pid": 1 })).starts_with("request_input takes {"));
+        let field = json!({ "kind": "password" });
+        for fields in [vec![], vec![field; MAX_INPUT_FIELDS + 1]] {
+            assert_eq!(
+                request(&host, json!({ "pid": 1, "window_id": 2, "fields": fields })),
+                format!("ask for 1 to {MAX_INPUT_FIELDS} fields")
+            );
+        }
+        let keyless = Host {
+            key: None,
+            ..Host::answering(Ok(ElicitationAction::Accept))
+        };
+        assert_eq!(
+            request(
+                &keyless,
+                json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "password" }] })
+            ),
+            "this Mac could not make or read its input key"
+        );
+        assert!(host.asked().is_empty() && keyless.asked().is_empty());
+    }
+
+    #[test]
+    fn the_extension_offers_input_and_redactions_to_axod_alone() {
+        let extension = ComputerExtension::new(
+            Arc::default(),
+            Arc::new(Host::answering(Ok(ElicitationAction::Accept))),
+        );
+        assert_eq!(extension.name(), "computer");
+        let mut handler = IoHandler::new();
+        extension.register(&mut handler);
+        let mut methods: Vec<_> = handler.iter().map(|(name, _)| name.clone()).collect();
+        methods.sort();
+        assert_eq!(methods, [COMPUTER_INPUT, COMPUTER_REDACTIONS]);
+    }
+
+    #[test]
+    fn a_fresh_computer_hides_nothing_and_exports_its_salt() {
+        let computer = ComputerUse::default();
+        let mut read = json!({ "content": [{ "type": "text", "text": "hunter2" }] });
+        computer.redact(&mut read);
+        assert_eq!(read["content"][0]["text"], "hunter2");
+        let exported = computer.redactions.export();
+        assert_eq!(exported["hashes"], json!([]), "{exported}");
     }
 }
