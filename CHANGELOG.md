@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.24 (Mac app build 295, axod 47)
+
+### Changed
+
+- An agent runs a script on the account's apps with `apps_run` (it was `apps_execute`).
+
 ## 0.23 (Mac app build 294, axod 46)
 
 ### Changed
