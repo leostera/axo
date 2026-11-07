@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.26 (Mac app build 297, axod 49)
+
+### Changed
+
+- Agents' Axo tools answer from inside axod: each tool call is one call in axod instead of a new connection, and every Session shares one computer-use safety check. After an update, an agent's next Axo tool call reconnects by itself.
+
 ## 0.25 (Mac app build 296, axod 48)
 
 ### Changed
