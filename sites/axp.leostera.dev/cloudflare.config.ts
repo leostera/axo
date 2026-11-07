@@ -8,7 +8,7 @@ export default defineConfig({
     compatibilityDate: "2026-11-02",
     workersDev: false,
     previewUrls: false,
-    observability: { enabled: true },
+    observability: { enabled: true, headSamplingRate: 0.01, logs: { enabled: true, headSamplingRate: 0.01 }, traces: { enabled: true, headSamplingRate: 0.01 } },
     assets: { notFoundHandling: "404-page" },
     domains: ["axp.leostera.dev"],
   },

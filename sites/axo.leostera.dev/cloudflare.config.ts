@@ -17,8 +17,10 @@ export default defineConfig(({ isPreview }) => ({
     },
     observability: {
       enabled: true,
+      // Telemetry is sampled at 1% across every Worker: logs and traces alike.
+      headSamplingRate: 0.01,
       redactQueryString: true,
-      logs: { enabled: true },
+      logs: { enabled: true, headSamplingRate: 0.01 },
       // Every SQL statement in a Durable Object is a span (~16 per request): at 1.0 that was ~13 GB/day,
       // about $98/month under Observability pricing from 2026-12-01. 1% keeps traces for debugging.
       traces: { enabled: true, headSamplingRate: 0.01 },
