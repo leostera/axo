@@ -349,7 +349,7 @@ impl SessionManager {
             return Ok(());
         }
         let session_id = binding.session_id;
-        let activity = state.pi_activity.entry(session_id).or_default();
+        let activity = state.agents.activity.entry(session_id).or_default();
         let changed = activity.connected != connected;
         activity.connected = connected;
         drop(state);
@@ -401,34 +401,44 @@ impl SessionManager {
 
             let changed = match event {
                 PiCatalogEvent::AgentStarted => !std::mem::replace(
-                    &mut state.pi_activity.entry(session_id).or_default().working,
+                    &mut state.agents.activity.entry(session_id).or_default().working,
                     true,
                 ),
                 PiCatalogEvent::AgentSettled => std::mem::replace(
-                    &mut state.pi_activity.entry(session_id).or_default().working,
+                    &mut state.agents.activity.entry(session_id).or_default().working,
                     false,
                 ),
                 PiCatalogEvent::PromptStarted => {
-                    let waits = &mut state.pi_activity.entry(session_id).or_default().ui_waits;
+                    let waits = &mut state
+                        .agents
+                        .activity
+                        .entry(session_id)
+                        .or_default()
+                        .ui_waits;
                     let previous = *waits;
                     *waits = waits.saturating_add(1);
                     *waits != previous
                 }
                 PiCatalogEvent::PromptEnded => {
-                    let waits = &mut state.pi_activity.entry(session_id).or_default().ui_waits;
+                    let waits = &mut state
+                        .agents
+                        .activity
+                        .entry(session_id)
+                        .or_default()
+                        .ui_waits;
                     let previous = *waits;
                     *waits = waits.saturating_sub(1);
                     *waits != previous
                 }
                 PiCatalogEvent::UserMessageStarted => !std::mem::replace(
-                    &mut state.pi_activity.entry(session_id).or_default().working,
+                    &mut state.agents.activity.entry(session_id).or_default().working,
                     true,
                 ),
                 PiCatalogEvent::MessageEnded => {
                     record_session_message(&state.database, session_id, unix_timestamp())?
                 }
                 PiCatalogEvent::ActivitySnapshot { working } => {
-                    let activity = state.pi_activity.entry(session_id).or_default();
+                    let activity = state.agents.activity.entry(session_id).or_default();
                     let changed = activity.working != working;
                     activity.working = working;
                     changed
@@ -707,8 +717,8 @@ mod tests {
 
         let state = manager.lock_state().unwrap();
         assert_eq!(state.panes.running(shell_id).unwrap().attachments, 1);
-        assert!(state.pi_activity[&session.id].connected);
-        assert!(state.pi_activity[&session.id].working);
+        assert!(state.agents.activity[&session.id].connected);
+        assert!(state.agents.activity[&session.id].working);
         let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
         assert_eq!(updated.pi_session_id.as_deref(), Some("replacement"));
         assert_eq!(updated.name, session.name);

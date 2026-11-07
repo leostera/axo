@@ -584,7 +584,8 @@ impl SessionManager {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         if running.role == PaneRole::Pi {
             let working = state
-                .pi_activity
+                .agents
+                .activity
                 .get(&session_id)
                 .is_some_and(|activity| activity.working);
             return Ok(rpc::ShellBusy {
@@ -1065,7 +1066,8 @@ mod tests {
             !manager
                 .lock_state()
                 .unwrap()
-                .queued_pi_prompts
+                .agents
+                .queued_prompts
                 .contains_key(&session.id)
         );
         // An agent's prompt waits for Pi to start.
@@ -1078,7 +1080,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(),
+            manager.lock_state().unwrap().agents.queued_prompts[&session.id].len(),
             1
         );
 
@@ -1092,7 +1094,8 @@ mod tests {
             !manager
                 .lock_state()
                 .unwrap()
-                .queued_pi_prompts
+                .agents
+                .queued_prompts
                 .contains_key(&session.id)
         );
 
@@ -1204,7 +1207,8 @@ mod tests {
         while !manager
             .lock_state()
             .unwrap()
-            .pi_activity
+            .agents
+            .activity
             .get(&session_id)
             .is_some_and(|activity| activity.connected)
         {

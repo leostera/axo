@@ -145,10 +145,7 @@ pub(super) fn close_session(
     };
 
     archive_session(&mut state.database, id, "explicit_close")?;
-    state.pi_activity.remove(&id);
-    state.pi_controls.remove(&id);
-    state.queued_pi_prompts.remove(&id);
-    state.prompt_provenance.forget(id);
+    state.agents.forget(id);
     let shells = remove_session_shells(state, id);
     Ok((replacement, shells))
 }
@@ -401,13 +398,13 @@ impl SessionManager {
             if wanted || idle == IdlePis::Start {
                 pi_shells.push((session_id, shell_id));
             } else {
-                state.dormant_pis.insert(shell_id);
+                state.agents.dormant.insert(shell_id);
             }
         }
         log::info!(
             "event=session.pis_restoring starting={} dormant={}",
             pi_shells.len(),
-            state.dormant_pis.len()
+            state.agents.dormant.len()
         );
         drop(state);
         self.recover_pi_shells(pi_shells);
@@ -673,9 +670,8 @@ impl SessionManager {
                 )
             });
             if exited.is_some() {
-                state.pi_activity.remove(session_id);
                 // A prompt for the Pi that exited is not sent to whatever replaces it.
-                state.queued_pi_prompts.remove(session_id);
+                state.agents.pi_exited(*session_id);
                 changed_sessions.insert(*session_id);
             }
         }
@@ -698,10 +694,7 @@ impl SessionManager {
             if remaining_shell_ids.is_empty() {
                 if removed_sessions.insert(*session_id) {
                     archive_session(&mut state.database, *session_id, "shell_exited")?;
-                    state.pi_activity.remove(session_id);
-                    state.pi_controls.remove(session_id);
-                    state.queued_pi_prompts.remove(session_id);
-                    state.prompt_provenance.forget(*session_id);
+                    state.agents.forget(*session_id);
                 }
             } else {
                 changed_sessions.insert(*session_id);

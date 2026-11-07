@@ -251,7 +251,7 @@ impl SessionManager {
                 .in_session(session_id)
                 .map(|(shell_id, _)| shell_id)
                 .filter(|shell_id| only.is_none_or(|only| only == *shell_id))
-                .find(|shell_id| state.dormant_pis.contains(shell_id))
+                .find(|shell_id| state.agents.dormant.contains(shell_id))
         };
         let Some(shell_id) = dormant else {
             return Ok(false);
@@ -369,14 +369,14 @@ impl SessionManager {
                 .begin_recovery(session_id, shell_id)
                 .map_err(recovery_refused)?;
             // Starting it, whoever asked: it is no longer waiting to be wanted.
-            state.dormant_pis.remove(&shell_id);
+            state.agents.dormant.remove(&shell_id);
             let recovery = PiRecoveryLease {
                 manager: self,
                 session_id,
                 shell_id,
                 recovery_id,
             };
-            (request, recovery, state.takeover_grace, has_messages)
+            (request, recovery, state.agents.takeover_grace, has_messages)
         };
 
         let check_current = || recovery.ensure_current();
@@ -440,7 +440,7 @@ impl SessionManager {
                 // newer launch; metadata is built after installing the process.
                 match state.commit_recovery(session_id, shell_id, recovery_id, running) {
                     Ok(()) => {
-                        state.pi_activity.remove(&session_id);
+                        state.agents.activity.remove(&session_id);
                         Ok(session_metadata(
                             &state,
                             session_id,
@@ -1447,7 +1447,7 @@ mod tests {
 
     #[test]
     fn automatic_pi_restart_preserves_busy_pi_and_explicit_restart_preserves_history() {
-        let directory = PathBuf::from("/tmp").join(format!("axor-{}", new_uuid_v4().unwrap()));
+        let directory = test_directory("axor");
         let server_directory = directory.join("server");
         let pi_session_directory = server_directory.join("pi-sessions");
         fs::create_dir_all(&pi_session_directory).unwrap();
@@ -1522,13 +1522,17 @@ mod tests {
         store_pi_bridge_token(&database, session_id, &bridge_token).unwrap();
         drop(database);
 
-        let bridge_socket =
-            BridgeSocketPath::for_session(&pi_session_directory, &session_uuid).unwrap();
+        // axod keeps the canonical path (`/private/tmp` on macOS).
+        let bridge_socket = BridgeSocketPath::for_session(
+            &pi_session_directory.canonicalize().unwrap(),
+            &session_uuid,
+        )
+        .unwrap();
         drop(UnixListener::bind(bridge_socket.as_path()).unwrap());
 
         let manager = open_with_silent_shell(&server_directory);
         // The old Pi ignores SIGTERM; escalation is what is tested, not the production waits.
-        manager.lock_state().unwrap().takeover_grace = TakeoverGrace {
+        manager.lock_state().unwrap().agents.takeover_grace = TakeoverGrace {
             before_terminate: Duration::from_millis(100),
             before_kill: Duration::from_millis(100),
         };
@@ -1759,7 +1763,7 @@ mod tests {
 
     #[test]
     fn pi_resume_reopens_archived_axo_session_without_replacing_history() {
-        let directory = PathBuf::from("/tmp").join(format!("axor-{}", new_uuid_v4().unwrap()));
+        let directory = test_directory("axor");
         let server_directory = directory.join("server");
         let pi_session_directory = server_directory.join("pi-sessions");
         fs::create_dir_all(&pi_session_directory).unwrap();

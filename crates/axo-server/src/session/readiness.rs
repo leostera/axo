@@ -38,7 +38,8 @@ fn still_starting(state: &SessionState, session_id: SessionId) -> bool {
         .in_session(session_id)
         .any(|(_, pane)| matches!(pane, Pane::Running(shell) if shell.role == PaneRole::Pi));
     let connected = state
-        .pi_activity
+        .agents
+        .activity
         .get(&session_id)
         .is_some_and(|activity| activity.connected);
     running_pi && !connected
@@ -56,7 +57,7 @@ impl SessionManager {
                 .filter(|session_id| still_starting(&state, *session_id))
                 .collect();
             log::info!("event=daemon.launch_waiting pis={}", waiting.len());
-            state.launch = Launch::Starting {
+            state.agents.launch = Launch::Starting {
                 waiting,
                 deadline: Instant::now() + LAUNCH_READY_LIMIT,
             };
@@ -68,14 +69,14 @@ impl SessionManager {
     /// Whether Axod has finished starting, for `axo.daemon.health`.
     pub fn is_ready(&self) -> bool {
         self.lock_state()
-            .is_ok_and(|state| matches!(state.launch, Launch::Ready))
+            .is_ok_and(|state| matches!(state.agents.launch, Launch::Ready))
     }
 
     /// Ends the launch once nothing it waits for is still starting, or its time is up, and
     /// tells every subscriber. Cheap to call often.
     /// When the launch stops waiting for Pis that have not connected, if it is waiting.
     pub(super) fn launch_deadline(&self) -> Option<Instant> {
-        match &self.state.lock().ok()?.launch {
+        match &self.state.lock().ok()?.agents.launch {
             Launch::Starting { deadline, .. } => Some(*deadline),
             _ => None,
         }
@@ -85,7 +86,7 @@ impl SessionManager {
         let Ok(mut state) = self.lock_state() else {
             return;
         };
-        let Launch::Starting { waiting, deadline } = &state.launch else {
+        let Launch::Starting { waiting, deadline } = &state.agents.launch else {
             return;
         };
         let deadline = *deadline;
@@ -96,13 +97,13 @@ impl SessionManager {
             .collect();
         let timed_out = Instant::now() >= deadline;
         if !still.is_empty() && !timed_out {
-            state.launch = Launch::Starting {
+            state.agents.launch = Launch::Starting {
                 waiting: still,
                 deadline,
             };
             return;
         }
-        state.launch = Launch::Ready;
+        state.agents.launch = Launch::Ready;
         drop(state);
         log::info!(
             "event=daemon.launch_ready still_starting={} timed_out={timed_out}",
@@ -177,7 +178,7 @@ mod tests {
         // A Pi that never connects holds Axod back only until the limit.
         let stuck = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
         assert!(!stuck.is_ready());
-        if let Launch::Starting { deadline, .. } = &mut stuck.lock_state().unwrap().launch {
+        if let Launch::Starting { deadline, .. } = &mut stuck.lock_state().unwrap().agents.launch {
             *deadline = Instant::now();
         }
         stuck.check_launch_ready();

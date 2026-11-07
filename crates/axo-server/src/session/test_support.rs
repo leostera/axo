@@ -36,6 +36,14 @@ pub(super) fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::R
     Ok(child.try_wait()?.is_some())
 }
 
+/// A fresh directory under `/tmp` for one test, with a short name: socket paths are limited to
+/// 104 bytes, and a Pi bridge socket too long for its Session's directory falls back to a path
+/// in `/tmp` named by the Session alone, which concurrent runs of a test would share.
+pub(super) fn test_directory(prefix: &str) -> PathBuf {
+    let unique = new_uuid_v4().unwrap().replace('-', "");
+    PathBuf::from("/tmp").join(format!("{prefix}-{}", &unique[..12]))
+}
+
 pub(super) fn sid(value: i64) -> SessionId {
     SessionId::from_u128(value as u128)
 }
@@ -57,7 +65,7 @@ pub(super) fn abandoned_socket(path: &Path) {
 
 pub(super) fn bridge_socket_directory() -> PathBuf {
     // /tmp, not the per-user temp directory: socket paths are limited to 104 bytes.
-    let directory = PathBuf::from("/tmp").join(format!("axo-bridge-{}", new_uuid_v4().unwrap()));
+    let directory = test_directory("axo-bridge");
     fs::create_dir_all(&directory).unwrap();
     directory
 }
@@ -108,7 +116,7 @@ pub(super) struct LifecycleFixture {
 
 impl LifecycleFixture {
     pub(super) fn new() -> Self {
-        let directory = PathBuf::from("/tmp").join(format!("axo-life-{}", new_uuid_v4().unwrap()));
+        let directory = test_directory("axo-life");
         fs::create_dir_all(&directory).unwrap();
         // Lifecycle tests must not race real login-profile initialization or
         // read/write the user's shell history. Seed only this private catalog.

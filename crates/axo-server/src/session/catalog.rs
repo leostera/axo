@@ -223,7 +223,7 @@ pub(super) fn session_metadata(
             Pane::Running(running) => running_shell_record(shell_id, running, attach_socket_path),
             Pane::Unavailable(shell) => {
                 let mut record = unavailable_pi_shell_record(shell_id, shell, attach_socket_path);
-                if state.dormant_pis.contains(&shell_id) {
+                if state.agents.dormant.contains(&shell_id) {
                     record.availability = Availability::Dormant;
                 }
                 record
@@ -244,7 +244,8 @@ pub(super) fn session_metadata(
         SessionStatus::Ready
     } else if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
         state
-            .pi_activity
+            .agents
+            .activity
             .get(&id)
             .map_or(SessionStatus::Starting, |activity| activity.status())
     } else {
@@ -271,7 +272,8 @@ pub(super) fn session_metadata(
         shells,
         layout,
         pi: state
-            .pi_controls
+            .agents
+            .controls
             .get(&id)
             .and_then(|controls| controls.runtime().cloned()),
     })

@@ -289,7 +289,7 @@ impl SessionManager {
             let session_ids = archive_workspace_records(&mut state.database, workspace_id)?;
             let mut shells = Vec::new();
             for session_id in &session_ids {
-                state.pi_activity.remove(session_id);
+                state.agents.activity.remove(session_id);
                 shells.extend(remove_session_shells(&mut state, *session_id));
             }
             (session_ids, shells)
@@ -529,12 +529,11 @@ mod tests {
 
     use std::fs;
 
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     #[test]
     fn imported_pi_transcript_is_copied_without_mutating_the_source_and_follows_symlinks() {
-        let directory =
-            PathBuf::from("/tmp").join(format!("axo-import-{}", new_uuid_v4().unwrap()));
+        let directory = test_directory("axo-import");
         fs::create_dir_all(&directory).unwrap();
         let source = directory.join("source.jsonl");
         let destination = directory.join("owned-copy.jsonl");
@@ -573,7 +572,7 @@ mod tests {
 
     #[test]
     fn manual_session_rename_is_separate_and_workspace_archive_preserves_history() {
-        let directory = PathBuf::from("/tmp").join(format!("axor-{}", new_uuid_v4().unwrap()));
+        let directory = test_directory("axor");
         fs::create_dir_all(&directory).unwrap();
         let manager = open_with_silent_shell(&directory);
         let workspace_id = new_uuid_v4().unwrap();

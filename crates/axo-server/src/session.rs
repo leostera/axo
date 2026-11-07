@@ -15,7 +15,7 @@ use axo_agent::pi::BridgeSocketPath;
 use axo_agent::takeover::TakeoverGrace;
 use axo_agent::{AgentCommand, WriterLock};
 use axo_panes::{PaneProcess, Panes, RuntimeId};
-use axo_protocol::{PaneRole, SessionId, ShellId, Viewport, new_uuid_v4};
+use axo_protocol::{PaneRole, SessionId, Viewport, new_uuid_v4};
 use axo_pty::TerminalOutput;
 use axo_pty::process;
 use axo_store::Connection;
@@ -23,6 +23,7 @@ use axo_store::{
     DATABASE_FILE, ensure_pi_bridge_socket_paths, load_or_create_host_id, load_viewport,
 };
 
+mod agents;
 mod catalog;
 mod cloud_transcripts;
 mod computer;
@@ -128,25 +129,12 @@ struct SessionState {
     /// Every open pane, running or unavailable; see `panes`.
     panes: Panes<RunningShell>,
     shutting_down: bool,
-    pi_activity: HashMap<SessionId, axo_agent::Activity>,
-    /// What each Session's Pi last said it runs; see `pi_controls`.
-    pi_controls: HashMap<SessionId, pi_controls::PiControls>,
-    /// Pi panes left unstarted because their Session wasn't active when Axod started; each is
-    /// also an unavailable pane in `panes`, and starts when the Session is wanted (see
-    /// `stop_notice`'s `wake_dormant_pi`).
-    dormant_pis: HashSet<ShellId>,
-    /// Whether Axod has finished starting; see `readiness`.
-    launch: readiness::Launch,
-    /// Prompts for a Pi that is still starting, sent once its bridge binds; see `prompts`.
-    queued_pi_prompts: HashMap<SessionId, Vec<prompts::QueuedPrompt>>,
-    /// Who prompted whom, for agent loop limits; see `prompts`.
-    prompt_provenance: prompts::PromptProvenance,
+    /// The Pis' part of the state; see `agents`.
+    agents: agents::AgentState,
     /// Every shell's output is published here once it enters the catalog.
     events: EventBus,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
     viewport: Option<Viewport>,
-    /// How long an explicit Pi restart waits before escalating; shortened by tests.
-    takeover_grace: TakeoverGrace,
     /// Remote panes on other Macs' Sessions (RFD0024): never in `panes`, never in the database.
     peer_views: peer_views::PeerViews,
     /// Archived Sessions being reopened: their transcripts are not deleted (RFD0027).
@@ -236,15 +224,9 @@ impl SessionManager {
                 shell_command,
                 panes: Panes::default(),
                 shutting_down: false,
-                pi_activity: HashMap::new(),
-                pi_controls: HashMap::new(),
-                dormant_pis: HashSet::new(),
-                launch: readiness::Launch::default(),
-                queued_pi_prompts: HashMap::new(),
-                prompt_provenance: prompts::PromptProvenance::default(),
+                agents: Default::default(),
                 events: subscribers.clone(),
                 viewport,
-                takeover_grace: TakeoverGrace::default(),
                 peer_views: Default::default(),
                 reopening: HashSet::new(),
             }),
@@ -365,7 +347,8 @@ fn take_previous_stop(
 /// first, for the next Axod to restore first and tell.
 fn record_stop(state: &SessionState) {
     let mut interrupted: Vec<(SessionId, i64)> = state
-        .pi_activity
+        .agents
+        .activity
         .iter()
         .filter(|(_, activity)| activity.connected && activity.working)
         .map(|(id, _)| {

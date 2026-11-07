@@ -338,20 +338,19 @@ mod tests {
 
     use crate::session::{pi_bridge::*, test_support::*};
 
-    use axo_protocol::{Event, new_uuid_v4};
+    use axo_protocol::Event;
 
     use serde_json::Value;
     use std::fs;
 
     use std::io::{self};
 
-    use std::path::PathBuf;
 
     use std::time::{Duration, Instant};
 
     #[test]
     fn local_subscriptions_signal_lag_filter_output_and_expire() {
-        let directory = PathBuf::from("/tmp").join(format!("axos-{}", new_uuid_v4().unwrap()));
+        let directory = test_directory("axos");
         fs::create_dir_all(&directory).unwrap();
         let manager = open_with_silent_shell(&directory);
         let drain = |id: &str| {
