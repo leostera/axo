@@ -1,7 +1,7 @@
 # RFD0033 - Axo: Session Controls for Clients
 
 - Feature Name: `axo-session-controls-for-clients`
-- Status: Draft
+- Status: Accepted (2026-11-07: queued prompts live in the log; Restart stops a working Pi; the model is pickable)
 - Author: leostera
 - Start Date: 2026-11-07
 - Updated: 2026-11-07
@@ -12,7 +12,7 @@
 
 I propose four controls that the web app and the phone get over a Session's Pi, each through one new piece of the client protocol:
 
-- **What Pi runs.** pi-axo publishes the Session's model and thinking level. Axod puts them in the Session's remote snapshot, so the message box can show "Opus 4.1 · High" as the new design asks.
+- **What Pi runs.** pi-axo publishes the Session's model and thinking level. Axod puts them in the Session's snapshot, so the message box can show "Opus 4.1 · High" as the new design asks. Tapping it picks another model or thinking level, through `axo.remote.session.models` and `axo.remote.session.model.set`.
 - **Slash commands.** Typing `/` in the box lists the commands that this Session's Pi can run when a client sends them: prompt templates, skills and extension commands such as `/axo-share`. The list comes from Pi itself, through `axo.remote.session.commands`.
 - **Restart.** `axo.remote.session.restart` restarts the Session's Pi, whether it is running or has died. It keeps the conversation and stops a turn that is running.
 - **Follow-up or steer.** A client's prompt says how it should be delivered if Pi is busy. Every accepted prompt is written to the Session's log before the client is told it was accepted, so reloading the web app or killing the phone app can never lose it.
@@ -34,7 +34,7 @@ The new composer design (Leo's screenshots, 2026-11-06) also shows the model and
 
 ## Goals
 
-- The message box shows the Session's model and thinking level.
+- The message box shows the Session's model and thinking level, and picking either changes it for this Session.
 - `/` lists exactly what this Session's Pi would run if sent, and narrows as you type. Arrow keys and Enter work on the web, and tapping works on the phone.
 - Restart works on a running, stuck or dead Pi. It asks first, and shows "Restarting…" until Pi is ready.
 - A prompt sent while Pi works can be a follow-up (the default, as today) or a steer.
@@ -42,12 +42,12 @@ The new composer design (Leo's screenshots, 2026-11-06) also shows the model and
 
 ## Non-goals
 
-- Changing the model from a client. Showing it comes first; a picker needs Pi's list of available models and a set-model call, and is a follow-up RFD.
+- Changing the model a new Session starts with. Picking a model changes this Session only, as `/model` in Pi does.
 - Pi's built-in commands that only make sense in its terminal (`/model`, `/tree`, `/login`). `pi.sendUserMessage` cannot run them, so they are not listed.
 
 ## Guide-level explanation
 
-**The box.** Under the words, on the right, a dimmed "Opus 4.1 · High" names the Session's model and thinking level. It changes when someone switches the model in the Session's Pi on the Mac, because pi-axo publishes the change and the snapshot carries it.
+**The box.** Under the words, on the right, a dimmed "Opus 4.1 · High" names the Session's model and thinking level. It changes when someone switches the model in the Session's Pi on the Mac, because pi-axo publishes the change and the snapshot carries it. Tapping it opens a menu: the models this Pi has credentials for, grouped by provider, and the thinking levels the chosen model supports. Choosing one changes it for this Session at once, also on the Mac.
 
 **Slash commands.** Typing `/` at the start of the box opens a list above it: `/axo-share` (Share this conversation), `/review` (a prompt template), `/hivemind` (a skill), and so on, each with its description. Typing narrows it, and choosing one puts `/review ` in the box, ready for arguments. Sending it goes through `pi.sendUserMessage` with `expandPromptTemplates`, exactly as typing it into Pi does. The client fetches the list once per Session and fetches it again when the snapshot's `commandsVersion` changes.
 
@@ -67,15 +67,19 @@ pi-axo publishes `pi.state` on `session_start` and whenever the model, the think
   "commandsVersion": "sha256:…" }
 ```
 
-Axod keeps the latest for each Session and adds it to `RemoteSessionSnapshot` as an optional `pi` field. Old clients ignore it, and old pi-axos simply never send it.
+Axod keeps the latest for each Session and adds it to the Session's snapshot (local and remote) as an optional `pi: {model, thinkingLevel}` field. Old clients ignore it, and old pi-axos simply never send it.
 
-The commands themselves are not in the snapshot: there can be dozens of skills, and the snapshot is broadcast on every change. They come from:
+The commands and models are not in the snapshot: there can be dozens of skills and models, and the snapshot is broadcast on every change. pi-axo publishes them as bridge events (`pi.commands` and `pi.models`) on `session_start` and whenever they change, axod keeps the latest, and clients ask for them:
 
-- `axo.remote.session.commands {target, sessionId}`, which returns `{commands: [{name, description, source: "extension" | "prompt" | "skill"}], commandsVersion}`. Axod gets the list from pi-axo over the bridge (`pi.getCommands()`).
+- `axo.remote.session.commands {target, sessionId}` returns `{commands: [{name, description, source: "extension" | "prompt" | "skill"}]}` (`pi.getCommands()`).
+- `axo.remote.session.models {target, sessionId}` returns `{models: [{provider, id, name, thinkingLevels}]}`: the models Pi has credentials for (`modelRegistry.getAvailable()`), each with the thinking levels it supports.
+- `axo.remote.session.model.set {target, sessionId, model?: {provider, id}, thinkingLevel?}` sets either or both through the bridge's new `setModel` action (`pi.setModel`, `pi.setThinkingLevel`). Pi answers `invalid` for a model it doesn't have and `unavailable` for one without credentials; the new state reaches every client through the snapshot.
+
+A client asks again when it opens the `/` list or the model menu, so neither needs a version.
 
 ### Restart
 
-`axo.remote.session.restart {target, sessionId}` replaces the `Planned` row for `SESSION_PI_RESTART_FORCE` in `parity.rs`. Axod handles it as follows:
+`axo.remote.session.restart {target, sessionId}` replaces the `Planned` rows for `SESSION_PI_RESTART_FORCE` and `SESSION_PI_RESTART_AUTO` in `parity.rs`: a person away from the Mac has one Restart. Axod handles it as follows:
 
 1. If the Pi is running, axod sends the bridge's existing `shutdown` action. pi-axo aborts a running turn and exits.
 2. Axod waits up to 10 s for the pane to become unavailable. If it does not, axod kills the process.
@@ -91,10 +95,11 @@ pi-axo accepts a prompt that it cannot hand to Pi straight away like this:
 
 1. It appends `axo.command.queued {commandId, delivery, text, attachments}` to the log. Attachments are kept as asset references, not bytes.
 2. Only then does it answer `accepted`. The client shows the prompt as sent only after that answer.
+   - A Pi that is still starting cannot write anything yet. Axod does not hold a client's prompt for it in memory: the relay answers the prompt from a thread of its own once Pi is up and has written it, or fails it after 30 s. The client keeps it as unsent and retries with the same `commandId`.
 3. **Follow-up:** when the turn ends, pi-axo writes the `axo.command` receipt and prompts Pi, as today.
-4. **Steer:** after the next tool result, before the next model call, pi-axo writes the receipt and hands the prompt to Pi with `deliverAs: "steer"`.
-   - A stop can move Pi's steering queue into its editor (RFD0024, problem 1).
-   - So on `settled`, a steer whose receipt is in the log but whose user message is not is delivered again, as the next turn.
+4. **Steer:** in its `turn_end` handler, which Pi's loop awaits right before it reads its steering queue, pi-axo writes the receipt and hands the prompt to Pi with `deliverAs: "steer"`. Pi takes it at once, so the receipt is still the entry just before the user message, as clients expect.
+   - A turn that ended because it was stopped or failed takes no steer: a stop can move Pi's steering queue into its editor (RFD0024, problem 1).
+   - On `settled`, a steer handed to Pi whose user message never came is delivered again, as the next turn.
 5. On `restore()`, when Pi starts or restarts, every queued entry without a receipt is held again, in log order. A Pi that exited, crashed or was restarted therefore still delivers what it had accepted.
 
 Clients render `axo.command.queued` entries without a receipt as "Queued" or "Steering". A reloaded web app or a relaunched phone shows them from the log alone, so nothing is queued only on the client. A client that never got an answer retries with the same `commandId`. pi-axo finds that id among its queued entries and receipts and answers `taken`, so there is no duplicate.
@@ -124,8 +129,10 @@ Clients render `axo.command.queued` entries without a receipt as "Queued" or "St
 - **Keeping queued prompts on the client until Pi is idle.** This is what Leo ruled out: a reload or a killed app loses them.
 - **Commands in the snapshot.** Simpler, but every status change would rebroadcast dozens of skills to every client.
 
-## Open questions
+## Decisions
 
-- Is a queued prompt kept in the log (as proposed) or in axod's database?
-- Should restarting a working Pi stop its turn (as proposed), or should Restart be refused while Pi works?
-- Should a client be able to change the model in this round, or only see it (as proposed)?
+Leo, 2026-11-07:
+
+- Queued prompts are kept in the log.
+- Restarting a working Pi stops its turn.
+- The model is pickable from clients, not only shown.

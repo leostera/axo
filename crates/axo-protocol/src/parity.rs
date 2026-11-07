@@ -70,11 +70,11 @@ pub const PARITY: &[Parity] = &[
     ),
     row(
         method::WORKSPACE_RENAME,
-        Remote::Planned("axo.remote.workspace.rename"),
+        Remote::LocalOnly("clients list chats, not Workspaces"),
     ),
     row(
         method::WORKSPACE_ARCHIVE,
-        Remote::Planned("axo.remote.workspace.archive"),
+        Remote::LocalOnly("clients list chats, not Workspaces"),
     ),
     row(
         method::WORKSPACE_SESSION_CREATE,
@@ -141,7 +141,7 @@ pub const PARITY: &[Parity] = &[
     ),
     row(
         method::TERMINAL_SCREEN,
-        Remote::Planned("axo.remote.terminal.screen"),
+        Remote::LocalOnly("clients show the conversation, not terminals"),
     ),
     row(
         method::SESSION_PROMPT,
