@@ -1,8 +1,9 @@
-import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
 import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
 import type { AskedQuestion, PendingPrompt } from "./workbench.ts";
 import { Icon, type IconName } from "./icons.tsx";
+import { highlight } from "./highlight.ts";
 import type { InputFieldKind } from "@axo/protocol";
 
 /** Bold, italics, links and `code` within a line. Remote images are never fetched. */
@@ -19,8 +20,8 @@ function Spans({ spans }: { spans: InlineSpan[] }) {
     <>
       {spans.map((span, index) => {
         switch (span.kind) {
-          case "text": return <span key={index}>{fade ? <Words text={span.text} /> : span.text}</span>;
-          case "code": return <code key={index}>{span.text}</code>;
+          case "text": return <span key={index}>{fade ? <Words text={span.text} /> : <Redactable text={span.text} />}</span>;
+          case "code": return <code key={index}><Redactable text={span.text} /></code>;
           case "strong": return <strong key={index}><Spans spans={span.children} /></strong>;
           case "emphasis": return <em key={index}><Spans spans={span.children} /></em>;
           case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener"><Spans spans={span.children} /></a>;
@@ -28,6 +29,24 @@ function Spans({ spans }: { spans: InlineSpan[] }) {
       })}
     </>
   );
+}
+
+/** What `/axo-share` puts where it removed something: `[redacted:<kind>]` (packages/pi-axo/src/share.ts). */
+const REDACTED = /\[redacted:([^\]\s]{1,64})\]/g;
+
+/** Text with each redaction drawn as a short marker; its kind is in the tooltip. */
+export function Redactable({ text }: { text: string }) {
+  if (!text.includes("[redacted:")) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(REDACTED)) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const kind = match[1]!.replace(/-/g, " ");
+    parts.push(<span key={match.index} className="redacted" title={`Redacted before sharing: ${kind}`}>redacted</span>);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
 }
 
 /**
@@ -115,13 +134,7 @@ export const Markdown = memo(function Markdown({ blocks, thinking = false }: { b
             );
           case "quote": return <blockquote key={index}><Inline text={block.text} /></blockquote>;
           case "rule": return <hr key={index} />;
-          case "code":
-            return (
-              <div key={index} className="md-code">
-                {block.language ? <span className="md-code-language">{block.language}</span> : null}
-                <pre><code>{block.text}</code></pre>
-              </div>
-            );
+          case "code": return <CodeBlock key={index} language={block.language} text={block.text} />;
           case "table":
             return (
               <div key={index} className="md-table">
@@ -133,6 +146,29 @@ export const Markdown = memo(function Markdown({ blocks, thinking = false }: { b
             );
         }
       })}
+    </div>
+  );
+});
+
+/** A fenced block: coloured by its language, with its own copy button. */
+const CodeBlock = memo(function CodeBlock({ language, text }: { language: string | null; text: string }) {
+  const tokens = useMemo(() => highlight(text, language), [text, language]);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <div className="md-code">
+      <div className="md-code-header">
+        <span className="md-code-language">{language ?? ""}</span>
+        <button className="md-code-copy" onClick={() => void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => {})}
+          aria-label={copied ? "Copied code" : "Copy code"}>
+          <Icon name={copied ? "check" : "copy"} size={14} /><span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+      <pre><code>{tokens.map((token, at) => token.kind === "plain" ? token.text : <span key={at} className={`tok-${token.kind}`}>{token.text}</span>)}</code></pre>
     </div>
   );
 });

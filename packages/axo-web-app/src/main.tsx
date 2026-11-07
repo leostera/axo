@@ -17,6 +17,9 @@ const chatTestPath = "/__tests__/chat";
 const isChatTestPath = import.meta.env.DEV && (path === chatTestPath || path.startsWith(`${chatTestPath}/`));
 const sharedSessionId = /^\/s\/([A-Za-z0-9_-]{22})(?:\/[^/]+)?\/?$/.exec(path)?.[1];
 
+// A shared session scrolls as a document; set before the first paint so nothing moves.
+if (sharedSessionId) document.documentElement.classList.add("share-document");
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {isAppPath

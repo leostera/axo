@@ -1,0 +1,146 @@
+/* Public, read-only shared-session page (shared-session.tsx). The app's colours (styles.css). */
+
+/* The page scrolls as a document, unlike the app: the browser's own bar, find and keys apply. */
+:root.share-document, :root.share-document body, :root.share-document #root { height: auto; min-height: 100%; }
+:root.share-document body { overflow: auto; }
+
+.share-page {
+  --share-column: 760px;
+  --share-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  min-height: 100vh;
+}
+
+.share-bar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 6px;
+  height: 52px; padding: 0 max(16px, env(safe-area-inset-left));
+  border-bottom: 0.5px solid var(--separator);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  -webkit-backdrop-filter: saturate(1.8) blur(20px); backdrop-filter: saturate(1.8) blur(20px);
+}
+.share-brand { color: var(--text); font: 700 19px/1 ui-rounded, "SF Pro Rounded", -apple-system, sans-serif; letter-spacing: -0.01em; text-decoration: none; }
+.share-bar-label { padding-left: 10px; margin-left: 4px; border-left: 0.5px solid var(--separator); color: var(--secondary); font-size: 13px; }
+.share-bar-button {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+  border: 0; border-radius: 8px; background: none; color: var(--secondary);
+  font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap;
+}
+.share-bar-button:hover { background: var(--fill); color: var(--text); }
+
+.share-column { width: min(100%, calc(var(--share-column) + 48px)); margin: 0 auto; padding: 0 24px 64px; }
+
+.share-header { padding: 44px 0 26px; border-bottom: 0.5px solid var(--separator); }
+.share-header h1 {
+  display: flex; align-items: flex-start; gap: 12px; margin: 0;
+  font-size: 32px; font-weight: 700; line-height: 1.15; letter-spacing: -0.025em; text-wrap: balance;
+}
+.share-emoji { flex: none; font-size: 0.95em; line-height: 1.2; }
+.share-facts { margin: 12px 0 0; color: var(--secondary); font-size: 14px; font-variant-numeric: tabular-nums; }
+.share-note { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; color: var(--tertiary); font-size: 13px; }
+.share-note .icon { flex: none; }
+
+.share-transcript { display: flex; flex-direction: column; padding: 8px 0 32px; }
+.share-turn { padding-top: 28px; }
+.share-steps-turn { padding-top: 16px; }
+.share-steps-turn + .share-steps-turn { padding-top: 8px; }
+
+.share-role { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--secondary); font-size: 13px; font-weight: 600; }
+.share-role time { color: var(--tertiary); font-weight: 400; font-variant-numeric: tabular-nums; }
+.share-role-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--secondary); }
+.share-user .share-role-dot { background: var(--blue); }
+.share-assistant .share-role-dot { background: var(--orange); }
+
+.share-user-text {
+  padding: 14px 16px; border-radius: 14px; background: var(--surface);
+  font-size: 16px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.share-assistant .markdown { gap: 14px; font-size: 16px; line-height: 1.62; }
+.share-assistant .markdown h2 { margin-top: 10px; font-size: 1.3em; letter-spacing: -0.015em; }
+.share-assistant .markdown h3 { margin-top: 6px; }
+.share-assistant .md-list-item + .md-list-item { margin-top: -6px; }
+.share-assistant .md-code { border-radius: 12px; }
+.share-assistant .md-code code { font: 13.5px/1.55 var(--share-mono); }
+.share-assistant .md-table { padding: 0; border-radius: 0; background: none; }
+.share-assistant .md-table table { font-size: 14px; }
+.share-assistant .md-table th, .share-assistant .md-table td { padding: 8px 18px 8px 0; white-space: normal; min-width: 8em; vertical-align: top; }
+
+/* Tool calls: one quiet line each, the details a click away. */
+.share-steps, .share-steps-list { border: 0.5px solid var(--separator); border-radius: 12px; background: var(--bg); }
+.share-steps-list { overflow: hidden; }
+.share-steps > .share-steps-list { border: 0; border-top: 0.5px solid var(--separator); border-radius: 0 0 12px 12px; }
+.share-steps summary, .share-tool summary {
+  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px;
+  list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.share-steps summary::-webkit-details-marker, .share-tool summary::-webkit-details-marker { display: none; }
+.share-steps summary > .icon, .share-tool summary > .icon { flex: none; color: var(--tertiary); transition: transform 0.15s var(--spring); }
+.share-steps[open] > summary > .icon, .share-tool[open] > summary > .icon { transform: rotate(90deg); }
+.share-steps summary:hover, .share-tool summary:hover { background: var(--fill); }
+.share-steps > summary { border-radius: 12px; font-size: 14px; }
+.share-steps[open] > summary { border-radius: 12px 12px 0 0; }
+.share-steps-title { flex: none; font-weight: 600; }
+.share-steps-breakdown { min-width: 0; overflow: hidden; color: var(--secondary); text-overflow: ellipsis; white-space: nowrap; }
+
+.share-tool + .share-tool { border-top: 0.5px solid var(--separator); }
+.share-tool summary { font-size: 13px; }
+.share-tool-icon { flex: none; color: var(--secondary); }
+.share-tool-failed .share-tool-icon { color: var(--red); }
+.share-tool-name { flex: none; font-weight: 600; }
+.share-tool-summary {
+  flex: 1; min-width: 0; overflow: hidden; color: var(--secondary);
+  font: 12.5px var(--share-mono); text-overflow: ellipsis; white-space: nowrap;
+}
+.share-tool-meta { flex: none; margin-left: auto; color: var(--tertiary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.share-tool-failed { color: var(--red); font-size: 12px; font-weight: 600; }
+.share-steps > summary .share-tool-failed { margin-left: auto; }
+
+.share-tool-body { display: grid; gap: 12px; padding: 4px 12px 14px 34px; }
+.share-tool-body section { min-width: 0; }
+.share-tool-body h4 { margin: 0 0 6px; color: var(--tertiary); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.share-pre {
+  margin: 0; padding: 10px 12px; overflow-x: auto; border-radius: 8px; background: var(--surface);
+  font: 12.5px/1.55 var(--share-mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4;
+}
+.share-tool-empty { margin: 6px 0 0; color: var(--tertiary); font-size: 12.5px; }
+.share-show-more {
+  margin-top: 6px; padding: 4px 8px; margin-left: -8px; border: 0; border-radius: 6px;
+  background: none; color: var(--blue); font-size: 13px; font-weight: 500;
+}
+.share-show-more:hover { background: var(--fill); }
+
+.share-footer {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px;
+  padding-top: 20px; border-top: 0.5px solid var(--separator); color: var(--secondary); font-size: 13px;
+}
+.share-footer a { color: var(--secondary); text-underline-offset: 2px; }
+.share-footer a:hover { color: var(--text); }
+
+.share-state { display: grid; min-height: 100vh; align-content: center; justify-items: center; gap: 8px; padding: 24px; text-align: center; color: var(--secondary); }
+.share-state h1 { margin: 0; color: var(--text); font-size: 22px; }
+.share-state p { margin: 0; }
+
+@media (max-width: 640px) {
+  .share-bar { height: 48px; padding: 0 8px 0 16px; }
+  .share-bar-label, .share-bar-wide { display: none; }
+  .share-column { padding: 0 16px 48px; }
+  .share-header { padding: 28px 0 20px; }
+  .share-header h1 { gap: 10px; font-size: 25px; }
+  .share-facts { font-size: 13px; }
+  .share-note { align-items: flex-start; font-size: 12px; }
+  .share-note .icon { margin-top: 1px; }
+  .share-turn { padding-top: 22px; }
+  .share-user-text { padding: 12px 14px; font-size: 15.5px; }
+  .share-assistant .markdown { font-size: 15.5px; line-height: 1.58; }
+  .share-assistant .md-code { margin: 0 -16px; border-radius: 0; }
+  .share-assistant .md-table { margin: 0 -16px; padding: 0 16px; }
+  .share-tool summary { gap: 7px; padding: 0 10px; }
+  .share-tool-kind-shell .share-tool-name { display: none; }
+  .share-tool-body { padding: 2px 10px 12px; }
+  .share-pre { font-size: 11.5px; }
+  /* Logs keep their lines on a phone; they scroll sideways instead of wrapping every line. */
+  .share-output { white-space: pre; overflow-wrap: normal; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-steps summary > .icon, .share-tool summary > .icon { transition: none; }
+}
