@@ -417,6 +417,25 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testAConversationWithRowsWiderThanTheScreenStaysInItsColumn() {
+    // "Explain the relay" has four pictures in one message, a long command and a long link.
+    let app = launch()
+    app.buttons["Chats menu"].tapWhereItIs()
+    let chat = app.buttons["Explain the relay"]
+    XCTAssertTrue(chat.waitForExistence(timeout: 5))
+    chat.tapWhereItIs()
+    let reply = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "The relay keeps")).firstMatch
+    _ = reply.waitForExistence(timeout: 5)
+    capture(app, named: "conversation-wide-rows-light")
+    XCTAssertTrue(reply.exists, "title: \(app.staticTexts["conversation-title"].label)")
+    RunLoop.current.run(until: Date().addingTimeInterval(1))
+    let mine = app.staticTexts["Here are the screenshots."]
+    let width = app.windows.firstMatch.frame.width
+    XCTAssertEqual(reply.frame.minX, 20, accuracy: 1, "the reply starts at the column's edge, not under it")
+    XCTAssertLessThanOrEqual(mine.frame.maxX, width - 19, "the person's message ends at the column's edge")
+  }
+
+  @MainActor
   func testSettingsOpenFromTheMenu() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

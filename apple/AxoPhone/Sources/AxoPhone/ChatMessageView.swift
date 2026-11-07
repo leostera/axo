@@ -518,18 +518,27 @@ struct ChatImagesView: View {
 
   var body: some View {
     let side: CGFloat = images.count == 1 ? 220 : 120
-    HStack(spacing: 8) {
-      ForEach(images) { image in
-        Button { opened = image } label: {
-          DecodedImage(data: image.data, maxSide: side, fill: true)
-            .frame(width: side, height: side)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
+    // Several pictures scroll sideways in their own row rather than widen the conversation's
+    // column: a row wider than the screen pushed every message off its edge.
+    ScrollView(.horizontal) {
+      HStack(spacing: 8) {
+        ForEach(images) { image in
+          Button { opened = image } label: {
+            DecodedImage(data: image.data, maxSide: side, fill: true)
+              .frame(width: side, height: side)
+              .clipShape(RoundedRectangle(cornerRadius: 18))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Image")
+          .accessibilityHint("Opens it full screen")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Image")
-        .accessibilityHint("Opens it full screen")
       }
     }
+    .scrollIndicators(.hidden)
+    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    .scrollsSideways()
+    // The person's pictures sit on the right, as their words do, until there are too many.
+    .defaultScrollAnchor(alignment == .trailing ? .trailing : .leading)
     .frame(maxWidth: .infinity, alignment: alignment == .trailing ? .trailing : .leading)
     .fullScreenCover(item: $opened) { opened in
       FullScreenImage(data: opened.data)

@@ -121,18 +121,21 @@ struct ConversationView: View {
           Color.clear.frame(height: 1).id(Self.end)
         }
         .scrollTargetLayout()
-        .padding(.horizontal, 20)
         .padding(.top, 24)
         .padding(.bottom, 20)
         // Exactly as wide as the screen: a row that asked for more would otherwise widen the
         // column, and scrolling to the end would slide it sideways.
         .containerRelativeFrame(.horizontal, alignment: .leading)
       }
+      // The column's margins are the scroll view's, not padding inside it: the scroll position
+      // lines a row's edge up with the content's edge, and with padding inside, every row slid
+      // 20 points under the left edge of the screen.
+      .contentMargins(.horizontal, 20, for: .scrollContent)
       .scrollDismissesKeyboard(.interactively)
       .softScrollEdges()
       // The row at the bottom of the screen stays put when content changes elsewhere (an older
       // page arriving above keeps the reader's place); the end itself is kept by `follow`.
-      .scrollPosition(id: $scrollAnchor, anchor: .bottom)
+      .scrollPosition(id: $scrollAnchor, anchor: Self.endAnchor)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       // The keyboard opening or the composer growing raises the bottom inset (the scroll view
       // itself keeps its size under the bars). A follower keeps the end in view, rather than the
@@ -245,6 +248,9 @@ struct ConversationView: View {
 
   /// The marker after the last row: the scroll position while following.
   private static let end = "latest"
+  /// Bottom and leading: `.bottom` is also the horizontal middle, which lines a row narrower than
+  /// the column up with the middle of the screen and slides the whole column sideways.
+  private static let endAnchor = UnitPoint.bottomLeading
 
   private func move(_ move: ScrollFollow.Move, proxy: ScrollViewProxy) {
     switch move {
@@ -260,17 +266,17 @@ struct ConversationView: View {
       instant.disablesAnimations = true
       withTransaction(instant) {
         scrollAnchor = Self.end
-        proxy.scrollTo(Self.end, anchor: .bottom)
+        proxy.scrollTo(Self.end, anchor: Self.endAnchor)
       }
       Task { @MainActor in
         await Task.yield()
         guard follow.isFollowing else { return }
-        withTransaction(instant) { proxy.scrollTo(Self.end, anchor: .bottom) }
+        withTransaction(instant) { proxy.scrollTo(Self.end, anchor: Self.endAnchor) }
       }
     case .goToEnd:
       withAnimation(.snappy(duration: 0.3)) {
         scrollAnchor = Self.end
-        proxy.scrollTo(Self.end, anchor: .bottom)
+        proxy.scrollTo(Self.end, anchor: Self.endAnchor)
       }
     }
   }

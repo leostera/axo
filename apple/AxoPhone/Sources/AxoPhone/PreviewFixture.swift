@@ -126,6 +126,17 @@ enum PreviewFixture {
       }
       let plan = "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."
       if session == sessionID(2) { return [message("user", "What's the plan?"), message("assistant", plan)] }
+      if session == sessionID(3) {
+        // Wider than the screen if laid out in one row: four pictures and a long command.
+        let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        let image = #"{"type":"image","data":"\#(pixel)","mimeType":"image/png"}"#
+        return [
+          #"{"role":"user","content":[{"type":"text","text":"Here are the screenshots."},\#(image),\#(image),\#(image),\#(image)]}"#,
+          #"{"role":"assistant","timestamp":1792810292070,"content":[{"type":"text","text":"Live and correct now."},{"type":"toolCall","id":"w1","name":"bash","arguments":{"command":"cd /tmp/sharepage && U=https://axo.leostera.dev/s/fuVgs7XzUJNX7wpVhCTqWg/riot-zcaml-toolchain; node shot2.mjs $U live-dark.png"}}]}"#,
+          #"{"role":"toolResult","toolCallId":"w1","content":"ok","isError":false}"#,
+          message("assistant", "The relay keeps each Session's log in order, from https://axo.leostera.dev/s/fuVgs7XzUJNX7wpVhCTqWg/riot-zcaml-toolchain-and-a-very-long-path-without-spaces"),
+        ]
+      }
       guard session == sessionID(1) else { return [message("user", "Hello"), message("assistant", "Hi! What are we working on?")] }
       return [
         message("user", "Can you make the phone app feel like the old one again?"),
