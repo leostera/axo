@@ -1,11 +1,11 @@
 //! Terminal I/O: the attach socket and its apps, input, resize and the busy check.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,7 +17,10 @@ use axo_protocol::{GridSize, PaneRole, SessionId, ShellActivity, ShellId};
 use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber, TerminalOutput, WindowSize, attach};
 
-const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How long the pump waits for output before looking at axod's stop flag again. The shell
+/// ending or the client hanging up wake it at once; this only bounds a stop that neither
+/// follows, which shutdown never leaves (it ends every shell).
+const ATTACH_IDLE_WAIT: Duration = Duration::from_secs(60);
 
 pub(super) const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
 
@@ -85,6 +88,30 @@ fn process_name(_process_id: libc::pid_t) -> Option<String> {
 
 /// Waits until `descriptor` is readable or `timeout` passes. Errors count as readable so the
 /// caller's own call reports them.
+/// Blocks until the client's end of `stream` closes, or the stream is shut down here. The client
+/// sends nothing after its request (input goes to the PTY descriptor it was handed); anything it
+/// does send is read and dropped.
+fn wait_for_hang_up(stream: &UnixStream) {
+    let mut scratch = [0_u8; 4096];
+    loop {
+        match (&*stream).read(&mut scratch) {
+            Ok(0) => return,
+            Ok(_) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 /// Waits, with no timeout, until `listener` has a client or `stopping` is readable (its other end
 /// was closed: axod is stopping). `true` for a client.
 fn wait_for_client(listener: RawFd, stopping: RawFd) -> bool {
@@ -252,12 +279,30 @@ pub(super) fn handle_attachment(
     );
     drop(replay);
 
+    // The pump waits on the shell's output alone; this watcher tells it when the client hangs
+    // up, so neither wakes on a timer. Ending the stream below lets the watcher go too.
+    let client_closed = Arc::new(AtomicBool::new(false));
+    // The request has been read; from here a read waits for the client to hang up. macOS
+    // refuses socket options once the client has closed, and then the first read sees it.
+    if let Ok(watched) = stream.try_clone() {
+        let _ = watched.set_read_timeout(None);
+        let subscriber = Arc::clone(&subscription.0);
+        let closed = Arc::clone(&client_closed);
+        let _ = thread::Builder::new()
+            .name("axo-pty-attachment-watch".into())
+            .spawn(move || {
+                wait_for_hang_up(&watched);
+                closed.store(true, Ordering::Relaxed);
+                subscriber.detach();
+            });
+    }
+
     let mut delivered = 0_u64;
     let reason = 'stream: loop {
         if manager.stop_workers.load(Ordering::Relaxed) {
             break "shutdown";
         }
-        match subscription.0.next(ATTACH_STOP_POLL_INTERVAL) {
+        match subscription.0.next(ATTACH_IDLE_WAIT) {
             NextOutput::Chunks(chunks) => {
                 for chunk in chunks {
                     if stream.write_all(&chunk).is_err() {
@@ -266,13 +311,12 @@ pub(super) fn handle_attachment(
                     delivered = delivered.saturating_add(chunk.len() as u64);
                 }
             }
-            NextOutput::Idle => {
-                if attach::peer_closed(&mut stream) {
-                    break "client_closed";
-                }
-            }
+            NextOutput::Idle => {}
             NextOutput::Ended => break "shell_output_ended",
             NextOutput::Overflowed => break "client_overflowed",
+            NextOutput::Detached if client_closed.load(Ordering::Relaxed) => {
+                break "client_closed";
+            }
             NextOutput::Detached => break "detached",
         }
     };
@@ -644,6 +688,44 @@ mod tests {
     use std::sync::mpsc;
     use std::thread::{self};
     use std::time::{Duration, Instant};
+
+    /// A client that hangs up while its shell is quiet ends its attachment at once, and frees its
+    /// permit: a watcher sees the hang-up, so the pump does not wait for output or a timer.
+    #[test]
+    fn a_client_that_hangs_up_on_a_quiet_shell_ends_its_attachment_at_once() {
+        use std::io::Read;
+
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        manager.stop_workers.store(false, Ordering::Relaxed);
+        let shell_id = manager.list_sessions().unwrap().remove(0).shells[0].id;
+        let (mut client, server) = UnixStream::pair().unwrap();
+        writeln!(client, "{}", shell_id.get()).unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let permit = AttachmentPermit::try_acquire(Arc::clone(&active)).unwrap();
+        let weak = Arc::downgrade(manager);
+        let (done, ended) = mpsc::channel();
+        thread::spawn(move || {
+            handle_attachment(server, weak, permit);
+            done.send(()).unwrap();
+        });
+        let mut length = [0_u8; 8];
+        client.read_exact(&mut length).unwrap();
+        let mut rest = vec![0_u8; 1 + u64::from_be_bytes(length) as usize];
+        client.read_exact(&mut rest).unwrap();
+
+        let hung_up = Instant::now();
+        drop(client);
+        ended
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the attachment ended");
+        assert!(
+            hung_up.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            hung_up.elapsed()
+        );
+        assert_eq!(active.load(Ordering::SeqCst), 0, "its permit is free");
+    }
 
     /// After a relaunch the app attaches to a Pi that set its modes long ago and has since written
     /// far more output than any byte history keeps. The replay must still restore them.

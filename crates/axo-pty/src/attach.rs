@@ -143,29 +143,6 @@ fn wait_for_request_data(file_descriptor: RawFd, deadline: Instant) -> io::Resul
     }
 }
 
-/// Clients never write after their request; readable means closed (or a protocol violation,
-/// which is discarded).
-pub fn peer_closed(stream: &mut UnixStream) -> bool {
-    let mut descriptor = libc::pollfd {
-        fd: stream.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: descriptor points to one initialized pollfd for this live socket.
-    if unsafe { libc::poll(&mut descriptor, 1, 0) } <= 0 {
-        return false;
-    }
-    let mut scratch = [0_u8; 4096];
-    match stream.read(&mut scratch) {
-        Ok(0) => true,
-        Ok(_) => false,
-        Err(error) => !matches!(
-            error.kind(),
-            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-        ),
-    }
-}
-
 pub fn set_send_buffer(stream: &UnixStream, bytes: libc::c_int) {
     // SAFETY: setsockopt borrows this live socket and an initialized integer.
     unsafe {
