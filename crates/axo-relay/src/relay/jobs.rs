@@ -14,7 +14,7 @@ use super::wire::PromptParams;
 const MAX_BASH_JOBS: usize = 16;
 static BASH_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Starts a `bash` request on the blocking pool; its reply goes back on this socket only.
+/// Starts a `bash` request as a task of its own; its reply goes back on this socket only.
 pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContext) {
     let params = match crate::bash::parse(params, &context.account_id) {
         Ok(params) => params,
@@ -28,9 +28,10 @@ pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContex
         );
     }
     let replies = context.replies.clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         log::info!("event=apps.bash_started call={}", params.call_id);
         let outcome = crate::bash::run(&params)
+            .await
             .map(|result| serde_json::to_value(result).expect("a bash result serializes"));
         BASH_JOBS.fetch_sub(1, Ordering::SeqCst);
         log::info!(

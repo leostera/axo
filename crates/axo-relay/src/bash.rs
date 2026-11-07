@@ -1,15 +1,14 @@
 //! The `bash` tool of a host connection (RFD0016): one non-interactive command, run as the user
-//! axod runs as, in a login shell so the user's PATH and tools are there. It runs on a thread of
-//! its own, so the relay keeps serving while it does, and its reply goes back only on the socket
-//! the request came on.
+//! axod runs as, in a login shell so the user's PATH and tools are there. It runs as a task of
+//! its own (`tokio::process`: its exit and its output are awaited, nothing polls), so the relay
+//! keeps serving while it does, and its reply goes back only on the socket the request came on.
 
-use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
+
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -75,7 +74,7 @@ pub fn parse(params: &Value, account_id: &str) -> Result<BashParams, (i64, Strin
 }
 
 /// Runs the command to its end or its timeout. `Err` only when it could not start.
-pub fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
+pub async fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     let started = Instant::now();
     let timeout = params
         .timeout_ms
@@ -102,22 +101,33 @@ pub fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     let mut child = command
         .spawn()
         .map_err(|error| (-32010, format!("could not start the command: {error}")))?;
-    let stdout = Captured::start(child.stdout.take().expect("piped"));
-    let stderr = Captured::start(child.stderr.take().expect("piped"));
+    // The child leads its own group (process_group(0)), so its pid is the group's id.
+    let group = child.id();
+    let stdout = tokio::spawn(capture(child.stdout.take().expect("piped")));
+    let stderr = tokio::spawn(capture(child.stderr.take().expect("piped")));
 
-    let (status, timed_out) = wait(&mut child, timeout);
-    // Background children may hold the output open; give them a moment, then end the group.
-    let drained = Instant::now() + DRAIN_GRACE;
-    while !(stdout.finished() && stderr.finished()) && Instant::now() < drained {
-        thread::sleep(Duration::from_millis(10));
-    }
-    if !(stdout.finished() && stderr.finished()) {
-        kill_group(&child);
-    }
+    let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => (status.ok(), false),
+        Err(_) => {
+            kill_group(group);
+            (child.wait().await.ok(), true)
+        }
+    };
+    // Background children may hold the output open; give them a moment, then end the group,
+    // which closes the pipes and so ends both readers.
+    let (mut stdout, mut stderr) = (stdout, stderr);
+    let drained = async { ((&mut stdout).await, (&mut stderr).await) };
+    let (stdout, stderr) = match tokio::time::timeout(DRAIN_GRACE, drained).await {
+        Ok(both) => both,
+        Err(_) => {
+            kill_group(group);
+            (stdout.await, stderr.await)
+        }
+    };
 
     use std::os::unix::process::ExitStatusExt;
-    let (stdout, stdout_truncated) = stdout.take();
-    let (stderr, stderr_truncated) = stderr.take();
+    let (stdout, stdout_truncated) = text_of(stdout.unwrap_or_default());
+    let (stderr, stderr_truncated) = text_of(stderr.unwrap_or_default());
     let mut result = BashResult {
         exit_code: status.and_then(|s| s.code()),
         signal: status.and_then(|s| s.signal()),
@@ -132,74 +142,39 @@ pub fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     Ok(result)
 }
 
-fn wait(child: &mut Child, timeout: Duration) -> (Option<std::process::ExitStatus>, bool) {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return (Some(status), false),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-            Ok(None) => {
-                kill_group(child);
-                return (child.wait().ok(), true);
-            }
-            Err(_) => return (None, false),
+fn kill_group(group: Option<u32>) {
+    if let Some(group) = group {
+        // SAFETY: signals only the command's own process group.
+        unsafe {
+            libc::killpg(group as libc::pid_t, libc::SIGKILL);
         }
     }
 }
 
-fn kill_group(child: &Child) {
-    // The child leads its own group (process_group(0)), so its pid is the group's id.
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-    }
-}
-
-/// One output stream, read on its own thread: the first `MAX_OUTPUT_BYTES` kept.
-struct Captured {
-    buffer: Arc<Mutex<(Vec<u8>, bool)>>,
-    reader: JoinHandle<()>,
-}
-
-impl Captured {
-    fn start(mut stream: impl Read + Send + 'static) -> Self {
-        let buffer = Arc::new(Mutex::new((Vec::new(), false)));
-        let shared = Arc::clone(&buffer);
-        let reader = thread::spawn(move || {
-            let mut chunk = [0_u8; 16_384];
-            while let Ok(read) = stream.read(&mut chunk) {
-                if read == 0 {
-                    break;
-                }
-                let Ok(mut buffer) = shared.lock() else {
-                    break;
-                };
-                let room = MAX_OUTPUT_BYTES.saturating_sub(buffer.0.len());
-                buffer.0.extend_from_slice(&chunk[..read.min(room)]);
-                if read > room {
-                    buffer.1 = true;
-                }
-            }
-        });
-        Self { buffer, reader }
-    }
-
-    fn finished(&self) -> bool {
-        self.reader.is_finished()
-    }
-
-    fn take(self) -> (String, bool) {
-        let (bytes, truncated) = std::mem::take(
-            &mut *self
-                .buffer
-                .lock()
-                .expect("reader holds no lock across a panic"),
-        );
-        let mut text = String::from_utf8_lossy(&bytes).into_owned();
-        if truncated {
-            text.push_str(TRUNCATED);
+/// One output stream to its end: the first `MAX_OUTPUT_BYTES` kept, the rest read and dropped.
+async fn capture(mut stream: impl AsyncRead + Unpin) -> (Vec<u8>, bool) {
+    let mut kept = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0_u8; 16_384];
+    while let Ok(read) = stream.read(&mut chunk).await {
+        if read == 0 {
+            break;
         }
-        (text, truncated)
+        let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
+        kept.extend_from_slice(&chunk[..read.min(room)]);
+        if read > room {
+            truncated = true;
+        }
     }
+    (kept, truncated)
+}
+
+fn text_of((bytes, truncated): (Vec<u8>, bool)) -> (String, bool) {
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        text.push_str(TRUNCATED);
+    }
+    (text, truncated)
 }
 
 /// Shortens the output, keeping its start, until the reply fits the largest relay message.
@@ -224,6 +199,14 @@ fn fit_in_one_message(result: &mut BashResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
     use serde_json::json;
 
     fn params(command: &str) -> BashParams {
@@ -236,7 +219,7 @@ mod tests {
 
     #[test]
     fn a_command_returns_its_status_and_both_streams() {
-        let result = run(&params("echo out; echo err >&2; exit 3")).unwrap();
+        let result = block_on(run(&params("echo out; echo err >&2; exit 3"))).unwrap();
         assert_eq!(result.exit_code, Some(3));
         assert_eq!(result.stdout, "out\n");
         assert_eq!(result.stderr, "err\n");
@@ -248,15 +231,28 @@ mod tests {
         let mut p = params("sleep 30 & sleep 30; echo never");
         p.timeout_ms = Some(200);
         let started = Instant::now();
-        let result = run(&p).unwrap();
+        let result = block_on(run(&p)).unwrap();
         assert!(result.timed_out);
         assert_eq!(result.signal, Some(libc::SIGKILL));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    /// The shell exits but leaves a child holding its output open: the reply comes after the
+    /// drain grace, with what was written, and the child is ended with the group.
+    #[test]
+    fn a_background_child_holding_the_output_is_ended_after_the_grace() {
+        let started = Instant::now();
+        let result = block_on(run(&params("sleep 30 & echo done"))).unwrap();
+        assert_eq!(result.stdout, "done\n");
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!result.timed_out);
+        let took = started.elapsed();
+        assert!(took >= DRAIN_GRACE && took < Duration::from_secs(5), "{took:?}");
+    }
+
     #[test]
     fn output_past_the_limit_is_cut_with_a_marker_and_the_reply_fits_one_message() {
-        let result = run(&params("head -c 3000000 /dev/zero | tr '\\\\0' a")).unwrap();
+        let result = block_on(run(&params("head -c 3000000 /dev/zero | tr '\\\\0' a"))).unwrap();
         assert!(result.stdout_truncated);
         assert!(result.stdout.ends_with(TRUNCATED));
         assert!(serde_json::to_string(&result).unwrap().len() <= fragments::MESSAGE_BYTES);
