@@ -7,16 +7,39 @@
 //!   gate asks the person as Axo, not as the agent.
 //! - [`Signer::AxoApp`]: Axo.app, the only local client that answers the person's questions.
 //!
+//! The account's calls arrive over the relay connection inside axod, not the socket: they run as
+//! [`Peer::Relay`], which no socket client can be, and a method meant for them admits only
+//! [`Caller::Relay`].
+//!
 //! The check uses the connection's audit token (`LOCAL_PEERTOKEN`), not its pid, so a process that
 //! exits and whose pid is reused cannot pass for it. The kernel validates the peer's code
 //! signature as it runs, so a modified binary fails. Off macOS nothing passes.
 
 use std::cell::Cell;
 
-/// A connection's peer: its audit token, if the kernel gave one.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Peer {
-    token: Option<[u8; 32]>,
+/// Who sent the request being handled.
+#[derive(Clone, Copy, Debug)]
+pub enum Peer {
+    /// A program connected to the socket, with its audit token if the kernel gave one.
+    Socket { token: Option<[u8; 32]> },
+    /// The account, through this process's relay connection.
+    Relay,
+}
+
+impl Default for Peer {
+    /// Outside any request: a socket peer nobody can verify.
+    fn default() -> Self {
+        Self::Socket { token: None }
+    }
+}
+
+/// Whom a method answers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Caller {
+    /// A local program signed as this.
+    Signed(Signer),
+    /// The account, through the relay.
+    Relay,
 }
 
 /// What a peer may be signed as.
@@ -50,6 +73,11 @@ pub(crate) async fn scope<F: Future>(peer: Peer, request: F) -> F::Output {
     TASK_PEER.scope(peer, request).await
 }
 
+/// Runs `method` as the account's request through the relay.
+pub fn as_relay<R>(method: impl FnOnce() -> R) -> R {
+    on_this_thread(Peer::Relay, method)
+}
+
 /// Runs `method` with `peer` as [`current`], for a handler on the blocking pool.
 pub(crate) fn on_this_thread<R>(peer: Peer, method: impl FnOnce() -> R) -> R {
     let previous = THREAD_PEER.with(|cell| cell.replace(Some(peer)));
@@ -61,15 +89,27 @@ pub(crate) fn on_this_thread<R>(peer: Peer, method: impl FnOnce() -> R) -> R {
 impl Peer {
     /// The peer of a connected Unix socket.
     pub(crate) fn of(stream: &tokio::net::UnixStream) -> Self {
-        Self {
+        Self::Socket {
             token: platform::audit_token(stream),
         }
     }
 
-    /// Whether the peer runs code signed as `signer`, checked now.
+    /// Whether the peer is a local program running code signed as `signer`, checked now.
     pub fn is(&self, signer: Signer) -> bool {
-        self.token
-            .is_some_and(|token| platform::satisfies(&token, signer))
+        match self {
+            Self::Socket { token } => {
+                token.is_some_and(|token| platform::satisfies(&token, signer))
+            }
+            Self::Relay => false,
+        }
+    }
+
+    /// Whether a method that answers `caller` answers this peer.
+    pub fn is_caller(&self, caller: Caller) -> bool {
+        match caller {
+            Caller::Signed(signer) => self.is(signer),
+            Caller::Relay => matches!(self, Self::Relay),
+        }
     }
 }
 
@@ -213,12 +253,27 @@ mod tests {
 
     #[test]
     fn the_peer_is_seen_on_the_blocking_pool_and_only_there() {
-        let peer = Peer {
+        let token = |peer: Peer| match peer {
+            Peer::Socket { token } => token,
+            Peer::Relay => panic!("not a socket peer"),
+        };
+        let peer = Peer::Socket {
             token: Some([7; 32]),
         };
-        let seen = on_this_thread(peer, || current().token);
+        let seen = on_this_thread(peer, || token(current()));
         assert_eq!(seen, Some([7; 32]));
-        assert_eq!(current().token, None);
+        assert_eq!(token(current()), None);
+    }
+
+    #[test]
+    fn the_relay_is_its_own_caller_and_never_a_signed_program() {
+        as_relay(|| {
+            let peer = current();
+            assert!(peer.is_caller(Caller::Relay));
+            assert!(!peer.is(Signer::ThisBinary) && !peer.is(Signer::AxoApp));
+            assert!(!peer.is_caller(Caller::Signed(Signer::ThisBinary)));
+        });
+        assert!(!current().is_caller(Caller::Relay), "only inside as_relay");
     }
 
     #[cfg(target_os = "macos")]
@@ -245,7 +300,8 @@ mod tests {
         let (left, right) = tokio::net::UnixStream::pair().unwrap();
         let peer = Peer::of(&left);
         drop(right);
-        assert!(peer.token.is_some());
+        assert!(matches!(peer, Peer::Socket { token: Some(_) }));
+        assert!(!peer.is_caller(Caller::Relay));
         // The test binary connects to itself: the same program, and not Axo.app.
         assert!(peer.is(Signer::ThisBinary));
         assert!(!peer.is(Signer::AxoApp));

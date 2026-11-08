@@ -14,14 +14,15 @@
 //! - `elicitation`: a person's answers to an agent's questions (RFD0029).
 //! - `wire`: the JSON-RPC message types.
 
-mod dispatch;
 mod elicitation;
+mod forward;
 mod jobs;
 mod session;
 mod socket;
 mod status;
 mod wire;
 
+pub use session::current_timestamp;
 pub(crate) use socket::{
     MAX_FRAME_BYTES, RelaySink, RelayStream, connect_websocket, host_websocket_request, receive,
     send_json,
@@ -308,8 +309,6 @@ async fn run_connection(
             protocol_version: axo_protocol::rpc::PROTOCOL_VERSION,
         },
         sessions,
-        &host_id,
-        &host_generation,
     )
     .await?;
     let subscription_id = {
@@ -340,8 +339,6 @@ async fn run_connection(
         "axo.host.register",
         registration,
         sessions,
-        &host_id,
-        &host_generation,
     )
     .await
     {

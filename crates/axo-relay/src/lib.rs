@@ -23,5 +23,7 @@ pub use host::{
 };
 pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
 pub use outbound::{Priority, RelayCallError, RelayChannel, ReplySender};
-pub use relay::{RelayControl, RelayDependencies, RelayWorker, unavailable_status};
+pub use relay::{
+    RelayControl, RelayDependencies, RelayWorker, current_timestamp, unavailable_status,
+};
 pub use sync::{SessionMetadata, StoredSyncState, SyncSession, WorkspaceState};

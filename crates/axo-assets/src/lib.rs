@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use axo_ipc::peer::Signer;
+use axo_ipc::peer::{Caller, Signer};
 use axo_ipc::{ErrorCode, Extension, Only, RpcError, TypedMethods};
 use axo_protocol::asset::{Attachments, FetchedAttachment};
 use axo_protocol::rpc::method::ASSETS_FETCH;
@@ -56,7 +56,7 @@ impl Extension for Assets {
         let slot = Arc::clone(&self.slot);
         methods.add_typed_only(
             Only {
-                signer: Signer::ThisBinary,
+                caller: Caller::Signed(Signer::ThisBinary),
                 code: -32003,
                 message: "only axod's own tools fetch assets here",
             },

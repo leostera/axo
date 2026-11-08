@@ -18,7 +18,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axo_ipc::Extension;
-use axo_ipc::peer::Signer;
+use axo_ipc::peer::{Caller, Signer};
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::elicitation::{
     Asker, BAD_INPUT, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind,
@@ -454,7 +454,7 @@ impl Extension for QuestionsExtension {
                 // Anyone may ask as the agent; only axod's own tools ask as a tool.
                 if request.asked_by != Asker::Agent {
                     Only {
-                        signer: Signer::ThisBinary,
+                        caller: Caller::Signed(Signer::ThisBinary),
                         code: NOT_A_TOOL,
                         message: "only Axo's own tools ask as a tool; ask as the agent",
                     }
@@ -476,7 +476,7 @@ impl Extension for QuestionsExtension {
         let (answering, host) = (Arc::clone(&self.questions), Arc::clone(&self.host));
         handler.add_typed_only(
             Only {
-                signer: Signer::AxoApp,
+                caller: Caller::Signed(Signer::AxoApp),
                 code: NOT_A_PERSON,
                 message: "only the person answers: on this Mac, from Axo.app",
             },

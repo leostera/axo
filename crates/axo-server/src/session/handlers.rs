@@ -10,19 +10,25 @@ use super::prompts::PromptError;
 use axo_agent::takeover::TakeoverPolicy;
 use axo_ipc::TypedMethods;
 use axo_protocol::rpc::{self, method};
-use axo_protocol::{
-    Event, Layout, LayoutNode, RelayStatus, RemoteSessionSnapshot, SessionId, SessionRecord,
-    ShellId, Viewport,
-};
+use axo_protocol::{Event, Layout, RelayStatus, SessionId, ShellId, Viewport};
 use axo_pty::WindowSize;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 
-/// Exposes the session manager to the cloud relay.
-pub(crate) struct RelayHostAdapter(pub(crate) Arc<SessionManager>);
+/// Exposes the session manager to the cloud relay, and answers the account's calls with axod's
+/// own methods (`remote`), set once they are assembled.
+pub(crate) struct RelayHostAdapter(
+    pub(crate) Arc<SessionManager>,
+    std::sync::OnceLock<IoHandler>,
+);
 
 impl RelayHostAdapter {
-    fn remote(&self, session: &SessionRecord, updated_at: &str) -> RemoteSessionSnapshot {
-        RemoteSessionSnapshot::from_record(session, &self.0.host_id, updated_at)
+    pub(crate) fn new(manager: Arc<SessionManager>) -> Self {
+        Self(manager, std::sync::OnceLock::new())
+    }
+
+    /// The methods the account's calls are answered with: axod's, as the relay's caller.
+    pub(crate) fn answer_with(&self, methods: IoHandler) {
+        let _ = self.1.set(methods);
     }
 }
 
@@ -226,162 +232,22 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         self.0.unsubscribe(subscription_id)
     }
 
-    fn remote_create_session(&self, updated_at: &str) -> io::Result<RemoteSessionSnapshot> {
-        let session = self.0.create_session_and_publish()?;
-        Ok(self.remote(&session, updated_at))
-    }
-
-    fn remote_create_workspace_session(
-        &self,
-        workspace_id: &str,
-        updated_at: &str,
-    ) -> io::Result<RemoteSessionSnapshot> {
-        let session = self.0.create_session_in_workspace(workspace_id)?;
-        Ok(self.remote(&session, updated_at))
-    }
-
-    fn remote_close_session(
-        &self,
-        session_id: SessionId,
-        updated_at: &str,
-    ) -> io::Result<Option<RemoteSessionSnapshot>> {
-        let replacement = self.0.close_session_and_publish(session_id)?;
-        Ok(replacement.map(|session| self.remote(&session, updated_at)))
-    }
-
-    fn remote_workspaces(&self) -> io::Result<Vec<axo_protocol::RemoteWorkspace>> {
-        Ok(self
-            .0
-            .list_workspaces()?
-            .iter()
-            .map(axo_protocol::RemoteWorkspace::from)
-            .collect())
-    }
-
-    fn remote_rename_session(&self, session_id: SessionId, name: &str) -> io::Result<()> {
-        self.0.rename_session(session_id, name).map(drop)
-    }
-
-    fn remote_create_shell(&self, session_id: SessionId) -> io::Result<ShellId> {
-        Ok(self.0.create_shell_and_publish(session_id)?.id)
-    }
-
-    fn remote_close_shell(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<()> {
-        self.0
-            .close_shell_and_publish(session_id, shell_id)
-            .map(drop)
-    }
-
-    fn remote_set_layout(&self, session_id: SessionId, layout: LayoutNode) -> io::Result<()> {
-        let layout = Layout::try_from(layout)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        self.0.set_layout_and_publish(session_id, layout)
-    }
-
-    fn remote_terminal_input(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        sequence: u64,
-        data: &str,
-    ) -> io::Result<()> {
-        // Typing into a dormant Pi starts it; this keystroke is lost, as it has nowhere to go yet.
-        if self.0.wake_dormant_pane(session_id, shell_id)? {
-            return Ok(());
-        }
-        self.0
-            .write_terminal_input(session_id, shell_id, sequence, data)
-    }
-
-    fn remote_prompt_pi(
-        &self,
-        session_id: SessionId,
-        text: &str,
-        command_id: Option<&axo_relay::CommandId>,
-        attachments: &[axo_protocol::asset::FetchedAttachment],
-        delivery: axo_relay::ClientDelivery,
-    ) -> io::Result<()> {
-        // A client that sends no commandId still gets one, so pi-axo queues its prompt in the log
-        // while Pi works rather than steering it into a queue a stop would empty (RFD0024).
-        let generated;
-        let command_id = match command_id {
-            Some(command_id) => command_id,
+    fn answer_remote(&self, request: serde_json::Value) -> Option<serde_json::Value> {
+        let reply = match self.1.get() {
+            Some(methods) => {
+                let request = request.to_string();
+                axo_ipc::peer::as_relay(|| methods.handle_request_sync(&request))?
+            }
             None => {
-                generated = axo_relay::CommandId::try_from(axo_protocol::new_uuid_v4()?)
-                    .map_err(io::Error::other)?;
-                &generated
+                // A call that arrives while axod is still assembling its methods.
+                return Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request.get("id").cloned().unwrap_or_default(),
+                    "error": { "code": -32003, "message": "Operation failed" },
+                }));
             }
         };
-        let delivery = match delivery {
-            axo_relay::ClientDelivery::FollowUp => rpc::PromptDelivery::FollowUp,
-            axo_relay::ClientDelivery::Steer => rpc::PromptDelivery::Steer,
-        };
-        self.0
-            .prompt_pi(session_id, text, command_id, attachments, delivery)
-    }
-
-    fn remote_pi_commands(
-        &self,
-        session_id: SessionId,
-    ) -> io::Result<Vec<axo_protocol::PiCommandInfo>> {
-        self.0.pi_commands(session_id)
-    }
-
-    fn remote_pi_models(
-        &self,
-        session_id: SessionId,
-    ) -> io::Result<Vec<axo_protocol::PiModelInfo>> {
-        self.0.pi_models(session_id)
-    }
-
-    fn remote_set_pi_model(
-        &self,
-        session_id: SessionId,
-        model: Option<&axo_relay::ModelChoice>,
-        thinking_level: Option<axo_protocol::ThinkingLevel>,
-    ) -> io::Result<()> {
-        self.0.set_pi_model(
-            session_id,
-            model.map(|model| (model.provider.as_str(), model.id.as_str())),
-            thinking_level,
-        )
-    }
-
-    fn remote_restart_pi(&self, session_id: SessionId) -> io::Result<()> {
-        self.0.restart_pi_for_client(session_id)
-    }
-
-    fn remote_stop_pi_turn(
-        &self,
-        session_id: SessionId,
-        stop: &axo_relay::StopTarget,
-    ) -> io::Result<bool> {
-        self.0.stop_pi_turn(session_id, stop)
-    }
-
-    fn remote_press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {
-        if self.0.wake_dormant_pi(session_id)? {
-            return Ok(());
-        }
-        self.0.press_pi_key(session_id, key)
-    }
-
-    fn remote_terminal_resize(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        rows: u32,
-        columns: u32,
-    ) -> io::Result<()> {
-        let size = WindowSize::new(rows, columns).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "terminal dimensions are outside the supported range",
-            )
-        })?;
-        // A client sizing the pane is showing the Session: its Pi starts, at that size.
-        self.0.wake_dormant_pane(session_id, shell_id)?;
-        self.0.resize_terminal(session_id, shell_id, size)
+        serde_json::from_str(&reply).ok()
     }
 }
 
