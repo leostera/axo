@@ -27,6 +27,8 @@ rust_library(
     version = AXO["version"] + ".0",
     deps = select({
         "@platforms//os:windows": [
+            "//crates/axo-relay:axo_relay",
+            "//crates/axo-ipc:axo_ipc",
             "//crates/axo-protocol:axo_protocol",
             "@crates//:log",
             "@crates//:serde",
@@ -77,6 +79,8 @@ rust_test(
     version = AXO["version"] + ".0",
     deps = select({
         "@platforms//os:windows": [
+            "//crates/axo-relay:axo_relay",
+            "//crates/axo-ipc:axo_ipc",
             "//crates/axo-protocol:axo_protocol",
             "@crates//:log",
             "@crates//:serde",

@@ -15,6 +15,18 @@ pub enum RelayState {
 pub enum HostKind {
     #[serde(rename = "macos")]
     MacOS,
+    #[serde(rename = "windows")]
+    Windows,
+}
+
+impl HostKind {
+    pub const fn platform() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::MacOS
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

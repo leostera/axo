@@ -1,8 +1,10 @@
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "dev.leostera.axo.host-credential";
 
 pub trait HostCredentialStore: Send + Sync {
@@ -92,18 +94,19 @@ impl FileCredentialStore {
 impl HostCredentialStore for FileCredentialStore {
     fn store(&self, credential_id: &str, secret: &[u8]) -> io::Result<()> {
         let path = self.path(credential_id)?;
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.directory)?;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder.create(&self.directory)?;
+        #[cfg(unix)]
         fs::set_permissions(&self.directory, fs::Permissions::from_mode(0o700))?;
         let temporary = self.directory.join(format!(".{credential_id}.tmp"));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temporary)?;
         file.write_all(secret)?;
         file.sync_all()?;
         fs::rename(&temporary, &path)
@@ -124,6 +127,7 @@ impl HostCredentialStore for FileCredentialStore {
 #[cfg(test)]
 mod file_store_tests {
     use super::{FileCredentialStore, HostCredentialStore};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     const ID: &str = "8a6e1308-a849-4902-a572-6b0b74ee69a8";
@@ -147,9 +151,12 @@ mod file_store_tests {
         store.store(ID, b"secret-one").unwrap();
         store.store(ID, b"secret-two").unwrap();
         assert_eq!(store.load(ID).unwrap(), b"secret-two");
+        #[cfg(unix)]
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        #[cfg(unix)]
         assert_eq!(mode(&store.directory), 0o700);
+        #[cfg(unix)]
         assert_eq!(mode(&store.directory.join(ID)), 0o600);
         assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 1);
         store.delete(ID).unwrap();

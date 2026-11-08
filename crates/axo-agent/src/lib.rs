@@ -28,9 +28,13 @@ pub use lock::WriterLock;
 
 /// A fresh directory under /tmp (not the per-user temp directory: socket paths are limited to
 /// 104 bytes).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn test_directory() -> std::path::PathBuf {
-    let directory = std::path::PathBuf::from("/tmp").join(format!(
+    #[cfg(unix)]
+    let root = std::path::PathBuf::from("/tmp");
+    #[cfg(windows)]
+    let root = std::env::temp_dir();
+    let directory = root.join(format!(
         "axo-agent-test-{}",
         axo_protocol::new_uuid_v4().unwrap()
     ));
@@ -112,6 +116,5 @@ pub mod codex;
 
 // The catalog can read legacy Pi addresses on Windows; launching Pi remains Unix-only.
 #[cfg(windows)]
-pub mod pi {
-    pub use crate::bridge_path::BridgeSocketPath;
-}
+#[path = "pi_windows.rs"]
+pub mod pi;

@@ -95,7 +95,7 @@ pub fn validate_code(raw: &str) -> io::Result<()> {
 pub fn prepare_credential(credentials: &dyn HostCredentialStore) -> io::Result<String> {
     let credential_id = create_uuid_v4()?;
     let mut secret = [0_u8; CREDENTIAL_BYTES];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut secret)?;
+    axo_protocol::random_bytes(&mut secret)?;
     let result = credentials.store(&credential_id, &secret);
     secret.fill(0);
     result?;
@@ -384,7 +384,7 @@ fn decode_chunked_body(mut input: &[u8]) -> io::Result<Vec<u8>> {
 
 fn create_uuid_v4() -> io::Result<String> {
     let mut bytes = [0_u8; 16];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    axo_protocol::random_bytes(&mut bytes)?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format!(

@@ -80,6 +80,7 @@ pub(super) struct Capability {
     version: u32,
 }
 
+#[cfg(not(windows))]
 pub(super) const HOST_CAPABILITIES: &[Capability] = &[
     Capability {
         id: "agent.pi",
@@ -89,6 +90,17 @@ pub(super) const HOST_CAPABILITIES: &[Capability] = &[
         id: "terminal.pty",
         version: 1,
     },
+    Capability {
+        id: "workspace.filesystem",
+        version: 1,
+    },
+];
+
+#[cfg(windows)]
+pub(super) const HOST_CAPABILITIES: &[Capability] = &[
+    // The production v2 service validates a closed capability vocabulary. Codex uses
+    // the existing agent-neutral session commands, but must not claim agent.pi or
+    // send an unrecognised agent.codex capability that would reject registration.
     Capability {
         id: "workspace.filesystem",
         version: 1,

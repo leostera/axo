@@ -8,6 +8,7 @@ rust_library(
     edition = "2024",
     deps = select({
         "@platforms//os:windows": [
+            "@crates//:sha2",
             "@crates//:windows-sys",
             "//crates/axo-protocol:axo_protocol",
             "@crates//:log",

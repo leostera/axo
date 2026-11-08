@@ -55,7 +55,10 @@ use crate::sync::{SyncWaker, SyncWorker};
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
+#[cfg(not(windows))]
 const NOT_LINKED: &str = "This Mac is not linked to an Axo account.";
+#[cfg(windows)]
+const NOT_LINKED: &str = "This PC is not linked to an Axo account.";
 
 pub struct RelayWorker {
     stop: Stop,
@@ -96,7 +99,7 @@ impl RelayWorker {
     ) -> io::Result<Self> {
         let observed_host = Arc::downgrade(&dependencies.host);
         let control = Arc::new(
-            RelayControl::new(host_label(), HostKind::MacOS).with_observer(Box::new(
+            RelayControl::new(host_label(), HostKind::platform()).with_observer(Box::new(
                 move |status| {
                     if let Some(host) = observed_host.upgrade() {
                         host.publish_relay_status(status);
@@ -328,7 +331,7 @@ async fn run_connection(
         host_id: &host_id,
         host_generation: &host_generation,
         label: &label,
-        host_kind: HostKind::MacOS,
+        host_kind: HostKind::platform(),
         capabilities: HOST_CAPABILITIES,
         sessions: [],
     };

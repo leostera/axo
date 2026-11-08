@@ -4,15 +4,21 @@
 //! keeps serving while it does, and its reply goes back only on the socket the request came on.
 
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+#[cfg(unix)]
 use tokio::io::{AsyncRead, AsyncReadExt};
+#[cfg(unix)]
 use tokio::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(unix)]
 use crate::fragments;
 
 pub const METHOD: &str = "axo.apps.bash";
@@ -21,8 +27,10 @@ pub const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// Output kept per stream; the rest is read and thrown away.
 pub const MAX_OUTPUT_BYTES: usize = 1_048_576;
 const MAX_COMMAND_BYTES: usize = 65_536;
+#[cfg(unix)]
 const TRUNCATED: &str = "\n[output truncated by Axo]\n";
 /// After the shell exits, how long background children may keep its output open.
+#[cfg(unix)]
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +82,7 @@ pub fn parse(params: &Value, account_id: &str) -> Result<BashParams, (i64, Strin
 }
 
 /// Runs the command to its end or its timeout. `Err` only when it could not start.
+#[cfg(unix)]
 pub async fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     let started = Instant::now();
     let timeout = params
@@ -142,6 +151,7 @@ pub async fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     Ok(result)
 }
 
+#[cfg(unix)]
 fn kill_group(group: Option<u32>) {
     if let Some(group) = group {
         // SAFETY: signals only the command's own process group.
@@ -152,6 +162,7 @@ fn kill_group(group: Option<u32>) {
 }
 
 /// One output stream to its end: the first `MAX_OUTPUT_BYTES` kept, the rest read and dropped.
+#[cfg(unix)]
 async fn capture(mut stream: impl AsyncRead + Unpin) -> (Vec<u8>, bool) {
     let mut kept = Vec::new();
     let mut truncated = false;
@@ -169,6 +180,7 @@ async fn capture(mut stream: impl AsyncRead + Unpin) -> (Vec<u8>, bool) {
     (kept, truncated)
 }
 
+#[cfg(unix)]
 fn text_of((bytes, truncated): (Vec<u8>, bool)) -> (String, bool) {
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     if truncated {
@@ -178,6 +190,7 @@ fn text_of((bytes, truncated): (Vec<u8>, bool)) -> (String, bool) {
 }
 
 /// Shortens the output, keeping its start, until the reply fits the largest relay message.
+#[cfg(unix)]
 fn fit_in_one_message(result: &mut BashResult) {
     let limit = fragments::MESSAGE_BYTES - 4_096;
     while serde_json::to_string(result).map(|s| s.len()).unwrap_or(0) > limit {
@@ -196,7 +209,7 @@ fn fit_in_one_message(result: &mut BashResult) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -247,7 +260,10 @@ mod tests {
         assert_eq!(result.exit_code, Some(0));
         assert!(!result.timed_out);
         let took = started.elapsed();
-        assert!(took >= DRAIN_GRACE && took < Duration::from_secs(5), "{took:?}");
+        assert!(
+            took >= DRAIN_GRACE && took < Duration::from_secs(5),
+            "{took:?}"
+        );
     }
 
     #[test]
@@ -287,4 +303,12 @@ mod tests {
         long["timeoutMs"] = json!(600_001);
         assert_eq!(parse(&long, "acct").unwrap_err().0, -32602);
     }
+}
+
+#[cfg(windows)]
+pub async fn run(_params: &BashParams) -> Result<BashResult, (i64, String)> {
+    Err((
+        -32601,
+        "The bash app tool is not available on this Windows host".into(),
+    ))
 }

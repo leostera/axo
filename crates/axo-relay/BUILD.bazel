@@ -23,8 +23,11 @@ rust_library(
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:sha2",
-        "@crates//:security-framework",
-    ],
+
+    ] + select({
+        "@platforms//os:macos": ["@crates//:security-framework"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

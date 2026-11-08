@@ -3,10 +3,18 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Axo</AssemblyName>
     <RootNamespace>Axo</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/Axo.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/*.png"/>
+    <Resource Include="Assets/Axo.ico"/>
+    <Using Remove="System.Windows.Forms"/>
+    <Using Remove="System.Drawing"/>
+  </ItemGroup>
 </Project>

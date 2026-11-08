@@ -38,8 +38,9 @@ From the repository root:
 This builds the Rust targets with Bazel, publishes the WPF client with the .NET SDK, runs Rust
 unit tests and a Windows process/IPC integration suite, and opens `dist/Axo-Windows/Axo.exe`.
 Pass `-BazelRoot D:/short-cache` to choose another short writable cache directory.
-The integration suite uses a deterministic Codex stand-in; it makes no model requests and
-briefly opens a native terminal to test that path. Real Codex inference requires its own sign-in.
+The integration suite uses a deterministic Codex stand-in and a loopback HTTP/WebSocket relay;
+it makes no model requests. It exercises real ConPTY, DPAPI, authentication, uploads, remote
+prompts/approvals/Stop, reconnect and durable command receipts. Real Codex requires its own sign-in.
 
 `bazel build //...` still includes the Apple apps and is not the Windows build entry point.
 The Windows slice does not fetch/build Ghostty, the Metal inference sidecar, or Apple frameworks.
@@ -47,14 +48,18 @@ The current unified crate dependency resolver still resolves Cua's pinned source
 
 ## Use
 
-1. Open a project folder. Axo creates a workspace and its first Codex session.
+1. Use **+** or **Ctrl+N**, choose a project folder and name the Workspace. Axo creates its first Codex session.
 2. Send a message. Output streams into the conversation; command output and file activity appear
    while it runs. Use **Stop** to interrupt a turn. Codex's default model is used.
-3. Create additional sessions with **New**. Each has a separate Codex thread and working directory.
-4. **Terminal** opens an interactive PowerShell window in the session's folder. This preview uses
-   a real external console, rather than an embedded terminal renderer. Axod tracks the process
-   and closes it when the session closes.
-5. Close the Axo window and reopen it: the daemon and running agents remain alive. Session metadata,
+3. **Terminal → New Session** (**Ctrl+Shift+N**) creates another session in a chosen Workspace.
+   The sidebar lists sessions across Workspaces, grouped as Pinned, Active and Earlier.
+4. The workbench shows the Codex pane and an embedded PowerShell terminal side by side. **Split Right**
+   (**Ctrl+Shift+D**) reveals the terminal; **View → Close Terminal Pane** hides its view without
+   killing the shell. Terminal text can be selected and copied; Ctrl+Shift+C/V copy and paste.
+   **Open External Terminal** remains available. Axod owns both terminal and agent processes.
+5. Closing the window hides it. The animated Axo in the Windows notification area offers **Open
+   Terminal**, **Settings…** and **Quit Axo**. Windows may put this icon in the overflow area.
+   Quit exits the desktop client; the daemon and running agents remain alive. Session metadata,
    completed chat messages and Codex thread IDs survive daemon restarts. Select **Reconnect**
    after a failed agent process; Axo resumes its saved thread rather than starting a new conversation.
 
@@ -68,6 +73,63 @@ The daemon's catalog is in `%LOCALAPPDATA%/Axo/server/axo.db`. It uses a local n
 to the current Windows SID (`Axo-<SID>`), with access restricted to that user and SYSTEM, and
 rejects remote pipe clients. Catalog directories use an inheritable user/SYSTEM-only ACL.
 Codex process trees belong to Windows jobs so they terminate if their owning daemon dies.
+ConPTY shells and their descendants also belong to jobs. PowerShell starts without a profile and
+uses its native module search path, avoiding a developer parent application's injected PSModulePath.
+No Windows execution-policy or publisher-trust settings are changed.
+
+## Remote Access
+
+Open **Axo → Settings… → Remote Access** (or **Ctrl+,**), enter the one-time `XXXX-YYYY` code
+from your Axo account, and choose **Link this PC**. The default is the standard service at
+`https://axo.leostera.dev`. Connection status is updated through daemon events, including automatic
+reconnect and a manual Connect/Retry action. The daemon remains connected when the desktop closes.
+
+This uses `axo-relay`, the same pairing, authenticated WebSocket, fragmentation, session uploader
+and reconnect implementation as macOS. Windows host credentials are protected by per-user DPAPI
+in the daemon's private directory. No credential is saved in the UI preferences or application
+folder. `--relay-url` / `AXO_RELAY_URL` can select a development relay; non-loopback relays require TLS.
+
+Completed Codex messages are projected into the relay's existing `pi/3` interchange format so
+existing clients can read conversations. Codex's thread and SQLite history remain authoritative.
+The host reports `windows` and only capabilities recognised by the existing production v2 service;
+it never claims to be Pi. Remote clients can create/list/rename/archive sessions, send idle-session
+prompts, resolve supported permission requests by their exact elicitation ID, and stop a turn they
+actually saw. Command UUID receipts persist across reconnects to prevent duplicate turns.
+
+Remote steering, busy-turn follow-up queues, attachments, model switching and computer use are not
+implemented in this Windows slice. Large permission requests and text questionnaires are handled
+on the PC. A rejected or unsupported remote command is reported as an error rather than accepted
+and discarded. Linking a real account requires the user's fresh pairing code; tests use an isolated relay.
+
+## Mac interface reference
+
+The Windows client follows the committed Mac interface rather than adding a separate design:
+
+| Mac source | Windows implementation |
+| --- | --- |
+| `WorkbenchSidebar`, `SessionSidebarRow` | 220-DIP sidebar, 26-DIP host header, 22-DIP single-line rows, status/glyph/name/age, pin/rename/archive menu, collapse toggle |
+| `TerminalWorkbenchView`, `TerminalSplitView` | 1000×680 window, minimum 760×480, edge-to-edge panes and a one-pixel split divider |
+| `SettingsView`, `RemoteAccessSettingsView` | 180-DIP Settings sidebar; Appearance, Remote Access and About use the same content and section names, with PC/Windows wording |
+| `LaunchSplashView`, `AxoApp` | Original animated loader, happy reveal, app icon and notification-area Mark; Open Terminal / Settings / Quit menu |
+| `GhosttyRuntime+Config` | 2-DIP horizontal / 10-DIP vertical terminal padding; pinned Ghostty default background `#282C34` and foreground `#FFFFFF` |
+
+Native chrome uses the Windows system appearance and accent; Settings → Appearance offers
+System/Light/Dark. The default terminal colors match the [pinned Ghostty configuration](https://github.com/ghostty-org/ghostty/blob/81598385d608dda4946093d6d6a234d204a2f225/src/config/Config.zig#L575).
+The shell renderer is a native WPF VT surface over ConPTY, not Ghostty. The Codex pane renders
+app-server messages and tool activity in the same terminal workbench layout; it is not Pi's TUI.
+
+`Assets/AppIcon.png` is copied unchanged from the Mac app icon. Animation atlases are rendered
+from the committed `assets/mascot/axo.riv`, using its Mark, Icon, Face and Loader artboards and its
+happy input. Playback is 30 fps and respects Windows reduced-animation preferences. Regenerate with:
+
+```powershell
+pnpm --dir packages/axo-mascot install --ignore-workspace --ignore-scripts --lockfile=false
+node windows/tools/generate-mascot.mjs
+```
+
+Regeneration needs Chrome and the mascot package's development dependencies. Normal builds use
+the committed atlases and need neither. The port includes the original idle/blink, loading and
+happy poses; interactive pointer tracking and the Mac About pane's experimental 3D mascot are not ported.
 
 For an isolated daemon:
 
@@ -78,7 +140,8 @@ For an isolated daemon:
 `AXO_DAEMON` can override the client daemon executable. Closing the desktop window keeps the
 daemon running. The Windows RPC method `axo.daemon.stop` shuts down the daemon and its agents.
 For isolated UI testing, set `AXO_PIPE` to a local pipe's short name and `AXO_SERVER_DIR` to an
-absolute scratch directory before launching the client. These overrides keep fixture sessions
+absolute scratch directory before launching the client; `AXO_DESKTOP_CONFIG` can isolate UI preferences.
+These overrides keep fixture sessions
 out of the normal catalog.
 
 An optional live Codex smoke test makes three small inference requests in a fresh scratch folder.
@@ -92,13 +155,16 @@ dotnet run --project windows/Tests/Tests.csproj -c Release -- dist/Axo-Windows/a
 ## Scope and limits
 
 Implemented: local workspaces, named/archived sessions, Codex conversations with streamed output,
-interrupts, approvals/questions, catalog persistence, agent reconnection, and native terminals.
+interrupts, approvals/questions, catalog persistence, agent reconnection, embedded ConPTY terminals,
+Mac workbench structure, original animated branding, a tray app, and relay/account linking.
 The pipe negotiates only methods actually implemented on Windows. Windows chat/session extensions
 are additive and are not yet the generic AXP agent protocol or wire-compatible replacements for
 Pi's terminal panes; the Apple client is unchanged.
 
-Not included: remote relay/account linking, computer use, local inference, embedded terminal panes,
-the Pi bridge, voice, mascot, auto-update, startup registration, or an installer. Completed chat
+Not included: computer use, local inference, the Pi bridge, voice, arbitrary/nested terminal splits,
+full Ghostty terminal features/configuration, auto-update, startup registration, or an installer. Completed chat
 messages are persisted locally; live tool output is not retained across desktop restarts. A turn
 interrupted by a daemon crash may have an incomplete local display, while Codex retains its own
-thread history. This is a development preview, not full Mac parity.
+thread history. Terminal replay is bounded to 2 MiB per shell and the native VT surface is a
+basic terminal renderer. Mac, physical IME and real-device relay interoperability need their own
+validation lanes. This is a development preview, not full Mac parity.

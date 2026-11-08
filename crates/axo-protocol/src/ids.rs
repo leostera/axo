@@ -123,12 +123,12 @@ impl SessionId {
 }
 
 #[cfg(unix)]
-fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
+pub fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
     std::fs::File::open("/dev/urandom")?.read_exact(bytes)
 }
 
 #[cfg(windows)]
-fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
+pub fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
     #[link(name = "advapi32")]
     unsafe extern "system" {
         #[link_name = "SystemFunction036"]
@@ -137,7 +137,9 @@ fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
     // SAFETY: bytes points to writable storage of the given length. RtlGenRandom is the
     // system cryptographic random source, available without initializing a provider.
     if unsafe { rtl_gen_random(bytes.as_mut_ptr(), bytes.len().try_into().unwrap()) } == 0 {
-        Err(io::Error::other("Windows cryptographic random source failed"))
+        Err(io::Error::other(
+            "Windows cryptographic random source failed",
+        ))
     } else {
         Ok(())
     }

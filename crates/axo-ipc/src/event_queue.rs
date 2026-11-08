@@ -21,12 +21,14 @@ pub struct EventQueue<T> {
     ready: Condvar,
     /// Wakes async waiters.
     notify: Notify,
+    weight: Option<(usize, fn(&T) -> usize)>,
 }
 
 struct QueueState<T> {
     events: VecDeque<T>,
     lagged: bool,
     closed: bool,
+    bytes: usize,
 }
 
 /// Why `push` did not enqueue.
@@ -45,12 +47,20 @@ impl<T> EventQueue<T> {
                 events: VecDeque::new(),
                 lagged: false,
                 closed: false,
+                bytes: 0,
             }),
             capacity,
             lag_marker,
             ready: Condvar::new(),
             notify: Notify::new(),
+            weight: None,
         }
+    }
+
+    /// Also bounds payload memory for streams whose events can vary greatly in size.
+    pub fn with_byte_limit(mut self, bytes: usize, weight: fn(&T) -> usize) -> Self {
+        self.weight = Some((bytes, weight));
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, QueueState<T>> {
@@ -60,6 +70,7 @@ impl<T> EventQueue<T> {
     }
 
     pub fn push(&self, event: T) -> PushOutcome {
+        let bytes = self.weight.map_or(0, |(_, weight)| weight(&event));
         let outcome = {
             let mut state = self.lock();
             if state.closed {
@@ -68,11 +79,18 @@ impl<T> EventQueue<T> {
             if state.lagged {
                 // Already gapped: everything until the lag report is discarded anyway.
                 PushOutcome::Lagged
-            } else if state.events.len() >= self.capacity {
+            } else if state.events.len() >= self.capacity
+                || self
+                    .weight
+                    .is_some_and(|(limit, _)| state.bytes.saturating_add(bytes) > limit)
+            {
                 state.lagged = true;
+                state.events.clear();
+                state.bytes = 0;
                 PushOutcome::Lagged
             } else {
                 state.events.push_back(event);
+                state.bytes += bytes;
                 PushOutcome::Queued
             }
         };
@@ -102,13 +120,18 @@ impl<T> EventQueue<T> {
         if state.lagged {
             state.lagged = false;
             state.events.clear();
+            state.bytes = 0;
             return Some(Ok(vec![(self.lag_marker)()]));
         }
         if state.events.is_empty() {
             return None;
         }
         let count = state.events.len().min(max_events.max(1));
-        Some(Ok(state.events.drain(..count).collect()))
+        let events: Vec<T> = state.events.drain(..count).collect();
+        if let Some((_, weight)) = self.weight {
+            state.bytes -= events.iter().map(weight).sum::<usize>();
+        }
+        Some(Ok(events))
     }
 
     /// Blocks the calling thread for up to `timeout`. An empty result means it timed out.
@@ -153,6 +176,23 @@ impl<T> EventQueue<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_limit_reports_a_gap_and_reclaims_the_backlog() {
+        let queue = EventQueue::new(100, || String::from("gap")).with_byte_limit(5, |s| s.len());
+        assert_eq!(queue.push("123".into()), PushOutcome::Queued);
+        assert_eq!(queue.push("456".into()), PushOutcome::Lagged);
+        assert_eq!(
+            queue.wait_blocking(Duration::ZERO, 100).unwrap(),
+            vec!["gap"]
+        );
+        assert_eq!(queue.push("12345".into()), PushOutcome::Queued);
+        assert_eq!(
+            queue.wait_blocking(Duration::ZERO, 100).unwrap(),
+            vec!["12345"]
+        );
+        assert_eq!(queue.push("123456".into()), PushOutcome::Lagged);
+    }
 
     const LAGGED: i64 = -1;
 
