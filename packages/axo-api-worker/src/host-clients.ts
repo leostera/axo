@@ -1,5 +1,6 @@
 import {
   CLIENT_METHODS,
+  ELICITATION_ERRORS,
   ELICITATION_METHODS,
   FRAGMENT_METHOD,
   DISCARD_METHOD,
@@ -63,6 +64,11 @@ const attachmentSchema = z.object({
   socketId: uuid,
   /** The client's connection number, from its hello; -1 until then. */
   connection: z.number().int().min(-1),
+  /**
+   * A signed-in person's client, not a Mac following its peers (RFD0022). Only people see and
+   * answer what a Mac asks (RFD0029). Sockets accepted before this field existed were people's.
+   */
+  person: z.boolean().default(true),
   expiresAt: z.number().finite(),
   window: z.number(),
   calls: z.number().int().nonnegative(),
@@ -164,6 +170,7 @@ export class HostClients {
       clientId: request.headers.get("X-Axo-Client"),
       socketId: crypto.randomUUID(),
       connection: -1,
+      person: request.headers.get("X-Axo-Person") !== "0",
       expiresAt: Number(request.headers.get("X-Axo-Expiry")),
       window: Date.now(),
       calls: 0,
@@ -209,7 +216,7 @@ export class HostClients {
     if (!call.success) return void this.send(socket, failure(null, -32600, "Invalid Request"));
     const reply = await this.answer(socket, peer, call.data);
     if (reply && call.data.id !== undefined) this.send(socket, reply);
-    if (call.data.method === CLIENT_METHODS.hello && reply && "result" in reply)
+    if (call.data.method === CLIENT_METHODS.hello && reply && "result" in reply && peer.person)
       for (const elicitation of this.host.elicitations()) this.send(socket, this.requested(elicitation));
     // What the open did not return follows it, in batches.
     if (call.data.method === CLIENT_METHODS.open && reply && "result" in reply)
@@ -281,11 +288,12 @@ export class HostClients {
           case "label":
             this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.label, params: { label: notice.label } });
             break;
+          // Only people see what a Mac asks: a Mac following its peers does not (RFD0029).
           case "elicitationRequested":
-            this.send(socket, this.requested(notice.elicitation));
+            if (peer.person) this.send(socket, this.requested(notice.elicitation));
             break;
           case "elicitationResolved":
-            this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.resolved, params: { hostId, ...notice.resolved } });
+            if (peer.person) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.resolved, params: { hostId, ...notice.resolved } });
             break;
         }
       }
@@ -338,7 +346,8 @@ export class HostClients {
           return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
         }
         case ELICITATION_METHODS.resolve: {
-          // Only a person answers (RFD0029): these sockets are signed in to the account as one.
+          // Only a person answers: a Mac's own credential cannot, for any Mac (RFD0029).
+          if (!peer.person) return failure(id, ELICITATION_ERRORS.notAPerson, "Only a person answers");
           const params = clientElicitationResolveParamsSchema.safeParse(call.params);
           const presence = this.host.presence();
           if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");

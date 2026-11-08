@@ -306,3 +306,45 @@ test("the account socket in protocol 3 lists hosts and no Sessions, and refuses 
   const open = await account.call("axo.client.session.open", { hostId: host.hostId, sessionId: crypto.randomUUID() });
   assert.ok("error" in open && open.error.code === -32601, JSON.stringify(open));
 });
+
+test("a Mac follows another Mac's HostDO with its host credential: the index and pushed records, but not what the Mac asks", async (t) => {
+  const { h, session, host, daemon, transcript } = await fixture(t);
+  const follower = await pairHost(h, session, "Studio");
+  const credential = { Authorization: `Bearer ${follower.credential}`, "X-Axo-Credential-Id": follower.credentialId };
+  const peer = await Peer.connectPeerHostClient(h.url, session.accountId, follower.hostId, host.hostId, credential);
+  t.after(() => peer.close());
+  const clientId = `host-${follower.hostId}`;
+  const hello = await peer.call("axo.client.hello", { protocolVersion: 3, clientId, connection: 1 });
+  assert.ok("result" in hello, JSON.stringify(hello));
+  assert.deepEqual((hello.result as { sessions: Array<{ sessionId: string }> }).sessions.map((row) => row.sessionId), [transcript.sessionId]);
+  const before = reads(h);
+  const opened = await peer.call("axo.client.session.open", { hostId: host.hostId, sessionId: transcript.sessionId, have: { epoch: 1, cursor: 2 } });
+  assert.ok("result" in opened && (opened.result as { cursor: number }).cursor === 2, JSON.stringify(opened));
+
+  const elicitation = { id: crypto.randomUUID(), sessionId: transcript.sessionId, kind: "confirm", askedBy: "computerUse", message: "Go?", createdAt: Date.now(), expiresAt: Date.now() + 300_000 };
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: elicitation });
+  await transcript.write(userMessage("three"));
+  await append(daemon, transcript, 3);
+  for (;;) {
+    const message = (await peer.next()) as { method?: string; params?: { cursor?: number } };
+    assert.notEqual(message.method, "axo.elicitation.requested", "a Mac following its peers never sees what a Mac asks");
+    if (message.method === "axo.client.session.records") {
+      assert.equal(message.params!.cursor, 3);
+      break;
+    }
+  }
+  assert.equal(reads(h), before, "a Mac that already holds the head costs no read, to open or to follow");
+  const refused = await peer.call("axo.elicitation.resolve", { hostId: host.hostId, elicitationId: elicitation.id, action: "accept" });
+  assert.ok("error" in refused && refused.error.code === -32012, JSON.stringify(refused));
+
+  const wrong = new WebSocket(`${h.url.replace(/^http/, "ws")}api/v1/accounts/${session.accountId}/hosts/${follower.hostId}/peers/${host.hostId}/client`, {
+    headers: { Authorization: `Bearer ${"x".repeat(43)}`, "X-Axo-Credential-Id": follower.credentialId },
+  });
+  wrong.on("error", () => undefined);
+  const status = await new Promise<number>((done) => {
+    wrong.once("unexpected-response", (_request, response) => done(response.statusCode ?? 0));
+    wrong.once("open", () => done(101));
+  });
+  wrong.terminate();
+  assert.equal(status, 401);
+});

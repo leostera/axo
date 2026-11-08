@@ -149,6 +149,49 @@ export async function upgradeAccountClient(
 }
 
 /**
+ * A paired Mac's socket on one of its account's hosts (RFD0032, protocol 3), for following that
+ * host's Sessions (RFD0022) or reading back its own (RFD0027). Signed in with the Mac's host
+ * credential, as `/peers` is; it is not a person, so it neither sees nor answers what a Mac asks.
+ */
+export async function upgradePeerHostClient(
+  request: Request,
+  ctx: ExecutionContext,
+  rawAccountId: string,
+  rawHostId: string,
+  rawTargetId: string,
+): Promise<Response> {
+  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+    return new Response("WebSocket required", { status: 426, headers: privateHeaders });
+  if (request.headers.has("Origin")) return json({ error: "Origin not allowed" }, 403);
+  const hostId = hostIdSchema.safeParse(rawHostId);
+  const targetId = hostIdSchema.safeParse(rawTargetId);
+  const accountId = uuid.safeParse(rawAccountId);
+  if (!hostId.success || !targetId.success) return json({ error: "Invalid host" }, 400);
+  if (!accountId.success) return json({ error: "Invalid account" }, 400);
+  const credential = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get("Authorization") ?? "")?.[1];
+  const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
+  if (!credential || !uuid.safeParse(credentialId).success) return json({ error: "Host authentication required" }, 401);
+  try {
+    const account = ctx.exports.AxoAccountDirectory.getByName(accountId.data) as unknown as HostAuthorizer & { clientHosts(): Promise<Array<{ hostId: string }>> };
+    if (!(await account.authorizeHost(hostId.data, credentialId, credential))) return json({ error: "Host authentication required" }, 401);
+    if (!(await account.clientHosts()).some((host) => host.hostId === targetId.data)) return json({ error: "Unknown host" }, 404);
+  } catch {
+    return unavailable();
+  }
+  return ctx.exports.AxoHostDO.getByName(hostDOName(accountId.data, targetId.data)).fetch(new Request("https://host.internal/", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Role": DIRECT_CLIENT_ROLE,
+      "X-Axo-Account": accountId.data,
+      "X-Axo-Machine": targetId.data,
+      "X-Axo-Client": peerClientId(hostId.data),
+      "X-Axo-Person": "0",
+      "X-Axo-Expiry": String(Date.now() + PEERS_SIGN_IN_MS),
+    },
+  }));
+}
+
+/**
  * A client's socket on one of the account's hosts (RFD0032, protocol 3), signed in like the
  * account socket, and served by that host's HostDO. A host the account doesn't own, or revoked,
  * is refused.
@@ -182,6 +225,7 @@ export async function upgradeHostClient(
       "X-Axo-Account": caller.accountId,
       "X-Axo-Machine": hostId.data,
       "X-Axo-Client": clientId.data,
+      "X-Axo-Person": "1",
       "X-Axo-Expiry": String(caller.expiresAt),
     },
   }));

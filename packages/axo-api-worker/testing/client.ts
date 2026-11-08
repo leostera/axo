@@ -140,6 +140,15 @@ export class Peer {
     });
     return Peer.open(socket);
   }
+  /** A paired Mac's socket on another host of its account (RFD0032, protocol 3), with its host credential. */
+  static async connectPeerHostClient(url: string, accountId: string, hostId: string, targetId: string, headers: Record<string, string>) {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/accounts/${accountId}/hosts/${hostId}/peers/${targetId}/client`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket);
+  }
   /** Whether the server closed this socket, and how; null while it is open. */
   closedWith(): Promise<{ code: number; reason: string }> {
     if (this.socket.readyState === WebSocket.CLOSED) return Promise.resolve({ code: -1, reason: "already closed" });
