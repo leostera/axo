@@ -1,10 +1,13 @@
 //! Local Windows vertical slice of axod. Shares Axo IDs, workspaces and SQLite sessions,
 //! with a Codex app-server agent and a per-user named-pipe transport. Apple-only extensions
 //! are deliberately absent from negotiation. No listener is exposed to the network.
+mod computer;
 mod credentials;
+mod mcp;
 mod relay;
 mod security;
 mod terminal;
+pub use mcp::serve_stdio as serve_mcp;
 
 use axo_agent::codex::{Codex, message_text};
 use axo_protocol::rpc::{self, method};
@@ -52,6 +55,13 @@ const METHODS: &[&str] = &[
     "axo.terminal.close",
     method::TERMINAL_INPUT,
     method::TERMINAL_RESIZE,
+    computer::CALL,
+    computer::STATUS,
+    computer::TOOLS,
+    computer::SETTINGS,
+    computer::SAVE_SETTINGS,
+    method::ELICITATION_RESOLVE,
+    method::ELICITATION_LIST,
 ];
 
 #[derive(Default)]
@@ -89,6 +99,8 @@ struct Backend {
     relay: Mutex<Option<Arc<relay::Relay>>>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
     next_shell: std::sync::atomic::AtomicU32,
+    computer: computer::Computer,
+    pipe: String,
 }
 
 struct Subscription {
@@ -128,6 +140,8 @@ pub fn serve(
         let database = axo_store::open(&directory.join(axo_store::DATABASE_FILE))?;
         axo_store::coding::initialize(&database)?;
         let backend = Arc::new(Backend {
+            computer: computer::Computer::load(&directory)?,
+            pipe: pipe.clone(),
             database: Mutex::new(database),
             sessions: Mutex::new(HashMap::new()),
             codex,
@@ -162,6 +176,13 @@ pub fn serve(
         }
         // Relay workers join tasks using the runtime handle, so drop them on the blocking
         // pool while that runtime is still alive.
+        for question in backend.computer.list() {
+            backend.computer.resolve(
+                &backend,
+                &question.id,
+                axo_protocol::elicitation::ElicitationAction::Cancel,
+            );
+        }
         tokio::task::spawn_blocking(move || relay.shutdown())
             .await
             .map_err(io::Error::other)?;
@@ -193,6 +214,7 @@ struct Request {
 }
 
 async fn connection(pipe: NamedPipeServer, backend: Arc<Backend>) -> io::Result<()> {
+    let desktop = security::is_desktop_client(&pipe);
     let mut reader = BufReader::new(pipe);
     loop {
         let mut line = Vec::new();
@@ -218,7 +240,29 @@ async fn connection(pipe: NamedPipeServer, backend: Arc<Backend>) -> io::Result<
                 let state = backend.clone();
                 let id = request.id.clone();
                 let stopping = request.method == "axo.daemon.stop";
-                let result = if request.method == method::SESSION_EVENTS_NEXT {
+                let result = if matches!(
+                    request.method.as_str(),
+                    computer::SAVE_SETTINGS | method::ELICITATION_RESOLVE
+                ) && !desktop
+                {
+                    Ok(Err(RpcError { code: -32003, message: "Only the bundled Axo desktop client may change permissions or answer a local approval".into() }))
+                } else if request.method == computer::CALL {
+                    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let flag = cancelled.clone();
+                    let call = tokio::task::spawn_blocking(move || -> Result<Value, RpcError> {
+                        let call: computer::Call = parse(request.params)?;
+                        state.session(call.session_id)?;
+                        Ok(state.computer.call(&state, call, &flag))
+                    });
+                    tokio::pin!(call);
+                    tokio::select! {
+                        result = &mut call => result,
+                        _ = reader.fill_buf() => {
+                            cancelled.store(true, std::sync::atomic::Ordering::Release);
+                            return Ok(());
+                        }
+                    }
+                } else if request.method == method::SESSION_EVENTS_NEXT {
                     Ok(state.next_events(request.params).await)
                 } else {
                     tokio::task::spawn_blocking(move || {
@@ -408,17 +452,20 @@ impl Backend {
         let session = self.session(id)?;
         let thread = axo_store::coding::thread_id(&self.database.lock().unwrap(), id)?;
         let runtime = session.runtime.lock().unwrap();
+        let mut pending = self.computer.pending(id);
+        let attention = !pending.is_empty();
+        pending.extend(runtime.pending.values().cloned());
         let shells=runtime.pseudoconsole.as_ref().map(|t| json!({"id":t.shell,"paneId":null,"role":"terminal","processId":t.pid,"initialPwd":row.initial_pwd,"ptyDevice":"ConPTY","attachSocketPath":"","available":t.is_alive(),"availabilityReason":if t.is_alive() {Value::Null} else {json!("Terminal exited")}})).into_iter().collect::<Vec<_>>();
         Ok(
             json!({"id":id,"agent":"codex","name":row.manual_name.clone().unwrap_or(row.name),
             "manualName":row.manual_name,"emoji":row.emoji,"piSessionFile":null,"piSessionId":null,"shells":shells,"layout":null,
             "initialPwd":row.initial_pwd,"workspaceId":row.workspace_id,"workspaceName":row.workspace_name,
             "createdAt":row.created_at,"lastMessageAt":row.last_message_at,
-            "status":runtime.status.unwrap_or(SessionStatus::Ready),"error":runtime.error,
+            "status":if attention {SessionStatus::NeedsAttention} else {runtime.status.unwrap_or(SessionStatus::Ready)},"error":runtime.error,
             "connected":runtime.agent.as_ref().is_some_and(|a| a.is_alive()),
             "agentProcessId":runtime.agent.as_ref().map(|a|a.process_id()),
             "threadId":thread,
-            "pendingRequests":runtime.pending.values().collect::<Vec<_>>(),"eventSequence":runtime.sequence}),
+            "pendingRequests":pending,"eventSequence":runtime.sequence}),
         )
     }
 
@@ -488,6 +535,28 @@ impl Backend {
 
     fn dispatch_inner(self: &Arc<Self>, name: &str, params: Value) -> Result<Value, RpcError> {
         match name {
+            computer::STATUS => Ok(self.computer.status()),
+            computer::TOOLS => Ok(json!({"tools":axo_computer::tool_definitions()})),
+            computer::SETTINGS => Ok(serde_json::to_value(
+                self.computer.settings.lock().unwrap().clone(),
+            )?),
+            computer::SAVE_SETTINGS => self.save_settings(parse(params)?).map_err(Into::into),
+            method::ELICITATION_LIST => Ok(json!({"elicitations":self.computer.list()})),
+            method::ELICITATION_RESOLVE => {
+                let p: axo_protocol::elicitation::ResolveElicitation = parse(params)?;
+                if p.values.is_some() {
+                    return Err(
+                        invalid("Secret input forms are not available on Windows yet").into(),
+                    );
+                }
+                if !self
+                    .computer
+                    .resolve(self, &p.elicitation_id, p.action.into())
+                {
+                    return Err(invalid("Approval already answered or expired").into());
+                }
+                Ok(json!({"resolved":true}))
+            }
             "axo.terminal.create" => {
                 let id = sid(params)?;
                 let session = self.session(id)?;
@@ -734,10 +803,7 @@ impl Backend {
                     runtime.remote_command = None;
                     runtime.turn_entries.clear();
                 }
-                match agent.request(
-                    "turn/start",
-                    json!({"threadId":thread,"input":[{"type":"text","text":p.text}]}),
-                ) {
+                match agent.request("turn/start", self.turn_params(&thread, p.text)?) {
                     Ok(result) => {
                         let mut runtime = session.runtime.lock().unwrap();
                         if runtime.status == Some(SessionStatus::Working) && runtime.turn.is_none()
@@ -754,6 +820,7 @@ impl Backend {
             }
             "axo.session.interrupt" => {
                 let id = sid(params)?;
+                self.computer.cancel_session(self, id);
                 let session = self.session(id)?;
                 let _operation = session.operation.lock().unwrap();
                 let (agent, turn) = {
@@ -782,6 +849,8 @@ impl Backend {
                     .front()
                     .and_then(|e| e["sequence"].as_u64())
                     .unwrap_or(runtime.sequence + 1);
+                let mut pending = self.computer.pending(p.session_id);
+                pending.extend(runtime.pending.values().cloned());
                 let events: Vec<_> = runtime
                     .events
                     .iter()
@@ -790,7 +859,7 @@ impl Backend {
                     .collect();
                 Ok(
                     json!({"events":events,"sequence":runtime.sequence,"reset":p.after>runtime.sequence || p.after.saturating_add(1)<earliest,
-                    "status":runtime.status.unwrap_or(SessionStatus::Ready),"error":runtime.error,"pendingRequests":runtime.pending.values().collect::<Vec<_>>()}),
+                    "status":if pending.is_empty() {runtime.status.unwrap_or(SessionStatus::Ready)} else {SessionStatus::NeedsAttention},"error":runtime.error,"pendingRequests":pending}),
                 )
             }
             "axo.session.approval.respond" => {
@@ -892,6 +961,7 @@ impl Backend {
             }
             method::SESSION_CLOSE => {
                 let id = sid(params)?;
+                self.computer.cancel_session(self, id);
                 let session = self.session(id)?;
                 let _operation = session.operation.lock().unwrap();
                 let (agent, terminal, pty) = {
@@ -958,7 +1028,7 @@ impl Backend {
         let weak = Arc::downgrade(self);
         let live = Arc::downgrade(session);
         let agent = Arc::new(
-            Codex::spawn(&self.codex, &cwd, move |event| {
+            Codex::spawn_with_config(&self.codex, &cwd, &self.mcp_config(id)?, move |event| {
                 if let (Some(backend), Some(session)) = (weak.upgrade(), live.upgrade()) {
                     backend.on_event(id, &session, generation, event);
                 }
@@ -971,9 +1041,15 @@ impl Backend {
             })?,
         );
         let thread = axo_store::coding::thread_id(&self.database.lock().unwrap(), id)?;
-        let result=match thread {
-            Some(thread)=>agent.request("thread/resume",json!({"threadId":thread,"cwd":cwd,"excludeTurns":true,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write"})),
-            None=>agent.request("thread/start",json!({"cwd":cwd,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write","serviceName":"axo"})),
+        let full = self.computer.settings.lock().unwrap().codex_full_access;
+        let mut parameters = json!({"cwd":cwd,"approvalPolicy":if full {"never"} else {"on-request"},"approvalsReviewer":"user","sandbox":if full {"danger-full-access"} else {"workspace-write"},"serviceName":"axo"});
+        let result = match thread {
+            Some(thread) => {
+                parameters["threadId"] = json!(thread);
+                parameters["excludeTurns"] = json!(true);
+                agent.request("thread/resume", parameters)
+            }
+            None => agent.request("thread/start", parameters),
         }?;
         let thread = result["thread"]["id"]
             .as_str()
@@ -1204,6 +1280,8 @@ mod tests {
     fn late_exit_from_old_process_cannot_disconnect_replacement() {
         let db = axo_store::Connection::open_in_memory().unwrap();
         let backend = Backend {
+            computer: computer::Computer::default(),
+            pipe: String::new(),
             database: Mutex::new(db),
             sessions: Mutex::new(HashMap::new()),
             codex: PathBuf::from("codex"),

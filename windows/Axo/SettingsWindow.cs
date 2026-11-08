@@ -32,6 +32,23 @@ public sealed class SettingsWindow : Window
         var general = new StackPanel();
         var status = new TextBlock { Text = "Starting…" };
         AddSection(general, "axod", status);
+        var permissions = new StackPanel();
+        var fullAccess = new CheckBox { Content = "Full access — run Codex commands without asking", IsEnabled = false, Margin = new Thickness(0, 0, 0, 8) };
+        var computerUse = new CheckBox { Content = "Allow computer use on this PC", IsEnabled = false, Margin = new Thickness(0, 0, 0, 8) };
+        var permissionStatus = new TextBlock { Text = "Loading permissions…", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
+        var savePermissions = new Button { Content = "Save permissions", IsEnabled = false, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4) };
+        permissions.Children.Add(fullAccess);
+        permissions.Children.Add(new TextBlock { Text = "Full access lets Codex read, write and run commands with your Windows account's permissions. It applies on the next turn and does not require Administrator rights.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
+        permissions.Children.Add(computerUse);
+        permissions.Children.Add(new TextBlock { Text = "Allows agents in Axo and your paired account to inspect and operate Windows apps. Actions that may send, delete or commit changes can still ask you first. Locked screens and elevated apps remain protected by Windows.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
+        permissions.Children.Add(savePermissions); permissions.Children.Add(permissionStatus); AddSection(general, "Agent permissions", permissions);
+        savePermissions.Click += async (_, _) =>
+        {
+            savePermissions.IsEnabled = false;
+            try { await daemon.CallAsync("axo.windows.settings.save", new { codexFullAccess = fullAccess.IsChecked == true, computerUseEnabled = computerUse.IsChecked == true }); permissionStatus.Text = "Saved. Codex command permissions apply on the next turn."; }
+            catch (Exception error) { permissionStatus.Text = error.Message; }
+            finally { savePermissions.IsEnabled = true; }
+        };
         var terminal = new StackPanel(); terminal.Children.Add(new TextBlock { Text = "Shell command" }); terminal.Children.Add(new TextBox { Text = "powershell.exe -NoLogo -NoProfile -NoExit", IsReadOnly = true, FontFamily = new FontFamily("Consolas"), Margin = new Thickness(0, 8, 0, 0) }); AddSection(general, "Terminal", terminal);
 
         var appearance = new StackPanel(); var themes = new StackPanel { Orientation = Orientation.Horizontal };
@@ -89,6 +106,13 @@ public sealed class SettingsWindow : Window
             {
                 ApplyStatus(await daemon.CallAsync("axo.relay.status")); var health = await daemon.CallAsync("axo.daemon.health");
                 daemonVersion.Text = health.GetProperty("version").GetString(); daemonBuild.Text = health.GetProperty("buildNumber").ToString(); status.Text = daemonStatus.Text = "Running";
+                try
+                {
+                    var settings = await daemon.CallAsync("axo.windows.settings");
+                    fullAccess.IsChecked = settings.GetProperty("codexFullAccess").GetBoolean(); computerUse.IsChecked = settings.GetProperty("computerUseEnabled").GetBoolean();
+                    fullAccess.IsEnabled = computerUse.IsEnabled = savePermissions.IsEnabled = true; permissionStatus.Text = "";
+                }
+                catch (Exception error) { permissionStatus.Text = "Update axod to change permissions. " + error.Message; }
             }
             catch (Exception e) { detail.Text = e.Message; status.Text = daemonStatus.Text = "Unavailable"; }
             clock.Start();

@@ -28,6 +28,7 @@ sealed class RelayFixture : IAsyncDisposable
     public ConcurrentQueue<JsonElement> Progress {get;}=[];
     public ConcurrentQueue<JsonElement> Questions {get;}=[];
     public const string Account="0f3af604-5e8d-4bb6-9556-111122223333";
+    public ConcurrentDictionary<string,byte[]> Assets {get;}=[];
     RelayFixture(WebApplication app){this.app=app;}
     public static async Task<RelayFixture> StartAsync()
     {
@@ -45,6 +46,13 @@ sealed class RelayFixture : IAsyncDisposable
             if(context.Request.Headers.Authorization!="Bearer "+fixture.credential||context.Request.Headers["X-Axo-Credential-Id"]!=fixture.credentialId){context.Response.StatusCode=401;return;}
             using var ws=await context.WebSockets.AcceptWebSocketAsync();fixture.socket=ws;fixture.Connections++;
             try{await fixture.ReadAsync(ws,context.RequestAborted);}catch(Exception e)when(e is WebSocketException or OperationCanceledException or IOException){}
+        });
+        app.MapPut("/api/v1/accounts/{account}/hosts/{host}/assets/{hash}",async(HttpContext context,string account,string host,string hash)=>
+        {
+            if(account!=Account||context.Request.Headers.Authorization!="Bearer "+fixture.credential||context.Request.Headers["X-Axo-Credential-Id"]!=fixture.credentialId){context.Response.StatusCode=401;return;}
+            using var body=new MemoryStream();await context.Request.Body.CopyToAsync(body);var bytes=body.ToArray();
+            if(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes))!=hash){context.Response.StatusCode=400;return;}
+            fixture.Assets[hash]=bytes;context.Response.StatusCode=201;
         });
         await app.StartAsync();fixture.Origin=app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();return fixture;
     }

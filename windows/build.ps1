@@ -32,7 +32,7 @@ try {
     $verb = 'build'
     if ($Test) {
         $verb = 'test'
-        $targets += @('//crates/axo-protocol:axo_protocol_tests', '//crates/axo-agent:axo_agent_tests', '//crates/axo-store:axo_store_tests', '//crates/axo-ipc:axo_ipc_tests', '//crates/axo-relay:axo_relay_tests', '//crates/axo-server:axo_server_tests', '//crates/axo-agent:fake_codex')
+        $targets += @('//crates/axo-protocol:axo_protocol_tests', '//crates/axo-agent:axo_agent_tests', '//crates/axo-store:axo_store_tests', '//crates/axo-ipc:axo_ipc_tests', '//crates/axo-relay:axo_relay_tests', '//crates/axo-server:axo_server_tests', '//crates/axo-computer:axo_computer_tests', '//crates/axo-agent:fake_codex')
     }
     & $bazel "--output_user_root=$BazelRoot" $verb @targets '--repo_env=CARGO_NET_GIT_FETCH_WITH_CLI=true' "--repo_env=BAZEL_SH=$env:BAZEL_SH"
     if ($LASTEXITCODE -ne 0) { throw 'The Rust build or tests failed.' }
@@ -41,6 +41,9 @@ try {
     & $dotnet publish windows/Axo/Axo.csproj -c Release --self-contained false -o dist/Axo-Windows --nologo "-p:Version=$($buildConfig.version).0" "-p:FileVersion=$($buildConfig.version).0.$($buildConfig.builds.axod)" "-p:InformationalVersion=$($buildConfig.version).0-windows.$($buildConfig.builds.axod)+$revision" '-p:IncludeSourceRevisionInInformationalVersion=false'
     if ($LASTEXITCODE -ne 0) { throw 'The desktop client build failed.' }
     Copy-Item -LiteralPath 'bazel-bin\crates\axod\axod.exe' -Destination 'dist\Axo-Windows\axod.exe' -Force
+    New-Item -ItemType Directory -Path 'dist/Axo-Windows/licenses' -Force | Out-Null
+    Copy-Item -LiteralPath 'third_party/cua/LICENSE.md' -Destination 'dist/Axo-Windows/licenses/Cua-LICENSE.md' -Force
+    Copy-Item -LiteralPath 'third_party/cua/THIRD_PARTY_NOTICES.md' -Destination 'dist/Axo-Windows/licenses/Cua-THIRD_PARTY_NOTICES.md' -Force
     if ($Test) {
         & $dotnet run --project windows/Tests/Tests.csproj -c Release -- 'bazel-bin\crates\axod\axod.exe' 'bazel-bin\crates\axo-agent\fake_codex.exe'
         if ($LASTEXITCODE -ne 0) { throw 'Windows integration tests failed.' }

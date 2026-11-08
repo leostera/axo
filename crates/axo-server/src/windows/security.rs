@@ -9,6 +9,73 @@ use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+/// A local tool process cannot answer its own questions or grant itself access.
+/// Match the connected process to this bundle's desktop executable, rather than
+/// trusting a role supplied in JSON. The pipe ACL already verifies the user SID.
+pub fn is_desktop_client(pipe: &NamedPipeServer) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetNamedPipeClientProcessId(pipe: *mut c_void, pid: *mut u32) -> i32;
+    }
+    unsafe {
+        let mut pid = 0;
+        if GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) == 0 {
+            return false;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut path = vec![0u16; 32768];
+        let mut length = path.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length);
+        CloseHandle(process);
+        if ok == 0 {
+            return false;
+        }
+        let actual = std::path::PathBuf::from(String::from_utf16_lossy(&path[..length as usize]));
+        let expected = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.join("Axo.exe")));
+        match (
+            std::fs::canonicalize(actual),
+            expected.and_then(|p| std::fs::canonicalize(p).ok()),
+        ) {
+            (Ok(actual), Some(expected)) => actual
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&expected.to_string_lossy()),
+            _ => false,
+        }
+    }
+}
+
+pub fn process_image(pid: u32) -> io::Result<std::path::PathBuf> {
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut path = vec![0u16; 32768];
+        let mut length = path.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length);
+        let error = io::Error::last_os_error();
+        CloseHandle(process);
+        if ok == 0 {
+            return Err(error);
+        }
+        Ok(std::path::PathBuf::from(String::from_utf16_lossy(
+            &path[..length as usize],
+        )))
+    }
+}
+
 pub fn current_sid() -> io::Result<String> {
     unsafe {
         let mut token = std::ptr::null_mut();

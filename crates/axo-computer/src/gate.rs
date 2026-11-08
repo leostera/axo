@@ -19,10 +19,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use axod_infer::{Infer, InferError};
+#[cfg(not(windows))]
+use axod_infer::Infer;
 use serde_json::{Value, json};
 
 /// hand's risk question (acoyfellow/hand `src/steer.ts`), for text instead of a screenshot.
+#[cfg(not(windows))]
 const RISK_QUESTION: &str = "Would doing `action` in `window` do something destructive or hard to undo, such as deleting data, removing a person, discarding work, emptying a trash, sending a message or email, posting publicly, sending money or placing an order?";
 
 /// Clef's probability at or above which the person is asked about a flagged action.
@@ -106,12 +108,13 @@ pub enum Verdict {
 
 /// This process's gate, with Clef beside axod when installed: `axod mcp` for this Mac's agents,
 /// axod for other Macs' scripts (RFD0028). `socket` is axod's, beside which Clef's runs.
-pub fn for_socket(socket: &Path) -> &'static Gate {
+pub fn for_socket(_socket: &Path) -> &'static Gate {
     static GATE: OnceLock<Gate> = OnceLock::new();
     GATE.get_or_init(|| {
         // Until the model files are downloaded, its answers are "unavailable" and the word list
         // alone decides; the first process to find them missing starts the download.
-        let judge = socket
+        #[cfg(not(windows))]
+        let judge = _socket
             .parent()
             .and_then(Infer::beside_current_exe)
             .filter(|infer| infer.helper.exists())
@@ -125,6 +128,8 @@ pub fn for_socket(socket: &Path) -> &'static Gate {
                 }
             })
             .map(|infer| Box::new(infer) as Box<dyn Judge>);
+        #[cfg(windows)]
+        let judge = None; // No Metal/llama sidecar is installed or downloaded on Windows.
         Gate::new(judge)
     })
 }
@@ -132,18 +137,21 @@ pub fn for_socket(socket: &Path) -> &'static Gate {
 /// What decides a flagged action; Clef on this Mac in production.
 pub trait Judge: Send + Sync {
     /// The probability that `action` in `window` is destructive or hard to undo.
-    fn risky(&self, action: &str, window: &str) -> Result<f64, InferError>;
+    fn risky(&self, action: &str, window: &str) -> Result<f64, String>;
 }
 
+#[cfg(not(windows))]
 impl Judge for Infer {
-    fn risky(&self, action: &str, window: &str) -> Result<f64, InferError> {
-        let answers = self.ask(&json!({
-            "state": { "action": action, "window": window },
-            "questions": { "risky": { "type": "noul", "instructions": RISK_QUESTION } },
-        }))?;
+    fn risky(&self, action: &str, window: &str) -> Result<f64, String> {
+        let answers = self
+            .ask(&json!({
+                "state": { "action": action, "window": window },
+                "questions": { "risky": { "type": "noul", "instructions": RISK_QUESTION } },
+            }))
+            .map_err(|error| error.to_string())?;
         answers["risky"]["noul"]
             .as_f64()
-            .ok_or_else(|| InferError::Failed(format!("no probability in {answers}")))
+            .ok_or_else(|| format!("no probability in {answers}"))
     }
 }
 
@@ -216,7 +224,7 @@ impl Gate {
         for (action, window) in flagged {
             let judged = match &self.judge {
                 Some(judge) => judge.risky(action, window),
-                None => Err(InferError::Unavailable("no local model".into())),
+                None => Err("no local model".into()),
             };
             match judged {
                 Ok(p) if p < RISKY_AT => {
@@ -393,7 +401,7 @@ mod tests {
 
     struct Fixed(f64, Arc<AtomicUsize>);
     impl Judge for Fixed {
-        fn risky(&self, _: &str, _: &str) -> Result<f64, InferError> {
+        fn risky(&self, _: &str, _: &str) -> Result<f64, String> {
             self.1.fetch_add(1, Ordering::SeqCst);
             Ok(self.0)
         }

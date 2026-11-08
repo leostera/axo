@@ -63,7 +63,11 @@ The current unified crate dependency resolver still resolves Cua's pinned source
    completed chat messages and Codex thread IDs survive daemon restarts. Select **Reconnect**
    after a failed agent process; Axo resumes its saved thread rather than starting a new conversation.
 
-Codex uses workspace-write with approval requests routed to the user. The client supports command
+Codex defaults to workspace-write with approval requests routed to the user. **Settings → General →
+Agent permissions → Full access** selects `never` / `dangerFullAccess` on the next turn, including
+already-connected sessions. This permits commands with your Windows account's access; it does not
+require or request Administrator rights. The choice is local to Axo, persisted by axod, and never
+changes the global Codex configuration. The client supports command
 and file approvals and text questions; other server requests can be dismissed with an explicit
 unsupported-interaction error. It does not silently accept an unknown request. Managed Codex
 requirements still apply. Changing the application's build setup does not grant agents access
@@ -96,10 +100,44 @@ it never claims to be Pi. Remote clients can create/list/rename/archive sessions
 prompts, resolve supported permission requests by their exact elicitation ID, and stop a turn they
 actually saw. Command UUID receipts persist across reconnects to prevent duplicate turns.
 
-Remote steering, busy-turn follow-up queues, attachments, model switching and computer use are not
+Remote steering, busy-turn follow-up queues, attachments and model switching are not
 implemented in this Windows slice. Large permission requests and text questionnaires are handled
 on the PC. A rejected or unsupported remote command is reported as an error rather than accepted
 and discarded. Linking a real account requires the user's fresh pairing code; tests use an isolated relay.
+
+## Computer use
+
+Enable **Settings → General → Agent permissions → Allow computer use on this PC**. The choice
+applies to local sessions and the paired account; pairing alone does not enable it. Disabling it
+revokes subsequent calls immediately and cancels pending permission requests. Windows computer use
+runs through the pinned Cua UI Automation / Win32 runtime in the Rust daemon, with the same tool
+names used on Mac. No additional desktop service, browser extension or elevated scheduled task is
+installed. Bazel downloads Microsoft's checksum-pinned Spectre CRT link libraries when building
+the Windows driver, so a second elevated compiler installation is not required.
+
+Every Axo-owned Codex app-server receives a per-process MCP configuration pointing at
+`axod mcp --pipe <this daemon> --session <this session>`. It connects to the running daemon and
+exposes `computer_tools` (schemas) and `computer` (one call), including inline screenshots. Agents
+can inspect app windows, read UI elements, take screenshots, set field values, click, scroll and
+send keys to a specific window. Use fresh `get_window_state` results and returned element tokens
+before acting. Windows validates that the window belongs to the specified process.
+
+The production relay interfaces `axo.apps.computer.status` and `axo.apps.computer` use the same
+backend and gate. Screenshot replies upload image assets with the existing host credential and
+return attachment references. The standard Axo account and existing pairing continue to work.
+
+The shared word-based action gate asks about flagged actions and honors `confirm: true`; the
+person answers in Axo's approval panel or through the authenticated relay. Windows does not run
+the Mac Clef inference helper, so flagged actions require an answer. A question expires, cancels
+when its MCP call disconnects, and cannot authorize a different or later call. Local permission
+changes and computer approvals are accepted only from the adjacent `Axo.exe` process, never from
+the MCP bridge. This peer check is not isolation from arbitrary code running as the same Windows
+user, which can already modify the user's application files.
+
+Computer tools cannot act on Axo's own UI, use desktop-scope input, unlock the PC, dismiss UAC,
+or bypass Windows integrity boundaries. Composite scripts and sealed secret-input forms are not
+advertised on Windows yet. The word gate is not a complete semantic safety reviewer. Full Access
+for shell commands remains separate from the computer-use opt-in and its permission requests.
 
 ## Mac interface reference
 
@@ -144,9 +182,10 @@ absolute scratch directory before launching the client; `AXO_DESKTOP_CONFIG` can
 These overrides keep fixture sessions
 out of the normal catalog.
 
-An optional live Codex smoke test makes three small inference requests in a fresh scratch folder.
+An optional live Codex smoke test makes four small inference requests in a fresh scratch folder.
 It verifies conversation continuity across a daemon restart, creates `axo-smoke.txt` in that
-scratch folder, and asks Codex to read it back with a shell command:
+scratch folder, and asks Codex to read it back with a shell command. It then uses Axo's MCP tools
+to read and edit a separate owned WPF fixture window and independently verifies the field value:
 
 ```powershell
 dotnet run --project windows/Tests/Tests.csproj -c Release -- dist/Axo-Windows/axod.exe C:/tools/codex.exe --live
@@ -161,7 +200,7 @@ The pipe negotiates only methods actually implemented on Windows. Windows chat/s
 are additive and are not yet the generic AXP agent protocol or wire-compatible replacements for
 Pi's terminal panes; the Apple client is unchanged.
 
-Not included: computer use, local inference, the Pi bridge, voice, arbitrary/nested terminal splits,
+Not included: sealed computer-input forms, composite computer scripts, local inference, the Pi bridge, voice, arbitrary/nested terminal splits,
 full Ghostty terminal features/configuration, auto-update, startup registration, or an installer. Completed chat
 messages are persisted locally; live tool output is not retained across desktop restarts. A turn
 interrupted by a daemon crash may have an incomplete local display, while Codex retains its own

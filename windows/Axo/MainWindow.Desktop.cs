@@ -41,7 +41,7 @@ public partial class MainWindow
     {
         if (mark is null || tray is null) return;
         int frame = (mascotFrame++) % 120;
-        int attention = allSessions.Count(s => s.Status == "needsAttention");
+        int attention = Math.Max(computerQuestions.Length, allSessions.Count(s => s.Status == "needsAttention"));
         var light = (int?)(Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "SystemUsesLightTheme", 0)) != 0;
         var tint = attention > 0 ? Drawing.Color.FromArgb(217, 23, 92) : light ? Drawing.Color.FromArgb(40, 40, 40) : Drawing.Color.White;
         using var icon = new Drawing.Bitmap(32, 32);
@@ -58,7 +58,7 @@ public partial class MainWindow
     void UpdateTray()
     {
         if (tray is null) return;
-        var count = allSessions.Count(s => s.Status == "needsAttention");
+        var count = Math.Max(computerQuestions.Length, allSessions.Count(s => s.Status == "needsAttention"));
         tray.Text = count > 0 ? $"Axo — {count} waiting for input" : "Axo";
         if (trayHealth is not null) trayHealth.Text = DaemonStatus.Text.Contains("running") ? "●  axod running" : DaemonStatus.Text;
     }

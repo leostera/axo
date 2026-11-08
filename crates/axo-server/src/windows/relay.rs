@@ -63,7 +63,7 @@ impl Relay {
                 links: host.clone(),
                 credentials: credentials.clone(),
                 peers: None,
-                assets_directory: None,
+                assets_directory: Some(backend.directory.join("assets")),
             },
             tokio::runtime::Handle::current(),
             axo_ipc::Stop::default(),
@@ -147,19 +147,23 @@ impl RelayHost for Host {
             .cloned()
             .collect::<Vec<_>>();
         let now = axo_store::unix_timestamp().max(0) as u64 * 1000;
-        sessions
-            .iter()
-            .flat_map(|s| {
-                s.runtime
-                    .lock()
-                    .unwrap()
-                    .remote_questions
-                    .values()
-                    .filter(|(_, e)| e.expires_at > now)
-                    .map(|(_, e)| e.clone())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        let mut pending = b.computer.list();
+        pending.extend(
+            sessions
+                .iter()
+                .flat_map(|s| {
+                    s.runtime
+                        .lock()
+                        .unwrap()
+                        .remote_questions
+                        .values()
+                        .filter(|(_, e)| e.expires_at > now)
+                        .map(|(_, e)| e.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+        );
+        pending
     }
     fn resolve_elicitation(
         &self,
@@ -181,6 +185,9 @@ impl RelayHost for Host {
             ));
         }
         let b = self.backend().map_err(|_| missing())?;
+        if b.computer.resolve(&b, id, answer.into()) {
+            return Ok(());
+        }
         let sessions = b
             .sessions
             .lock()
@@ -207,6 +214,33 @@ impl RelayHost for Host {
             }
         }
         Err(missing())
+    }
+    fn computer_status(&self) -> Value {
+        self.backend()
+            .map_or_else(|_| json!({"available":false}), |b| b.computer.status())
+    }
+    fn remote_computer(
+        &self,
+        request: &axo_relay::computer::ComputerParams,
+    ) -> Result<Value, (i64, String)> {
+        let b = self.backend().map_err(|e| (-32000, e.to_string()))?;
+        let result = b.computer.call(
+            &b,
+            computer::Call {
+                session_id: request.session_id,
+                tool: request.tool.clone(),
+                args: if request.args.is_null() {
+                    json!({})
+                } else {
+                    request.args.clone()
+                },
+                confirm: request.confirm,
+                timeout_ms: request.timeout_ms,
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        // The shared relay worker uploads inline images and projects attachments.
+        Ok(result)
     }
     fn sync_catalog(&self) -> io::Result<Vec<SyncSession>> {
         let b = self.backend()?;
@@ -477,6 +511,7 @@ impl RelayHost for Host {
         if let Some(a) = old {
             a.stop();
         }
+        b.computer.cancel_session(&b, id);
         b.connect(id, &s)?;
         b.publish_snapshot(id);
         Ok(())
@@ -507,6 +542,7 @@ impl RelayHost for Host {
             )
         };
         let thread = axo_store::coding::thread_id(&b.database.lock().unwrap(), id)?;
+        b.computer.cancel_session(&b, id);
         agent.request("turn/interrupt", json!({"threadId":thread,"turnId":turn}))?;
         Ok(true)
     }

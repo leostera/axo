@@ -5,6 +5,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "axod", version, about = "Axo Windows session daemon")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Subcommand>,
     /// Per-user catalog directory; defaults to LOCALAPPDATA/Axo/server.
     #[arg(long)]
     server_dir: Option<PathBuf>,
@@ -19,8 +21,26 @@ struct Cli {
     relay_url: Option<String>,
 }
 
+#[derive(clap::Subcommand)]
+enum Subcommand {
+    /// MCP computer tools for a Codex session; connects to the running daemon.
+    Mcp {
+        #[arg(long)]
+        pipe: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+}
+
 pub fn main() {
     let cli = Cli::parse();
+    if let Some(Subcommand::Mcp { pipe, session }) = cli.command {
+        if let Err(error) = axo_server::windows::serve_mcp(pipe, session) {
+            eprintln!("axod mcp: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     if let Err(error) = axo_server::windows::serve(
         cli.server_dir,

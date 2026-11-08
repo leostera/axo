@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -30,6 +31,8 @@ public partial class MainWindow : Window
     bool refreshing, polling, sending, closed;
     string? subscription;
     JsonElement? pendingRequest;
+    JsonElement[] computerQuestions = [];
+    JsonElement lastPendingRequests = JsonSerializer.SerializeToElement(Array.Empty<object>());
 
     public MainWindow()
     {
@@ -85,9 +88,10 @@ public partial class MainWindow : Window
                     subscription = (await daemon.CallAsync("axo.session.subscribe", new { includeTerminalOutput = true }, lifetime.Token)).GetProperty("subscriptionId").GetString();
                     await RefreshCatalogAsync();
                     ApplyRelayStatus(await daemon.CallAsync("axo.relay.status"));
+                    await RefreshComputerQuestionsAsync();
                 }
                 var batch = await daemon.CallAsync("axo.session.events.next", new { subscriptionId = subscription, timeoutMs = 25000, maxEvents = 128 }, lifetime.Token);
-                bool catalog = false, agent = false;
+                bool catalog = false, agent = false, questions = false;
                 foreach (var item in batch.GetProperty("events").EnumerateArray())
                 {
                     var type = item.GetProperty("type").GetString();
@@ -95,10 +99,12 @@ public partial class MainWindow : Window
                     else if (type == "subscription.lagged") { catalog = true; agent = true; }
                     else if (type == "relay.status") ApplyRelayStatus(item.GetProperty("status"));
                     else if (type == "terminal.output") EmbeddedTerminal.Output(item);
+                    else if (type is "elicitation.requested" or "elicitation.resolved") questions = true;
                     else if (type == "pi.event" && item.GetProperty("sessionId").GetString() == selected && item.GetProperty("name").GetString() == "codex.event") agent = true;
                 }
                 if (catalog) await RefreshCatalogAsync();
                 if (agent) await PollAsync();
+                if (questions) { await RefreshComputerQuestionsAsync(); await PollAsync(); }
                 UpdateTray();
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
@@ -200,7 +206,8 @@ public partial class MainWindow : Window
         Composer.IsEnabled = SendButton.IsEnabled = TerminalButton.IsEnabled = MoreButton.IsEnabled = false;
         Welcome.Visibility = Visibility.Visible;
         ChatScroll.Visibility = Visibility.Collapsed;
-        ApprovalPanel.Visibility = Visibility.Collapsed;
+        pendingRequest = null;
+        ApplyPending(JsonSerializer.SerializeToElement(Array.Empty<object>()));
         SessionTitle.Text = "Axo Terminal";
         WorkspacePath.Text = "";
         EmbeddedTerminal.Detach(); SetTerminalVisible(false);
@@ -323,7 +330,10 @@ public partial class MainWindow : Window
 
     void ApplyPending(JsonElement requests)
     {
+        lastPendingRequests = requests.Clone();
         var request = requests.EnumerateArray().FirstOrDefault();
+        if (computerQuestions.FirstOrDefault() is var computerQuestion && computerQuestion.ValueKind == JsonValueKind.Object)
+            request = JsonSerializer.SerializeToElement(new { id = computerQuestion.GetProperty("id").GetString(), method = "axo.computer.confirm", @params = new { message = computerQuestion.GetProperty("message").GetString() } });
         if (request.ValueKind != JsonValueKind.Object)
         {
             pendingRequest = null; ApprovalPanel.Visibility = Visibility.Collapsed; return;
@@ -335,7 +345,11 @@ public partial class MainWindow : Window
         var method = request.GetProperty("method").GetString();
         var parameters = request.GetProperty("params");
         ApproveButton.Visibility = Visibility.Visible; ApproveButton.Content = "Allow once"; DeclineButton.Visibility = Visibility.Visible; DeclineButton.Content = "Decline";
-        if (method == "item/tool/requestUserInput")
+        if (method == "axo.computer.confirm")
+        {
+            ApprovalTitle.Text = "Allow computer use?"; ApprovalDetail.Text = parameters.GetProperty("message").GetString();
+        }
+        else if (method == "item/tool/requestUserInput")
         {
             ApprovalTitle.Text = "Codex has a question"; ApprovalDetail.Text = "";
             ApproveButton.Content = "Send answers"; DeclineButton.Visibility = Visibility.Collapsed;
@@ -429,14 +443,37 @@ public partial class MainWindow : Window
     async void Decline(object sender, RoutedEventArgs e) => await RespondAsync("decline");
     async Task RespondAsync(string decision)
     {
-        if (pendingRequest is not JsonElement request || selected is null) return;
+        if (pendingRequest is not JsonElement request) return;
         var answers = questionInputs.ToDictionary(k => k.Key, k => new { answers = new[] { k.Value.Text } });
         try
         {
-            await daemon.CallAsync("axo.session.approval.respond", new { sessionId = selected, requestId = request.GetProperty("id").GetRawText(), decision, answers });
-            pendingRequest = null; ApprovalPanel.Visibility = Visibility.Collapsed;
+            if (request.GetProperty("method").GetString() == "axo.computer.confirm")
+            {
+                await daemon.CallAsync("axo.elicitation.resolve", new { elicitationId = request.GetProperty("id").GetString(), action = decision });
+                pendingRequest = null;
+                lastPendingRequests = JsonSerializer.SerializeToElement(Array.Empty<object>());
+                await RefreshComputerQuestionsAsync();
+                await PollAsync();
+            }
+            else
+            {
+                if (selected is null) return;
+                await daemon.CallAsync("axo.session.approval.respond", new { sessionId = selected, requestId = request.GetProperty("id").GetRawText(), decision, answers });
+            }
+            if (request.GetProperty("method").GetString() != "axo.computer.confirm") { pendingRequest = null; ApprovalPanel.Visibility = Visibility.Collapsed; }
         }
         catch (Exception error) { ShowError(error.Message); }
+    }
+
+    async Task RefreshComputerQuestionsAsync()
+    {
+        try
+        {
+            var pending = await daemon.CallAsync("axo.elicitation.list");
+            computerQuestions = pending.GetProperty("elicitations").EnumerateArray().OrderBy(q => q.GetProperty("createdAt").GetInt64()).Select(q => q.Clone()).ToArray();
+            ApplyPending(lastPendingRequests);
+        }
+        catch (IOException) { computerQuestions = []; } // Compatibility with an older running daemon.
     }
 
     void ShowSessionMenu(object sender, RoutedEventArgs e)

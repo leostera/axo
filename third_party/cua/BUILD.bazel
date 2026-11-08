@@ -1,1 +1,1 @@
-exports_files(["cua-driver-core-skills.patch"])
+exports_files(["cua-driver-core-skills.patch", "msvc-spectre-path.patch", "windows-import-libraries.patch"])
