@@ -112,6 +112,12 @@ export interface QueuedPrompt {
   readonly text: string;
   /** The names of the files that go with it. */
   readonly files: readonly string[];
+  /**
+   * Where it shows: after the reply that was being written when it was sent, as the number of
+   * messages before it. What the run writes after that comes below it, rather than it sinking
+   * below every new reply. Until that reply is recorded it is the newest thing, and goes last.
+   */
+  readonly at?: number;
 }
 
 /** A record as the conversation sees it: a message, a client's receipt or queued prompt, or nothing to show. */
@@ -275,6 +281,12 @@ export class ChatTranscript {
 
   private applyRecord(record: TranscriptRecord): void {
     const entry = entryOf(record);
+    // A receipt followed by anything but its user message ran as a command (`/axo-share`):
+    // nothing more of it will come.
+    if (this.receipt !== null && !isUserOrSystem(entry)) {
+      this.delivered.add(this.receipt);
+      this.receipt = null;
+    }
     if (entry.kind === "receipt") {
       this.receipt = entry.commandId;
       if (this.queued.some(prompt => prompt.commandId === entry.commandId)) {
@@ -283,7 +295,9 @@ export class ChatTranscript {
       return;
     }
     if (entry.kind === "queued") {
-      if (!this.queued.some(prompt => prompt.commandId === entry.prompt.commandId)) this.queued = [...this.queued, entry.prompt];
+      if (!this.queued.some(prompt => prompt.commandId === entry.prompt.commandId)) {
+        this.queued = [...this.queued, entry.prompt];
+      }
       return;
     }
     if (entry.kind !== "message") return;
@@ -304,6 +318,7 @@ export class ChatTranscript {
       this.live = [];
       if (timestamp !== null) this.recordedReplies.add(timestamp);
     }
+    const placing = role === "assistant" && this.queued.some(prompt => prompt.at === undefined);
     pieces(message, role).forEach((piece, index) => {
       const callId = piece.tool?.callId;
       const result = callId ? this.results.get(callId) : undefined;
@@ -317,6 +332,8 @@ export class ChatTranscript {
         ...(piece.files?.length ? { files: piece.files } : {}),
       });
     });
+    // The reply being written when they were sent is recorded: they go after it.
+    if (placing) this.queued = this.queued.map(prompt => prompt.at === undefined ? { ...prompt, at: this.messages.length } : prompt);
   }
 
   private recordResult(message: Record<string, unknown>): void {
@@ -339,6 +356,11 @@ export class ChatTranscript {
     if (!message.tool) return;
     this.messages[index] = { ...message, tool: change(message.tool) };
   }
+}
+
+function isUserOrSystem(entry: Entry): boolean {
+  if (entry.kind === "other") return true;
+  return entry.kind === "message" && (entry.message.role === "user" || entry.message.role === "system");
 }
 
 function filled(tool: ToolActivity, result: ToolResult): ToolActivity {

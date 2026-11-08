@@ -74,3 +74,25 @@ export function pendingLabel(prompt: Pick<WaitingPrompt, "state" | "delivery">):
     case "queued": return prompt.delivery === "steer" ? "Steering · read at the agent's next step" : "Queued · answered after the current reply";
   }
 }
+
+/** One row of the conversation: a message, or one of the person's messages the agent has not recorded yet. */
+export type ConversationRow<M> = { kind: "message"; message: M; index: number } | { kind: "waiting"; prompt: WaitingPrompt };
+
+/**
+ * The conversation in log order. A message waiting in the log sits where it was sent, before what
+ * the run already going writes after it. One the log does not hold yet is the newest thing, so it
+ * goes last. Messages are the conversation's, in order, and may stop short of all of them (a
+ * reply still being let out holds back what follows it).
+ */
+export function conversationRows<M>(messages: readonly M[], waiting: readonly WaitingPrompt[]): ConversationRow<M>[] {
+  const rows: ConversationRow<M>[] = [];
+  const anchored = waiting.filter(prompt => prompt.at !== undefined).sort((a, b) => a.at! - b.at!);
+  let next = 0;
+  messages.forEach((message, index) => {
+    while (next < anchored.length && anchored[next]!.at! <= index) rows.push({ kind: "waiting", prompt: anchored[next++]! });
+    rows.push({ kind: "message", message, index });
+  });
+  for (; next < anchored.length; next++) rows.push({ kind: "waiting", prompt: anchored[next]! });
+  for (const prompt of waiting) if (prompt.at === undefined) rows.push({ kind: "waiting", prompt });
+  return rows;
+}

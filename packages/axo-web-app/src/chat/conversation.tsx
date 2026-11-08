@@ -6,7 +6,7 @@ import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from 
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 import { ModelPicker, SendButton, SlashMenu } from "./composer-controls.tsx";
-import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
+import { conversationRows, matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
 import type { Delivery } from "./transcript.ts";
 
 /** How close to the bottom still counts as following the conversation. */
@@ -208,14 +208,14 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             </div>
           ) : null}
 
-          {shown.map(({ message, live, enter, reveal }) => (
-            <MessageView key={message.key} message={message} working={Boolean(transcript?.working)} live={live} enter={enter} reveal={reveal} />
-          ))}
-          {session && chat?.waiting.map(prompt => (
+          {conversationRows(shown, session ? chat?.waiting ?? [] : []).map(row => row.kind === "message" ? (
+            <MessageView key={row.message.message.key} message={row.message.message} working={Boolean(transcript?.working)}
+              live={row.message.live} enter={row.message.enter} reveal={row.message.reveal} />
+          ) : (
             <PendingView
-              key={prompt.id}
-              prompt={prompt}
-              onDismiss={() => workbench.dismissPending(session.sessionId, prompt.id)}
+              key={`pending:${row.prompt.id}`}
+              prompt={row.prompt}
+              onDismiss={() => session && workbench.dismissPending(session.sessionId, row.prompt.id)}
             />
           ))}
           {session && workbench.questions(session.sessionId).map(question => (
