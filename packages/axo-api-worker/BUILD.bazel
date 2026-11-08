@@ -19,6 +19,7 @@ _DEPS = [
     ":node_modules/@axo/apps",
     ":node_modules/@axo/protocol",
     ":node_modules/@cfworker/json-schema",
+    ":node_modules/@leostera/atxf",
     ":node_modules/@modelcontextprotocol/sdk",
     ":node_modules/@types/node",
     ":node_modules/@types/ws",
