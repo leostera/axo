@@ -178,8 +178,11 @@ export class AxoHostDO extends AxoHostRelay {
   private readonly elicitations = new Map<string, Elicitation>();
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Commands from ClientDOs waiting for the host's reply, by the id they were sent with. */
-  private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; resolve: (outcome: HostCommandOutcome) => void }>();
+  /**
+   * Commands waiting for the host's reply, by the id they were sent with, and the connection they
+   * went out on: only that connection's end leaves their outcome unknown.
+   */
+  private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; connectionId: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `callHost` hops waiting for the daemon's reply, with the socket they were sent on. */
   private readonly hops = new Map<string, { connectionId: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `axo.apps.*` calls from the daemon waiting for the account. */
@@ -326,6 +329,7 @@ export class AxoHostDO extends AxoHostRelay {
       hop.resolve({ error: { code: -32004, message: "Host disconnected; the call may have run" } });
     }
     for (const [id, command] of this.commands) {
+      if (command.connectionId !== connectionId) continue;
       this.commands.delete(id);
       command.resolve({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } });
     }
@@ -445,20 +449,11 @@ export class AxoHostDO extends AxoHostRelay {
     return { round, applied: true, sessions: answered, serverOnly: serverOnly.slice(0, SYNC.manifestSessions) };
   }
 
-  /**
-   * A SessionDO's head for the handshake, raising its fence. A SessionDO still on code without
-   * fences answers `head` alone, which verifies nothing (RFD0032, Migration).
-   */
+  /** A SessionDO's head for the handshake, raising its fence. */
   private async syncHead(sessionId: string, fence: number): Promise<{ head: SessionHead | null; fenced: boolean }> {
-    const stub = this.session(sessionId);
-    try {
-      const read = await stub.syncHead(this.binding(sessionId), fence);
-      this.adoptFence(read.fence);
-      return { head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads] }, fenced: read.fence >= fence };
-    } catch (error) {
-      if (!/syncHead/.test(String(error))) throw error;
-      return { head: await stub.head(this.binding(sessionId)), fenced: false };
-    }
+    const read = await this.session(sessionId).syncHead(this.binding(sessionId), fence);
+    this.adoptFence(read.fence);
+    return { head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads] }, fenced: read.fence >= fence };
   }
 
   private currentFence(): number {
@@ -496,9 +491,9 @@ export class AxoHostDO extends AxoHostRelay {
     const result = await this.session(sessionId).append(this.binding(sessionId), input.data, this.currentFence());
     recordApiEvent({ event: "session_append", outcome: result.outcome, records: input.data.records.length });
     this.renewRoute(peer);
-    // Whatever the outcome, the answer says what the SessionDO holds; one with a fence verifies the row.
+    // Whatever the outcome, the answer says what the SessionDO holds, fenced: it verifies the row.
     this.adoptFence(result.fence);
-    this.refreshHead(sessionId, result.epoch, result.count, result.chain, result.fence !== undefined);
+    this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
     // A fenced write reaches axod as the conflict it already handles by handshaking again.
     if (result.outcome === "fenced") return { outcome: "conflict", epoch: result.epoch, count: result.count, chain: result.chain };
     if (result.outcome !== "committed") return { outcome: result.outcome, epoch: result.epoch, count: result.count, chain: result.chain };
@@ -528,12 +523,8 @@ export class AxoHostDO extends AxoHostRelay {
     const result = await this.session(sessionId).truncate(this.binding(sessionId), keep, expectedChain, this.currentFence());
     recordApiEvent({ event: "session_truncate", outcome: result.outcome });
     this.adoptFence(result.fence);
-    if (result.outcome !== "truncated") {
-      // An answer from code without fences has no head to refresh from; the row stays distrusted.
-      if (result.fence !== undefined) this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
-      return { round, outcome: "mismatch" as const };
-    }
-    this.refreshHead(sessionId, result.epoch, result.count, result.chain, result.fence !== undefined);
+    this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
+    if (result.outcome !== "truncated") return { round, outcome: "mismatch" as const };
     // This HostDO made the cut, so protocol 3's sockets learn where with no read.
     this.clients.cut(sessionId, result.epoch, keep);
     this.queue({ kind: "epoch", sessionId, epoch: result.epoch, head: result.count }, true);
@@ -662,6 +653,7 @@ export class AxoHostDO extends AxoHostRelay {
       this.commands.set(id, {
         method: remote,
         generation: active.route.generation!,
+        connectionId: active.route.connection_id,
         resolve: (outcome) => {
           clearTimeout(timer);
           resolve(outcome);

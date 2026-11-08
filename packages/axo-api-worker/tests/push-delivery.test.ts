@@ -348,3 +348,28 @@ test("a Mac follows another Mac's HostDO with its host credential: the index and
   wrong.terminate();
   assert.equal(status, 401);
 });
+
+test("a command waiting on the Mac's socket is not failed when another connection is fenced", async (t) => {
+  const entry = resolve(fileURLToPath(new URL(".", import.meta.url)), "fixtures/fence-hook.ts");
+  const h = await harness({ entry });
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const host = await pairHost(h, session);
+  const daemon = await connectHost(h, session, host);
+  t.after(() => daemon.close());
+  const { socket } = await hostSocket(h, session, host, t);
+  const target = { hostId: host.hostId, hostGeneration: host.hostGeneration };
+  const answer = socket.call("axo.client.command", { hostId: host.hostId, method: "axo.remote.session.create", params: { target } });
+  const forwarded = (await daemon.next()) as { id: string; method: string };
+  assert.equal(forwarded.method, "axo.remote.session.create");
+
+  // An old socket of this Mac closes late: its connection is fenced, not the one the command went on.
+  const namespace = (await h.mf.getDurableObjectNamespace("TEST_HOST_DO")) as unknown as { idFromName(name: string): unknown; get(id: unknown): { fetch(url: string, init?: RequestInit): Promise<Response> } };
+  const stub = namespace.get(namespace.idFromName(`${session.accountId}:${host.hostId}`));
+  assert.equal((await stub.fetch("https://host.internal/", { headers: { "X-Test-Fence": crypto.randomUUID() } })).status, 204);
+
+  const created = { session: { hostId: host.hostId, sessionId: crypto.randomUUID(), shells: [], layout: null, updatedAt: new Date().toISOString() } };
+  daemon.send({ jsonrpc: "2.0", id: forwarded.id, result: created });
+  const reply = await answer;
+  assert.ok("result" in reply, `the Mac's answer reaches the client: ${JSON.stringify(reply)}`);
+});
