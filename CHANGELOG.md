@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.36 (Mac app build 307, axod 59)
+
+### Changed
+
+- Inside axod, what the web and the phone ask of a Mac is answered by the same methods as local requests; the relay only carries it. Nothing changes on the wire.
+
 ## 0.35 (Mac app build 306, axod 58)
 
 ### Fixed
