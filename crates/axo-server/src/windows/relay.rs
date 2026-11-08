@@ -18,6 +18,7 @@ pub(super) struct Host {
     id: String,
     generation: String,
     prompt_lock: Mutex<()>,
+    prompts: std::sync::atomic::AtomicUsize,
 }
 pub(super) struct Relay {
     pub host: Arc<Host>,
@@ -53,6 +54,7 @@ impl Relay {
             id,
             generation: axo_protocol::new_uuid_v4()?,
             prompt_lock: Mutex::new(()),
+            prompts: std::sync::atomic::AtomicUsize::new(0),
         });
         let credentials = Arc::new(super::credentials::Credentials(
             backend.directory.join("credentials"),

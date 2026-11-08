@@ -6,6 +6,14 @@ use axo_relay::current_timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct PromptPermit<'a>(&'a AtomicUsize);
+impl Drop for PromptPermit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 pub(super) fn answer(host: &Host, request: Value) -> Option<Value> {
     let id = request
@@ -13,6 +21,17 @@ pub(super) fn answer(host: &Host, request: Value) -> Option<Value> {
         .filter(|id| id.is_number() || id.is_string())?
         .clone();
     let name = request["method"].as_str()?;
+    let _permit = if name == "axo.remote.session.prompt" {
+        if host.prompts.fetch_add(1, Ordering::AcqRel) >= 16 {
+            host.prompts.fetch_sub(1, Ordering::AcqRel);
+            return Some(
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32006,"message":"Too many prompts are on their way"}}),
+            );
+        }
+        Some(PromptPermit(&host.prompts))
+    } else {
+        None
+    };
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     let result = dispatch_remote_call(name, &params, host, &host.id, &host.generation);
     Some(match result {
@@ -138,13 +157,13 @@ fn dispatch_remote_call(
         }
         "axo.remote.session.prompt" => {
             let request = parsed!(PromptParams);
+            target_ok!(request.target);
             if !request.attachments.is_empty() {
                 return Err((
                     -32003,
                     "Attachments are not supported by the Windows Codex backend",
                 ));
             }
-            target_ok!(request.target);
             sessions
                 .remote_prompt_pi(
                     request.session_id,
@@ -421,4 +440,51 @@ pub(super) struct TerminalResizeParams {
     pub(super) shell_id: ShellId,
     pub(super) rows: u32,
     pub(super) columns: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn host() -> Host {
+        Host {
+            backend: std::sync::Weak::new(),
+            id: "fixture".into(),
+            generation: "current".into(),
+            prompt_lock: std::sync::Mutex::new(()),
+            prompts: AtomicUsize::new(0),
+        }
+    }
+    #[test]
+    fn remote_calls_cannot_reach_local_permissions_or_act_on_a_stale_host() {
+        let host = host();
+        let local = answer(
+            &host,
+            json!({"id":1,"method":"axo.windows.settings.save","params":{}}),
+        )
+        .unwrap();
+        assert_eq!(local["error"]["code"], -32601);
+        let stale=answer(&host,json!({"id":2,"method":"axo.remote.workspace.list","params":{"target":{"hostId":"fixture","hostGeneration":"old"}}})).unwrap();
+        assert_eq!(stale["error"]["code"], -32002);
+        let unknown=answer(&host,json!({"id":3,"method":"axo.remote.workspace.list","params":{"target":{"hostId":"fixture","hostGeneration":"current"},"extra":true}})).unwrap();
+        assert_eq!(unknown["error"]["code"], -32602);
+    }
+    #[test]
+    fn notifications_do_not_run_and_prompt_capacity_is_owned_by_the_host() {
+        let host = host();
+        assert!(
+            answer(
+                &host,
+                json!({"method":"axo.remote.session.prompt","params":{}})
+            )
+            .is_none()
+        );
+        host.prompts.store(16, Ordering::Release);
+        let full = answer(
+            &host,
+            json!({"id":1,"method":"axo.remote.session.prompt","params":{}}),
+        )
+        .unwrap();
+        assert_eq!(full["error"]["code"], -32006);
+        assert_eq!(host.prompts.load(Ordering::Acquire), 16);
+    }
 }

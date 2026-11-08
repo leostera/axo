@@ -100,8 +100,9 @@ it never claims to be Pi. Remote clients can create/list/rename/archive sessions
 prompts, resolve supported permission requests by their exact elicitation ID, and stop a turn they
 actually saw. Command UUID receipts persist across reconnects to prevent duplicate turns.
 
-Remote steering, busy-turn follow-up queues, attachments and model switching are not
-implemented in this Windows slice. Large permission requests and text questionnaires are handled
+Remote steering, mid-run interrupt-and-send, busy-turn follow-up queues, attachments and model switching are not
+implemented in this Windows slice. The Windows host answers the account's typed AXP remote methods;
+the shared relay transports them and never forwards local settings methods. Large permission requests and text questionnaires are handled
 on the PC. A rejected or unsupported remote command is reported as an error rather than accepted
 and discarded. Linking a real account requires the user's fresh pairing code; tests use an isolated relay.
 
