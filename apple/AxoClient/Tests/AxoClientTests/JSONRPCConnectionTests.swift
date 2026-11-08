@@ -308,12 +308,12 @@ final class FakeTransport: AxoTransport, @unchecked Sendable {
 
   /// What channels answer `axo.client.hello` with themselves, as the account's socket does.
   private let hello: String?
-  /// Hello protocol versions its channels refuse (-32602), as older relay code does.
-  private let refusing: Set<Int>
+  /// Hello protocol versions its channels refuse, and the error code they refuse with.
+  private let refusing: [Int: Int]
 
   init(
     connectDelay: Duration = .zero, failingConnects: Int = 0, negotiates: Bool = false, hello: String? = nil,
-    refusingHello refusing: Set<Int> = []
+    refusingHello refusing: [Int: Int] = [:]
   ) {
     self.refusing = refusing
     self.connectDelay = connectDelay
@@ -371,9 +371,12 @@ final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
   var answersNegotiation = false
   /// Answers `axo.client.hello` with this itself and does not count it among the requests sent.
   var answersHello: String?
-  /// Hello protocol versions it refuses with -32602 instead.
-  var refusesHello: Set<Int> = []
+  /// Hello protocol versions it refuses, and the error code it refuses each with.
+  var refusesHello: [Int: Int] = [:]
   private var hello: [String: Any]?
+  private var askedVersion: Int?
+  /// The protocol version the last hello said, answered or refused.
+  var helloVersion: Int? { lock.withLock { askedVersion } }
   /// The params of the hello it answered.
   var helloParams: [String: Any]? { lock.withLock { hello } }
 
@@ -389,8 +392,9 @@ final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
       }
       if let answersHello, object?["method"] as? String == "axo.client.hello", let id = object?["id"] as? Int {
         let params = object?["params"] as? [String: Any]
-        if let version = params?["protocolVersion"] as? Int, refusesHello.contains(version) {
-          return (id, #"{"code":-32602,"message":"Unsupported protocol"}"#, true)
+        askedVersion = params?["protocolVersion"] as? Int
+        if let version = params?["protocolVersion"] as? Int, let code = refusesHello[version] {
+          return (id, #"{"code":\#(code),"message":"Refused"}"#, true)
         }
         hello = params
         return (id, answersHello, false)

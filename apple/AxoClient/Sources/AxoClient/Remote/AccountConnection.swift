@@ -29,7 +29,8 @@ public final class AccountConnection: Sendable {
     let (lost, lossSink) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     self.events = events
     connectionLost = lost
-    let router = Router(clientID: clientID, hosts: hosts, sink: sink)
+    let (ends, endSink) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let router = Router(clientID: clientID, hosts: hosts, events: sink, endConnection: endSink)
     self.router = router
     let rpc = JSONRPCConnection(transport: transport) { connection in
       try await router.hello(on: connection)
@@ -45,8 +46,11 @@ public final class AccountConnection: Sendable {
           lossSink.yield()
         }
       },
+      // A host's socket ending ends the connection: the account's goes, and with it the rest.
+      Task {
+        for await _ in ends { await rpc.disconnect() }
+      },
     ]
-    Task { await router.attach(rpc) }
   }
 
   public convenience init(endpoint: RelayEndpoint = .production, clientID: ClientID, tokens: any SessionTokenProvider) {
@@ -175,6 +179,14 @@ public final class AccountConnection: Sendable {
 private actor Router {
   enum Refused: Error { case protocol3 }
 
+  /// Which protocol this connection speaks (RFD0032).
+  enum Spoken {
+    /// Everything on the account's socket, through the ClientDO.
+    case relayed
+    /// The account's socket lists the hosts; each host's HostDO serves its own Sessions.
+    case direct
+  }
+
   /// How long a refused protocol 3 stays refused before it is tried again.
   static let relayedAfterRefusal: Duration = .seconds(10 * 60)
 
@@ -189,43 +201,67 @@ private actor Router {
   private let clientID: ClientID
   private let hosts: (@Sendable (UUID) -> any AxoTransport)?
   private let sink: AsyncStream<AccountEvent>.Continuation
-  private weak var account: JSONRPCConnection?
+  /// Asks for the whole connection to end.
+  private let endConnection: AsyncStream<Void>.Continuation
   private var relayedUntil: ContinuousClock.Instant?
-  private var direct = false
+  private var spoken = Spoken.relayed
   /// Whether this connection's `.hello` went out: questions asked before it wait for it.
   private var listed = false
   private var held: [AccountEvent] = []
   private var accountHosts: [ClientHost] = []
+  /// What the account's socket listed at hello, in protocol 2.
+  private var relayedListing = ClientHello(hosts: [], sessions: [])
   private var links: [UUID: Link] = [:]
   private var opened: [SessionID: UUID] = [:]
   private var lastConnection: UInt64 = 0
 
-  init(clientID: ClientID, hosts: (@Sendable (UUID) -> any AxoTransport)?, sink: AsyncStream<AccountEvent>.Continuation) {
+  init(
+    clientID: ClientID, hosts: (@Sendable (UUID) -> any AxoTransport)?, events: AsyncStream<AccountEvent>.Continuation,
+    endConnection: AsyncStream<Void>.Continuation
+  ) {
     self.clientID = clientID
     self.hosts = hosts
-    self.sink = sink
+    sink = events
+    self.endConnection = endConnection
   }
-
-  func attach(_ account: JSONRPCConnection) { self.account = account }
 
   /// Says hello on a new account socket, and in protocol 3 on every host's.
   func hello(on connection: JSONRPCConnection.LinkCaller) async throws {
     letGo()
-    let refused = relayedUntil.map { ContinuousClock.now < $0 } ?? false
-    guard hosts != nil, !refused else {
-      direct = false
-      let hello: ClientHello = try await connection.call(
-        "axo.client.hello", params: Hello(protocolVersion: 2, clientId: clientID.rawValue), timeout: .seconds(10))
-      listed = true
-      sink.yield(.hello(hello))
-      return
+    let refusedLately = relayedUntil.map { ContinuousClock.now < $0 } ?? false
+    if hosts == nil || refusedLately {
+      try await helloRelayed(on: connection)
+    } else {
+      try await helloDirect(on: connection)
     }
-    direct = true
+    listed = true
+    sink.yield(.hello(listing()))
+    for event in held { sink.yield(event) }
+    held = []
+  }
+
+  private func helloRelayed(on connection: JSONRPCConnection.LinkCaller) async throws {
+    spoken = .relayed
+    let hello: ClientHello = try await connection.call(
+      "axo.client.hello", params: Hello(protocolVersion: 2, clientId: clientID.rawValue), timeout: .seconds(10))
+    relayedListing = hello
+  }
+
+  /// Protocol 3. Refused when the account's socket refuses hello 3 (it runs older code), or when
+  /// a host's socket fails before its index comes (that host may too): the next connection then
+  /// speaks 2 for a while. Any other failure fails this connection only.
+  private func helloDirect(on connection: JSONRPCConnection.LinkCaller) async throws {
+    spoken = .direct
+    let hello: ClientHello
     do {
-      let hello: ClientHello = try await connection.call(
+      hello = try await connection.call(
         "axo.client.hello", params: Hello(protocolVersion: 3, clientId: clientID.rawValue), timeout: .seconds(10))
-      accountHosts = hello.hosts
-      let number = nextConnection()
+    } catch AxoClientError.serverRejected(let code, _) where code == -32602 {
+      throw refuseDirect()
+    }
+    accountHosts = hello.hosts
+    let number = nextConnection()
+    do {
       try await withThrowingTaskGroup(of: Void.self) { group in
         for host in hello.hosts {
           let rpc = link(host.hostId, connection: number)
@@ -233,22 +269,15 @@ private actor Router {
         }
         try await group.waitForAll()
       }
-    } catch let error as AxoClientError {
-      letGo()
-      // An account socket that refuses hello 3 runs older code; a host socket that fails before
-      // its index may too. Either way the next connection speaks 2.
-      if case .serverRejected(let code, _) = error, code != -32602 { throw error }
-      relayedUntil = ContinuousClock.now + Self.relayedAfterRefusal
-      throw Refused.protocol3
     } catch {
-      letGo()
-      relayedUntil = ContinuousClock.now + Self.relayedAfterRefusal
-      throw Refused.protocol3
+      throw refuseDirect()
     }
-    listed = true
-    sink.yield(.hello(listing()))
-    for event in held { sink.yield(event) }
-    held = []
+  }
+
+  private func refuseDirect() -> Refused {
+    letGo()
+    relayedUntil = ContinuousClock.now + Self.relayedAfterRefusal
+    return .protocol3
   }
 
   /// The connection ended, or a new one starts: every host socket goes with it.
@@ -265,7 +294,7 @@ private actor Router {
   }
 
   func connection(for host: UUID, opening session: SessionID?) throws -> JSONRPCConnection? {
-    guard direct else { return nil }
+    guard spoken == .direct else { return nil }
     // Nothing went anywhere: the same answer the ClientDO gives for a host it can't reach.
     guard let link = links[host] else {
       throw AxoClientError.serverRejected(code: -32005, message: "Host offline; nothing queued")
@@ -275,7 +304,7 @@ private actor Router {
   }
 
   func connection(of session: SessionID) throws -> JSONRPCConnection? {
-    guard direct else { return nil }
+    guard spoken == .direct else { return nil }
     guard let host = opened[session], let link = links[host] else { throw AxoClientError.connectionClosed }
     return link.rpc
   }
@@ -285,7 +314,7 @@ private actor Router {
   /// What `axo.client.refresh` answered, as the app sees it: in protocol 3, with each host's
   /// presence and Sessions, once a newly listed host's socket is open.
   func refreshed(_ listing: ClientHello) async throws -> ClientHello {
-    guard direct else { return listing }
+    guard spoken == .direct else { return listing }
     accountHosts = listing.hosts
     try await follow()
     return self.listing()
@@ -298,7 +327,7 @@ private actor Router {
     switch notification.method {
     case "axo.client.hosts":
       guard let hosts = try? notification.params(as: HostsNotice.self).hosts else { return }
-      guard direct else {
+      guard spoken == .direct else {
         sink.yield(.hosts(hosts))
         return
       }
@@ -388,9 +417,9 @@ private actor Router {
   }
 
   /// A host's socket ended: so does the connection, which the app connects again.
-  private func lost(_ host: UUID, _ rpc: JSONRPCConnection) async {
+  private func lost(_ host: UUID, _ rpc: JSONRPCConnection) {
     guard links[host]?.rpc === rpc else { return }
-    await account?.disconnect()
+    endConnection.yield()
   }
 
   /// The account's hosts changed: a socket on each new one, none on one let go. A new host whose
@@ -408,13 +437,16 @@ private actor Router {
         try await link(host, connection: number).connect()
       }
     } catch {
-      await account?.disconnect()
+      endConnection.yield()
       throw error
     }
   }
 
   private func listing() -> ClientHello {
-    ClientHello(hosts: hostList(), sessions: links.values.flatMap { $0.sessions.values })
+    switch spoken {
+    case .relayed: relayedListing
+    case .direct: ClientHello(hosts: hostList(), sessions: links.values.flatMap { $0.sessions.values })
+    }
   }
 
   /// The account's hosts, with what each one's HostDO says of its presence.

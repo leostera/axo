@@ -180,7 +180,7 @@ final class DirectAccountConnectionTests: XCTestCase {
 
   func testAnAccountThatRefusesHello3IsSpokenToInProtocol2() async throws {
     let relayed = #"{"hosts":[],"sessions":[]}"#
-    let f = fixture(account: FakeTransport(hello: relayed, refusingHello: [3]))
+    let f = fixture(account: FakeTransport(hello: relayed, refusingHello: [3: -32602]))
     try await f.account.connect()
     let second = try await f.accountTransport.channel(1)
     XCTAssertEqual(second.helloParams?["protocolVersion"] as? Int, 2)
@@ -195,6 +195,22 @@ final class DirectAccountConnectionTests: XCTestCase {
     XCTAssertEqual(command["method"] as? String, "axo.client.command")
     second.reply(to: try XCTUnwrap(command["id"] as? Int), result: #"{"accepted":true}"#)
     try await prompted
+  }
+
+  func testAnAccountHelloThatFailsOtherwiseFailsThisConnectionAndKeepsProtocol3() async throws {
+    let f = fixture(account: FakeTransport(hello: accountHello, refusingHello: [3: -32603]))
+    do {
+      try await f.account.connect()
+      XCTFail("a failed hello fails the connection")
+    } catch {
+      guard case .serverRejected(-32603, _) = error as? AxoClientError else { return XCTFail("\(error)") }
+    }
+    let failed = try await f.accountTransport.channel(0)
+    XCTAssertTrue(failed.isClosed)
+    XCTAssertEqual(f.accountTransport.connectCount, 1, "not a refusal of protocol 3: no fallback")
+    try? await f.account.connect()
+    let again = try await f.accountTransport.channel(1)
+    XCTAssertEqual(again.helloVersion, 3, "the next connection tries 3 again")
   }
 
   func testAHostSocketThatFailsBeforeItsIndexSendsTheConnectionBackTo2() async throws {
