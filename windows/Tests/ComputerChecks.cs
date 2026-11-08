@@ -129,6 +129,13 @@ static class ComputerChecks
             assert(remote.TryGetProperty("result", out var remoteRead) && !IsError(remoteRead) && remoteRead.ToString().Contains("Fixture input"), "remote computer calls use the native Windows window backend");
             remote = await relay.CallAsync("axo.apps.computer", new { accountId = RelayFixture.Account, callId = Guid.NewGuid().ToString(), tool = "get_window_state", args = new { pid, window_id = window, include_screenshot = true }, sessionId = session, from = "fixture", timeoutMs = 15000 });
             assert(remote.TryGetProperty("result", out var remoteImage) && remoteImage.GetProperty("content").EnumerateArray().Any(c => c.GetProperty("type").GetString() == "image" && c.TryGetProperty("attachment", out _)) && relay.Assets.Count > 0, "relay screenshots upload authenticated, hash-verified image assets and return attachment references");
+            var attachment=remoteImage.GetProperty("content").EnumerateArray().First(c=>c.GetProperty("type").GetString()=="image").GetProperty("attachment").Clone();
+            remote=await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=session,text="must not silently discard this image",attachments=new[]{attachment},commandId=Guid.NewGuid().ToString()});
+            assert(remote.TryGetProperty("error",out _),"host-owned remote dispatch rejects unsupported attachments instead of discarding them");
+            remote=await relay.CallAsync("axo.remote.windows.settings.save",new{target,computerUseEnabled=false,codexFullAccess=true});
+            assert(remote.TryGetProperty("error",out var permissionError)&&permissionError.GetProperty("code").GetInt32()==-32601&&(await client.CallAsync("axo.computer.status")).GetProperty("available").GetBoolean(),"account forwarding cannot reach local permission settings");
+            remote=await relay.CallAsync("axo.remote.workspace.list",new{target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration="stale"}});
+            assert(remote.TryGetProperty("error",out var staleHost)&&staleHost.GetProperty("code").GetInt32()==-32002,"host-owned dispatch rejects a stale relay generation before operating");
         }
         finally { if (!fixture.HasExited) { fixture.Kill(entireProcessTree: true); await fixture.WaitForExitAsync(); } }
         await client.CallAsync("axo.session.prompt", new { sessionId = session, text = "inspect-policy" });
