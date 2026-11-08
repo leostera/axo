@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SHARE_PUBLISH_METHOD, sharePublishResultSchema, sharedSnapshotSchema, type SharedSnapshot } from "@axo/protocol";
 import { buildSharedMessages, redactSnapshot } from "@axo/pi-axo/share";
-import { harness, Peer } from "./harness";
+import { harness, signIn, type Harness } from "./harness";
+import { connectHost, pairHost } from "./account-support";
 
 const snapshot: SharedSnapshot = {
   version: 1,
@@ -30,21 +31,12 @@ const snapshot: SharedSnapshot = {
   ],
 };
 
-async function registeredDaemon(h: Awaited<ReturnType<typeof harness>>) {
-  const hostId = crypto.randomUUID();
-  const hostGeneration = crypto.randomUUID();
-  const daemon = await Peer.connectHost(h.url, await h.token("daemon"), hostId, "daemon");
-  await daemon.negotiate();
-  const registered = await daemon.call("axo.host.register", {
-    protocolVersion: 2,
-    hostId,
-    hostGeneration,
-    label: "Share fixture",
-    hostKind: "macos",
-    sessions: [],
-  });
-  assert.ok("result" in registered, "host registration should succeed");
-  return { daemon, hostId, hostGeneration };
+/** A paired Mac's registered socket, as axod opens it. */
+async function registeredDaemon(h: Harness) {
+  const session = await signIn(h);
+  const host = await pairHost(h, session, "Share fixture");
+  const daemon = await connectHost(h, session, host);
+  return { daemon, hostId: host.hostId, hostGeneration: host.hostGeneration };
 }
 
 test("a registered host publishes a shared conversation into the public bucket", async (t) => {
@@ -87,16 +79,6 @@ test("a share is refused for another host, a stale generation or a malformed sna
   }
   const bucket = await h.mf.getR2Bucket("PUBLIC_SESSIONS") as unknown as R2Bucket;
   assert.equal((await bucket.list({ prefix: "shares/" })).objects.length, 0);
-});
-
-test("a client cannot publish a share", async (t) => {
-  const h = await harness();
-  t.after(() => h.close());
-  const { hostId, hostGeneration } = await registeredDaemon(h);
-  const client = await Peer.connectHost(h.url, await h.token("client"), hostId, "client");
-  await client.negotiate();
-  const reply = await client.call(SHARE_PUBLISH_METHOD, { hostId, hostGeneration, snapshot });
-  assert.ok("error" in reply);
 });
 
 test("what pi-axo builds and redacts is what the cloud accepts, even at its limits", async () => {

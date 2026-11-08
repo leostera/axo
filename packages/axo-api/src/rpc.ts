@@ -14,8 +14,6 @@ import {
   replySchema,
   failure,
   negotiateSchema,
-  registrationSchema,
-  machineListResultSchema,
   localMethods,
   stateMutationMethods,
   type LocalMethod,
@@ -27,8 +25,6 @@ export type Negotiated = {
   protocolVersion: 2;
   methods: string[];
 };
-export type Registered = { leaseId: string; hostGeneration: string; leaseExpiresAt?: number };
-export type Heartbeat = { leaseId: string; leaseExpiresAt?: number };
 export type DaemonMethods = {
   [Method in LocalMethod]: (
     params: z.input<(typeof localMethods)[Method]>,
@@ -38,13 +34,6 @@ export type ServiceMethods = {
   "axo.protocol.negotiate": (
     params: z.input<typeof negotiateSchema>,
   ) => Negotiated;
-  "axo.machine.register": (
-    params: z.input<typeof registrationSchema>,
-  ) => Registered;
-  "axo.machine.heartbeat": (params: Heartbeat) => Heartbeat;
-  "axo.machine.list": (
-    params: Record<string, never>,
-  ) => z.output<typeof machineListResultSchema>;
 };
 export type AxoMethods = ServiceMethods & DaemonMethods;
 export type AxoClient<Context = void> = TypedJSONRPCClient<AxoMethods, Context>;
@@ -71,7 +60,7 @@ export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
   server.applyMiddleware((next, request, context) => {
     if (
       request.id === undefined &&
-      [...stateMutationMethods, "axo.runtime.startApproved", "axo.machine.register", ...hostMutationMethods].some(
+      [...stateMutationMethods, "axo.runtime.startApproved", ...hostMutationMethods].some(
         (method) => method === request.method,
       )
     )

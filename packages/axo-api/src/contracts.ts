@@ -18,9 +18,7 @@ export const LIMITS = {
   frameBytes: 65_536,
   batchCalls: 8,
   machines: 16,
-  pendingPerClient: 32,
   pendingPerMachine: 128,
-  clientsPerMachine: 8,
   leaseMs: 30_000,
   deadlineMs: 10_000,
 } as const;
@@ -147,31 +145,6 @@ export const localEndpointSchema = z
   .strict();
 export type LocalEndpoint = z.infer<typeof localEndpointSchema>;
 
-export const registrationSchema = z
-  .object({
-    protocolVersion: z.literal(1),
-    machineId: uuid,
-    hostGeneration: uuid,
-    label: z.string().min(1).max(80),
-  })
-  .strict();
-export type Registration = z.infer<typeof registrationSchema>;
-export const machineListResultSchema = z
-  .object({
-    machines: z
-      .array(
-        z
-          .object({
-            machineId: uuid,
-            label: z.string().min(1).max(80),
-            online: z.boolean(),
-            hostGeneration: uuid.nullable(),
-          })
-          .strict(),
-      )
-      .max(LIMITS.machines),
-  })
-  .strict();
 export const listSchema = z
   .object({
     target: destinationSchema,

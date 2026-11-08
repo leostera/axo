@@ -33,8 +33,8 @@ import {
   type SessionMetadata,
   type SessionStatus,
 } from "@axo/protocol";
-import { hostV1Results, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
-import { AxoHostRelay, hostRemoteMethods, type HostRemoteMethod } from "./axo-host-relay";
+import { hostV1Methods, hostV1Results, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
+import { AxoHostRelay } from "./axo-host-relay";
 import type { CallerContext, Peer } from "./relay/peer";
 import { sessionDOName, type SessionBinding, type SessionHead } from "./session-store";
 import { recordApiEvent } from "./observability";
@@ -157,15 +157,35 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
     sql.exec(`CREATE TABLE IF NOT EXISTS account_touch (singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       host_generation TEXT NOT NULL, at REAL NOT NULL, last_seen_at TEXT NOT NULL)`);
   },
+  (sql) => {
+    // The relay's client calls, from before the private fleet went: only role "client" sockets
+    // wrote them, and a HostDO never had one. A rollback's constructor creates them again.
+    sql.exec("DROP TABLE IF EXISTS groups");
+    sql.exec("DROP TABLE IF EXISTS pending");
+  },
 ];
 
-/**
- * Presence a HostDO reported while its base class was still being constructed, by generation.
- * The base constructor fences the routes of sockets that did not survive a restart (a deploy, an
- * eviction), which reports the host offline before this class's fields exist. The report waits
- * here, outside the object, and is sent once construction is done.
- */
-const offlineDuringConstruction = new WeakMap<AxoHostDO, string>();
+/** What a client may ask the Mac to do, through `command`, and the params each takes. */
+const hostRemoteMethods = {
+  "axo.remote.workspace.list": hostV1Methods["axo.remote.workspace.list"],
+  "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
+  "axo.remote.workspace.session.create": hostV1Methods["axo.remote.workspace.session.create"],
+  "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
+  "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
+  "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],
+  "axo.remote.session.rename": hostV1Methods["axo.remote.session.rename"],
+  "axo.remote.session.layout.set": hostV1Methods["axo.remote.session.layout.set"],
+  "axo.remote.terminal.input": hostV1Methods["axo.remote.terminal.input"],
+  "axo.remote.session.prompt": hostV1Methods["axo.remote.session.prompt"],
+  "axo.remote.session.key": hostV1Methods["axo.remote.session.key"],
+  "axo.remote.session.stop": hostV1Methods["axo.remote.session.stop"],
+  "axo.remote.session.restart": hostV1Methods["axo.remote.session.restart"],
+  "axo.remote.session.commands": hostV1Methods["axo.remote.session.commands"],
+  "axo.remote.session.models": hostV1Methods["axo.remote.session.models"],
+  "axo.remote.session.model.set": hostV1Methods["axo.remote.session.model.set"],
+  "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],
+} as const;
+type HostRemoteMethod = keyof typeof hostRemoteMethods;
 
 export class AxoHostDO extends AxoHostRelay {
   /** The newest progress snapshot per Session and slot; never stored (RFD0018, Ephemeral progress). */
@@ -207,24 +227,10 @@ export class AxoHostDO extends AxoHostRelay {
       command: (method, params) => this.command(method, params),
       resolveElicitation: (params) => this.resolveElicitation(params),
     });
-    const offline = offlineDuringConstruction.get(this);
-    if (offline !== undefined) {
-      offlineDuringConstruction.delete(this);
-      this.presenceChanged("", offline, "offline");
-    }
+    this.reconcile();
   }
 
   // ─── Socket admission and registration ─────────────────────────────────────
-
-  protected override supportsLegacyMachineMethods(): boolean { return false; }
-
-  /**
-   * The relay serves the Mac's daemon socket; a client socket of another shape, left by a newer
-   * release, is closed when the object wakes (RFD0032, Release P).
-   */
-  protected override owns(attachment: unknown): boolean {
-    return super.owns(attachment) && (attachment as Peer).role === "daemon";
-  }
 
   /** Protocol 3's client sockets are this class's own (RFD0032). */
   protected override keeps(attachment: unknown): boolean {
@@ -259,7 +265,7 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   protected override async authorizeRelayPeer(request: Request, peer: Peer): Promise<boolean> {
-    if (peer.role !== "daemon" || !this.bind(peer.identity, peer.machineId)) return false;
+    if (!this.bind(peer.identity, peer.machineId)) return false;
     return this.account().authorizeHost(
       peer.machineId,
       request.headers.get("X-Axo-Credential-Id") ?? "",
@@ -295,20 +301,7 @@ export class AxoHostDO extends AxoHostRelay {
       hostGeneration, at, lastSeenAt);
   }
 
-  protected override async storeHostSessions(): Promise<{ storedAt: string }> {
-    throw new Error("Sessions are synced with axo.host.sync");
-  }
-
-  /** The firehose is gone (RFD0018): a host that still sends it is out of date. */
-  protected override async storeHostEvent(): Promise<void> {
-    throw new Error("Host events are replaced by axo.host.sync");
-  }
-
-  protected override presenceChanged(_hostId: string, hostGeneration: string, status: "online" | "offline"): void {
-    if (this.constructing()) {
-      if (status === "offline") offlineDuringConstruction.set(this, hostGeneration);
-      return;
-    }
+  protected override presenceChanged(hostGeneration: string, status: "online" | "offline"): void {
     if (status === "offline") {
       this.progress.clear();
       this.statuses.clear();
@@ -321,8 +314,6 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override fence(connectionId: string): void {
     super.fence(connectionId);
-    // Nothing waits on a connection while the object is still being built: the maps start empty.
-    if (this.constructing()) return;
     for (const [id, hop] of this.hops) {
       if (hop.connectionId !== connectionId) continue;
       this.hops.delete(id);
@@ -333,14 +324,6 @@ export class AxoHostDO extends AxoHostRelay {
       this.commands.delete(id);
       command.resolve({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } });
     }
-  }
-
-  /**
-   * Whether the base class constructor is still running, so this class's fields do not exist
-   * yet. The base constructor calls `fence` and, through it, `presenceChanged`.
-   */
-  private constructing(): boolean {
-    return this.progress === undefined;
   }
 
   // ─── Upload: Axod → HostDO ─────────────────────────────────────────────────
@@ -676,7 +659,7 @@ export class AxoHostDO extends AxoHostRelay {
       return hop.resolve("error" in reply ? { error: { code: reply.error.code, message: reply.error.message } } : { result: reply.result });
     }
     const command = typeof reply.id === "string" ? this.commands.get(reply.id) : undefined;
-    if (!command) return super.receiveReply(socket, reply);
+    if (!command) return;
     this.commands.delete(reply.id as string);
     // The host is the account's own Mac: its reason reaches the client, bounded.
     if ("error" in reply) return command.resolve({ error: { code: reply.error.code, message: reply.error.message.slice(0, 256) || "Host rejected operation" } });
@@ -770,7 +753,7 @@ export class AxoHostDO extends AxoHostRelay {
     // Protocol 3's clients keep their sockets: they see the Mac go offline, its Sessions still
     // listed, until their next hello, which no longer lists it (as in protocol 2).
     if (active) this.drop(active.socket, 4003, "Host revoked");
-    this.closeHostRelay(identity.host_id);
+    else this.endLease(identity.host_id);
   }
 
   /** Tells the clients following this Mac its new name at once. */
@@ -782,9 +765,9 @@ export class AxoHostDO extends AxoHostRelay {
     return this.presence();
   }
 
-  override presence() {
+  presence() {
     const identity = this.identity();
-    return identity ? super.presence(identity.host_id) : { online: false, hostGeneration: null };
+    return identity ? this.presenceOfMachine(identity.host_id) : { online: false, hostGeneration: null };
   }
 
   // ─── Notices ───────────────────────────────────────────────────────────────

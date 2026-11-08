@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fc from "fast-check";
 import { LIMITS, success, replySchema, type Reply } from "@axo/protocol";
-import { boundReplyGroup } from "../src/relay/replies";
+import { boundReplies } from "../src/relay/replies";
 
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const id = fc.oneof(
@@ -39,10 +39,9 @@ async function campaign(property: Parameters<typeof fc.check>[0]) {
 
 test("seeded relay framing campaign preserves IDs, batch shape and encoded byte bounds", { timeout: 60000 }, async () => {
   await campaign(fc.property(groups, ({ batch, replies }) => {
-    const bounded = boundReplyGroup(replies, batch);
+    const bounded = { replies: boundReplies(replies, batch) };
     assert.equal(bounded.replies.length, replies.length);
     assert.deepEqual(bounded.replies.map(reply => reply.id), replies.map(reply => reply.id));
-    assert.equal(bounded.stored, JSON.stringify(bounded.replies));
     const frame = batch ? bounded.replies : bounded.replies[0];
     assert.ok(bytes(frame) <= LIMITS.frameBytes);
     assert.ok(bounded.replies.every(reply => replySchema.safeParse(reply).success));
@@ -50,24 +49,6 @@ test("seeded relay framing campaign preserves IDs, batch shape and encoded byte 
       assert.deepEqual(bounded.replies, replies);
     } else {
       assert.ok(bounded.replies.every(reply => "error" in reply && reply.error.code === -32004));
-    }
-  }));
-});
-
-test("partial durable groups stay bounded across arbitrary completion order and repeated reductions", { timeout: 60000 }, async () => {
-  await campaign(fc.property(fc.array(reply, { minLength: 1, maxLength: 8 }), replies => {
-    let accumulated: Reply[] = [];
-    for (let index = 0; index < replies.length; index++) {
-      const bounded = boundReplyGroup([...accumulated, replies[index]], true);
-      // Model SQL serialization between replies (including hibernation), not an in-memory cache.
-      accumulated = JSON.parse(bounded.stored) as Reply[];
-      assert.ok(bytes(accumulated) <= LIMITS.frameBytes);
-      assert.equal(accumulated.length, index + 1);
-      assert.deepEqual(accumulated.map(reply => reply.id), JSON.parse(JSON.stringify(replies.slice(0, index + 1).map(reply => reply.id))));
-      assert.ok(accumulated.every(reply => replySchema.safeParse(reply).success));
-      for (const previous of bounded.replies) {
-        if ("error" in previous) assert.equal(previous.error.code, -32004);
-      }
     }
   }));
 });

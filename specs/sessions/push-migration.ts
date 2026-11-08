@@ -327,7 +327,7 @@ export const HostDO = defineActor({
     update: {
       on: Update,
       description: "Adopts the code deployed when it next wakes (axod's heartbeat wakes it within seconds). Sockets stay; version 1 closes the client sockets it does not own.",
-      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.closeUnowned", "packages/axo-api-worker/src/host-do.ts#AxoHostDO.owns"],
+      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.closeUnowned", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.isOwned"],
       sends: [HostRefused],
       run(s, m, ctx) {
         s.version = m.version;

@@ -1,5 +1,4 @@
 import WebSocket from "ws";
-import { accessHeaders } from "./access-headers";
 import {
   FRAGMENT_METHOD,
   MemoryPartialStore,
@@ -92,22 +91,7 @@ export class Peer {
       waiter.reject(new Error("Disconnected: outcome may be unknown"));
     }
   }
-  static async connect(
-    url: string,
-    assertion: string,
-    machine: string,
-    role: "client" | "daemon",
-  ) {
-    const socket = new WebSocket(
-      `${url.replace(/^http/, "ws")}v1/machines/${machine}/${role}`,
-      {
-        headers: accessHeaders(assertion),
-        maxPayload: 65_536,
-        followRedirects: false,
-      },
-    );
-    return Peer.open(socket);
-  }
+
   /** A host's socket on the account path, served by its HostDO (RFD0018). */
   static async connectHostDaemon(
     url: string,
@@ -163,26 +147,7 @@ export class Peer {
     });
     return Peer.open(socket);
   }
-  static async connectHost(
-    url: string,
-    assertion: string,
-    host: string,
-    role: "client" | "daemon",
-    origin?: string,
-  ) {
-    const socket = new WebSocket(
-      `${url.replace(/^http/, "ws")}v1/hosts/${host}/${role}`,
-      {
-        headers: {
-          ...accessHeaders(assertion),
-          ...(origin ? { Origin: origin } : {}),
-        },
-        maxPayload: 65_536,
-        followRedirects: false,
-      },
-    );
-    return Peer.open(socket);
-  }
+
   static async connectLocal(discovery: LocalEndpoint) {
     const endpoint = localEndpointSchema.parse(discovery);
     return Peer.open(

@@ -119,8 +119,8 @@ const REQUEST_TIMEOUT = defineLimit({ name: "The web app waits this long for an 
 // ---- Cloudflare Access: signs people in and puts a signed JWT on what they send ----
 
 export const Access = defineActor({
-  name: "Cloudflare Access",
-  description: "Signs people in and only lets signed-in requests through to the Worker, with a signed JWT for who they are.",
+  name: "Sign-in",
+  description: "Signs people in with Cloudflare OAuth (RFD0013) and only lets requests with Axo's session for their account through to the Worker.",
   zone: cloudflare,
   singleton: true,
   initialState: () => ({ sessions: {} as Record<string, string> }), // person -> account (the JWT subject)
@@ -129,8 +129,8 @@ export const Access = defineActor({
   transitions: {
     signIn: {
       on: SignIn,
-      description: "Signs the person in; from now on their requests carry a JWT for their account.",
-      sources: ["packages/axo-api-worker/src/http/router.ts#authorizeCaller"],
+      description: "Signs the person in; from now on their requests carry a session for their account.",
+      sources: ["packages/axo-api-worker/src/auth/login.ts#completeLogin"],
       sends: [SignedIn],
       say: (_s, m) => `Signed ${who(m.account)} in`,
       run(state, m, ctx) { state.sessions[m.person] = m.account; ctx.reply(SignedIn, {}); },
@@ -442,7 +442,7 @@ export const Manager = defineActor({
     revokeInAccount: {
       on: RevokeInAccount,
       description: "Marks the host revoked, drops its socket and fails what was waiting on it.",
-      sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.revokeHost", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.closeHostRelay"],
+      sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.revokeHost", "packages/axo-api-worker/src/host-do.ts#AxoHostDO.disconnect"],
       sends: [Revoked, SocketClosed, OutcomeUnknown, Detached],
       say: (s, m) => `${who(m.account)} revokes ${s.hosts[keyOf(m.account, m.host)]?.label ?? "a Mac"}`,
       run(state, m, ctx) {
@@ -563,7 +563,7 @@ export const Manager = defineActor({
     forwardCall: {
       on: ForwardCall,
       description: "Passes a command to the host, if the account owns it and it is online.",
-      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.forwardHostRemoteCall"],
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.command"],
       sends: [Forward, NotYourMac, MacOffline],
       say: (s, m) => `${who(m.account)} types into ${s.hosts[keyOf(m.account, m.host)]?.label ?? "a Mac"}`,
       run(state, m, ctx) {
@@ -582,7 +582,7 @@ export const Manager = defineActor({
     callDone: {
       on: CallDone,
       description: "Hands the host's answer to the person who asked.",
-      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.receiveReply"],
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveReply"],
       sends: [Output],
       run(state, m, ctx) {
         const pending = state.pending[m.request];

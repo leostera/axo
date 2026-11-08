@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { recordApiEvent } from "../src/observability";
-import { accessHeaders } from "../testing/access-headers";
 
 test("diagnostics contain only static metadata and never infer execution from replies", () => {
   const captured: string[] = [];
@@ -31,18 +30,4 @@ test("diagnostics contain only static metadata and never infer execution from re
       outcome: "executed",
     });
   }
-});
-
-test("native Access headers supply the edge cookie and reject cookie/header injection", () => {
-  assert.deepEqual(accessHeaders("header.payload.signature"), {
-    Cookie: "CF_Authorization=header.payload.signature",
-    "Cf-Access-Jwt-Assertion": "header.payload.signature",
-  });
-  for (const value of [
-    "not-a-jwt",
-    "header.payload.signature; other=value",
-    "header.payload.signature\r\nSecret: value",
-    "x".repeat(8193),
-  ])
-    assert.throws(() => accessHeaders(value), /Invalid Access/);
 });
