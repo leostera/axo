@@ -391,7 +391,7 @@ export const SessionDO = defineActor({
     readChains: {
       on: ReadChains,
       description: "Returns the chain at every position, from nothing to the head.",
-      sources: ["packages/axo-api-worker/src/session-store.ts:235-240"],
+      sources: ["packages/axo-api-worker/src/session-store.ts:246-251"],
       sends: [ChainsRead],
       run: (s, msg, ctx) => ctx.reply(ChainsRead, { inc: msg.inc, chains: s.records.map((_r, i) => chainOf(s.records, i)).concat(chainOf(s.records)) }),
     },

@@ -46,7 +46,7 @@ import {
   type HostMethod,
   type HostSnapshot,
 } from "@axo/protocol/v1";
-import { peerSchema, type Peer, type CallerContext } from "./relay/peer";
+import { UNOWNED_CLOSE, peerSchema, type Peer, type CallerContext } from "./relay/peer";
 import type { Route, Group, Pending } from "./relay/records";
 import { recordApiEvent } from "./observability";
 import { boundReplyGroup } from "./relay/replies";
@@ -108,6 +108,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS pending (hop_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, original_id TEXT NOT NULL, connection_id TEXT NOT NULL, machine_id TEXT NOT NULL, method TEXT NOT NULL, generation TEXT NOT NULL, deadline REAL NOT NULL)",
     );
     this.preparePending();
+    this.closeUnowned();
     // Messages larger than a frame (RFD0016, Transport): fragments received so far, one row each.
     // It only ever holds traffic of open sockets, so an older shape is dropped, not migrated.
     // RFD0018 removed delivery credits, and with them the outbox of frames waiting for credit.
@@ -208,7 +209,7 @@ export class AxoHostRelay extends DurableObject<Env> {
   }
   private discardDisconnectedCorrelations() {
     const connected = new Set(
-      this.ctx.getWebSockets().map((socket) => this.peer(socket).connectionId),
+      this.owned().map((socket) => this.peer(socket).connectionId),
     );
     const sql = this.ctx.storage.sql;
     for (const row of sql
@@ -232,8 +233,34 @@ export class AxoHostRelay extends DurableObject<Env> {
   protected peer(socket: WebSocket): Peer {
     return peerSchema.parse(socket.deserializeAttachment());
   }
+  /**
+   * Whether this object serves a socket with this attachment. One it doesn't was accepted by
+   * another release: after a rollback, a protocol 3 client socket (RFD0032, Release P). Nothing
+   * would ever write to it, so it is closed when the object wakes, and ignored until it is gone.
+   * Called from the constructor, so an override may use no fields.
+   */
+  protected owns(attachment: unknown): boolean {
+    return peerSchema.safeParse(attachment).success;
+  }
+  private isOwned(socket: WebSocket): boolean {
+    return this.owns(socket.deserializeAttachment());
+  }
+  private owned(): WebSocket[] {
+    return this.ctx.getWebSockets().filter((socket) => this.isOwned(socket));
+  }
+  private closeUnowned(): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (this.isOwned(socket)) continue;
+      recordApiEvent({ event: "connection_closed", role: "unowned", code: UNOWNED_CLOSE.code });
+      try {
+        socket.close(UNOWNED_CLOSE.code, UNOWNED_CLOSE.reason);
+      } catch {
+        // Already closing.
+      }
+    }
+  }
   private sockets(role?: Peer["role"]) {
-    return this.ctx.getWebSockets().filter((socket) => {
+    return this.owned().filter((socket) => {
       const peer = this.peer(socket);
       return peer.expiresAt > Date.now() && (!role || peer.role === role);
     });
@@ -336,6 +363,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     socket: WebSocket,
     raw: string | ArrayBuffer,
   ): Promise<void> {
+    if (!this.isOwned(socket)) return;
     const peer = this.peer(socket);
     if (peer.expiresAt <= Date.now()) {
       this.drop(socket, 4001, "Access expired");
@@ -1212,10 +1240,10 @@ export class AxoHostRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM fragments_discarded WHERE connection_id = ?", peer.connectionId);
   }
   webSocketClose(socket: WebSocket) {
-    this.drop(socket, 1000, "Disconnected");
+    if (this.isOwned(socket)) this.drop(socket, 1000, "Disconnected");
   }
   webSocketError(socket: WebSocket) {
-    this.drop(socket, 1011, "Transport failed");
+    if (this.isOwned(socket)) this.drop(socket, 1011, "Transport failed");
   }
   protected async schedule() {
     const deadlines = this.sockets().map(
@@ -1241,7 +1269,7 @@ export class AxoHostRelay extends DurableObject<Env> {
   async alarm() {
     for (const route of this.routes())
       if (route.lease_until <= Date.now()) this.fence(route.connection_id);
-    for (const socket of this.ctx.getWebSockets())
+    for (const socket of this.owned())
       if (this.peer(socket).expiresAt <= Date.now())
         this.drop(socket, 4001, "Access expired");
     for (const row of this.ctx.storage.sql

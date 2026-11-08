@@ -31,3 +31,9 @@ export const peerSchema = z
     }).strict()).max(64).default([]),
   })
   .strict();
+
+/**
+ * How a socket this object doesn't serve is closed (RFD0032, Release P). A protocol 3 client that
+ * hears it reconnects, and falls back to protocol 2 when the HostDO refuses the new socket.
+ */
+export const UNOWNED_CLOSE = { code: 4010, reason: "Protocol not served" } as const;

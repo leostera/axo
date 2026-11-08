@@ -38,6 +38,7 @@ import { AxoHostRelay, hostRemoteMethods, type HostRemoteMethod } from "./axo-ho
 import type { CallerContext, Peer } from "./relay/peer";
 import { sessionDOName, type SessionBinding, type SessionHead } from "./session-store";
 import { recordApiEvent } from "./observability";
+import { addColumns, migrate, type SchemaStep } from "./schema";
 import { z } from "zod";
 
 /**
@@ -113,6 +114,36 @@ type AccountStub = {
   appsCall(call: AppsCall): Promise<HostCommandOutcome>;
 };
 
+/** The HostDO's schema, one step per change (RFD0032, Release P). */
+const HOST_SCHEMA: readonly SchemaStep[] = [
+  (sql) => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS host_identity (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL, host_id TEXT NOT NULL)`);
+    // `missing` marks a Session the last manifest did not list: archived, never deleted.
+    sql.exec(`CREATE TABLE IF NOT EXISTS session_index (
+      session_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, metadata_version INTEGER NOT NULL,
+      missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
+    sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
+    // RFD0031: followers stay until their socket closes; `behind` marks one a notice failed to reach.
+    sql.exec("DROP TABLE IF EXISTS subscribers");
+    sql.exec("CREATE TABLE IF NOT EXISTS followers (client_do TEXT PRIMARY KEY, behind INTEGER NOT NULL DEFAULT 0)");
+    sql.exec(`CREATE TABLE IF NOT EXISTS watchers (
+      client_do TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (client_do, session_id))`);
+  },
+  (sql) => {
+    // RFD0032, Host sync from the index: rows start distrusted; the fence only grows.
+    addColumns(sql, "session_index", { verified: "INTEGER NOT NULL DEFAULT 0" });
+    sql.exec("CREATE TABLE IF NOT EXISTS sync_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
+  },
+  (sql) => {
+    // RFD0032, protocol 3: what each client socket has of each Session it opened. Release P
+    // creates it so that a rollback from protocol 3 finds the tables it expects; nothing reads it.
+    sql.exec(`CREATE TABLE IF NOT EXISTS client_opens (
+      socket_id TEXT NOT NULL, session_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+      sent INTEGER NOT NULL, acked INTEGER NOT NULL, PRIMARY KEY (socket_id, session_id))`);
+  },
+];
+
 /**
  * Presence a HostDO reported while its base class was still being constructed, by generation.
  * The base constructor fences the routes of sockets that did not survive a restart (a deploy, an
@@ -143,23 +174,7 @@ export class AxoHostDO extends AxoHostRelay {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    const sql = ctx.storage.sql;
-    sql.exec(`CREATE TABLE IF NOT EXISTS host_identity (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL, host_id TEXT NOT NULL)`);
-    // `missing` marks a Session the last manifest did not list: archived, never deleted.
-    sql.exec(`CREATE TABLE IF NOT EXISTS session_index (
-      session_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, metadata_version INTEGER NOT NULL,
-      missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
-    sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
-    // RFD0032, Host sync from the index: rows start distrusted; the fence only grows.
-    if (!sql.exec<{ name: string }>("PRAGMA table_info(session_index)").toArray().some((column) => column.name === "verified"))
-      sql.exec("ALTER TABLE session_index ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
-    sql.exec("CREATE TABLE IF NOT EXISTS sync_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
-    // RFD0031: followers stay until their socket closes; `behind` marks one a notice failed to reach.
-    sql.exec("DROP TABLE IF EXISTS subscribers");
-    sql.exec("CREATE TABLE IF NOT EXISTS followers (client_do TEXT PRIMARY KEY, behind INTEGER NOT NULL DEFAULT 0)");
-    sql.exec(`CREATE TABLE IF NOT EXISTS watchers (
-      client_do TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (client_do, session_id))`);
+    migrate(ctx.storage, HOST_SCHEMA);
     const offline = offlineDuringConstruction.get(this);
     if (offline !== undefined) {
       offlineDuringConstruction.delete(this);
@@ -170,6 +185,14 @@ export class AxoHostDO extends AxoHostRelay {
   // ─── Socket admission and registration ─────────────────────────────────────
 
   protected override supportsLegacyMachineMethods(): boolean { return false; }
+
+  /**
+   * A HostDO serves its Mac's daemon socket only. Protocol 3 adds client sockets; until this code
+   * serves them, one left by a newer release is closed when the object wakes (RFD0032, Release P).
+   */
+  protected override owns(attachment: unknown): boolean {
+    return super.owns(attachment) && (attachment as Peer).role === "daemon";
+  }
 
   protected override async authorizeRelayPeer(request: Request, peer: Peer): Promise<boolean> {
     if (peer.role !== "daemon" || !this.bind(peer.identity, peer.machineId)) return false;

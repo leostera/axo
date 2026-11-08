@@ -1,7 +1,7 @@
 # RFD0032 - Axo: Push Delivery
 
 - Feature Name: `axo-push-delivery`
-- Status: Accepted; host sync from the index is implemented (2026-11-08)
+- Status: Accepted; host sync from the index and release P are implemented (2026-11-08)
 - Author: leostera
 - Start Date: 2026-11-05
 - Updated: 2026-11-08
@@ -108,7 +108,7 @@ Route: `GET /api/v1/account/hosts/:host/client`, a WebSocket upgrade signed in l
 
 ### Delivery rules
 
-These are the rules `specs/push-delivery.ts` checks. Each one breaks a property when turned off.
+These are the rules `specs/sessions/push-delivery.ts` checks. Each one breaks a property when turned off.
 
 - **pushFromAppend.** A confirmed append is sent to every socket whose row is at the record before it, from the line in hand. The record also goes into memory, so later acknowledgements can be served from it.
 - **openAtHead.** An open whose `have` equals the index's head, in the index's epoch, writes a row and answers with no read.
@@ -160,7 +160,7 @@ Per record: one SessionDO append, plus a read only after hibernation or for a la
 
 ## Migration
 
-Durable Objects adopt a deploy one by one. Each takes the new code when it next wakes after hibernating, or is reset onto it after the deadline (5 minutes by default). A hibernated WebSocket survives the switch, and its next frame goes to whatever code the object runs then. A rollback works the same way. Clients update when they update: a tab runs the JavaScript it loaded, and the Mac and iPhone apps run the build they have. `specs/push-migration.ts` models this mix.
+Durable Objects adopt a deploy one by one. Each takes the new code when it next wakes after hibernating, or is reset onto it after the deadline (5 minutes by default). A hibernated WebSocket survives the switch, and its next frame goes to whatever code the object runs then. A rollback works the same way. Clients update when they update: a tab runs the JavaScript it loaded, and the Mac and iPhone apps run the build they have. `specs/sessions/push-migration.ts` models this mix.
 
 ### Release P (preparatory)
 
@@ -169,6 +169,13 @@ Ships first, and is the oldest release a rollback may go to once protocol 3 has 
 - The HostDO tolerates the new SQLite state. It creates `client_opens` and the fence and `verified` columns idempotently, and ignores them.
 - When it wakes, a HostDO closes every client socket it doesn't own: one whose attachment says protocol 3. Without this, a rollback leaves protocol 3 clients on sockets that nothing writes to (the model's `closeUnknownSockets`).
 - Schema changes are gated behind a stored schema version, applied once per object instead of on every wake (from the RFD0031 backlog). Every change is additive, so release P and release 3 read each other's tables.
+
+**Built (2026-11-08).**
+
+- `src/schema.ts` `migrate` applies a Durable Object's schema steps once each and stores how many in `schema_version`. The HostDO and SessionDO use it. Each step is idempotent, so an object from before the version existed runs them all once and keeps what it holds. A stored version past a release's steps was written by a newer release and applies nothing.
+- The HostDO's third step creates `client_opens`. Nothing reads it yet.
+- `AxoHostRelay.owns(attachment)` says which sockets an object serves. The HostDO serves only its daemon's. A socket it doesn't serve is closed with 4010 "Protocol not served" (`UNOWNED_CLOSE`) when the object is constructed, and ignored until then: its frames get no answer, and it never counts as a socket for presence, routes or alarms. Before this, one socket with an attachment the strict `peerSchema` refused made every socket lookup throw, so the Mac's own calls failed with "Outcome unknown".
+- Tests (`tests/release-p.test.ts`, with `tests/fixtures/foreign-sockets.ts` standing in for release 3): a daemon keeps syncing with two foreign client sockets on its HostDO, and a wake closes them and keeps the daemon's; the schema is applied once, again after its version is lost, and not at all under a newer version.
 
 ### Release 3
 
@@ -196,9 +203,9 @@ Go back to release P. HostDOs that adopt it close their protocol 3 sockets. Thos
 
 | Spec | What it checks | Result |
 |---|---|---|
-| `specs/push-delivery.ts` | One tab and one Session on a HostDO that hibernates, is reset, and loses answers. Properties: noGapsNoDuplicates, holdsWhatTheCloudHolds, oneBatchOutstanding, progressEndsWithItsRecord, catchesUp, readsOnlyAfterForgetting, opensAtHeadReadNothing. 6 scenarios. | Every safety property holds in every state within 24 events with no faults (28M states), and within 14 events with one fault (15.5M states). `catchesUp` holds as far as those depths reach. These are bounded checks, not proofs. With one fault, at depth 16, nothing broke in the 37M states explored before the memory limit. Each rule is needed except sweepStaleRows and tabDropsRecordedProgress. For those two, the search stopped before it could show whether they are needed. |
+| `specs/sessions/push-delivery.ts` | One tab and one Session on a HostDO that hibernates, is reset, and loses answers. Properties: noGapsNoDuplicates, holdsWhatTheCloudHolds, oneBatchOutstanding, progressEndsWithItsRecord, catchesUp, readsOnlyAfterForgetting, opensAtHeadReadNothing. 6 scenarios. | Every safety property holds in every state within 24 events with no faults (28M states), and within 14 events with one fault (15.5M states). `catchesUp` holds as far as those depths reach. These are bounded checks, not proofs. With one fault, at depth 16, nothing broke in the 37M states explored before the memory limit. Each rule is needed except sweepStaleRows and tabDropsRecordedProgress. For those two, the search stopped before it could show whether they are needed. |
 | `specs/sessions/sync-from-index.ts` | axod, HostDO and SessionDO through rewrites, lost answers and resets mid-write. Properties: believesOnlyWhatIsThere, converges, quietHandshakesAskNothing. | Proved with up to two faults on a path (250k states, every path explored). Each rule is needed. |
-| `specs/push-migration.ts` | Deploy and rollback across the ClientDO and HostDO adopting code at different times, with clients on protocol 2 or 3, and a forced update. Properties: neverBroken, keepsHearing. | Proved with one fault (3.4M states). closeUnknownSockets, fallBackToTwo and frozenWire are each needed. |
+| `specs/sessions/push-migration.ts` | Deploy and rollback across the ClientDO and HostDO adopting code at different times, with clients on protocol 2 or 3, and a forced update. Properties: neverBroken, keepsHearing. | Proved with one fault (3.4M states). closeUnknownSockets, fallBackToTwo and frozenWire are each needed. |
 
 ### Worker tests
 

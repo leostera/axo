@@ -5,7 +5,8 @@ type ApiEvent =
   | { event: "host_registered" }
   | { event: "share_published"; messages: number }
   | { event: "sign_in"; client: "web" | "native"; outcome: "started" | "completed" | "refused" | "failed"; stage?: string }
-  | { event: "connection_closed"; role: "client" | "daemon"; code: number }
+  /** `unowned`: a socket another release accepted, closed when the object woke (RFD0032, Release P). */
+  | { event: "connection_closed"; role: "client" | "daemon" | "unowned"; code: number }
   | { event: "relay_send_failed"; reason: "too_large" }
   /** `read`: the Sessions the index could not answer, each one SessionDO call (RFD0032). */
   | { event: "host_sync"; sessions: number; read: number; unknown: number }

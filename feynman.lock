@@ -121,7 +121,7 @@
     "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.forwardHostRemoteCall": "d563f3a64e59",
     "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.receiveReply": "c08ccb347021",
     "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.registerHost": "1bd9a7334530",
-    "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.webSocketClose": "bfb18f63ad9c",
+    "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.webSocketClose": "1b4ef52c4a9b",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.alarm": "43b8ec7af73a",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.notify": "897ae29e4627",
     "packages/axo-api-worker/src/client-do.ts#AxoClientDO.openSession": "fc447b558921",
@@ -179,6 +179,10 @@
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.refreshHead": "962ae02e6927",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.truncate": "3955cb595120",
     "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.syncHead": "417c2ae6e188",
-    "packages/axo-api-worker/src/session-store.ts:235-240": "29b3817a21b4"
+    "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.closeUnowned": "f244382eed29",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.owns": "b0de8b3e8883",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.head": "d4e7cb8385db",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.read": "cf25c71b6612",
+    "packages/axo-api-worker/src/session-store.ts:246-251": "29b3817a21b4"
   }
 }

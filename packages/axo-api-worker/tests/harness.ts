@@ -177,12 +177,16 @@ export type Harness = Awaited<ReturnType<typeof harness>>;
 /** Answers the Worker's outbound requests to hosts other than the identity provider; undefined passes them on. */
 export type Outbound = (request: Request) => Promise<Response | undefined> | Response | undefined;
 
-export async function harness(configuration: { audience?: string; bindings?: Record<string, string>; outbound?: Outbound } = {}) {
+/**
+ * `entry` replaces the Worker's entry module, for a test that runs another release's code (a
+ * fixture under `tests/fixtures/`).
+ */
+export async function harness(configuration: { audience?: string; bindings?: Record<string, string>; outbound?: Outbound; entry?: string } = {}) {
   const audience = configuration.audience ?? "private-test";
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const bundle = join(directory, "worker.mjs");
   await build({
-    entryPoints: [resolve(root, "packages/axo-api-worker/src/index.ts")],
+    entryPoints: [configuration.entry ?? resolve(root, "packages/axo-api-worker/src/index.ts")],
     outfile: bundle,
     bundle: true,
     format: "esm",
