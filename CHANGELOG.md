@@ -2,6 +2,13 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.39 (Mac app build 310, axod 62)
+
+### Fixed
+
+- When you unpair a Mac, your other Macs let go of it cleanly. Before, one that was still opening that Mac's Sessions could ask the cloud for it, drop its connection and follow through the account for ten minutes; a command waiting on it now fails as offline at once.
+- On the web and the phone, a message for a Mac they haven't connected to yet says it wasn't sent, instead of being taken for an older Mac and sent again another way.
+
 ## 0.38 (Mac app build 309, axod 61)
 
 ### Changed
