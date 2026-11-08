@@ -8,8 +8,8 @@ protocol WebSocketTasking: Sendable {
   func closeConnection()
 }
 
-/// The account's socket (RFD0018): JSON-RPC text frames over one WebSocket to this client's
-/// ClientDO, authenticated with the session token and no cookies. It plugs into
+/// The account's socket (RFD0018), or a host's (RFD0032): JSON-RPC text frames over one WebSocket
+/// to this client's ClientDO or a host's HostDO, authenticated with the session token and no cookies. It plugs into
 /// `JSONRPCConnection` exactly where the Unix socket does.
 public struct RelayWebSocketTransport: AxoTransport {
   /// One frame; larger messages come in fragments.
@@ -20,11 +20,14 @@ public struct RelayWebSocketTransport: AxoTransport {
   private let clientID: ClientID
   private let tokens: any SessionTokenProvider
   private let session: URLSession
+  /// Where it connects: the account's socket unless it names a host's.
+  private let url: URL?
 
   public init(
     endpoint: RelayEndpoint = .production, clientID: ClientID,
-    tokens: any SessionTokenProvider, session: URLSession = RelayCredentials.makeURLSession()
+    tokens: any SessionTokenProvider, session: URLSession = RelayCredentials.makeURLSession(), url: URL? = nil
   ) {
+    self.url = url
     self.endpoint = endpoint
     self.clientID = clientID
     self.tokens = tokens
@@ -32,7 +35,7 @@ public struct RelayWebSocketTransport: AxoTransport {
   }
 
   public func connect() async throws -> any AxoMessageChannel {
-    var request = URLRequest(url: endpoint.accountClientSocketURL(clientID: clientID))
+    var request = URLRequest(url: url ?? endpoint.accountClientSocketURL(clientID: clientID))
     request.timeoutInterval = Double(Self.connectTimeout.components.seconds)
     request = try await RelayCredentials.authorize(request, with: tokens)
     let task = session.webSocketTask(with: request)
