@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.37 (Mac app build 308, axod 60)
+
+### Changed
+
+- **Send interrupts.** A message sent from the web or the phone while the agent works stops its reply and is answered next, ahead of anything waiting. Hold Send for the gentler ways: Steer (read at the agent's next step) or Follow up (after its reply). On the web, ⌘↵ steers and ⌥↵ follows up. Every message is still written to the Session's log before it is accepted.
+- Holding Send works on the phone and on a phone's browser, and the phone's Send is a plain solid circle again.
+
+### Fixed
+
+- A message sent while the agent works stays where it was sent, instead of sinking below every new reply until the agent took it. A `/axo-share` sent from a client no longer leaves a bubble waiting at the end.
+
 ## 0.36 (Mac app build 307, axod 59)
 
 ### Changed
