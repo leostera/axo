@@ -148,7 +148,7 @@
     "packages/axo-api-worker/src/http/assets.ts#serveAccountAssets": "6918cc38b5a9",
     "packages/axo-api-worker/src/http/assets.ts#upload": "bc75d7d479fe",
     "packages/axo-api-worker/src/http/router.ts#authorizeCaller": "95b7eaf87d34",
-    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.append": "8969b0c210d3",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.append": "563e02f52af1",
     "packages/axo-api/src/apps.ts#APPS_LIMITS": "eb475a72b9ea",
     "packages/axo-api/src/apps.ts#CONNECTIONS_LIMITS": "b3a005dc6d5b",
     "packages/axo-api/src/contracts.ts#LIMITS": "d016efc788b7",
@@ -166,6 +166,13 @@
     "crates/axo-relay/src/relay/forward.rs#answer": "753605e67003",
     "crates/axo-server/src/session/handlers.rs#RelayHostAdapter::answer_remote": "45127b2470bb",
     "crates/axo-server/src/session/remote.rs#Remote::register": "88f0f974c35d",
-    "crates/axo-server/src/session/remote.rs#prompt": "b3509d4170ec"
+    "crates/axo-server/src/session/remote.rs#prompt": "b3509d4170ec",
+    "crates/axo-relay/src/sync/uploader.rs#Uploader::realign": "770e3eb0514a",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.alarm": "94406f9ca5d9",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.catchUp": "d40b90db245e",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.resume": "579d6a6d29b3",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.translate": "2aa4be7cd95d",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.translateAfterAppend": "c2220833ee1c",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.truncate": "7b80ade318d6"
   }
 }
