@@ -49,11 +49,9 @@
     "crates/axo-relay/src/relay.rs#run_connection": "ad75e130562c",
     "crates/axo-relay/src/relay.rs#run_reconnect_loop": "2326674fcc6a",
     "crates/axo-relay/src/relay.rs#wait_for_reconnect": "7bc87ab9deb5",
-    "crates/axo-relay/src/relay/dispatch.rs#dispatch_remote_call": "f611c850b658",
-    "crates/axo-relay/src/relay/dispatch.rs#remote_request_reply": "0904859c4895",
     "crates/axo-relay/src/relay/jobs.rs#start_bash": "c7e449fd61b2",
     "crates/axo-relay/src/relay/session.rs#relay_session": "8137d3e17b2c",
-    "crates/axo-relay/src/relay/session.rs#rpc_call": "774844d1a072",
+    "crates/axo-relay/src/relay/session.rs#rpc_call": "b4d4e318edbb",
     "crates/axo-relay/src/relay/socket.rs#CONNECT_TIMEOUT": "12b979a96d2a",
     "crates/axo-relay/src/relay/socket.rs#connect_websocket": "5607c07125bf",
     "crates/axo-relay/src/relay/socket.rs#receive": "872538f2eda0",
@@ -164,6 +162,10 @@
     "packages/axo-web-app/src/chat/apps.tsx#ServersPage": "fdf0d945501c",
     "packages/axo-web-app/src/chat/workbench.ts#ChatWorkbench.listHosts": "c41c83b639e8",
     "packages/axo-web-app/src/cloudflare-sign-in-app.tsx#CloudflareSignInApp": "fabd3c33b407",
-    "packages/pi-axo/src/extension.ts#installAxoPiExtension": "70c89a770061"
+    "packages/pi-axo/src/extension.ts#installAxoPiExtension": "70c89a770061",
+    "crates/axo-relay/src/relay/forward.rs#answer": "753605e67003",
+    "crates/axo-server/src/session/handlers.rs#RelayHostAdapter::answer_remote": "45127b2470bb",
+    "crates/axo-server/src/session/remote.rs#Remote::register": "88f0f974c35d",
+    "crates/axo-server/src/session/remote.rs#prompt": "b3509d4170ec"
   }
 }
