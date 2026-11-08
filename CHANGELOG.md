@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.35 (Mac app build 306, axod 58)
+
+### Fixed
+
+- Reopening a Session right after closing it no longer leaves its agent marked as unrecoverable: Axo waits for the old agent to finish exiting.
+
 ## 0.34 (Mac app build 305, axod 57)
 
 ### Fixed
