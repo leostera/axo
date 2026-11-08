@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.33 (Mac app build 304, axod 56)
+
+### Changed
+
+- Inside axod, what it knows about its agents has its own lock, so health checks and agent controls no longer wait behind Session work.
+
 ## 0.32 (Mac app build 303, axod 55)
 
 ### Changed
