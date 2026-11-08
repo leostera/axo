@@ -86,6 +86,15 @@ export function isDirectClient(attachment: unknown): boolean {
  */
 type OpenRow = { socket_id: string; session_id: string; epoch: number | null; sent: number; acked: number; sent_at: number };
 
+/** A call's id, as its reply names it. */
+type Id = NonNullable<Call["id"]> | null;
+
+/** A call's reply, and what follows it on the socket once it is sent. */
+type Answer = { reply: Reply | null; after?: () => Promise<void> | void };
+
+/** How far a pump may go: a moved epoch makes it read where the Session was cut (learnTheCut). */
+type PumpOptions = { epochMoved?: boolean; reads?: number };
+
 /** What `HostClients` needs from its HostDO. */
 export interface HostClientsHost {
   hostId(): string | undefined;
@@ -188,39 +197,49 @@ export class HostClients {
 
   async receive(socket: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const peer = this.attachment(socket);
-    if (!peer) return;
-    if (peer.expiresAt <= Date.now()) return this.close(socket, 4001, "Sign-in expired");
-    if (typeof raw !== "string") return this.close(socket, 1003, "Text required");
+    if (!peer || !this.admit(socket, peer, raw)) return;
+    const call = this.callIn(socket, peer, raw as string);
+    if (!call) return;
+    const answer = await this.answer(socket, peer, call);
+    if (answer.reply && call.id !== undefined) this.send(socket, answer.reply);
+    await answer.after?.();
+  }
+
+  /** Whether a frame may be read: signed in, text, and within the rate limit. Closes it if not. */
+  private admit(socket: WebSocket, peer: Attachment, raw: string | ArrayBuffer): raw is string {
+    if (peer.expiresAt <= Date.now()) return this.close(socket, 4001, "Sign-in expired"), false;
+    if (typeof raw !== "string") return this.close(socket, 1003, "Text required"), false;
     if (Date.now() - peer.window >= 1000) Object.assign(peer, { window: Date.now(), calls: 0 });
     peer.calls += 1;
     socket.serializeAttachment(peer);
-    if (peer.calls > FRAMES_PER_SECOND) return this.close(socket, 1008, "Rate limit");
+    if (peer.calls > FRAMES_PER_SECOND) return this.close(socket, 1008, "Rate limit"), false;
+    return true;
+  }
 
+  /**
+   * The call a frame carries, once whole: a fragment is kept until its message completes, and a
+   * frame that isn't one call is answered with its error. Null when there is nothing to answer.
+   */
+  private callIn(socket: WebSocket, peer: Attachment, raw: string): Call | null {
     let decoded = decode(raw);
-    if ("error" in decoded) return void this.send(socket, decoded.error);
+    if ("error" in decoded) return this.send(socket, decoded.error), null;
     const frame = decoded.batch ? undefined : callSchema.safeParse(decoded.entries[0]);
     if (frame?.success && frame.data.method === DISCARD_METHOD) {
       const notice = discardParamsSchema.safeParse(frame.data.params);
       if (notice.success) this.partialsOf(peer.socketId).discard(notice.data.messageId);
-      return;
+      return null;
     }
     if (frame?.success && frame.data.method === FRAGMENT_METHOD) {
       const outcome = receiveFragment(this.partialsOf(peer.socketId), frame.data.params);
-      if (outcome.status === "invalid") return this.close(socket, 1008, `Invalid fragment: ${outcome.reason}`);
-      if (outcome.status !== "complete") return;
+      if (outcome.status === "invalid") return this.close(socket, 1008, `Invalid fragment: ${outcome.reason}`), null;
+      if (outcome.status !== "complete") return null;
       decoded = decode(outcome.raw, CLIENT_MESSAGE_BYTES);
-      if ("error" in decoded) return void this.send(socket, decoded.error);
+      if ("error" in decoded) return this.send(socket, decoded.error), null;
     }
-    if (decoded.batch) return void this.send(socket, failure(null, -32600, "Batches are not supported"));
+    if (decoded.batch) return this.send(socket, failure(null, -32600, "Batches are not supported")), null;
     const call = callSchema.safeParse(decoded.entries[0]);
-    if (!call.success) return void this.send(socket, failure(null, -32600, "Invalid Request"));
-    const reply = await this.answer(socket, peer, call.data);
-    if (reply && call.data.id !== undefined) this.send(socket, reply);
-    if (call.data.method === CLIENT_METHODS.hello && reply && "result" in reply && peer.person)
-      for (const elicitation of this.host.elicitations()) this.send(socket, this.requested(elicitation));
-    // What the open did not return follows it, in batches.
-    if (call.data.method === CLIENT_METHODS.open && reply && "result" in reply)
-      await this.pump(peer.socketId, clientOpenParamsSchema.parse(call.data.params).sessionId);
+    if (!call.success) return this.send(socket, failure(null, -32600, "Invalid Request")), null;
+    return call.data;
   }
 
   /** A socket closed: what it had open goes with it. */
@@ -258,112 +277,132 @@ export class HostClients {
     }
   }
 
-  /** The HostDO's notices, as frames on each socket; an open Session that moved is pumped. */
+  /** The HostDO's notices, as frames on each socket that said hello. */
   async deliver(notices: HostNotice[]): Promise<void> {
     const hostId = this.host.hostId();
     if (!hostId) return;
-    await Promise.all(this.sockets().map(async (socket) => {
+    await Promise.all(this.sockets().map((socket) => {
       const peer = this.attachment(socket)!;
-      if (peer.connection < 0) return;
-      const open = new Set(this.rowsOfSocket(peer.socketId).map((row) => row.session_id));
-      const sessions: ClientSession[] = [];
-      const touched = new Map<string, boolean>();
-      for (const notice of notices) {
-        switch (notice.kind) {
-          case "session":
-            sessions.push(notice.session);
-            if (open.has(notice.session.sessionId)) touched.set(notice.session.sessionId, touched.get(notice.session.sessionId) ?? false);
-            break;
-          case "progress":
-            if (open.has(notice.sessionId))
-              this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.progress, params: { sessionId: notice.sessionId, slot: notice.slot, snapshot: notice.snapshot } });
-            break;
-          case "epoch":
-            // A row already in that epoch (`cut` told it) has nothing to learn.
-            if (open.has(notice.sessionId)) touched.set(notice.sessionId, this.row(peer.socketId, notice.sessionId)?.epoch !== notice.epoch);
-            break;
-          case "presence":
-            this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.presence, params: { online: notice.online, hostGeneration: notice.hostGeneration } });
-            break;
-          case "label":
-            this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.label, params: { label: notice.label } });
-            break;
-          // Only people see what a Mac asks: a Mac following its peers does not (RFD0029).
-          case "elicitationRequested":
-            if (peer.person) this.send(socket, this.requested(notice.elicitation));
-            break;
-          case "elicitationResolved":
-            if (peer.person) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.resolved, params: { hostId, ...notice.resolved } });
-            break;
-        }
-      }
-      if (sessions.length) this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.sessions, params: { hostId, sessions } });
-      for (const [sessionId, epochMoved] of touched) await this.pump(peer.socketId, sessionId, epochMoved);
+      return peer.connection < 0 ? undefined : this.deliverTo(socket, peer, hostId, notices);
     }));
+  }
+
+  /**
+   * One socket's share of the notices: every listing change, and progress and moves of what it
+   * has open. An open Session that changed or moved is pumped. Only people see what a Mac asks: a
+   * Mac following its peers does not (RFD0029).
+   */
+  private async deliverTo(socket: WebSocket, peer: Attachment, hostId: string, notices: HostNotice[]): Promise<void> {
+    const open = new Set(this.rowsOfSocket(peer.socketId).map((row) => row.session_id));
+    const sessions: ClientSession[] = [];
+    /** Each open Session to pump, and whether its epoch moved. */
+    const touched = new Map<string, boolean>();
+    for (const notice of notices) {
+      switch (notice.kind) {
+        case "session":
+          sessions.push(notice.session);
+          if (open.has(notice.session.sessionId)) touched.set(notice.session.sessionId, touched.get(notice.session.sessionId) ?? false);
+          break;
+        case "progress":
+          if (open.has(notice.sessionId))
+            this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.progress, params: { sessionId: notice.sessionId, slot: notice.slot, snapshot: notice.snapshot } });
+          break;
+        case "epoch":
+          // A row already in that epoch (`cut` told it) has nothing to learn.
+          if (open.has(notice.sessionId)) touched.set(notice.sessionId, this.row(peer.socketId, notice.sessionId)?.epoch !== notice.epoch);
+          break;
+        case "presence":
+          this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.presence, params: { online: notice.online, hostGeneration: notice.hostGeneration } });
+          break;
+        case "label":
+          this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.label, params: { label: notice.label } });
+          break;
+        case "elicitationRequested":
+          if (peer.person) this.send(socket, this.requested(notice.elicitation));
+          break;
+        case "elicitationResolved":
+          if (peer.person) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.resolved, params: { hostId, ...notice.resolved } });
+          break;
+      }
+    }
+    if (sessions.length) this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.sessions, params: { hostId, sessions } });
+    for (const [sessionId, epochMoved] of touched) await this.pump(peer.socketId, sessionId, { epochMoved });
   }
 
   // ─── Client requests ───────────────────────────────────────────────────────
 
-  private async answer(socket: WebSocket, peer: Attachment, call: Call): Promise<Reply | null> {
+  private async answer(socket: WebSocket, peer: Attachment, call: Call): Promise<Answer> {
     const id = call.id ?? null;
     const hostId = this.host.hostId();
     if (call.method === CLIENT_METHODS.hello) return this.hello(socket, peer, call);
-    if (peer.connection < 0 || !hostId) return failure(id, -32600, "Say hello first");
+    if (peer.connection < 0 || !hostId) return { reply: failure(id, -32600, "Say hello first") };
     try {
       switch (call.method) {
         case CLIENT_METHODS.open: {
           const params = clientOpenParamsSchema.safeParse(call.params);
-          if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");
-          return success(id, await this.open(peer.socketId, params.data));
+          if (!params.success || params.data.hostId !== hostId) return { reply: failure(id, -32602, "Invalid params") };
+          const opened = await this.open(peer.socketId, params.data);
+          // What the open did not return follows it, in batches.
+          return { reply: success(id, opened), after: () => this.pump(peer.socketId, params.data.sessionId) };
         }
         case CLIENT_METHODS.ack: {
           const params = clientAckParamsSchema.safeParse(call.params);
           if (params.success) await this.ack(peer.socketId, params.data.sessionId, params.data.cursor);
-          return null;
+          return { reply: null };
         }
-        case CLIENT_METHODS.older: {
-          const params = clientOlderParamsSchema.safeParse(call.params);
-          const open = params.success ? this.row(peer.socketId, params.data.sessionId) : undefined;
-          if (!params.success || !open) return failure(id, -32602, "Invalid params");
-          const read = await this.read(open.session_id, { epoch: open.epoch, before: params.data.before, limit: params.data.limit });
-          if (read.kind === "reset") {
-            this.reset(socket, open, read);
-            return success(id, { epoch: read.epoch, records: [], older: null });
-          }
-          return success(id, { epoch: read.epoch, records: read.records, older: read.older });
-        }
+        case CLIENT_METHODS.older:
+          return { reply: await this.older(socket, peer, id, call.params) };
         case CLIENT_METHODS.close: {
           const params = clientCloseParamsSchema.safeParse(call.params);
           if (params.success) this.forgetOpen(peer.socketId, params.data.sessionId);
-          return null;
+          return { reply: null };
         }
-        case CLIENT_METHODS.command: {
-          const params = clientCommandParamsSchema.safeParse(call.params);
-          if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");
-          // A call that throws may have reached the host: its outcome is unknown (RFD0024).
-          const outcome = await this.host.command(params.data.method, params.data.params)
-            .catch((): HostCommandOutcome => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
-          return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
-        }
-        case ELICITATION_METHODS.resolve: {
-          // Only a person answers: a Mac's own credential cannot, for any Mac (RFD0029).
-          if (!peer.person) return failure(id, ELICITATION_ERRORS.notAPerson, "Only a person answers");
-          const params = clientElicitationResolveParamsSchema.safeParse(call.params);
-          const presence = this.host.presence();
-          if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");
-          if (presence.hostGeneration === null) return failure(id, -32005, "Host offline; nothing sent");
-          const { elicitationId, action, sealed, device } = params.data;
-          const outcome = await this.host
-            .resolveElicitation({ target: { hostId, hostGeneration: presence.hostGeneration }, elicitationId, action, ...(sealed ? { sealed } : {}), ...(device ? { device } : {}) })
-            .catch((): HostCommandOutcome => ({ error: { code: -32004, message: "Outcome unknown" } }));
-          return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
-        }
+        case CLIENT_METHODS.command:
+          return { reply: await this.command(hostId, id, call.params) };
+        case ELICITATION_METHODS.resolve:
+          return { reply: await this.resolve(peer, hostId, id, call.params) };
         default:
-          return failure(id, -32601, "Method not found");
+          return { reply: failure(id, -32601, "Method not found") };
       }
     } catch {
-      return failure(id, -32603, "Unavailable; try again");
+      return { reply: failure(id, -32603, "Unavailable; try again") };
     }
+  }
+
+  /** Records just before `before` of a Session the socket has open. */
+  private async older(socket: WebSocket, peer: Attachment, id: Id, raw: unknown): Promise<Reply> {
+    const params = clientOlderParamsSchema.safeParse(raw);
+    const open = params.success ? this.row(peer.socketId, params.data.sessionId) : undefined;
+    if (!params.success || !open) return failure(id, -32602, "Invalid params");
+    const read = await this.read(open.session_id, { epoch: open.epoch, before: params.data.before, limit: params.data.limit });
+    if (read.kind === "reset") {
+      this.reset(socket, open, read);
+      return success(id, { epoch: read.epoch, records: [], older: null });
+    }
+    return success(id, { epoch: read.epoch, records: read.records, older: read.older });
+  }
+
+  /** Runs a command on the Mac. A call that throws may have reached it: its outcome is unknown (RFD0024). */
+  private async command(hostId: string, id: Id, raw: unknown): Promise<Reply> {
+    const params = clientCommandParamsSchema.safeParse(raw);
+    if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");
+    const outcome = await this.host.command(params.data.method, params.data.params)
+      .catch((): HostCommandOutcome => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
+    return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
+  }
+
+  /** A person's answer to what the Mac asks. A Mac's own credential cannot answer, for any Mac (RFD0029). */
+  private async resolve(peer: Attachment, hostId: string, id: Id, raw: unknown): Promise<Reply> {
+    if (!peer.person) return failure(id, ELICITATION_ERRORS.notAPerson, "Only a person answers");
+    const params = clientElicitationResolveParamsSchema.safeParse(raw);
+    const presence = this.host.presence();
+    if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");
+    if (presence.hostGeneration === null) return failure(id, -32005, "Host offline; nothing sent");
+    const { elicitationId, action, sealed, device } = params.data;
+    const outcome = await this.host
+      .resolveElicitation({ target: { hostId, hostGeneration: presence.hostGeneration }, elicitationId, action, ...(sealed ? { sealed } : {}), ...(device ? { device } : {}) })
+      .catch((): HostCommandOutcome => ({ error: { code: -32004, message: "Outcome unknown" } }));
+    return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
   }
 
   /**
@@ -371,20 +410,22 @@ export class HostClients {
    * client is closed, and a hello older than a socket already serving it is refused. Rows whose
    * socket is gone (a reset closed it) are swept.
    */
-  private hello(socket: WebSocket, peer: Attachment, call: Call): Reply | null {
+  private hello(socket: WebSocket, peer: Attachment, call: Call): Answer {
     const id = call.id ?? null;
     const params = clientHostHelloParamsSchema.safeParse(call.params);
-    if (!params.success) return failure(id, -32602, "Invalid params");
-    if (params.data.clientId !== peer.clientId) return failure(id, -32602, "clientId does not match the socket");
-    if (peer.connection >= 0) return failure(id, -32600, "Already said hello");
-    if (!this.host.hostId()) return failure(id, -32005, "Host not connected yet");
+    if (!params.success) return { reply: failure(id, -32602, "Invalid params") };
+    if (params.data.clientId !== peer.clientId) return { reply: failure(id, -32602, "clientId does not match the socket") };
+    if (peer.connection >= 0) return { reply: failure(id, -32600, "Already said hello") };
+    if (!this.host.hostId()) return { reply: failure(id, -32005, "Host not connected yet") };
     for (const other of this.sockets()) {
       const them = this.attachment(other)!;
       if (other === socket || them.clientId !== peer.clientId || them.connection < 0) continue;
       if (them.connection > params.data.connection) {
+        recordApiEvent({ event: "host_client_replaced", outcome: "refused" });
         this.close(socket, 4000, "Replaced");
-        return null;
+        return { reply: null };
       }
+      recordApiEvent({ event: "host_client_replaced", outcome: "replaced" });
       this.close(other, 4000, "Replaced");
     }
     peer.connection = params.data.connection;
@@ -392,7 +433,9 @@ export class HostClients {
     this.sweep();
     recordApiEvent({ event: "host_client_hello" });
     const result: ClientHostHello = { ...this.host.presence(), sessions: this.host.sessions() };
-    return success(id, result);
+    // What the Mac asks follows the index, to people only (RFD0029).
+    const after = peer.person ? () => { for (const elicitation of this.host.elicitations()) this.send(socket, this.requested(elicitation)); } : undefined;
+    return { reply: success(id, result), after };
   }
 
   /**
@@ -453,7 +496,7 @@ export class HostClients {
    * the index's now is made again (staleReadsAreRedone). A batch outstanding for `SYNC.stallMs`
    * is sent again.
    */
-  private async pump(socketId: string, sessionId: string, epochMoved = false, reads = 0): Promise<void> {
+  private async pump(socketId: string, sessionId: string, { epochMoved = false, reads = 0 }: PumpOptions = {}): Promise<void> {
     const socket = this.socket(socketId);
     let open = this.row(socketId, sessionId);
     if (!socket || !open) return;
@@ -480,10 +523,10 @@ export class HostClients {
     if (!read || !current || this.reads.get(this.key(socketId, sessionId)) !== readId) return;
     if (read.kind === "reset") {
       this.reset(socket, current, read);
-      return this.pump(socketId, sessionId, false, reads + 1);
+      return this.pump(socketId, sessionId, { reads: reads + 1 });
     }
     const now = this.host.head(sessionId);
-    if (now?.epoch != null && read.epoch !== null && read.epoch < now.epoch) return this.pump(socketId, sessionId, true, reads + 1);
+    if (now?.epoch != null && read.epoch !== null && read.epoch < now.epoch) return this.pump(socketId, sessionId, { epochMoved: true, reads: reads + 1 });
     if (read.epoch !== null) this.recent.add(sessionId, read.epoch, read.records);
     if (current.sent !== current.acked || read.records.length === 0) {
       if (current.epoch === null && read.epoch !== null) this.update(socketId, sessionId, { epoch: read.epoch });

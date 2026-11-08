@@ -17,6 +17,8 @@ type ApiEvent =
   | { event: "client_open"; records: number; read?: boolean }
   /** A protocol 3 client said hello on a host socket (RFD0032). */
   | { event: "host_client_hello" }
+  /** A client's newer connection closed its older socket, or an older hello was refused (RFD0032). */
+  | { event: "host_client_replaced"; outcome: "replaced" | "refused" }
   | { event: "client_stalled" }
   | { event: "client_follow_failed" }
   /** What a Mac asked its person, and how it ended (RFD0029); never the words. */

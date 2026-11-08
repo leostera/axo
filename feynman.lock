@@ -39,10 +39,9 @@
     "crates/axo-relay/src/pairing.rs#redeem": "cc3048917961",
     "crates/axo-relay/src/pairing.rs#validate_code": "89109dd1a3ed",
     "crates/axo-relay/src/peers.rs#PeersWorker::start": "9212fd71366f",
-    "crates/axo-relay/src/peers/follower.rs#Follower::records": "552c4652fe8b",
+    "crates/axo-relay/src/peers/follower.rs#Follower::records": "77d663936122",
     "crates/axo-relay/src/peers/follower.rs#Follower::reset": "d409c7299b76",
-    "crates/axo-relay/src/peers/follower.rs#Follower::restored": "bcec8a3f2d77",
-    "crates/axo-relay/src/peers/follower.rs#Follower::run": "fe0ffec1eb4f",
+    "crates/axo-relay/src/peers/follower.rs#Follower::restored": "c0ee7517ce31",
     "crates/axo-relay/src/peers/live.rs#PeerLive::restore": "7c5b8b1421d0",
     "crates/axo-relay/src/relay.rs#MAX_RECONNECT_DELAY": "fcebfa978b7d",
     "crates/axo-relay/src/relay.rs#RelayWorker::shutdown": "15939f83d618",
@@ -187,13 +186,15 @@
     "packages/axo-api-worker/src/host-clients.ts#HostClients.closed": "8adbaf66d929",
     "packages/axo-api-worker/src/host-clients.ts#HostClients.committed": "f55bc317d427",
     "packages/axo-api-worker/src/host-clients.ts#HostClients.cut": "3e32cc6ffe89",
-    "packages/axo-api-worker/src/host-clients.ts#HostClients.deliver": "0a62324300c7",
-    "packages/axo-api-worker/src/host-clients.ts#HostClients.hello": "fc44b71398ec",
-    "packages/axo-api-worker/src/host-clients.ts#HostClients.open": "c810c2bce54d",
-    "packages/axo-api-worker/src/host-clients.ts#HostClients.pump": "cd1f24941f2f",
+    "packages/axo-api-worker/src/host-clients.ts#HostClients.deliver": "6f0acff3363d",
+    "packages/axo-api-worker/src/host-clients.ts#HostClients.hello": "f993f2f0323b",
+    "packages/axo-api-worker/src/host-clients.ts#HostClients.open": "990a948ca5cf",
+    "packages/axo-api-worker/src/host-clients.ts#HostClients.pump": "546223d5859c",
     "packages/axo-api-worker/src/host-clients.ts#HostClients.reset": "49a91ac6547e",
     "packages/axo-api-worker/src/host-clients.ts#RecentRecords.add": "7c99e40caedd",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostNotification": "e791d0fe6a2e",
-    "packages/axo-app/src/index.ts#Channel.request": "538b8b142c15"
+    "packages/axo-app/src/index.ts#Channel.request": "538b8b142c15",
+    "crates/axo-relay/src/peers/follower.rs#Follower::follow": "eb74861978e5",
+    "packages/axo-api-worker/src/host-clients.ts#HostClients.deliverTo": "afde06e04094"
   }
 }

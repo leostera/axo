@@ -363,7 +363,7 @@ export const HostDO = defineActor({
       with: [atMost(1)],
       label: "axod sends progress",
       description: "A snapshot of the reply being written arrives and goes to every socket with the Session open.",
-      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostNotification", "packages/axo-api-worker/src/host-clients.ts#HostClients.deliver"],
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostNotification", "packages/axo-api-worker/src/host-clients.ts#HostClients.deliver", "packages/axo-api-worker/src/host-clients.ts#HostClients.deliverTo"],
       when: (s) => s.head < MAX_RECORDS && s.progress?.text !== "more",
       sends: [Progress],
       run(state, _i, ctx) {
