@@ -80,7 +80,7 @@ test("a HostDO ignores the client sockets another release left on it, and closes
 });
 
 /** How many schema steps each object has in this release. */
-const HOST_STEPS = 4;
+const HOST_STEPS = 5;
 const SESSION_STEPS = 3;
 const version = (h: Harness, className: string) =>
   objectRows<{ version: number }>(h, className, "SELECT version FROM schema_version").map((row) => row.version);
@@ -130,4 +130,24 @@ test("a HostDO and a SessionDO apply their schema once, and a newer release's ve
   assert.deepEqual((await sync(daemon, host, transcript, 3)).sessions.map((row) => [row.state, "count" in row && row.count]), [["known", 2]]);
   assert.deepEqual(version(h, "AxoHostDO"), [99]);
   assert.equal(hasTable(h, "AxoHostDO", "client_opens"), false);
+});
+
+test("a heartbeat within SYNC.lastSeenMs of registering leaves the account alone", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const host = await pairHost(h, session);
+  const lastSeen = () => objectRows<{ last_seen_at: number }>(h, "AxoAccountDirectory", `SELECT last_seen_at FROM account_hosts WHERE host_id = '${host.hostId}'`)[0]!.last_seen_at;
+  const daemon = await connectHost(h, session, host);
+  t.after(() => daemon.close());
+  const registered = lastSeen();
+  await new Promise((done) => setTimeout(done, 20));
+  for (let beat = 0; beat < 3; beat++) {
+    const reply = await daemon.call("axo.host.heartbeat", { hostId: host.hostId, hostGeneration: host.hostGeneration });
+    assert.ok("result" in reply, JSON.stringify(reply));
+    assert.equal((reply.result as { lastSeenAt: string }).lastSeenAt, new Date(registered).toISOString());
+  }
+  assert.equal(lastSeen(), registered, "registering touched the account; the heartbeats after it don't");
+  // When it was last touched is in SQLite, so an eviction between heartbeats doesn't lose it.
+  assert.deepEqual(objectRows<{ at: number }>(h, "AxoHostDO", "SELECT at FROM account_touch").map((row) => row.at), [registered]);
 });

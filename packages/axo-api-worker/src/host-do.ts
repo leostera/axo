@@ -152,6 +152,11 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
       acked INTEGER NOT NULL, sent_at REAL NOT NULL, PRIMARY KEY (socket_id, session_id))`);
     sql.exec("CREATE INDEX IF NOT EXISTS client_opens_by_session ON client_opens(session_id)");
   },
+  (sql) => {
+    // When the account last recorded this host as seen, so an eviction doesn't lose the throttle.
+    sql.exec(`CREATE TABLE IF NOT EXISTS account_touch (singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      host_generation TEXT NOT NULL, at REAL NOT NULL, last_seen_at TEXT NOT NULL)`);
+  },
 ];
 
 /**
@@ -173,8 +178,6 @@ export class AxoHostDO extends AxoHostRelay {
   private readonly elicitations = new Map<string, Elicitation>();
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  /** When each connection's heartbeat last reached the account, and what it answered. */
-  private readonly lastTouch = new Map<string, { at: number; reply: { acknowledged: true; lastSeenAt: string } }>();
   /** Commands from ClientDOs waiting for the host's reply, by the id they were sent with. */
   private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `callHost` hops waiting for the daemon's reply, with the socket they were sent on. */
@@ -262,19 +265,31 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   protected override async storeHostRegistration(registration: unknown): Promise<HostSnapshot> {
-    return this.account().registerHost(registration, Date.now());
+    const now = Date.now();
+    const snapshot = await this.account().registerHost(registration, now);
+    // Registering records the host as seen, as a heartbeat's touch does.
+    this.touched(snapshot.hostGeneration, now, snapshot.lastSeenAt);
+    return snapshot;
   }
 
   protected override async storeHostHeartbeat(reference: unknown): Promise<{ acknowledged: true; lastSeenAt: string }> {
     // The account's last-seen time only needs SYNC.lastSeenMs resolution; presence is here (RFD0031).
+    // It is kept in SQLite: kept in memory, every eviction between heartbeats cost a touch.
     const { hostId, hostGeneration } = reference as { hostId: string; hostGeneration: string };
-    const key = `${hostId}:${hostGeneration}`;
-    const last = this.lastTouch.get(key);
-    if (last && Date.now() - last.at < SYNC.lastSeenMs) return last.reply;
-    const reply = await this.account().touchHost(hostId, hostGeneration, Date.now());
-    this.lastTouch.clear();
-    this.lastTouch.set(key, { at: Date.now(), reply });
+    const last = this.ctx.storage.sql.exec<{ host_generation: string; at: number; last_seen_at: string }>(
+      "SELECT host_generation, at, last_seen_at FROM account_touch WHERE singleton = 1").toArray()[0];
+    if (last && last.host_generation === hostGeneration && Date.now() - last.at < SYNC.lastSeenMs)
+      return { acknowledged: true, lastSeenAt: last.last_seen_at };
+    const now = Date.now();
+    const reply = await this.account().touchHost(hostId, hostGeneration, now);
+    this.touched(hostGeneration, now, reply.lastSeenAt);
     return reply;
+  }
+
+  private touched(hostGeneration: string, at: number, lastSeenAt: string): void {
+    this.ctx.storage.sql.exec(`INSERT INTO account_touch (singleton, host_generation, at, last_seen_at) VALUES (1, ?, ?, ?)
+      ON CONFLICT(singleton) DO UPDATE SET host_generation = excluded.host_generation, at = excluded.at, last_seen_at = excluded.last_seen_at`,
+      hostGeneration, at, lastSeenAt);
   }
 
   protected override async storeHostSessions(): Promise<{ storedAt: string }> {

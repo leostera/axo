@@ -36,6 +36,10 @@ RFD0031 took Axo from about 25k Durable Object requests an hour to about 4.3k. H
 
 At about 1.2M requests a month, this is at the 1M included in Workers Paid. It grows with every client and every Session a client follows, because every hop between the record and the client is a billed call.
 
+Measured again on 2026-11-08, by the ops-cost review, the case is stronger. Over the 24 hours to 14:00 UTC, about 112k billable requests a day, or 3.4M a month against the 1M included. Most of it is `AxoClientDO.notify` (about 73k a day, roughly 70% of RPC calls), then SessionDO `read` and `head` (about 10k a day each; `head` is the host-sync handshake) and `append` (4.6k). A busy hour (13:00 UTC) had 18.4k raw requests and about 10.4k billable; an idle one (07:00) about 570 billable. Under protocol 3 what is left is the appends, the account, and incoming frames at 1:20: about 12–15k a day, or 0.4M a month.
+
+`touchHost` was about 2–3k a day where its throttle allows about 300: the throttle was kept in memory and lost on every eviction. It is now kept in the HostDO's SQLite, and registering counts as a touch (`tests/release-p.test.ts`). In idle hours the AccountDirectory and SessionDOs still answer about 130 requests an hour each that no traffic explains; that is not found yet.
+
 Also, each reconnect of axod costs 300 to 600 requests. Its host-sync handshake asks every SessionDO of the Mac for its head (307 Sessions on the main Mac), although the HostDO's index already holds every head.
 
 The shape is the problem. Today a record goes axod → HostDO → SessionDO (append) → HostDO → ClientDO (`notify`) → SessionDO (`read`) → ClientDO → client. Only the first SessionDO call is needed. The HostDO has the record, and the client could be listening on the HostDO itself.
@@ -244,6 +248,7 @@ After each deploy, check that:
 - **More sockets per client.** A client holds one socket per Mac, plus the account socket. Each is a hibernated WebSocket, which costs nothing while quiet. The client handles reconnecting for each one.
 - **The HostDO does more.** It serves every client of its Mac. One person's clients are a handful, far from a single object's limits. An account with many viewers per Mac would need fan-out, which is out of scope here.
 - **Two protocols until the native clients update.** Protocol 2 code stays, tested, for a while.
+- **Cold SessionDOs translate again.** Protocol 3 keeps the HostDO warm, but a SessionDO is touched only to append, so between replies it is often evicted. An append to an evicted SessionDO rebuilds its ATXF stream in an alarm (RFD0035): one more request, and a read of the whole Session. So "one append per record" is slightly low for large Sessions with pauses of minutes: at worst about +4% requests, well inside the included GB-s and rows read.
 - **The fence adds a write.** Every head read during host sync writes the fence on the HostDO and the SessionDO. Head reads happen only for rows that aren't verified, so this is rare.
 
 ## Rationale and alternatives
