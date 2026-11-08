@@ -14,6 +14,12 @@ import { objectRows } from "./storage";
  * Driven through its RPC methods under Miniflare, alarms included.
  */
 
+/** The SessionDO as the HostDO calls it: every write carries the HostDO's fence. */
+type RawStub = Omit<Stub, "append" | "truncate"> & {
+  append(binding: SessionBinding, params: AppendParams, fence: number): Promise<StoreAppendResult>;
+  truncate(binding: SessionBinding, keep: number, chain: string, fence: number): Promise<StoreTruncateResult>;
+};
+
 type Stub = {
   append(binding: SessionBinding, params: AppendParams): Promise<StoreAppendResult>;
   truncate(binding: SessionBinding, keep: number, chain: string): Promise<StoreTruncateResult>;
@@ -29,11 +35,12 @@ const plain = <T>(value: T): T => {
 };
 
 async function sessionObject(h: Harness, binding: SessionBinding = { accountId: crypto.randomUUID(), hostId: crypto.randomUUID(), sessionId: crypto.randomUUID() }): Promise<{ stub: Stub; binding: SessionBinding }> {
-  const namespace = (await h.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY")) as unknown as { idFromName(name: string): unknown; get(id: unknown): Stub };
+  const namespace = (await h.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY")) as unknown as { idFromName(name: string): unknown; get(id: unknown): RawStub };
   const raw = namespace.get(namespace.idFromName(`${binding.accountId}:${binding.hostId}:${binding.sessionId}`));
   const stub: Stub = {
-    append: async (b, p) => plain(await raw.append(b, p)),
-    truncate: async (b, k, c) => plain(await raw.truncate(b, k, c)),
+    // No head read fences these: fence 0 is never behind.
+    append: async (b, p) => plain(await raw.append(b, p, 0)),
+    truncate: async (b, k, c) => plain(await raw.truncate(b, k, c, 0)),
     read: async (b, r) => plain(await raw.read(b, r)),
     atxf: async (b, f, l) => plain(await raw.atxf(b, f, l)),
   };

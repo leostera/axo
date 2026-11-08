@@ -165,7 +165,7 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Commits a batch in one transaction. A batch that starts at or before the count is a retry:
    * its overlap must match what is stored, and only its new tail is added.
    */
-  async append(binding: SessionBinding, params: AppendParams, fence?: number): Promise<StoreAppendResult> {
+  async append(binding: SessionBinding, params: AppendParams, fence: number): Promise<StoreAppendResult> {
     if (!this.owns(binding, true)) throw new Error("Session identity conflict");
     let transcript = this.transcript();
     const reject = (outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"): StoreAppendResult => ({
@@ -254,7 +254,7 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Cuts the transcript back to `keep` records if its chain there is `expectedChain`, starts a
    * new epoch, and records the cut so readers of older epochs learn where to drop to.
    */
-  async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence?: number): Promise<StoreTruncateResult> {
+  async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence: number): Promise<StoreTruncateResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
     const result = this.ctx.storage.transactionSync((): StoreTruncateResult => {
       const transcript = this.transcript();
@@ -460,12 +460,10 @@ export class AxoSessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Whether a write with `fence` comes from before the last head read. A write with none comes
-   * from a HostDO that doesn't fence (older code), and is refused once any head read fenced.
+   * Whether a write with `fence` comes from before the last head read.
    */
-  private fenced(fence: number | undefined): boolean {
-    const current = this.fence();
-    return fence === undefined ? current > 0 : fence < current;
+  private fenced(fence: number): boolean {
+    return fence < this.fence();
   }
 
   private translation(): Translation | undefined {
