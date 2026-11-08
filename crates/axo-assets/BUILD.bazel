@@ -20,4 +20,8 @@ rust_test(
     name = "axo_assets_tests",
     crate = ":axo_assets",
     edition = "2024",
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:sha2",
+    ],
 )
