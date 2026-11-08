@@ -108,6 +108,18 @@ public struct QueuedPrompt: Identifiable, Equatable, Sendable {
   public let text: String
   /// The names of the files that go with it.
   public let attachments: [String]
+  /// Where it shows: after the reply that was being written when it was sent, as the number of
+  /// messages before it, so what the run writes later comes below it rather than it sinking below
+  /// every new reply. Nil until that reply is recorded: it is the newest thing, and goes last.
+  public internal(set) var at: Int?
+
+  public init(commandId: String, delivery: PromptDelivery, text: String, attachments: [String], at: Int? = nil) {
+    self.commandId = commandId
+    self.delivery = delivery
+    self.text = text
+    self.attachments = attachments
+    self.at = at
+  }
 
   public var id: String { commandId }
   /// The same as its pending row's and its user message's.
@@ -149,6 +161,9 @@ public struct ChatTranscript: Equatable, Sendable {
   private var receipt: String?
   /// Prompts the Session's Pi took while busy and has not started on, in the order it took them.
   public private(set) var queued: [QueuedPrompt] = []
+  /// How many messages there were once the first reply held was recorded: where a queued prompt
+  /// from an older page, with no reply after it on that page, goes when the page comes.
+  private var firstReplyEnd: Int?
 
   /// The custom entry the Session's Pi writes just before a client's prompt: its commandId.
   static let receiptEntry = "axo.command"
@@ -182,6 +197,11 @@ public struct ChatTranscript: Equatable, Sendable {
   public mutating func prepend(older page: ChatTranscript) {
     let first = firstCursor ?? .max
     guard page.lastCursor < first, !page.records.isEmpty else { return }
+    // What is held now sits after the page's messages.
+    let shift = page.messages.count
+    for index in queued.indices { queued[index].at = queued[index].at.map { $0 + shift } }
+    let heldFirstReply = firstReplyEnd.map { $0 + shift }
+    firstReplyEnd = page.firstReplyEnd ?? heldFirstReply
     var older = page.messages
     for index in older.indices {
       if let callID = older[index].tool?.callID, let result = results[callID] { older[index].tool?.fill(result) }
@@ -191,8 +211,14 @@ public struct ChatTranscript: Equatable, Sendable {
     results.merge(page.results) { newer, _ in newer }
     recordedReplies.formUnion(page.recordedReplies)
     delivered.formUnion(page.delivered)
-    // What waited then may have been delivered since.
-    queued = page.queued.filter { !delivered.contains($0.commandId) } + queued
+    // What waited then may have been delivered since; one the page has no reply after goes after
+    // the first reply held now, recorded while it waited.
+    let held = page.queued.filter { !delivered.contains($0.commandId) }.map { prompt in
+      var prompt = prompt
+      if prompt.at == nil, let end = heldFirstReply { prompt.at = end }
+      return prompt
+    }
+    queued = held + queued
     if lastUserEntry == nil { lastUserEntry = page.lastUserEntry }
   }
 
@@ -208,6 +234,7 @@ public struct ChatTranscript: Equatable, Sendable {
     lastUserEntry = nil
     receipt = nil
     queued = []
+    firstReplyEnd = nil
     append(kept)
   }
 
@@ -263,6 +290,13 @@ public struct ChatTranscript: Equatable, Sendable {
 
   private mutating func apply(_ record: ClientRecord) {
     let entry = Self.entry(of: record)
+    // A receipt followed by anything but its user message ran as a command (`/axo-share`), which
+    // writes none: nothing more of it will come.
+    if let taken = receipt, !Self.mayFollowReceipt(entry) {
+      delivered.insert(taken)
+      queued.removeAll { $0.commandId == taken }
+      receipt = nil
+    }
     if case .receipt(let commandId) = entry {
       receipt = commandId
       return
@@ -295,6 +329,13 @@ public struct ChatTranscript: Equatable, Sendable {
       live = []
       if let timestamp { recordedReplies.insert(timestamp) }
     }
+    defer {
+      if role == "assistant" {
+        // The reply being written when they were sent is recorded: they go after it.
+        if firstReplyEnd == nil { firstReplyEnd = messages.count }
+        for index in queued.indices where queued[index].at == nil { queued[index].at = messages.count }
+      }
+    }
     for (index, piece) in Self.pieces(of: message, role: role).enumerated() {
       var tool = piece.tool
       if let callID = tool?.callID {
@@ -307,6 +348,16 @@ public struct ChatTranscript: Equatable, Sendable {
           timestamp: timestamp, tool: tool, images: piece.images,
           replyKey: role == "assistant"
             ? ChatMessage.replyKey(timestamp: timestamp, index: index) : index == 0 ? promptKey : promptKey.map { "\($0)#\(index)" }))
+    }
+  }
+
+  /// What can come between a receipt and its user message: a system message, or an entry that
+  /// shows nothing (a model change, say).
+  private static func mayFollowReceipt(_ entry: Entry) -> Bool {
+    switch entry {
+    case .other: true
+    case .message(_, let message): ["user", "system"].contains(message["role"]?.stringValue)
+    case .receipt, .queued: false
     }
   }
 
