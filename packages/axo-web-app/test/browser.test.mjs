@@ -376,6 +376,11 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         reply({ label });
         return;
       }
+      // This cloud speaks protocol 2, as one before RFD0032 does: the app falls back to it.
+      if (call.method === "axo.client.hello" && call.params.protocolVersion !== 2) {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "Invalid params" } }));
+        return;
+      }
       if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
         methods.push(call.method);
         reply({ hosts: [clientHost, studioHost], sessions });

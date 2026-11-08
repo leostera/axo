@@ -749,7 +749,7 @@ export const Person = defineActor({
     outcomeUnknown: { on: OutcomeUnknown, description: "The terminal says the command may or may not have run.", run: (s, m) => void s.answered.push(m.request) },
     requestTimeout: {
       description: "No answer after ten seconds; the app gives up on the command.",
-      sources: ["packages/axo-app/src/index.ts#AccountConnection.request"],
+      sources: ["packages/axo-app/src/index.ts#Channel.request"],
       run(s) { for (const r of s.asked) if (!s.answered.includes(r)) { s.answered.push(r); s.timedOut.push(r); } },
     },
     // Faults: what the network and restarts may do here.

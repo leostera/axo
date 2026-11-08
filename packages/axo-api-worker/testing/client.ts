@@ -131,6 +131,20 @@ export class Peer {
     });
     return Peer.open(socket);
   }
+  /** A client's socket on one host, served by that host's HostDO (RFD0032, protocol 3). */
+  static async connectHostClient(url: string, hostId: string, clientId: string, headers: Record<string, string>) {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/account/hosts/${hostId}/client?clientId=${clientId}`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket);
+  }
+  /** Whether the server closed this socket, and how; null while it is open. */
+  closedWith(): Promise<{ code: number; reason: string }> {
+    if (this.socket.readyState === WebSocket.CLOSED) return Promise.resolve({ code: -1, reason: "already closed" });
+    return new Promise((resolve) => this.socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() })));
+  }
   /** A client's one socket, served by its ClientDO (RFD0018). */
   static async connectClient(url: string, clientId: string, headers: Record<string, string>) {
     const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/account/client?clientId=${clientId}`, {

@@ -13,7 +13,10 @@ type ApiEvent =
   | { event: "session_append"; outcome: "committed" | "gap" | "conflict" | "epoch" | "invalid" | "fenced"; records: number }
   | { event: "session_truncate"; outcome: "truncated" | "mismatch" | "fenced" }
   | { event: "notice_batch"; subscribers: number; notices: number }
-  | { event: "client_open"; records: number }
+  /** `read`: whether the open read the SessionDO; a protocol 3 open at the head reads nothing (RFD0032). */
+  | { event: "client_open"; records: number; read?: boolean }
+  /** A protocol 3 client said hello on a host socket (RFD0032). */
+  | { event: "host_client_hello" }
   | { event: "client_stalled" }
   | { event: "client_follow_failed" }
   /** What a Mac asked its person, and how it ended (RFD0029); never the words. */

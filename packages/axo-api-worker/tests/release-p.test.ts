@@ -79,6 +79,9 @@ test("a HostDO ignores the client sockets another release left on it, and closes
   assert.equal((await sync(daemon, host, transcript, 3)).sessions.length, 1);
 });
 
+/** How many schema steps each object has in this release. */
+const HOST_STEPS = 4;
+const SESSION_STEPS = 3;
 const version = (h: Harness, className: string) =>
   objectRows<{ version: number }>(h, className, "SELECT version FROM schema_version").map((row) => row.version);
 const hasTable = (h: Harness, className: string, table: string) =>
@@ -96,8 +99,8 @@ test("a HostDO and a SessionDO apply their schema once, and a newer release's ve
   const appended = await daemon.call("axo.host.session.append", { sessionId: transcript.sessionId, epoch: 1, from: 1, header: transcript.transcript.header, records: transcript.records(1) });
   assert.ok("result" in appended, JSON.stringify(appended));
   daemon.close();
-  assert.deepEqual(version(h, "AxoHostDO"), [3]);
-  assert.deepEqual(version(h, "AxoSessionDO"), [3]);
+  assert.deepEqual(version(h, "AxoHostDO"), [HOST_STEPS]);
+  assert.deepEqual(version(h, "AxoSessionDO"), [SESSION_STEPS]);
   assert.ok(hasTable(h, "AxoHostDO", "client_opens"));
 
   // An object from before the version existed has the tables but no version: it runs every
@@ -113,8 +116,8 @@ test("a HostDO and a SessionDO apply their schema once, and a newer release's ve
   const second = await daemon.call("axo.host.session.append", { sessionId: transcript.sessionId, epoch: 1, from: 2, records: transcript.records(2) });
   assert.ok("result" in second && (second.result as { outcome: string }).outcome === "committed", JSON.stringify(second));
   daemon.close();
-  assert.deepEqual(version(h, "AxoHostDO"), [3]);
-  assert.deepEqual(version(h, "AxoSessionDO"), [3]);
+  assert.deepEqual(version(h, "AxoHostDO"), [HOST_STEPS]);
+  assert.deepEqual(version(h, "AxoSessionDO"), [SESSION_STEPS]);
   assert.ok(hasTable(h, "AxoHostDO", "client_opens"));
 
   // A version past this release's steps was written by a newer release: nothing runs, so a table

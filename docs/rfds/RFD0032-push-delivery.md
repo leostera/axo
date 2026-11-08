@@ -1,7 +1,7 @@
 # RFD0032 - Axo: Push Delivery
 
 - Feature Name: `axo-push-delivery`
-- Status: Accepted; host sync from the index and release P are implemented (2026-11-08)
+- Status: Accepted; host sync from the index, release P and release 3 for the web app are implemented (2026-11-08)
 - Author: leostera
 - Start Date: 2026-11-05
 - Updated: 2026-11-08
@@ -185,6 +185,17 @@ Ships first, and is the oldest release a rollback may go to once protocol 3 has 
   - the account socket answers `hello` 3 with invalid params (old code), or
   - the host socket is refused or closes before its index arrives.
 - Protocol 2 frames keep their exact shape. The web app's schemas are strict, so a field added for protocol 3 would break every tab still on protocol 2 (the model's `frozenWire`).
+
+**Built (2026-11-08).**
+
+- `src/host-clients.ts` `HostClients` serves protocol 3's client sockets on the HostDO. The Worker's `GET /api/v1/account/hosts/:host/client?clientId=` checks that the signed-in account owns the host (one account call, as protocol 2's `subscribe` was) and forwards with `X-Axo-Role: direct-client`. The relay base leaves such sockets to the subclass (`keeps`).
+- The host socket carries protocol 2's frames unchanged (`sessions`, `session.open`, `records`, `ack`, `older`, `progress`, `reset`, `close`, `command`, `axo.elicitation.*`), plus `hello { protocolVersion: 3, clientId, connection }`, whose answer is the index and presence, and two notifications: `axo.client.host.presence` and `axo.client.host.label`.
+- One `pump` per socket and Session sends the next batch once the last is acknowledged: from `RecentRecords` when they hold it (the append just committed puts its records there first), else read from the SessionDO. A cut this HostDO made resets the rows in the epoch before it with no read; a row further behind reads once in its own epoch. A failed read is made once more at once; a read answered in an older epoch than the index's is made again.
+- `client_opens` is created again by a fourth schema step, with a nullable epoch (a Session with no records yet) and `sent_at` for `SYNC.stallMs`. Release P's table was never written.
+- The account socket answers `hello 3` with the hosts, each listed offline, and no Sessions; it follows no HostDO, and refuses what the host sockets carry with -32601.
+- `@axo/app`'s `AccountConnection` speaks protocol 3 by default, behind the same calls and events. It opens a socket per host, merges each one's presence and name into the host list, routes each call to the host it names, and closes the whole connection when any socket closes. It falls back to protocol 2 when the account socket refuses `hello 3` with -32602 or a host socket fails before its index arrives. Each connection is numbered above the last, from the clock, so a late hello of an old one is refused.
+- axod's peer sync and the native apps stay on protocol 2 for now.
+- Tests: `tests/push-delivery.test.ts` against the Worker, with `tests/fixtures/counting-reads.ts` counting SessionDO reads: an open at the head and every pushed record read nothing; a tab that opens behind reads once; a cut arrives as a reset with no read; protocol 2 and 3 tabs both get the record and protocol 2's frames keep their keys; commands, newest-connection-wins, ownership, reconnect after a reset, what a Mac asks, and presence. `packages/axo-app/test/remote-api.test.mjs` covers routing, merging and both fallbacks.
 
 ### Order
 

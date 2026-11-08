@@ -242,6 +242,14 @@ export class AxoHostRelay extends DurableObject<Env> {
   protected owns(attachment: unknown): boolean {
     return peerSchema.safeParse(attachment).success;
   }
+  /**
+   * Whether a subclass serves a socket with this attachment itself (protocol 3's client sockets on
+   * a HostDO). The relay leaves it alone: it is neither closed nor one of its peers. Called from
+   * the constructor, so an override may use no fields.
+   */
+  protected keeps(_attachment: unknown): boolean {
+    return false;
+  }
   private isOwned(socket: WebSocket): boolean {
     return this.owns(socket.deserializeAttachment());
   }
@@ -250,7 +258,7 @@ export class AxoHostRelay extends DurableObject<Env> {
   }
   private closeUnowned(): void {
     for (const socket of this.ctx.getWebSockets()) {
-      if (this.isOwned(socket)) continue;
+      if (this.isOwned(socket) || this.keeps(socket.deserializeAttachment())) continue;
       recordApiEvent({ event: "connection_closed", role: "unowned", code: UNOWNED_CLOSE.code });
       try {
         socket.close(UNOWNED_CLOSE.code, UNOWNED_CLOSE.reason);

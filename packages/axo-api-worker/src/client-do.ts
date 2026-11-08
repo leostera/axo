@@ -62,6 +62,9 @@ function peerHostOf(clientId: string): string | null {
   return clientId.startsWith("host-") ? clientId.slice("host-".length) : null;
 }
 
+/** What a protocol 3 client asks of its account socket (RFD0032). */
+const PROTOCOL_3_METHODS = new Set<string>([CLIENT_METHODS.hello, CLIENT_METHODS.refresh, CLIENT_METHODS.renameHost]);
+
 /** Frames a client may send per second; acknowledgements count. */
 const FRAMES_PER_SECOND = 60;
 /** The largest message a client may send, reassembled. */
@@ -73,6 +76,11 @@ const attachmentSchema = z.object({
   expiresAt: z.number(),
   window: z.number(),
   calls: z.number(),
+  /**
+   * The protocol its hello asked for. In protocol 3 (RFD0032) this socket lists the account's
+   * hosts and nothing else: the client opens a socket on each host's HostDO for the rest.
+   */
+  protocol: z.union([z.literal(2), z.literal(3)]).default(2),
 }).strict();
 type Attachment = z.infer<typeof attachmentSchema>;
 
@@ -206,6 +214,10 @@ export class AxoClientDO extends DurableObject<Env> {
   async hostsChanged(): Promise<boolean> {
     const socket = this.socket();
     if (!socket || !this.identity()) return false;
+    if (this.peer(socket)?.protocol === 3) {
+      this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.hosts, params: { hosts: await this.listHosts() } });
+      return true;
+    }
     await this.followHosts(socket, false);
     this.sendElicitations(socket);
     return true;
@@ -269,16 +281,23 @@ export class AxoClientDO extends DurableObject<Env> {
 
   private async receive(socket: WebSocket, peer: Attachment, call: Call): Promise<Reply | null> {
     const id = call.id ?? null;
+    if (peer.protocol === 3 && !PROTOCOL_3_METHODS.has(call.method)) return call.id === undefined ? null : failure(id, -32601, "Method not found; protocol 3 sends it to the host's socket");
     try {
       switch (call.method) {
         case CLIENT_METHODS.hello: {
           const params = clientHelloParamsSchema.safeParse(call.params);
           if (!params.success) return failure(id, -32602, "Invalid params");
           if (params.data.clientId !== peer.clientId) return failure(id, -32602, "clientId does not match the socket");
+          if (params.data.protocolVersion === 3) {
+            peer.protocol = 3;
+            socket.serializeAttachment(peer);
+            return success(id, { hosts: await this.listHosts(), sessions: [] });
+          }
           const sessions = await this.followHosts(socket, true);
           return success(id, { hosts: this.hosts(), sessions });
         }
         case CLIENT_METHODS.refresh: {
+          if (peer.protocol === 3) return success(id, { hosts: await this.listHosts(), sessions: [] });
           const sessions = await this.followHosts(socket, true);
           return success(id, { hosts: this.hosts(), sessions });
         }
@@ -339,7 +358,8 @@ export class AxoClientDO extends DurableObject<Env> {
         }
         case CLIENT_METHODS.renameHost: {
           const params = clientHostRenameParamsSchema.safeParse(call.params);
-          if (!params.success || !this.host(params.data.hostId)) return failure(id, -32602, "Invalid params");
+          // In protocol 3 no host is followed here; the account knows which are its own.
+          if (!params.success || (peer.protocol !== 3 && !this.host(params.data.hostId))) return failure(id, -32602, "Invalid params");
           const label = await this.account().renameHost(params.data.hostId, params.data.name);
           if (label === null) return failure(id, -32602, "Invalid params");
           this.ctx.storage.sql.exec("UPDATE hosts SET label = ? WHERE host_id = ?", label, params.data.hostId);
@@ -451,6 +471,15 @@ export class AxoClientDO extends DurableObject<Env> {
     const binding = { accountId, hostId: open.host_id, sessionId: open.session_id };
     const stub = this.ctx.exports.AxoSessionDO.getByName(sessionDOName(accountId, open.host_id, open.session_id)) as unknown as SessionStub;
     return stub.read(binding, request);
+  }
+
+  /**
+   * The account's hosts, in protocol 3: the account remembers this client and says when they
+   * change (RFD0031). Presence is the host sockets' to tell, so every host is listed offline.
+   */
+  private async listHosts(): Promise<ClientHost[]> {
+    const self = peerHostOf(this.identity()!.clientId);
+    return (await this.account().clientHosts(this.name())).filter((host) => host.hostId !== self).map((host) => ({ ...host, online: false }));
   }
 
   /**
