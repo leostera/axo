@@ -156,7 +156,7 @@ A row is verified only by an answer that carries the SessionDO's fence. An answe
 
 ### Mac peers (RFD0022)
 
-axod's peer sync connects to each other Mac's HostDO with its host credential (`/api/v1/accounts/:account/hosts/:host/peers` gains the HostDO target), and follows the index. It opens a Session only to show it in the sidebar's detail or to archive it (RFD0027). When it does, it opens with `have`, so a Session it already holds costs nothing.
+axod's peer sync connects to each other Mac's HostDO with its host credential (`/api/v1/accounts/:account/hosts/:host/peers/:target/client`), and follows the index. It still keeps a copy of every Session that isn't archived (RFD0022), but it opens each one with `have`, so a Session it already holds to the head costs no read. Commands go to the HostDO of the Mac they name. This Mac's own HostDO is opened only to fetch back an archived Session (RFD0027).
 
 ### Cost
 
@@ -199,14 +199,16 @@ Ships first, and is the oldest release a rollback may go to once protocol 3 has 
 - The account socket answers `hello 3` with the hosts, each listed offline, and no Sessions; it follows no HostDO, and refuses what the host sockets carry with -32601.
 - `@axo/app`'s `AccountConnection` speaks protocol 3 by default, behind the same calls and events. It opens a socket per host, merges each one's presence and name into the host list, routes each call to the host it names, and closes the whole connection when any socket closes. It falls back to protocol 2 when the account socket refuses `hello 3` with -32602 or a host socket fails before its index arrives. Each connection is numbered above the last, from the clock, so a late hello of an old one is refused.
 - A paired Mac reaches another Mac's HostDO at `GET /api/v1/accounts/:account/hosts/:host/peers/:target/client`, signed in with its host credential as `/peers` is, and checked against the account's hosts; its own host is allowed, for reading back its archived Sessions (RFD0027). Its socket is not a person's (`person: false` in the attachment): it never hears what a Mac asks, and its answers are refused with `notAPerson` (RFD0029).
-- axod's peer sync and the native apps stay on protocol 2 until they move to these routes.
+- axod's peer sync speaks protocol 3 (`crates/axo-relay/src/peers/follower.rs`). The account socket says `hello 3` and lists the Macs; the follower opens a socket per Mac on the peer route (`peers/socket.rs`: one task per socket, each rate-limited to 30 frames a second), merges each HostDO's presence and name into `peers.json`, stamps the HostDO's rows with its Mac, and routes opens, acknowledgements, closes and commands by Mac. Any socket closing ends the connection, which reconnects. A connection that fails before every Mac has said hello falls back to protocol 2 for ten minutes (`RELAYED_AFTER_REFUSAL`), then tries 3 again; one that fails to connect at all doesn't count, so a network outage never demotes it.
+- The native apps stay on protocol 2 until they move to the client route.
+- Tests: `tests/axod-peers.test.ts` runs the real axod against the Worker. It checks that axod reaches protocol 3 (`event=peers.direct_ready`), keeps the copies and fetches its own archived Session back, and that a command reaches the Mac it names and is answered. With `tests/fixtures/without-peer-route.ts`, a Worker without the peer route, it falls back to protocol 2 and keeps the copy.
 - Tests: `tests/push-delivery.test.ts` against the Worker, with `tests/fixtures/counting-reads.ts` counting SessionDO reads: an open at the head and every pushed record read nothing; a tab that opens behind reads once; a cut arrives as a reset with no read; protocol 2 and 3 tabs both get the record and protocol 2's frames keep their keys; commands, newest-connection-wins, ownership, reconnect after a reset, what a Mac asks, and presence. `packages/axo-app/test/remote-api.test.mjs` covers routing, merging and both fallbacks.
 
 ### Order
 
 1. Deploy release P from `main`. Wait until every HostDO has adopted it: axod's heartbeats wake each HostDO within seconds, and a reset follows within 5 minutes.
 2. Deploy release 3. Clients move to protocol 3 as they reconnect. The deploy itself disconnects no one, except objects that the deadline resets.
-3. Update axod's peer sync and the native apps to protocol 3 in their own releases. Until then they use protocol 2 against the same HostDO index.
+3. Update axod's peer sync (done) and the native apps to protocol 3 in their own releases. Until then they use protocol 2 against the same HostDO index.
 4. Remove protocol 2 only after no client has said `hello` 2 for a set period. That is a later RFD.
 
 ### Rolling back

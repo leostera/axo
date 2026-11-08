@@ -58,6 +58,11 @@ impl RelayEndpoint {
         self.host_socket_url(account_id, host_id, "peers")
     }
 
+    /// A Mac's socket on another Mac's HostDO, to follow its Sessions (RFD0032, protocol 3).
+    pub(crate) fn peer_host_url(&self, account_id: &str, host_id: &str, target_id: &str) -> Url {
+        self.host_socket_url(account_id, host_id, &format!("peers/{target_id}/client"))
+    }
+
     fn host_socket_url(&self, account_id: &str, host_id: &str, route: &str) -> Url {
         let mut url = self.at(&format!(
             "/api/v1/accounts/{account_id}/hosts/{host_id}/{route}"
