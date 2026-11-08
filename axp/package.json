@@ -8,7 +8,7 @@
     "examples": "node scripts/examples.ts"
   },
   "devDependencies": {
-    "@leostera/atxf": "0.2.0",
+    "@leostera/atxf": "0.3.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1"
   }
