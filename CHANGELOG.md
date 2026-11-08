@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.38 (Mac app build 309, axod 61)
+
+### Changed
+
+- A Mac follows your other Macs' Sessions straight from each Mac's cloud host, instead of through the account. A reconnect costs one hello per Mac, and a Session whose copy is already current opens without reading anything. If the cloud can't serve that yet, the Mac follows through the account as before, and tries again ten minutes later.
+
 ## 0.37 (Mac app build 308, axod 60)
 
 ### Changed
