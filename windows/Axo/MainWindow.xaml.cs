@@ -6,6 +6,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
+using System.Windows.Data;
+using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace Axo;
@@ -13,7 +15,9 @@ namespace Axo;
 public partial class MainWindow : Window
 {
     readonly DaemonClient daemon = new();
-    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(300) };
+    readonly CancellationTokenSource lifetime = new();
+    readonly Preferences preferences = Preferences.Load();
+    readonly DispatcherTimer sidebarClock = new() { Interval = TimeSpan.FromSeconds(30) };
     readonly Dictionary<string, MessageView> messageIndex = [];
     readonly Dictionary<string, ComboBox> questionInputs = [];
     readonly Dictionary<string, string> drafts = [];
@@ -24,32 +28,89 @@ public partial class MainWindow : Window
     long messageCursor;
     ulong eventCursor;
     bool refreshing, polling, sending, closed;
-    int ticks;
+    string? subscription;
     JsonElement? pendingRequest;
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
-        timer.Tick += async (_, _) => await PollAsync();
+        preferences.Apply();
+#pragma warning disable WPF0001
+        // The workbench supplies its own title-bar drag strip; Fluent's automatic
+        // title-bar layer would paint over the native application menus.
+        ThemeMode = System.Windows.ThemeMode.None;
+#pragma warning restore WPF0001
+        var view = CollectionViewSource.GetDefaultView(Sessions); view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(SessionView.Group)));
+        ApplySidebar();
+        EmbeddedTerminal.Failed += ShowError;
+        SetupTray();
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += SystemThemeChanged;
+        sidebarClock.Tick += (_, _) => { if (!SessionList.IsMouseOver) FilterSessions(); };
     }
 
     async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Opacity = 0;
+        var splash = new LaunchSplash(); splash.Show();
         try
         {
             await daemon.EnsureStartedAsync();
-            var negotiation = await daemon.CallAsync("axo.protocol.negotiate", new { protocolVersion = 1 });
-            if (!negotiation.GetProperty("methods").EnumerateArray().Any(m => m.GetString() == "axo.session.open"))
-                throw new InvalidOperationException("This daemon does not support the Windows Codex client.");
+            var negotiation = await daemon.CallAsync("axo.protocol.negotiate", new { protocolVersion = 2 });
+            var methods = negotiation.GetProperty("methods").EnumerateArray().Select(m => m.GetString()).ToHashSet();
+            if (!methods.Contains("axo.terminal.create") || !methods.Contains("axo.relay.link"))
+                throw new InvalidOperationException("This daemon predates the Windows workbench and relay support. Use the matching Axo/axod build; running sessions were left in place.");
             DaemonStatus.Text = "●  axod is running";
+            subscription = (await daemon.CallAsync("axo.session.subscribe", new { includeTerminalOutput = true })).GetProperty("subscriptionId").GetString();
             await RefreshCatalogAsync();
-            timer.Start();
+            ApplyRelayStatus(await daemon.CallAsync("axo.relay.status"));
+            _ = CatalogEventsAsync();
+            sidebarClock.Start();
+            await splash.ReadyAsync();
         }
         catch (Exception error) { ShowError(error.Message); DaemonStatus.Text = "Daemon unavailable"; }
+        finally { Opacity = 1; splash.Close(); Activate(); }
     }
 
-    void OnClosing(object? sender, CancelEventArgs e) { closed = true; timer.Stop(); }
+    void OnClosing(object? sender, CancelEventArgs e) { if (!closed) { e.Cancel = true; Hide(); } }
+
+    async Task CatalogEventsAsync()
+    {
+        while (!lifetime.IsCancellationRequested)
+        {
+            try
+            {
+                if (subscription is null)
+                {
+                    subscription = (await daemon.CallAsync("axo.session.subscribe", new { includeTerminalOutput = true }, lifetime.Token)).GetProperty("subscriptionId").GetString();
+                    await RefreshCatalogAsync();
+                    ApplyRelayStatus(await daemon.CallAsync("axo.relay.status"));
+                }
+                var batch = await daemon.CallAsync("axo.session.events.next", new { subscriptionId = subscription, timeoutMs = 25000, maxEvents = 128 }, lifetime.Token);
+                bool catalog = false, agent = false;
+                foreach (var item in batch.GetProperty("events").EnumerateArray())
+                {
+                    var type = item.GetProperty("type").GetString();
+                    if (type is "session.snapshot" or "session.removed" or "workspace.changed") catalog = true;
+                    else if (type == "subscription.lagged") { catalog = true; agent = true; }
+                    else if (type == "relay.status") ApplyRelayStatus(item.GetProperty("status"));
+                    else if (type == "terminal.output") EmbeddedTerminal.Output(item);
+                    else if (type == "pi.event" && item.GetProperty("sessionId").GetString() == selected && item.GetProperty("name").GetString() == "codex.event") agent = true;
+                }
+                if (catalog) await RefreshCatalogAsync();
+                if (agent) await PollAsync();
+                UpdateTray();
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
+            catch (Exception error)
+            {
+                DaemonStatus.Text = "Reconnecting…"; ShowError(error.Message);
+                if (subscription is not null) { try { await daemon.CallAsync("axo.session.unsubscribe", new { subscriptionId = subscription }); } catch { } }
+                subscription = null;
+                try { await Task.Delay(1500, lifetime.Token); } catch (OperationCanceledException) { break; }
+            }
+        }
+    }
 
     async Task RefreshCatalogAsync()
     {
@@ -74,12 +135,14 @@ public partial class MainWindow : Window
 
     void FilterSessions()
     {
-        var workspace = WorkspacePicker.SelectedItem as WorkspaceView;
-        var filtered = allSessions.Where(s => s.WorkspaceId == workspace?.Id).ToList();
+        foreach (var s in allSessions) s.Pinned = preferences.Pinned.Contains(s.Id);
+        var filtered = allSessions.OrderBy(s => s.GroupOrder).ThenBy(s => s.Pinned ? preferences.Pinned.IndexOf(s.Id) : 0).ThenBy(s => s.Group == "Active" ? s.Name : "", StringComparer.CurrentCultureIgnoreCase).ThenByDescending(s => s.LastActive).ToList();
+        EmptySidebar.Visibility = filtered.Count == 0 && !preferences.SidebarCollapsed ? Visibility.Visible : Visibility.Collapsed;
         // Keep the selected object and avoid rebuilding ListBox selection on every status poll.
         if (Sessions.Select(s => s.Id).SequenceEqual(filtered.Select(s => s.Id)))
         {
             foreach (var item in Sessions) item.Update(filtered.First(s => s.Id == item.Id));
+            CollectionViewSource.GetDefaultView(Sessions).Refresh();
             return;
         }
         var previous = selected;
@@ -107,6 +170,7 @@ public partial class MainWindow : Window
         selected = session.Id;
         Composer.Text = drafts.GetValueOrDefault(selected, "");
         var id = selected;
+        EmbeddedTerminal.Detach();
         messageCursor = 0; eventCursor = 0; messageIndex.Clear(); Messages.Clear();
         SessionTitle.Text = session.Name; WorkspacePath.Text = session.Directory;
         Welcome.Visibility = Visibility.Collapsed; ChatScroll.Visibility = Visibility.Visible;
@@ -122,6 +186,7 @@ public partial class MainWindow : Window
             if (selected != id || closed) return;
             UpdateStatus(snapshot.GetProperty("status").GetString() ?? "ready");
             ApplyPending(snapshot.GetProperty("pendingRequests"));
+            await AttachTerminalAsync(id);
             Composer.Focus();
         }
         catch (Exception error) { if (selected == id) { ShowError(error.Message); ActivityText.Text = "Connection failed. Use ••• → Reconnect to retry."; } }
@@ -136,8 +201,9 @@ public partial class MainWindow : Window
         Welcome.Visibility = Visibility.Visible;
         ChatScroll.Visibility = Visibility.Collapsed;
         ApprovalPanel.Visibility = Visibility.Collapsed;
-        SessionTitle.Text = "A place to work with Codex";
-        WorkspacePath.Text = "Open a folder to start a session.";
+        SessionTitle.Text = "Axo Terminal";
+        WorkspacePath.Text = "";
+        EmbeddedTerminal.Detach(); SetTerminalVisible(false);
     }
 
     async Task LoadMessagesAsync(string id)
@@ -164,7 +230,6 @@ public partial class MainWindow : Window
         polling = true;
         try
         {
-            if (++ticks % 7 == 0) await RefreshCatalogAsync();
             var id = selected;
             if (id is null) return;
             var result = await daemon.CallAsync("axo.session.events.poll", new { sessionId = id, after = eventCursor });
@@ -247,11 +312,13 @@ public partial class MainWindow : Window
     void UpdateStatus(string status)
     {
         var working = status is "working" or "needsAttention";
-        ActivityText.Text = status switch { "working" => "Codex is working…", "needsAttention" => "Codex is waiting for your input.", "unavailable" => "Codex disconnected. Use ••• → Reconnect.", _ => Messages.Count > 0 ? "Ready for your next message." : "Tell Codex what you would like to build." };
+        ActivityText.Text = status switch { "working" => "Codex · working…", "needsAttention" => "Codex · needs input", "unavailable" => "Codex · disconnected", _ => "Codex" };
         Composer.IsEnabled = selected is not null && status != "unavailable";
         SendButton.IsEnabled = Composer.IsEnabled && !working && !sending;
         StopButton.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
-        if (SessionList.SelectedItem is SessionView session) session.StatusLabel = "Codex · " + SessionView.ReadableStatus(status);
+        if (SessionList.SelectedItem is SessionView session) session.Status = status;
+        Title = (SessionList.SelectedItem as SessionView)?.Name is string name ? name + " — Axo Terminal" : "Axo Terminal";
+        UpdateTray();
     }
 
     void ApplyPending(JsonElement requests)
@@ -299,12 +366,13 @@ public partial class MainWindow : Window
     {
         var picker = new OpenFolderDialog { Title = "Open a workspace in Axo" };
         if (picker.ShowDialog(this) != true) return;
+        var creation = new WorkspaceNameSheet(picker.FolderName) { Owner = this };
+        if (creation.ShowDialog() != true) return;
         try
         {
             HideError();
-            var folder = picker.FolderName;
-            var name = System.IO.Path.GetFileName(folder.TrimEnd(System.IO.Path.DirectorySeparatorChar));
-            if (string.IsNullOrEmpty(name)) name = folder;
+            var folder = creation.Directory;
+            var name = creation.WorkspaceName;
             var result = await daemon.CallAsync("axo.workspace.create", new { name, directoryPath = folder });
             await RefreshCatalogAsync();
             var workspace = result.GetProperty("workspace").GetProperty("workspaceId").GetString();
@@ -354,7 +422,7 @@ public partial class MainWindow : Window
     async void OpenTerminal(object sender, RoutedEventArgs e)
     {
         if (selected is null) return;
-        try { await daemon.CallAsync("axo.terminal.open", new { sessionId = selected }); }
+        try { await AttachTerminalAsync(selected); EmbeddedTerminal.Focus(); }
         catch (Exception error) { ShowError(error.Message); }
     }
     async void Approve(object sender, RoutedEventArgs e) => await RespondAsync("accept");
@@ -375,6 +443,10 @@ public partial class MainWindow : Window
     {
         if (selected is null) return;
         var menu = new ContextMenu();
+        var pin = new MenuItem { Header = preferences.Pinned.Contains(selected) ? "Unpin" : "Pin" };
+        pin.Click += (_, _) => { if (selected is null) return; if (preferences.Pinned.Contains(selected)) preferences.Pinned.Remove(selected); else preferences.Pinned.Add(selected); preferences.Save(); FilterSessions(); };
+        var copy = new MenuItem { Header = "Copy Session Info" }; copy.Click += (_, _) => Clipboard.SetText($"Session: {selected}\n{WorkspacePath.Text}\nAgent: Codex");
+        menu.Items.Add(pin); menu.Items.Add(copy); menu.Items.Add(new Separator());
         var reconnect = new MenuItem { Header = "Reconnect" };
         reconnect.Click += async (_, _) =>
         {
@@ -393,7 +465,7 @@ public partial class MainWindow : Window
             try { await daemon.CallAsync("axo.session.rename", new { sessionId = selected, name = input.Text }); SessionTitle.Text = input.Text.Trim(); await RefreshCatalogAsync(); }
             catch (Exception error) { ShowError(error.Message); }
         };
-        var close = new MenuItem { Header = "Close session" };
+        var close = new MenuItem { Header = "Archive" };
         close.Click += async (_, _) =>
         {
             try
@@ -418,12 +490,22 @@ public sealed class SessionView : INotifyPropertyChanged
     public required string Id { get; init; }
     public required string WorkspaceId { get; init; }
     public required string Directory { get; init; }
-    string name = "", status = "";
+    string name = "", status = "ready";
     public string Name { get => name; set { name = value; Changed(); } }
-    public string StatusLabel { get => status; set { status = value; Changed(); } }
+    public string Status { get => status; set { if (status == value) return; status = value; Changed(); Changed(nameof(StatusLabel)); Changed(nameof(StatusSymbol)); Changed(nameof(StatusBrush)); Changed(nameof(Tooltip)); } }
+    public string StatusLabel => "Codex · " + ReadableStatus(Status);
+    public bool Pinned { get; set; }
+    public long LastActive { get; set; }
+    public string Group => Pinned ? "Pinned" : Status is "working" or "needsAttention" || DateTimeOffset.UtcNow.ToUnixTimeSeconds() - LastActive < 180 ? "Active" : "Earlier";
+    public int GroupOrder => Pinned ? 0 : Group == "Active" ? 1 : 2;
+    public string Glyph { get; set; } = "✧";
+    public string Age { get { var seconds = Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeSeconds() - LastActive); return seconds < 60 ? "now" : seconds < 3600 ? $"{seconds / 60}m" : seconds < 86400 ? $"{seconds / 3600}h" : $"{seconds / 86400}d"; } }
+    public string StatusSymbol => Status switch { "working" => "⚒", "needsAttention" => "▲", "starting" or "unavailable" => "◌", _ => "●" };
+    public Brush StatusBrush => Status switch { "working" => SystemColors.HighlightBrush, "needsAttention" => Brushes.Goldenrod, "starting" or "unavailable" => SystemColors.GrayTextBrush, _ => Brushes.ForestGreen };
+    public string Tooltip => $"{Name}\n{Directory}\n{StatusLabel}";
     public static string ReadableStatus(string? status) => status == "needsAttention" ? "needs attention" : status ?? "ready";
-    public static SessionView From(JsonElement s) => new() { Id = s.GetProperty("id").GetString()!, WorkspaceId = s.GetProperty("workspaceId").GetString()!, Directory = s.GetProperty("initialPwd").GetString()!, Name = s.GetProperty("name").GetString()!, StatusLabel = "Codex · " + ReadableStatus(s.GetProperty("status").GetString()) };
-    public void Update(SessionView other) { Name = other.Name; StatusLabel = other.StatusLabel; }
+    public static SessionView From(JsonElement s) => new() { Id = s.GetProperty("id").GetString()!, WorkspaceId = s.GetProperty("workspaceId").GetString()!, Directory = s.GetProperty("initialPwd").GetString()!, Name = s.GetProperty("name").GetString()!, Status = s.GetProperty("status").GetString() ?? "ready", LastActive = s.TryGetProperty("lastMessageAt", out var at) && at.ValueKind == JsonValueKind.Number ? at.GetInt64() : s.GetProperty("createdAt").GetInt64(), Glyph = s.TryGetProperty("emoji", out var emoji) && emoji.ValueKind == JsonValueKind.String ? emoji.GetString()! : "✧" };
+    public void Update(SessionView other) { Name = other.Name; Status = other.Status; LastActive = other.LastActive; Pinned = other.Pinned; Changed(nameof(Age)); Changed(nameof(Group)); }
     public event PropertyChangedEventHandler? PropertyChanged;
     void Changed([CallerMemberName] string? property = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
 }

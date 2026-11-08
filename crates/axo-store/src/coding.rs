@@ -22,7 +22,13 @@ pub fn initialize(database: &Connection) -> io::Result<()> {
             created_at INTEGER NOT NULL,
             UNIQUE(session_id, item_id)
         );
-        CREATE INDEX IF NOT EXISTS coding_messages_by_session ON coding_messages(session_id, sequence);"
+        CREATE INDEX IF NOT EXISTS coding_messages_by_session ON coding_messages(session_id, sequence);
+        CREATE TABLE IF NOT EXISTS coding_commands (
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            command_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending','submitted')),
+            PRIMARY KEY(session_id,command_id)
+        );"
     ).map_err(io::Error::other)
 }
 
@@ -118,6 +124,52 @@ pub fn reopen(database: &Connection, id: SessionId) -> io::Result<()> {
 pub fn session_exists(database: &Connection, id: SessionId) -> io::Result<bool> {
     database.query_row("SELECT 1 FROM coding_agents c JOIN sessions s ON s.id=c.session_id WHERE c.session_id=?1 AND s.state='open'", params![id.to_string()], |_| Ok(true))
         .optional().map(|v| v.unwrap_or(false)).map_err(io::Error::other)
+}
+
+/// A durable receipt is reserved before talking to Codex, so retrying an unconfirmed
+/// network command can never silently start the same work twice.
+pub fn command_state(
+    database: &Connection,
+    id: SessionId,
+    command: &str,
+) -> io::Result<Option<String>> {
+    database
+        .query_row(
+            "SELECT state FROM coding_commands WHERE session_id=?1 AND command_id=?2",
+            params![id.to_string(), command],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(io::Error::other)
+}
+pub fn reserve_command(database: &Connection, id: SessionId, command: &str) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO coding_commands(session_id,command_id,state) VALUES (?1,?2,'pending')",
+            params![id.to_string(), command],
+        )
+        .map(|_| ())
+        .map_err(io::Error::other)
+}
+pub fn submit_command(database: &Connection, id: SessionId, command: &str) -> io::Result<()> {
+    database
+        .execute(
+            "UPDATE coding_commands SET state='submitted' WHERE session_id=?1 AND command_id=?2",
+            params![id.to_string(), command],
+        )
+        .map(|_| ())
+        .map_err(io::Error::other)
+}
+
+/// Includes archived sessions for the relay uploader; never mixes Pi-owned sessions.
+pub fn catalog(database: &Connection) -> io::Result<Vec<Value>> {
+    let mut q = database.prepare("SELECT s.id,COALESCE(s.manual_name,s.name),s.emoji,s.workspace_id,w.name,s.created_at,s.last_message_at,s.state,s.initial_pwd
+        FROM sessions s JOIN coding_agents c ON c.session_id=s.id LEFT JOIN workspaces w ON w.workspace_id=s.workspace_id
+        WHERE c.agent='codex' ORDER BY s.rowid").map_err(io::Error::other)?;
+    q.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"emoji":r.get::<_,Option<String>>(2)?,
+        "workspaceId":r.get::<_,Option<String>>(3)?,"workspaceName":r.get::<_,Option<String>>(4)?,"createdAt":r.get::<_,i64>(5)?,
+        "lastMessageAt":r.get::<_,Option<i64>>(6)?,"archived":r.get::<_,String>(7)? == "archived","initialPwd":r.get::<_,String>(8)?})))
+        .map_err(io::Error::other)?.collect::<Result<Vec<_>,_>>().map_err(io::Error::other)
 }
 
 #[cfg(test)]

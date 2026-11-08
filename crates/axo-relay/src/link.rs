@@ -300,6 +300,7 @@ pub fn host_label() -> String {
 }
 
 /// The name macOS shows for this Mac (System Settings, General, Sharing), as people know it.
+#[cfg(not(windows))]
 fn computer_name() -> Option<String> {
     let output = std::process::Command::new("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
@@ -317,6 +318,7 @@ fn is_label(name: &str) -> bool {
 }
 
 /// The network's name for this Mac, when macOS has no Computer Name.
+#[cfg(not(windows))]
 fn network_host_name() -> String {
     let mut bytes = [0_u8; 256];
     // SAFETY: bytes is writable storage for gethostname's NUL-terminated output.
@@ -543,4 +545,13 @@ mod tests {
         );
         assert!(crate::credential::HostCredentialStore::load(&*credentials, CREDENTIAL).is_ok());
     }
+}
+
+#[cfg(windows)]
+fn computer_name() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok().filter(|n| is_label(n))
+}
+#[cfg(windows)]
+fn network_host_name() -> String {
+    computer_name().unwrap_or_else(|| "This PC".into())
 }

@@ -32,6 +32,11 @@ impl HostKind {
         Self::Linux
     }
 
+    #[cfg(target_os = "windows")]
+    pub const fn current() -> Self {
+        Self::Windows
+    }
+
     #[cfg(target_os = "macos")]
     pub const fn current() -> Self {
         Self::MacOS

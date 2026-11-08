@@ -96,7 +96,10 @@ struct ConnectionEnd {
     result: io::Result<()>,
 }
 
+#[cfg(not(windows))]
 const NOT_LINKED: &str = "This Mac is not linked to an Axo account.";
+#[cfg(windows)]
+const NOT_LINKED: &str = "This PC is not linked to an Axo account.";
 
 pub struct RelayWorker {
     stop: Stop,
