@@ -113,25 +113,44 @@ export interface HostClientsHost {
  * The records each Session committed lately, contiguous and in one epoch, while the object is in
  * memory (RFD0032, pushFromAppend). A client acknowledging a batch gets the next one from here
  * when it can. Lost on hibernation, which costs a read.
+ *
+ * Bounded twice: each Session keeps two batches, and all of them together keep at most
+ * `RecentRecords.characters` characters of lines, dropping the Session written to longest ago.
+ * Durable Objects of one class can share an isolate and its 128 MB, so a cache per Session alone
+ * (64 of them at 1 MiB each) was too much.
  */
 export class RecentRecords {
-  private readonly sessions = new Map<string, { epoch: number; records: ClientRecord[]; bytes: number }>();
+  /** Characters of lines kept in all: 16 MB at worst, as two-byte strings. */
+  static readonly characters = 8 * 1024 * 1024;
 
-  constructor(private readonly limits = { records: SYNC.clientRecords * 2, bytes: SYNC.clientBytes * 2, sessions: 64 }) {}
+  private readonly sessions = new Map<string, { epoch: number; records: ClientRecord[]; characters: number }>();
+  private held = 0;
+
+  constructor(private readonly limits = { records: SYNC.clientRecords * 2, characters: SYNC.clientBytes * 2 }) {}
 
   add(sessionId: string, epoch: number, records: ClientRecord[]): void {
     if (records.length === 0) return;
-    let held = this.sessions.get(sessionId);
-    if (!held || held.epoch !== epoch || held.records.at(-1)!.cursor + 1 !== records[0]!.cursor) held = { epoch, records: [], bytes: 0 };
-    this.sessions.delete(sessionId);
+    let kept = this.sessions.get(sessionId);
+    this.forget(sessionId);
+    if (!kept || kept.epoch !== epoch || kept.records.at(-1)!.cursor + 1 !== records[0]!.cursor) kept = { epoch, records: [], characters: 0 };
     for (const record of records) {
-      held.records.push(record);
-      held.bytes += record.line.length;
+      kept.records.push(record);
+      kept.characters += record.line.length;
     }
-    while (held.records.length > 1 && (held.records.length > this.limits.records || held.bytes > this.limits.bytes))
-      held.bytes -= held.records.shift()!.line.length;
-    this.sessions.set(sessionId, held);
-    while (this.sessions.size > this.limits.sessions) this.sessions.delete(this.sessions.keys().next().value!);
+    while (kept.records.length > 1 && (kept.records.length > this.limits.records || kept.characters > this.limits.characters))
+      kept.characters -= kept.records.shift()!.line.length;
+    // Map order is insertion order: re-adding makes this the Session written to last.
+    this.sessions.set(sessionId, kept);
+    this.held += kept.characters;
+    for (const [oldest] of this.sessions) {
+      if (this.held <= RecentRecords.characters || oldest === sessionId) break;
+      this.forget(oldest);
+    }
+  }
+
+  /** Characters of lines held across every Session. */
+  heldCharacters(): number {
+    return this.held;
   }
 
   /**
@@ -154,6 +173,11 @@ export class RecentRecords {
 
   /** The Session moved to a new epoch: what is held may be past the cut. */
   drop(sessionId: string): void {
+    this.forget(sessionId);
+  }
+
+  private forget(sessionId: string): void {
+    this.held -= this.sessions.get(sessionId)?.characters ?? 0;
     this.sessions.delete(sessionId);
   }
 }
