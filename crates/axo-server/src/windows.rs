@@ -1,11 +1,14 @@
 //! Local Windows vertical slice of axod. Shares Axo IDs, workspaces and SQLite sessions,
 //! with a Codex app-server agent and a per-user named-pipe transport. Apple-only extensions
 //! are deliberately absent from negotiation. No listener is exposed to the network.
+mod credentials;
+mod relay;
 mod security;
+mod terminal;
 
 use axo_agent::codex::{Codex, message_text};
 use axo_protocol::rpc::{self, method};
-use axo_protocol::{SessionId, SessionStatus};
+use axo_protocol::{Event, EventScope, SessionId, SessionStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -38,6 +41,17 @@ const METHODS: &[&str] = &[
     "axo.session.approval.respond",
     "axo.terminal.open",
     "axo.daemon.stop",
+    method::RELAY_LINK,
+    method::RELAY_STATUS,
+    method::RELAY_CONNECT,
+    method::SESSION_SUBSCRIBE,
+    method::SESSION_EVENTS_NEXT,
+    method::SESSION_UNSUBSCRIBE,
+    "axo.terminal.create",
+    "axo.terminal.replay",
+    "axo.terminal.close",
+    method::TERMINAL_INPUT,
+    method::TERMINAL_RESIZE,
 ];
 
 #[derive(Default)]
@@ -52,6 +66,11 @@ struct Runtime {
     event_bytes: usize,
     error: Option<String>,
     terminal: Option<Child>,
+    pseudoconsole: Option<Arc<terminal::Terminal>>,
+    remote_command: Option<String>,
+    turn_entries: Vec<String>,
+    progress: HashMap<String, String>,
+    remote_questions: HashMap<String, (String, axo_protocol::elicitation::Elicitation)>,
 }
 
 #[derive(Default)]
@@ -66,9 +85,25 @@ struct Backend {
     sessions: Mutex<HashMap<SessionId, Arc<LiveSession>>>,
     codex: PathBuf,
     stop: tokio::sync::Notify,
+    directory: PathBuf,
+    relay: Mutex<Option<Arc<relay::Relay>>>,
+    subscriptions: Mutex<HashMap<String, Subscription>>,
+    next_shell: std::sync::atomic::AtomicU32,
 }
 
-pub fn serve(directory: Option<PathBuf>, pipe: Option<String>, codex: PathBuf) -> io::Result<()> {
+struct Subscription {
+    session: Option<SessionId>,
+    scope: EventScope,
+    queue: Arc<axo_ipc::EventQueue<Event>>,
+    touched: std::time::Instant,
+}
+
+pub fn serve(
+    directory: Option<PathBuf>,
+    pipe: Option<String>,
+    codex: PathBuf,
+    relay_url: Option<String>,
+) -> io::Result<()> {
     let sid = security::current_sid()?;
     let directory = match directory {
         Some(path) if path.is_absolute() => path,
@@ -97,7 +132,17 @@ pub fn serve(directory: Option<PathBuf>, pipe: Option<String>, codex: PathBuf) -
             sessions: Mutex::new(HashMap::new()),
             codex,
             stop: tokio::sync::Notify::new(),
+            directory,
+            relay: Mutex::new(None),
+            subscriptions: Mutex::new(HashMap::new()),
+            next_shell: std::sync::atomic::AtomicU32::new(1),
         });
+        let endpoint = match relay_url {
+            Some(url) => axo_relay::RelayEndpoint::parse(&url)?,
+            None => axo_relay::RelayEndpoint::production(),
+        };
+        let relay = Arc::new(relay::Relay::start(&backend, endpoint)?);
+        *backend.relay.lock().unwrap() = Some(relay.clone());
         log::info!("event=daemon.ready platform=windows");
         loop {
             tokio::select! {
@@ -115,10 +160,18 @@ pub fn serve(directory: Option<PathBuf>, pipe: Option<String>, codex: PathBuf) -
                 }
             });
         }
+        // Relay workers join tasks using the runtime handle, so drop them on the blocking
+        // pool while that runtime is still alive.
+        tokio::task::spawn_blocking(move || relay.shutdown())
+            .await
+            .map_err(io::Error::other)?;
         for session in backend.sessions.lock().unwrap().values() {
             let mut runtime = session.runtime.lock().unwrap();
             if let Some(agent) = runtime.agent.take() {
                 agent.stop();
+            }
+            if let Some(pty) = runtime.pseudoconsole.take() {
+                pty.stop();
             }
             if let Some(mut terminal) = runtime.terminal.take() {
                 let _ = terminal.kill();
@@ -165,11 +218,15 @@ async fn connection(pipe: NamedPipeServer, backend: Arc<Backend>) -> io::Result<
                 let state = backend.clone();
                 let id = request.id.clone();
                 let stopping = request.method == "axo.daemon.stop";
-                match tokio::task::spawn_blocking(move || {
-                    state.dispatch(&request.method, request.params)
-                })
-                .await
-                {
+                let result = if request.method == method::SESSION_EVENTS_NEXT {
+                    Ok(state.next_events(request.params).await)
+                } else {
+                    tokio::task::spawn_blocking(move || {
+                        state.dispatch(&request.method, request.params)
+                    })
+                    .await
+                };
+                match result {
                     Ok(Ok(result)) => {
                         should_stop = stopping;
                         json!({"jsonrpc":"2.0","id":id,"result":result})
@@ -256,6 +313,86 @@ struct Approval {
 }
 
 impl Backend {
+    async fn next_events(&self, params: Value) -> Result<Value, RpcError> {
+        let p: rpc::NextEvents = parse(params)?;
+        if !(1..=30000).contains(&p.timeout_ms) || p.max_events.is_some_and(|n| n == 0 || n > 128) {
+            return Err(invalid("Invalid event batch bounds").into());
+        }
+        let events = self
+            .queue(&p.subscription_id)?
+            .wait(
+                std::time::Duration::from_millis(p.timeout_ms),
+                p.max_events.unwrap_or(1),
+            )
+            .await?;
+        Ok(json!({"events":events}))
+    }
+    fn subscribe(&self, session: Option<SessionId>, streams: bool) -> io::Result<String> {
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        subscriptions.retain(|_, s| {
+            let keep = s.touched.elapsed() < std::time::Duration::from_secs(90);
+            if !keep {
+                s.queue.close();
+            }
+            keep
+        });
+        if subscriptions.len() >= 128 {
+            return Err(io::Error::other("Too many event subscriptions"));
+        }
+        let id = axo_protocol::new_uuid_v4()?;
+        subscriptions.insert(
+            id.clone(),
+            Subscription {
+                session,
+                scope: if streams {
+                    EventScope::Streams
+                } else {
+                    EventScope::Catalog
+                },
+                queue: Arc::new(
+                    axo_ipc::EventQueue::new(512, || Event::SubscriptionLagged)
+                        .with_byte_limit(4 * 1024 * 1024, |event| {
+                            serde_json::to_vec(event).map_or(0, |v| v.len())
+                        }),
+                ),
+                touched: std::time::Instant::now(),
+            },
+        );
+        Ok(id)
+    }
+    fn queue(&self, id: &str) -> io::Result<Arc<axo_ipc::EventQueue<Event>>> {
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .get_mut(id)
+            .map(|s| {
+                s.touched = std::time::Instant::now();
+                s.queue.clone()
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Subscription not found"))
+    }
+    fn unsubscribe(&self, id: &str) -> io::Result<()> {
+        if let Some(s) = self.subscriptions.lock().unwrap().remove(id) {
+            s.queue.close();
+        }
+        Ok(())
+    }
+    fn publish(&self, event: Event) {
+        for s in self.subscriptions.lock().unwrap().values() {
+            if s.scope.accepts(event.scope())
+                && (s.session.is_none() || s.session == event.session_id())
+            {
+                s.queue.push(event.clone());
+            }
+        }
+    }
+    fn publish_snapshot(&self, id: SessionId) {
+        if let Ok(value) = self.record(id) {
+            if let Ok(record) = serde_json::from_value(value) {
+                self.publish(Event::snapshot(record));
+            }
+        }
+    }
     fn session(&self, id: SessionId) -> io::Result<Arc<LiveSession>> {
         if !axo_store::coding::session_exists(&self.database.lock().unwrap(), id)? {
             return Err(io::Error::new(
@@ -271,9 +408,10 @@ impl Backend {
         let session = self.session(id)?;
         let thread = axo_store::coding::thread_id(&self.database.lock().unwrap(), id)?;
         let runtime = session.runtime.lock().unwrap();
+        let shells=runtime.pseudoconsole.as_ref().map(|t| json!({"id":t.shell,"paneId":null,"role":"terminal","processId":t.pid,"initialPwd":row.initial_pwd,"ptyDevice":"ConPTY","attachSocketPath":"","available":t.is_alive(),"availabilityReason":if t.is_alive() {Value::Null} else {json!("Terminal exited")}})).into_iter().collect::<Vec<_>>();
         Ok(
             json!({"id":id,"agent":"codex","name":row.manual_name.clone().unwrap_or(row.name),
-            "manualName":row.manual_name,"emoji":row.emoji,"piSessionFile":null,"piSessionId":null,"shells":[],"layout":null,
+            "manualName":row.manual_name,"emoji":row.emoji,"piSessionFile":null,"piSessionId":null,"shells":shells,"layout":null,
             "initialPwd":row.initial_pwd,"workspaceId":row.workspace_id,"workspaceName":row.workspace_name,
             "createdAt":row.created_at,"lastMessageAt":row.last_message_at,
             "status":runtime.status.unwrap_or(SessionStatus::Ready),"error":runtime.error,
@@ -291,21 +429,218 @@ impl Backend {
             return Err(invalid("Workspace directory does not exist"));
         }
         let id = SessionId::new_v4()?;
-        let name = format!("Codex {}", axo_store::next_session_ordinal(&db, workspace)?);
+        let workspace_name = axo_store::list_open_workspaces(&db)?
+            .into_iter()
+            .find(|w| w.workspace_id == workspace)
+            .map(|w| w.name)
+            .ok_or_else(|| invalid("Workspace not found"))?;
+        let name = format!(
+            "{workspace_name} · Codex {}",
+            axo_store::next_session_ordinal(&db, workspace)?
+        );
         axo_store::coding::insert_session(&mut db, id, workspace, &cwd, &name)?;
         drop(db);
         self.record(id)
     }
 
     fn dispatch(self: &Arc<Self>, name: &str, params: Value) -> Result<Value, RpcError> {
+        let id = params
+            .get("sessionId")
+            .and_then(|v| serde_json::from_value::<SessionId>(v.clone()).ok());
+        let result = self.dispatch_inner(name, params)?;
         match name {
-            method::PROTOCOL_NEGOTIATE => {
-                let p: rpc::NegotiateProtocol = parse(params)?;
-                if p.protocol_version != 1 {
-                    return Err(invalid("Only protocol version 1 is supported").into());
+            method::SESSION_CLOSE => {
+                if let Some(session_id) = id {
+                    self.publish(Event::SessionRemoved { session_id });
+                }
+            }
+            method::WORKSPACE_CREATE => {
+                if let Some(workspace_id) = result["workspace"]["workspaceId"].as_str() {
+                    self.publish(Event::WorkspaceChanged {
+                        workspace_id: workspace_id.into(),
+                    });
+                }
+                if let Ok(id) = serde_json::from_value(result["session"]["id"].clone()) {
+                    self.publish_snapshot(id);
+                }
+            }
+            method::WORKSPACE_SESSION_CREATE => {
+                if let Ok(id) = serde_json::from_value(result["id"].clone()) {
+                    self.publish_snapshot(id);
+                }
+            }
+            method::SESSION_RENAME
+            | method::SESSION_REOPEN
+            | method::SESSION_PROMPT
+            | "axo.session.open"
+            | "axo.session.approval.respond"
+            | "axo.session.interrupt"
+            | "axo.terminal.create"
+            | "axo.terminal.close" => {
+                if let Some(id) = id {
+                    self.publish_snapshot(id);
+                }
+            }
+            _ => {}
+        }
+        Ok(result)
+    }
+
+    fn dispatch_inner(self: &Arc<Self>, name: &str, params: Value) -> Result<Value, RpcError> {
+        match name {
+            "axo.terminal.create" => {
+                let id = sid(params)?;
+                let session = self.session(id)?;
+                let _operation = session.operation.lock().unwrap();
+                if let Some(t) = session
+                    .runtime
+                    .lock()
+                    .unwrap()
+                    .pseudoconsole
+                    .as_ref()
+                    .filter(|t| t.is_alive())
+                {
+                    return Ok(t.replay());
+                }
+                let cwd = axo_store::session_initial_pwd(&self.database.lock().unwrap(), id)?;
+                let shell = axo_protocol::ShellId::new(
+                    self.next_shell
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        .into(),
+                )
+                .ok_or_else(|| io::Error::other("Shell ID exhausted"))?;
+                let output = Arc::downgrade(self);
+                let exited = Arc::downgrade(self);
+                let pty = terminal::Terminal::spawn(
+                    &cwd,
+                    shell,
+                    move |sequence, bytes| {
+                        if let Some(b) = output.upgrade() {
+                            b.publish(Event::TerminalOutput {
+                                session_id: id,
+                                shell_id: shell,
+                                sequence,
+                                data: axo_protocol::base64::encode(&bytes),
+                            });
+                        }
+                    },
+                    move || {
+                        if let Some(b) = exited.upgrade() {
+                            b.publish(Event::ShellActivity {
+                                session_id: id,
+                                shell_id: shell,
+                                activity: axo_protocol::ShellActivity::Exited,
+                            });
+                        }
+                    },
+                )?;
+                let replay = pty.replay();
+                session.runtime.lock().unwrap().pseudoconsole = Some(pty);
+                Ok(replay)
+            }
+            "axo.terminal.replay"
+            | "axo.terminal.close"
+            | method::TERMINAL_INPUT
+            | method::TERMINAL_RESIZE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Ref {
+                    session_id: SessionId,
+                    shell_id: axo_protocol::ShellId,
+                }
+                let (id, shell) = match name {
+                    method::TERMINAL_INPUT => {
+                        let p: rpc::TerminalInput = parse(params.clone())?;
+                        (p.session_id, p.shell_id)
+                    }
+                    method::TERMINAL_RESIZE => {
+                        let p: rpc::TerminalResize = parse(params.clone())?;
+                        (p.session_id, p.shell_id)
+                    }
+                    _ => {
+                        let p: Ref = parse(params.clone())?;
+                        (p.session_id, p.shell_id)
+                    }
+                };
+                let session = self.session(id)?;
+                let pty = session
+                    .runtime
+                    .lock()
+                    .unwrap()
+                    .pseudoconsole
+                    .as_ref()
+                    .filter(|t| t.shell == shell)
+                    .cloned()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "Terminal pane not found")
+                    })?;
+                match name {
+                    "axo.terminal.replay" => Ok(pty.replay()),
+                    "axo.terminal.close" => {
+                        pty.stop();
+                        session.runtime.lock().unwrap().pseudoconsole.take();
+                        Ok(json!({"closed":true}))
+                    }
+                    method::TERMINAL_INPUT => {
+                        let p: rpc::TerminalInput = parse(params)?;
+                        let bytes = axo_protocol::base64::decode_terminal_input(&p.data)?;
+                        pty.write(p.sequence, &bytes)?;
+                        Ok(json!({"written":true}))
+                    }
+                    _ => {
+                        let p: rpc::TerminalResize = parse(params)?;
+                        pty.resize(p.rows, p.columns)?;
+                        Ok(json!({"resized":true}))
+                    }
+                }
+            }
+            method::SESSION_SUBSCRIBE => {
+                let p: rpc::Subscribe = parse(params)?;
+                if let Some(id) = p.session_id {
+                    self.session(id)?;
                 }
                 Ok(
-                    json!({"protocolVersion":1,"methods":METHODS,"platform":"windows","agent":"codex"}),
+                    json!({"subscriptionId":self.subscribe(p.session_id,p.include_terminal_output)?}),
+                )
+            }
+            method::SESSION_UNSUBSCRIBE => {
+                let p: rpc::Unsubscribe = parse(params)?;
+                self.unsubscribe(&p.subscription_id)?;
+                Ok(json!({"unsubscribed":true}))
+            }
+            method::RELAY_STATUS | method::RELAY_CONNECT | method::RELAY_LINK => {
+                let relay = self
+                    .relay
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| io::Error::other("Relay unavailable"))?;
+                if name == method::RELAY_LINK {
+                    let p: rpc::LinkHost = parse(params)?;
+                    let _link = relay.link_lock.lock().unwrap();
+                    let label = axo_relay::link_host(
+                        &relay.endpoint,
+                        &p.code,
+                        relay.host.as_ref(),
+                        relay.host.as_ref(),
+                        relay.credentials.as_ref(),
+                    )?;
+                    relay.control.request_connect()?;
+                    Ok(json!({"linked":true,"hostLabel":label}))
+                } else {
+                    if name == method::RELAY_CONNECT {
+                        relay.control.request_connect()?;
+                    }
+                    Ok(serde_json::to_value(relay.control.snapshot()?)?)
+                }
+            }
+            method::PROTOCOL_NEGOTIATE => {
+                let p: rpc::NegotiateProtocol = parse(params)?;
+                if p.protocol_version != 1 && p.protocol_version != rpc::PROTOCOL_VERSION {
+                    return Err(invalid("Unsupported protocol version").into());
+                }
+                Ok(
+                    json!({"protocolVersion":p.protocol_version,"methods":METHODS,"platform":"windows","agent":"codex"}),
                 )
             }
             method::DAEMON_HEALTH => Ok(
@@ -396,6 +731,8 @@ impl Backend {
                     }
                     runtime.status = Some(SessionStatus::Working);
                     runtime.error = None;
+                    runtime.remote_command = None;
+                    runtime.turn_entries.clear();
                 }
                 match agent.request(
                     "turn/start",
@@ -499,6 +836,24 @@ impl Backend {
                 agent.respond(request["id"].clone(), result)?;
                 let mut runtime = session.runtime.lock().unwrap();
                 runtime.pending.remove(&p.request_id);
+                let resolved = runtime
+                    .remote_questions
+                    .iter()
+                    .filter(|(_, (request, _))| request == &p.request_id)
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>();
+                for question in resolved {
+                    runtime.remote_questions.remove(&question);
+                    self.publish(Event::ElicitationResolved {
+                        id: question,
+                        session_id: p.session_id,
+                        action: if p.decision == "accept" {
+                            axo_protocol::elicitation::ElicitationAction::Accept
+                        } else {
+                            axo_protocol::elicitation::ElicitationAction::Decline
+                        },
+                    });
+                }
                 if runtime.pending.is_empty() {
                     runtime.status = Some(if runtime.turn.is_some() {
                         SessionStatus::Working
@@ -526,7 +881,8 @@ impl Backend {
                 .join("System32/WindowsPowerShell/v1.0/powershell.exe");
                 // A real interactive terminal, in the Session's workspace, tracked by axod.
                 let child = Command::new(executable)
-                    .args(["-NoLogo", "-NoExit"])
+                    .args(["-NoLogo", "-NoProfile", "-NoExit"])
+                    .env_remove("PSModulePath")
                     .current_dir(cwd)
                     .creation_flags(0x10)
                     .spawn()?;
@@ -538,11 +894,14 @@ impl Backend {
                 let id = sid(params)?;
                 let session = self.session(id)?;
                 let _operation = session.operation.lock().unwrap();
-                let (agent, terminal) = {
+                let (agent, terminal, pty) = {
                     let mut r = session.runtime.lock().unwrap();
                     r.generation += 1;
-                    (r.agent.take(), r.terminal.take())
+                    (r.agent.take(), r.terminal.take(), r.pseudoconsole.take())
                 };
+                if let Some(pty) = pty {
+                    pty.stop();
+                }
                 if let Some(agent) = agent {
                     agent.stop();
                 }
@@ -652,11 +1011,16 @@ impl Backend {
             "turn/started" => {
                 runtime.turn = event["params"]["turn"]["id"].as_str().map(str::to_owned);
                 runtime.status = Some(SessionStatus::Working);
+                runtime.turn_entries.clear();
+                runtime.progress.clear();
             }
             "turn/completed" => {
                 runtime.turn = None;
                 runtime.pending.clear();
                 runtime.status = Some(SessionStatus::Ready);
+                runtime.remote_command = None;
+                runtime.turn_entries.clear();
+                runtime.progress.clear();
                 if event["params"]["turn"]["status"] == "failed" {
                     runtime.error = Some(
                         event["params"]["turn"]["error"]["message"]
@@ -694,13 +1058,84 @@ impl Backend {
             }
             _ => {}
         }
+        if method == "item/completed" {
+            if let Some(entry) = event["params"]["item"]["id"].as_str() {
+                runtime.turn_entries.push(entry.to_owned());
+            }
+        }
+        let progress = if method == "item/agentMessage/delta" {
+            let item = event["params"]["itemId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let text = runtime.progress.entry(item).or_default();
+            if text.len() < 128 * 1024 {
+                text.push_str(event["params"]["delta"].as_str().unwrap_or_default());
+            }
+            Some(
+                json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":text}],"timestamp":axo_store::unix_timestamp()*1000}}),
+            )
+        } else {
+            None
+        };
         if event.get("id").is_some() {
             let key = event["id"].to_string();
-            runtime.pending.insert(key, event.clone());
+            runtime.pending.insert(key.clone(), event.clone());
             runtime.status = Some(SessionStatus::NeedsAttention);
+            if matches!(
+                method,
+                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+            ) {
+                let message = format!("Codex requests permission:\n{}", event["params"]);
+                // A remote approval must contain the entire action being approved. Larger
+                // requests stay on the PC, rather than authorizing an unseen truncation.
+                if message.chars().count() <= axo_protocol::elicitation::MAX_MESSAGE_CHARS {
+                    if let Ok(question) = axo_protocol::new_uuid_v4() {
+                        let now = axo_store::unix_timestamp().max(0) as u64 * 1000;
+                        let elicitation = axo_protocol::elicitation::Elicitation {
+                            id: question.clone(),
+                            session_id: id,
+                            kind: axo_protocol::elicitation::ElicitationKind::Confirm,
+                            asked_by: axo_protocol::elicitation::Asker::Agent,
+                            message,
+                            input: None,
+                            created_at: now,
+                            expires_at: now + axo_protocol::elicitation::TIMEOUT_MS,
+                        };
+                        runtime
+                            .remote_questions
+                            .insert(question, (key, elicitation.clone()));
+                        self.publish(Event::ElicitationRequested { elicitation });
+                    }
+                }
+            }
+        }
+        let expired = runtime
+            .remote_questions
+            .iter()
+            .filter(|(_, (request, _))| !runtime.pending.contains_key(request))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for question in expired {
+            runtime.remote_questions.remove(&question);
+            self.publish(Event::ElicitationResolved {
+                id: question,
+                session_id: id,
+                action: axo_protocol::elicitation::ElicitationAction::Cancel,
+            });
         }
         runtime.sequence += 1;
         let sequence = runtime.sequence;
+        let raw_event = event.clone();
+        let changed = matches!(
+            method,
+            "turn/started"
+                | "turn/completed"
+                | "axo/codex/exited"
+                | "item/completed"
+                | "serverRequest/resolved"
+        ) || event.get("id").is_some();
+        let settled = method == "turn/completed";
         let envelope = json!({"sequence":sequence,"event":event});
         runtime.event_bytes += envelope.to_string().len();
         runtime.events.push_back(envelope);
@@ -710,6 +1145,38 @@ impl Backend {
             if let Some(old) = runtime.events.pop_front() {
                 runtime.event_bytes = runtime.event_bytes.saturating_sub(old.to_string().len());
             }
+        }
+        drop(runtime);
+        self.publish(Event::PiEvent {
+            session_id: id,
+            pi_session_id: id.to_string(),
+            stream_id: generation.to_string(),
+            sequence,
+            name: "codex.event".into(),
+            data: raw_event,
+        });
+        if let Some(data) = progress {
+            self.publish(Event::PiEvent {
+                session_id: id,
+                pi_session_id: id.to_string(),
+                stream_id: generation.to_string(),
+                sequence,
+                name: "message.update".into(),
+                data,
+            });
+        }
+        if settled {
+            self.publish(Event::PiEvent {
+                session_id: id,
+                pi_session_id: id.to_string(),
+                stream_id: generation.to_string(),
+                sequence,
+                name: "agent.settled".into(),
+                data: Value::Null,
+            });
+        }
+        if changed {
+            self.publish_snapshot(id);
         }
     }
 }
@@ -741,6 +1208,10 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             codex: PathBuf::from("codex"),
             stop: tokio::sync::Notify::new(),
+            directory: std::env::temp_dir(),
+            relay: Mutex::new(None),
+            subscriptions: Mutex::new(HashMap::new()),
+            next_shell: std::sync::atomic::AtomicU32::new(1),
         };
         let session = LiveSession::default();
         {
@@ -762,7 +1233,7 @@ mod tests {
     fn windows_negotiation_does_not_claim_apple_or_pi_features() {
         assert!(METHODS.contains(&method::SESSION_PROMPT));
         assert!(!METHODS.contains(&method::SESSION_PI_RESTART_FORCE));
-        assert!(!METHODS.contains(&method::RELAY_CONNECT));
+        assert!(METHODS.contains(&method::RELAY_CONNECT));
     }
     #[test]
     fn unknown_or_misspelled_parameters_are_rejected() {

@@ -142,6 +142,5 @@ mod bridge_path;
 
 // Persisted Pi addresses remain readable even though Windows cannot launch Pi.
 #[cfg(windows)]
-pub mod pi {
-    pub use crate::bridge_path::BridgeSocketPath;
-}
+#[path = "pi_windows.rs"]
+pub mod pi;

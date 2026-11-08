@@ -328,7 +328,13 @@ pub fn percent_encode(text: &str) -> String {
 
 /// Opens a URL in the person's default browser, as one argument: no shell parses it.
 pub async fn open_in_browser(url: String) -> io::Result<()> {
-    let status = tokio::process::Command::new("/usr/bin/open")
+    #[cfg(target_os = "macos")]
+    let browser = "/usr/bin/open";
+    #[cfg(target_os = "linux")]
+    let browser = "/usr/bin/xdg-open";
+    #[cfg(windows)]
+    let browser = "explorer.exe";
+    let status = tokio::process::Command::new(browser)
         .arg(url)
         .kill_on_drop(true)
         .status()

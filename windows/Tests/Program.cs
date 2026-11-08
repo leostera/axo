@@ -10,14 +10,18 @@ var server = Path.Combine(root, "server"); var workspace = Path.Combine(root, "p
 Directory.CreateDirectory(workspace);
 var pipe = "Axo-Test-" + Guid.NewGuid();
 var client = new DaemonClient(pipe);
+await using var relay = live ? null : await RelayFixture.StartAsync();
 Process? daemon = null;
 int assertions = 0;
 void Assert(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); assertions++; Console.WriteLine("PASS: " + name); }
 Process Start()
 {
-    var start = new ProcessStartInfo(daemonPath) { UseShellExecute = false, CreateNoWindow = true };
+    var start = new ProcessStartInfo(daemonPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput=true, RedirectStandardError=true };
     foreach (var a in new[] { "--pipe", @"\\.\pipe\" + pipe, "--server-dir", server, "--codex", codexPath }) start.ArgumentList.Add(a);
-    return Process.Start(start)!;
+    if(relay is not null){start.ArgumentList.Add("--relay-url");start.ArgumentList.Add(relay.Origin);}
+    var process=Process.Start(start)!;
+    process.BeginOutputReadLine();process.BeginErrorReadLine();
+    return process;
 }
 async Task Ready()
 {
@@ -49,6 +53,29 @@ async Task<string[]> Messages(string id)
 }
 try
 {
+    if(!live)
+    {
+        Exception? viewError=null;
+        var views=new Thread(()=>
+        {
+            try
+            {
+                var application=new App();application.InitializeComponent();
+                var settings=new SettingsWindow(client,new Preferences());
+                settings.Measure(new System.Windows.Size(740,580));settings.Arrange(new System.Windows.Rect(0,0,740,580));settings.Close();application.Shutdown();
+            }
+            catch(Exception error){viewError=error;}
+        });
+        views.SetApartmentState(ApartmentState.STA);views.Start();
+        Assert(views.Join(TimeSpan.FromSeconds(15))&&viewError is null,"native Settings and segmented appearance picker compose with the shipped WPF resources" + (viewError is null?"":": "+viewError.Message));
+        var vt=new VtScreen();vt.Resize(12,3);string? reply=null;vt.Reply+=text=>reply=text;
+        vt.Feed("hello\r\x1b[2K\x1b[3");vt.Feed("1mworld\x1b[0m\x1b[6n");
+        Assert(string.Concat(vt.Visible(0)[0].Select(c=>c.Text)).StartsWith("world")&&reply=="\x1b[1;6R","VT handles split escape sequences, line editing, and cursor-position queries");
+        vt.Feed("\x1b[?1049h");vt.Resize(24,5);vt.Feed("alternate\x1b[?1049l");
+        Assert(string.Concat(vt.Visible(0)[0].Select(c=>c.Text)).StartsWith("world"),"VT restores the primary screen after an alternate-screen resize");
+        vt.Reset();vt.Resize(12,3);vt.Feed("one\r\ntwo\r\nthree\r\nfour");
+        Assert(vt.ScrollbackCount==1&&string.Concat(vt.Visible(0)[2].Select(c=>c.Text)).StartsWith("four"),"VT retains scrollback independently of the visible screen");
+    }
     daemon = Start(); await Ready();
     if (live)
     {
@@ -103,6 +130,7 @@ try
     }
     var n = await client.CallAsync("axo.protocol.negotiate", new { protocolVersion = 1 });
     Assert(n.GetProperty("agent").GetString() == "codex", "Windows negotiation reports Codex");
+    Assert((await client.CallAsync("axo.protocol.negotiate",new{protocolVersion=2})).GetProperty("protocolVersion").GetInt32()==2,"Windows supports the shared protocol version alongside the first preview's version");
     Assert(await Fails("axo.protocol.negotiate", new { protocolVersion = 500 }), "unsupported protocol is rejected");
     Assert(await Fails("axo.session.pi.restart.force.v2", new { }), "Pi-only method is not advertised or implemented");
     using (var duplicate = Start())
@@ -110,13 +138,40 @@ try
         await duplicate.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Assert(duplicate.ExitCode != 0, "duplicate daemon cannot claim the same pipe");
     }
+    var subscription=(await client.CallAsync("axo.session.subscribe",new{includeTerminalOutput=false})).GetProperty("subscriptionId").GetString();
+    var change=client.CallAsync("axo.session.events.next",new{subscriptionId=subscription,timeoutMs=10000,maxEvents=128});
     var created = await client.CallAsync("axo.workspace.create", new { name = "Fixture workspace", directoryPath = workspace });
+    Assert((await change).GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("type").GetString() is "session.snapshot" or "workspace.changed"),"catalog long-poll wakes on workspace creation");
     var id = created.GetProperty("session").GetProperty("id").GetString()!;
     var workspaceId = created.GetProperty("workspace").GetProperty("workspaceId").GetString()!;
     Assert(created.GetProperty("session").GetProperty("initialPwd").GetString() == workspace, "workspace paths preserve spaces and Unicode");
     var opened = await client.CallAsync("axo.session.open", new { sessionId = id });
     var threadId = opened.GetProperty("threadId").GetString();
     Assert(!string.IsNullOrEmpty(threadId), "session opens a real child process and records its thread ID");
+    var pty=await client.CallAsync("axo.terminal.create",new{sessionId=id});
+    int shellId=pty.GetProperty("shellId").GetInt32(),ptyPid=pty.GetProperty("processId").GetInt32();ulong input=0,output=0;
+    async Task PumpTerminal()
+    {
+        var snapshot=await client.CallAsync("axo.terminal.replay",new{sessionId=id,shellId});
+        foreach(var chunk in snapshot.GetProperty("chunks").EnumerateArray())
+        {
+            var seq=chunk.GetProperty("sequence").GetUInt64();if(seq<output)continue;output=seq+1;
+            var text=System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(chunk.GetProperty("data").GetString()!));
+            if(text.Contains("\x1b[6n"))await client.CallAsync("axo.terminal.input",new{sessionId=id,shellId,sequence=input++,data=Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("\x1b[1;1R"))});
+        }
+    }
+    for(int i=0;i<20;i++){await PumpTerminal();await Task.Delay(100);}
+    await client.CallAsync("axo.terminal.resize",new{sessionId=id,shellId,rows=26,columns=90});
+    var command=Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("Set-Content conpty-smoke.txt AXO_CONPTY_OK; Get-Content conpty-smoke.txt\r"));
+    var commandSequence=input++;
+    await client.CallAsync("axo.terminal.input",new{sessionId=id,shellId,sequence=commandSequence,data=command});
+    await client.CallAsync("axo.terminal.input",new{sessionId=id,shellId,sequence=commandSequence,data=command});
+    for(int i=0;i<80&&!File.Exists(Path.Combine(workspace,"conpty-smoke.txt"));i++){await PumpTerminal();await Task.Delay(100);}
+    Assert(File.Exists(Path.Combine(workspace,"conpty-smoke.txt"))&&File.ReadAllText(Path.Combine(workspace,"conpty-smoke.txt")).Trim()=="AXO_CONPTY_OK","embedded ConPTY runs PowerShell in the Unicode workspace");
+    var reattached=await new DaemonClient(pipe).CallAsync("axo.terminal.create",new{sessionId=id});
+    Assert(reattached.GetProperty("processId").GetInt32()==ptyPid&&reattached.GetProperty("chunks").GetArrayLength()>0,"terminal reattachment replays output and preserves its process");
+    var terminalOutput=string.Concat(reattached.GetProperty("chunks").EnumerateArray().Select(c=>System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(c.GetProperty("data").GetString()!))));
+    Assert(terminalOutput.Contains("AXO_CONPTY_OK")&&terminalOutput.Contains("PS "),"shell prompt and command output use ConPTY even when the daemon's stdio is redirected");
     await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "hello\nsecond line" });
     await Status(id, "ready");
     Assert((await Messages(id)).Contains("Echo: hello\nsecond line"), "app-server notifications become durable chat messages");
@@ -136,6 +191,41 @@ try
     await client.CallAsync("axo.session.approval.respond", new { sessionId = id, requestId, decision = "decline" }); await Status(id, "ready");
     Assert((await Messages(id)).Contains("Approval: decline"), "approval decision is delivered to the correct app-server request");
     Assert(await Fails("axo.session.approval.respond", new { sessionId = id, requestId, decision = "accept" }), "stale approval cannot be reused");
+    var relayState=await client.CallAsync("axo.relay.status");
+    Assert(relayState.GetProperty("hostKind").GetString()=="windows"&&relayState.GetProperty("state").GetString()=="disconnected","unpaired relay identifies this PC without connecting");
+    await client.CallAsync("axo.relay.link",new{code="ABCD-EFGH"});
+    await relay!.WaitAsync(()=>relay.Registration.ValueKind==JsonValueKind.Object,"Relay did not register after pairing");
+    await relay.WaitAsync(()=>relay.Messages(id).Contains("Approval: decline"),"Relay did not upload the Codex transcript");
+    Assert(relay.Registration.GetProperty("hostKind").GetString()=="windows","pairing and authenticated WebSocket registration identify Windows");
+    Assert(relay.Messages(id).Contains("Echo: hello\nsecond line"),"Codex messages upload through the existing relay transcript format");
+    var target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration=relay.Registration.GetProperty("hostGeneration").GetString()};
+    var remote=await relay.CallAsync("axo.remote.workspace.list",new{target});
+    Assert(remote.GetProperty("result").GetProperty("workspaces")[0].GetProperty("workspaceId").GetString()==workspaceId,"remote clients can list Windows workspaces");
+    var commandId=Guid.NewGuid().ToString();
+    remote=await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="relay hello",commandId});
+    Assert(remote.TryGetProperty("result",out _),"relay routes a remote prompt to the Codex agent");
+    await Status(id,"ready");
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="relay hello",commandId});
+    Assert((await Messages(id)).Count(m=>m=="Echo: relay hello")==1,"retrying a remote command ID never starts a duplicate Codex turn");
+    await relay.WaitAsync(()=>relay.Messages(id).Contains("Echo: relay hello"),"Remote Codex reply was not synced");
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="approval",commandId=Guid.NewGuid().ToString()});
+    await Status(id,"needsAttention");
+    await relay.WaitAsync(()=>!relay.Questions.IsEmpty,"Codex approval did not reach the relay");
+    relay.Questions.TryPeek(out var question);
+    remote=await relay.CallAsync("axo.elicitation.resolve",new{target,elicitationId=question.GetProperty("id").GetString(),action="decline"});
+    Assert(remote.TryGetProperty("result",out _),"remote approval names and resolves the exact Codex permission request");
+    await Status(id,"ready");
+    remote=await relay.CallAsync("axo.elicitation.resolve",new{target,elicitationId=question.GetProperty("id").GetString(),action="accept"});
+    Assert(remote.TryGetProperty("error",out _),"resolved remote approval cannot authorize a later request");
+    var stopCommand=Guid.NewGuid().ToString();
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="wait",commandId=stopCommand});await Status(id,"working");
+    remote=await relay.CallAsync("axo.remote.session.stop",new{target,sessionId=id,commandIds=new[]{Guid.NewGuid().ToString()}});
+    Assert(!remote.GetProperty("result").GetProperty("stopped").GetBoolean(),"remote Stop cannot interrupt a turn the client never saw");
+    remote=await relay.CallAsync("axo.remote.session.stop",new{target,sessionId=id,commandIds=new[]{stopCommand}});
+    Assert(remote.GetProperty("result").GetProperty("stopped").GetBoolean(),"remote Stop interrupts its own Codex turn");await Status(id,"ready");
+    var catalog=await client.CallAsync("axo.session.events.next",new{subscriptionId=subscription,timeoutMs=1,maxEvents=128});
+    Assert(catalog.GetProperty("events").EnumerateArray().All(e=>e.GetProperty("type").GetString() is not "pi.event" and not "terminal.output"),"catalog subscriptions exclude terminal and token streams");
+    await client.CallAsync("axo.session.unsubscribe",new{subscriptionId=subscription});
     await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "flood" }); await Status(id, "ready");
     var flood = await client.CallAsync("axo.session.events.poll", new { sessionId = id, after = 0 });
     Assert(flood.GetProperty("reset").GetBoolean() && flood.GetProperty("events").GetArrayLength() == 200, "bounded event journal reports lost cursor and paginates recovery");
@@ -153,8 +243,12 @@ try
     }
     catch (ArgumentException) { /* Windows already removed the process. */ }
     Assert(true, "Windows job terminates the agent when its daemon is killed");
+    try{using var terminalProcess=Process.GetProcessById(ptyPid);await terminalProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));}catch(ArgumentException){}
+    Assert(true,"Windows job terminates the embedded shell when its daemon is killed");
     daemon = Start(); await Ready();
     recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
+    await relay.WaitAsync(()=>relay.Connections>=2,"Relay did not reconnect after daemon restart");
+    Assert(relay.Registration.GetProperty("hostId").GetString()==target.hostId&&relay.Registration.GetProperty("hostGeneration").GetString()!=target.hostGeneration,"DPAPI credential and stable host identity survive restart with a fresh generation");
     Assert(recovered.GetProperty("threadId").GetString() == threadId, "daemon restart preserves Codex thread identity");
     Assert(recovered.GetProperty("name").GetString() == "Renamed session", "session name survives daemon restart");
     Assert((await Messages(id)).Contains("Echo: hello\nsecond line"), "chat history survives daemon restart");

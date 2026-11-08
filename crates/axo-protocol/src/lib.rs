@@ -25,6 +25,7 @@ mod viewport;
 mod conformance;
 
 pub use event::{Event, EventScope, ShellActivity};
+pub use ids::random_bytes;
 pub use ids::{InvalidId, InvalidSessionId, SessionId, ShellId, new_uuid_v4};
 pub use layout::{Layout, LayoutDirection, LayoutError, LayoutNode, is_uuid};
 pub use model::{

@@ -1,3 +1,6 @@
 # Unified-diff blank context lines contain a required leading space.
 third_party/cua/*.patch whitespace=-blank-at-eol
 third_party/ghostty/*.patch whitespace=-blank-at-eol
+# pi/3 vectors hash the exact bytes of each JSONL line. Git's Windows CRLF
+# conversion changes those identities, so keep transcript fixtures as committed.
+schemas/**/fixtures/*.jsonl text eol=lf
