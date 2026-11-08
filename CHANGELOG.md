@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.34 (Mac app build 305, axod 57)
+
+### Fixed
+
+- A large paste into a terminal whose program isn't reading no longer freezes Axo: only that terminal waits, more input to it gives up after 5 seconds, and closing it ends the wait.
+
 ## 0.33 (Mac app build 304, axod 56)
 
 ### Changed
