@@ -153,6 +153,17 @@ pub fn take_over(
                         check_current()?;
                         shutdown_attempt_from_lock(session_id, session_file, error, check_current)?
                     }
+                    Err(error) if bridge_gone(&error) => {
+                        // pi-axo closes the bridge when Pi's session shuts down, before Pi
+                        // exits and lets go of the transcript: a Pi holding it with no bridge is
+                        // most likely exiting, so wait for it. One that keeps it (its bridge
+                        // never started) is still refused, once the wait is up.
+                        log::info!(
+                            "event=session.pi_takeover_waiting session_id={} reason=bridge_gone",
+                            session_id
+                        );
+                        return WriterLock::wait(session_file, TAKEOVER_TIMEOUT, check_current);
+                    }
                     Err(error) => return Err(error),
                 },
                 None if takeover_policy == TakeoverPolicy::ExplicitUserRestart => {
@@ -419,6 +430,14 @@ fn shutdown_attempt_from_lock(
     })
 }
 
+/// Nobody listens on the Pi's bridge: its socket is gone, or nothing accepts on it.
+fn bridge_gone(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
 fn bridge_unavailable_for_restart(error: &io::Error) -> bool {
     matches!(
         error.kind(),
@@ -681,6 +700,41 @@ mod tests {
         )
         .unwrap();
         assert!(spawning.join().unwrap().success());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_pi_still_exiting_after_its_bridge_is_gone_is_waited_for() {
+        // Regression: reopening a just-closed Session found its old Pi still holding the
+        // transcript while it exited, its bridge socket already removed. Asking it to shut down
+        // failed with NotFound, and the reopened Pi was left unrecoverable.
+        let directory = crate::test_directory();
+        let session_file = directory.join("session.jsonl");
+        let session_uuid = axo_protocol::new_uuid_v4().unwrap();
+        let bridge_socket = BridgeSocketPath::for_session(&directory, &session_uuid).unwrap();
+        let lock = WriterLock::acquire(&session_file).unwrap();
+        let exiting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(lock);
+        });
+        let target = TakeoverTarget {
+            session_id: SessionId::from_u128(1),
+            initial_pwd: &directory,
+            session_file: &session_file,
+            bridge_socket: &bridge_socket,
+            session_uuid: &session_uuid,
+            pane_id: "pane",
+            previous_token: Some("token"),
+        };
+        take_over(
+            target,
+            TakeoverPolicy::PreserveExistingProcess,
+            TakeoverGrace::default(),
+            &|| Ok(()),
+            &|_, _| panic!("an exiting Pi is not signalled"),
+        )
+        .unwrap();
+        exiting.join().unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
 
