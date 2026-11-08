@@ -3,7 +3,7 @@
   "builds": {
     "mac": 306,
     "phone": 25,
-    "axod": 58
+    "axod": 59
   },
   "apple": {
     "team": "RGH6S9S55G",
