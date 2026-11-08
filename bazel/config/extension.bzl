@@ -184,18 +184,21 @@ def _phone_profile(rctx, config):
 
 def _git_commit(rctx, workspace):
     """The checked-out commit, rerunning whenever HEAD moves."""
-    git_dir = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "rev-parse", "--absolute-git-dir"])
-    common_dir = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-common-dir"])
+    git = rctx.which("git")
+    if git == None:
+        return "unknown"
+    git_dir = _run(rctx, [str(git), "-C", str(workspace), "rev-parse", "--absolute-git-dir"])
+    common_dir = _run(rctx, [str(git), "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-common-dir"])
     if git_dir == None or common_dir == None:
         return "unknown"
     git_dir = git_dir.strip()
     common_dir = common_dir.strip()
     rctx.watch(git_dir + "/HEAD")
     rctx.watch(common_dir + "/packed-refs")
-    ref = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "symbolic-ref", "-q", "HEAD"])
+    ref = _run(rctx, [str(git), "-C", str(workspace), "symbolic-ref", "-q", "HEAD"])
     if ref != None:
         rctx.watch(common_dir + "/" + ref.strip())
-    commit = _run(rctx, ["/usr/bin/git", "-C", str(workspace), "rev-parse", "--short=7", "HEAD"])
+    commit = _run(rctx, [str(git), "-C", str(workspace), "rev-parse", "--short=7", "HEAD"])
     return commit.strip() if commit != None else "unknown"
 
 def _starlark(value):
@@ -231,11 +234,12 @@ def _axo_config_impl(rctx):
 
     reasons = {}
 
-    identity, reason = _signing_identity(rctx, config)
+    is_macos = rctx.os.name == "mac os x"
+    identity, reason = _signing_identity(rctx, config) if is_macos else (None, "Apple signing requires macOS")
     if reason:
         reasons["sign"] = reason
 
-    has_profile, reason = _phone_profile(rctx, config)
+    has_profile, reason = _phone_profile(rctx, config) if is_macos else (False, "Apple provisioning requires macOS")
     if reason:
         reasons["phone_device"] = reason
 

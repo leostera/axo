@@ -4,7 +4,9 @@
 //! Session anywhere, including the cloud.
 
 use std::fmt;
-use std::io::{self, Read};
+use std::io;
+#[cfg(unix)]
+use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +83,7 @@ impl SessionId {
     /// A new random (version 4) Session ID.
     pub fn new_v4() -> io::Result<Self> {
         let mut bytes = [0_u8; 16];
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        random_bytes(&mut bytes)?;
         bytes[6] = (bytes[6] & 0x0f) | 0x40;
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
         Ok(Self(bytes))
@@ -117,6 +119,27 @@ impl SessionId {
             nibbles += 1;
         }
         Some(Self(bytes))
+    }
+}
+
+#[cfg(unix)]
+fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
+    std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+}
+
+#[cfg(windows)]
+fn random_bytes(bytes: &mut [u8]) -> io::Result<()> {
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        #[link_name = "SystemFunction036"]
+        fn rtl_gen_random(buffer: *mut u8, length: u32) -> u8;
+    }
+    // SAFETY: bytes points to writable storage of the given length. RtlGenRandom is the
+    // system cryptographic random source, available without initializing a provider.
+    if unsafe { rtl_gen_random(bytes.as_mut_ptr(), bytes.len().try_into().unwrap()) } == 0 {
+        Err(io::Error::other("Windows cryptographic random source failed"))
+    } else {
+        Ok(())
     }
 }
 

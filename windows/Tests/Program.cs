@@ -1,0 +1,182 @@
+using System.Diagnostics;
+using System.Text.Json;
+using Axo;
+
+if (args.Length < 2 || args.Length > 3) throw new ArgumentException("Usage: Tests <axod.exe> <fake_codex.exe> OR <axod.exe> <codex.exe> --live");
+var live = args.Length == 3 && args[2] == "--live";
+var daemonPath = Path.GetFullPath(args[0]); var codexPath = Path.GetFullPath(args[1]);
+var root = Path.Combine(Path.GetTempPath(), "axo-windows-test-" + Guid.NewGuid());
+var server = Path.Combine(root, "server"); var workspace = Path.Combine(root, "project with spaces ž");
+Directory.CreateDirectory(workspace);
+var pipe = "Axo-Test-" + Guid.NewGuid();
+var client = new DaemonClient(pipe);
+Process? daemon = null;
+int assertions = 0;
+void Assert(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); assertions++; Console.WriteLine("PASS: " + name); }
+Process Start()
+{
+    var start = new ProcessStartInfo(daemonPath) { UseShellExecute = false, CreateNoWindow = true };
+    foreach (var a in new[] { "--pipe", @"\\.\pipe\" + pipe, "--server-dir", server, "--codex", codexPath }) start.ArgumentList.Add(a);
+    return Process.Start(start)!;
+}
+async Task Ready()
+{
+    for (int i = 0; i < 30; i++)
+    {
+        try { await client.CallAsync("axo.daemon.health"); return; }
+        catch { if (daemon!.HasExited) throw new Exception("Daemon failed to start: " + daemon.ExitCode); await Task.Delay(100); }
+    }
+    throw new Exception("Daemon startup timed out");
+}
+async Task<JsonElement> Status(string id, string expected)
+{
+    for (int i = 0; i < 150; i++)
+    {
+        var r = await client.CallAsync("axo.session.events.poll", new { sessionId = id, after = 0 });
+        if (r.GetProperty("status").GetString() == expected) return r;
+        await Task.Delay(50);
+    }
+    throw new Exception("Session did not become " + expected);
+}
+async Task<bool> Fails(string method, object p)
+{
+    try { await client.CallAsync(method, p); return false; } catch (IOException) { return true; }
+}
+async Task<string[]> Messages(string id)
+{
+    var r = await client.CallAsync("axo.session.messages", new { sessionId = id, after = 0 });
+    return r.GetProperty("messages").EnumerateArray().Select(m => m.GetProperty("text").GetString()!).ToArray();
+}
+try
+{
+    daemon = Start(); await Ready();
+    if (live)
+    {
+        var project = await client.CallAsync("axo.workspace.create", new { name = "Live Codex smoke test", directoryPath = workspace });
+        var sessionId = project.GetProperty("session").GetProperty("id").GetString()!;
+        var snapshot = await client.CallAsync("axo.session.open", new { sessionId });
+        var savedThread = snapshot.GetProperty("threadId").GetString();
+        Console.WriteLine("Real Codex thread opened.");
+        await client.CallAsync("axo.session.prompt", new { sessionId, text = "Reply with exactly AXO_WINDOWS_READY. Do not use tools or modify files." });
+        for (var i = 0; i < 180; i++)
+        {
+            var status = await client.CallAsync("axo.session.events.poll", new { sessionId, after = 0 });
+            if (status.GetProperty("status").GetString() == "ready") break;
+            if (status.GetProperty("status").GetString() == "needsAttention") throw new Exception("Live smoke unexpectedly requires input: " + status.GetRawText());
+            await Task.Delay(500);
+        }
+        Assert((await Messages(sessionId)).Any(t => t.Trim() == "AXO_WINDOWS_READY"), "real Codex returns a streamed assistant message");
+        daemon.Kill(); await daemon.WaitForExitAsync(); daemon.Dispose(); daemon = Start(); await Ready();
+        snapshot = await client.CallAsync("axo.session.open", new { sessionId });
+        Assert(snapshot.GetProperty("threadId").GetString() == savedThread, "real Codex resumes its saved thread after daemon restart");
+        await client.CallAsync("axo.session.prompt", new { sessionId, text = "What exact marker did I ask you to reply with in my previous message? Reply only with that marker. Do not use tools." });
+        for (var i = 0; i < 180; i++)
+        {
+            var status = await client.CallAsync("axo.session.events.poll", new { sessionId, after = 0 });
+            if (status.GetProperty("status").GetString() == "ready") break;
+            await Task.Delay(500);
+        }
+        Assert((await Messages(sessionId)).Count(t => t.Trim() == "AXO_WINDOWS_READY") >= 2, "resumed Codex conversation retains context");
+        await client.CallAsync("axo.session.prompt", new { sessionId, text = "Create axo-smoke.txt in this workspace with exactly AXO_WINDOWS_FILE_OK followed by a newline. Use tools to create the file and then run a shell command to read it back. Do not change any other files or access anything outside this workspace. Reply with the file contents." });
+        var commandCompleted = false;
+        for (var i = 0; i < 240; i++)
+        {
+            var status = await client.CallAsync("axo.session.events.poll", new { sessionId, after = 0 });
+            foreach (var envelope in status.GetProperty("events").EnumerateArray())
+            {
+                var notification = envelope.GetProperty("event");
+                if (notification.GetProperty("method").GetString() == "item/completed")
+                {
+                    var item = notification.GetProperty("params").GetProperty("item");
+                    if (item.GetProperty("type").GetString() == "commandExecution" && item.TryGetProperty("exitCode", out var exit) && exit.ValueKind == JsonValueKind.Number && exit.GetInt32() == 0) commandCompleted = true;
+                }
+            }
+            if (status.GetProperty("status").GetString() == "ready") break;
+            if (status.GetProperty("status").GetString() == "needsAttention") throw new Exception("Live tool smoke needs input: " + status.GetProperty("pendingRequests").GetRawText());
+            await Task.Delay(500);
+        }
+        var smokeFile = Path.Combine(workspace, "axo-smoke.txt");
+        Assert(File.Exists(smokeFile) && File.ReadAllText(smokeFile).Trim() == "AXO_WINDOWS_FILE_OK", "real Codex creates a file inside its Windows workspace");
+        Assert(commandCompleted, "real Codex completes a Windows shell tool call");
+        Console.WriteLine("Live Codex smoke test passed.");
+        return;
+    }
+    var n = await client.CallAsync("axo.protocol.negotiate", new { protocolVersion = 1 });
+    Assert(n.GetProperty("agent").GetString() == "codex", "Windows negotiation reports Codex");
+    Assert(await Fails("axo.protocol.negotiate", new { protocolVersion = 500 }), "unsupported protocol is rejected");
+    Assert(await Fails("axo.session.pi.restart.force.v2", new { }), "Pi-only method is not advertised or implemented");
+    using (var duplicate = Start())
+    {
+        await duplicate.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert(duplicate.ExitCode != 0, "duplicate daemon cannot claim the same pipe");
+    }
+    var created = await client.CallAsync("axo.workspace.create", new { name = "Fixture workspace", directoryPath = workspace });
+    var id = created.GetProperty("session").GetProperty("id").GetString()!;
+    var workspaceId = created.GetProperty("workspace").GetProperty("workspaceId").GetString()!;
+    Assert(created.GetProperty("session").GetProperty("initialPwd").GetString() == workspace, "workspace paths preserve spaces and Unicode");
+    var opened = await client.CallAsync("axo.session.open", new { sessionId = id });
+    var threadId = opened.GetProperty("threadId").GetString();
+    Assert(!string.IsNullOrEmpty(threadId), "session opens a real child process and records its thread ID");
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "hello\nsecond line" });
+    await Status(id, "ready");
+    Assert((await Messages(id)).Contains("Echo: hello\nsecond line"), "app-server notifications become durable chat messages");
+    Assert(await Fails("axo.session.prompt", new { sessionId = id, text = " " }), "empty message is rejected");
+    Assert(await Fails("axo.session.open", new { sessionId = id, typo = true }), "misspelled parameters are rejected");
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "wait" });
+    await Status(id, "working");
+    Assert(await Fails("axo.session.prompt", new { sessionId = id, text = "second concurrent turn" }), "busy session refuses a competing prompt");
+    var newClient = new DaemonClient(pipe);
+    var list = await newClient.CallAsync("axo.session.list");
+    Assert(list.GetProperty("sessions")[0].GetProperty("status").GetString() == "working", "session keeps working after client reconnection");
+    await client.CallAsync("axo.session.interrupt", new { sessionId = id }); await Status(id, "ready");
+    Assert(true, "Stop interrupts the active Codex turn");
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "approval" });
+    var waiting = await Status(id, "needsAttention");
+    var requestId = waiting.GetProperty("pendingRequests")[0].GetProperty("id").GetRawText();
+    await client.CallAsync("axo.session.approval.respond", new { sessionId = id, requestId, decision = "decline" }); await Status(id, "ready");
+    Assert((await Messages(id)).Contains("Approval: decline"), "approval decision is delivered to the correct app-server request");
+    Assert(await Fails("axo.session.approval.respond", new { sessionId = id, requestId, decision = "accept" }), "stale approval cannot be reused");
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "flood" }); await Status(id, "ready");
+    var flood = await client.CallAsync("axo.session.events.poll", new { sessionId = id, after = 0 });
+    Assert(flood.GetProperty("reset").GetBoolean() && flood.GetProperty("events").GetArrayLength() == 200, "bounded event journal reports lost cursor and paginates recovery");
+    Assert((await Messages(id)).Contains("flood complete"), "completed message survives event journal overflow");
+    await client.CallAsync("axo.session.rename", new { sessionId = id, name = "Renamed session" });
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "crash" }); await Status(id, "unavailable");
+    var recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
+    Assert(recovered.GetProperty("threadId").GetString() == threadId, "crashed Codex process resumes the existing thread");
+    var agentPid = recovered.GetProperty("agentProcessId").GetInt32();
+    daemon.Kill(); await daemon.WaitForExitAsync(); daemon.Dispose();
+    try
+    {
+        using var child = Process.GetProcessById(agentPid);
+        await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    }
+    catch (ArgumentException) { /* Windows already removed the process. */ }
+    Assert(true, "Windows job terminates the agent when its daemon is killed");
+    daemon = Start(); await Ready();
+    recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
+    Assert(recovered.GetProperty("threadId").GetString() == threadId, "daemon restart preserves Codex thread identity");
+    Assert(recovered.GetProperty("name").GetString() == "Renamed session", "session name survives daemon restart");
+    Assert((await Messages(id)).Contains("Echo: hello\nsecond line"), "chat history survives daemon restart");
+    await client.CallAsync("axo.session.close", new { sessionId = id });
+    list = await client.CallAsync("axo.session.list");
+    Assert(list.GetProperty("sessions").GetArrayLength() == 0, "closing session archives it and stops its agent");
+    await client.CallAsync("axo.session.reopen", new { sessionId = id });
+    Assert((await Messages(id)).Contains("flood complete"), "reopening archived session retains history");
+    var second = await client.CallAsync("axo.workspace.session.create", new { workspaceId });
+    Assert(second.GetProperty("id").GetString() != id, "sessions receive distinct Axo UUIDs");
+    // A genuine native PowerShell window is opened, then closed by session shutdown.
+    var terminal = await client.CallAsync("axo.terminal.open", new { sessionId = id });
+    Assert(terminal.GetProperty("processId").GetInt32() > 0, "daemon opens an interactive terminal in the workspace");
+    await client.CallAsync("axo.session.close", new { sessionId = id });
+    await client.CallAsync("axo.daemon.stop");
+    await daemon.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    Assert(daemon.ExitCode == 0, "graceful shutdown acknowledges its request and exits cleanly");
+    Console.WriteLine($"All {assertions} Windows integration checks passed.");
+}
+finally
+{
+    if (daemon is not null) { if (!daemon.HasExited) { daemon.Kill(entireProcessTree: true); await daemon.WaitForExitAsync(); } daemon.Dispose(); }
+    // Tests intentionally keep a diagnostic catalog on failure; caller owns scratch cleanup.
+    Console.WriteLine("Test catalog: " + root);
+}

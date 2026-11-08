@@ -31,3 +31,7 @@ config.local.json
 # Written by every build (RFD0021).
 rust-project.json
 .rules_rust_analyzer/
+
+# Native Windows client build outputs.
+windows/**/bin/
+windows/**/obj/

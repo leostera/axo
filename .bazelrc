@@ -1,6 +1,6 @@
 common --enable_bzlmod
 build --enable_platform_specific_config
-build --macos_minimum_os=14.0
+build:macos --macos_minimum_os=14.0
 test --test_output=errors
 common --repo_env=DO_NOT_TRACK=1
 # TypeScript 7 (tsc) writes the JavaScript, as it did before Bazel.

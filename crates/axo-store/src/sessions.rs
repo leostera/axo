@@ -641,7 +641,11 @@ mod tests {
         insert_workspace(database, &workspace, "w", Path::new("/w"), None).unwrap();
         assert_eq!(next_session_ordinal(database, &workspace).unwrap(), 1);
 
-        let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
+        #[cfg(unix)]
+        let fixture_socket = PathBuf::from("/tmp/axo-store-test.sock");
+        #[cfg(windows)]
+        let fixture_socket = PathBuf::from("C:/axo-store-test.sock");
+        let socket = BridgeSocketPath::parse(fixture_socket).unwrap();
         let split = new_uuid_v4().unwrap();
         let inserted = insert_workspace_session(
             database,

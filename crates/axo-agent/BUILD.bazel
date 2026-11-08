@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -6,15 +6,24 @@ rust_library(
     name = "axo_agent",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
-    deps = [
-        "//crates/axo-protocol:axo_protocol",
-        "//crates/axo-pty:axo_pty",
-        "@crates//:libc",
-        "@crates//:log",
-        "@crates//:serde",
-        "@crates//:serde_json",
-        "@crates//:sha2",
-    ],
+    deps = select({
+        "@platforms//os:windows": [
+            "@crates//:windows-sys",
+            "//crates/axo-protocol:axo_protocol",
+            "@crates//:log",
+            "@crates//:serde",
+            "@crates//:serde_json",
+        ],
+        "//conditions:default": [
+            "//crates/axo-protocol:axo_protocol",
+            "//crates/axo-pty:axo_pty",
+            "@crates//:libc",
+            "@crates//:log",
+            "@crates//:serde",
+            "@crates//:serde_json",
+            "@crates//:sha2",
+        ],
+    }),
 )
 
 rust_test(
@@ -22,4 +31,12 @@ rust_test(
     compile_data = ["//schemas/axo.leostera.dev/v1"],
     crate = ":axo_agent",
     edition = "2024",
+)
+
+rust_binary(
+    name = "fake_codex",
+    testonly = True,
+    srcs = ["testdata/fake_codex.rs"],
+    edition = "2024",
+    deps = ["@crates//:serde_json"],
 )

@@ -1,0 +1,790 @@
+use std::ffi::{CStr, OsStr};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use axo_ipc::{ErrorCode, Extension, Methods, RpcError, TypedMethods};
+use axo_protocol::rpc::{self, method};
+use jsonrpc_core::IoHandler;
+
+pub mod permissions;
+mod session;
+mod workspace_access;
+
+const MAX_SOCKET_PATH_BYTES: usize = 103;
+
+pub const BUILD_NUMBER: &str = match option_env!("AXO_BUILD_NUMBER") {
+    Some(build_number) => build_number,
+    None => "1",
+};
+
+pub fn build_number() -> u64 {
+    BUILD_NUMBER
+        .parse()
+        .expect("build metadata must provide a positive decimal build number")
+}
+
+/// Where every Mac's transcripts live, by host: `sessions/` beside the server directory, so
+/// `~/.axo/server` has `~/.axo/sessions` (RFD0022).
+pub fn sessions_directory_for(server_directory: &Path) -> PathBuf {
+    match server_directory.parent() {
+        Some(parent) => parent.join("sessions"),
+        None => server_directory.join("sessions"),
+    }
+}
+
+/// Returns the default directory for daemon metadata and logs.
+pub fn default_server_directory() -> io::Result<PathBuf> {
+    Ok(current_user_home_directory()?.join(".axo/server"))
+}
+
+pub(crate) fn current_user_home_directory() -> io::Result<PathBuf> {
+    resolve_home_directory(std::env::var_os("HOME").map(PathBuf::from))
+}
+
+pub(crate) fn current_user_login_shell() -> io::Result<PathBuf> {
+    let mut account = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0; 16 * 1024];
+    let mut result = std::ptr::null_mut();
+    // SAFETY: account, buffer, and result are valid writable storage for getpwuid_r.
+    let error = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            account.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error));
+    }
+    if result.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine the current user's login shell",
+        ));
+    }
+
+    // SAFETY: getpwuid_r returned a non-null result and initialized account.
+    let shell = unsafe { account.assume_init() }.pw_shell;
+    if shell.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the current user's account has no login shell",
+        ));
+    }
+
+    // SAFETY: pw_shell points to a NUL-terminated string in buffer, which remains alive here.
+    let shell = unsafe { CStr::from_ptr(shell) }.to_bytes();
+    let shell = PathBuf::from(OsStr::from_bytes(shell));
+    if !shell.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the current user's login shell path is not absolute",
+        ));
+    }
+    Ok(shell)
+}
+
+fn resolve_home_directory(configured_home: Option<PathBuf>) -> io::Result<PathBuf> {
+    if let Some(home) = configured_home.filter(|path| path.is_absolute()) {
+        return Ok(home);
+    }
+
+    // LaunchAgents do not guarantee that HOME is present in their environment.
+    let mut account = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0; 16 * 1024];
+    let mut result = std::ptr::null_mut();
+    // SAFETY: account, buffer, and result are valid writable storage for getpwuid_r.
+    let error = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            account.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error));
+    }
+    if result.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine the current user's home directory",
+        ));
+    }
+
+    // SAFETY: getpwuid_r returned a non-null result and initialized account.
+    let home = unsafe { account.assume_init() }.pw_dir;
+    if home.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the current user's account has no home directory",
+        ));
+    }
+
+    // SAFETY: pw_dir points to a NUL-terminated string in buffer, which remains alive here.
+    let home = unsafe { CStr::from_ptr(home) }.to_bytes();
+    let home = PathBuf::from(OsStr::from_bytes(home));
+    if !home.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the current user's home directory is not absolute",
+        ));
+    }
+    Ok(home)
+}
+
+/// Creates the daemon's per-user directory with private permissions.
+pub fn prepare_server_directory(path: &Path) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "server directory must be an absolute path",
+        ));
+    }
+    fs::create_dir_all(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+/// Where axod keeps per-host relay credentials.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostCredentialStorage {
+    /// The user's login Keychain (macOS).
+    Keychain,
+    /// `0600` files under `<server-dir>/host-credentials`, for platforms without a secret store
+    /// and for isolated tests.
+    Files,
+}
+
+impl HostCredentialStorage {
+    pub const fn platform_default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Keychain
+        } else {
+            Self::Files
+        }
+    }
+
+    fn open(self, server_directory: &Path) -> Arc<dyn axo_relay::credential::HostCredentialStore> {
+        match self {
+            Self::Keychain => Arc::new(axo_relay::credential::MacOSKeychain),
+            Self::Files => Arc::new(axo_relay::credential::FileCredentialStore::new(
+                server_directory.join("host-credentials"),
+            )),
+        }
+    }
+}
+
+pub use axo_relay::{DEFAULT_RELAY_URL, RelayEndpoint};
+
+/// How this daemon reaches the Axo relay.
+pub struct RemoteAccess {
+    pub endpoint: RelayEndpoint,
+    pub credential_storage: HostCredentialStorage,
+}
+
+/// What the relay RPCs act on; absent if the relay worker could not start.
+#[derive(Clone)]
+struct RelayContext {
+    control: Arc<axo_relay::RelayControl>,
+    channel: Arc<axo_relay::RelayChannel>,
+    endpoint: axo_relay::RelayEndpoint,
+    host: Arc<session::RelayHostAdapter>,
+    credentials: Arc<dyn axo_relay::credential::HostCredentialStore>,
+}
+
+/// Starts Axo's local JSON-RPC server and blocks for the daemon's lifetime.
+pub fn serve_ipc(
+    socket_override: Option<&Path>,
+    server_directory: &Path,
+    daemon_version: &'static str,
+    remote_access: RemoteAccess,
+) -> Result<(), Box<dyn std::error::Error>> {
+    prepare_server_directory(server_directory)?;
+    let socket_path = match socket_override {
+        Some(path) => SocketPath::parse(path.to_path_buf())?,
+        None => default_socket_path()?,
+    };
+    prepare_runtime_directory(&socket_path.0)?;
+    remove_stale_socket(&socket_path.0)?;
+
+    let runtime = axod_runtime()?;
+    let stop = axo_ipc::Stop::default();
+    session::set_agent_socket(&socket_path.0);
+    let sessions_directory = sessions_directory_for(server_directory);
+    let sessions = session::SessionManager::open(server_directory, &sessions_directory)?;
+    let host = Arc::new(session::RelayHostAdapter(Arc::clone(&sessions)));
+    let credentials = remote_access.credential_storage.open(server_directory);
+    sessions.keep_input_key_in(Arc::clone(&credentials));
+    sessions.reap_on_child_exit(runtime.handle())?;
+    // What the peers socket follows, shared with the remote panes' handlers (RFD0024).
+    let peer_live = axo_relay::peers::PeerLive::new();
+    sessions.attach_peers(Arc::clone(&peer_live), server_directory.join("peers.json"));
+    let mut remote_relay = match axo_relay::RelayWorker::start(
+        axo_relay::RelayDependencies {
+            host: host.clone(),
+            endpoint: remote_access.endpoint.clone(),
+            links: host.clone(),
+            credentials: Arc::clone(&credentials),
+            // Every Mac's transcripts by host, this Mac's beside the copies (RFD0022).
+            peers: Some(axo_relay::peers::PeersPaths {
+                sessions_directory: sessions_directory.clone(),
+                index: server_directory.join("peers.json"),
+                live: peer_live,
+            }),
+            // Prompts' attachments, beside the Sessions (RFD0030).
+            assets_directory: sessions_directory.parent().map(|axo| axo.join("assets")),
+        },
+        runtime.handle().clone(),
+        stop.clone(),
+    ) {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            log::error!("event=relay.worker_unavailable reason={error}");
+            None
+        }
+    };
+    let relay = remote_relay.as_ref().map(|worker| RelayContext {
+        control: worker.control_handle(),
+        channel: worker.channel_handle(),
+        endpoint: remote_access.endpoint,
+        host,
+        credentials,
+    });
+    let handler = rpc_handler(Arc::clone(&sessions), daemon_version, relay);
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path.0)?;
+    fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
+    let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
+    let signalled = {
+        // Signal streams register with the runtime they are made in.
+        let _inside = runtime.enter();
+        stop_on_signal(stop.clone())?
+    };
+    runtime.spawn(signalled);
+
+    log::info!("event=daemon.ready pid={}", std::process::id());
+    // `axod mcp` opens the MCP server for its Session on its connection (RFD0034).
+    let mut upgrades = axo_ipc::Upgrades::default();
+    let mcp_socket = socket_path.0.clone();
+    upgrades.add(axo_mcp::OPEN, move |upgraded| {
+        axo_mcp::upgrade(upgraded, mcp_socket.clone())
+    });
+    let served = axo_ipc::serve(runtime.handle(), listener, handler, upgrades, stop);
+    if let Some(relay) = remote_relay.as_mut() {
+        relay.shutdown();
+    }
+    sessions.shutdown();
+    // Requests still running get a moment to finish; then they are cut short.
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    log::info!("event=daemon.server_stopped");
+    served?;
+    Ok(())
+}
+
+/// Grace for requests still running when axod stops.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// axod's one runtime (RFD0034, step 7): the socket, its requests, the MCP servers and the
+/// relay run on it; blocking work runs on its blocking pool.
+fn axod_runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("axod")
+        .enable_all()
+        .build()
+}
+
+/// Stops axod on SIGTERM or SIGINT. The streams are made now, so a signal from here on is never
+/// missed, and they replace the default handlers, which would kill the process.
+fn stop_on_signal(stop: axo_ipc::Stop) -> io::Result<impl std::future::Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    Ok(async move {
+        let name = tokio::select! {
+            _ = terminate.recv() => "SIGTERM",
+            _ = interrupt.recv() => "SIGINT",
+        };
+        log::info!("event=daemon.signal signal={name}");
+        stop.stop();
+    })
+}
+
+/// axod's methods, from its extensions (RFD0034). Each method has one owner; two claiming the
+/// same name is a bug, found when axod starts.
+fn rpc_handler(
+    sessions: Arc<session::SessionManager>,
+    daemon_version: &'static str,
+    relay: Option<RelayContext>,
+) -> IoHandler {
+    let apps = axo_apps::Apps::new(relay.as_ref().map(|relay| Arc::clone(&relay.channel)));
+    let assets = axo_assets::Assets::new(sessions.asset_slot());
+    let questions = axo_questions::QuestionsExtension::new(
+        sessions.questions(),
+        Arc::clone(&sessions) as Arc<dyn axo_questions::QuestionsHost>,
+    );
+    let computer = axo_computer_use::ComputerExtension::new(
+        sessions.computer(),
+        Arc::clone(&sessions) as Arc<dyn axo_computer_use::ComputerHost>,
+    );
+    let daemon = Daemon {
+        version: daemon_version,
+        sessions: Arc::clone(&sessions),
+    };
+    let mut methods = Methods::new();
+    for extension in [
+        &daemon as &dyn Extension,
+        &Relay(relay),
+        &Sessions(sessions),
+        &apps,
+        &assets,
+        &questions,
+        &computer,
+    ] {
+        if let Err(conflict) = methods.add(extension) {
+            panic!("{conflict}");
+        }
+    }
+    methods.into_handler()
+}
+
+/// The daemon's own methods: negotiating the protocol, and its health.
+struct Daemon {
+    version: &'static str,
+    sessions: Arc<session::SessionManager>,
+}
+
+impl Extension for Daemon {
+    fn name(&self) -> &'static str {
+        "daemon"
+    }
+
+    fn register(&self, methods: &mut IoHandler) {
+        add_protocol_negotiate_method(methods);
+        let ready = Arc::clone(&self.sessions);
+        add_health_method(methods, self.version, move || ready.is_ready());
+    }
+}
+
+/// Linking this Mac, its relay's status, and sharing through it.
+struct Relay(Option<RelayContext>);
+
+impl Extension for Relay {
+    fn name(&self) -> &'static str {
+        "relay"
+    }
+
+    fn register(&self, methods: &mut IoHandler) {
+        add_relay_methods(methods, self.0.clone());
+    }
+}
+
+/// Sessions, Workspaces, panes, Pi, questions, computer use: the Session manager's methods,
+/// until they move into extensions of their own (RFD0034 step 5).
+struct Sessions(Arc<session::SessionManager>);
+
+impl Extension for Sessions {
+    fn name(&self) -> &'static str {
+        "sessions"
+    }
+
+    fn register(&self, methods: &mut IoHandler) {
+        self.0.register_rpc_methods(methods);
+    }
+}
+
+fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
+    let context = relay.clone();
+    handler.add_typed(
+        method::RELAY_LINK,
+        "expected {code}",
+        move |request: rpc::LinkHost| {
+            let context = context
+                .as_ref()
+                .ok_or_else(|| internal_error("host relay is unavailable"))?;
+            let host_label = axo_relay::link_host(
+                &context.endpoint,
+                &request.code,
+                context.host.as_ref(),
+                context.host.as_ref(),
+                context.credentials.as_ref(),
+            )
+            .map_err(|error| {
+                log::warn!("event=relay.link_failed reason={error}");
+                internal_error("could not link this Mac")
+            })?;
+            context
+                .control
+                .request_connect()
+                .map_err(|_| internal_error("could not start the host relay"))?;
+            Ok(rpc::HostLinked {
+                linked: true,
+                host_label,
+            })
+        },
+    );
+
+    let context = relay.clone();
+    handler.add_typed(
+        method::RELAY_STATUS,
+        "expected no parameters",
+        move |_: rpc::NoParams| match &context {
+            Some(context) => context
+                .control
+                .snapshot()
+                .map_err(|_| internal_error("could not read remote connection status")),
+            None => Ok(axo_relay::unavailable_status()),
+        },
+    );
+
+    let context = relay.clone();
+    handler.add_typed(
+        method::SESSION_SHARE,
+        "expected {snapshot}",
+        move |request: rpc::ShareSession| {
+            let context = context
+                .as_ref()
+                .ok_or_else(|| internal_error("this Mac cannot reach its Axo account"))?;
+            share_session(context, request.snapshot)
+        },
+    );
+
+    handler.add_typed(
+        method::RELAY_CONNECT,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            let requested = match &relay {
+                Some(context) => {
+                    context
+                        .control
+                        .request_connect()
+                        .map_err(|_| internal_error("could not request remote connection"))?;
+                    true
+                }
+                None => false,
+            };
+            Ok(rpc::ConnectRequested { requested })
+        },
+    );
+}
+
+/// The cloud method that stores a shared conversation (`@axo/protocol`'s `SHARE_PUBLISH_METHOD`).
+const SHARE_PUBLISH_METHOD: &str = "axo.host.share.publish";
+/// Storing a snapshot of up to 1.5 MiB; generous, since nothing else waits on it.
+const SHARE_PUBLISH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Forwards a redacted conversation over the relay link, so the cloud publishes it under this
+/// Mac's account. No Cloudflare credentials are needed on the Mac.
+fn share_session(
+    context: &RelayContext,
+    snapshot: serde_json::Value,
+) -> Result<rpc::SessionShared, RpcError> {
+    use axo_relay::{RelayCallError, RelayHost};
+    let params = serde_json::json!({
+        "hostId": context.host.host_id(),
+        "hostGeneration": context.host.host_generation(),
+        "snapshot": snapshot,
+    });
+    let reply = context
+        .channel
+        .request(
+            SHARE_PUBLISH_METHOD,
+            params,
+            axo_relay::Priority::Control,
+            SHARE_PUBLISH_TIMEOUT,
+        )
+        .map_err(|error| {
+            log::warn!("event=share.publish_failed reason={error:?}");
+            internal_error(match error {
+                RelayCallError::NotConnected => {
+                    "this Mac is not connected to its Axo account; link it under Settings > Remote Access, or check that it is online"
+                }
+                RelayCallError::TooLarge => "the conversation is too large to share",
+                RelayCallError::Rejected { .. } => "Axo's cloud refused the conversation",
+                RelayCallError::Disconnected
+                | RelayCallError::TimedOut
+                | RelayCallError::Abandoned => {
+                    "the connection to Axo's cloud dropped; the conversation may have been published"
+                }
+            })
+        })?;
+    serde_json::from_value(reply).map_err(|_| internal_error("Axo's cloud answered unexpectedly"))
+}
+
+fn add_protocol_negotiate_method(handler: &mut IoHandler) {
+    handler.add_typed(
+        method::PROTOCOL_NEGOTIATE,
+        "expected {protocolVersion}",
+        |request: rpc::NegotiateProtocol| {
+            if request.protocol_version != rpc::PROTOCOL_VERSION {
+                return Err(invalid_params("unsupported protocol version"));
+            }
+            Ok(rpc::ProtocolNegotiated {
+                protocol_version: rpc::PROTOCOL_VERSION,
+                methods: method::ADVERTISED
+                    .iter()
+                    .map(|&name| name.to_owned())
+                    .collect(),
+            })
+        },
+    );
+}
+
+fn add_health_method(
+    handler: &mut IoHandler,
+    daemon_version: &'static str,
+    ready: impl Fn() -> bool + Send + Sync + 'static,
+) {
+    handler.add_typed(
+        method::DAEMON_HEALTH,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            Ok(rpc::DaemonHealth {
+                version: daemon_version.to_owned(),
+                build_number: build_number(),
+                status: rpc::DaemonStatus::Running,
+                ready: ready(),
+                developer_tools: permissions::developer_tools(),
+            })
+        },
+    );
+}
+
+fn invalid_params(message: &str) -> RpcError {
+    RpcError {
+        code: ErrorCode::InvalidParams,
+        message: message.to_owned(),
+        data: None,
+    }
+}
+
+fn internal_error(message: &str) -> RpcError {
+    RpcError {
+        code: ErrorCode::InternalError,
+        message: message.to_owned(),
+        data: None,
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SocketPath(PathBuf);
+
+impl SocketPath {
+    fn parse(path: PathBuf) -> Result<Self, &'static str> {
+        let byte_length = path.as_os_str().as_bytes().len();
+        if !path.is_absolute() || path.file_name().is_none() {
+            return Err("socket path must be an absolute file path");
+        }
+        if byte_length > MAX_SOCKET_PATH_BYTES {
+            return Err("socket path is too long for a Unix-domain socket");
+        }
+        Ok(Self(path))
+    }
+}
+
+fn default_socket_path() -> Result<SocketPath, Box<dyn std::error::Error>> {
+    Ok(SocketPath::parse(
+        current_user_home_directory()?.join("Library/Application Support/Axo/run/axod.sock"),
+    )?)
+}
+
+fn prepare_runtime_directory(socket_path: &Path) -> io::Result<()> {
+    let runtime_directory = socket_path
+        .parent()
+        .ok_or_else(|| io::Error::other("socket path must have a parent directory"))?;
+    fs::create_dir_all(runtime_directory)?;
+    fs::set_permissions(runtime_directory, fs::Permissions::from_mode(0o700))
+}
+
+fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(socket_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "refusing to replace a non-socket path",
+        ));
+    }
+    if UnixStream::connect(socket_path).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "another Axo server is already listening on this socket",
+        ));
+    }
+
+    log::warn!("event=daemon.stale_socket_removed");
+    fs::remove_file(socket_path)
+}
+
+struct PidFile {
+    path: PathBuf,
+    process_id: u32,
+}
+
+impl PidFile {
+    fn write(path: &Path) -> io::Result<Self> {
+        let process_id = std::process::id();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary_path = path.with_file_name(format!("axo.pid.{process_id}.{nonce}.tmp"));
+        let mut temporary_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary_path)?;
+        writeln!(temporary_file, "{process_id}")?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        if let Err(error) = fs::rename(&temporary_path, path) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            process_id,
+        })
+    }
+}
+
+impl Drop for PidFile {
+    fn drop(&mut self) {
+        let still_ours = fs::read_to_string(&self.path)
+            .map(|contents| contents.trim() == self.process_id.to_string())
+            .unwrap_or(false);
+        if still_ours {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary_directory() -> PathBuf {
+        static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("axo-server-test-{}-{unique}", std::process::id()))
+    }
+
+    #[test]
+    fn health_method_reports_this_build() {
+        let mut handler = IoHandler::new();
+        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"), || false);
+        let response = handler
+            .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.health"}"#)
+            .expect("health is a request with a response");
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["result"]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(response["result"]["buildNumber"], build_number());
+        assert_eq!(response["result"]["status"], "running");
+        assert_eq!(response["result"]["ready"], false, "still starting");
+    }
+
+    #[test]
+    fn unknown_methods_use_the_json_rpc_method_not_found_error() {
+        let mut handler = IoHandler::new();
+        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"), || true);
+        let response = handler
+            .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.unknown"}"#)
+            .expect("unknown method requests have an error response");
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn socket_paths_are_bounded_absolute_file_paths() {
+        assert!(SocketPath::parse(PathBuf::from("/tmp/axod.sock")).is_ok());
+        assert!(SocketPath::parse(PathBuf::from("relative/axod.sock")).is_err());
+        assert!(
+            SocketPath::parse(PathBuf::from(format!(
+                "/{}",
+                "x".repeat(MAX_SOCKET_PATH_BYTES)
+            )))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_socket_cleanup_never_removes_regular_files() {
+        let file = temporary_directory();
+        fs::write(&file, b"keep me").unwrap();
+
+        let error = remove_stale_socket(&file).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&file).unwrap(), b"keep me");
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn home_directory_uses_the_account_database_when_home_is_unset_or_relative() {
+        let from_account = resolve_home_directory(None).unwrap();
+        assert!(from_account.is_absolute());
+        assert_eq!(
+            resolve_home_directory(Some(PathBuf::from("relative/home"))).unwrap(),
+            from_account
+        );
+    }
+
+    #[test]
+    fn server_directory_is_private_and_must_be_absolute() {
+        let directory = temporary_directory();
+        prepare_server_directory(&directory).unwrap();
+        assert_eq!(
+            fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        assert_eq!(
+            prepare_server_directory(Path::new("relative"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn pid_file_is_removed_on_drop_only_when_it_still_identifies_this_process() {
+        let directory = temporary_directory();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("axo.pid");
+
+        let pid_file = PidFile::write(&path).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().trim(),
+            std::process::id().to_string()
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(pid_file);
+        assert!(!path.exists());
+
+        let pid_file = PidFile::write(&path).unwrap();
+        fs::write(&path, "different process\n").unwrap();
+        drop(pid_file);
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "different process\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

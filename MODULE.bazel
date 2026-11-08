@@ -21,6 +21,8 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
     versions = ["1.99.0"],
+    # Keep the formatter's rustc_driver DLL compatible on Windows.
+    rustfmt_version = "1.99.0",
 )
 use_repo(rust, "rust_toolchains")
 
@@ -55,6 +57,13 @@ crate.spec(package = "tokio-tungstenite", version = "0.30.0", features = ["nativ
 crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls", "url"])
 crate.spec(package = "url", version = "2.5.8")
 crate.spec(package = "zeroize", version = "1")
+crate.spec(package = "windows-sys", version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+])
 # Cua Driver (MIT), pinned: only its macOS runtime and core are linked into axod (axo-computer);
 # its daemon, MCP server, SDK bindings and telemetry are not.
 crate.spec(package = "platform-macos", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")

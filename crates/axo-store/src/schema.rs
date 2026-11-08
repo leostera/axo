@@ -3,6 +3,7 @@
 //! [`SCHEMA_VERSION`].
 
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -27,6 +28,7 @@ pub fn open(path: &Path) -> io::Result<Connection> {
         .and_then(|()| back_up_before_uuid_rekey(&database, path))
         .and_then(|()| initialize_database(&mut database))
         .map_err(io::Error::other)?;
+    #[cfg(unix)]
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(database)
 }
@@ -196,8 +198,11 @@ mod tests {
         // FULL is also bundled SQLite's default, so this guards the build, not the pragma.
         assert_eq!(pragma("synchronous"), "2", "FULL");
         assert_eq!(pragma("foreign_keys"), "1");
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let host = load_or_create_host_id(&database).unwrap();
         drop(database);
 
