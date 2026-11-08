@@ -27,4 +27,5 @@ rust_test(
     name = "axo_computer_use_tests",
     crate = ":axo_computer_use",
     edition = "2024",
+    deps = ["@crates//:zeroize"],
 )

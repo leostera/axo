@@ -10,7 +10,7 @@
     "apple/AxoMac/Sources/AxoMac/Settings/RemoteAccessModel.swift#RemoteAccessModel.link": "aac7cb58a029",
     "apple/AxoMac/Sources/AxoMac/Settings/RemoteAccessSettingsView.swift#RemoteAccessSettingsView.linkHost": "d33200ee8e6f",
     "crates/axo-apps/src/lib.rs#forward": "0cdf47a9779e",
-    "crates/axo-computer-use/src/lib.rs#ComputerUse.fill": "d3691db823a2",
+    "crates/axo-computer-use/src/lib.rs#ComputerUse.fill": "2de38601840f",
     "crates/axo-computer-use/src/lib.rs#ComputerUse.remote": "544fac368329",
     "crates/axo-computer-use/src/lib.rs#ComputerUse.request_input": "f1f8e59a6d37",
     "crates/axo-computer/src/form.rs#Form.check_unchanged": "4851187379a8",
