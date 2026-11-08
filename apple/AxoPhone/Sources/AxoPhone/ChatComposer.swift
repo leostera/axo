@@ -9,7 +9,8 @@ import UniformTypeIdentifiers
 /// (the camera, photos, files and plugins, in a menu above it) and voice and Send on the right. It
 /// grows with the words. It stays closed, saying why in its placeholder, when there is nobody to
 /// send to. Once a message runs past a few lines it can be opened full screen. Return starts a new
-/// line and Send sends, as the web does on a touch screen; holding Send offers Follow-up or Steer.
+/// line and Send sends, as the web does on a touch screen: a tap interrupts a working agent, so it
+/// answers now, and holding Send offers Steer or Follow-up instead.
 /// With `voice`, a message can be said instead of typed: while listening the box becomes the
 /// listening bar. With `pi`, the bar names the model the chat's Pi runs, and a `/` starting the
 /// box lists its commands (RFD0033).
@@ -37,6 +38,9 @@ struct ChatComposer: View {
   @State private var showingCamera = false
   @State private var showingAddMenu = false
   @State private var showingModels = false
+  @State private var showingDeliveries = false
+  /// Send was held: the lift that ends the hold sends nothing.
+  @State private var heldSend = false
 
   private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty }
   /// About three lines: long enough to want the whole screen to read and edit it.
@@ -185,33 +189,84 @@ struct ChatComposer: View {
     }
   }
 
-  /// Tap sends as a follow-up; holding it offers Follow-up or Steer, which only differ while Pi
-  /// works, and both always go.
+  /// Our circle in a plain button, not a system menu (which iOS 26 dresses in its own glass, and
+  /// whose hold the card around it may never pass on). A tap sends, interrupting a working agent;
+  /// a hold of 0.4 s sends nothing and offers Steer or Follow-up above it, sent once one is chosen.
   private var sendButton: some View {
     let enabled = canSend && hasDraft && ready
-    return Menu {
-      Button { send(.followUp) } label: {
-        Label("Follow-up", systemImage: "text.append")
-        Text("After this turn")
+    return Button {
+      // The finger lifting after a hold is not a tap.
+      if heldSend {
+        heldSend = false
+        return
       }
-      Button { send(.steer) } label: {
-        Label("Steer", systemImage: "arrow.turn.down.right")
-        Text("Now, within this turn")
-      }
+      send(.interrupt)
     } label: {
       Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold))
         .foregroundStyle(enabled ? ChatColors.background : Color.secondary)
         .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
-        .background(enabled ? Color.primary : ChatColors.disabledControl, in: Circle())
-    } primaryAction: {
-      send(.followUp)
+        // The label's colour as itself: `Color.primary` over the card's material is drawn vibrant,
+        // a see-through grey rather than the solid circle it is meant to be.
+        .background(enabled ? Color(uiColor: .label) : ChatColors.disabledControl, in: Circle())
+        .contentShape(Circle())
     }
-    .menuStyle(.button)
     .buttonStyle(.plain)
-    .accessibilityLabel("Send")
-    .accessibilityHint("Hold to steer the reply being written")
-    .accessibilityIdentifier("send-message")
+    .simultaneousGesture(
+      LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+        heldSend = true
+        showingDeliveries = true
+      })
     .disabled(!enabled)
+    .accessibilityLabel("Send")
+    .accessibilityHint("Hold to steer or follow up instead")
+    .accessibilityAction(named: "Steer") { send(.steer) }
+    .accessibilityAction(named: "Follow up") { send(.followUp) }
+    .accessibilityIdentifier("send-message")
+    .popover(isPresented: $showingDeliveries, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+      DeliveryMenu { delivery in
+        showingDeliveries = false
+        send(delivery)
+      }
+      .presentationCompactAdaptation(.popover)
+    }
+    // A hold whose lift never reached the button leaves nothing to swallow the next tap.
+    .onChange(of: showingDeliveries) { _, showing in if !showing { heldSend = false } }
+  }
+}
+
+/// What holding Send offers: a message that doesn't interrupt the agent.
+private struct DeliveryMenu: View {
+  let pick: (PromptDelivery) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      row(.steer, "Steer", "At the agent's next step", "arrow.turn.down.right")
+      row(.followUp, "Follow up", "After the current reply", "text.append")
+    }
+    .padding(8)
+    .frame(width: 260)
+    .presentationBackground(.thinMaterial)
+  }
+
+  private func row(_ delivery: PromptDelivery, _ title: String, _ detail: String, _ icon: String) -> some View {
+    Button { pick(delivery) } label: {
+      HStack(spacing: 14) {
+        Image(systemName: icon)
+          .font(.system(size: 17, weight: .regular))
+          .frame(width: 40, height: 40)
+          .background(Color.primary.opacity(0.08), in: Circle())
+        VStack(alignment: .leading, spacing: 1) {
+          Text(title).font(.body)
+          Text(detail).font(.footnote).foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 8).padding(.vertical, 5)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("send-\(delivery.rawValue)")
   }
 }
 

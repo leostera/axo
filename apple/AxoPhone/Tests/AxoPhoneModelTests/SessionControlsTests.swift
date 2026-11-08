@@ -192,6 +192,43 @@ final class SessionControlsTests: XCTestCase {
     }
   }
 
+  func testSendInterruptsByDefaultAndAMacBefore037GetsTheSameMessageAsAFollowUp() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([said(1, "go")]))
+    let sending = Task { await model.sendPrompt("stop and look at main") }
+    let channel = try await world.channel()
+    let first = try await channel.nextRequest("axo.remote.session.prompt")
+    XCTAssertEqual(first.params["delivery"] as? String, "interrupt", "a tap interrupts")
+    channel.reply(to: first.id, error: -32602, message: "Invalid params")
+    let again = try await channel.nextRequest("axo.remote.session.prompt")
+    XCTAssertEqual(again.params["commandId"] as? String, first.params["commandId"] as? String, "the same message")
+    XCTAssertNil(again.params["delivery"], "as a follow-up, which every Mac knows")
+    channel.reply(to: again.id, result: #"{"accepted":true}"#)
+    let outcome = await sending.value
+    XCTAssertEqual(outcome, .accepted)
+    XCTAssertEqual(model.pendingPrompts[1]?.first?.delivery, .followUp, "shown as what the Mac took")
+  }
+
+  func testOnlyAnInterruptIsSentAgainAsAFollowUp() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([]))
+    let sending = Task { await model.sendPrompt("look", delivery: .steer) }
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest("axo.remote.session.prompt")
+    XCTAssertEqual(request.params["delivery"] as? String, "steer")
+    channel.reply(to: request.id, error: -32602, message: "Invalid params")
+    let outcome = await sending.value
+    XCTAssertEqual(outcome, .notSent)
+    XCTAssertFalse(channel.hasRequest, "a steer refused is not changed into something else")
+  }
+
+  func testTheLogSaysWhichPromptsInterrupt() {
+    let transcript = ChatTranscript(records: [said(1, "go"), queued(2, "c-1", "now this", delivery: "interrupt"), queued(3, "c-2", "x", delivery: "later")])
+    XCTAssertEqual(transcript.queued.map(\.delivery), [.interrupt, .followUp], "one this app doesn't know waits as a follow-up")
+  }
+
   func testAPromptAPiStillStartingRefusesWaitsAndIsSentAgainWithTheSameCommand() async throws {
     let world = HostWorld()
     let model = world.model

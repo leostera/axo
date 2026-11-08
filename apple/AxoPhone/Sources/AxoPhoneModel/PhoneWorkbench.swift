@@ -453,8 +453,9 @@ public final class PhoneWorkbench {
 
   /// Sends what is typed in the open chat. On a new chat, the first message brings the chat into
   /// being in the Mac's Home Workspace. The words leave the box as they go and come back if the
-  /// Mac refuses them. `delivery` says when a working Pi takes it (RFD0033).
-  public func send(delivery: PromptDelivery = .followUp) async -> SendOutcome {
+  /// Mac refuses them. `delivery` says when a working Pi takes it (RFD0033): by default it
+  /// interrupts, so the agent answers it now.
+  public func send(delivery: PromptDelivery = .interrupt) async -> SendOutcome {
     guard !isSending, let selection, canSendDraft else { return .failed }
     isSending = true
     defer { isSending = false }
@@ -489,7 +490,7 @@ public final class PhoneWorkbench {
     return await prompt(from: chat)
   }
 
-  private func prompt(from selection: Selection, delivery: PromptDelivery = .followUp) async -> SendOutcome {
+  private func prompt(from selection: Selection, delivery: PromptDelivery = .interrupt) async -> SendOutcome {
     guard let workbench = current, workbench.reference.hostId == selection.host else { return .failed }
     let text = text(of: selection)
     let files = attachments(for: selection)

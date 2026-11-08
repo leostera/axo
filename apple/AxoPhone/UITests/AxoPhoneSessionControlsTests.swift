@@ -10,10 +10,10 @@ final class AxoPhoneSessionControlsTests: XCTestCase {
   }
 
   @MainActor
-  private func launch(chat: Int) -> XCUIApplication {
+  private func launch(chat: Int, appearance: String = "light") -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_CHAT": "\(chat)"]
-    app.launchArguments = ["-appearance", "light"]
+    app.launchArguments = ["-appearance", appearance]
     app.launch()
     let title = app.staticTexts["conversation-title"]
     XCTAssertTrue(title.waitForExistence(timeout: 15))
@@ -97,34 +97,74 @@ final class AxoPhoneSessionControlsTests: XCTestCase {
     XCTAssertTrue(waitUntil(5) { !list.exists }, "the list goes once arguments start")
   }
 
-  // MARK: - Follow-up or steer
+  // MARK: - Interrupt, steer or follow up
+
+  private func rows(_ app: XCUIApplication, _ identifier: String, saying words: String) -> XCUIElementQuery {
+    app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", identifier, words))
+  }
 
   @MainActor
-  func testHoldingSendOffersFollowUpAndSteerAndAWorkingPiQueuesEither() {
+  func testATapOnSendInterruptsTheWorkingAgent() {
     let app = launch(chat: 1)
-    _ = type("Look at main instead", in: app)
+    _ = type("Stop and look at main", in: app)
+    app.buttons["send-message"].tap()
+    let interrupting = rows(app, "queuedPrompt", saying: "Interrupting").firstMatch
+    XCTAssertTrue(interrupting.waitForExistence(timeout: 10), "the log holds it as an interrupt")
+    XCTAssertTrue(interrupting.label.contains("Stop and look at main"), interrupting.label)
+    XCTAssertFalse(element(app, "send-steer").exists, "a tap offers nothing")
+  }
+
+  @MainActor
+  func testHoldingSendSendsNothingAndOffersSteerOrFollowUp() {
+    let app = launch(chat: 1)
+    let composer = type("Look at main instead", in: app)
     let send = app.buttons["send-message"]
     XCTAssertTrue(send.isEnabled)
     send.press(forDuration: 1.0)
-    // Each choice reads as its name and when it goes.
-    let steer = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Steer'")).firstMatch
+    let steer = element(app, "send-steer")
     XCTAssertTrue(steer.waitForExistence(timeout: 5), "holding Send offers Steer")
-    XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Follow-up'")).firstMatch.exists, "and Follow-up")
+    XCTAssertTrue(element(app, "send-followUp").exists, "and Follow up")
+    XCTAssertTrue(app.staticTexts["At the agent's next step"].exists && app.staticTexts["After the current reply"].exists)
+    // Held and let go: nothing has gone yet.
+    RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "queuedPrompt").count, 0, "nothing sent by the hold")
+    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "pendingPrompt").count, 0)
+    XCTAssertEqual(composer.value as? String, "Look at main instead")
     capture(app, named: "send-menu-light")
     steer.tap()
-    let steering = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'queuedPrompt' AND label CONTAINS 'Steering'")).firstMatch
-    XCTAssertTrue(steering.waitForExistence(timeout: 10), "the log holds it as a steer")
+    let steering = rows(app, "queuedPrompt", saying: "Steering").firstMatch
+    XCTAssertTrue(steering.waitForExistence(timeout: 10), "sent once chosen, as a steer")
     XCTAssertTrue(steering.label.contains("Look at main instead"), steering.label)
 
-    // A tap is a follow-up.
     _ = type("Then update the docs", in: app)
-    send.tap()
-    let queued = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'queuedPrompt' AND label CONTAINS 'Queued'")).firstMatch
+    send.press(forDuration: 1.0)
+    let followUp = element(app, "send-followUp")
+    XCTAssertTrue(followUp.waitForExistence(timeout: 5))
+    followUp.tap()
+    let queued = rows(app, "queuedPrompt", saying: "Queued").firstMatch
     XCTAssertTrue(queued.waitForExistence(timeout: 10))
     XCTAssertTrue(queued.label.contains("Then update the docs"), queued.label)
-    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "pendingPrompt").count, 0, "the log's rows, not the phone's own")
+    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "queuedPrompt").count, 2, "each once")
     app.tap()
     capture(app, named: "queued-light")
+  }
+
+  // MARK: - The box's look (compared against apple/AxoPhone/Snapshots/Phone)
+
+  @MainActor
+  func testVisualSnapshotComposerWithTextLight() {
+    let app = launch(chat: 2, appearance: "light")
+    _ = type("Check the Send button", in: app)
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+    Snapshots.check(app, named: "composer-text-light", in: self)
+  }
+
+  @MainActor
+  func testVisualSnapshotComposerWithTextDark() {
+    let app = launch(chat: 2, appearance: "dark")
+    _ = type("Check the Send button", in: app)
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+    Snapshots.check(app, named: "composer-text-dark", in: self)
   }
 
   // MARK: - Restart

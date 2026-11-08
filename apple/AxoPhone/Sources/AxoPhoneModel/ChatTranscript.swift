@@ -388,7 +388,7 @@ public struct ChatTranscript: Equatable, Sendable {
       return .queued(
         QueuedPrompt(
           commandId: commandId,
-          delivery: data?["delivery"]?.stringValue == "steer" ? .steer : .followUp,
+          delivery: data?["delivery"]?.stringValue.flatMap(PromptDelivery.init(rawValue:)) ?? .followUp,
           text: text.trimmingCharacters(in: .whitespacesAndNewlines),
           attachments: (data?["attachments"]?.arrayValue ?? []).compactMap { $0["name"]?.stringValue }))
     }

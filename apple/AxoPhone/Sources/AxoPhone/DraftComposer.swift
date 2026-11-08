@@ -40,7 +40,7 @@ struct DraftComposer: View {
     voice?.consume(transcript)
     guard let selection = phone.selection else { return }
     phone.setDraft(transcript.appending(to: phone.draft(for: selection)), for: selection)
-    if transcript.delivery == .send, canSend, !phone.isSending { send(.followUp) }
+    if transcript.delivery == .send, canSend, !phone.isSending { send(.interrupt) }
   }
 
   /// The open chat's Pi, read here so only the box redraws as it changes.

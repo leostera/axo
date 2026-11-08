@@ -56,7 +56,7 @@ struct VoiceListeningBar: View {
           Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold))
             .foregroundStyle(canSend ? ChatColors.background : Color.secondary)
             .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
-            .background(canSend ? Color.primary : ChatColors.disabledControl, in: Circle())
+            .background(canSend ? Color(uiColor: .label) : ChatColors.disabledControl, in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!canSend || finishing)

@@ -108,8 +108,9 @@ public final class HostWorkbenchModel {
     public let text: String
     /// Files already in the account, fetched by the Mac before Pi gets the prompt (RFD0030).
     public var attachments: [Attachment] = []
-    /// When a working Pi takes it (RFD0033).
-    public var delivery: PromptDelivery = .followUp
+    /// When a working Pi takes it (RFD0033). An interrupt a Mac before 0.37 refused goes again as
+    /// a follow-up.
+    public var delivery: PromptDelivery = .interrupt
     public fileprivate(set) var state: State
     /// Sent while the agent was busy: it waits behind the reply being written, and shows below
     /// it; otherwise it starts the next reply, and shows above it.
@@ -121,7 +122,7 @@ public final class HostWorkbenchModel {
     public static func key(commandId: String) -> String { "prompt:\(commandId)" }
 
     init(
-      id: UUID, text: String, attachments: [Attachment] = [], delivery: PromptDelivery = .followUp, state: State,
+      id: UUID, text: String, attachments: [Attachment] = [], delivery: PromptDelivery = .interrupt, state: State,
       behindReply: Bool = false
     ) {
       self.id = id
@@ -444,8 +445,8 @@ public final class HostWorkbenchModel {
 
   /// Sends a message to the selected chat, with its commandId. It shows as pending until the log
   /// holds it, queued or delivered; one refused on its first try disappears. `delivery` says when
-  /// a working Pi takes it (RFD0033).
-  public func sendPrompt(_ text: String, attachments: [Attachment] = [], delivery: PromptDelivery = .followUp) async
+  /// a working Pi takes it (RFD0033): by default it interrupts, so the agent answers it now.
+  public func sendPrompt(_ text: String, attachments: [Attachment] = [], delivery: PromptDelivery = .interrupt) async
     -> PromptOutcome
   {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -464,9 +465,17 @@ public final class HostWorkbenchModel {
   private func deliver(_ pending: PendingPrompt, in id: SessionID, attempt: Int) async -> PromptOutcome {
     let outcome: PromptOutcome
     var starting = false
+    var delivery = pending.delivery
     do {
-      try await connection.promptPi(
-        in: id, text: pending.text, commandId: pending.id, attachments: pending.attachments, delivery: pending.delivery)
+      do {
+        try await connection.promptPi(
+          in: id, text: pending.text, commandId: pending.id, attachments: pending.attachments, delivery: delivery)
+      } catch AxoClientError.serverRejected(Self.invalidParams, _) where delivery == .interrupt {
+        // A Mac before 0.37 doesn't know interrupt: the same message, as a follow-up.
+        delivery = .followUp
+        try await connection.promptPi(
+          in: id, text: pending.text, commandId: pending.id, attachments: pending.attachments, delivery: delivery)
+      }
       failure = nil
       outcome = .accepted
     } catch is CancellationError {
@@ -486,6 +495,10 @@ public final class HostWorkbenchModel {
     }
     guard let chat = chatStore[id], let index = chat.pending.firstIndex(where: { $0.id == pending.id })
     else { return outcome }
+    chat.pending[index].delivery = delivery
+    // Its retries go as the Mac took it.
+    var pending = pending
+    pending.delivery = delivery
     switch outcome {
     case .accepted:
       // Busy when it was sent, not when the Mac answered: by then the agent may be working on

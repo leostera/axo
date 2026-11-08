@@ -121,10 +121,13 @@ public struct PiCommand: Decodable, Hashable, Sendable, Identifiable {
   }
 }
 
-/// When a prompt sent while Pi works reaches it. Either way it is in the Session's log before the
+/// When a prompt sent while Pi works reaches it. Whichever, it is in the Session's log before the
 /// Mac says it took it.
 public enum PromptDelivery: String, Codable, Hashable, Sendable {
-  /// After the turn Pi is working on, as the next one. The default.
+  /// Now: Pi stops what it is doing and answers it next, ahead of follow-ups waiting. What a tap
+  /// on Send does. Macs before 0.37 don't know it.
+  case interrupt
+  /// After the turn Pi is working on, as the next one. A Mac's default when none is said.
   case followUp
   /// Within the turn Pi is working on, at its next step.
   case steer
