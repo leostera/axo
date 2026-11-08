@@ -84,7 +84,7 @@ The wire, `pi/3` hashes and chains, the upload handshake, truncation, and every 
 
 ## Drawbacks
 
-- An object holding a large Session reads all of it back once each time it wakes to translate. That's 2.5 s of CPU for the largest Session here, once per wake, and only while it is behind.
+- An object holding a large Session reads all of it back once each time it wakes to translate. That's 2.5 s of CPU for the largest Session here. Every append to a cold object leaves it behind, so this is once per wake that appends: one alarm, a billed request, and the read-back. The append itself never waits for it. RFD0032's push delivery touches SessionDOs only to append, so they go cold more often. The ops-cost review (2026-11-08) put the worst case at about 32k GB-s and 1.3B rows read a month, against 400k and 25B included.
 - Storage grows by about the size of each record's content again. The bytes of the line are not stored twice.
 - A patched dependency until ATXF 0.2.1 is published.
 
@@ -99,3 +99,4 @@ The wire, `pi/3` hashes and chains, the upload handshake, truncation, and every 
 
 - When a reader needs ATXF, Sessions no one has touched since this shipped must be translated first: a sweep over every SessionDO, or translation on first read.
 - Whether to stop storing `line` once AXP carries ATXF, keeping it only as `native`.
+- Whether ATXF's stream should snapshot its state (aliases, parents, tool calls and the Pi reader's state) so that a cold object resumes from SQLite instead of reading every line back. Worth it if the read-back shows up in GB-s once push delivery ships.
