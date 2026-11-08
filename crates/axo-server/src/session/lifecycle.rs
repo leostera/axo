@@ -702,6 +702,10 @@ impl SessionManager {
         }
         drop(state);
 
+        if !exited.is_empty() {
+            // A prompt waiting for a Pi that has just exited is told now, not at its time limit.
+            self.pi_wake.wake();
+        }
         for (shell_id, session_id) in exited {
             self.publish_shell_activity(session_id, shell_id, ShellActivity::Exited);
         }

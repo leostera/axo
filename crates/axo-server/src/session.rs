@@ -150,6 +150,8 @@ pub struct SessionManager {
     stop_workers: Arc<AtomicBool>,
     /// Wakes the reaper when a child exits or axod stops.
     reaper: Arc<lifecycle::Reaper>,
+    /// Wakes prompts waiting for a Pi to bind; see `prompts`.
+    pi_wake: Arc<agents::PiWake>,
     /// Dropped when axod stops, which wakes the attachment acceptor.
     stop_acceptor: Mutex<Option<std::os::unix::net::UnixStream>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -236,6 +238,7 @@ impl SessionManager {
             host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),
             reaper: Default::default(),
+            pi_wake: Default::default(),
             stop_acceptor: Default::default(),
             workers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(HashMap::new()),
@@ -283,8 +286,11 @@ impl SessionManager {
                 }
             }
         }
-        if let Ok(mut acceptor) = self.stop_acceptor.lock() {
-            acceptor.take();
+        // A byte wakes the acceptor even if a forked child holds a copy of this end.
+        if let Ok(mut acceptor) = self.stop_acceptor.lock()
+            && let Some(acceptor) = acceptor.take()
+        {
+            let _ = io::Write::write(&mut &acceptor, &[1]);
         }
     }
 

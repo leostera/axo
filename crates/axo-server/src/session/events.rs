@@ -345,7 +345,6 @@ mod tests {
 
     use std::io::{self};
 
-
     use std::time::{Duration, Instant};
 
     #[test]

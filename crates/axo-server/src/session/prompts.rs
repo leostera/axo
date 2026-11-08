@@ -377,9 +377,20 @@ impl SessionManager {
 
     /// Waits up to `timeout` for the Session's Pi to bind its bridge: `NotFound` if it has no Pi
     /// that runs or is starting, `TimedOut` if it is still starting.
+    /// Wakes when a Pi binds or a pane goes away, or the request is cancelled; nothing polls.
     fn wait_for_pi_bridge(&self, session_id: SessionId, timeout: Duration) -> io::Result<()> {
         let deadline = Instant::now() + timeout;
+        let cancellation = axo_ipc::cancel::current();
+        let wake = Arc::clone(&self.pi_wake);
+        cancellation.on_cancel(move || wake.wake());
         loop {
+            let seen = self.pi_wake.count();
+            if cancellation.is_cancelled() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "the prompt was cancelled while Pi started",
+                ));
+            }
             {
                 let state = self.lock_state()?;
                 let connected = state
@@ -404,7 +415,7 @@ impl SessionManager {
             if Instant::now() >= deadline {
                 return Err(still_starting());
             }
-            thread::sleep(Duration::from_millis(50));
+            self.pi_wake.wait_past(seen, deadline);
         }
     }
 

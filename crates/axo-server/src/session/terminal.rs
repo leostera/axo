@@ -112,8 +112,8 @@ fn wait_for_hang_up(stream: &UnixStream) {
     }
 }
 
-/// Waits, with no timeout, until `listener` has a client or `stopping` is readable (its other end
-/// was closed: axod is stopping). `true` for a client.
+/// Waits, with no timeout, until `listener` has a client or `stopping` is readable (axod is
+/// stopping: its other end was written to and dropped). `true` for a client.
 fn wait_for_client(listener: RawFd, stopping: RawFd) -> bool {
     let mut descriptors = [listener, stopping].map(|fd| libc::pollfd {
         fd,
@@ -994,6 +994,53 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
         }
+    }
+
+    /// A person's prompt to a Pi that is still starting waits for it, but stops as soon as its
+    /// request is cancelled (the client went), instead of at its time limit.
+    #[test]
+    fn a_prompt_waiting_for_pi_to_start_stops_when_its_request_is_cancelled() {
+        let directory = test_directory("axo-cancel");
+        std::fs::create_dir_all(&directory).unwrap();
+        let (manager, _log) = manager_recording_input(&directory);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let command_id =
+            axo_relay::CommandId::try_from("00000000-0000-4000-8000-000000000001".to_owned())
+                .unwrap();
+        let cancellation = axo_ipc::cancel::Cancellation::default();
+        let cancelling = {
+            let cancellation = cancellation.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(200));
+                cancellation.cancel();
+            })
+        };
+        let started = Instant::now();
+        let refused = axo_ipc::cancel::on_this_thread(cancellation, || {
+            manager.prompt_pi(
+                session.id,
+                "hello",
+                &command_id,
+                &[],
+                rpc::PromptDelivery::FollowUp,
+            )
+        })
+        .unwrap_err();
+        cancelling.join().unwrap();
+        assert_eq!(refused.kind(), io::ErrorKind::Interrupted, "{refused}");
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(200) && waited < Duration::from_secs(1),
+            "{waited:?}"
+        );
+        assert!(
+            !manager
+                .lock_state()
+                .unwrap()
+                .agents
+                .queued_prompts
+                .contains_key(&session.id)
+        );
     }
 
     #[test]

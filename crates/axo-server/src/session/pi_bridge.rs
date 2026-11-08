@@ -353,6 +353,7 @@ impl SessionManager {
         let changed = activity.connected != connected;
         activity.connected = connected;
         drop(state);
+        self.pi_wake.wake();
         if changed {
             self.publish_session_snapshot(session_id)?;
         }
