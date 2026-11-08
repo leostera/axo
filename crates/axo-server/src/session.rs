@@ -44,6 +44,7 @@ mod spawn;
 mod stop_notice;
 pub(crate) use spawn::set_agent_socket;
 mod terminal;
+mod terminal_input;
 #[cfg(test)]
 mod test_support;
 mod transcripts;
@@ -74,7 +75,8 @@ struct RunningShell {
     /// Live terminal attachments. Only Axod's output pump reads `master`.
     attachments: usize,
     output: Arc<TerminalOutput>,
-    last_input_sequence: Option<u64>,
+    /// Where input to the pane is written, outside the Session state's lock.
+    input: Arc<terminal_input::TerminalInput>,
     _writer_lock: Option<WriterLock>,
     pi_bridge_socket: Option<BridgeSocketPath>,
     pi_bridge_token: Option<String>,
@@ -129,8 +131,6 @@ struct SessionState {
     /// Every open pane, running or unavailable; see `panes`.
     panes: Panes<RunningShell>,
     shutting_down: bool,
-    /// The Pis' part of the state; see `agents`.
-    agents: agents::AgentState,
     /// Every shell's output is published here once it enters the catalog.
     events: EventBus,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
@@ -143,6 +143,9 @@ struct SessionState {
 
 pub struct SessionManager {
     state: Mutex<SessionState>,
+    /// The Pis' part of the state; see `agents`. Locked after `state` when both are needed,
+    /// never the other way round.
+    agents: Mutex<agents::AgentState>,
     attach_socket_path: PathBuf,
     pi_directories: PiDirectories,
     host_id: String,
@@ -150,6 +153,8 @@ pub struct SessionManager {
     stop_workers: Arc<AtomicBool>,
     /// Wakes the reaper when a child exits or axod stops.
     reaper: Arc<lifecycle::Reaper>,
+    /// Wakes prompts waiting for a Pi to bind; see `prompts`.
+    pi_wake: Arc<agents::PiWake>,
     /// Dropped when axod stops, which wakes the attachment acceptor.
     stop_acceptor: Mutex<Option<std::os::unix::net::UnixStream>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -224,18 +229,19 @@ impl SessionManager {
                 shell_command,
                 panes: Panes::default(),
                 shutting_down: false,
-                agents: Default::default(),
                 events: subscribers.clone(),
                 viewport,
                 peer_views: Default::default(),
                 reopening: HashSet::new(),
             }),
+            agents: Default::default(),
             attach_socket_path,
             pi_directories,
             host_id,
             host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),
             reaper: Default::default(),
+            pi_wake: Default::default(),
             stop_acceptor: Default::default(),
             workers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(HashMap::new()),
@@ -283,8 +289,11 @@ impl SessionManager {
                 }
             }
         }
-        if let Ok(mut acceptor) = self.stop_acceptor.lock() {
-            acceptor.take();
+        // A byte wakes the acceptor even if a forked child holds a copy of this end.
+        if let Ok(mut acceptor) = self.stop_acceptor.lock()
+            && let Some(acceptor) = acceptor.take()
+        {
+            let _ = io::Write::write(&mut &acceptor, &[1]);
         }
     }
 
@@ -294,7 +303,7 @@ impl SessionManager {
         if let Ok(mut state) = self.state.lock() {
             // First, before anything slow: launchd kills an Axod that takes too long to stop.
             if !state.shutting_down {
-                record_stop(&state);
+                record_stop(&state, &self.lock_agents());
             }
             state.shutting_down = true;
         }
@@ -345,9 +354,8 @@ fn take_previous_stop(
 
 /// Writes down this Axod's version and the Sessions whose Pi is mid-turn, most recently active
 /// first, for the next Axod to restore first and tell.
-fn record_stop(state: &SessionState) {
-    let mut interrupted: Vec<(SessionId, i64)> = state
-        .agents
+fn record_stop(state: &SessionState, agents: &agents::AgentState) {
+    let mut interrupted: Vec<(SessionId, i64)> = agents
         .activity
         .iter()
         .filter(|(_, activity)| activity.connected && activity.working)

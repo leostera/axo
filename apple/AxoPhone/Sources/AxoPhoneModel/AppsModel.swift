@@ -5,7 +5,7 @@ import Observation
 
 /// Settings › Apps' API, as the phone needs it (`AppsClient`; a stand-in in tests).
 public protocol AppsService: Sendable {
-  func list() async throws -> [Connection]
+  func list() async throws -> [AccountApp]
   func log(service: String?, limit: Int, before: String?) async throws -> [CallRecord]
   func integrity() async throws -> CallLogIntegrity
   func addToken(app: String, account: String?, fields: [String: String]) async throws -> String
@@ -16,7 +16,7 @@ public protocol AppsService: Sendable {
   func phoneSignIn(app: String, step: PhoneSignInStep) async throws -> PhoneSignIn
   @discardableResult func setClient(_ name: String, clientId: String, clientSecret: String?) async throws -> String
   func remove(_ name: String, account: String?) async throws
-  func addServer(name: String, url: String) async throws -> (connection: Connection, signInUrl: String?)
+  func addServer(name: String, url: String) async throws -> (app: AccountApp, signInUrl: String?)
   func webPage(for app: AppConnection?) -> URL
 }
 
@@ -103,7 +103,7 @@ public final class AppsModel {
     }
   }
 
-  private func adopt(_ entries: [Connection]) {
+  private func adopt(_ entries: [AccountApp]) {
     var apps: [AppConnection] = []
     var servers: [ServerConnection] = []
     var macs: [HostConnectionInfo] = []
@@ -271,8 +271,8 @@ public final class AppsModel {
     let url = url.trimmingCharacters(in: .whitespacesAndNewlines)
     var outcome = ServerAdded.failed
     await act {
-      let (connection, signInUrl) = try await service.addServer(name: name, url: url)
-      if case .server(let server) = connection {
+      let (app, signInUrl) = try await service.addServer(name: name, url: url)
+      if case .server(let server) = app {
         outcome = signInUrl != nil || server.state == .needsSignIn ? .needsSignIn : .added
         if outcome == .added { notice = Notice(kind: .done, text: "Added \(server.displayName).") }
       } else {

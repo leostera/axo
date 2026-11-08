@@ -2,6 +2,42 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.35 (Mac app build 306, axod 58)
+
+### Fixed
+
+- Reopening a Session right after closing it no longer leaves its agent marked as unrecoverable: Axo waits for the old agent to finish exiting.
+
+## 0.34 (Mac app build 305, axod 57)
+
+### Fixed
+
+- A large paste into a terminal whose program isn't reading no longer freezes Axo: only that terminal waits, more input to it gives up after 5 seconds, and closing it ends the wait.
+
+## 0.33 (Mac app build 304, axod 56)
+
+### Changed
+
+- Inside axod, what it knows about its agents has its own lock, so health checks and agent controls no longer wait behind Session work.
+
+## 0.32 (Mac app build 303, axod 55)
+
+### Changed
+
+- Apps are called apps everywhere: adding a server answers with the app, and agents read "no app named …" instead of "connection".
+
+## 0.31 (Mac app build 302, axod 54)
+
+### Fixed
+
+- Computer use on a locked Mac says "this Mac is locked" instead of acting on the lock screen. Agents see a locked Mac in `codemode.hosts.list()`; `bash.run` still works there.
+- A message sent from the phone or the web while the chat's Pi is starting stops waiting as soon as you leave, and is answered the moment Pi is up instead of up to 50ms later.
+- A shell or Pi no longer keeps a copy of axod's sockets, which could stop the next axod from starting after a restart.
+
+### Changed
+
+- `axod attach` follows a terminal resize the moment it happens instead of checking every 25ms.
+
 ## 0.30 (Mac app build 301, axod 53)
 
 ### Changed

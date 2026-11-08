@@ -34,6 +34,13 @@ rust_binary(
     }),
 )
 
+# The CLI's own tests: terminal attach's raw mode and resize forwarding.
+rust_test(
+    name = "axod_tests",
+    crate = ":axod",
+    edition = "2024",
+)
+
 rust_test(
     name = "rpc_tests",
     srcs = ["tests/rpc.rs"],

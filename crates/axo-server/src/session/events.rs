@@ -308,7 +308,12 @@ impl SessionManager {
     pub(super) fn publish_session_snapshot(&self, session_id: SessionId) -> io::Result<()> {
         let session = {
             let state = self.lock_state()?;
-            session_metadata(&state, session_id, &self.attach_socket_path)?
+            session_metadata(
+                &state,
+                &self.lock_agents(),
+                session_id,
+                &self.attach_socket_path,
+            )?
         };
         self.publish_event(Event::snapshot(session.clone()));
         Ok(())
@@ -344,7 +349,6 @@ mod tests {
     use std::fs;
 
     use std::io::{self};
-
 
     use std::time::{Duration, Instant};
 

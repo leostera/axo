@@ -31,7 +31,7 @@ final class AppsTests: XCTestCase {
       {"kind":"robot","name":"r2d2"}
       ]
       """
-    let apps = try decode([Connection].self, json)
+    let apps = try decode([AccountApp].self, json)
     XCTAssertEqual(apps.count, 8)
 
     guard case .host(let mac) = apps[0] else { return XCTFail("\(apps[0])") }

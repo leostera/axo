@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connectionSchema } from "@axo/protocol";
+import { accountAppSchema } from "@axo/protocol";
 import { PhoneRefused, ProviderOutcomeUnknown, type PhoneClient, type PhoneSignIn, type PhoneStep } from "@axo/apps";
 import { BuiltinApps } from "../src/apps/builtin";
 import { sqlStorage } from "./sql-storage";
@@ -126,7 +126,7 @@ async function refused(promise: Promise<unknown>): Promise<Error> {
 test("Telegram is listed with a phone sign-in that asks for the person's API client first, and has no tools until it is set up", async () => {
   const { apps } = fixture();
   const listed = apps.list().find((c) => c.name === "apps.telegram")!;
-  assert.ok(connectionSchema.safeParse(listed).success);
+  assert.ok(accountAppSchema.safeParse(listed).success);
   assert.deepEqual(listed.kind === "app" && listed.signIn, { kind: "phone", consoleUrl: "https://my.telegram.org/apps", clientHelp: "Create an app at my.telegram.org.", clientReady: false });
   assert.equal(apps.tools().filter((t) => t.service === "apps.telegram").length, 0);
   assert.match((await refused(apps.setClient("telegram", "abc", HASH))).message, /api_id is a number/);

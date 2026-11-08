@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connectionSchema } from "@axo/protocol";
+import { accountAppSchema } from "@axo/protocol";
 import { AppAccountRefused, BuiltinApps } from "../src/apps/builtin";
 import { FakeHetzner } from "./fake-hetzner";
 import { sqlStorage } from "./sql-storage";
@@ -40,7 +40,7 @@ test("Hetzner is listed without any client of Axo's, asking for a token the pers
   assert.deepEqual(apps.tools().map((t) => t.service).filter((s, i, all) => all.indexOf(s) === i), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.kraken", "apps.discord", "apps.unifi"],
     "without any OAuth client set up, only apps that need none have tools");
   const listed = all.find((c) => c.name === "apps.hetzner");
-  const parsed = connectionSchema.parse(listed);
+  const parsed = accountAppSchema.parse(listed);
   assert.ok(parsed.kind === "app");
   assert.deepEqual([parsed.name, parsed.provider, parsed.state, parsed.accounts], ["apps.hetzner", "Hetzner", "needsSignIn", []]);
   assert.deepEqual(parsed.signIn, {

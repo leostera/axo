@@ -323,9 +323,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         // As the Worker does: the name as typed is the title, its slug the name.
         const { name: title, url: serverUrl } = JSON.parse(body);
         const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-        const connection = { kind: "thirdParty", name, title: name === title ? null : title, url: serverUrl, state: "ready", tools: 3, syncedAt: now, lastError: null };
-        apps.push(connection);
-        json(response, { connection, signInUrl: null }, origin);
+        const app = { kind: "thirdParty", name, title: name === title ? null : title, url: serverUrl, state: "ready", tools: 3, syncedAt: now, lastError: null };
+        apps.push(app);
+        json(response, { app, signInUrl: null }, origin);
       });
       return;
     }

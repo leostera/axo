@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connectionSchema } from "@axo/protocol";
+import { accountAppSchema } from "@axo/protocol";
 import { BuiltinApps, macCommand } from "../src/apps/builtin";
 import { ProviderOutcomeUnknown } from "@axo/apps";
 import { sqlStorage } from "./sql-storage";
@@ -85,7 +85,7 @@ test("a command's arguments are each quoted, and its input is piped from a built
 
 test("1Password's accounts are the account's Macs; it is listed only where Macs can be reached", () => {
   const { apps } = fixture();
-  const listed = connectionSchema.parse(apps.list().find((c) => c.name === "apps.onepassword"));
+  const listed = accountAppSchema.parse(apps.list().find((c) => c.name === "apps.onepassword"));
   assert.ok(listed.kind === "app");
   assert.deepEqual(listed.accounts.map((a) => a.account), ["studio", "leo_s_laptop"]);
   assert.equal(listed.signIn.kind, "mac");

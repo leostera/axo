@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::agents::AgentState;
 use super::catalog::{remove_session_shells, session_metadata};
 use super::pi_recovery::{PiLaunchRequest, spawn_new_pi};
 use super::spawn::spawn_shell;
@@ -173,7 +174,13 @@ pub(super) fn create_workspace_session(
     };
     state.install_running(inserted.pi, running);
     start_companion_terminal(state, session_id, inserted, &initial_pwd)?;
-    session_metadata(state, session_id, attach_socket_path)
+    // A new Session: the agents know nothing of it yet.
+    session_metadata(
+        state,
+        &AgentState::default(),
+        session_id,
+        attach_socket_path,
+    )
 }
 
 /// Starts the terminal pane beside a new Session's Pi. If its shell cannot start, the Session
@@ -288,8 +295,9 @@ impl SessionManager {
             let mut state = self.lock_state()?;
             let session_ids = archive_workspace_records(&mut state.database, workspace_id)?;
             let mut shells = Vec::new();
+            let mut agents = self.lock_agents();
             for session_id in &session_ids {
-                state.agents.activity.remove(session_id);
+                agents.activity.remove(session_id);
                 shells.extend(remove_session_shells(&mut state, *session_id));
             }
             (session_ids, shells)
@@ -480,7 +488,12 @@ impl SessionManager {
                     "Pi Session is no longer current",
                 ));
             }
-            let current = session_metadata(&state, binding.session_id, &self.attach_socket_path)?;
+            let current = session_metadata(
+                &state,
+                &self.lock_agents(),
+                binding.session_id,
+                &self.attach_socket_path,
+            )?;
             let workspace_id = current.workspace_id.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,

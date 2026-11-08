@@ -100,14 +100,15 @@ test("hosts.list names every Mac, says which one the script runs from, and asks 
   // Both Macs are online; the laptop (an older Axo) says nothing, the studio answers.
   const asked = (await studioDaemon.next()) as Sent;
   assert.equal(asked.method, COMPUTER_STATUS_METHOD);
-  studioDaemon.send({ jsonrpc: "2.0", id: asked.id, result: { available: true, accessibility: true, screenRecording: true } });
+  // A locked Mac says so: its computer calls are refused until the person unlocks it.
+  studioDaemon.send({ jsonrpc: "2.0", id: asked.id, result: { available: true, accessibility: true, screenRecording: true, locked: true } });
   const ignored = (await laptopDaemon.next()) as Sent;
   assert.equal(ignored.method, COMPUTER_STATUS_METHOD);
   laptopDaemon.send({ jsonrpc: "2.0", id: ignored.id, error: { code: -32601, message: "Method not found" } });
   assert.deepEqual(result(await listing), {
     result: [
       { name: "leo_s_laptop", label: "Leo's Laptop", online: true, kind: "macos", self: true, computerUse: null },
-      { name: "studio", label: "Studio", online: true, kind: "macos", self: false, computerUse: { available: true, accessibility: true, screenRecording: true } },
+      { name: "studio", label: "Studio", online: true, kind: "macos", self: false, computerUse: { available: true, accessibility: true, screenRecording: true, locked: true } },
     ],
     logs: [],
   });
@@ -172,7 +173,7 @@ test("a script has no network of its own, and names only its own account's apps"
   const fetched = error(await call("axo.apps.run", { code: `async () => (await fetch("https://example.com")).status` }));
   assert.equal(fetched.code, APPS_ERRORS.scriptFailed);
   const unknown = error(await call("axo.apps.run", { code: `async () => codemode.workbench.list_issues({})` }));
-  assert.match(unknown.message, /no connection named workbench/);
+  assert.match(unknown.message, /no app named workbench/);
   const notAFunction = error(await call("axo.apps.run", { code: `42` }));
   assert.match(notAFunction.message, /must be a function/);
 });

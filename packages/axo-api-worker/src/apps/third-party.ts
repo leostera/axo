@@ -1,4 +1,4 @@
-import type { Connection, ToolDefinition } from "@axo/protocol";
+import type { AccountApp, ToolDefinition } from "@axo/protocol";
 import { pkceChallenge } from "@axo/apps";
 import { seal, unseal } from "../auth/crypto";
 import { callTool, initialize, listTools, McpAuthRequired, McpError, toolOutput, type McpSession } from "./mcp-client";
@@ -113,7 +113,7 @@ export class ThirdPartyApps {
     return this.row(name) !== undefined;
   }
 
-  list(): Connection[] {
+  list(): AccountApp[] {
     return this.rows().map((row) => ({
       kind: "thirdParty",
       name: row.name,
@@ -165,14 +165,14 @@ export class ThirdPartyApps {
 
   /** A client the person registered with the provider themselves, entered on the Apps page. */
   async setClient(name: string, client: Client): Promise<{ signInUrl: string }> {
-    if (!this.has(name)) throw new Error(`no connection named ${name}`);
+    if (!this.has(name)) throw new Error(`no app named ${name}`);
     this.deps.sql.exec("UPDATE third_party_connections SET client_sealed = ? WHERE name = ?", await this.seal("client", client), name);
     return { signInUrl: await this.prepareSignIn(name, null) };
   }
 
   /** A fresh sign-in link for a connection, for example after its grant was dropped. */
   async signInLink(name: string): Promise<string> {
-    if (!this.has(name)) throw new Error(`no connection named ${name}`);
+    if (!this.has(name)) throw new Error(`no app named ${name}`);
     return this.prepareSignIn(name, null);
   }
 
@@ -240,7 +240,7 @@ export class ThirdPartyApps {
   /** Calls a tool with the account's grant. A 401 renews the grant once; the call is then sent again, since it did not run. */
   async call(name: string, tool: string, input: unknown): Promise<unknown> {
     const row = this.row(name);
-    if (!row) throw new Error(`no connection named ${name}`);
+    if (!row) throw new Error(`no app named ${name}`);
     if (row.needs_sign_in) throw new Error(`${name} needs sign-in; open the Apps page or ask for a new link with apps_add`);
     const stored = this.storedTools(row).find((t) => t.name === tool);
     if (!stored) throw new Error(`${name} has no tool named ${tool}`);

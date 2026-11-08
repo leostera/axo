@@ -238,7 +238,7 @@ const TOOLS: &[Tool] = &[
         description: "Adds a remote MCP server to the account as a connection, so `codemode.<name>.*` reaches it from every Session. If the server needs sign-in, returns `signInUrl`: give it to the person to open in a browser signed in to Axo. Never ask the person for a token or secret in chat.",
         properties: || {
             json!({
-                "name": { "type": "string", "description": "What to call it, any text, e.g. \"emdash: leostera.com\". Scripts reach it by its slug, returned as `connection.name` (emdash_leostera_com). The same server may be added again under another name, for another account with it." },
+                "name": { "type": "string", "description": "What to call it, any text, e.g. \"emdash: leostera.com\". Scripts reach it by its slug, returned as `app.name` (emdash_leostera_com). The same server may be added again under another name, for another account with it." },
                 "url": { "type": "string", "description": "The server's streamable HTTP endpoint, https only, e.g. https://mcp.linear.app/mcp" }
             })
         },
@@ -250,7 +250,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "apps_remove",
         method: Some(method::APPS_REMOVE),
-        description: "Removes a remote MCP server connection and its grant from the account, or signs one account out of an app (name `apps.<app>`, e.g. `apps.gmail`, with `account`). A Mac is removed by unpairing it, not here.",
+        description: "Removes a remote MCP server and its grant from the account, or signs one account out of an app (name `apps.<app>`, e.g. `apps.gmail`, with `account`). A Mac is removed by unpairing it, not here.",
         properties: || {
             json!({
                 "name": { "type": "string" },
@@ -758,7 +758,7 @@ const DESCRIBES_APPS: &[&str] = &["apps_run", "apps_search", "apps_list"];
 /// Listing the account's apps for a summary may not hold up starting a Session.
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// `axo.apps.list`'s answer as one line per connection, saying how a script calls it.
+/// `axo.apps.list`'s answer as one line per app, saying how a script calls it.
 fn summarize_apps(listed: &Value) -> Option<String> {
     let apps = listed["apps"].as_array()?;
     if apps.is_empty() {
@@ -766,24 +766,24 @@ fn summarize_apps(listed: &Value) -> Option<String> {
     }
     let lines = apps
         .iter()
-        .filter_map(|connection| {
-            let name = connection["name"].as_str()?;
-            Some(match connection["kind"].as_str()? {
+        .filter_map(|app| {
+            let name = app["name"].as_str()?;
+            Some(match app["kind"].as_str()? {
                 "host" => format!(
                     "- the Mac `{name}`, {}: `codemode.bash.run({{ host: \"{name}\", command }})`, `codemode.computer.run({{ host: \"{name}\", tool, args }})`",
-                    connection["state"].as_str().unwrap_or("offline")
+                    app["state"].as_str().unwrap_or("offline")
                 ),
                 "thirdParty" => format!(
                     "- `codemode.{name}.*`: the MCP server at {}{}",
-                    connection["url"].as_str().unwrap_or("?"),
-                    if connection["state"] == "needsSignIn" { " (needs sign-in)" } else { "" }
+                    app["url"].as_str().unwrap_or("?"),
+                    if app["state"] == "needsSignIn" { " (needs sign-in)" } else { "" }
                 ),
                 "app" => {
-                    let tools = connection["tools"]
+                    let tools = app["tools"]
                         .as_array()
                         .map(|tools| tools.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
                         .unwrap_or_default();
-                    let accounts = connection["accounts"]
+                    let accounts = app["accounts"]
                         .as_array()
                         .map(|accounts| {
                             accounts
@@ -793,7 +793,7 @@ fn summarize_apps(listed: &Value) -> Option<String> {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    let title = connection["title"].as_str().unwrap_or(name);
+                    let title = app["title"].as_str().unwrap_or(name);
                     let accounts = if accounts.is_empty() {
                         "no account signed in yet".to_string()
                     } else {

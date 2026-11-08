@@ -6,7 +6,7 @@ import { hostDOName } from "../host-do";
 import { AccountApps, type CallOutcome, type AppsCall } from "../apps/account";
 import type { DeviceSignIn } from "../apps/builtin";
 import { googleClient } from "../apps/builtin/google";
-import type { AppMacSignIn, AppPhoneSignIn, AppPhoneSignInRequest, CallRecord, Connection } from "@axo/protocol";
+import type { AppMacSignIn, AppPhoneSignIn, AppPhoneSignInRequest, CallRecord, AccountApp } from "@axo/protocol";
 import type { ChainCheck } from "../apps/call-log";
 
 import type { AccountProfile } from "./account-access";
@@ -371,16 +371,16 @@ export class AxoAccountManager extends DurableObject<Env> {
 
   // ─── Apps on the web (RFD0016, Apps page) ──────────────────────
 
-  async listApps(): Promise<{ apps: Connection[] }> {
+  async listApps(): Promise<{ apps: AccountApp[] }> {
     return this.requireApps().list();
   }
 
-  async addConnection(name: string, url: string): Promise<CallOutcome> {
+  async addApp(name: string, url: string): Promise<CallOutcome> {
     return this.requireApps().add(name, url);
   }
 
   /** Removes a third-party connection, or signs `account` out of an app. */
-  async removeConnection(name: string, account?: string): Promise<CallOutcome> {
+  async removeApp(name: string, account?: string): Promise<CallOutcome> {
     return this.requireApps().remove(name, account);
   }
 
@@ -414,7 +414,7 @@ export class AxoAccountManager extends DurableObject<Env> {
     return this.requireApps().appPhoneSignIn(name, request);
   }
 
-  async connectionSignInLink(name: string): Promise<string> {
+  async appSignInLink(name: string): Promise<string> {
     return this.requireApps().signInLink(name);
   }
 

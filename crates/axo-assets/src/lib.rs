@@ -62,14 +62,17 @@ impl Extension for Assets {
             },
             ASSETS_FETCH,
             "expected {attachments}",
-            move |request: FetchAssets| {
-                let fetched = fetch(&slot, &request.attachments)?;
-                Ok(Fetched {
-                    files: fetched.into_iter().map(FetchedFile::from).collect(),
-                })
-            },
+            move |request: FetchAssets| fetch_files(&slot, &request),
         );
     }
+}
+
+/// `axo.assets.fetch`'s answer: where each attachment now is.
+fn fetch_files(slot: &AssetSlot, request: &FetchAssets) -> Result<Fetched, RpcError> {
+    let fetched = fetch(slot, &request.attachments)?;
+    Ok(Fetched {
+        files: fetched.into_iter().map(FetchedFile::from).collect(),
+    })
 }
 
 /// Fetches attachments into `~/.axo/assets`, as a prompt's are, with this Mac's credential.
@@ -146,5 +149,125 @@ mod tests {
         assert!(slot.get().is_none());
         let refused = fetch(&slot, &Attachments::default()).unwrap_err();
         assert_eq!(refused.code, ErrorCode::ServerError(NOT_CONNECTED));
+    }
+
+    // A stand-in for the account: answers each request with the next canned response.
+    struct Store;
+    impl axo_relay::credential::HostCredentialStore for Store {
+        fn store(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn load(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            Ok(vec![7; 32])
+        }
+        fn delete(&self, _: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn account(responses: Vec<Vec<u8>>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let _ = stream.write_all(&response);
+            }
+        });
+        origin
+    }
+
+    fn answer(status: &str, body: &[u8]) -> Vec<u8> {
+        let mut response = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(body);
+        response
+    }
+
+    /// A slot filled as the relay fills it, pointing at `origin`, keeping files in a directory of
+    /// its own.
+    fn connected(origin: &str) -> (AssetSlot, std::path::PathBuf) {
+        let directory = std::env::temp_dir().join(format!(
+            "axo-assets-ext-{}",
+            axo_protocol::new_uuid_v4().unwrap()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let slot = AssetSlot::default();
+        slot.set(Some(AssetSource {
+            endpoint: axo_relay::RelayEndpoint::parse(origin).unwrap(),
+            account: axo_relay::AccountLink::parse(
+                "b6b4cc11-b541-40ca-8aa5-b84276fa9939".to_owned(),
+                "0d6b0f0a-5f4e-4b1c-9a0e-1f2e3d4c5b6a".to_owned(),
+            )
+            .unwrap(),
+            host_id: "18355f00-95fd-4c93-8586-a71a8a52bf73".to_owned(),
+            credentials: Arc::new(Store),
+            directory: directory.clone(),
+        }));
+        (slot, directory)
+    }
+
+    fn request(bytes: &[u8], name: &str) -> FetchAssets {
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+        serde_json::from_value(serde_json::json!({ "attachments": [{
+            "asset": axo_protocol::asset::AssetHash::from_digest(digest).to_string(),
+            "name": name,
+            "mimeType": "image/png",
+            "size": bytes.len(),
+        }] }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_fetched_asset_is_answered_with_where_it_now_is() {
+        let bytes = b"a screenshot of the build".as_slice();
+        let (slot, directory) = connected(&account(vec![answer("200 OK", bytes)]));
+        let fetched = fetch_files(&slot, &request(bytes, "build.png")).unwrap();
+        let file = &fetched.files[0];
+        assert_eq!(std::fs::read(&file.path).unwrap(), bytes);
+        assert!(file.path.ends_with("/build.png"), "{}", file.path);
+        assert!(file.asset.starts_with("sha256:"));
+        assert_eq!(
+            (file.name.as_str(), file.mime_type.as_str(), file.size),
+            ("build.png", "image/png", bytes.len() as u64)
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn an_asset_that_is_gone_or_not_what_its_name_says_is_refused_plainly() {
+        let (slot, directory) = connected(&account(vec![
+            answer("404 Not Found", b""),
+            answer("200 OK", b"BBBBBBBBBB"),
+            answer("500 Internal Server Error", b""),
+        ]));
+        let refused = |bytes: &[u8]| fetch_files(&slot, &request(bytes, "a.png")).err().unwrap();
+        let gone = refused(b"gone");
+        assert_eq!(gone.code, ErrorCode::ServerError(FETCH_FAILED));
+        assert_eq!(gone.message, "an asset is no longer in the account");
+        // Same length, so only the hash tells.
+        let other = refused(b"AAAAAAAAAA");
+        assert_eq!(other.message, "an asset did not match its name");
+        let failed = refused(b"broken");
+        assert!(
+            failed.message.starts_with("an asset could not be fetched:"),
+            "{}",
+            failed.message
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 }

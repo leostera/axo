@@ -83,7 +83,7 @@
       ]
     }
 
-    func list() async throws -> [Connection] {
+    func list() async throws -> [AccountApp] {
       try await Task.sleep(for: .milliseconds(150))
       return locked {
         apps().map { .app($0) } + servers.map { .server($0) } + [
@@ -183,7 +183,7 @@
       }
     }
 
-    func addServer(name: String, url: String) async throws -> (connection: Connection, signInUrl: String?) {
+    func addServer(name: String, url: String) async throws -> (app: AccountApp, signInUrl: String?) {
       locked {
         let slug = name.map { $0.isLetter || $0.isNumber ? $0 : "_" }.reduce(into: "") { $0.append($1) }
         let server = ServerConnection(name: slug, title: name, url: url, state: url.contains("signin") ? .needsSignIn : .ready, tools: 3)

@@ -75,20 +75,20 @@ export const APPS_ERRORS = {
 } as const;
 
 /** A service name: a JavaScript-safe identifier, the `x` in `codemode.x.tool()`. */
-export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/);
+export const appNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/);
 
 /**
  * What the person calls a connection they add, as typed: "emdash: leostera.com". Scripts reach it
- * by its slug (connectionSlug), the connection's `name`.
+ * by its slug (appSlug), the connection's `name`.
  */
-export const connectionTitleSchema = z.string().trim().min(1).max(100);
+export const appTitleSchema = z.string().trim().min(1).max(100);
 
 /**
  * The name a script calls a connection by, made from what the person typed: lowercase letters,
  * digits and underscores, so `codemode.<name>` is plain JavaScript ("emdash: leostera.com" is
  * emdash_leostera_com). Null when nothing in it is a letter or digit.
  */
-export function connectionSlug(title: string): string | null {
+export function appSlug(title: string): string | null {
   const slug = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64).replace(/_+$/, "");
   if (!slug) return null;
@@ -97,7 +97,7 @@ export function connectionSlug(title: string): string | null {
 
 /**
  * Apps are services Axo itself provides, each with its own sign-in and tools, reached as
- * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection takes that name.
+ * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no app takes that name.
  */
 export const APPS_NAMESPACE = "apps";
 /**
@@ -107,7 +107,7 @@ export const APPS_NAMESPACE = "apps";
 export const HOSTS_NAMESPACE = "hosts";
 export const COMPUTER_NAMESPACE = "computer";
 export const BASH_NAMESPACE = "bash";
-/** Names no connection may take. */
+/** Names no app may take. */
 export const RESERVED_NAMES: readonly string[] = [APPS_NAMESPACE, HOSTS_NAMESPACE, COMPUTER_NAMESPACE, BASH_NAMESPACE];
 export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise", "telegram", "kraken", "github", "discord", "unifi", "spotify", "withings"] as const;
 export type AppName = (typeof APPS)[number];
@@ -124,7 +124,7 @@ export const appAccountSchema = z.object({
 export type AppAccount = z.infer<typeof appAccountSchema>;
 /** A field a person fills in to add an account to a token app, such as Hetzner's API token. */
 export const appTokenFieldSchema = z.object({
-  name: connectionNameSchema,
+  name: appNameSchema,
   /** As shown: "API token". */
   label: z.string().max(64),
   /** Where to find it, in plain words. */
@@ -167,7 +167,7 @@ export type AppClientRequest = z.infer<typeof appClientRequestSchema>;
 /** A token app's sign-in on a Mac: the button, and what the person chooses the credential may do. */
 export const appMacSignInOfferSchema = z.object({
   title: z.string().min(1).max(64),
-  presets: z.array(z.object({ id: connectionNameSchema, label: z.string().min(1).max(64), description: z.string().max(256) }).strict()).min(1).max(8),
+  presets: z.array(z.object({ id: appNameSchema, label: z.string().min(1).max(64), description: z.string().max(256) }).strict()).min(1).max(8),
 }).strict();
 export const appSignInSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("oauth"), client: appOAuthClientSchema.optional() }).strict(),
@@ -188,7 +188,7 @@ export type AppSignIn = z.infer<typeof appSignInSchema>;
 /** What adding a token app account sends: the account's name when the person names it, and the fields. */
 export const appTokenRequestSchema = z.object({
   account: z.string().min(3).max(64).regex(/^[a-z0-9][a-z0-9._@-]*$/, "use lowercase letters, digits, dots, dashes and @").optional(),
-  fields: z.record(connectionNameSchema, z.string().min(1).max(8192)),
+  fields: z.record(appNameSchema, z.string().min(1).max(8192)),
 }).strict();
 export type AppTokenRequest = z.infer<typeof appTokenRequestSchema>;
 /** A device sign-in as the web app polls it: the code to enter and where, until it is done or failed. */
@@ -206,14 +206,14 @@ export const appDeviceSignInSchema = z.discriminatedUnion("state", [
 export type AppDeviceSignIn = z.infer<typeof appDeviceSignInSchema>;
 /** What starting a sign-in on a Mac sends: which Mac, the preset chosen, and the account's name when the person names it. */
 export const appMacSignInRequestSchema = z.object({
-  mac: connectionNameSchema,
-  preset: connectionNameSchema,
+  mac: appNameSchema,
+  preset: appNameSchema,
   account: z.string().min(3).max(64).regex(/^[a-z0-9][a-z0-9._@-]*$/, "use lowercase letters, digits, dots, dashes and @").optional(),
 }).strict();
 export type AppMacSignInRequest = z.infer<typeof appMacSignInRequestSchema>;
 /** A sign-in on a Mac as the web app polls it: waiting for the person in their browser, done, or failed. */
 export const appMacSignInSchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("pending"), mac: connectionNameSchema, expiresAt: z.iso.datetime() }).strict(),
+  z.object({ state: z.literal("pending"), mac: appNameSchema, expiresAt: z.iso.datetime() }).strict(),
   z.object({ state: z.literal("done"), account: z.string().min(3).max(320), expiresAt: z.iso.datetime().nullable() }).strict(),
   z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
 ]);
@@ -238,23 +238,23 @@ export const appPhoneSignInSchema = z.discriminatedUnion("state", [
 ]);
 export type AppPhoneSignIn = z.infer<typeof appPhoneSignInSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
-export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
+export const serviceSchema = z.union([appNameSchema, appServiceSchema]);
 
 const sessionId = uuid;
 const script = z.string().min(1).max(APPS_LIMITS.scriptBytes);
 
-export const connectionSchema = z.discriminatedUnion("kind", [
+export const accountAppSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("host"),
-    name: connectionNameSchema,
+    name: appNameSchema,
     hostId: uuid,
     state: z.enum(["online", "offline"]),
   }).strict(),
   z.object({
     kind: z.literal("thirdParty"),
-    name: connectionNameSchema,
+    name: appNameSchema,
     /** What the person called it; null when that is its name (and from a Worker one release older). */
-    title: connectionTitleSchema.nullable().default(null),
+    title: appTitleSchema.nullable().default(null),
     url: z.url(),
     state: z.enum(["ready", "needsSignIn", "error"]),
     tools: z.number().int().nonnegative(),
@@ -283,15 +283,15 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     state: z.enum(["ready", "needsSignIn"]),
     /** The provider accounts signed in, each named by its email; every call names one. */
     accounts: z.array(appAccountSchema).max(APP_ACCOUNTS_MAX),
-    tools: z.array(connectionNameSchema).max(256),
+    tools: z.array(appNameSchema).max(256),
     lastError: z.string().max(512).nullable(),
   }).strict(),
 ]);
-export type Connection = z.infer<typeof connectionSchema>;
+export type AccountApp = z.infer<typeof accountAppSchema>;
 
 export const toolDefinitionSchema = z.object({
   service: serviceSchema,
-  name: connectionNameSchema,
+  name: appNameSchema,
   /** The upstream server's own name for the tool, kept for display. */
   title: z.string().max(256),
   description: z.string().max(16_384),
@@ -321,8 +321,8 @@ export const appsParams = {
   [APPS_METHODS.list]: z.object({ sessionId }).strict(),
   [APPS_METHODS.search]: z.object({ sessionId, code: script }).strict(),
   [APPS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
-  /** `name` is what to call it, any text; the connection's name is its slug (connectionSlug). */
-  [APPS_METHODS.add]: z.object({ sessionId, name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
+  /** `name` is what to call it, any text; the connection's name is its slug (appSlug). */
+  [APPS_METHODS.add]: z.object({ sessionId, name: appTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
   /** Removes a third-party connection, or signs out of an app (`apps.<app>`). */
   [APPS_METHODS.remove]: z.object({
     sessionId,
@@ -340,10 +340,10 @@ export const appsParams = {
 } as const;
 
 export const appsResults = {
-  [APPS_METHODS.list]: z.object({ apps: z.array(connectionSchema) }).strict(),
+  [APPS_METHODS.list]: z.object({ apps: z.array(accountAppSchema) }).strict(),
   [APPS_METHODS.search]: z.object({ result: z.unknown() }).strict(),
   [APPS_METHODS.execute]: z.object({ result: z.unknown(), logs: z.array(z.string()) }).strict(),
-  [APPS_METHODS.add]: z.object({ connection: connectionSchema, signInUrl: z.url().nullable() }).strict(),
+  [APPS_METHODS.add]: z.object({ app: accountAppSchema, signInUrl: z.url().nullable() }).strict(),
   [APPS_METHODS.remove]: z.object({ removed: z.literal(true) }).strict(),
   [APPS_METHODS.log]: z.object({ records: z.array(callRecordSchema) }).strict(),
 } as const;
@@ -390,10 +390,14 @@ export const computerResultSchema = z.object({
 }).strict();
 export type ComputerResult = z.infer<typeof computerResultSchema>;
 
-/** Whether a Mac can do computer use now: its Accessibility and Screen Recording grants. */
+/**
+ * Whether a Mac can do computer use: its Accessibility and Screen Recording grants, and whether
+ * its screen is locked now, when computer calls are refused until the person unlocks it.
+ */
 export const computerStatusSchema = z.object({
   available: z.boolean(),
   accessibility: z.boolean(),
   screenRecording: z.boolean(),
+  locked: z.boolean().optional(),
 }).strict();
 export type ComputerStatus = z.infer<typeof computerStatusSchema>;

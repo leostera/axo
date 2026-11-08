@@ -17,7 +17,7 @@ import {
   APPS_ERRORS,
   APPS_LIMITS,
   APPS_METHODS,
-  connectionSlug,
+  appSlug,
   bashResultSchema,
   appsParams,
   isAppsMethod,
@@ -25,7 +25,7 @@ import {
   type AppMacSignIn,
   type AppPhoneSignIn,
   type AppPhoneSignInRequest,
-  type Connection,
+  type AccountApp,
   type AppsMethod,
   type AppsParams,
   type AppsResult,
@@ -193,14 +193,14 @@ export class AccountApps {
    * another name, for another account with it.
    */
   async add(title: string, url: string): Promise<CallOutcome> {
-    const name = connectionSlug(title);
+    const name = appSlug(title);
     if (!name) return failure(-32602, "a name needs a letter or a digit");
     if (RESERVED_NAMES.includes(name)) return failure(APPS_ERRORS.nameTaken, `${name} is reserved for what Axo provides; choose another name`);
     if (this.thirdParty.has(name))
-      return failure(APPS_ERRORS.nameTaken, name === title ? `a connection named ${name} already exists` : `a connection named ${name} already exists (the name of "${title}"); choose another name`);
+      return failure(APPS_ERRORS.nameTaken, name === title ? `an app named ${name} already exists` : `an app named ${name} already exists (the name of "${title}"); choose another name`);
     const { signInUrl } = await this.thirdParty.add(name, url, title.trim() === name ? null : title.trim());
-    const connection = this.thirdParty.list().find((c) => c.name === name)!;
-    const result: AppsResult<typeof APPS_METHODS.add> = { connection, signInUrl };
+    const app = this.thirdParty.list().find((c) => c.name === name)!;
+    const result: AppsResult<typeof APPS_METHODS.add> = { app, signInUrl };
     return { result };
   }
 
@@ -213,7 +213,7 @@ export class AccountApps {
       const result: AppsResult<typeof APPS_METHODS.remove> = { removed: true };
       return { result };
     }
-    if (!this.thirdParty.remove(name)) return failure(APPS_ERRORS.notFound, `no connection named ${name}`);
+    if (!this.thirdParty.remove(name)) return failure(APPS_ERRORS.notFound, `no app named ${name}`);
     const result: AppsResult<typeof APPS_METHODS.remove> = { removed: true };
     return { result };
   }
@@ -290,7 +290,7 @@ export class AccountApps {
 
   async list(): Promise<AppsResult<typeof APPS_METHODS.list>> {
     const named = this.named();
-    const apps = await Promise.all(named.map(async ({ name, host }): Promise<Connection> => {
+    const apps = await Promise.all(named.map(async ({ name, host }): Promise<AccountApp> => {
       const presence = await this.deps.presence(host.hostId).catch(() => null);
       const online = Boolean(presence?.online && presence.hostGeneration === host.hostGeneration);
       return { kind: "host", name, hostId: host.hostId, state: online ? "online" : "offline" };
@@ -314,7 +314,8 @@ export class AccountApps {
         description:
           `The account's Macs (${macs}): [{ name, label, online, kind, self, computerUse }]. name is what bash.run and computer.run take; ` +
           "self is the Mac this script was started from; computerUse, for an online Mac, says whether it can be driven now " +
-          "({ available, accessibility, screenRecording }), or is null if the Mac did not say.",
+          "({ available, accessibility, screenRecording, locked }), or is null if the Mac did not say. " +
+          "A locked Mac refuses computer calls until the person unlocks it; bash.run still works there.",
         inputSchema: z.toJSONSchema(z.object({}).strict()) as Record<string, unknown>,
         call: `codemode.${HOSTS_NAMESPACE}.list`,
       },
@@ -383,7 +384,7 @@ export class AccountApps {
         if (this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input);
         if (this.named().some((entry) => entry.name === service))
           throw new Error(`${service} is a Mac: call codemode.bash.run({ host: "${service}", command }) or codemode.computer.run({ host: "${service}", tool, args })`);
-        throw new Error(`no connection named ${service}`);
+        throw new Error(`no app named ${service}`);
       }
       if (tool !== "run") throw new Error(`bash has no tool named ${tool}; call bash.run({ host, command })`);
       const parsed = bashInputSchema.safeParse(input);

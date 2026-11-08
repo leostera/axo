@@ -85,17 +85,6 @@ impl PeerViews {
             .map(|view| &view.running)
     }
 
-    pub(super) fn running_in_mut(
-        &mut self,
-        session_id: SessionId,
-        shell_id: ShellId,
-    ) -> Option<&mut RunningShell> {
-        self.views
-            .get_mut(&session_id)
-            .filter(|view| view.shell_id == shell_id)
-            .map(|view| &mut view.running)
-    }
-
     /// The panes whose Pi has exited, taken out.
     fn take_exited(&mut self) -> Vec<(SessionId, RunningShell)> {
         let exited: Vec<SessionId> = self
@@ -341,11 +330,13 @@ impl SessionManager {
                     initial_pwd: directory,
                     child: pty.child,
                     wait_error_reported: false,
+                    input: std::sync::Arc::new(super::terminal_input::TerminalInput::new(
+                        &pty.master,
+                    )?),
                     master: pty.master,
                     slave_device: pty.device,
                     attachments: 0,
                     output: pty.output,
-                    last_input_sequence: None,
                     _writer_lock: None,
                     pi_bridge_socket: None,
                     pi_bridge_token: None,
@@ -694,7 +685,9 @@ mod tests {
             .unwrap();
         assert_eq!(again.session.shells[0].id, shell.id, "one pane per Session");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // A script written just now can wait seconds before its first instruction while macOS
+        // authorizes its first exec, more so on a loaded machine: give it time.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let launched = loop {
             if let Ok(text) = fs::read_to_string(&recorded)
                 && !text.is_empty()

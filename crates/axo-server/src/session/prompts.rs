@@ -290,7 +290,7 @@ impl SessionManager {
         command_id: Option<&CommandId>,
         attachments: &[FetchedAttachment],
     ) -> Result<Admitted, PromptError> {
-        let mut state = self
+        let state = self
             .lock_state()
             .map_err(|error| PromptError::Unavailable(error.to_string()))?;
         if let Some(from) = from
@@ -309,19 +309,18 @@ impl SessionManager {
             }
             None => text.to_owned(),
         };
+        let mut agents = self.lock_agents();
         if let Some(from) = from {
-            state
-                .agents
+            agents
                 .provenance
                 .admit(from, from == target, Instant::now())?;
         }
-        let ready = state
-            .agents
+        let ready = agents
             .activity
             .get(&target)
             .is_some_and(|activity| activity.connected);
         if !ready {
-            let queue = state.agents.queued_prompts.entry(target).or_default();
+            let queue = agents.queued_prompts.entry(target).or_default();
             if queue.len() >= MAX_QUEUED_PI_PROMPTS {
                 return Err(PromptError::QueueFull);
             }
@@ -377,13 +376,24 @@ impl SessionManager {
 
     /// Waits up to `timeout` for the Session's Pi to bind its bridge: `NotFound` if it has no Pi
     /// that runs or is starting, `TimedOut` if it is still starting.
+    /// Wakes when a Pi binds or a pane goes away, or the request is cancelled; nothing polls.
     fn wait_for_pi_bridge(&self, session_id: SessionId, timeout: Duration) -> io::Result<()> {
         let deadline = Instant::now() + timeout;
+        let cancellation = axo_ipc::cancel::current();
+        let wake = Arc::clone(&self.pi_wake);
+        cancellation.on_cancel(move || wake.wake());
         loop {
+            let seen = self.pi_wake.count();
+            if cancellation.is_cancelled() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "the prompt was cancelled while Pi started",
+                ));
+            }
             {
                 let state = self.lock_state()?;
-                let connected = state
-                    .agents
+                let connected = self
+                    .lock_agents()
                     .activity
                     .get(&session_id)
                     .is_some_and(|activity| activity.connected);
@@ -404,7 +414,7 @@ impl SessionManager {
             if Instant::now() >= deadline {
                 return Err(still_starting());
             }
-            thread::sleep(Duration::from_millis(50));
+            self.pi_wake.wait_past(seen, deadline);
         }
     }
 
@@ -431,8 +441,8 @@ impl SessionManager {
     /// thread of their own: the bridge round trips must not hold up the caller.
     pub(super) fn flush_queued_pi_prompts(&self, session_id: SessionId) -> io::Result<()> {
         let (queue, bridge) = {
-            let mut state = self.lock_state()?;
-            let Some(queue) = state.agents.queued_prompts.remove(&session_id) else {
+            let state = self.lock_state()?;
+            let Some(queue) = self.lock_agents().queued_prompts.remove(&session_id) else {
                 return Ok(());
             };
             (queue, pi_bridge(&state, session_id)?)

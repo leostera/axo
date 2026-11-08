@@ -344,15 +344,18 @@ impl SessionManager {
         binding: PiRuntimeBinding,
         connected: bool,
     ) -> io::Result<()> {
-        let mut state = self.lock_state()?;
+        let state = self.lock_state()?;
         if !binding.is_current(&state) {
             return Ok(());
         }
         let session_id = binding.session_id;
-        let activity = state.agents.activity.entry(session_id).or_default();
+        let mut agents = self.lock_agents();
+        let activity = agents.activity.entry(session_id).or_default();
         let changed = activity.connected != connected;
         activity.connected = connected;
+        drop(agents);
         drop(state);
+        self.pi_wake.wake();
         if changed {
             self.publish_session_snapshot(session_id)?;
         }
@@ -374,11 +377,11 @@ impl SessionManager {
         // What Pi runs (RFD0033): kept for clients; only its model and level are in the snapshot.
         if let Some(control) = super::pi_controls::PiControlEvent::parse(name, data) {
             let changed = {
-                let mut state = self.lock_state()?;
+                let state = self.lock_state()?;
                 if !binding.is_current(&state) {
                     return Ok(false);
                 }
-                control.apply(&mut state, session_id)
+                control.apply(&mut self.lock_agents(), session_id)
             };
             if changed {
                 self.publish_session_snapshot(session_id)?;
@@ -388,10 +391,11 @@ impl SessionManager {
         let event = PiCatalogEvent::parse(name, data);
         let settled = matches!(event, PiCatalogEvent::AgentSettled);
         let (changed, settled_in) = {
-            let mut state = self.lock_state()?;
+            let state = self.lock_state()?;
             if !binding.is_current(&state) {
                 return Ok(false);
             }
+            let mut agents = self.lock_agents();
             // The agent may have changed the repository: read it again, off this lock.
             let settled_in = if settled {
                 axo_store::session_initial_pwd(&state.database, session_id).ok()
@@ -401,44 +405,34 @@ impl SessionManager {
 
             let changed = match event {
                 PiCatalogEvent::AgentStarted => !std::mem::replace(
-                    &mut state.agents.activity.entry(session_id).or_default().working,
+                    &mut agents.activity.entry(session_id).or_default().working,
                     true,
                 ),
                 PiCatalogEvent::AgentSettled => std::mem::replace(
-                    &mut state.agents.activity.entry(session_id).or_default().working,
+                    &mut agents.activity.entry(session_id).or_default().working,
                     false,
                 ),
                 PiCatalogEvent::PromptStarted => {
-                    let waits = &mut state
-                        .agents
-                        .activity
-                        .entry(session_id)
-                        .or_default()
-                        .ui_waits;
+                    let waits = &mut agents.activity.entry(session_id).or_default().ui_waits;
                     let previous = *waits;
                     *waits = waits.saturating_add(1);
                     *waits != previous
                 }
                 PiCatalogEvent::PromptEnded => {
-                    let waits = &mut state
-                        .agents
-                        .activity
-                        .entry(session_id)
-                        .or_default()
-                        .ui_waits;
+                    let waits = &mut agents.activity.entry(session_id).or_default().ui_waits;
                     let previous = *waits;
                     *waits = waits.saturating_sub(1);
                     *waits != previous
                 }
                 PiCatalogEvent::UserMessageStarted => !std::mem::replace(
-                    &mut state.agents.activity.entry(session_id).or_default().working,
+                    &mut agents.activity.entry(session_id).or_default().working,
                     true,
                 ),
                 PiCatalogEvent::MessageEnded => {
                     record_session_message(&state.database, session_id, unix_timestamp())?
                 }
                 PiCatalogEvent::ActivitySnapshot { working } => {
-                    let activity = state.agents.activity.entry(session_id).or_default();
+                    let activity = agents.activity.entry(session_id).or_default();
                     let changed = activity.working != working;
                     activity.working = working;
                     changed
@@ -717,9 +711,11 @@ mod tests {
 
         let state = manager.lock_state().unwrap();
         assert_eq!(state.panes.running(shell_id).unwrap().attachments, 1);
-        assert!(state.agents.activity[&session.id].connected);
-        assert!(state.agents.activity[&session.id].working);
-        let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
+        let agents = manager.lock_agents();
+        assert!(agents.activity[&session.id].connected);
+        assert!(agents.activity[&session.id].working);
+        let updated =
+            session_metadata(&state, &agents, session.id, &manager.attach_socket_path).unwrap();
         assert_eq!(updated.pi_session_id.as_deref(), Some("replacement"));
         assert_eq!(updated.name, session.name);
     }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { appMacSignInRequestSchema, appPhoneSignInRequestSchema, appServiceSchema, appTokenRequestSchema, connectionNameSchema, connectionTitleSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
+import { appMacSignInRequestSchema, appPhoneSignInRequestSchema, appServiceSchema, appTokenRequestSchema, appNameSchema, appTitleSchema, serviceSchema, type CallRecord, type AccountApp } from "@axo/protocol";
 import type { ChainCheck } from "../apps/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
@@ -20,9 +20,9 @@ const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache
 const APP = "https://axo.leostera.dev";
 
 type AppsStub = {
-  listApps(): Promise<{ apps: Connection[] }>;
-  addConnection(name: string, url: string): Promise<CallOutcome>;
-  removeConnection(name: string, account?: string): Promise<CallOutcome>;
+  listApps(): Promise<{ apps: AccountApp[] }>;
+  addApp(name: string, url: string): Promise<CallOutcome>;
+  removeApp(name: string, account?: string): Promise<CallOutcome>;
   setConnectionClient(name: string, clientId: string, clientSecret: string | null): Promise<{ signInUrl: string }>;
   addAppToken(name: string, account: string | null, fields: Record<string, string>): Promise<{ name: string; account: string } | { error: string }>;
   startAppDevice(name: string): Promise<Record<string, unknown> | { error: string }>;
@@ -30,7 +30,7 @@ type AppsStub = {
   startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<Record<string, unknown> | { error: string }>;
   pollAppMacSignIn(name: string, flow: string): Promise<Record<string, unknown>>;
   appPhoneSignIn(name: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
-  connectionSignInLink(name: string): Promise<string>;
+  appSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
   appsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }>;
@@ -39,7 +39,7 @@ type AppsStub = {
 
 export type AppsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll" | "phoneSignIn";
 
-const addBody = z.object({ name: connectionTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict();
+const addBody = z.object({ name: appTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
 const pollBody = z.object({ flow: z.uuid() }).strict();
 const clientBody = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(2048).nullable().optional() }).strict();
@@ -64,9 +64,9 @@ export async function serveApps(
   const stub = account(ctx, caller.accountId);
   // Signing in, removing and setting a client also take an app, `apps.<app>` (its provider's client).
   const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema
-    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" || route === "phoneSignIn" ? appServiceSchema : connectionNameSchema;
+    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" || route === "phoneSignIn" ? appServiceSchema : appNameSchema;
   const name = rawName === undefined ? null : names.safeParse(rawName);
-  if (name && !name.success) return json({ error: "Invalid connection name" }, 400);
+  if (name && !name.success) return json({ error: "Invalid app name" }, 400);
   try {
     switch (route) {
       case "list":
@@ -85,13 +85,13 @@ export async function serveApps(
       case "add": {
         const body = addBody.safeParse(await request.json().catch(() => null));
         if (!body.success) return json({ error: "Expected { name, url } with an https URL" }, 400);
-        return outcome(plain(await stub.addConnection(body.data.name, body.data.url)));
+        return outcome(plain(await stub.addApp(body.data.name, body.data.url)));
       }
       case "remove": {
         // Signing out of an app names the account: { account }.
         const body = removeBody.safeParse(await request.json().catch(() => ({})));
         if (!body.success) return json({ error: "Expected { account? }" }, 400);
-        return outcome(plain(await stub.removeConnection(name!.data!, body.data.account)));
+        return outcome(plain(await stub.removeApp(name!.data!, body.data.account)));
       }
       case "client": {
         const body = clientBody.safeParse(await request.json().catch(() => null));
@@ -99,7 +99,7 @@ export async function serveApps(
         return json(plain(await stub.setConnectionClient(name!.data!, body.data.clientId, body.data.clientSecret ?? null)));
       }
       case "signIn":
-        return json({ signInUrl: plain(await stub.connectionSignInLink(name!.data!)) });
+        return json({ signInUrl: plain(await stub.appSignInLink(name!.data!)) });
       case "token": {
         // A token app's Add account: what the service issued, sent once; nothing is sent back but the account's name.
         const body = appTokenRequestSchema.safeParse(await request.json().catch(() => null));

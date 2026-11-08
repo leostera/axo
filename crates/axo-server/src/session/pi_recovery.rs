@@ -148,11 +148,11 @@ fn spawn_pi(
         initial_pwd: request.initial_pwd.clone(),
         child,
         wait_error_reported: false,
+        input: std::sync::Arc::new(super::terminal_input::TerminalInput::new(&master)?),
         master,
         slave_device,
         attachments: 0,
         output,
-        last_input_sequence: None,
         _writer_lock: Some(writer_lock),
         pi_bridge_socket: Some(request.bridge_socket.clone()),
         pi_bridge_token: Some(bridge_token),
@@ -246,12 +246,13 @@ impl SessionManager {
     ) -> io::Result<bool> {
         let dormant = {
             let state = self.lock_state()?;
+            let agents = self.lock_agents();
             state
                 .panes
                 .in_session(session_id)
                 .map(|(shell_id, _)| shell_id)
                 .filter(|shell_id| only.is_none_or(|only| only == *shell_id))
-                .find(|shell_id| state.agents.dormant.contains(shell_id))
+                .find(|shell_id| agents.dormant.contains(shell_id))
         };
         let Some(shell_id) = dormant else {
             return Ok(false);
@@ -369,14 +370,15 @@ impl SessionManager {
                 .begin_recovery(session_id, shell_id)
                 .map_err(recovery_refused)?;
             // Starting it, whoever asked: it is no longer waiting to be wanted.
-            state.agents.dormant.remove(&shell_id);
+            let mut agents = self.lock_agents();
+            agents.dormant.remove(&shell_id);
             let recovery = PiRecoveryLease {
                 manager: self,
                 session_id,
                 shell_id,
                 recovery_id,
             };
-            (request, recovery, state.agents.takeover_grace, has_messages)
+            (request, recovery, agents.takeover_grace, has_messages)
         };
 
         let check_current = || recovery.ensure_current();
@@ -440,9 +442,11 @@ impl SessionManager {
                 // newer launch; metadata is built after installing the process.
                 match state.commit_recovery(session_id, shell_id, recovery_id, running) {
                     Ok(()) => {
-                        state.agents.activity.remove(&session_id);
+                        let mut agents = self.lock_agents();
+                        agents.activity.remove(&session_id);
                         Ok(session_metadata(
                             &state,
+                            &agents,
                             session_id,
                             &self.attach_socket_path,
                         ))
@@ -548,7 +552,12 @@ impl SessionManager {
                     self.publish_session_snapshot(owner.session_id)?;
                     log::info!("event=session.reopened session_id={}", owner.session_id);
                     let state = self.lock_state()?;
-                    return session_metadata(&state, owner.session_id, &self.attach_socket_path);
+                    return session_metadata(
+                        &state,
+                        &self.lock_agents(),
+                        owner.session_id,
+                        &self.attach_socket_path,
+                    );
                 }
                 Err(error) => {
                     log::warn!(
@@ -722,7 +731,12 @@ impl SessionManager {
             }
             // Target readiness and requester archival are one catalog transition.
             // A concurrent target close/recovery cannot slip between these checks.
-            let target = session_metadata(&state, target_session_id, &self.attach_socket_path)?;
+            let target = session_metadata(
+                &state,
+                &self.lock_agents(),
+                target_session_id,
+                &self.attach_socket_path,
+            )?;
             if !target
                 .shells
                 .iter()
@@ -736,6 +750,7 @@ impl SessionManager {
             if requester_session_id != target_session_id {
                 close_session(
                     &mut state,
+                    &mut self.lock_agents(),
                     requester_session_id,
                     &self.attach_socket_path,
                     &self.pi_directories,
@@ -1532,7 +1547,7 @@ mod tests {
 
         let manager = open_with_silent_shell(&server_directory);
         // The old Pi ignores SIGTERM; escalation is what is tested, not the production waits.
-        manager.lock_state().unwrap().agents.takeover_grace = TakeoverGrace {
+        manager.lock_agents().takeover_grace = TakeoverGrace {
             before_terminate: Duration::from_millis(100),
             before_kill: Duration::from_millis(100),
         };

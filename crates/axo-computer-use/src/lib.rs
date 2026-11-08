@@ -18,7 +18,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axo_computer::form::{FieldKind, Form, pick_field};
+use axo_computer::form::{FieldKind, FieldReading, Form, FormError, pick_field};
 use axo_ipc::peer::Signer;
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::SessionId;
@@ -171,6 +171,53 @@ fn listed(labels: &[String]) -> String {
     }
 }
 
+/// What axod read of a window's form: what the person sees there.
+#[derive(Clone)]
+struct Reading {
+    app: String,
+    window_title: String,
+    origin: Option<String>,
+    fields: Vec<FieldReading>,
+    buttons: Vec<String>,
+}
+
+/// A window with a form: read once, then filled only if it is unchanged. [`Form`] is the real
+/// one; tests stand in for it.
+trait Window {
+    fn reading(&self) -> Reading;
+    fn check_unchanged(&self, fields: &[usize], submit: Option<usize>) -> Result<(), FormError>;
+    fn fill(&self, field: usize, value: &str) -> Result<(), FormError>;
+    fn press(&self, button: usize) -> Result<(), FormError>;
+}
+
+impl Window for Form {
+    fn reading(&self) -> Reading {
+        Reading {
+            app: self.app.clone(),
+            window_title: self.window_title.clone(),
+            origin: self.origin.clone(),
+            fields: self.fields.clone(),
+            buttons: self.buttons.clone(),
+        }
+    }
+    fn check_unchanged(&self, fields: &[usize], submit: Option<usize>) -> Result<(), FormError> {
+        Form::check_unchanged(self, fields, submit)
+    }
+    fn fill(&self, field: usize, value: &str) -> Result<(), FormError> {
+        Form::fill(self, field, value)
+    }
+    fn press(&self, button: usize) -> Result<(), FormError> {
+        Form::press(self, button)
+    }
+}
+
+/// Who asked for input, where to ask, and for how long.
+struct Asking<'a> {
+    session_id: SessionId,
+    from: Option<&'a str>,
+    timeout: Duration,
+}
+
 /// What computer use needs of the rest of axod.
 pub trait ComputerHost: Send + Sync {
     /// Asks the person in `session_id` and waits, for a form when `input` is given.
@@ -224,10 +271,28 @@ impl ComputerUse {
         let Some(key) = host.input_key() else {
             return refused("this Mac could not make or read its input key");
         };
-        let form = match Form::read(args.pid, args.window_id) {
+        let window = match Form::read(args.pid, args.window_id) {
             Ok(form) => form,
             Err(error) => return refused(error.0),
         };
+        let asking = Asking {
+            session_id,
+            from,
+            timeout,
+        };
+        self.ask_and_fill(host, &asking, &args, key, &window)
+    }
+
+    /// Picks the fields asked for in `window`, asks the person for them and fills them in.
+    fn ask_and_fill(
+        &self,
+        host: &dyn ComputerHost,
+        asking: &Asking,
+        args: &InputArgs,
+        key: &axo_seal::InputKey,
+        window: &dyn Window,
+    ) -> Value {
+        let form = window.reading();
         let mut picked = Vec::new();
         for wanted in &args.fields {
             let Some(kind) = FieldKind::parse(&wanted.kind) else {
@@ -289,7 +354,7 @@ impl ComputerUse {
             ));
         }
         message.push('.');
-        if let Some(from) = from {
+        if let Some(from) = asking.from {
             message.push_str(&format!("\nAsked from {from}'s Session."));
         }
         let message: String = message.chars().take(MAX_MESSAGE_CHARS).collect();
@@ -310,9 +375,9 @@ impl ComputerUse {
             submit: submit.map(|index| form.buttons[index].clone()),
             key: key.public_key(),
         };
-        let timeout = timeout.min(Duration::from_millis(TIMEOUT_MS));
+        let timeout = asking.timeout.min(Duration::from_millis(TIMEOUT_MS));
         let (outcome, values) = match host.ask_with(
-            session_id,
+            asking.session_id,
             &message,
             Asker::ComputerUse,
             Some(input),
@@ -331,7 +396,7 @@ impl ComputerUse {
             (ElicitationAction::Decline, _) => return refused("Not done: the person declined."),
             _ => return refused("Not done: nobody answered in time."),
         };
-        let receipt = self.fill(&form, &picked, &labels, submit, &values, &place);
+        let receipt = self.fill(window, &form, &picked, &labels, submit, &values, &place);
         log::info!(
             "event=input.filled fields={} submitted={} outcome={}",
             picked.len(),
@@ -345,9 +410,11 @@ impl ComputerUse {
         receipt
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fill(
         &self,
-        form: &Form,
+        window: &dyn Window,
+        form: &Reading,
         picked: &[(usize, FieldKind)],
         labels: &[String],
         submit: Option<usize>,
@@ -355,7 +422,7 @@ impl ComputerUse {
         place: &str,
     ) -> Value {
         let indices: Vec<usize> = picked.iter().map(|&(index, _)| index).collect();
-        if let Err(error) = form.check_unchanged(&indices, submit) {
+        if let Err(error) = window.check_unchanged(&indices, submit) {
             return refused(format!(
                 "Not filled: {error}. Read the window again and ask again."
             ));
@@ -368,12 +435,12 @@ impl ComputerUse {
             let Some(value) = values.get(&format!("f{position}")) else {
                 return refused("Not filled: a value is missing.");
             };
-            if let Err(error) = form.fill(index, value) {
+            if let Err(error) = window.fill(index, value) {
                 return refused(format!("Not filled: {error}."));
             }
         }
         let pressed = match submit {
-            Some(index) => match form.press(index) {
+            Some(index) => match window.press(index) {
                 Ok(()) => Some(form.buttons[index].clone()),
                 Err(error) => {
                     return tool_result(
@@ -538,6 +605,7 @@ impl ComputerUse {
             "available": axo_computer::AVAILABLE && accessibility && screen_recording,
             "accessibility": accessibility,
             "screenRecording": screen_recording,
+            "locked": axo_computer::screen_locked(),
         })
     }
 }
@@ -589,6 +657,7 @@ fn ask_for_computer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeroize::Zeroizing;
 
     #[test]
     fn remembered_values_are_hidden_in_every_read() {
@@ -617,6 +686,9 @@ mod tests {
         answer: Result<ElicitationAction, &'static str>,
         key: Option<axo_seal::InputKey>,
         asked: Mutex<Vec<(String, Duration, bool)>>,
+        /// What an accepted form is answered with.
+        values: Option<Values>,
+        forms: Mutex<Vec<InputRequest>>,
     }
 
     impl Host {
@@ -625,6 +697,8 @@ mod tests {
                 answer,
                 key: Some(axo_seal::InputKey::generate()),
                 asked: Mutex::default(),
+                values: None,
+                forms: Mutex::default(),
             }
         }
 
@@ -647,13 +721,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((message.to_owned(), timeout, input.is_some()));
+            self.forms.lock().unwrap().extend(input);
             match self.answer {
                 Ok(action) => Ok((
                     ElicitationOutcome {
                         id: "e-1".into(),
                         action,
                     },
-                    None,
+                    self.values.clone(),
                 )),
                 Err(message) => Err(RpcError::invalid_params(message)),
             }
@@ -838,5 +913,324 @@ mod tests {
         assert_eq!(read["content"][0]["text"], "hunter2");
         let exported = computer.redactions.export();
         assert_eq!(exported["hashes"], json!([]), "{exported}");
+    }
+
+    /// A window that reads as given, fails where told, and records what was done to it.
+    #[derive(Default)]
+    struct FakeWindow {
+        fields: Vec<(&'static str, bool)>,
+        buttons: Vec<&'static str>,
+        changed: bool,
+        fill_fails: bool,
+        press_fails: bool,
+        filled: Mutex<Vec<(usize, String)>>,
+        pressed: Mutex<Vec<usize>>,
+    }
+
+    impl FakeWindow {
+        /// A sign-in page: an email field, a password field and a "Sign in" button.
+        fn sign_in() -> Self {
+            Self {
+                fields: vec![("Email address", false), ("Password", true)],
+                buttons: vec!["Forgot password?", "Sign in"],
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Window for FakeWindow {
+        fn reading(&self) -> Reading {
+            Reading {
+                app: "Safari".into(),
+                window_title: "Sign in to GitHub".into(),
+                origin: Some("https://github.com".into()),
+                fields: self
+                    .fields
+                    .iter()
+                    .map(|&(label, secure)| FieldReading {
+                        label: label.into(),
+                        secure,
+                    })
+                    .collect(),
+                buttons: self.buttons.iter().map(|&b| b.to_owned()).collect(),
+            }
+        }
+        fn check_unchanged(&self, _: &[usize], _: Option<usize>) -> Result<(), FormError> {
+            if self.changed {
+                return Err(FormError("the page changed".into()));
+            }
+            Ok(())
+        }
+        fn fill(&self, field: usize, value: &str) -> Result<(), FormError> {
+            if self.fill_fails {
+                return Err(FormError("the field took no value".into()));
+            }
+            self.filled.lock().unwrap().push((field, value.to_owned()));
+            Ok(())
+        }
+        fn press(&self, button: usize) -> Result<(), FormError> {
+            if self.press_fails {
+                return Err(FormError("the button did not press".into()));
+            }
+            self.pressed.lock().unwrap().push(button);
+            Ok(())
+        }
+    }
+
+    fn values(pairs: &[(&str, &str)]) -> Values {
+        pairs
+            .iter()
+            .map(|&(id, value)| (id.to_owned(), Zeroizing::new(value.to_owned())))
+            .collect()
+    }
+
+    fn answering_with(values: Values) -> Host {
+        Host {
+            values: Some(values),
+            ..Host::answering(Ok(ElicitationAction::Accept))
+        }
+    }
+
+    /// `request_input` on `window`, asked from another Mac with a minute to answer.
+    fn ask_in(computer: &ComputerUse, host: &Host, window: &FakeWindow, args: Value) -> Value {
+        let args: InputArgs = serde_json::from_value(args).unwrap();
+        let asking = Asking {
+            session_id: SESSION,
+            from: Some("Leo's MacBook"),
+            timeout: Duration::from_secs(60),
+        };
+        computer.ask_and_fill(host, &asking, &args, host.key.as_ref().unwrap(), window)
+    }
+
+    const SIGN_IN: &str = "Sign in";
+
+    fn sign_in_args() -> Value {
+        json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "email" }, { "kind": "password" }], "submit": "sign IN" })
+    }
+
+    #[test]
+    fn a_form_is_asked_for_by_what_the_person_sees_then_filled_submitted_and_hidden() {
+        let computer = ComputerUse::default();
+        let host = answering_with(values(&[("f0", "leo@example.com"), ("f1", "hunter22")]));
+        let window = FakeWindow::sign_in();
+        let receipt = ask_in(&computer, &host, &window, sign_in_args());
+
+        let (message, timeout, _) = host.asked().remove(0);
+        assert_eq!(
+            message,
+            "Fill Email address and Password in Safari \u{2014} https://github.com, then press \u{201c}Sign in\u{201d}.\nAsked from Leo's MacBook's Session."
+        );
+        assert_eq!(timeout, Duration::from_secs(60));
+        let form = host.forms.lock().unwrap().remove(0);
+        assert_eq!(
+            (
+                form.app.as_str(),
+                form.origin.as_deref(),
+                form.submit.as_deref()
+            ),
+            ("Safari", Some("https://github.com"), Some(SIGN_IN))
+        );
+        assert_eq!(form.key, host.key.as_ref().unwrap().public_key());
+        let fields: Vec<_> = form
+            .fields
+            .iter()
+            .map(|field| (field.id.as_str(), field.label.as_str(), field.kind))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                ("f0", "Email address", InputFieldKind::Email),
+                ("f1", "Password", InputFieldKind::Password)
+            ]
+        );
+
+        assert_eq!(
+            *window.filled.lock().unwrap(),
+            [(0, "leo@example.com".into()), (1, "hunter22".into())]
+        );
+        assert_eq!(*window.pressed.lock().unwrap(), [1]);
+        assert_eq!(receipt["isError"], json!(false), "{receipt}");
+        assert_eq!(
+            receipt["structuredContent"],
+            json!({ "filled": ["Email address", "Password"], "app": "Safari", "origin": "https://github.com", "submitted": true })
+        );
+        let text = receipt["content"][0]["text"].as_str().unwrap();
+        assert!(
+            !text.contains("hunter22") && text.contains("pressed"),
+            "{text}"
+        );
+
+        // Every later read hides both values.
+        let mut read = json!({ "text": "hunter22", "email": "leo@example.com" });
+        computer.redact(&mut read);
+        assert!(!read.to_string().contains("hunter22"), "{read}");
+        assert!(!read.to_string().contains("leo@example.com"), "{read}");
+        assert_eq!(
+            computer.redactions.export()["hashes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_label_is_named_by_its_kind_and_nothing_is_pressed_unless_asked() {
+        let computer = ComputerUse::default();
+        let host = answering_with(values(&[("f0", "123456")]));
+        let window = FakeWindow {
+            fields: vec![("  ", false)],
+            ..FakeWindow::default()
+        };
+        let receipt = ask_in(
+            &computer,
+            &host,
+            &window,
+            json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "code" }] }),
+        );
+        assert!(
+            host.asked()[0].0.starts_with("Fill Code in Safari"),
+            "{:?}",
+            host.asked()
+        );
+        assert_eq!(receipt["structuredContent"]["submitted"], json!(false));
+        assert!(window.pressed.lock().unwrap().is_empty());
+        // Too short to hide wherever it appears.
+        let mut read = json!("123");
+        computer.redact(&mut read);
+        assert_eq!(read, json!("123"));
+    }
+
+    #[test]
+    fn a_request_the_window_cannot_satisfy_is_refused_before_asking() {
+        let computer = ComputerUse::default();
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        let window = FakeWindow::sign_in();
+        let refuse = |args: Value| refusal(&ask_in(&computer, &host, &window, args));
+        assert_eq!(
+            refuse(json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "pin" }] })),
+            "pin is not a field kind: use username, email, password, code or text"
+        );
+        assert_eq!(
+            refuse(
+                json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "password" }, { "kind": "text", "label": "password" }] })
+            ),
+            "two fields asked for \"Password\""
+        );
+        assert_eq!(
+            refuse(
+                json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "password", "label": "Email address" }] })
+            ),
+            "\"Email address\" is not a secure field; a password goes only into one"
+        );
+        assert_eq!(
+            refuse(
+                json!({ "pid": 1, "window_id": 2, "fields": [{ "kind": "password" }], "submit": "Log in" })
+            ),
+            "no button \"Log in\"; the window's buttons are \"Forgot password?\", \"Sign in\""
+        );
+        assert!(host.asked().is_empty());
+    }
+
+    #[test]
+    fn nothing_is_filled_unless_the_person_accepts_with_values() {
+        for (host, said) in [
+            (
+                Host::answering(Ok(ElicitationAction::Decline)),
+                "Not done: the person declined.",
+            ),
+            (
+                Host::answering(Ok(ElicitationAction::Cancel)),
+                "Not done: nobody answered in time.",
+            ),
+            (
+                Host::answering(Ok(ElicitationAction::Accept)),
+                "Not done: nobody answered in time.",
+            ),
+            (
+                Host::answering(Err("no such Session")),
+                "Not done: the person could not be asked (no such Session).",
+            ),
+        ] {
+            let window = FakeWindow::sign_in();
+            let result = ask_in(&ComputerUse::default(), &host, &window, sign_in_args());
+            assert_eq!(refusal(&result), said);
+            assert_eq!(result["structuredContent"]["filled"], json!(false));
+            assert!(window.filled.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_changed_page_or_a_failed_fill_fills_nothing_more() {
+        let both = values(&[("f0", "leo@example.com"), ("f1", "hunter22")]);
+        let cases = [
+            (
+                FakeWindow {
+                    changed: true,
+                    ..FakeWindow::sign_in()
+                },
+                both.clone(),
+                "Not filled: the page changed. Read the window again and ask again.",
+            ),
+            (
+                FakeWindow {
+                    fill_fails: true,
+                    ..FakeWindow::sign_in()
+                },
+                both.clone(),
+                "Not filled: the field took no value.",
+            ),
+            (
+                FakeWindow::sign_in(),
+                values(&[("f0", "leo@example.com")]),
+                "Not filled: a value is missing.",
+            ),
+        ];
+        for (window, answer, said) in cases {
+            let host = answering_with(answer);
+            let result = ask_in(&ComputerUse::default(), &host, &window, sign_in_args());
+            assert_eq!(refusal(&result), said);
+            assert!(window.pressed.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_button_that_will_not_press_reports_the_fields_filled_but_not_submitted() {
+        let host = answering_with(values(&[("f0", "leo@example.com"), ("f1", "hunter22")]));
+        let window = FakeWindow {
+            press_fails: true,
+            ..FakeWindow::sign_in()
+        };
+        let result = ask_in(&ComputerUse::default(), &host, &window, sign_in_args());
+        assert_eq!(
+            refusal(&result),
+            "Filled Email address and Password in Safari \u{2014} https://github.com, but the button did not press. The values are not shown to you."
+        );
+        assert_eq!(
+            result["structuredContent"],
+            json!({ "filled": ["Email address", "Password"], "submitted": false })
+        );
+        assert_eq!(window.filled.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_input_question_never_outlasts_its_own_limit() {
+        let host = answering_with(values(&[("f0", "x"), ("f1", "y")]));
+        let args: InputArgs = serde_json::from_value(sign_in_args()).unwrap();
+        let asking = Asking {
+            session_id: SESSION,
+            from: None,
+            timeout: Duration::from_millis(TIMEOUT_MS * 10),
+        };
+        ComputerUse::default().ask_and_fill(
+            &host,
+            &asking,
+            &args,
+            host.key.as_ref().unwrap(),
+            &FakeWindow::sign_in(),
+        );
+        let (message, timeout, _) = host.asked().remove(0);
+        assert_eq!(timeout, Duration::from_millis(TIMEOUT_MS));
+        assert!(!message.contains("Asked from"), "{message}");
     }
 }

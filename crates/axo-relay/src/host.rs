@@ -223,7 +223,7 @@ pub trait RelayHost: Send + Sync {
     ) -> Result<serde_json::Value, (i64, String)> {
         Err((-32601, "Method not found".into()))
     }
-    /// Whether this Mac can do computer use now: `{ available, accessibility, screenRecording }`.
+    /// Whether this Mac can do computer use now: `{ available, accessibility, screenRecording, locked }`.
     fn computer_status(&self) -> serde_json::Value {
         serde_json::json!({ "available": false, "accessibility": false, "screenRecording": false })
     }
