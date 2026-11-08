@@ -222,10 +222,16 @@ impl TerminalOutput {
     /// already queued and then see end of file.
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
-        self.stop_signal
+        // A byte wakes the pump even if a child forked meanwhile holds a copy of this end, which
+        // would keep it from closing.
+        if let Some(signal) = self
+            .stop_signal
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
+            .take()
+        {
+            let _ = io::Write::write(&mut &signal, &[1]);
+        }
     }
 
     /// Registers a subscriber and returns the replay it must write first: a snapshot of the
@@ -352,7 +358,7 @@ impl TerminalOutput {
 }
 
 /// Waits, with no timeout, until `fd` can be read (`true`) or `stopping` is (`false`: its other
-/// end was dropped by `stop`).
+/// end was written to, or dropped, by `stop`).
 fn wait_readable(fd: RawFd, stopping: RawFd) -> io::Result<bool> {
     let mut descriptors = [fd, stopping].map(|fd| libc::pollfd {
         fd,

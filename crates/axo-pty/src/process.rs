@@ -72,6 +72,53 @@ pub struct PtyProcess {
 
 /// Starts `command` on a new PTY of `size`. `inherit` lists descriptors the child keeps across
 /// exec (they stay close-on-exec in this process, so concurrent launches never leak them).
+/// The highest descriptor the child must look at: the highest this process has open now, as the
+/// kernel lists them, plus room for a few opened before the fork. Descriptors opened meanwhile
+/// take the lowest free numbers, so the child marks the whole range up to it. Looping up to the
+/// open-files limit instead took over a second where that limit is high.
+fn highest_open_descriptor() -> RawFd {
+    const ROOM: RawFd = 64;
+    let size = std::mem::size_of::<libc::proc_fdinfo>();
+    let mut listed: Vec<libc::proc_fdinfo> = Vec::new();
+    for _ in 0..4 {
+        // SAFETY: a null buffer asks for the size the list needs.
+        let needed = unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDLISTFDS,
+                0,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if needed <= 0 {
+            break;
+        }
+        let capacity = needed as usize / size + 16;
+        listed = Vec::with_capacity(capacity);
+        // SAFETY: the buffer holds `capacity` entries; the call fills at most that many bytes.
+        let filled = unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDLISTFDS,
+                0,
+                listed.as_mut_ptr().cast(),
+                (capacity * size) as libc::c_int,
+            )
+        };
+        if filled > 0 && (filled as usize) < capacity * size {
+            // SAFETY: the kernel initialized `filled` bytes of whole entries.
+            unsafe { listed.set_len(filled as usize / size) };
+            break;
+        }
+    }
+    match listed.iter().map(|info| info.proc_fd).max() {
+        Some(highest) => highest + ROOM,
+        // The list is unavailable: look as far as the usual open-files limit.
+        None => 1024,
+    }
+}
+
 pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::Result<PtyProcess> {
     let OpenedPty {
         master,
@@ -80,13 +127,15 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
     } = open_pty(size)?;
     let slave_fd = slave.as_raw_fd();
     let inherit = inherit.to_vec();
+    let highest = highest_open_descriptor();
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // SAFETY: the closure runs in the forked child before exec and only makes async-signal-safe
     // calls: it creates a session, makes the PTY its controlling terminal and foreground group,
-    // connects the standard streams, and clears close-on-exec on the inherited descriptors.
+    // connects the standard streams, closes every other descriptor at exec, and clears
+    // close-on-exec on the inherited ones.
     unsafe {
         command.pre_exec(move || {
             if libc::setsid() == -1
@@ -101,6 +150,14 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
                 }
             }
             libc::close(slave_fd);
+            // macOS has no atomic SOCK_CLOEXEC: a socket another thread is opening as this fork
+            // happens is not close-on-exec yet. Inherited, it would keep that socket alive in the
+            // shell, such as axod's listener after axod stopped. So nothing passes but `inherit`.
+            for descriptor in 3..=highest {
+                if !inherit.contains(&descriptor) {
+                    libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC);
+                }
+            }
             for descriptor in &inherit {
                 if libc::fcntl(*descriptor, libc::F_SETFD, 0) == -1 {
                     return Err(io::Error::last_os_error());
@@ -478,6 +535,49 @@ fn wait_writable(fd: RawFd, timeout: Duration) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A descriptor that is not close-on-exec, as a socket another thread is still opening is on
+    /// macOS, does not reach the shell; one it is asked to inherit does.
+    #[test]
+    fn a_shell_gets_only_the_descriptors_it_is_meant_to_inherit() {
+        let directory = std::env::temp_dir().join(format!("axo-fds-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("report");
+        let open_without_cloexec = || {
+            // SAFETY: dup of stdin's descriptor; the duplicate is not close-on-exec.
+            let fd = unsafe { libc::dup(libc::STDIN_FILENO) };
+            assert!(fd > 2);
+            fd
+        };
+        let stray = open_without_cloexec();
+        let meant = open_without_cloexec();
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(format!(
+            "for fd in {stray} {meant}; do if [ -e /dev/fd/$fd ]; then echo \"$fd open\"; else echo \"$fd closed\"; fi; done > {}; exec /bin/sleep 30",
+            report.display()
+        ));
+        let mut shell = spawn(command, WindowSize::DEFAULT, &[meant]).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let seen = loop {
+            let text = std::fs::read_to_string(&report).unwrap_or_default();
+            if text.lines().count() == 2 {
+                break text;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the shell never reported"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        stop(&mut shell.child, Duration::from_millis(100));
+        // SAFETY: closes the two duplicates this test made.
+        unsafe {
+            libc::close(stray);
+            libc::close(meant);
+        }
+        let _ = std::fs::remove_dir_all(&directory);
+        assert_eq!(seen, format!("{stray} closed\n{meant} open\n"));
+    }
 
     #[test]
     fn a_lost_pty_allocation_race_is_retried_with_growing_pauses() {
