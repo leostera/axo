@@ -36,7 +36,7 @@ import {
 import { hostV1Results, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
 import { AxoHostRelay, hostRemoteMethods, type HostRemoteMethod } from "./axo-host-relay";
 import type { CallerContext, Peer } from "./relay/peer";
-import { sessionDOName, type SessionBinding } from "./session-store";
+import { sessionDOName, type SessionBinding, type SessionHead } from "./session-store";
 import { recordApiEvent } from "./observability";
 import { z } from "zod";
 
@@ -101,6 +101,8 @@ type IndexRow = {
   epoch: number | null;
   head: number;
   chain: string | null;
+  /** The row was last set from an answer that carried the SessionDO's fence, and no write to it is out since. */
+  verified: number;
 };
 
 type ClientStub = { notify(hostId: string, notices: HostNotice[]): Promise<boolean> };
@@ -149,6 +151,10 @@ export class AxoHostDO extends AxoHostRelay {
       session_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, metadata_version INTEGER NOT NULL,
       missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
     sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
+    // RFD0032, Host sync from the index: rows start distrusted; the fence only grows.
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(session_index)").toArray().some((column) => column.name === "verified"))
+      sql.exec("ALTER TABLE session_index ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
+    sql.exec("CREATE TABLE IF NOT EXISTS sync_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
     // RFD0031: followers stay until their socket closes; `behind` marks one a notice failed to reach.
     sql.exec("DROP TABLE IF EXISTS subscribers");
     sql.exec("CREATE TABLE IF NOT EXISTS followers (client_do TEXT PRIMARY KEY, behind INTEGER NOT NULL DEFAULT 0)");
@@ -318,18 +324,71 @@ export class AxoHostDO extends AxoHostRelay {
         this.queueSession(row.session_id);
       }
     }
-    const states: CloudSessionState[] = [];
-    for (let start = 0; start < sessions.length; start += 16) {
-      const batch = sessions.slice(start, start + 16);
-      states.push(...await Promise.all(batch.map(async ({ sessionId }): Promise<CloudSessionState> => {
-        const head = await this.session(sessionId).head(this.binding(sessionId));
-        this.refreshHead(sessionId, head ? head.epoch : null, head?.count ?? 0, head?.chain ?? null);
-        return head ? { sessionId, state: "known", ...head } : { sessionId, state: "unknown" };
-      })));
+    // A verified row that agrees with the manifest is the answer (RFD0032, answerFromIndex); the
+    // rest are read from their SessionDO, with a fence raised once for this handshake.
+    const states = new Map<string, CloudSessionState>();
+    const toRead: string[] = [];
+    for (const { sessionId, upload } of sessions) {
+      const row = this.indexRow(sessionId);
+      const agrees = row !== undefined && row.verified === 1 &&
+        (upload === null || (row.epoch !== null && row.head === upload.count && row.chain === upload.chain));
+      if (agrees) states.set(sessionId, indexState(row));
+      else toRead.push(sessionId);
+    }
+    const fence = toRead.length > 0 ? this.raiseFence() : this.currentFence();
+    for (let start = 0; start < toRead.length; start += 16) {
+      await Promise.all(toRead.slice(start, start + 16).map(async (sessionId) => {
+        const read = await this.syncHead(sessionId, fence);
+        this.refreshHead(sessionId, read.head ? read.head.epoch : null, read.head?.count ?? 0, read.head?.chain ?? null, read.fenced);
+        states.set(sessionId, read.head ? { sessionId, state: "known", ...read.head } : { sessionId, state: "unknown" });
+      }));
     }
     this.renewRoute(peer);
-    recordApiEvent({ event: "host_sync", sessions: sessions.length, unknown: states.filter((state) => state.state === "unknown").length });
-    return { round, applied: true, sessions: states, serverOnly: serverOnly.slice(0, SYNC.manifestSessions) };
+    const answered = sessions.map(({ sessionId }) => states.get(sessionId)!);
+    recordApiEvent({ event: "host_sync", sessions: sessions.length, read: toRead.length, unknown: answered.filter((state) => state.state === "unknown").length });
+    return { round, applied: true, sessions: answered, serverOnly: serverOnly.slice(0, SYNC.manifestSessions) };
+  }
+
+  /**
+   * A SessionDO's head for the handshake, raising its fence. A SessionDO still on code without
+   * fences answers `head` alone, which verifies nothing (RFD0032, Migration).
+   */
+  private async syncHead(sessionId: string, fence: number): Promise<{ head: SessionHead | null; fenced: boolean }> {
+    const stub = this.session(sessionId);
+    try {
+      const read = await stub.syncHead(this.binding(sessionId), fence);
+      this.adoptFence(read.fence);
+      return { head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads] }, fenced: read.fence >= fence };
+    } catch (error) {
+      if (!/syncHead/.test(String(error))) throw error;
+      return { head: await stub.head(this.binding(sessionId)), fenced: false };
+    }
+  }
+
+  private currentFence(): number {
+    return this.ctx.storage.sql.exec<{ fence: number }>("SELECT fence FROM sync_fence WHERE singleton = 1").toArray()[0]?.fence ?? 0;
+  }
+
+  /** Raises the fence in SQLite, so it outlives a reset, and returns it. */
+  private raiseFence(): number {
+    const fence = this.currentFence() + 1;
+    this.ctx.storage.sql.exec("INSERT INTO sync_fence (singleton, fence) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET fence = excluded.fence", fence);
+    return fence;
+  }
+
+  /**
+   * A SessionDO holds at most the fence this object gave it, so this changes nothing unless that
+   * was lost. If it was, writes would be refused for good while the index went on answering; so
+   * the HostDO takes up any higher fence an answer carries.
+   */
+  private adoptFence(fence: number | undefined): void {
+    if (fence === undefined || fence <= this.currentFence()) return;
+    this.ctx.storage.sql.exec("INSERT INTO sync_fence (singleton, fence) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET fence = excluded.fence", fence);
+  }
+
+  /** Marks a row distrusted before a write goes out: only the SessionDO's answer verifies it again (distrustWhileWriting). */
+  private distrust(sessionId: string): void {
+    this.ctx.storage.sql.exec("UPDATE session_index SET verified = 0 WHERE session_id = ?", sessionId);
   }
 
   private async append(params: unknown, { peer }: CallerContext): Promise<AppendResult> {
@@ -337,11 +396,16 @@ export class AxoHostDO extends AxoHostRelay {
     if (!input.success || !this.ready(peer)) throw new JSONRPCErrorException("Invalid append", -32602);
     const { sessionId } = input.data;
     if (!this.indexRow(sessionId)) throw new JSONRPCErrorException("Unknown Session; sync first", -32602);
-    const result = await this.session(sessionId).append(this.binding(sessionId), input.data);
+    this.distrust(sessionId);
+    const result = await this.session(sessionId).append(this.binding(sessionId), input.data, this.currentFence());
     recordApiEvent({ event: "session_append", outcome: result.outcome, records: input.data.records.length });
     this.renewRoute(peer);
-    if (result.outcome !== "committed") return result;
-    this.refreshHead(sessionId, result.epoch, result.count, result.chain);
+    // Whatever the outcome, the answer says what the SessionDO holds; one with a fence verifies the row.
+    this.adoptFence(result.fence);
+    this.refreshHead(sessionId, result.epoch, result.count, result.chain, result.fence !== undefined);
+    // A fenced write reaches axod as the conflict it already handles by handshaking again.
+    if (result.outcome === "fenced") return { outcome: "conflict", epoch: result.epoch, count: result.count, chain: result.chain };
+    if (result.outcome !== "committed") return { outcome: result.outcome, epoch: result.epoch, count: result.count, chain: result.chain };
     for (const slot of result.cleared) {
       if (!this.progress.get(sessionId)?.delete(slot)) continue;
       this.queue({ kind: "progress", sessionId, slot, snapshot: null });
@@ -361,12 +425,19 @@ export class AxoHostDO extends AxoHostRelay {
     const input = truncateParamsSchema.safeParse(params);
     if (!input.success || !this.ready(peer)) throw new JSONRPCErrorException("Invalid truncate", -32602);
     const { sessionId, round, keep, expectedChain } = input.data;
-    const result = await this.session(sessionId).truncate(this.binding(sessionId), keep, expectedChain);
+    this.distrust(sessionId);
+    const result = await this.session(sessionId).truncate(this.binding(sessionId), keep, expectedChain, this.currentFence());
     recordApiEvent({ event: "session_truncate", outcome: result.outcome });
-    if (result.outcome === "mismatch") return { round, outcome: "mismatch" as const };
-    this.refreshHead(sessionId, result.epoch, result.count, result.chain);
+    this.adoptFence(result.fence);
+    if (result.outcome !== "truncated") {
+      // An answer from code without fences has no head to refresh from; the row stays distrusted.
+      if (result.fence !== undefined) this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
+      return { round, outcome: "mismatch" as const };
+    }
+    this.refreshHead(sessionId, result.epoch, result.count, result.chain, result.fence !== undefined);
     this.queue({ kind: "epoch", sessionId, epoch: result.epoch, head: result.count }, true);
-    return { round, ...result };
+    // axod's schema is strict: only what it reads, never the fence.
+    return { round, outcome: "truncated" as const, epoch: result.epoch, count: result.count, chain: result.chain };
   }
 
   private meta(params: unknown, { peer }: CallerContext) {
@@ -395,10 +466,15 @@ export class AxoHostDO extends AxoHostRelay {
     return true;
   }
 
-  /** The index caches each Session's head; subscribers hear when it changes. */
-  private refreshHead(sessionId: string, epoch: number | null, head: number, chain: string | null): void {
+  /**
+   * The index caches each Session's head; subscribers hear when it changes. `verified` when the
+   * head came in an answer carrying the SessionDO's fence.
+   */
+  private refreshHead(sessionId: string, epoch: number | null, head: number, chain: string | null, verified = false): void {
     const row = this.indexRow(sessionId);
-    if (!row || (row.epoch === epoch && row.head === head && row.chain === chain)) return;
+    if (!row) return;
+    if (verified !== (row.verified === 1)) this.ctx.storage.sql.exec("UPDATE session_index SET verified = ? WHERE session_id = ?", verified ? 1 : 0, sessionId);
+    if (row.epoch === epoch && row.head === head && row.chain === chain) return;
     this.ctx.storage.sql.exec("UPDATE session_index SET epoch = ?, head = ?, chain = ? WHERE session_id = ?", epoch, head, chain, sessionId);
     if (row.epoch !== null && epoch !== null && epoch > row.epoch) this.queue({ kind: "epoch", sessionId, epoch, head }, true);
     this.queueSession(sessionId);
@@ -750,6 +826,12 @@ export class AxoHostDO extends AxoHostRelay {
   private client(name: string): ClientStub {
     return this.ctx.exports.AxoClientDO.getByName(name) as unknown as ClientStub;
   }
+}
+
+/** A verified index row as the handshake's answer; axod ignores `heads`, which the index doesn't keep. */
+function indexState(row: IndexRow): CloudSessionState {
+  if (row.epoch === null || row.chain === null) return { sessionId: row.session_id, state: "unknown" };
+  return { sessionId: row.session_id, state: "known", epoch: row.epoch, count: row.head, chain: row.chain, heads: [] };
 }
 
 function outcomeKind(error: { code: number; message: string }): "error" | "disconnected" | "timeout" {

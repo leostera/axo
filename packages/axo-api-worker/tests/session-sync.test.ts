@@ -9,6 +9,7 @@ import {
 } from "@axo/protocol";
 import { Peer } from "../testing/client";
 import { harness, signIn, type AccountSession, type Harness } from "./harness";
+import { objectRows } from "./storage";
 import { FakeTranscript, assistantMessage, connectClient, connectHost, pairHost, userMessage, type PairedHost } from "./account-support";
 
 type Notification = { method?: string; params?: Record<string, unknown> };
@@ -83,8 +84,9 @@ test("a host's appends are verified, committed and acknowledged, and a retry cha
   const committed = await append(daemon, transcript, 4);
   assert.deepEqual(committed, { outcome: "committed", epoch: 1, count: 5, chain: transcript.transcript.chain });
 
+  // Answered from the index (RFD0032), which keeps no heads; axod ignores them.
   const known = await call(daemon, "axo.host.sync", { hostId: host.hostId, hostGeneration: host.hostGeneration, round: 2, sessions: [transcript.manifestRow()] }, hostSyncResultSchema);
-  assert.deepEqual(known.sessions, [{ sessionId: transcript.sessionId, state: "known", epoch: 1, count: 5, chain: transcript.transcript.chain, heads: transcript.transcript.heads }]);
+  assert.deepEqual(known.sessions, [{ sessionId: transcript.sessionId, state: "known", epoch: 1, count: 5, chain: transcript.transcript.chain, heads: [] }]);
   const stale = await call(daemon, "axo.host.sync", { hostId: host.hostId, hostGeneration: host.hostGeneration, round: 1, sessions: [] }, hostSyncResultSchema);
   assert.equal(stale.applied, false, "a manifest from an older round changes nothing");
 });
@@ -455,4 +457,63 @@ test("a Mac is named by its person, everywhere at once, and reconnecting never u
   assert.ok("error" in stranger);
   const unsafe = await client.call("axo.client.host.rename", { hostId: host.hostId, name: "bad\u0007name" });
   assert.ok("error" in unsafe);
+});
+
+// ─── RFD0032, Host sync from the index ─────────────────────────────────────────
+
+const hostFence = (h: Harness) => objectRows<{ fence: number }>(h, "AxoHostDO", "SELECT fence FROM sync_fence")[0]?.fence ?? 0;
+
+function sync(daemon: Peer, host: PairedHost, round: number, sessions: unknown[]) {
+  return call(daemon, "axo.host.sync", { hostId: host.hostId, hostGeneration: host.hostGeneration, round, sessions }, hostSyncResultSchema);
+}
+
+test("a quiet reconnect is answered from the index, asking no SessionDO", async (t) => {
+  const { h, daemon, transcript, host } = await fixture(t);
+  assert.equal(hostFence(h), 1, "the first handshake read the head, raising the fence");
+
+  const quiet = await sync(daemon, host, 2, [transcript.manifestRow()]);
+  assert.deepEqual(quiet.sessions, [{ sessionId: transcript.sessionId, state: "known", epoch: 1, count: 3, chain: transcript.transcript.chain, heads: [] }]);
+  assert.equal(hostFence(h), 1, "no head was read");
+
+  // An append's answer verifies the row again.
+  await transcript.write(userMessage("four"));
+  await append(daemon, transcript, 4);
+  assert.equal((await sync(daemon, host, 3, [transcript.manifestRow()])).sessions[0]!.state, "known");
+  assert.equal(hostFence(h), 1);
+
+  // A manifest that disagrees with the index is asked about.
+  const behind = { ...transcript.manifestRow(), upload: { count: 2, chain: transcript.transcript.chainAt(2)!, heads: [] } };
+  const asked = await sync(daemon, host, 4, [behind]);
+  assert.deepEqual(asked.sessions.map((state) => state.state === "known" && state.count), [4]);
+  assert.equal(hostFence(h), 2);
+});
+
+test("a row the HostDO wrote to and never heard back about is read, not trusted", async (t) => {
+  const { h, session, host, transcript } = await fixture(t);
+  // A commit landed and the answer was lost: the index lags at 2 records, and is distrusted.
+  await h.restart(() => {
+    objectRows(h, "AxoHostDO", `UPDATE session_index SET verified = 0, head = 2, chain = '${transcript.transcript.chainAt(2)}'`, true);
+  });
+  const daemon = await connectHost(h, session, host);
+  t.after(() => daemon.close());
+  // The Mac's file shrank back to exactly what the index says.
+  const lagging = { ...transcript.manifestRow(), upload: { count: 2, chain: transcript.transcript.chainAt(2)!, heads: [] } };
+  const answer = await sync(daemon, host, 2, [lagging]);
+  assert.deepEqual(answer.sessions.map((state) => state.state === "known" && state.count), [3], "the SessionDO's head, not the index's");
+});
+
+test("a write from before the last head read is refused as a conflict, and the next one lands", async (t) => {
+  const { h, session, daemon, transcript, host } = await fixture(t);
+  // A head read with a higher fence than the one this HostDO writes with, as a reset instance would face.
+  const namespace = (await h.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY")) as unknown as { idFromName(name: string): unknown; get(id: unknown): { syncHead(binding: unknown, fence: number): Promise<unknown> } };
+  const stub = namespace.get(namespace.idFromName(`${session.accountId}:${host.hostId}:${transcript.sessionId}`));
+  const raised = await stub.syncHead({ accountId: session.accountId, hostId: host.hostId, sessionId: transcript.sessionId }, 50);
+  (raised as Partial<Disposable>)[Symbol.dispose]?.();
+
+  await transcript.write(userMessage("four"));
+  const refused = await append(daemon, transcript, 4);
+  assert.deepEqual(refused, { outcome: "conflict", epoch: 1, count: 3, chain: transcript.transcript.chainAt(3) });
+  assert.equal(hostFence(h), 50, "the HostDO took up the higher fence");
+  assert.equal((await sync(daemon, host, 2, [transcript.manifestRow()])).sessions[0]!.state, "known");
+  assert.deepEqual(await append(daemon, transcript, 4), { outcome: "committed", epoch: 1, count: 4, chain: transcript.transcript.chain });
 });

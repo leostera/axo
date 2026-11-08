@@ -32,13 +32,22 @@ export function sessionDOName(accountId: string, hostId: string, sessionId: stri
 
 export type SessionHead = { epoch: number; count: number; chain: string; heads: string[] };
 
-export type StoreAppendResult =
+/**
+ * Every write's answer says what this object then holds, and its fence (RFD0032, Host sync from
+ * the index): a HostDO trusts its index for a Session only after an answer that carries one.
+ */
+export type StoreAppendResult = (
   | { outcome: "committed"; epoch: number; count: number; chain: string; added: number; cleared: string[] }
-  | { outcome: "gap" | "conflict" | "epoch" | "invalid"; epoch: number | null; count: number; chain: string | null };
+  | { outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"; epoch: number | null; count: number; chain: string | null }
+) & { fence: number };
 
-export type StoreTruncateResult =
+export type StoreTruncateResult = (
   | { outcome: "truncated"; epoch: number; count: number; chain: string }
-  | { outcome: "mismatch" };
+  | { outcome: "mismatch" | "fenced"; epoch: number | null; count: number; chain: string | null }
+) & { fence: number };
+
+/** What a handshake reads: the head, and the fence it raised. */
+export type SyncHead = { head: SessionHead | null; fence: number };
 
 /** What a reader asks for: records after a cursor, before one, or the last few. */
 export type ReadRequest = {
@@ -108,6 +117,22 @@ export class AxoSessionDO extends DurableObject<Env> {
     addColumns(sql, "transcript", { atxf_header: "TEXT", atxf_through: "INTEGER NOT NULL DEFAULT 0", atxf_converter: "TEXT", atxf_error: "TEXT" });
     sql.exec(`CREATE TABLE IF NOT EXISTS atxf_parts (
       cursor INTEGER NOT NULL, idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (cursor, idx))`);
+    // RFD0032: the highest fence a HostDO's head read carried; older writes are refused.
+    sql.exec("CREATE TABLE IF NOT EXISTS write_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
+  }
+
+  /**
+   * The head, for a HostDO's handshake, raising the fence to `fence` first: from now on a write
+   * carrying an older fence, or none, is refused. A write a reset HostDO sent before this read can
+   * then never land after it, behind an index the new HostDO trusts (RFD0032, fenceOnVerify).
+   */
+  async syncHead(binding: SessionBinding, fence: number): Promise<SyncHead> {
+    if (!this.owns(binding)) throw new Error("Session identity conflict");
+    if (!Number.isSafeInteger(fence) || fence < 1) throw new Error("A fence is a positive integer");
+    const sql = this.ctx.storage.sql;
+    sql.exec(`INSERT INTO write_fence (singleton, fence) VALUES (1, ?)
+      ON CONFLICT(singleton) DO UPDATE SET fence = MAX(fence, excluded.fence)`, fence);
+    return { head: await this.head(binding), fence: this.fence() };
   }
 
   /** What the cloud holds, or null while it holds nothing. */
@@ -129,12 +154,13 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Commits a batch in one transaction. A batch that starts at or before the count is a retry:
    * its overlap must match what is stored, and only its new tail is added.
    */
-  async append(binding: SessionBinding, params: AppendParams): Promise<StoreAppendResult> {
+  async append(binding: SessionBinding, params: AppendParams, fence?: number): Promise<StoreAppendResult> {
     if (!this.owns(binding, true)) throw new Error("Session identity conflict");
     let transcript = this.transcript();
-    const reject = (outcome: "gap" | "conflict" | "epoch" | "invalid"): StoreAppendResult => ({
-      outcome, epoch: transcript?.epoch ?? null, count: this.count(), chain: transcript ? this.chainAt(this.count(), transcript)! : null,
+    const reject = (outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"): StoreAppendResult => ({
+      outcome, epoch: transcript?.epoch ?? null, count: this.count(), chain: transcript ? this.chainAt(this.count(), transcript)! : null, fence: this.fence(),
     });
+    if (this.fenced(fence)) return reject("fenced");
     if (params.records.some((record) => encoder.encode(record.line).byteLength > PI3_MAX_LINE_BYTES)) return reject("invalid");
     if (!transcript || (params.header !== undefined && params.header !== transcript.header && this.count() === 0 && params.from === 1)) {
       if (params.header === undefined || pi3Entry(params.header) === null) return reject(params.header === undefined ? "gap" : "invalid");
@@ -176,7 +202,9 @@ export class AxoSessionDO extends DurableObject<Env> {
     const committed = transcript;
     const before = !this.transcript();
     const result: StoreAppendResult = this.ctx.storage.transactionSync((): StoreAppendResult => {
-      // Hashing awaited; anything that changed the transcript since makes this batch a retry.
+      // Hashing awaited: a head read may have raised the fence since, and anything that changed the
+      // transcript makes this batch a retry.
+      if (this.fenced(fence)) return reject("fenced");
       const now = this.transcript();
       if (this.count() !== count || (now ? now.epoch !== committed.epoch || (count > 0 && now.header !== committed.header) : !before))
         return reject("gap");
@@ -198,7 +226,7 @@ export class AxoSessionDO extends DurableObject<Env> {
           sql.exec("INSERT INTO record_parts (cursor, idx, data) VALUES (?, ?, ?)", cursor, idx, data));
         for (const id of row.refs) sql.exec("UPDATE records SET referenced = 1 WHERE id = ? AND referenced = 0", id);
       });
-      return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared] };
+      return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared], fence: this.fence() };
     });
     if (result.outcome === "committed") await this.translateAfterAppend(count);
     return result;
@@ -215,11 +243,15 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Cuts the transcript back to `keep` records if its chain there is `expectedChain`, starts a
    * new epoch, and records the cut so readers of older epochs learn where to drop to.
    */
-  async truncate(binding: SessionBinding, keep: number, expectedChain: string): Promise<StoreTruncateResult> {
+  async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence?: number): Promise<StoreTruncateResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
     const result = this.ctx.storage.transactionSync((): StoreTruncateResult => {
       const transcript = this.transcript();
-      if (!transcript || this.chainAt(keep, transcript) !== expectedChain) return { outcome: "mismatch" };
+      const refuse = (outcome: "mismatch" | "fenced"): StoreTruncateResult => ({
+        outcome, epoch: transcript?.epoch ?? null, count: this.count(), chain: transcript ? this.chainAt(this.count(), transcript)! : null, fence: this.fence(),
+      });
+      if (this.fenced(fence)) return refuse("fenced");
+      if (!transcript || this.chainAt(keep, transcript) !== expectedChain) return refuse("mismatch");
       const sql = this.ctx.storage.sql;
       const epoch = transcript.epoch + 1;
       sql.exec("DELETE FROM records WHERE cursor > ?", keep);
@@ -232,7 +264,7 @@ export class AxoSessionDO extends DurableObject<Env> {
         SELECT value FROM records AS later, json_each(later.refs)))`);
       sql.exec("UPDATE transcript SET epoch = ?", epoch);
       sql.exec("INSERT INTO cuts (epoch, keep) VALUES (?, ?)", epoch, keep);
-      return { outcome: "truncated", epoch, count: keep, chain: expectedChain };
+      return { outcome: "truncated", epoch, count: keep, chain: expectedChain, fence: this.fence() };
     });
     // The cut cleared any stop, since the line that caused it may be gone: try again if records wait.
     if (result.outcome === "truncated") await this.catchUp();
@@ -409,6 +441,20 @@ export class AxoSessionDO extends DurableObject<Env> {
       }
     }
     return read;
+  }
+
+  /** The highest fence a head read carried; 0 before any. */
+  private fence(): number {
+    return this.ctx.storage.sql.exec<{ fence: number }>("SELECT fence FROM write_fence WHERE singleton = 1").toArray()[0]?.fence ?? 0;
+  }
+
+  /**
+   * Whether a write with `fence` comes from before the last head read. A write with none comes
+   * from a HostDO that doesn't fence (older code), and is refused once any head read fenced.
+   */
+  private fenced(fence: number | undefined): boolean {
+    const current = this.fence();
+    return fence === undefined ? current > 0 : fence < current;
   }
 
   private translation(): Translation | undefined {

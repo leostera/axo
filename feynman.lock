@@ -136,7 +136,7 @@
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall": "22a3d8584329",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveReply": "3f7f80e42c61",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.subscribe": "bc859dedcc1a",
-    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.sync": "655278750701",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.sync": "ff73ad6d7340",
     "packages/axo-api-worker/src/http/account-hosts.ts#revokeAccountHost": "85bf93b1dd39",
     "packages/axo-api-worker/src/http/account-hosts.ts#serveAccountHosts": "9803bcef866f",
     "packages/axo-api-worker/src/http/account-hosts.ts#upgradeAccountClient": "ba248a9787ac",
@@ -148,7 +148,7 @@
     "packages/axo-api-worker/src/http/assets.ts#serveAccountAssets": "6918cc38b5a9",
     "packages/axo-api-worker/src/http/assets.ts#upload": "bc75d7d479fe",
     "packages/axo-api-worker/src/http/router.ts#authorizeCaller": "95b7eaf87d34",
-    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.append": "563e02f52af1",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.append": "832cbfe682b9",
     "packages/axo-api/src/apps.ts#APPS_LIMITS": "eb475a72b9ea",
     "packages/axo-api/src/apps.ts#CONNECTIONS_LIMITS": "b3a005dc6d5b",
     "packages/axo-api/src/contracts.ts#LIMITS": "d016efc788b7",
@@ -173,6 +173,12 @@
     "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.resume": "579d6a6d29b3",
     "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.translate": "2aa4be7cd95d",
     "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.translateAfterAppend": "c2220833ee1c",
-    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.truncate": "7b80ade318d6"
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.truncate": "52c8d765d876",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.append": "6259ba473b60",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.chainAt": "2d86345780ee",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.refreshHead": "962ae02e6927",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.truncate": "3955cb595120",
+    "packages/axo-api-worker/src/session-store.ts#AxoSessionDO.syncHead": "417c2ae6e188",
+    "packages/axo-api-worker/src/session-store.ts:235-240": "29b3817a21b4"
   }
 }

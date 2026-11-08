@@ -7,6 +7,7 @@ import { addIntegrity, canonicalJson, verifyIntegrity, type Transcript } from "@
 import { pi } from "@leostera/atxf/pi";
 import type { AtxfRead, ReadRequest, ReadResult, SessionBinding, StoreAppendResult, StoreTruncateResult } from "../src/session-store";
 import { harness, type Harness } from "./harness";
+import { objectRows } from "./storage";
 
 /**
  * RFD0035: the SessionDO keeps each Pi line's ATXF record beside it, and never changes the line.
@@ -27,8 +28,7 @@ const plain = <T>(value: T): T => {
   return copy;
 };
 
-async function sessionObject(h: Harness): Promise<{ stub: Stub; binding: SessionBinding }> {
-  const binding = { accountId: crypto.randomUUID(), hostId: crypto.randomUUID(), sessionId: crypto.randomUUID() };
+async function sessionObject(h: Harness, binding: SessionBinding = { accountId: crypto.randomUUID(), hostId: crypto.randomUUID(), sessionId: crypto.randomUUID() }): Promise<{ stub: Stub; binding: SessionBinding }> {
   const namespace = (await h.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY")) as unknown as { idFromName(name: string): unknown; get(id: unknown): Stub };
   const raw = namespace.get(namespace.idFromName(`${binding.accountId}:${binding.hostId}:${binding.sessionId}`));
   const stub: Stub = {
@@ -184,6 +184,31 @@ test("after a cut, the stream is read back from the kept records and the new bra
   assert.equal(atxf.records.length, 55);
   same(atxf.records, expected(second.file()).records);
   assert.equal(pi.fromAtxf(atxf), second.file());
+});
+
+test("a Session stored before RFD0035 is translated, oldest first, once it is read", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const { stub, binding } = await sessionObject(h);
+  const uploader = await Uploader.start(binding.sessionId);
+  await uploader.push(piLines(90));
+  await uploader.upload(stub, binding, 1);
+  await caughtUp(stub, binding);
+  const before = await piRecords(stub, binding);
+
+  // As it was stored before: no translations at all.
+  await h.restart(() => {
+    objectRows(h, "AxoSessionDO", `UPDATE records SET atxf_hash = NULL, atxf = NULL;
+      UPDATE transcript SET atxf_header = NULL, atxf_through = 0, atxf_converter = NULL, atxf_error = NULL;
+      DELETE FROM atxf_parts;`, true);
+  });
+  const { stub: cold } = await sessionObject(h, binding);
+  assert.equal((await cold.atxf(binding, 1, 0)).through, 0);
+  assert.deepEqual(await piRecords(cold, binding), before, "reading it changes none of its records");
+
+  const atxf = await caughtUp(cold, binding);
+  same(atxf.records, expected(uploader.file()).records);
+  assert.equal(pi.fromAtxf(atxf), uploader.file());
 });
 
 test("a record too long for one SQLite value is kept in parts and reads back whole", async (t) => {
