@@ -1,0 +1,22 @@
+diff --git a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -12,6 +12,18 @@ fn add_spectre_link_search() {
+     use cc::windows_registry;
+     use std::env;
+ 
++    // Bazel supplies the verified Microsoft package as an explicit input.
++    // Preserve the Spectre requirement; never fall back to unmitigated libs.
++    if let Some(library) = env::var_os("AXO_SPECTRE_LIBRARY") {
++        let library = std::path::PathBuf::from(library);
++        let library = if library.is_absolute() { library } else {
++            env::current_dir().unwrap().join(library)
++        };
++        assert!(library.is_file(), "the supplied Spectre library must exist");
++        println!("cargo:rustc-link-search=native={}", library.parent().unwrap().display());
++        return;
++    }
++
+     let target = env::var("TARGET").expect("missing TARGET");
+     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("missing CARGO_CFG_TARGET_ARCH");
+     let arch = match arch.as_str() {

@@ -75,6 +75,15 @@ fn main() {
                         }
                         complete(&thread, &active, "completed", "flood complete");
                     }
+                    "inspect-policy" => complete(
+                        &thread,
+                        &active,
+                        "completed",
+                        &format!(
+                            "Policy: {} / {}",
+                            p["approvalPolicy"], p["sandboxPolicy"]["type"]
+                        ),
+                    ),
                     _ => complete(&thread, &active, "completed", &format!("Echo: {text}")),
                 }
             }
