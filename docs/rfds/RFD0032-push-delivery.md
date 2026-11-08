@@ -162,6 +162,19 @@ axod's peer sync connects to each other Mac's HostDO with its host credential (`
 
 Per record: one SessionDO append, plus a read only after hibernation or for a lagging client. Per reconnect: one hello per Mac, with reads only for Sessions behind. Per axod reconnect: SessionDO calls only for Sessions that changed while it was away. Based on the hour above, `notify`, `watch` and most reads go away, about 1,100 of the 1,330 RPC calls. The total falls under 1,000 requests an hour while Macs are active, and near zero when idle.
 
+Measured on 2026-11-08, by hour (UTC), from GraphQL `durableObjectsInvocationsAdaptiveGroups` split by `type`, with incoming WebSocket frames (`hibernation`) billed at 1:20. Protocol 3 reached every client by 18:00: release 0.38 moved axod's peer sync, and phone builds 28 and 29 moved the phone, on top of the web app's release 3.
+
+| Hour | Raw requests | Billable | ClientDO RPC | SessionDO RPC |
+|---|---:|---:|---:|---:|
+| 13 (protocol 2) | 18,395 | 9,595 | 6,183 | 2,436 |
+| 14 (protocol 2) | 22,846 | 11,745 | 8,226 | 2,043 |
+| 17 (protocol 2) | 13,613 | 6,722 | 4,884 | 865 |
+| 18 | 5,912 | 862 | 23 | 182 |
+| 20 | 7,719 | 787 | 23 | 176 |
+| 21 | 3,188 | 355 | 14 | 91 |
+
+HostDO frames were about as many before and after (5–7k an hour), so the activity is comparable. Billable requests fell by about 90%, to roughly 15k a day, or 0.45M a month, under the 1M included. What is left, per hour: HostDO frames (about 250 billable), SessionDO appends and translation alarms (about 200), and the account directory (about 100: `touchHost` once per 10 minutes per Mac, and the `authorizeHost`, `verifySession`, `follow` and `unfollow` of each socket opened).
+
 ## Migration
 
 Durable Objects adopt a deploy one by one. Each takes the new code when it next wakes after hibernating, or is reset onto it after the deadline (5 minutes by default). A hibernated WebSocket survives the switch, and its next frame goes to whatever code the object runs then. A rollback works the same way. Clients update when they update: a tab runs the JavaScript it loaded, and the Mac and iPhone apps run the build they have. `specs/sessions/push-migration.ts` models this mix.
@@ -264,5 +277,5 @@ After each deploy, check that:
 
 ## Unresolved questions
 
-- Should axod's heartbeat become a fixed frame, so that `setWebSocketAutoResponse` answers it without waking the HostDO? This would make an idle Mac free too. Presence would then come from the auto-response timestamp.
+- Should axod's heartbeat become a fixed frame, so that `setWebSocketAutoResponse` answers it without waking the HostDO? This would make an idle Mac free too. Presence would then come from the auto-response timestamp. Measured, not yet: a quiet Mac's HostDO takes 600–700 frames an hour, its heartbeats every 10 seconds and its peers' traffic, which is 30–35 billable requests. The lease renews on any frame, so the change would save only that much and would move presence onto a timestamp the code doesn't read today. It is worth revisiting if the number of Macs grows.
 - How long should protocol 2 be kept after the native apps update?
