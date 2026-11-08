@@ -151,6 +151,46 @@ phone_install = rule(
     },
 )
 
+def _phone_reinstall_impl(ctx):
+    launcher = ctx.actions.declare_file(ctx.attr.name + ".sh")
+    app = ctx.files.app
+    ctx.actions.write(
+        launcher,
+        "\n".join([
+            "#!/bin/bash",
+            "# Installs and opens the last device build on the phone again (`bazel run`).",
+            "set -euo pipefail",
+            "cd \"${RUNFILES_DIR:-$0.runfiles}/_main\"",
+            "exec %s %s %s %s /dev/stdout %s" % (
+                ctx.executable._install.short_path,
+                repr(app[0].short_path if app else ""),
+                repr(ctx.attr.device),
+                repr(ctx.attr.bundle_id),
+                repr(ctx.attr.off),
+            ),
+            "",
+        ]),
+        is_executable = True,
+    )
+    runfiles = ctx.runfiles(files = app + [ctx.executable._install])
+    return [DefaultInfo(executable = launcher, runfiles = runfiles)]
+
+phone_reinstall = rule(
+    implementation = _phone_reinstall_impl,
+    executable = True,
+    doc = """Installs and opens the last device build on the phone with `bazel run`, every time.
+
+    `phone_install` runs once per new build: Bazel's action cache skips it while its inputs are
+    the same, so after a failed or locked install, this is how to try again.""",
+    attrs = {
+        "app": attr.label(doc = "An ios_device_app; empty when this Mac cannot build one.", allow_files = True),
+        "bundle_id": attr.string(mandatory = True),
+        "device": attr.string(),
+        "off": attr.string(doc = "Why installing is off; empty to install."),
+        "_install": attr.label(default = ":install_phone_app.sh", executable = True, cfg = "target", allow_single_file = True),
+    },
+)
+
 def _status_line_impl(ctx):
     status = ctx.actions.declare_file(ctx.attr.name + ".status")
     ctx.actions.write(status, ctx.attr.line + "\n")

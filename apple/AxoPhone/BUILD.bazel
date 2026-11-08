@@ -6,7 +6,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 load("@axo_config//:defs.bzl", "AXO", "CAN", "REASONS")
-load("//bazel/apple:defs.bzl", "ios_device_app", "phone_install", "status_line")
+load("//bazel/apple:defs.bzl", "ios_device_app", "phone_install", "phone_reinstall", "status_line")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -194,6 +194,16 @@ phone_install(
     bundle_id = AXO["apple"]["bundle_ids"]["phone"],
     device = AXO.get("phone", {}).get("device", ""),
     off = REASONS.get("phone_install", ""),
+)
+
+# bazel run //apple/AxoPhone:reinstall: installs and opens the last device build again, whatever
+# phone.install says; `install` runs once per new build, so this is the retry.
+phone_reinstall(
+    name = "reinstall",
+    app = ":AxoPhone_ipa" if CAN.phone_device else None,
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    device = AXO.get("phone", {}).get("device", ""),
+    off = "" if CAN.phone_device and AXO.get("phone", {}).get("device", "") else REASONS.get("phone_device", "no phone.device in config.local.json"),
 )
 
 # bazel run //apple/AxoPhone:record_snapshots: after reviewing them, the last UI test run's
