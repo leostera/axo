@@ -221,6 +221,21 @@ test("protocol 3 merges a host's presence and name into the host list as they ch
   assert.equal(connection.active, false);
 });
 
+test("protocol 3 refuses a command for a host it has no socket on as offline, and sends it nowhere", async () => {
+  const cloud = new FakeCloud();
+  const connection = await new RemoteAxoApi("https://api.example.test/", cloud.make).connect(clientId, {});
+  const sent = () => cloud.sockets.reduce((count, socket) => count + socket.sent.length, 0);
+  const before = sent();
+  const stranger = { hostId: "0b0b0b0b-0000-4000-8000-00000000000b", hostGeneration };
+  // -32602 would read as "this Mac is too old for these fields", and the app would try again without them.
+  await assert.rejects(
+    connection.command("axo.remote.session.prompt", { target: stranger, sessionId: sid(1), text: "hi" }),
+    (error) => error.code === -32005,
+  );
+  assert.equal(sent(), before);
+  connection.close();
+});
+
 test("protocol 3 falls back to protocol 2 when the account socket or a host socket refuses it", async () => {
   for (const refusal of [{ accountRefuses: true }, { hostRefuses: true }]) {
     const cloud = new FakeCloud(refusal);

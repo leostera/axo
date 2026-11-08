@@ -607,7 +607,9 @@ export class AccountConnection {
   private channelOf(hostId: string): Channel {
     if (!this.direct) return this.account;
     const link = this.links.get(hostId);
-    if (!link) throw new AxoRpcError("Unknown host", -32602);
+    // Nothing went anywhere: the ClientDO's answer for a host it can't reach. Not -32602, which
+    // the app reads as a Mac too old for the fields it sent.
+    if (!link) throw new AxoRpcError("Host offline; nothing queued", -32005);
     return link.channel;
   }
 
