@@ -25,6 +25,8 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
     versions = ["1.99.0"],
+    # Keep the formatter's rustc_driver DLL compatible on Windows.
+    rustfmt_version = "1.99.0",
 )
 use_repo(rust, "rust_toolchains")
 
@@ -74,6 +76,13 @@ crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls"
 crate.spec(package = "url", version = "2.5.8")
 crate.spec(package = "shlex", version = "=2.0.1")
 crate.spec(package = "zeroize", version = "1")
+crate.spec(package = "windows-sys", version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+])
 # Linux desktop lock state is observed from logind, not guessed from display variables.
 crate.spec(package = "zbus", version = "5", default_features = False, features = ["tokio"])
 # Cua Driver (MIT), pinned: only its native platform runtime and core are linked into axod;

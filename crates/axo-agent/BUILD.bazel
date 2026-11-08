@@ -7,50 +7,73 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     compile_data = glob(["testdata/atxf/*"]),
     edition = "2024",
-    deps = [
-        "@crates//:atxf",
-        "//crates/axo-protocol:axo_protocol",
-        "//crates/axo-pty:axo_pty",
-        "@crates//:futures-util",
-        "@crates//:httparse",
-        "@crates//:libc",
-        "@crates//:log",
-        "@crates//:reqwest",
-        "@crates//:serde",
-        "@crates//:serde_json",
-        "@crates//:sha2",
-        "@crates//:tokio",
-        "@crates//:tokio-tungstenite",
-    ],
+    deps = select({
+        "@platforms//os:windows": [
+            "@crates//:windows-sys",
+            "//crates/axo-protocol:axo_protocol",
+            "@crates//:log",
+            "@crates//:serde",
+            "@crates//:serde_json",
+            "@crates//:atxf",
+        ],
+        "//conditions:default": [
+            "@crates//:atxf",
+            "//crates/axo-protocol:axo_protocol",
+            "//crates/axo-pty:axo_pty",
+            "@crates//:futures-util",
+            "@crates//:httparse",
+            "@crates//:libc",
+            "@crates//:log",
+            "@crates//:reqwest",
+            "@crates//:serde",
+            "@crates//:serde_json",
+            "@crates//:sha2",
+            "@crates//:tokio",
+            "@crates//:tokio-tungstenite",
+        ],
+    }),
 )
 
 rust_test(
     name = "axo_agent_tests",
     compile_data = ["//schemas/axo.leostera.dev/v1"] + glob(["testdata/atxf/*"]),
     crate = ":axo_agent",
-    data = [
-        ":fake_claude",
-        ":fake_codex",
-        ":fake_opencode",
-    ],
+    data = select({
+        "@platforms//os:windows": [],
+        "//conditions:default": [
+            ":fake_claude",
+            ":fake_codex",
+            ":fake_opencode",
+        ],
+    }),
     edition = "2024",
-    env = {
-        "AXO_TEST_FAKE_CLAUDE": "$(rootpath :fake_claude)",
-        "AXO_TEST_FAKE_CODEX": "$(rootpath :fake_codex)",
-        "AXO_TEST_FAKE_OPENCODE": "$(rootpath :fake_opencode)",
-    },
+    env = select({
+        "@platforms//os:windows": {},
+        "//conditions:default": {
+            "AXO_TEST_FAKE_CLAUDE": "$(rootpath :fake_claude)",
+            "AXO_TEST_FAKE_CODEX": "$(rootpath :fake_codex)",
+            "AXO_TEST_FAKE_OPENCODE": "$(rootpath :fake_opencode)",
+        },
+    }),
 )
 
 # A stand-in for codex's app-server and TUI, for the launch tests.
 rust_binary(
     name = "fake_codex",
     testonly = True,
-    srcs = ["testdata/fake_codex.rs"],
+    srcs = [
+        "testdata/fake_codex.rs",
+        "testdata/fake_codex_unix.rs",
+        "testdata/fake_codex_windows.rs",
+    ],
+    crate_root = "testdata/fake_codex.rs",
     edition = "2024",
     deps = [
         "@crates//:serde_json",
-        "@crates//:tungstenite",
-    ],
+    ] + select({
+        "@platforms//os:windows": [],
+        "//conditions:default": ["@crates//:tungstenite"],
+    }),
 )
 
 # A stand-in for opencode's server and TUI, for the launch and link tests.

@@ -1,42 +1,67 @@
 //! Coding agents for Axod (RFD0072): which agent a Session runs and what it can do (`kind`), the
 //! one shape every running agent presents to its Session (`runtime`), and each agent's adapter.
-//! Pi is the only adapter today: launching Pi for a Session with the lifeline that ends it with
-//! axod, the transcript writer lock that proves whether one is alive, its bridge socket, and the
-//! link axod follows it over.
+//! Unix agents use the Session's TUI and lifeline; Windows currently supports Codex through
+//! its stdio app-server. Each adapter owns its transport and agent process.
 //!
 //! Nothing here knows about the session catalog or its database; callers decide which agent to
 //! launch and when, and what its events mean for the catalog.
 
 pub mod activity;
+#[cfg(unix)]
 pub mod axo_mcp;
 pub mod catalog;
+#[cfg(unix)]
 mod channel;
+#[cfg(unix)]
 pub mod claude;
+// The Unix TUI and Windows stdio clients have different process/transport contracts.
+#[cfg(unix)]
+#[path = "codex/mod.rs"]
 pub mod codex;
+#[cfg(windows)]
+#[path = "codex.rs"]
+pub mod codex;
+#[cfg(unix)]
 mod command;
+#[cfg(unix)]
 pub mod discovery;
+#[cfg(unix)]
 pub mod opencode;
+#[cfg(unix)]
 mod history;
+#[cfg(unix)]
 mod lock;
+#[cfg(unix)]
 pub mod pi;
+#[cfg(unix)]
 pub mod process;
+#[cfg(unix)]
 mod runtime;
 pub mod transcript;
+#[cfg(unix)]
 mod vocabulary;
 
 pub use activity::Activity;
+#[cfg(unix)]
 pub use command::AgentCommand;
+#[cfg(unix)]
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
 pub use axo_protocol::agent::{AgentKind, Capabilities, Deliveries, UnknownAgent};
+#[cfg(unix)]
 pub use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
+#[cfg(unix)]
 pub use lock::{FORK_EXEC_WINDOW, WriterLock};
+#[cfg(unix)]
 pub use runtime::{AgentCommands, AgentEvent, CommandResult, QueuedDelivery, RejectReason};
 
-/// A fresh directory under /tmp (not the per-user temp directory: socket paths are limited to
-/// 104 bytes).
+/// A fresh test directory. Unix socket tests need short paths under /tmp.
 #[cfg(test)]
 pub(crate) fn test_directory() -> std::path::PathBuf {
-    let directory = std::path::PathBuf::from("/tmp").join(format!(
+    #[cfg(unix)]
+    let root = std::path::PathBuf::from("/tmp");
+    #[cfg(windows)]
+    let root = std::env::temp_dir();
+    let directory = root.join(format!(
         "axo-agent-test-{}",
         axo_protocol::new_uuid_v4().unwrap()
     ));
@@ -46,13 +71,13 @@ pub(crate) fn test_directory() -> std::path::PathBuf {
 
 /// A child forked from this process and held just before exec, so it still has a copy of every
 /// descriptor this process had open, as any concurrently launching process briefly does.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct PausedBeforeExec {
     release: std::os::fd::OwnedFd,
     spawning: std::thread::JoinHandle<std::process::ExitStatus>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl PausedBeforeExec {
     /// Returns once the child has forked (and so holds its copies).
     pub(crate) fn fork() -> Self {
@@ -100,7 +125,7 @@ impl PausedBeforeExec {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn test_pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let mut fds = [0; 2];
@@ -111,4 +136,12 @@ fn test_pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     axo_pty::process::set_cloexec(ends.0.as_raw_fd()).unwrap();
     axo_pty::process::set_cloexec(ends.1.as_raw_fd()).unwrap();
     ends
+}
+
+mod bridge_path;
+
+// Persisted Pi addresses remain readable even though Windows cannot launch Pi.
+#[cfg(windows)]
+pub mod pi {
+    pub use crate::bridge_path::BridgeSocketPath;
 }
