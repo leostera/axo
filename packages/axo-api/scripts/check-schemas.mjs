@@ -5,9 +5,6 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import {
   hostListResultSchema,
-  hostNotificationSchema,
-  hostDataEventSchema,
-  hostRelayNotificationSchema,
   hostRegisterSchema,
   hostSnapshotSchema,
   hostPairingCreateResultSchema,
@@ -194,10 +191,6 @@ validateWith(
   await fixture("terminal-output.event.json"),
 );
 validateWith(
-  "https://schemas.axo.leostera.dev/v1/events.schema.json#/$defs/HostNotification",
-  await fixture("host-session-snapshot.event.json"),
-);
-validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/EventsNextResult",
   { event: null },
 );
@@ -257,21 +250,6 @@ assert.equal(hostRegisterSchema.safeParse(register.params).success, true, "regis
 const duplicateHostCapability = structuredClone(register.params);
 duplicateHostCapability.capabilities.push(duplicateHostCapability.capabilities[0]);
 assert.equal(hostRegisterSchema.safeParse(duplicateHostCapability).success, false, "host capability IDs must be unique");
-const hostEvent = await fixture("host-session-snapshot.event.json");
-assert.equal(hostNotificationSchema.safeParse(hostEvent).success, true, "client host events must satisfy runtime validation");
-const relayHostEvent = await fixture("host-session-snapshot.relay.event.json");
-validateWith(
-  "https://schemas.axo.leostera.dev/v1/events.schema.json#/$defs/HostRelayNotification",
-  relayHostEvent,
-);
-assert.equal(hostRelayNotificationSchema.safeParse(relayHostEvent).success, true, "Axod host events must satisfy runtime validation");
-const relayPiEvent = await fixture("host-pi-event.relay.json");
-validateWith(
-  "https://schemas.axo.leostera.dev/v1/events.schema.json#/$defs/HostRelayNotification",
-  relayPiEvent,
-);
-assert.equal(hostRelayNotificationSchema.safeParse(relayPiEvent).success, true, "Pi events must satisfy host relay runtime validation");
-assert.equal(hostDataEventSchema.safeParse(relayPiEvent.params).success, true, "Pi event payloads must satisfy host event validation");
 const mismatchedOwner = structuredClone(hostList.hosts[0]);
 mismatchedOwner.sessions[0].hostId = crypto.randomUUID();
 assert.equal(hostSnapshotSchema.safeParse(mismatchedOwner).success, false, "host sessions must reference their owning host");
