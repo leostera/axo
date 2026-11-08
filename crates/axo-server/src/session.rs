@@ -44,6 +44,7 @@ mod spawn;
 mod stop_notice;
 pub(crate) use spawn::set_agent_socket;
 mod terminal;
+mod terminal_input;
 #[cfg(test)]
 mod test_support;
 mod transcripts;
@@ -74,7 +75,8 @@ struct RunningShell {
     /// Live terminal attachments. Only Axod's output pump reads `master`.
     attachments: usize,
     output: Arc<TerminalOutput>,
-    last_input_sequence: Option<u64>,
+    /// Where input to the pane is written, outside the Session state's lock.
+    input: Arc<terminal_input::TerminalInput>,
     _writer_lock: Option<WriterLock>,
     pi_bridge_socket: Option<BridgeSocketPath>,
     pi_bridge_token: Option<String>,

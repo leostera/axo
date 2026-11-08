@@ -423,38 +423,16 @@ impl SessionManager {
                 "terminal input must contain 1 to 49152 bytes",
             ));
         }
-        let mut state = self.lock_state()?;
-        let state = &mut *state;
-        let running = state
-            .panes
-            .running_in_mut(session_id, shell_id)
-            .or_else(|| state.peer_views.running_in_mut(session_id, shell_id))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
-        if running.last_input_sequence == Some(sequence) {
-            return Ok(());
-        }
-        let expected_sequence = running
-            .last_input_sequence
-            .map_or(Some(0), |last| last.checked_add(1))
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "terminal input sequence exhausted",
-                )
-            })?;
-        if sequence != expected_sequence {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "terminal input sequence is out of order",
-            ));
-        }
-        process::write_all(
-            running.master.as_raw_fd(),
-            &input,
-            TERMINAL_INPUT_WRITE_TIMEOUT,
-        )?;
-        running.last_input_sequence = Some(sequence);
-        Ok(())
+        let terminal = {
+            let state = self.lock_state()?;
+            let running = state
+                .panes
+                .running_in(session_id, shell_id)
+                .or_else(|| state.peer_views.running_in(session_id, shell_id))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+            Arc::clone(&running.input)
+        };
+        terminal.write_sequenced(sequence, &input, TERMINAL_INPUT_WRITE_TIMEOUT)
     }
 
     /// Presses one key in the Session's Pi pane, as a person at the Mac would: Escape stops a reply
@@ -465,7 +443,7 @@ impl SessionManager {
         session_id: SessionId,
         key: axo_relay::PiKey,
     ) -> io::Result<()> {
-        let mut state = self.lock_state()?;
+        let state = self.lock_state()?;
         let pi_shell = state
             .panes
             .in_session(session_id)
@@ -474,10 +452,12 @@ impl SessionManager {
                 _ => None,
             })
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-        let running = state
+        let terminal = state
             .panes
-            .running_in_mut(session_id, pi_shell)
+            .running_in(session_id, pi_shell)
+            .map(|running| Arc::clone(&running.input))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
+        drop(state);
         let bytes: &[u8] = match key {
             axo_relay::PiKey::Escape => b"\x1b",
             axo_relay::PiKey::Enter => b"\r",
@@ -486,11 +466,7 @@ impl SessionManager {
             "event=session.pi_key_pressed session_id={} key={key:?}",
             session_id
         );
-        process::write_all(
-            running.master.as_raw_fd(),
-            bytes,
-            TERMINAL_INPUT_WRITE_TIMEOUT,
-        )
+        terminal.write(bytes, TERMINAL_INPUT_WRITE_TIMEOUT)
     }
 
     /// Types `text` into a pane as a keyboard would, outside its input sequence: for agents
@@ -507,22 +483,21 @@ impl SessionManager {
                 "terminal text must contain 1 to 49152 bytes",
             ));
         }
-        let state = self.lock_state()?;
-        let running = state
-            .panes
-            .running_in(session_id, shell_id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+        let terminal = {
+            let state = self.lock_state()?;
+            let running = state
+                .panes
+                .running_in(session_id, shell_id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+            Arc::clone(&running.input)
+        };
         log::info!(
             "event=terminal.write session_id={} shell_id={} bytes={}",
             session_id,
             shell_id.get(),
             text.len()
         );
-        process::write_all(
-            running.master.as_raw_fd(),
-            text.as_bytes(),
-            TERMINAL_INPUT_WRITE_TIMEOUT,
-        )
+        terminal.write(text.as_bytes(), TERMINAL_INPUT_WRITE_TIMEOUT)
     }
 
     /// The last `lines` lines of a pane's screen and scrollback as plain text, and whether
@@ -1300,6 +1275,68 @@ mod tests {
             actions.recv_timeout(Duration::from_secs(5)).unwrap(),
             serde_json::json!({ "kind": "stop", "seen": "e9", "commandIds": ["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"] })
         );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
+        let directory = test_directory("axo-stuck");
+        std::fs::create_dir_all(&directory).unwrap();
+        // Its shell is `sleep`, which never reads what is typed.
+        let manager = open_with_silent_shell(&directory);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = terminal_shell(&session);
+        // A paste larger than a PTY holds for a program that doesn't read it.
+        let paste =
+            axo_protocol::base64::encode(&[b"x".repeat(99), b"\n".to_vec()].concat().repeat(480));
+        let (wrote, written) = mpsc::channel();
+        {
+            let manager = Arc::clone(&manager);
+            thread::spawn(move || {
+                let _ = wrote.send(manager.write_terminal_input(session.id, shell_id, 0, &paste));
+            });
+        }
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            written.try_recv().is_err(),
+            "the paste is stuck, as a person's would be"
+        );
+
+        // The rest of axod answers meanwhile.
+        let (answered, listed) = mpsc::channel();
+        {
+            let manager = Arc::clone(&manager);
+            thread::spawn(move || {
+                let _ = answered.send(manager.list_sessions().map(|sessions| sessions.len()));
+            });
+        }
+        assert!(
+            listed.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "a stuck pane held up the Sessions"
+        );
+
+        // More input for the same pane gives up rather than waiting behind it for ever.
+        let started = Instant::now();
+        let refused = manager
+            .write_terminal_input(session.id, shell_id, 1, &axo_protocol::base64::encode(b"y"))
+            .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::TimedOut, "{refused}");
+        assert!(started.elapsed() >= TERMINAL_INPUT_WRITE_TIMEOUT);
+        assert!(
+            manager
+                .write_terminal_text(session.id, shell_id, "z")
+                .is_err_and(|error| error.kind() == io::ErrorKind::TimedOut)
+        );
+
+        // Closing the pane ends the stuck write.
+        manager.close_session(session.id).unwrap();
+        assert!(
+            written
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the stuck write ended with its pane")
+                .is_err()
+        );
+        manager.shutdown();
         let _ = std::fs::remove_dir_all(&directory);
     }
 }
