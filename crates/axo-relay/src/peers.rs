@@ -120,34 +120,19 @@ async fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
     let dependencies = Arc::new(dependencies);
     let mut mirror = Mirror::new(dependencies.sessions_directory.clone());
     let mut delay = Duration::from_secs(1);
-    let mut relayed_until: Option<Instant> = None;
+    let mut protocols = ProtocolChoice::default();
     while !stop.is_stopped() {
-        let links = Arc::clone(&dependencies.links);
-        let account = match tokio::task::spawn_blocking(move || links.load_link()).await {
-            Ok(Ok(link)) => link.account().cloned(),
-            Ok(Err(error)) => {
-                log::warn!("event=peers.link_unavailable reason={error}");
-                None
-            }
-            Err(error) => {
-                log::warn!("event=peers.link_unavailable reason={error}");
-                None
-            }
-        };
-        let Some(account) = account else {
+        let Some(account) = paired_account(&dependencies).await else {
             // Not paired: nothing to follow until it is.
             wait(&stop, Duration::from_secs(5)).await;
             continue;
         };
         let started = Instant::now();
-        let protocol = match relayed_until {
-            Some(until) if Instant::now() < until => Protocol::Relayed,
-            _ => Protocol::Direct,
-        };
+        let protocol = protocols.next(started);
         let ended = follow(&dependencies, account, &mut mirror, &stop, protocol).await;
-        if protocol == Protocol::Direct && !ended.ready && ended.outcome.is_err() {
+        if ended.refused_direct {
             log::warn!("event=peers.protocol_fallback protocol=2");
-            relayed_until = Some(Instant::now() + RELAYED_AFTER_REFUSAL);
+            protocols.refused(Instant::now());
         }
         match ended.outcome {
             Ok(()) => log::info!("event=peers.socket_renewed"),
@@ -160,6 +145,43 @@ async fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
             (delay * 2).min(MAX_RETRY_DELAY)
         };
         wait(&stop, delay).await;
+    }
+}
+
+/// The account this Mac is paired with, if it is. The link is read off the runtime: it may
+/// wait on the Keychain.
+async fn paired_account(dependencies: &PeersDependencies) -> Option<crate::link::AccountLink> {
+    let links = Arc::clone(&dependencies.links);
+    let loaded = tokio::task::spawn_blocking(move || links.load_link())
+        .await
+        .map_err(io::Error::other)
+        .and_then(|loaded| loaded);
+    match loaded {
+        Ok(link) => link.account().cloned(),
+        Err(error) => {
+            log::warn!("event=peers.link_unavailable reason={error}");
+            None
+        }
+    }
+}
+
+/// Which protocol the next connection speaks: 3, unless the cloud refused it in the last
+/// `RELAYED_AFTER_REFUSAL` (RFD0032).
+#[derive(Default)]
+struct ProtocolChoice {
+    relayed_until: Option<Instant>,
+}
+
+impl ProtocolChoice {
+    fn next(&self, now: Instant) -> Protocol {
+        match self.relayed_until {
+            Some(until) if now < until => Protocol::Relayed,
+            _ => Protocol::Direct,
+        }
+    }
+
+    fn refused(&mut self, now: Instant) {
+        self.relayed_until = Some(now + RELAYED_AFTER_REFUSAL);
     }
 }
 
@@ -177,9 +199,10 @@ async fn follow(
     let (sink, stream) = match connect(Arc::clone(dependencies), account.clone(), url).await {
         Ok(socket) => socket,
         Err(error) => {
+            // Not reaching the cloud says nothing of what it serves.
             return follower::Ended {
                 outcome: Err(error),
-                ready: true,
+                refused_direct: false,
             };
         }
     };
@@ -229,4 +252,26 @@ pub fn restore_directory(index: &Path) -> PathBuf {
         || PathBuf::from("restoring"),
         |server| server.join("restoring"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_3_refused_is_not_tried_again_for_a_while() {
+        let mut protocols = ProtocolChoice::default();
+        let start = Instant::now();
+        assert_eq!(protocols.next(start), Protocol::Direct, "3 first");
+        protocols.refused(start);
+        assert_eq!(
+            protocols.next(start + Duration::from_secs(60)),
+            Protocol::Relayed
+        );
+        assert_eq!(
+            protocols.next(start + RELAYED_AFTER_REFUSAL),
+            Protocol::Direct,
+            "then 3 again"
+        );
+    }
 }
