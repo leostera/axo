@@ -19,6 +19,7 @@
 //! | `rows` | Parsed IDs, lifecycle states, timestamps, row-count checks |
 
 mod host_link;
+pub mod coding;
 mod metadata;
 mod migrations;
 mod pi;

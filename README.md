@@ -4,9 +4,13 @@ Axo is an agentic workspace for working with coding agents across your Mac, iPho
 
 > **Status:** Axo is under active development. Features, setup, and interfaces may change between releases.
 
+This branch includes a **Windows preview**: a native desktop client and the Rust daemon running
+local Codex CLI sessions. See [`windows/README.md`](windows/README.md) for setup, building and scope.
+
 ## What is in this repository?
 
 - **Mac app and host** — `apple/AxoMac/` contains the native macOS app; `crates/` contains the Rust daemon and supporting crates. The host manages agent sessions, each in its own folder, and terminal panes.
+- **Windows client and host (preview)** — `windows/Axo/` contains the native WPF client; the same Rust `axod` binary has a Windows backend for Codex conversations, local workspaces and native terminals.
 - **iPhone app** — `apple/AxoMobile/` contains the native iOS client and its UI tests.
 - **Web client and service** — `packages/axo-web-app/`, `packages/axo-api-worker/`, and `sites/axo.leostera.dev/` contain the web app and its Cloudflare Worker deployment.
 - **Shared protocols and Pi integration** — `packages/axo-api/`, `packages/pi-axo/`, and `schemas/` contain shared API types, the first-party Pi extension, and versioned schemas.
@@ -62,6 +66,9 @@ bazel test //...    # every test that needs no desktop, phone or browser of its 
 Experimental x86-64 Linux daemon builds use `bazel build //linux:runtime`; see [`linux/README.md`](linux/README.md) for requirements, isolated smoke tests, and remaining limitations. The native Apple UI is not part of the Linux build.
 
 The native visual UI tests require an unlocked macOS desktop and Xcode UI Automation permission. See the contributor guide before running them.
+
+On Windows, use `./windows/build.ps1 -Test -Run`. This builds the supported Rust slice with Bazel
+and the native client with .NET; the Apple targets in `//...` require macOS.
 
 ## Project notes
 
