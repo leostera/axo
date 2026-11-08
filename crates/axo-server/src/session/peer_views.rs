@@ -685,7 +685,9 @@ mod tests {
             .unwrap();
         assert_eq!(again.session.shells[0].id, shell.id, "one pane per Session");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // A script written just now can wait seconds before its first instruction while macOS
+        // authorizes its first exec, more so on a loaded machine: give it time.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let launched = loop {
             if let Ok(text) = fs::read_to_string(&recorded)
                 && !text.is_empty()
