@@ -2,6 +2,18 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.31 (Mac app build 302, axod 54)
+
+### Fixed
+
+- Computer use on a locked Mac says "this Mac is locked" instead of acting on the lock screen. Agents see a locked Mac in `codemode.hosts.list()`; `bash.run` still works there.
+- A message sent from the phone or the web while the chat's Pi is starting stops waiting as soon as you leave, and is answered the moment Pi is up instead of up to 50ms later.
+- A shell or Pi no longer keeps a copy of axod's sockets, which could stop the next axod from starting after a restart.
+
+### Changed
+
+- `axod attach` follows a terminal resize the moment it happens instead of checking every 25ms.
+
 ## 0.30 (Mac app build 301, axod 53)
 
 ### Changed
