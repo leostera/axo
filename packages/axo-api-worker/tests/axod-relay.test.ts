@@ -113,7 +113,8 @@ test("an isolated axod pairs with an account, then the account drives it through
     const strangerClient = await TestAccountClient.connect(api.url, stranger);
     assert.deepEqual(strangerClient.hosts, []);
     assert.equal(strangerClient.sessions.size, 0);
-    await assert.rejects(strangerClient.connection.command("axo.remote.workspace.list", { target }), { code: -32602 }, "a client of another account cannot reach this host");
+    // In protocol 3 it has no socket on this host, so nothing is sent: refused as offline (-32005).
+    await assert.rejects(strangerClient.connection.command("axo.remote.workspace.list", { target }), { code: -32005 }, "a client of another account cannot reach this host");
     strangerClient.close();
 
     // The call is wired through the Worker to the host, which refuses a Session it does not have
