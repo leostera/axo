@@ -36,8 +36,8 @@ public struct AppsClient: Sendable {
   // MARK: - Reading
 
   /// Every app, MCP server and Mac the account's Sessions can use.
-  public func list() async throws -> [Connection] {
-    struct Listing: Decodable { let apps: [Connection] }
+  public func list() async throws -> [AccountApp] {
+    struct Listing: Decodable { let apps: [AccountApp] }
     let listing: Listing = try await send("GET", path: "")
     return listing.apps
   }
@@ -152,17 +152,17 @@ public struct AppsClient: Sendable {
 
   /// Adds a remote MCP server under a name of the person's. `signInUrl` is set when it needs a
   /// browser sign-in next.
-  public func addServer(name: String, url: String) async throws -> (connection: Connection, signInUrl: String?) {
+  public func addServer(name: String, url: String) async throws -> (app: AccountApp, signInUrl: String?) {
     struct Body: Encodable {
       let name: String
       let url: String
     }
     struct Added: Decodable {
-      let connection: Connection
+      let app: AccountApp
       let signInUrl: String?
     }
     let added: Added = try await send("POST", path: "", body: Body(name: name, url: url))
-    return (added.connection, added.signInUrl)
+    return (added.app, added.signInUrl)
   }
 
   // MARK: - The web

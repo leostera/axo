@@ -50,7 +50,7 @@ async function signInThroughBrowser(h: Harness, server: FakeMcp, session: Accoun
 test("an agent adds a server that needs sign-in, the person signs in, and a script calls its tools with the grant", async (t) => {
   const { server, h, session, call } = await fixture(t);
   const added = appsResults["axo.apps.add"].parse(result(await call("axo.apps.add", { name: "linear", url: server.url })));
-  assert.equal(added.connection.state, "needsSignIn");
+  assert.equal(added.app.state, "needsSignIn");
   assert.match(added.signInUrl!, /^https:\/\/axo\.leostera\.dev\/api\/v1\/connections\/oauth\/start\?flow=/);
   assert.equal(server.clients.size, 1, "Axo registered itself as a client");
 
@@ -125,24 +125,24 @@ test("a server that needs no sign-in is ready at once; a Mac's name is free for 
   const { server, call } = await fixture(t);
   server.requireAuth = false;
   const added = result(await call("axo.apps.add", { name: "docs", url: server.url }));
-  assert.deepEqual([added.connection.state, added.signInUrl, added.connection.tools], ["ready", null, 2]);
+  assert.deepEqual([added.app.state, added.signInUrl, added.app.tools], ["ready", null, 2]);
   const taken = await call("axo.apps.add", { name: "computer", url: server.url });
   assert.ok("error" in taken && taken.error.code === -32022, JSON.stringify(taken));
   // Macs are reached as bash.run({ host }), not by name, so a server may be called "studio".
   const studio = result(await call("axo.apps.add", { name: "studio", url: server.url }));
-  assert.equal(studio.connection.name, "studio");
+  assert.equal(studio.app.name, "studio");
   assert.deepEqual(result(await call("axo.apps.remove", { name: "studio" })), { removed: true });
   assert.deepEqual(result(await call("axo.apps.remove", { name: "docs" })), { removed: true });
   const gone = await call("axo.apps.run", { code: `async () => codemode.docs.list_issues({})` });
-  assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
+  assert.ok("error" in gone && /no app named docs/.test(gone.error.message), JSON.stringify(gone));
 });
 
 test("a server is added under any name, reached by its slug, and may be added again under another, each signing in on its own", async (t) => {
   const { server, h, session, call } = await fixture(t);
   const first = result(await call("axo.apps.add", { name: "emdash: leostera.com", url: server.url }));
-  assert.deepEqual([first.connection.name, first.connection.title], ["emdash_leostera_com", "emdash: leostera.com"]);
+  assert.deepEqual([first.app.name, first.app.title], ["emdash_leostera_com", "emdash: leostera.com"]);
   const second = result(await call("axo.apps.add", { name: "Emdash — ocaml.ai", url: server.url }));
-  assert.deepEqual([second.connection.name, second.connection.title], ["emdash_ocaml_ai", "Emdash — ocaml.ai"]);
+  assert.deepEqual([second.app.name, second.app.title], ["emdash_ocaml_ai", "Emdash — ocaml.ai"]);
   assert.notEqual(first.signInUrl, second.signInUrl, "each has its own sign-in");
   assert.equal(server.clients.size, 2, "and its own client");
   const taken = await call("axo.apps.add", { name: "Emdash: leostera.com!", url: server.url });
@@ -150,7 +150,7 @@ test("a server is added under any name, reached by its slug, and may be added ag
   const empty = await call("axo.apps.add", { name: " — ", url: server.url });
   assert.ok("error" in empty && /a letter or a digit/.test(empty.error.message), JSON.stringify(empty));
   const plain = result(await call("axo.apps.add", { name: "linear", url: server.url }));
-  assert.deepEqual([plain.connection.name, plain.connection.title], ["linear", null], "a name that is already its slug keeps no title");
+  assert.deepEqual([plain.app.name, plain.app.title], ["linear", null], "a name that is already its slug keeps no title");
 
   await signInThroughBrowser(h, server, session, first.signInUrl);
   await waitForTools(call);

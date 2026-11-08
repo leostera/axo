@@ -173,7 +173,7 @@ test("a script has no network of its own, and names only its own account's apps"
   const fetched = error(await call("axo.apps.run", { code: `async () => (await fetch("https://example.com")).status` }));
   assert.equal(fetched.code, APPS_ERRORS.scriptFailed);
   const unknown = error(await call("axo.apps.run", { code: `async () => codemode.workbench.list_issues({})` }));
-  assert.match(unknown.message, /no connection named workbench/);
+  assert.match(unknown.message, /no app named workbench/);
   const notAFunction = error(await call("axo.apps.run", { code: `42` }));
   assert.match(notAFunction.message, /must be a function/);
 });

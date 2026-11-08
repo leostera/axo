@@ -93,7 +93,7 @@
     "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.prepareSignIn": "e53976ef5bac",
     "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.renew": "1f3a4dd54ab0",
     "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.requestSync": "5195b01e158a",
-    "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.setClient": "41977fb2c239",
+    "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.setClient": "8f5fd71ec324",
     "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.sync": "18d2e6c5b19a",
     "packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.tools": "172654d02cf0",
     "packages/axo-api-worker/src/assets/assets-do.ts#AxoAssetsDO.alarm": "27e60da6b8f5",

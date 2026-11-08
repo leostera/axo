@@ -6,7 +6,7 @@ import Foundation
 // `.unknown` rather than failing the whole listing, as Workers roll out ahead of the app.
 
 /// What the account's Sessions can reach: a paired Mac, an MCP server, or an app Axo provides.
-public enum Connection: Decodable, Equatable, Sendable {
+public enum AccountApp: Decodable, Equatable, Sendable {
   case host(HostConnectionInfo)
   case server(ServerConnection)
   case app(AppConnection)

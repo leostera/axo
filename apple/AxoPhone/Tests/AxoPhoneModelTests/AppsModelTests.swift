@@ -7,18 +7,18 @@ import XCTest
 /// Settings › Apps' API, answered from memory, recording what was asked.
 private final class FakeApps: AppsService, @unchecked Sendable {
   private let lock = NSLock()
-  var apps: [Connection] = []
+  var apps: [AccountApp] = []
   var failList: Error?
   var refuseTokens = false
   var deviceAnswers: [DeviceSignIn] = []
   var macAnswers: [MacSignIn] = []
-  var addAnswer: (Connection, String?)?
+  var addAnswer: (AccountApp, String?)?
   var phoneAnswers: [PhoneSignIn] = []
   private(set) var calls: [String] = []
 
   private func note(_ call: String) { lock.withLock { calls.append(call) } }
 
-  func list() async throws -> [Connection] {
+  func list() async throws -> [AccountApp] {
     note("list")
     if let failList { throw failList }
     return apps
@@ -61,7 +61,7 @@ private final class FakeApps: AppsService, @unchecked Sendable {
     return "https://axo.leostera.dev/api/v1/connections/oauth/start?flow=x"
   }
   func remove(_ name: String, account: String?) async throws { note("remove \(name) \(account ?? "-")") }
-  func addServer(name: String, url: String) async throws -> (connection: Connection, signInUrl: String?) {
+  func addServer(name: String, url: String) async throws -> (app: AccountApp, signInUrl: String?) {
     note("add \(name) \(url)")
     return addAnswer ?? (.server(ServerConnection(name: "x", url: url, state: .ready)), nil)
   }
@@ -76,7 +76,7 @@ final class AppsModelTests: XCTestCase {
   private let chatgpt = AppConnection(name: "apps.chatgpt", title: "ChatGPT", provider: "OpenAI", signIn: .device)
 
   /// A model whose polls do not wait, and the fake behind it.
-  private func world(_ apps: [Connection] = []) -> (AppsModel, FakeApps) {
+  private func world(_ apps: [AccountApp] = []) -> (AppsModel, FakeApps) {
     let fake = FakeApps()
     fake.apps = apps
     return (AppsModel(service: fake, pause: { _ in await Task.yield() }), fake)

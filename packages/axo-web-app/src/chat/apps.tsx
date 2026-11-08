@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { appDeviceSignInSchema, appMacSignInSchema, appPhoneSignInSchema, appsResults, type AppDeviceSignIn, type AppPhoneSignIn, type CallRecord, type Connection } from "@axo/protocol";
+import { appDeviceSignInSchema, appMacSignInSchema, appPhoneSignInSchema, appsResults, type AppDeviceSignIn, type AppPhoneSignIn, type CallRecord, type AccountApp } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
@@ -35,8 +35,8 @@ import withingsLogo from "./logos/withings.svg";
  * chat, and no grant or token ever reaches the browser again.
  */
 
-type App = Extract<Connection, { kind: "app" }>;
-type Server = Extract<Connection, { kind: "thirdParty" }>;
+type App = Extract<AccountApp, { kind: "app" }>;
+type Server = Extract<AccountApp, { kind: "thirdParty" }>;
 type Notice = { kind: "ok" | "error"; text: string } | null;
 
 /** What the sign-in callback left in the URL, `?signedIn=<name>` or `?error=<message>`, as a notice. */
@@ -65,7 +65,7 @@ export function AppsSettings({ appsUrl, route, initialNotice, onNavigate, onClos
   /** The URL of a settings page, so its links open in a new tab too. */
   hrefOf: (route: SettingsRoute) => string;
 }) {
-  const [entries, setEntries] = useState<Connection[] | null>(null);
+  const [entries, setEntries] = useState<AccountApp[] | null>(null);
   const [notice, setNotice] = useState<Notice>(initialNotice);
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
@@ -809,8 +809,8 @@ function useServers({ appsUrl, act, setNotice }: Shared) {
     const result = appsResults["axo.apps.add"].parse(await request(appsUrl, "POST", { name: draft.name.trim(), url: draft.url }));
     then();
     if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
-    else if (result.connection.kind === "thirdParty" && result.connection.state === "needsSignIn") setClientFor(result.connection.name);
-    else if (result.connection.kind === "thirdParty") setNotice({ kind: "ok", text: `Added ${nameOf(result.connection)}.` });
+    else if (result.app.kind === "thirdParty" && result.app.state === "needsSignIn") setClientFor(result.app.name);
+    else if (result.app.kind === "thirdParty") setNotice({ kind: "ok", text: `Added ${nameOf(result.app)}.` });
   });
   const signIn = (name: string) => act(async () => {
     const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(name)}/sign-in`, "POST")) as { signInUrl: string };

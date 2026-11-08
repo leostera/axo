@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appDeviceSignInSchema, connectionSchema } from "@axo/protocol";
+import { appDeviceSignInSchema, accountAppSchema } from "@axo/protocol";
 import { BuiltinApps } from "../src/apps/builtin";
 import { FakeOpenAI } from "./fake-openai";
 import { sqlStorage } from "./sql-storage";
@@ -48,7 +48,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 
 test("ChatGPT is listed signing in with a code, needs no client of Axo's, and its tools all need an account", () => {
   const { apps } = fixture();
-  const chatgpt = connectionSchema.parse(apps.list().find((c) => c.name === "apps.chatgpt"));
+  const chatgpt = accountAppSchema.parse(apps.list().find((c) => c.name === "apps.chatgpt"));
   assert.ok(chatgpt.kind === "app");
   assert.deepEqual([chatgpt.provider, chatgpt.signIn, chatgpt.state, chatgpt.tools], ["OpenAI", { kind: "device" }, "needsSignIn", ["respond", "list_models", "usage", "request"]]);
 });

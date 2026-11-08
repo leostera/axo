@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connectionSchema, type AppName } from "@axo/protocol";
+import { accountAppSchema, type AppName } from "@axo/protocol";
 import { BuiltinApps } from "../src/apps/builtin";
 import type { FakeOAuth } from "./fake-oauth";
 import { FakeGitHub } from "./fake-github";
@@ -59,7 +59,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 
 test("an OAuth app is listed before its provider's client is set up, with where to register one, and its tools appear once it is", async () => {
   const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
-  const listed = () => connectionSchema.parse(apps.list().find((c) => c.name === "apps.github"));
+  const listed = () => accountAppSchema.parse(apps.list().find((c) => c.name === "apps.github"));
   const before = listed();
   assert.deepEqual(before.kind === "app" && before.signIn, { kind: "oauth", client: {
     provider: "github", ready: false, consoleUrl: "https://github.com/settings/developers", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback",
@@ -75,7 +75,7 @@ test("an OAuth app is listed before its provider's client is set up, with where 
   assert.ok(ready.kind === "app" && ready.signIn.kind === "oauth" && ready.signIn.client?.ready);
   assert.ok(apps.tools().some((t) => t.service === "apps.github"));
   assert.ok(!JSON.stringify([apps.list(), apps.tools()]).includes("s3cret"), "the secret is never shown");
-  const gmail = connectionSchema.parse(apps.list().find((c) => c.name === "apps.gmail"));
+  const gmail = accountAppSchema.parse(apps.list().find((c) => c.name === "apps.gmail"));
   assert.ok(gmail.kind === "app" && gmail.signIn.kind === "oauth" && gmail.signIn.client?.ready === false, "a client serves its own provider's apps only");
   assert.equal(apps.removeClient("github"), true);
   assert.ok(!apps.tools().some((t) => t.service === "apps.github"));
@@ -96,7 +96,7 @@ test("a replaced client is used for the next sign-in and renewal; a renewal the 
 
 test("GitHub signs in with the person's OAuth app, is named by the login, and its tools all need an account", async () => {
   const { apps, fake, signIn } = await fixture(new FakeGitHub(), "github");
-  const github = connectionSchema.parse(apps.list().find((c) => c.name === "apps.github"));
+  const github = accountAppSchema.parse(apps.list().find((c) => c.name === "apps.github"));
   assert.ok(github.kind === "app");
   assert.deepEqual([github.provider, github.signIn.kind, github.state], ["GitHub", "oauth", "needsSignIn"]);
   assert.deepEqual(github.tools, ["get_me", "list_repos", "search", "list_issues", "get_issue", "create_issue", "comment", "get_pull", "get_file", "list_notifications", "request"]);
@@ -185,7 +185,7 @@ test("a GitHub code is redeemed once, and signing out deletes Axo's authorizatio
 
 test("Spotify signs in with PKCE and the client in HTTP basic, is named by its Spotify ID, and plays, searches and edits playlists", async () => {
   const { apps, fake, signIn, tick } = await fixture(new FakeSpotify(), "spotify");
-  const spotify = connectionSchema.parse(apps.list().find((c) => c.name === "apps.spotify"));
+  const spotify = accountAppSchema.parse(apps.list().find((c) => c.name === "apps.spotify"));
   assert.ok(spotify.kind === "app" && spotify.signIn.kind === "oauth");
   assert.deepEqual([spotify.provider, spotify.category, spotify.signIn.client?.consoleUrl], ["Spotify", "media", "https://developer.spotify.com/dashboard"]);
   assert.ok(apps.tools().filter((t) => t.service === "apps.spotify").every((t) => (t.inputSchema.required as string[])[0] === "account"));
@@ -240,7 +240,7 @@ test("Spotify signs in with PKCE and the client in HTTP basic, is named by its S
 
 test("Withings signs in without PKCE through its requesttoken action, is named by its user ID, and reads measures, activity, sleep and ECGs", async () => {
   const { apps, fake, signIn, tick } = await fixture(new FakeWithings(), "withings");
-  const withings = connectionSchema.parse(apps.list().find((c) => c.name === "apps.withings"));
+  const withings = accountAppSchema.parse(apps.list().find((c) => c.name === "apps.withings"));
   assert.ok(withings.kind === "app");
   assert.deepEqual([withings.provider, withings.category], ["Withings", "health"]);
   assert.deepEqual(await signIn("withings"), { name: "apps.withings" });

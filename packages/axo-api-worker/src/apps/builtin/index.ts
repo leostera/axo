@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
+import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type AccountApp, type ToolDefinition } from "@axo/protocol";
 import {
   allowedUrl,
   APP_DEFINITIONS,
@@ -213,8 +213,8 @@ export class BuiltinApps {
    * Every app, with its accounts; an OAuth app whose provider has no client yet is listed too, so
    * the person can set one up on its page. A Mac app is listed where Macs can be reached.
    */
-  list(): Connection[] {
-    return APPS.filter((app) => this.isListed(APP_DEFINITIONS[app])).map((app): Connection => {
+  list(): AccountApp[] {
+    return APPS.filter((app) => this.isListed(APP_DEFINITIONS[app])).map((app): AccountApp => {
       const definition = APP_DEFINITIONS[app];
       const accounts = this.accounts(app);
       return {
