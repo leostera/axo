@@ -1,0 +1,22 @@
+diff --git a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -1,8 +1,17 @@
+ fn main() {
+     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
++    // Bazel's temporary Cargo runfiles are retired after this action. Native
++    // link inputs must live in the declared output tree, not that directory.
++    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
++    for entry in std::fs::read_dir(std::path::Path::new(&dir).join("lib")).unwrap() {
++        let entry = entry.unwrap();
++        if entry.path().extension().is_some_and(|extension| extension == "lib") {
++            std::fs::copy(entry.path(), out.join(entry.file_name())).unwrap();
++        }
++    }
+ 
+     println!(
+         "cargo:rustc-link-search=native={}",
+-        std::path::Path::new(&dir).join("lib").display()
++        out.display()
+     );
+ }

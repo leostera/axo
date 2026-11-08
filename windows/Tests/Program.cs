@@ -2,7 +2,36 @@ using System.Diagnostics;
 using System.Text.Json;
 using Axo;
 
+if (args.Length == 2 && args[0] == "--computer-fixture") return ComputerChecks.RunFixture(args[1]);
+if (args.Length == 2 && args[0] == "--untrusted-permissions")
+{
+    var untrusted = new DaemonClient(args[1]);
+    int refused = 0;
+    foreach (var (method, parameters) in new (string, object)[] {
+        ("axo.windows.settings.save", new { computerUseEnabled = true, codexFullAccess = true }),
+        ("axo.elicitation.resolve", new { elicitationId = Guid.NewGuid().ToString(), action = "accept" }) })
+    {
+        try { await untrusted.CallAsync(method, parameters); }
+        catch (IOException e) when (e.Message.Contains("Only the bundled Axo")) { refused++; }
+    }
+    Console.WriteLine($"Refused {refused}/2 unauthorized requests"); return refused == 2 ? 0 : 1;
+}
 if (args.Length < 2 || args.Length > 3) throw new ArgumentException("Usage: Tests <axod.exe> <fake_codex.exe> OR <axod.exe> <codex.exe> --live");
+// The process peer check uses the actual connected image, not a JSON role. Run
+// tests as the desktop in a private bundle; Tests.exe remains the tool peer.
+if (!string.Equals(Path.GetFileName(Environment.ProcessPath), "Axo.exe", StringComparison.OrdinalIgnoreCase))
+{
+    var bundle = Path.Combine(Path.GetTempPath(), "axo-desktop-fixture-" + Guid.NewGuid()); Directory.CreateDirectory(bundle);
+    foreach (var file in Directory.GetFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories))
+    {
+        var destination = Path.Combine(bundle, Path.GetRelativePath(AppContext.BaseDirectory, file)); Directory.CreateDirectory(Path.GetDirectoryName(destination)!); File.Copy(file, destination, true);
+    }
+    File.Copy(Path.Combine(AppContext.BaseDirectory, "Tests.exe"), Path.Combine(bundle, "Axo.exe"), true);
+    File.Copy(Path.GetFullPath(args[0]), Path.Combine(bundle, "axod.exe"), true);
+    var launch = new ProcessStartInfo(Path.Combine(bundle, "Axo.exe")) { UseShellExecute = false };
+    launch.ArgumentList.Add(Path.Combine(bundle, "axod.exe")); launch.ArgumentList.Add(Path.GetFullPath(args[1])); if (args.Length == 3) launch.ArgumentList.Add(args[2]);
+    using var runner = Process.Start(launch)!; await runner.WaitForExitAsync(); return runner.ExitCode;
+}
 var live = args.Length == 3 && args[2] == "--live";
 var daemonPath = Path.GetFullPath(args[0]); var codexPath = Path.GetFullPath(args[1]);
 var root = Path.Combine(Path.GetTempPath(), "axo-windows-test-" + Guid.NewGuid());
@@ -104,6 +133,7 @@ try
             await Task.Delay(500);
         }
         Assert((await Messages(sessionId)).Count(t => t.Trim() == "AXO_WINDOWS_READY") >= 2, "resumed Codex conversation retains context");
+        await client.CallAsync("axo.windows.settings.save", new { codexFullAccess = true, computerUseEnabled = true });
         await client.CallAsync("axo.session.prompt", new { sessionId, text = "Create axo-smoke.txt in this workspace with exactly AXO_WINDOWS_FILE_OK followed by a newline. Use tools to create the file and then run a shell command to read it back. Do not change any other files or access anything outside this workspace. Reply with the file contents." });
         var commandCompleted = false;
         for (var i = 0; i < 240; i++)
@@ -125,8 +155,9 @@ try
         var smokeFile = Path.Combine(workspace, "axo-smoke.txt");
         Assert(File.Exists(smokeFile) && File.ReadAllText(smokeFile).Trim() == "AXO_WINDOWS_FILE_OK", "real Codex creates a file inside its Windows workspace");
         Assert(commandCompleted, "real Codex completes a Windows shell tool call");
+        await ComputerChecks.LiveAsync(client, sessionId, Assert);
         Console.WriteLine("Live Codex smoke test passed.");
-        return;
+        return 0;
     }
     var n = await client.CallAsync("axo.protocol.negotiate", new { protocolVersion = 1 });
     Assert(n.GetProperty("agent").GetString() == "codex", "Windows negotiation reports Codex");
@@ -217,6 +248,7 @@ try
     await Status(id,"ready");
     remote=await relay.CallAsync("axo.elicitation.resolve",new{target,elicitationId=question.GetProperty("id").GetString(),action="accept"});
     Assert(remote.TryGetProperty("error",out _),"resolved remote approval cannot authorize a later request");
+    await ComputerChecks.RunAsync(client, daemonPath, pipe, id, relay, target, Assert);
     var stopCommand=Guid.NewGuid().ToString();
     await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="wait",commandId=stopCommand});await Status(id,"working");
     remote=await relay.CallAsync("axo.remote.session.stop",new{target,sessionId=id,commandIds=new[]{Guid.NewGuid().ToString()}});
@@ -274,3 +306,4 @@ finally
     // Tests intentionally keep a diagnostic catalog on failure; caller owns scratch cleanup.
     Console.WriteLine("Test catalog: " + root);
 }
+return 0;

@@ -9,12 +9,12 @@ rust_library(
     edition = "2024",
     deps = [
         "//crates/axo-protocol:axo_protocol",
-        "//crates/axod-infer:axod_infer",
         "@crates//:log",
         "@crates//:serde_json",
         "@crates//:zeroize",
     ] + select({
         "@platforms//os:macos": [
+            "//crates/axod-infer:axod_infer",
             "@crates//:core-foundation",
             "@crates//:cua-driver-core",
             "@crates//:cursor-overlay",
@@ -22,6 +22,7 @@ rust_library(
             "@crates//:tokio",
         ],
         "@platforms//os:linux": [
+            "//crates/axod-infer:axod_infer",
             "@crates//:cua-driver-core",
             "@crates//:libc",
             "@crates//:platform-linux",
@@ -31,6 +32,12 @@ rust_library(
             "@crates//:serde",
             "@crates//:sha2",
             "@crates//:futures-util",
+        ],
+        "@platforms//os:windows": [
+            "@crates//:cua-driver-core",
+            "@crates//:cursor-overlay",
+            "@crates//:platform-windows",
+            "@crates//:tokio",
         ],
         "//conditions:default": [],
     }),

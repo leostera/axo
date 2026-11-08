@@ -32,7 +32,20 @@ impl Codex {
         cwd: &Path,
         on_event: impl Fn(Value) + Send + Sync + 'static,
     ) -> io::Result<Self> {
+        Self::spawn_with_config(executable, cwd, &[], on_event)
+    }
+
+    /// Per-child overrides; never edits the person's global Codex configuration.
+    pub fn spawn_with_config(
+        executable: &Path,
+        cwd: &Path,
+        config: &[String],
+        on_event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
         let mut command = Command::new(executable);
+        for setting in config {
+            command.arg("-c").arg(setting);
+        }
         command
             .args(["app-server", "--listen", "stdio://"])
             .current_dir(cwd)
