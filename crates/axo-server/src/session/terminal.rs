@@ -583,8 +583,8 @@ impl SessionManager {
             .running_in(session_id, shell_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         if running.role == PaneRole::Pi {
-            let working = state
-                .agents
+            let working = self
+                .lock_agents()
                 .activity
                 .get(&session_id)
                 .is_some_and(|activity| activity.working);
@@ -1035,9 +1035,7 @@ mod tests {
         );
         assert!(
             !manager
-                .lock_state()
-                .unwrap()
-                .agents
+                .lock_agents()
                 .queued_prompts
                 .contains_key(&session.id)
         );
@@ -1108,9 +1106,7 @@ mod tests {
         assert_eq!(starting.kind(), io::ErrorKind::TimedOut);
         assert!(
             !manager
-                .lock_state()
-                .unwrap()
-                .agents
+                .lock_agents()
                 .queued_prompts
                 .contains_key(&session.id)
         );
@@ -1123,10 +1119,7 @@ mod tests {
                 from_session_id: None,
             })
             .unwrap();
-        assert_eq!(
-            manager.lock_state().unwrap().agents.queued_prompts[&session.id].len(),
-            1
-        );
+        assert_eq!(manager.lock_agents().queued_prompts[&session.id].len(), 1);
 
         // Pi comes up: the worker binds, and what waited is sent.
         let actions = fake_pi_bridge(&manager, &session);
@@ -1136,9 +1129,7 @@ mod tests {
         );
         assert!(
             !manager
-                .lock_state()
-                .unwrap()
-                .agents
+                .lock_agents()
                 .queued_prompts
                 .contains_key(&session.id)
         );
@@ -1248,9 +1239,7 @@ mod tests {
     fn wait_for_bridge(manager: &SessionManager, session_id: SessionId) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !manager
-            .lock_state()
-            .unwrap()
-            .agents
+            .lock_agents()
             .activity
             .get(&session_id)
             .is_some_and(|activity| activity.connected)

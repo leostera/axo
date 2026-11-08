@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use axo_panes::Pane;
 use axo_protocol::{Event, PaneRole, SessionId};
 
+use super::agents::AgentState;
 use super::{SessionManager, SessionState};
 
 /// The longest Axod waits for the Pis it started before calling itself ready.
@@ -32,13 +33,12 @@ pub(super) enum Launch {
 }
 
 /// Whether the Session's Pi is still on its way up: running, but its bridge not connected yet.
-fn still_starting(state: &SessionState, session_id: SessionId) -> bool {
+fn still_starting(state: &SessionState, agents: &AgentState, session_id: SessionId) -> bool {
     let running_pi = state
         .panes
         .in_session(session_id)
         .any(|(_, pane)| matches!(pane, Pane::Running(shell) if shell.role == PaneRole::Pi));
-    let connected = state
-        .agents
+    let connected = agents
         .activity
         .get(&session_id)
         .is_some_and(|activity| activity.connected);
@@ -49,15 +49,16 @@ impl SessionManager {
     /// Called once Sessions are restored: Axod now waits for the Pis that are starting.
     pub(super) fn begin_launch(&self) -> io::Result<()> {
         {
-            let mut state = self.lock_state()?;
+            let state = self.lock_state()?;
+            let mut agents = self.lock_agents();
             let waiting: HashSet<SessionId> = state
                 .panes
                 .session_ids()
                 .into_iter()
-                .filter(|session_id| still_starting(&state, *session_id))
+                .filter(|session_id| still_starting(&state, &agents, *session_id))
                 .collect();
             log::info!("event=daemon.launch_waiting pis={}", waiting.len());
-            state.agents.launch = Launch::Starting {
+            agents.launch = Launch::Starting {
                 waiting,
                 deadline: Instant::now() + LAUNCH_READY_LIMIT,
             };
@@ -68,42 +69,43 @@ impl SessionManager {
 
     /// Whether Axod has finished starting, for `axo.daemon.health`.
     pub fn is_ready(&self) -> bool {
-        self.lock_state()
-            .is_ok_and(|state| matches!(state.agents.launch, Launch::Ready))
+        matches!(self.lock_agents().launch, Launch::Ready)
     }
 
-    /// Ends the launch once nothing it waits for is still starting, or its time is up, and
-    /// tells every subscriber. Cheap to call often.
     /// When the launch stops waiting for Pis that have not connected, if it is waiting.
     pub(super) fn launch_deadline(&self) -> Option<Instant> {
-        match &self.state.lock().ok()?.agents.launch {
+        match &self.lock_agents().launch {
             Launch::Starting { deadline, .. } => Some(*deadline),
             _ => None,
         }
     }
 
+    /// Ends the launch once nothing it waits for is still starting, or its time is up, and
+    /// tells every subscriber. Cheap to call often.
     pub(super) fn check_launch_ready(&self) {
-        let Ok(mut state) = self.lock_state() else {
+        let Ok(state) = self.lock_state() else {
             return;
         };
-        let Launch::Starting { waiting, deadline } = &state.agents.launch else {
+        let mut agents = self.lock_agents();
+        let Launch::Starting { waiting, deadline } = &agents.launch else {
             return;
         };
         let deadline = *deadline;
         let still: HashSet<SessionId> = waiting
             .iter()
             .copied()
-            .filter(|session_id| still_starting(&state, *session_id))
+            .filter(|session_id| still_starting(&state, &agents, *session_id))
             .collect();
         let timed_out = Instant::now() >= deadline;
         if !still.is_empty() && !timed_out {
-            state.agents.launch = Launch::Starting {
+            agents.launch = Launch::Starting {
                 waiting: still,
                 deadline,
             };
             return;
         }
-        state.agents.launch = Launch::Ready;
+        agents.launch = Launch::Ready;
+        drop(agents);
         drop(state);
         log::info!(
             "event=daemon.launch_ready still_starting={} timed_out={timed_out}",
@@ -178,7 +180,7 @@ mod tests {
         // A Pi that never connects holds Axod back only until the limit.
         let stuck = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
         assert!(!stuck.is_ready());
-        if let Launch::Starting { deadline, .. } = &mut stuck.lock_state().unwrap().agents.launch {
+        if let Launch::Starting { deadline, .. } = &mut stuck.lock_agents().launch {
             *deadline = Instant::now();
         }
         stuck.check_launch_ready();

@@ -3,13 +3,62 @@
 //! launch still waits for them (RFD0034, step 8). It is the agent extension's part of the
 //! Session manager's state, grouped here so that it can get an owner of its own.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Condvar, Mutex};
+use std::ops::{Deref, DerefMut};
+use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Instant;
 
 use axo_protocol::{SessionId, ShellId};
 
-use super::{TakeoverGrace, pi_controls, prompts, readiness};
+use super::{SessionManager, TakeoverGrace, pi_controls, prompts, readiness};
+
+thread_local! {
+    /// Whether this thread holds the agents' lock, so taking the Session state's lock after it,
+    /// the wrong order, is caught.
+    static HOLDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether this thread holds the agents' lock; the Session state's lock must not be taken then.
+pub(super) fn holding() -> bool {
+    HOLDING.with(Cell::get)
+}
+
+/// The agents' state, locked. While it is held, this thread takes no other Session lock.
+pub(super) struct AgentsGuard<'a> {
+    guard: MutexGuard<'a, AgentState>,
+}
+
+impl Deref for AgentsGuard<'_> {
+    type Target = AgentState;
+    fn deref(&self) -> &AgentState {
+        &self.guard
+    }
+}
+
+impl DerefMut for AgentsGuard<'_> {
+    fn deref_mut(&mut self) -> &mut AgentState {
+        &mut self.guard
+    }
+}
+
+impl Drop for AgentsGuard<'_> {
+    fn drop(&mut self) {
+        HOLDING.with(|holding| holding.set(false));
+    }
+}
+
+impl SessionManager {
+    /// The agents' state. With the Session state too, lock that first: never the Session state
+    /// while holding this. It holds no I/O; a lock poisoned by a panic is taken anyway, since
+    /// each change to it is one assignment or one map operation.
+    pub(super) fn lock_agents(&self) -> AgentsGuard<'_> {
+        assert!(!holding(), "the agents' lock is taken once per thread");
+        let guard = self.agents.lock().unwrap_or_else(|p| p.into_inner());
+        HOLDING.with(|holding| holding.set(true));
+        AgentsGuard { guard }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct AgentState {

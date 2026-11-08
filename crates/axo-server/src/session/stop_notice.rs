@@ -195,7 +195,8 @@ mod tests {
         let next = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
         {
             let state = next.lock_state().unwrap();
-            let queued = &state.agents.queued_prompts[&fixture.session_id];
+            let agents = next.lock_agents();
+            let queued = &agents.queued_prompts[&fixture.session_id];
             assert_eq!(queued.len(), 1);
             assert_eq!(
                 queued[0].text(),
@@ -207,7 +208,7 @@ mod tests {
         next.shutdown();
         // This Axod stopped with nothing working, so the one after it tells no one.
         let after = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
-        assert!(after.lock_state().unwrap().agents.queued_prompts.is_empty());
+        assert!(after.lock_agents().queued_prompts.is_empty());
         after.shutdown();
     }
 

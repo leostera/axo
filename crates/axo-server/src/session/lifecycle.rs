@@ -1,6 +1,7 @@
 //! Session and pane lifecycle: creating, closing, restoring and reaping, and the layout and
 //! viewport they carry.
 
+use super::agents::AgentState;
 use super::transcripts::PiDirectories;
 use std::collections::HashSet;
 use std::io;
@@ -114,6 +115,7 @@ fn create_shell(
 
 pub(super) fn close_session(
     state: &mut SessionState,
+    agents: &mut AgentState,
     id: SessionId,
     attach_socket_path: &Path,
     pi_directories: &PiDirectories,
@@ -145,13 +147,14 @@ pub(super) fn close_session(
     };
 
     archive_session(&mut state.database, id, "explicit_close")?;
-    state.agents.forget(id);
+    agents.forget(id);
     let shells = remove_session_shells(state, id);
     Ok((replacement, shells))
 }
 
 fn close_shell(
     state: &mut SessionState,
+    agents: &mut AgentState,
     session_id: SessionId,
     shell_id: ShellId,
     attach_socket_path: &Path,
@@ -173,8 +176,13 @@ fn close_shell(
 
     let sibling_count = open_shell_ids(state, session_id).len();
     if sibling_count == 1 || role == PaneRole::Pi {
-        let (replacement, shells) =
-            close_session(state, session_id, attach_socket_path, pi_directories)?;
+        let (replacement, shells) = close_session(
+            state,
+            agents,
+            session_id,
+            attach_socket_path,
+            pi_directories,
+        )?;
         return Ok((
             rpc::ShellClosed {
                 archived_shell_id: shell_id,
@@ -393,19 +401,21 @@ impl SessionManager {
             .collect();
         ranked.sort();
         let mut pi_shells = Vec::new();
+        let mut agents = self.lock_agents();
         for (rank, std::cmp::Reverse(activity), session_id, shell_id) in ranked {
             let wanted = rank < first.len() || activity >= active_since;
             if wanted || idle == IdlePis::Start {
                 pi_shells.push((session_id, shell_id));
             } else {
-                state.agents.dormant.insert(shell_id);
+                agents.dormant.insert(shell_id);
             }
         }
         log::info!(
             "event=session.pis_restoring starting={} dormant={}",
             pi_shells.len(),
-            state.agents.dormant.len()
+            agents.dormant.len()
         );
+        drop(agents);
         drop(state);
         self.recover_pi_shells(pi_shells);
         Ok(())
@@ -527,7 +537,12 @@ impl SessionManager {
         let session = {
             let state = self.lock_state()?;
             set_manual_session_name(&state.database, session_id, name)?;
-            session_metadata(&state, session_id, &self.attach_socket_path)?
+            session_metadata(
+                &state,
+                &self.lock_agents(),
+                session_id,
+                &self.attach_socket_path,
+            )?
         };
         self.publish_event(Event::snapshot(session.clone()));
         Ok(session)
@@ -541,6 +556,7 @@ impl SessionManager {
             let mut state = self.lock_state()?;
             close_session(
                 &mut state,
+                &mut self.lock_agents(),
                 id,
                 &self.attach_socket_path,
                 &self.pi_directories,
@@ -562,6 +578,7 @@ impl SessionManager {
             let mut state = self.lock_state()?;
             close_shell(
                 &mut state,
+                &mut self.lock_agents(),
                 session_id,
                 shell_id,
                 &self.attach_socket_path,
@@ -659,6 +676,7 @@ impl SessionManager {
                 (!exited_pi_shell_ids.contains(shell_id)).then_some(*shell_id)
             })
             .collect();
+        let mut agents = self.lock_agents();
         let mut changed_sessions = HashSet::new();
         let mut removed_sessions = HashSet::new();
         for (shell_id, session_id) in &exited_pi_shells {
@@ -671,7 +689,7 @@ impl SessionManager {
             });
             if exited.is_some() {
                 // A prompt for the Pi that exited is not sent to whatever replaces it.
-                state.agents.pi_exited(*session_id);
+                agents.pi_exited(*session_id);
                 changed_sessions.insert(*session_id);
             }
         }
@@ -694,12 +712,13 @@ impl SessionManager {
             if remaining_shell_ids.is_empty() {
                 if removed_sessions.insert(*session_id) {
                     archive_session(&mut state.database, *session_id, "shell_exited")?;
-                    state.agents.forget(*session_id);
+                    agents.forget(*session_id);
                 }
             } else {
                 changed_sessions.insert(*session_id);
             }
         }
+        drop(agents);
         drop(state);
 
         if !exited.is_empty() {

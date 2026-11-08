@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::agents::AgentState;
 use super::prompts::pi_command_sender;
 use super::{SessionManager, SessionState};
 use axo_agent::pi::protocol::{CommandResult, RejectReason};
@@ -73,8 +74,8 @@ impl PiControlEvent {
     }
 
     /// Keeps it for `session_id`; says whether the Session's snapshot changed.
-    pub(super) fn apply(self, state: &mut SessionState, session_id: SessionId) -> bool {
-        let controls = state.agents.controls.entry(session_id).or_default();
+    pub(super) fn apply(self, agents: &mut AgentState, session_id: SessionId) -> bool {
+        let controls = agents.controls.entry(session_id).or_default();
         match self {
             Self::State(runtime) => {
                 let changed = controls.runtime.as_ref() != Some(&runtime);
@@ -129,7 +130,7 @@ impl SessionManager {
         if !state.panes.session_ids().contains(&session_id) {
             return Err(session_not_open());
         }
-        Ok(read(state.agents.controls.get(&session_id)))
+        Ok(read(self.lock_agents().controls.get(&session_id)))
     }
 
     /// The slash commands the Session's Pi last listed; none before it has said.

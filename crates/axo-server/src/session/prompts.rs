@@ -290,7 +290,7 @@ impl SessionManager {
         command_id: Option<&CommandId>,
         attachments: &[FetchedAttachment],
     ) -> Result<Admitted, PromptError> {
-        let mut state = self
+        let state = self
             .lock_state()
             .map_err(|error| PromptError::Unavailable(error.to_string()))?;
         if let Some(from) = from
@@ -309,19 +309,18 @@ impl SessionManager {
             }
             None => text.to_owned(),
         };
+        let mut agents = self.lock_agents();
         if let Some(from) = from {
-            state
-                .agents
+            agents
                 .provenance
                 .admit(from, from == target, Instant::now())?;
         }
-        let ready = state
-            .agents
+        let ready = agents
             .activity
             .get(&target)
             .is_some_and(|activity| activity.connected);
         if !ready {
-            let queue = state.agents.queued_prompts.entry(target).or_default();
+            let queue = agents.queued_prompts.entry(target).or_default();
             if queue.len() >= MAX_QUEUED_PI_PROMPTS {
                 return Err(PromptError::QueueFull);
             }
@@ -393,8 +392,8 @@ impl SessionManager {
             }
             {
                 let state = self.lock_state()?;
-                let connected = state
-                    .agents
+                let connected = self
+                    .lock_agents()
                     .activity
                     .get(&session_id)
                     .is_some_and(|activity| activity.connected);
@@ -442,8 +441,8 @@ impl SessionManager {
     /// thread of their own: the bridge round trips must not hold up the caller.
     pub(super) fn flush_queued_pi_prompts(&self, session_id: SessionId) -> io::Result<()> {
         let (queue, bridge) = {
-            let mut state = self.lock_state()?;
-            let Some(queue) = state.agents.queued_prompts.remove(&session_id) else {
+            let state = self.lock_state()?;
+            let Some(queue) = self.lock_agents().queued_prompts.remove(&session_id) else {
                 return Ok(());
             };
             (queue, pi_bridge(&state, session_id)?)

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::agents::AgentState;
 use super::events::ShellOutputSink;
 use super::terminal::window_size;
 use super::{RunningShell, SessionManager, SessionState};
@@ -200,6 +201,7 @@ pub(super) fn remove_session_shells(
 
 pub(super) fn session_metadata(
     state: &SessionState,
+    agents: &AgentState,
     id: SessionId,
     attach_socket_path: &Path,
 ) -> io::Result<SessionRecord> {
@@ -223,7 +225,7 @@ pub(super) fn session_metadata(
             Pane::Running(running) => running_shell_record(shell_id, running, attach_socket_path),
             Pane::Unavailable(shell) => {
                 let mut record = unavailable_pi_shell_record(shell_id, shell, attach_socket_path);
-                if state.agents.dormant.contains(&shell_id) {
+                if agents.dormant.contains(&shell_id) {
                     record.availability = Availability::Dormant;
                 }
                 record
@@ -243,8 +245,7 @@ pub(super) fn session_metadata(
         // Idle, and ready for a prompt, which starts its Pi.
         SessionStatus::Ready
     } else if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
-        state
-            .agents
+        agents
             .activity
             .get(&id)
             .map_or(SessionStatus::Starting, |activity| activity.status())
@@ -271,8 +272,7 @@ pub(super) fn session_metadata(
         initial_pwd,
         shells,
         layout,
-        pi: state
-            .agents
+        pi: agents
             .controls
             .get(&id)
             .and_then(|controls| controls.runtime().cloned()),
@@ -334,11 +334,12 @@ fn unavailable_pi_shell_record(
 impl SessionManager {
     pub(super) fn list_sessions(&self) -> io::Result<Vec<SessionRecord>> {
         let state = self.lock_state()?;
+        let agents = self.lock_agents();
         let mut sessions = state
             .panes
             .session_ids()
             .into_iter()
-            .map(|id| session_metadata(&state, id, &self.attach_socket_path))
+            .map(|id| session_metadata(&state, &agents, id, &self.attach_socket_path))
             .collect::<io::Result<Vec<_>>>()?;
         sessions.sort_by_key(|session| (session.created_at, session.id));
         Ok(sessions)
@@ -357,6 +358,10 @@ impl SessionManager {
     #[track_caller]
     pub(super) fn lock_state(&self) -> io::Result<CatalogGuard<'_>> {
         let caller = std::panic::Location::caller();
+        debug_assert!(
+            !super::agents::holding(),
+            "the Session state is locked before the agents' state, never after: {caller}"
+        );
         let requested = Instant::now();
         let guard = self
             .state
@@ -414,7 +419,13 @@ mod tests {
                     params![workspace_id, session.id.to_string()],
                 )
                 .unwrap();
-            let record = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
+            let record = session_metadata(
+                &state,
+                &manager.lock_agents(),
+                session.id,
+                &manager.attach_socket_path,
+            )
+            .unwrap();
             assert_eq!(record.emoji.as_deref(), Some("🦀"));
             assert_eq!(record.workspace_id.as_deref(), Some(workspace_id.as_str()));
             assert_eq!(record.workspace_name.as_deref(), Some("Axo"));
@@ -429,7 +440,15 @@ mod tests {
                     params![workspace_id],
                 )
                 .unwrap();
-            assert!(session_metadata(&state, session.id, &manager.attach_socket_path).is_err());
+            assert!(
+                session_metadata(
+                    &state,
+                    &manager.lock_agents(),
+                    session.id,
+                    &manager.attach_socket_path
+                )
+                .is_err()
+            );
         }
     }
 }

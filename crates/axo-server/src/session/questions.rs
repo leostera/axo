@@ -17,7 +17,13 @@ use super::SessionManager;
 impl QuestionsHost for SessionManager {
     fn has_session(&self, session: SessionId) -> bool {
         self.lock_state().is_ok_and(|state| {
-            super::catalog::session_metadata(&state, session, &self.attach_socket_path).is_ok()
+            super::catalog::session_metadata(
+                &state,
+                &self.lock_agents(),
+                session,
+                &self.attach_socket_path,
+            )
+            .is_ok()
         })
     }
 
