@@ -314,7 +314,8 @@ export class AccountApps {
         description:
           `The account's Macs (${macs}): [{ name, label, online, kind, self, computerUse }]. name is what bash.run and computer.run take; ` +
           "self is the Mac this script was started from; computerUse, for an online Mac, says whether it can be driven now " +
-          "({ available, accessibility, screenRecording }), or is null if the Mac did not say.",
+          "({ available, accessibility, screenRecording, locked }), or is null if the Mac did not say. " +
+          "A locked Mac refuses computer calls until the person unlocks it; bash.run still works there.",
         inputSchema: z.toJSONSchema(z.object({}).strict()) as Record<string, unknown>,
         call: `codemode.${HOSTS_NAMESPACE}.list`,
       },

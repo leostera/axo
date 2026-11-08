@@ -538,6 +538,7 @@ impl ComputerUse {
             "available": axo_computer::AVAILABLE && accessibility && screen_recording,
             "accessibility": accessibility,
             "screenRecording": screen_recording,
+            "locked": axo_computer::screen_locked(),
         })
     }
 }

@@ -100,14 +100,15 @@ test("hosts.list names every Mac, says which one the script runs from, and asks 
   // Both Macs are online; the laptop (an older Axo) says nothing, the studio answers.
   const asked = (await studioDaemon.next()) as Sent;
   assert.equal(asked.method, COMPUTER_STATUS_METHOD);
-  studioDaemon.send({ jsonrpc: "2.0", id: asked.id, result: { available: true, accessibility: true, screenRecording: true } });
+  // A locked Mac says so: its computer calls are refused until the person unlocks it.
+  studioDaemon.send({ jsonrpc: "2.0", id: asked.id, result: { available: true, accessibility: true, screenRecording: true, locked: true } });
   const ignored = (await laptopDaemon.next()) as Sent;
   assert.equal(ignored.method, COMPUTER_STATUS_METHOD);
   laptopDaemon.send({ jsonrpc: "2.0", id: ignored.id, error: { code: -32601, message: "Method not found" } });
   assert.deepEqual(result(await listing), {
     result: [
       { name: "leo_s_laptop", label: "Leo's Laptop", online: true, kind: "macos", self: true, computerUse: null },
-      { name: "studio", label: "Studio", online: true, kind: "macos", self: false, computerUse: { available: true, accessibility: true, screenRecording: true } },
+      { name: "studio", label: "Studio", online: true, kind: "macos", self: false, computerUse: { available: true, accessibility: true, screenRecording: true, locked: true } },
     ],
     logs: [],
   });

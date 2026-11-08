@@ -163,7 +163,28 @@ pub fn call(tool: &str, args: Value) -> Value {
             TOOLS.join(", ")
         ));
     }
+    if let Some(refusal) = refusal_while(tool, imp::screen_locked) {
+        return refusal;
+    }
     imp::call(cua_name(tool), args)
+}
+
+/// The refusal for `tool` if the Mac is locked now; the lock is only looked at for tools that
+/// need the screen or input.
+fn refusal_while(tool: &str, locked: impl Fn() -> bool) -> Option<Value> {
+    (!WORKS_LOCKED.contains(&tool) && locked()).then(|| error(LOCKED))
+}
+
+/// What a computer call on a locked Mac answers. Locked, the login window owns the screen:
+/// screenshots show it, and clicks and keys go to it, not to the apps (RFD0028).
+pub const LOCKED: &str = "Not done: this Mac is locked, so its screen and input belong to the login window. Computer use needs the person to unlock it; bash and the other tools still work.";
+
+/// Tools that touch neither the screen nor input, and answer the same locked or not.
+const WORKS_LOCKED: &[&str] = &["check_permissions", "get_guide"];
+
+/// Whether this Mac's screen is locked now; `false` where that can't be known.
+pub fn screen_locked() -> bool {
+    imp::screen_locked()
 }
 
 /// Whether this process holds the grants computer use needs: `(accessibility, screen_recording)`,
@@ -246,6 +267,31 @@ mod imp {
         (status.accessibility, status.screen_recording)
     }
 
+    /// The login session's `CGSSessionScreenIsLocked`, present and true only while locked.
+    pub fn screen_locked() -> bool {
+        use core_foundation::base::TCFType;
+        use core_foundation::boolean::CFBoolean;
+        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+        use core_foundation::string::CFString;
+
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
+        }
+        // SAFETY: returns a dictionary we own (Copy rule), or null outside a login session.
+        let session = unsafe { CGSessionCopyCurrentDictionary() };
+        if session.is_null() {
+            return false;
+        }
+        // SAFETY: a non-null dictionary we own, released when this drops.
+        let session: CFDictionary<CFString, core_foundation::base::CFType> =
+            unsafe { CFDictionary::wrap_under_create_rule(session) };
+        session
+            .find(CFString::from_static_string("CGSSessionScreenIsLocked"))
+            .and_then(|value| value.downcast::<CFBoolean>())
+            .is_some_and(bool::from)
+    }
+
     pub fn call(tool: &str, args: Value) -> Value {
         let runtime = runtime();
         let result = runtime.tokio.block_on(runtime.registry.invoke(tool, args));
@@ -256,6 +302,42 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_a_locked_mac_only_the_tools_that_need_no_screen_run() {
+        for tool in [
+            "screenshot",
+            "click",
+            "type_text",
+            "get_window_state",
+            "run_steps",
+        ] {
+            let refused = refusal_while(tool, || true).expect(tool);
+            assert_eq!(refused["isError"], true);
+            assert!(
+                refused["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("locked")
+            );
+            assert!(
+                refusal_while(tool, || false).is_none(),
+                "{tool} runs unlocked"
+            );
+        }
+        let looked = std::cell::Cell::new(false);
+        for tool in WORKS_LOCKED {
+            assert!(
+                refusal_while(tool, || {
+                    looked.set(true);
+                    true
+                })
+                .is_none()
+            );
+        }
+        assert!(!looked.get(), "the lock is not looked at for them");
+        assert!(WORKS_LOCKED.iter().all(|tool| TOOLS.contains(tool)));
+    }
 
     #[test]
     fn a_filled_value_is_hidden_wherever_it_shows_but_not_in_images() {
@@ -291,6 +373,10 @@ mod imp {
 
     pub fn call(_tool: &str, _args: Value) -> Value {
         super::error("computer use is only available on macOS")
+    }
+
+    pub fn screen_locked() -> bool {
+        false
     }
 
     pub fn permissions() -> (bool, bool) {

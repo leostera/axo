@@ -390,10 +390,14 @@ export const computerResultSchema = z.object({
 }).strict();
 export type ComputerResult = z.infer<typeof computerResultSchema>;
 
-/** Whether a Mac can do computer use now: its Accessibility and Screen Recording grants. */
+/**
+ * Whether a Mac can do computer use: its Accessibility and Screen Recording grants, and whether
+ * its screen is locked now, when computer calls are refused until the person unlocks it.
+ */
 export const computerStatusSchema = z.object({
   available: z.boolean(),
   accessibility: z.boolean(),
   screenRecording: z.boolean(),
+  locked: z.boolean().optional(),
 }).strict();
 export type ComputerStatus = z.infer<typeof computerStatusSchema>;
