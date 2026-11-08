@@ -3,16 +3,16 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
-static TERMINAL_RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// The write end of the resize forwarder's pipe, or -1: SIGWINCH writes a byte to it, which is
+/// all a signal handler may safely do, and the forwarder wakes on it.
+static TERMINAL_RESIZED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 #[derive(Parser)]
 #[command(name = "axod", about = "Axo daemon command-line entrypoint")]
@@ -271,17 +271,34 @@ impl Drop for TerminalInputModeGuard {
 }
 
 struct TerminalResizeForwarder {
-    stop: Arc<AtomicBool>,
+    /// The pipe SIGWINCH writes to: `[read, write]`.
+    pipe: [RawFd; 2],
     thread: Option<JoinHandle<()>>,
     previous_handler: libc::sighandler_t,
 }
 
+/// What the forwarder reads from its pipe.
+const RESIZED: u8 = 1;
+const STOP: u8 = 0;
+
 impl TerminalResizeForwarder {
     fn start(input_fd: RawFd, pty_master_fd: RawFd) -> io::Result<Self> {
         copy_terminal_size(input_fd, pty_master_fd)?;
-        TERMINAL_RESIZE_REQUESTED.store(false, Ordering::Relaxed);
+        let mut pipe = [-1; 2];
+        // SAFETY: pipe fills two descriptors on success.
+        if unsafe { libc::pipe(pipe.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // The handler must never block: a full pipe already says "resized".
+        // SAFETY: fcntl on a descriptor this function just made.
+        unsafe {
+            libc::fcntl(pipe[1], libc::F_SETFL, libc::O_NONBLOCK);
+            libc::fcntl(pipe[0], libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(pipe[1], libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        TERMINAL_RESIZED.store(pipe[1], Ordering::SeqCst);
 
-        // SAFETY: the handler only updates an atomic flag and is valid for the process lifetime.
+        // SAFETY: the handler only writes one byte to a pipe, and is valid for the process lifetime.
         let previous_handler = unsafe {
             libc::signal(
                 libc::SIGWINCH,
@@ -289,31 +306,41 @@ impl TerminalResizeForwarder {
             )
         };
         if previous_handler == libc::SIG_ERR {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            close_pipe(pipe);
+            return Err(error);
         }
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
+        let reader = pipe[0];
         let resize_thread = thread::Builder::new()
             .name("axo-terminal-resize".into())
             .spawn(move || {
-                while !thread_stop.load(Ordering::Relaxed) {
-                    if TERMINAL_RESIZE_REQUESTED.swap(false, Ordering::Relaxed) {
-                        let _ = copy_terminal_size(input_fd, pty_master_fd);
+                let mut byte = [0_u8; 1];
+                loop {
+                    // SAFETY: reads one byte into a live buffer from the pipe this forwarder owns.
+                    let read = unsafe { libc::read(reader, byte.as_mut_ptr().cast(), 1) };
+                    if read == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                    {
+                        continue;
                     }
-                    thread::sleep(Duration::from_millis(25));
+                    if read != 1 || byte[0] == STOP {
+                        return;
+                    }
+                    let _ = copy_terminal_size(input_fd, pty_master_fd);
                 }
             });
 
         match resize_thread {
             Ok(thread) => Ok(Self {
-                stop,
+                pipe,
                 thread: Some(thread),
                 previous_handler,
             }),
             Err(error) => {
                 // SAFETY: restore the handler that was active before installing ours.
                 unsafe { libc::signal(libc::SIGWINCH, previous_handler) };
+                TERMINAL_RESIZED.store(-1, Ordering::SeqCst);
+                close_pipe(pipe);
                 Err(error)
             }
         }
@@ -322,17 +349,32 @@ impl TerminalResizeForwarder {
 
 impl Drop for TerminalResizeForwarder {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        // The handler goes first, so nothing writes to the pipe once it is closed.
+        // SAFETY: restore the handler that was active before this forwarder started.
+        unsafe { libc::signal(libc::SIGWINCH, self.previous_handler) };
+        TERMINAL_RESIZED.store(-1, Ordering::SeqCst);
+        // SAFETY: writes one byte from a live buffer to the pipe this forwarder owns.
+        unsafe { libc::write(self.pipe[1], [STOP].as_ptr().cast(), 1) };
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        // SAFETY: restore the handler that was active before this forwarder started.
-        unsafe { libc::signal(libc::SIGWINCH, self.previous_handler) };
+        close_pipe(self.pipe);
+    }
+}
+
+fn close_pipe(pipe: [RawFd; 2]) {
+    for fd in pipe {
+        // SAFETY: closes a descriptor this forwarder made and nothing else uses now.
+        unsafe { libc::close(fd) };
     }
 }
 
 extern "C" fn request_terminal_resize(_signal: libc::c_int) {
-    TERMINAL_RESIZE_REQUESTED.store(true, Ordering::Relaxed);
+    let fd = TERMINAL_RESIZED.load(Ordering::SeqCst);
+    if fd >= 0 {
+        // SAFETY: write is async-signal-safe; the descriptor stays open while the handler is set.
+        unsafe { libc::write(fd, [RESIZED].as_ptr().cast(), 1) };
+    }
 }
 
 fn copy_terminal_size(input_fd: RawFd, pty_master_fd: RawFd) -> io::Result<bool> {
@@ -414,6 +456,53 @@ fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn size_of(fd: RawFd) -> (u16, u16) {
+        // SAFETY: winsize is plain data that TIOCGWINSZ fills.
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: fd is an open PTY and size is writable.
+        assert_eq!(unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) }, 0);
+        (size.ws_row, size.ws_col)
+    }
+
+    fn set_size(fd: RawFd, rows: u16, cols: u16) {
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: fd is an open PTY and size is a valid winsize.
+        assert_eq!(unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) }, 0);
+    }
+
+    /// A resize of the person's terminal reaches the shell's PTY when SIGWINCH arrives, not on a
+    /// timer; and the forwarder stops at once when dropped.
+    #[test]
+    fn a_terminal_resize_is_forwarded_when_the_signal_arrives() {
+        let (terminal, _terminal_slave) = open_pty();
+        let (shell, _shell_slave) = open_pty();
+        set_size(terminal.as_raw_fd(), 24, 80);
+        let forwarder =
+            TerminalResizeForwarder::start(terminal.as_raw_fd(), shell.as_raw_fd()).unwrap();
+        assert_eq!(size_of(shell.as_raw_fd()), (24, 80), "copied at start");
+
+        set_size(terminal.as_raw_fd(), 50, 132);
+        // SAFETY: signals this process; the forwarder's handler is installed.
+        unsafe { libc::raise(libc::SIGWINCH) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while size_of(shell.as_raw_fd()) != (50, 132) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the resize was not forwarded"
+            );
+            thread::yield_now();
+        }
+        let stopped = std::time::Instant::now();
+        drop(forwarder);
+        assert!(stopped.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(TERMINAL_RESIZED.load(Ordering::SeqCst), -1);
+    }
 
     #[test]
     fn raw_input_mode_is_restored_when_the_guard_drops() {

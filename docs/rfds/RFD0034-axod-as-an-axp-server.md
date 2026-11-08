@@ -189,7 +189,7 @@ Each step is one or a few commits on main. Each lands only with `bazel test //cr
      - each attached terminal's pump waits on output, and a watcher blocked on the client's socket detaches it on hang-up; it woke every 100ms per pane;
      - each PTY's output pump polls the PTY and a stop socket; it woke every 250ms per shell;
      - each Pi's bridge worker polls Pi's socket and a wake socket that every command writes to; it read with a 200ms timeout, so every command waited about 200ms before reaching Pi (`conformance_latency` now measures a few milliseconds).
-   - **What remains threads:** the PTY pumps and attachment watchers (blocking reads, one per shell or pane), the Pi bridge workers (one per Pi), the database thread, and one-shot helpers (shell cleanup, Pi restarts, flushing queued prompts). None of them polls. They become tasks with step 8, when the terminal and agent extensions own their PTYs and Pis; `axod attach`'s resize forwarder, in its own process, still checks a flag every 25ms.
+   - **What remains threads:** the PTY pumps and attachment watchers (blocking reads, one per shell or pane), the Pi bridge workers (one per Pi), the database thread, and one-shot helpers (shell cleanup, Pi restarts, flushing queued prompts). None of them polls. They become tasks with step 8, when the terminal and agent extensions own their PTYs and Pis. `axod attach`'s resize forwarder wakes on SIGWINCH through a pipe (it checked a flag every 25ms).
 8. **The Session manager split** behind `Sessions`.
 
 Steps 1 to 3 are small and can start at once. Step 4 is the one that needs review. The order that remains is 7 (tokio), 8 (the split, and terminal, agent and sessions out), then 6 (the relay as a transport, once the views per caller have an owner).
