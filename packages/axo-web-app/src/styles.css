@@ -448,7 +448,7 @@ button:disabled { cursor: default; }
 .slash-source { flex: none; color: var(--tertiary); font-size: 11px; }
 /* Send, and what holding it offers. */
 .send-anchor { position: relative; flex: none; }
-.composer .send-button { -webkit-touch-callout: none; user-select: none; touch-action: manipulation; }
+.composer .send-button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: none; -webkit-tap-highlight-color: transparent; }
 .send-menu { right: -4px; left: auto; min-width: 300px; }
 .send-menu-text { display: flex; flex: 1; flex-direction: column; }
 .send-menu-text small { color: var(--secondary); font-size: 13px; }

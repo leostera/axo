@@ -21,7 +21,7 @@ use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::cancel::Cancellation;
-use crate::peer::Signer;
+use crate::peer::Caller;
 
 /// Largest accepted request line; larger requests close the connection.
 const MAX_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
@@ -112,20 +112,20 @@ impl TypedMethods for IoHandler {
 /// The one kind of caller a method answers, and what everyone else is told.
 #[derive(Clone, Copy, Debug)]
 pub struct Only {
-    pub signer: Signer,
+    pub caller: Caller,
     pub code: i64,
     pub message: &'static str,
 }
 
 impl Only {
-    /// Whether the request being handled comes from `signer`; the refusal if not.
+    /// Whether the request being handled comes from `caller`; the refusal if not.
     pub fn admit(&self, method: &str) -> Result<(), RpcError> {
-        if crate::peer::current().is(self.signer) {
+        if crate::peer::current().is_caller(self.caller) {
             return Ok(());
         }
         log::warn!(
             "event=rpc.refused method={method} required={:?}",
-            self.signer
+            self.caller
         );
         Err(RpcError {
             code: ErrorCode::ServerError(self.code),
@@ -466,6 +466,7 @@ fn log_if_slow(request: &str, elapsed: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::peer::Signer;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream as StdUnixStream;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -624,7 +625,7 @@ mod tests {
         let running = Arc::clone(&ran);
         handler.add_typed_only(
             Only {
-                signer: Signer::AxoApp,
+                caller: Caller::Signed(Signer::AxoApp),
                 code: -32099,
                 message: "only Axo.app",
             },

@@ -136,3 +136,7 @@ Leo, 2026-11-07:
 - Queued prompts are kept in the log.
 - Restarting a working Pi stops its turn.
 - The model is pickable from clients, not only shown.
+
+Leo, 2026-11-08:
+
+- **Send interrupts.** A message sent from a client is answered now: tapping Send stops the reply Pi is writing and starts the next run with the message, ahead of follow-ups already waiting (`delivery: "interrupt"`). Holding Send offers Steer (at the next step) and Follow-up (after the reply). pi-axo writes the interrupt to the log as `axo.command.queued`, aborts the run, and delivers it when the run settles, so it is as durable as the others. Clients fall back to a follow-up against a Mac that refuses `interrupt`.

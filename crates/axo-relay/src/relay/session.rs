@@ -16,14 +16,14 @@ use tokio::time::MissedTickBehavior;
 use tungstenite::Message;
 
 use super::HEARTBEAT_INTERVAL;
-use super::dispatch::remote_request_reply;
 use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
+use super::forward;
 use super::jobs::{start_bash, start_computer, start_prompt, start_sign_in};
 use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
-use super::wire::{HostIdentity, IncomingMessage, JSONRPC, OutgoingRequest, RequestId};
+use super::wire::{HostIdentity, JSONRPC, OutgoingRequest};
 use crate::fragments::Reassembler;
 use crate::host::RelayHost;
 use crate::outbound::{FRAMES_PER_TURN, Outbox, Outgoing, Priority, RelayChannel, ReplySender};
@@ -46,8 +46,6 @@ pub(super) async fn rpc_call(
     method: &str,
     params: impl Serialize,
     sessions: &Arc<dyn RelayHost>,
-    host_id: &str,
-    host_generation: &str,
 ) -> io::Result<()> {
     *request_number = request_number.saturating_add(1);
     let id = format!("axod-{}", *request_number);
@@ -67,21 +65,19 @@ pub(super) async fn rpc_call(
             let Some(raw) = receive(sink, message, reassembler).await? else {
                 continue;
             };
-            let response: IncomingMessage = serde_json::from_str(&raw)
+            let message: Value = serde_json::from_str(&raw)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-            if response.method.is_none() && response.id == Some(RequestId::Text(id.clone())) {
-                return response
-                    .result
-                    .map(drop)
-                    .ok_or_else(|| io::Error::other("relay RPC request was rejected"));
+            if message.get("method").is_none()
+                && message.get("id") == Some(&Value::from(id.as_str()))
+            {
+                return match message.get("result") {
+                    Some(result) if !result.is_null() => Ok(()),
+                    _ => Err(io::Error::other("relay RPC request was rejected")),
+                };
             }
-            let (sessions, host_id, host_generation) = (
-                Arc::clone(sessions),
-                host_id.to_owned(),
-                host_generation.to_owned(),
-            );
+            let sessions = Arc::clone(sessions);
             let reply = tokio::task::spawn_blocking(move || {
-                remote_request_reply(&response, &sessions, &host_id, &host_generation)
+                forward::answer(&message, |request| sessions.answer_remote(request))
             })
             .await
             .map_err(io::Error::other)?;
@@ -122,9 +118,16 @@ pub(super) struct RelaySessionContext {
 
 /// A request from the cloud that the host answers at once, in the order they came.
 pub(super) enum HostRequest {
-    ComputerStatus { id: Value, params: Value },
-    ResolveElicitation { id: Value, params: Value },
-    Call(IncomingMessage),
+    ComputerStatus {
+        id: Value,
+        params: Value,
+    },
+    ResolveElicitation {
+        id: Value,
+        params: Value,
+    },
+    /// One of the account's calls, answered by the host in order.
+    Call(Value),
 }
 
 /// Serves one connected socket until it closes, axod stops, or a reconnect is asked for.
@@ -250,8 +253,8 @@ fn take_message(
         // A prompt is answered once Pi has it in its log, after its attachments are fetched
         // (RFD0030) and Pi has started (RFD0033): on a thread of its own.
         Some("axo.remote.session.prompt") => {
-            if let Some(id) = id {
-                start_prompt(id, params, context);
+            if id.is_some() {
+                start_prompt(value.clone(), context);
             }
             return Ok(());
         }
@@ -269,10 +272,7 @@ fn take_message(
             },
             None => return Ok(()),
         },
-        _ => HostRequest::Call(
-            serde_json::from_value(value)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?,
-        ),
+        _ => HostRequest::Call(value.clone()),
     };
     let _ = requests.send(request);
     Ok(())
@@ -303,12 +303,9 @@ fn answer(request: HostRequest, context: &RelaySessionContext) {
             context.replies.reply(&id, outcome);
         }
         HostRequest::Call(message) => {
-            if let Some(reply) = remote_request_reply(
-                &message,
-                &context.sessions,
-                &context.host_id,
-                &context.host_generation,
-            ) {
+            if let Some(reply) =
+                forward::answer(&message, |request| context.sessions.answer_remote(request))
+            {
                 match serde_json::to_string(&reply) {
                     Ok(text) => context.replies.send(text),
                     Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),
@@ -410,7 +407,8 @@ pub(super) fn unix_timestamp_millis() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-pub(super) fn current_timestamp() -> String {
+/// Now, as the account dates a Session snapshot.
+pub fn current_timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

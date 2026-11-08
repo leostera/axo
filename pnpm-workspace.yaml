@@ -36,3 +36,6 @@ packageExtensions:
   "@cloudflare/kumo":
     peerDependencies:
       "@types/react": "*"
+
+patchedDependencies:
+  '@leostera/atxf@0.2.0': patches/@leostera__atxf@0.2.0.patch

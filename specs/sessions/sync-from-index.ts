@@ -362,8 +362,8 @@ export const SessionDO = defineActor({
   transitions: {
     head: {
       on: Head,
-      description: "Says how many records it holds and their chain.",
-      sources: ["packages/axo-api-worker/src/session-store.ts#AxoSessionDO.head"],
+      description: "Raises its fence to the one the head read carries, then says how many records it holds and their chain.",
+      sources: ["packages/axo-api-worker/src/session-store.ts#AxoSessionDO.syncHead"],
       sends: [HeadIs],
       run(s, msg, ctx) {
         s.fence = Math.max(s.fence, msg.fence);
@@ -391,7 +391,7 @@ export const SessionDO = defineActor({
     readChains: {
       on: ReadChains,
       description: "Returns the chain at every position, from nothing to the head.",
-      sources: ["packages/axo-api-worker/src/session-store.ts:170-174"],
+      sources: ["packages/axo-api-worker/src/session-store.ts:235-240"],
       sends: [ChainsRead],
       run: (s, msg, ctx) => ctx.reply(ChainsRead, { inc: msg.inc, chains: s.records.map((_r, i) => chainOf(s.records, i)).concat(chainOf(s.records)) }),
     },

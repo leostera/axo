@@ -259,7 +259,12 @@ fn a_prompt_from_the_account_says_when_a_working_pi_takes_it() {
         "axo.remote.session.prompt",
         json!({ "target": target, "sessionId": session, "text": "look here", "delivery": "steer", "commandId": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d" }),
     );
+    hub.ok(
+        "axo.remote.session.prompt",
+        json!({ "target": target, "sessionId": session, "text": "stop, this instead", "delivery": "interrupt", "commandId": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d" }),
+    );
     let log = axod.pi_log();
+    assert!(log.contains("DELIVERY:interrupt:stop, this instead"), "{log}");
     assert!(
         log.contains("DELIVERY:followUp:after this"),
         "a follow-up unless it says otherwise:\n{log}"

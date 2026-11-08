@@ -1,47 +1,32 @@
-//! Answering the relay's `axo.remote.*` requests by calling into the host.
-
+//! The Windows host answers the account's AXP methods (RFD0034).
+//! Retains the typed remote wire vocabulary moved out of axo-relay upstream.
+use super::Host;
+use axo_protocol::{LayoutNode, RemoteSessionSnapshot, SessionId, ShellId};
+use axo_relay::current_timestamp;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::io;
-use std::sync::Arc;
 
-use serde_json::Value;
-
-use super::session::current_timestamp;
-use super::wire::{
-    ErrorBody, IncomingMessage, JSONRPC, KeyParams, LayoutSetParams, ModelSetParams, OutgoingError,
-    OutgoingResponse, OutgoingResult, PromptParams, RemoteResult, RenameSessionParams,
-    SessionTargetParams, ShellTargetParams, StopParams, TargetParams, TerminalInputParams,
-    TerminalResizeParams, WorkspaceSessionTargetParams,
-};
-use crate::host::RelayHost;
-
-/// Answers a request from the relay; `None` for anything that is not a request.
-pub(super) fn remote_request_reply(
-    message: &IncomingMessage,
-    sessions: &Arc<dyn RelayHost>,
-    host_id: &str,
-    host_generation: &str,
-) -> Option<OutgoingResponse> {
-    let id = message.id.clone()?;
-    let method = message.method.as_deref()?;
-    let result = dispatch_remote_call(method, &message.params, sessions, host_id, host_generation);
+pub(super) fn answer(host: &Host, request: Value) -> Option<Value> {
+    let id = request
+        .get("id")
+        .filter(|id| id.is_number() || id.is_string())?
+        .clone();
+    let name = request["method"].as_str()?;
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let result = dispatch_remote_call(name, &params, host, &host.id, &host.generation);
     Some(match result {
-        Ok(result) => OutgoingResponse::Result(Box::new(OutgoingResult {
-            jsonrpc: JSONRPC,
-            id,
-            result,
-        })),
-        Err((code, message)) => OutgoingResponse::Error(OutgoingError {
-            jsonrpc: JSONRPC,
-            id,
-            error: ErrorBody { code, message },
-        }),
+        Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
+        Err((code, message)) => {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
+        }
     })
 }
 
 fn dispatch_remote_call(
     method: &str,
     params: &Value,
-    sessions: &Arc<dyn RelayHost>,
+    sessions: &Host,
     host_id: &str,
     host_generation: &str,
 ) -> Result<RemoteResult, (i64, &'static str)> {
@@ -153,6 +138,12 @@ fn dispatch_remote_call(
         }
         "axo.remote.session.prompt" => {
             let request = parsed!(PromptParams);
+            if !request.attachments.is_empty() {
+                return Err((
+                    -32003,
+                    "Attachments are not supported by the Windows Codex backend",
+                ));
+            }
             target_ok!(request.target);
             sessions
                 .remote_prompt_pi(
@@ -207,8 +198,9 @@ fn dispatch_remote_call(
         "axo.remote.session.stop" => {
             let request = parsed!(StopParams);
             target_ok!(request.target);
-            let stop = crate::StopTarget::new(request.turn_id, request.seen, request.command_ids)
-                .map_err(|_| (-32602, "Invalid params"))?;
+            let stop =
+                axo_relay::StopTarget::new(request.turn_id, request.seen, request.command_ids)
+                    .map_err(|_| (-32602, "Invalid params"))?;
             let stopped = sessions
                 .remote_stop_pi_turn(request.session_id, &stop)
                 .map_err(map_operation_error)?;
@@ -254,42 +246,179 @@ pub(super) fn map_operation_error(error: io::Error) -> (i64, &'static str) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+/// Results of `axo.remote.*` calls.
+#[derive(Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub(super) enum RemoteResult {
+    Session {
+        session: RemoteSessionSnapshot,
+    },
+    SessionClosed {
+        closed: bool,
+        session_id: SessionId,
+        replacement: Option<RemoteSessionSnapshot>,
+    },
+    ShellCreated {
+        host_id: String,
+        session_id: SessionId,
+        shell_id: ShellId,
+    },
+    ShellClosed {
+        closed: bool,
+        host_id: String,
+        session_id: SessionId,
+        shell_id: ShellId,
+    },
+    Saved {
+        saved: bool,
+    },
+    Workspaces {
+        workspaces: Vec<axo_protocol::RemoteWorkspace>,
+    },
+    InputAccepted {
+        accepted: bool,
+        sequence: u64,
+    },
+    ResizeAccepted {
+        accepted: bool,
+        rows: u32,
+        columns: u32,
+    },
+    PromptAccepted {
+        accepted: bool,
+    },
+    KeyAccepted {
+        accepted: bool,
+    },
+    /// Whether the turn the stop named was running, and is now stopping.
+    Stopped {
+        stopped: bool,
+    },
+    Commands {
+        commands: Vec<axo_protocol::PiCommandInfo>,
+    },
+    Models {
+        models: Vec<axo_protocol::PiModelInfo>,
+    },
+    Restarted {
+        restarted: bool,
+    },
+}
 
-    #[test]
-    fn every_remote_call_the_parity_table_promises_is_dispatched() {
-        use axo_protocol::parity::{PARITY, Remote};
-        let host: Arc<dyn RelayHost> = Arc::new(crate::link::testing::IdentityOnlyHost);
-        for parity in PARITY {
-            let Remote::Call(name) = parity.remote else {
-                continue;
-            };
-            // Empty params fail parsing, so no host method runs; "method not found" is the
-            // only answer that means the call is not wired.
-            let answer = dispatch_remote_call(name, &json!({}), &host, "host", "generation");
-            assert!(
-                matches!(answer, Err((-32602, _))),
-                "{name} is promised but not dispatched: {:?}",
-                answer.map(|_| ())
-            );
-        }
-    }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct KeyParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) key: axo_relay::PiKey,
+}
 
-    #[test]
-    fn planned_remote_calls_are_not_dispatched_yet() {
-        use axo_protocol::parity::{PARITY, Remote};
-        let host: Arc<dyn RelayHost> = Arc::new(crate::link::testing::IdentityOnlyHost);
-        for parity in PARITY {
-            if let Remote::Planned(name) = parity.remote {
-                let answer = dispatch_remote_call(name, &json!({}), &host, "host", "generation");
-                assert!(
-                    matches!(answer, Err((-32601, _))),
-                    "{name} is dispatched: move it to Remote::Call"
-                );
-            }
-        }
-    }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PromptParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) text: String,
+    #[serde(default)]
+    pub(super) command_id: Option<axo_relay::CommandId>,
+    #[serde(default)]
+    pub(super) attachments: axo_protocol::asset::Attachments,
+    /// When a working Pi takes it (RFD0033); a follow-up when absent.
+    #[serde(default)]
+    pub(super) delivery: axo_relay::ClientDelivery,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ModelSetParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    #[serde(default)]
+    pub(super) model: Option<axo_relay::ModelChoice>,
+    #[serde(default)]
+    pub(super) thinking_level: Option<axo_protocol::ThinkingLevel>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct StopParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    #[serde(default)]
+    pub(super) turn_id: Option<axo_relay::TurnId>,
+    #[serde(default)]
+    pub(super) seen: Option<axo_relay::TurnId>,
+    #[serde(default)]
+    pub(super) command_ids: Vec<axo_relay::CommandId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct HostRef {
+    pub(super) host_id: String,
+    pub(super) host_generation: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TargetParams {
+    pub(super) target: HostRef,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct SessionTargetParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RenameSessionParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct WorkspaceSessionTargetParams {
+    pub(super) target: HostRef,
+    pub(super) workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ShellTargetParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) shell_id: ShellId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct LayoutSetParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) layout: LayoutNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TerminalInputParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) shell_id: ShellId,
+    pub(super) sequence: u64,
+    pub(super) data: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TerminalResizeParams {
+    pub(super) target: HostRef,
+    pub(super) session_id: SessionId,
+    pub(super) shell_id: ShellId,
+    pub(super) rows: u32,
+    pub(super) columns: u32,
 }

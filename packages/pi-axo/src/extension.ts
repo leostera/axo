@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, resolve } from "node:path";
 import { AxoPiBridgeServer } from "./bridge-server.js";
@@ -134,9 +135,11 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
 
     // A client's prompt (RFD0024): taken at most once, with a receipt, queued in the log while Pi
     // works (RFD0033). Its files were read above, so one already gone is refused now.
-    if (command.action.kind === "send" && command.action.commandId !== undefined) {
+    // An interrupt goes the same way even without one: a stop moves Pi's own queue into its editor.
+    if (command.action.kind === "send" && (command.action.commandId !== undefined || command.action.delivery === "interrupt")) {
       const prompt = { text: command.action.text, attachments: command.action.attachments ?? [] };
-      return remote.prompt(command.action.commandId, prompt, command.action.delivery ?? "followUp") === "busy"
+      const commandId = command.action.commandId ?? randomUUID();
+      return remote.prompt(commandId, prompt, command.action.delivery ?? "followUp") === "busy"
         ? { accepted: false as const, reason: "busy" as const }
         : { accepted: true as const };
     }
@@ -151,11 +154,12 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       pi.sendUserMessage(content, AS_TYPED);
       return { accepted: true as const };
     }
-    if (command.action.delivery === undefined) {
+    const deliverAs = command.action.delivery;
+    if (deliverAs === undefined || deliverAs === "interrupt") {
       return { accepted: false as const, reason: "busy" as const };
     }
 
-    pi.sendUserMessage(content, { ...AS_TYPED, deliverAs: command.action.delivery });
+    pi.sendUserMessage(content, { ...AS_TYPED, deliverAs });
     return { accepted: true as const };
   };
 

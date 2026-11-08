@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axo_computer::form::{FieldKind, FieldReading, Form, FormError, pick_field};
-use axo_ipc::peer::Signer;
+use axo_ipc::peer::{Caller, Signer};
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::SessionId;
 use axo_protocol::elicitation::{
@@ -489,7 +489,7 @@ struct ComputerInput {
 }
 
 const AXOD_ONLY: Only = Only {
-    signer: Signer::ThisBinary,
+    caller: Caller::Signed(Signer::ThisBinary),
     code: -32003,
     message: "only axod's own tools ask for input",
 };

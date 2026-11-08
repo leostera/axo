@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { attachmentsIn, ChatTranscript } from "../src/chat/transcript.ts";
-import { levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
+import { conversationRows, levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
@@ -29,7 +29,7 @@ function receipt(cursor: number, commandId: string): ClientRecord {
   return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "custom", id: `e${cursor}`, parentId: null, timestamp: "2026-10-16T12:00:00.000Z", customType: "axo.command", data: { commandId } }) };
 }
 /** What the Session's Pi writes when it accepts a client's prompt it cannot take at once (RFD0033). */
-function queued(cursor: number, commandId: string, text: string, delivery: "followUp" | "steer" = "followUp", attachments: unknown[] = []): ClientRecord {
+function queued(cursor: number, commandId: string, text: string, delivery: "followUp" | "steer" | "interrupt" = "followUp", attachments: unknown[] = []): ClientRecord {
   return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "custom", id: `e${cursor}`, parentId: null, timestamp: "2026-10-16T12:00:00.000Z", customType: "axo.command.queued", data: { commandId, delivery, text, attachments } }) };
 }
 function other(cursor: number): ClientRecord {
@@ -935,7 +935,7 @@ test("a follow-up goes without a delivery, as before; a prompt to a waking agent
   await tick();
   workbench.setDraft("hello");
   account.failNext = Object.assign(new Error("Pi is still starting"), { code: -32008 });
-  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  assert.deepEqual(await workbench.send("followUp"), { kind: "sent" });
   assert.equal(workbench.draft(), "", "the words are not handed back");
   assert.equal(workbench.failure, null);
   assert.equal(workbench.chat(sid(1)).pending[0]?.state, "waking");
@@ -1058,6 +1058,132 @@ test("a stop that stopped nothing ends at once, so the next tap tries again", as
   await workbench.stop(sid(1));
   const stops = account.commands.filter(call => call.method === "axo.remote.session.stop").map(call => call.params);
   assert.deepEqual(stops.slice(-2).map(params => Object.keys(params).sort()), [["seen", "sessionId", "target", "turnId"], ["sessionId", "target", "turnId"]]);
+  assert.equal(workbench.failure, null);
+  workbench.dispose();
+});
+
+// MARK: - Where the person's messages show
+
+/** The conversation as the screen lists it: messages by their words, waiting ones marked. */
+function rowsOf(workbench: ChatWorkbench, sessionId: string): string[] {
+  const chat = workbench.chat(sessionId);
+  return conversationRows(chat.transcript?.messages ?? [], chat.waiting)
+    .map(row => row.kind === "message" ? `${row.message.role}: ${row.message.text}` : `waiting(${row.prompt.state}): ${row.prompt.text}`);
+}
+
+test("sent while idle: one copy, shown last until the log has it, then in its place before its reply", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "hi"), said(2, "assistant", "hello")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("fix it");
+  await workbench.send();
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: hi", "assistant: hello", "waiting(sent): fix it"]);
+  account.push(sid(1), [receipt(3, "pending-1"), said(4, "user", "fix it"), said(5, "assistant", "on it")]);
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: hi", "assistant: hello", "user: fix it", "assistant: on it"]);
+  workbench.dispose();
+});
+
+test("sent while a run streams: it stays after the reply it was sent under, not below every reply that follows", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "go")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
+  account.events.progress?.(sid(1), "message", { message: { role: "assistant", timestamp: 10, content: [{ type: "text", text: "step one" }] } });
+  workbench.setDraft("and the tests");
+  await workbench.send("followUp");
+  workbench.setDraft("use bun");
+  await workbench.send("steer");
+  // pi-axo writes them to the log before it accepts them, while the reply is still being written.
+  account.push(sid(1), [queued(2, "pending-1", "and the tests"), queued(3, "pending-2", "use bun", "steer")]);
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: go", "waiting(queued): and the tests", "waiting(queued): use bun"]);
+  // The reply they were sent under is recorded, and the run goes on: many more replies.
+  account.push(sid(1), [said(4, "assistant", "step one", { timestamp: 10 }), said(5, "assistant", "step two"), said(6, "assistant", "step three")]);
+  assert.deepEqual(rowsOf(workbench, sid(1)), [
+    "user: go", "assistant: step one", "waiting(queued): and the tests", "waiting(queued): use bun", "assistant: step two", "assistant: step three",
+  ], "never at the end, below replies they did not ask for");
+  const labels = workbench.chat(sid(1)).waiting.map(prompt => pendingLabel(prompt));
+  assert.deepEqual(labels, ["Queued · answered after the current reply", "Steering · read at the agent's next step"]);
+  // The steer joins the run at a turn's end; the follow-up starts the next run. Each shows once, before its replies.
+  account.push(sid(1), [receipt(7, "pending-2"), said(8, "user", "use bun"), said(9, "assistant", "using bun")]);
+  account.push(sid(1), [receipt(10, "pending-1"), said(11, "user", "and the tests"), said(12, "assistant", "tests pass")]);
+  assert.deepEqual(rowsOf(workbench, sid(1)), [
+    "user: go", "assistant: step one", "assistant: step two", "assistant: step three",
+    "user: use bun", "assistant: using bun", "user: and the tests", "assistant: tests pass",
+  ]);
+  workbench.dispose();
+});
+
+test("reloaded mid-run, a queued message shows from the log alone, once, in the same place", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "go"), queued(2, "c0ffee00-0000-4000-8000-000000000001", "and the tests"), said(3, "assistant", "step one"), said(4, "assistant", "step two")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: go", "assistant: step one", "waiting(queued): and the tests", "assistant: step two"]);
+  workbench.dispose();
+});
+
+test("records that come twice, as after a reconnect, show the message once", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "go")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("again");
+  await workbench.send();
+  const batch = [receipt(2, "pending-1"), said(3, "user", "again"), said(4, "assistant", "done")];
+  account.push(sid(1), batch);
+  account.events.records?.(sid(1), 1, batch);
+  await workbench.openChat(sid(1));
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: go", "user: again", "assistant: done"]);
+  workbench.dispose();
+});
+
+test("a command sent from here, which writes no user message, is not left waiting at the end", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "go"), said(2, "assistant", "done")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("/axo-share");
+  await workbench.send();
+  account.push(sid(1), [receipt(3, "pending-1")]);
+  account.push(sid(1), [said(4, "assistant", "Shared at https://axo.leostera.dev/s/abc")]);
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: go", "assistant: done", "assistant: Shared at https://axo.leostera.dev/s/abc"]);
+  workbench.dispose();
+});
+
+test("Send interrupts a working agent by default; Steer and Follow up are asked for", async () => {
+  const { workbench, account } = await workbenchWith();
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  for (const [text, delivery] of [["now", undefined], ["at its next step", "steer"], ["after", "followUp"]] as const) {
+    workbench.setDraft(text);
+    await (delivery ? workbench.send(delivery) : workbench.send());
+  }
+  const prompts = account.commands.filter(call => call.method === "axo.remote.session.prompt");
+  assert.deepEqual(prompts.map(call => [call.params.text, call.params.delivery]), [
+    ["now", "interrupt"], ["at its next step", "steer"], ["after", undefined],
+  ]);
+  // In the log while the reply stops: it says so.
+  account.push(sid(1), [queued(1, "pending-1", "now", "interrupt")]);
+  assert.equal(pendingLabel(workbench.chat(sid(1)).waiting[0]!), "Interrupting · answered next");
+  workbench.dispose();
+});
+
+test("a Mac from before interrupts gets the message as a follow-up, at once, with the same commandId", async () => {
+  const { workbench, account } = await workbenchWith();
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("now");
+  account.failNext = Object.assign(new Error("Invalid params"), { code: -32602 });
+  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  const prompts = account.commands.filter(call => call.method === "axo.remote.session.prompt");
+  assert.deepEqual(prompts.map(call => [call.params.commandId, call.params.delivery]), [["pending-1", "interrupt"], ["pending-1", undefined]]);
   assert.equal(workbench.failure, null);
   workbench.dispose();
 });

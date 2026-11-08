@@ -7,9 +7,10 @@ type ApiEvent =
   | { event: "sign_in"; client: "web" | "native"; outcome: "started" | "completed" | "refused" | "failed"; stage?: string }
   | { event: "connection_closed"; role: "client" | "daemon"; code: number }
   | { event: "relay_send_failed"; reason: "too_large" }
-  | { event: "host_sync"; sessions: number; unknown: number }
-  | { event: "session_append"; outcome: "committed" | "gap" | "conflict" | "epoch" | "invalid"; records: number }
-  | { event: "session_truncate"; outcome: "truncated" | "mismatch" }
+  /** `read`: the Sessions the index could not answer, each one SessionDO call (RFD0032). */
+  | { event: "host_sync"; sessions: number; read: number; unknown: number }
+  | { event: "session_append"; outcome: "committed" | "gap" | "conflict" | "epoch" | "invalid" | "fenced"; records: number }
+  | { event: "session_truncate"; outcome: "truncated" | "mismatch" | "fenced" }
   | { event: "notice_batch"; subscribers: number; notices: number }
   | { event: "client_open"; records: number }
   | { event: "client_stalled" }

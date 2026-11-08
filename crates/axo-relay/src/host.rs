@@ -3,9 +3,7 @@
 use std::io;
 use std::time::Duration;
 
-use axo_protocol::{
-    Event, LayoutNode, RelayStatus, RemoteSessionSnapshot, RemoteWorkspace, SessionId, ShellId,
-};
+use axo_protocol::{Event, RelayStatus, SessionId};
 
 use crate::sync::{StoredSyncState, SyncSession};
 
@@ -103,13 +101,15 @@ pub enum PiKey {
     Enter,
 }
 
-/// When a remote person's prompt reaches a working Pi (RFD0033): once the turn ends, or within it.
+/// When a remote person's prompt reaches a working Pi (RFD0033): once the run ends, within it,
+/// or at once, stopping it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ClientDelivery {
     #[default]
     FollowUp,
     Steer,
+    Interrupt,
 }
 
 /// A model a remote person picks for a Session, as Pi's registry names it (RFD0033).
@@ -231,82 +231,10 @@ pub trait RelayHost: Send + Sync {
     /// callers (`axod mcp`) can fetch them; `None` once it disconnects.
     fn set_asset_source(&self, _source: Option<crate::assets::AssetSource>) {}
 
-    /// The Workspaces a Session can be created in.
-    fn remote_workspaces(&self) -> io::Result<Vec<RemoteWorkspace>>;
-    fn remote_create_session(&self, updated_at: &str) -> io::Result<RemoteSessionSnapshot>;
-    fn remote_create_workspace_session(
-        &self,
-        workspace_id: &str,
-        updated_at: &str,
-    ) -> io::Result<RemoteSessionSnapshot>;
-    /// Returns the replacement session, if closing the last one created it.
-    fn remote_close_session(
-        &self,
-        session_id: SessionId,
-        updated_at: &str,
-    ) -> io::Result<Option<RemoteSessionSnapshot>>;
-    /// Names the Session by hand (what `axo.session.rename` does locally).
-    fn remote_rename_session(&self, session_id: SessionId, name: &str) -> io::Result<()>;
-    fn remote_create_shell(&self, session_id: SessionId) -> io::Result<ShellId>;
-    fn remote_close_shell(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<()>;
-    /// Fails with `InvalidInput` if the layout is malformed or does not match the open panes.
-    fn remote_set_layout(&self, session_id: SessionId, layout: LayoutNode) -> io::Result<()>;
-    fn remote_terminal_input(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        sequence: u64,
-        data: &str,
-    ) -> io::Result<()>;
-    /// Sends `text` to the Session's Pi as a prompt, as if typed and submitted in its pane.
-    /// Fails with `InvalidInput` for empty or oversized text, and `NotFound` if Pi is not running.
-    /// With a `command_id`, the prompt is taken at most once and written after a receipt
-    /// (RFD0024).
-    /// `attachments` are already fetched and checked (RFD0030); with any, `text` may be empty.
-    /// It returns once Pi has written the prompt to its log (RFD0033), so it may wait for a Pi
-    /// that is starting: call it off the relay's socket loop.
-    fn remote_prompt_pi(
-        &self,
-        session_id: SessionId,
-        text: &str,
-        command_id: Option<&CommandId>,
-        attachments: &[axo_protocol::asset::FetchedAttachment],
-        delivery: ClientDelivery,
-    ) -> io::Result<()>;
-    /// The slash commands the Session's Pi runs when a client sends them, as it last said.
-    /// Fails with `NotFound` for a Session that is not open.
-    fn remote_pi_commands(
-        &self,
-        session_id: SessionId,
-    ) -> io::Result<Vec<axo_protocol::PiCommandInfo>>;
-    /// The models the Session's Pi could switch to, as it last said.
-    fn remote_pi_models(&self, session_id: SessionId)
-    -> io::Result<Vec<axo_protocol::PiModelInfo>>;
-    /// Switches the Session's model, thinking level, or both. Fails with `InvalidInput` for a
-    /// model Pi doesn't have, `PermissionDenied` for one without credentials, and `NotFound` if
-    /// Pi is not running.
-    fn remote_set_pi_model(
-        &self,
-        session_id: SessionId,
-        model: Option<&ModelChoice>,
-        thinking_level: Option<axo_protocol::ThinkingLevel>,
-    ) -> io::Result<()>;
-    /// Restarts the Session's Pi, running, stuck or gone, keeping its conversation; a turn it is
-    /// running stops. Returns once the new Pi is starting; may take seconds, so call it off the
-    /// relay's socket loop.
-    fn remote_restart_pi(&self, session_id: SessionId) -> io::Result<()>;
-    /// Stops the Session's running run if anything in `stop` belongs to it; says whether it did.
-    /// Fails with `NotFound` if Pi is not running.
-    fn remote_stop_pi_turn(&self, session_id: SessionId, stop: &StopTarget) -> io::Result<bool>;
-    /// Presses `key` in the Session's Pi pane. Fails with `NotFound` if Pi is not running.
-    fn remote_press_pi_key(&self, session_id: SessionId, key: PiKey) -> io::Result<()>;
-    fn remote_terminal_resize(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        rows: u32,
-        columns: u32,
-    ) -> io::Result<()>;
+    /// Answers one of the account's calls (`axo.remote.*`), a whole JSON-RPC request, as the
+    /// account would be answered: the response to send back, or `None` for a notification.
+    /// The relay only carries it; what the methods do is the host's.
+    fn answer_remote(&self, request: serde_json::Value) -> Option<serde_json::Value>;
 }
 
 #[cfg(test)]

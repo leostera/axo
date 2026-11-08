@@ -6,7 +6,7 @@ import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from 
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 import { ModelPicker, SendButton, SlashMenu } from "./composer-controls.tsx";
-import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
+import { conversationRows, matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
 import type { Delivery } from "./transcript.ts";
 
 /** How close to the bottom still counts as following the conversation. */
@@ -150,7 +150,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   };
 
-  const send = async (delivery: Delivery = "followUp") => {
+  const send = async (delivery: Delivery = "interrupt") => {
     following.current = true;
     await workbench.send(delivery);
   };
@@ -208,14 +208,14 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             </div>
           ) : null}
 
-          {shown.map(({ message, live, enter, reveal }) => (
-            <MessageView key={message.key} message={message} working={Boolean(transcript?.working)} live={live} enter={enter} reveal={reveal} />
-          ))}
-          {session && chat?.waiting.map(prompt => (
+          {conversationRows(shown, session ? chat?.waiting ?? [] : []).map(row => row.kind === "message" ? (
+            <MessageView key={row.message.message.key} message={row.message.message} working={Boolean(transcript?.working)}
+              live={row.message.live} enter={row.message.enter} reveal={row.message.reveal} />
+          ) : (
             <PendingView
-              key={prompt.id}
-              prompt={prompt}
-              onDismiss={() => workbench.dismissPending(session.sessionId, prompt.id)}
+              key={`pending:${row.prompt.id}`}
+              prompt={row.prompt}
+              onDismiss={() => session && workbench.dismissPending(session.sessionId, row.prompt.id)}
             />
           ))}
           {session && workbench.questions(session.sessionId).map(question => (
@@ -343,7 +343,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     if (!voice || !transcript) return;
     voice.consume(transcript);
     workbench.setDraft(appendTranscript(workbench.draft(), transcript.text));
-    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("followUp");
+    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("interrupt");
     else if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
   }, [voice?.version]);
 
@@ -384,8 +384,8 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !touchTyping()) {
       event.preventDefault();
-      // ⌘↵ steers a working agent; ↵ follows up.
-      if (ready) onSend(event.metaKey || event.ctrlKey ? "steer" : "followUp");
+      // ↵ interrupts a working agent; ⌘↵ steers it, ⌥↵ waits for its reply.
+      if (ready) onSend(event.metaKey || event.ctrlKey ? "steer" : event.altKey ? "followUp" : "interrupt");
     } else if (event.key === "Escape" && !hasDraft) {
       event.preventDefault();
       onEscape();
@@ -425,7 +425,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
       {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
         <form className={dragging ? "composer dragging" : "composer"} onSubmit={event => {
           event.preventDefault();
-          if (ready) onSend("followUp");
+          if (ready) onSend("interrupt");
         }}
         onDragOver={event => {
           if (!canSend || !event.dataTransfer.types.includes("Files")) return;

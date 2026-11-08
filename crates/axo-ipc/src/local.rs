@@ -127,7 +127,7 @@ async fn first<A: Future, B: Future>(left: A, right: B) -> First<A::Output, B::O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peer::Signer;
+    use crate::peer::{Caller, Signer};
     use crate::{Only, TypedMethods};
     use std::sync::mpsc;
     use std::time::Instant;
@@ -154,7 +154,7 @@ mod tests {
         });
         handler.add_typed_only(
             Only {
-                signer: Signer::ThisBinary,
+                caller: Caller::Signed(Signer::ThisBinary),
                 code: -32003,
                 message: "axod only",
             },

@@ -58,6 +58,116 @@ final class SessionControlsTests: XCTestCase {
     guard case .queued = rows[3] else { return XCTFail("the log's row, not the pending one: \(rows[3])") }
   }
 
+  // MARK: - Where a queued prompt waits
+
+  /// What a run that took a message while streaming leaves in the log: the message is queued
+  /// while reply 2 is written, and the run goes on to reply 3 before Pi takes it.
+  private func run(_ commandId: String, delivery: String) -> [ClientRecord] {
+    [
+      said(1, "go"), said(2, "step one", role: "assistant"),
+      queued(3, commandId, "and the docs", delivery: delivery),
+      said(4, "step two", role: "assistant"), said(5, "step three", role: "assistant"),
+    ]
+  }
+
+  private func texts(_ rows: [ConversationRow]) -> [String] {
+    rows.map { row in
+      switch row {
+      case .message(let shown): shown.message.text
+      case .pending(let prompt): "pending: \(prompt.text)"
+      case .queued(let prompt): "queued: \(prompt.text)"
+      }
+    }
+  }
+
+  private func rows(_ transcript: ChatTranscript, pending: [HostWorkbenchModel.PendingPrompt] = []) -> [ConversationRow] {
+    ConversationRow.rows(shown: shown(transcript), pending: pending, queued: transcript.queued)
+  }
+
+  func testAMessageSentWhileARunStreamsStaysAfterTheReplyItWasSentUnder() {
+    for delivery in ["followUp", "steer"] {
+      let records = run("c-1", delivery: delivery)
+      var transcript = ChatTranscript(records: Array(records.prefix(3)))
+      transcript.progress(slot: "message", snapshot: jsonValue(#"{"message":{"role":"assistant","timestamp":9,"content":"step tw"}}"#))
+      XCTAssertEqual(texts(rows(transcript)), ["go", "step one", "step tw", "queued: and the docs"], "\(delivery): last until its reply is recorded")
+      transcript.append(Array(records.dropFirst(3)))
+      XCTAssertEqual(
+        texts(rows(transcript)), ["go", "step one", "step two", "queued: and the docs", "step three"],
+        "\(delivery): the run's later replies come below it")
+
+      // Pi takes it: its user message shows at its place in the log, before its replies, once.
+      transcript.append([receipt(6, "c-1"), said(7, "and the docs"), said(8, "docs done", role: "assistant")])
+      XCTAssertEqual(texts(rows(transcript)), ["go", "step one", "step two", "step three", "and the docs", "docs done"])
+    }
+  }
+
+  func testAfterARelaunchMidRunTheQueuedRowIsInTheSamePlaceOnce() {
+    let records = run("c-1", delivery: "followUp")
+    var live = ChatTranscript(records: Array(records.prefix(3)))
+    live.append(Array(records.dropFirst(3)))
+    let relaunched = ChatTranscript(records: records)
+    XCTAssertEqual(texts(rows(relaunched)), ["go", "step one", "step two", "queued: and the docs", "step three"])
+    XCTAssertEqual(rows(relaunched).map(\.id), rows(live).map(\.id))
+    XCTAssertEqual(rows(relaunched).filter { $0.id == "prompt:c-1" }.count, 1)
+  }
+
+  func testRecordsThatComeTwiceLeaveOneCopy() {
+    let records = run("c-1", delivery: "followUp")
+    var transcript = ChatTranscript(records: records)
+    transcript.append(records)
+    transcript.append([queued(6, "c-1", "and the docs", delivery: "followUp")])
+    XCTAssertEqual(texts(rows(transcript)), ["go", "step one", "step two", "queued: and the docs", "step three"])
+  }
+
+  func testAnOlderPageWhoseQueuedPromptHasNoReplyOnItGoesAfterTheFirstReplyHeld() {
+    let records = run("c-1", delivery: "followUp")
+    let older = ChatTranscript(records: Array(records.prefix(3)))
+    var newer = ChatTranscript(records: Array(records.dropFirst(3)))
+    XCTAssertEqual(texts(rows(newer)), ["step two", "step three"])
+    newer.prepend(older: older)
+    XCTAssertEqual(texts(rows(newer)), ["go", "step one", "step two", "queued: and the docs", "step three"])
+
+    // And one whose reply is on the page moves down with what is held.
+    let page = ChatTranscript(records: Array(records.prefix(4)))
+    var rest = ChatTranscript(records: [records[4]])
+    rest.prepend(older: page)
+    XCTAssertEqual(texts(rows(rest)), ["go", "step one", "step two", "queued: and the docs", "step three"])
+  }
+
+  func testAReceiptThatRanACommandLeavesNothingWaiting() {
+    var transcript = ChatTranscript(records: [said(1, "go"), queued(2, "c-9", "/axo-share", delivery: "followUp")])
+    transcript.append([receipt(3, "c-9"), said(4, "Shared at https://axo.example/s/1", role: "assistant")])
+    XCTAssertTrue(transcript.delivered.contains("c-9"), "a command writes no user message")
+    XCTAssertEqual(transcript.queued, [])
+    // Another receipt right after one is as good: the first ran as a command.
+    transcript.append([receipt(5, "c-10"), receipt(6, "c-11"), said(7, "next")])
+    XCTAssertTrue(transcript.delivered.isSuperset(of: ["c-10", "c-11"]))
+  }
+
+  func testThePhonesOwnMessageTakesItsQueuedEntrysPlaceAndACommandRetiresIt() async throws {
+    let world = HostWorld()
+    let model = world.model
+    _ = try await world.open(1, answering: Wire.opened([said(1, "go")]))
+    world.model.update([RemoteSession(ClientSession(
+      hostId: world.host.hostId, sessionId: 1, metadata: SessionMetadata(name: "One", createdAt: 1), status: .working))])
+    for text in ["and the docs", "/axo-share"] {
+      let sending = Task { await model.sendPrompt(text) }
+      let channel = try await world.channel()
+      let request = try await channel.nextRequest("axo.remote.session.prompt")
+      let commandId = try XCTUnwrap(request.params["commandId"] as? String)
+      let next = (model.chats[1]?.lastCursor ?? 0) + 1
+      model.receive(records: [queued(next, commandId, text, delivery: "followUp")], epoch: 1, cursor: next, in: 1)
+      channel.reply(to: request.id, result: #"{"accepted":true}"#)
+      _ = await sending.value
+      XCTAssertNil(model.pendingPrompts[1], "the log's row from here on, under the same key")
+      if text == "/axo-share" {
+        model.receive(
+          records: [receipt(next + 1, commandId), said(next + 2, "Shared", role: "assistant")], epoch: 1, cursor: next + 2, in: 1)
+        XCTAssertFalse(model.chats[1]?.queued.contains { $0.commandId == commandId } ?? true, "ran as a command")
+      }
+    }
+  }
+
   // MARK: - Follow-up or steer
 
   func testASteerSaysSoAndAFollowUpSaysNothingAndTheQueuedRecordRetiresItsPendingRow() async throws {

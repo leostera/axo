@@ -473,7 +473,7 @@ export const StudioAxod = defineActor({
     remote: {
       on: Remote,
       description: "Passes a prompt or a stop to the Session's pi-axo over its bridge.",
-      sources: ["crates/axo-relay/src/relay/dispatch.rs#dispatch_remote_call", "crates/axo-server/src/session/prompts.rs#SessionManager::prompt_pi"],
+      sources: ["crates/axo-relay/src/relay/forward.rs#answer", "crates/axo-server/src/session/remote.rs#prompt", "crates/axo-server/src/session/prompts.rs#SessionManager::prompt_pi"],
       sends: [Bridge],
       run(state, m, ctx) {
         if (!state.online || m.studio !== state.studio) return;

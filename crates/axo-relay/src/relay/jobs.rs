@@ -6,9 +6,7 @@ use std::sync::atomic::Ordering;
 
 use serde_json::Value;
 
-use super::dispatch::map_operation_error;
 use super::session::RelaySessionContext;
-use super::wire::PromptParams;
 
 /// Commands running at once on one Mac; more are refused until one ends.
 const MAX_BASH_JOBS: usize = 16;
@@ -83,93 +81,20 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
     });
 }
 
-/// Prompts on their way to Pi on one Mac at once; more are refused until one ends.
-const MAX_PROMPTS: usize = 16;
-static PROMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Fetches a prompt's attachments, all of them or none (RFD0030), then gives it to Pi; the reply
-/// goes back on this socket once Pi has written it to its log (RFD0033), or with why it was
-/// refused.
-pub(super) fn start_prompt(id: Value, params: &Value, context: &RelaySessionContext) {
-    let request = match serde_json::from_value::<PromptParams>(params.clone()) {
-        Ok(request) => request,
-        Err(_) => {
-            return context
-                .replies
-                .reply(&id, Err((-32602, "Invalid params".into())));
-        }
-    };
-    if request.target.host_id != context.host_id
-        || request.target.host_generation != context.host_generation
-    {
-        return context
-            .replies
-            .reply(&id, Err((-32002, "Stale host".into())));
-    }
-    if request.text.len() > 16_000 {
-        return context
-            .replies
-            .reply(&id, Err((-32602, "Invalid params".into())));
-    }
-    if request.text.is_empty() && request.attachments.is_empty() {
-        return context
-            .replies
-            .reply(&id, Err((-32602, "Invalid params".into())));
-    }
-    let source = context.assets.clone();
-    if source.is_none() && !request.attachments.is_empty() {
-        return context.replies.reply(
-            &id,
-            Err((-32003, "this Mac can't fetch attachments".into())),
-        );
-    }
-    if PROMPTS.fetch_add(1, Ordering::SeqCst) >= MAX_PROMPTS {
-        PROMPTS.fetch_sub(1, Ordering::SeqCst);
-        return context.replies.reply(
-            &id,
-            Err((
-                -32006,
-                "too many prompts are on their way on this Mac".into(),
-            )),
-        );
-    }
+/// Gives a prompt to the host on a task of its own: it is answered once its attachments are
+/// fetched and Pi has it in its log, which may take seconds, so it must not hold up the calls
+/// answered in order. The reply goes back on this socket only.
+pub(super) fn start_prompt(request: Value, context: &RelaySessionContext) {
     let replies = context.replies.clone();
     let sessions = Arc::clone(&context.sessions);
     tokio::task::spawn_blocking(move || {
-        let fetched = match &source {
-            Some(source) if !request.attachments.is_empty() => {
-                crate::assets::fetch_all(source, &request.attachments)
+        let reply = super::forward::answer(&request, |request| sessions.answer_remote(request));
+        if let Some(reply) = reply {
+            match serde_json::to_string(&reply) {
+                Ok(text) => replies.send(text),
+                Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),
             }
-            _ => Ok(Vec::new()),
-        };
-        let outcome = match fetched {
-            Err(error) => Err((
-                -32010,
-                match error {
-                    crate::assets::FetchError::NotFound => {
-                        "an attachment is no longer in the account"
-                    }
-                    crate::assets::FetchError::Mismatch => "an attachment did not match its name",
-                    crate::assets::FetchError::Failed(_) => "an attachment could not be fetched",
-                }
-                .to_owned(),
-            )),
-            Ok(fetched) => sessions
-                .remote_prompt_pi(
-                    request.session_id,
-                    &request.text,
-                    request.command_id.as_ref(),
-                    &fetched,
-                    request.delivery,
-                )
-                .map(|()| serde_json::json!({ "accepted": true }))
-                .map_err(|error| {
-                    let (code, message) = map_operation_error(error);
-                    (code, message.to_owned())
-                }),
-        };
-        PROMPTS.fetch_sub(1, Ordering::SeqCst);
-        replies.reply(&id, outcome);
+        }
     });
 }
 

@@ -166,6 +166,11 @@ export interface WaitingPrompt {
   readonly state: PendingState;
   /** Sent from this tab: it can be taken off the screen once its fate is unknown. */
   readonly mine: boolean;
+  /**
+   * How many of the conversation's messages come before it: its place in the log once the log
+   * holds it as queued. Without one, it is the newest thing in the chat and goes last.
+   */
+  readonly at?: number;
 }
 
 /** A new model, thinking level, or both, for a Session's Pi. */
@@ -223,16 +228,21 @@ export class Chat {
    */
   get waiting(): WaitingPrompt[] {
     const queued = this.transcript?.queued ?? [];
-    const inLog = new Set(queued.map(prompt => prompt.commandId));
+    const inLog = new Map(queued.map(prompt => [prompt.commandId, prompt]));
     const mine = new Set(this.pending.map(prompt => prompt.id));
     return [
-      ...this.pending.map(prompt => ({
-        id: prompt.id, text: prompt.text, files: prompt.attachments.map(file => file.name), delivery: prompt.delivery,
-        state: prompt.state === "sent" && inLog.has(prompt.id) ? "queued" as const : prompt.state,
-        mine: true,
-      })),
+      ...this.pending.map(prompt => {
+        const logged = inLog.get(prompt.id);
+        return {
+          id: prompt.id, text: prompt.text, files: prompt.attachments.map(file => file.name), delivery: prompt.delivery,
+          state: prompt.state === "sent" && logged ? "queued" as const : prompt.state,
+          mine: true,
+          ...(logged?.at === undefined ? {} : { at: logged.at }),
+        };
+      }),
       ...queued.filter(prompt => !mine.has(prompt.commandId)).map(prompt => ({
         id: prompt.commandId, text: prompt.text, files: prompt.files, delivery: prompt.delivery, state: "queued" as const, mine: false,
+        ...(prompt.at === undefined ? {} : { at: prompt.at }),
       })),
     ];
   }
@@ -922,7 +932,7 @@ export class ChatWorkbench {
    * Sends what is typed. On a new chat the first message brings the chat into being: in the
    * Workspace chosen for it, or in the Mac's Home Workspace.
    */
-  async send(delivery: Delivery = "followUp"): Promise<SendOutcome> {
+  async send(delivery: Delivery = "interrupt"): Promise<SendOutcome> {
     const selection = this.selection;
     if (this.isSending || !selection || !this.canSendDraft) return { kind: "failed" };
     if (selection.kind === "chat") return this.sending(() => this.prompt(selection, delivery));
@@ -1009,7 +1019,7 @@ export class ChatWorkbench {
    * in the log; one whose fate is unknown is sent again with the same id, which the Mac takes at
    * most once.
    */
-  private async prompt(selection: Selection & { kind: "chat" }, delivery: Delivery = "followUp"): Promise<SendOutcome> {
+  private async prompt(selection: Selection & { kind: "chat" }, delivery: Delivery = "interrupt"): Promise<SendOutcome> {
     const host = this.openHost;
     const text = this.draft(selection).trim();
     const files = this.attachments(selection);
@@ -1035,10 +1045,17 @@ export class ChatWorkbench {
   private async deliver(host: Host, sessionId: string, pending: PendingPrompt, attempt = 0): Promise<SendOutcome> {
     let outcome: SendOutcome;
     try {
-      await this.connection!.command("axo.remote.session.prompt", {
+      const params = {
         target: this.reference(host), sessionId, text: pending.text, commandId: pending.id,
         ...(pending.attachments.length ? { attachments: [...pending.attachments] } : {}),
-        ...(pending.delivery === "steer" ? { delivery: "steer" as const } : {}),
+      };
+      // A follow-up goes without a delivery, as Macs before RFD0033 take it.
+      await this.connection!.command("axo.remote.session.prompt", {
+        ...params, ...(pending.delivery === "followUp" ? {} : { delivery: pending.delivery }),
+      }).catch(error => {
+        // A Mac from before interrupts refuses one before it reaches Pi: it goes as a follow-up.
+        if (pending.delivery !== "interrupt" || (error as { code?: unknown }).code !== -32602) throw error;
+        return this.connection!.command("axo.remote.session.prompt", params);
       });
       this.failure = null;
       outcome = { kind: "sent" };

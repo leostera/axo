@@ -39,6 +39,7 @@ mod pi_recovery;
 mod prompts;
 mod questions;
 mod readiness;
+mod remote;
 mod settings;
 mod spawn;
 mod stop_notice;
@@ -53,6 +54,7 @@ mod workspaces;
 
 use self::events::{EventBus, LocalSubscription};
 pub(crate) use self::handlers::RelayHostAdapter;
+pub(crate) use self::remote::Remote;
 use self::lifecycle::IdlePis;
 use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
 use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};

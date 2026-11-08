@@ -221,7 +221,7 @@ pub fn serve_ipc(
     session::set_agent_socket(&socket_path.0);
     let sessions_directory = sessions_directory_for(server_directory);
     let sessions = session::SessionManager::open(server_directory, &sessions_directory)?;
-    let host = Arc::new(session::RelayHostAdapter(Arc::clone(&sessions)));
+    let host = Arc::new(session::RelayHostAdapter::new(Arc::clone(&sessions)));
     let credentials = remote_access.credential_storage.open(server_directory);
     sessions.keep_input_key_in(Arc::clone(&credentials));
     sessions.reap_on_child_exit(runtime.handle())?;
@@ -259,7 +259,12 @@ pub fn serve_ipc(
         host,
         credentials,
     });
+    let host_for_calls = relay.as_ref().map(|relay| Arc::clone(&relay.host));
     let handler = rpc_handler(Arc::clone(&sessions), daemon_version, relay);
+    // The account's calls are answered by the same methods, as the relay's caller.
+    if let Some(host) = host_for_calls {
+        host.answer_with(handler.clone());
+    }
     let listener = std::os::unix::net::UnixListener::bind(&socket_path.0)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
     let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
@@ -343,7 +348,8 @@ fn rpc_handler(
     for extension in [
         &daemon as &dyn Extension,
         &Relay(relay),
-        &Sessions(sessions),
+        &Sessions(Arc::clone(&sessions)),
+        &session::Remote::new(sessions),
         &apps,
         &assets,
         &questions,

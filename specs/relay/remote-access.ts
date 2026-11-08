@@ -992,7 +992,7 @@ export const Axod = defineActor({
     forward: {
       on: Forward,
       description: "axod runs the command and answers over the same socket.",
-      sources: ["crates/axo-relay/src/relay/dispatch.rs#remote_request_reply", "crates/axo-relay/src/relay/dispatch.rs#dispatch_remote_call"],
+      sources: ["crates/axo-relay/src/relay/forward.rs#answer", "crates/axo-server/src/session/handlers.rs#RelayHostAdapter::answer_remote", "crates/axo-server/src/session/remote.rs#Remote::register"],
       sends: [CallDone],
       run(state, m, ctx) {
         if (state.conn !== "connected" || !state.connId || !state.link.account) return;

@@ -317,3 +317,36 @@ test("an extension command runs without a turn and does not hold up the prompts 
   assert.deepEqual(pi.asked, ["and then this"]);
   assert.equal(remote.heldCount, 0);
 });
+
+test("an interrupt stops the run, is in the log first, and starts the next run ahead of follow-ups waiting", () => {
+  const pi = fakePi();
+  const remote = new RemoteCommands(pi);
+  send(remote, first, "one");
+  runStarts(pi, remote);
+  assert.equal(send(remote, second, "later"), "held");
+  assert.equal(pi.aborts, 0, "a follow-up waits");
+  assert.equal(send(remote, third, "stop, do this", "interrupt"), "held");
+  assert.equal(pi.aborts, 1, "an interrupt stops the run");
+  assert.deepEqual(written(pi).slice(-1), [`queued ${third} interrupt`], "in the log before it is accepted");
+  runEnds(pi, remote);
+  runStarts(pi, remote);
+  assert.deepEqual(written(pi).slice(-2), [`receipt ${third}`, "user stop, do this"], "it goes first");
+  runEnds(pi, remote);
+  runStarts(pi, remote);
+  assert.deepEqual(written(pi).slice(-2), [`receipt ${second}`, "user later"]);
+});
+
+test("an interrupt to an idle Pi is just the next turn, and one restored from the log goes as it was sent", () => {
+  const pi = fakePi();
+  const remote = new RemoteCommands(pi);
+  assert.equal(send(remote, first, "go", "interrupt"), "taken");
+  assert.equal(pi.aborts, 0);
+  runStarts(pi, remote);
+  assert.equal(send(remote, second, "now this", "interrupt"), "held");
+  // Pi exits before the stop lands; the next Pi delivers it.
+  const next = fakePi(pi.log);
+  const restarted = new RemoteCommands(next);
+  restarted.restore();
+  restarted.resume();
+  assert.deepEqual(next.asked, ["now this"]);
+});

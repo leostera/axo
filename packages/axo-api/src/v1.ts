@@ -205,7 +205,7 @@ export const hostV1Methods = {
     commandId: commandIdSchema.optional(),
     attachments: attachmentsSchema.optional(),
     // When a working Pi takes it; it is in the Session's log before it is accepted (RFD0033).
-    delivery: z.enum(["followUp", "steer"]).optional(),
+    delivery: z.enum(["followUp", "steer", "interrupt"]).optional(),
   }).strict().refine((prompt) => prompt.text.length > 0 || (prompt.attachments?.length ?? 0) > 0, "a prompt has text or attachments"),
   "axo.remote.session.key": sessionTargetSchema.extend({ key: z.enum(["escape", "enter"]) }).strict(),
   // Stops the turn the client showed running, named by one of its user records, and no other.

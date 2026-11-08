@@ -2,6 +2,7 @@
 //! pi/3 is the relay's existing conversation interchange format. These files are
 //! projections of completed Codex messages, never a second agent or source of truth.
 use super::*;
+mod remote;
 use axo_protocol::{
     Event, LayoutNode, RemoteSessionSnapshot, RemoteWorkspace, SessionRecord, ShellId,
 };
@@ -361,6 +362,12 @@ impl RelayHost for Host {
     fn unsubscribe_remote_events(&self, id: &str) -> io::Result<()> {
         self.backend()?.unsubscribe(id)
     }
+    fn answer_remote(&self, request: Value) -> Option<Value> {
+        remote::answer(self, request)
+    }
+}
+
+impl Host {
     fn remote_workspaces(&self) -> io::Result<Vec<RemoteWorkspace>> {
         let b = self.backend()?;
         Ok(

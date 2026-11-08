@@ -11,12 +11,17 @@ import {
   type AppendParams,
   type ClientRecord,
 } from "@axo/protocol";
+import type { EntryRecord, TranscriptHeader } from "@leostera/atxf";
+import { ATXF_CONVERTER, AtxfTranslator, storedForm, withNative } from "./session-atxf";
 
 /**
  * One Session's transcript (RFD0018, SessionDO): the lines of its Pi session file as hash-linked
  * records, in the order the host wrote them, with the epoch and the cuts that truncation made.
  * It serves reads and keeps no subscriber state. Named by (account, host, Session) and checks
  * that binding on every call.
+ *
+ * Beside each line it keeps the line's ATXF record (RFD0035), translated in cursor order after the
+ * line commits. Translating only adds: it never changes a line, a hash, the chain or a cut.
  */
 
 export type SessionBinding = { accountId: string; hostId: string; sessionId: string };
@@ -27,13 +32,22 @@ export function sessionDOName(accountId: string, hostId: string, sessionId: stri
 
 export type SessionHead = { epoch: number; count: number; chain: string; heads: string[] };
 
-export type StoreAppendResult =
+/**
+ * Every write's answer says what this object then holds, and its fence (RFD0032, Host sync from
+ * the index): a HostDO trusts its index for a Session only after an answer that carries one.
+ */
+export type StoreAppendResult = (
   | { outcome: "committed"; epoch: number; count: number; chain: string; added: number; cleared: string[] }
-  | { outcome: "gap" | "conflict" | "epoch" | "invalid"; epoch: number | null; count: number; chain: string | null };
+  | { outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"; epoch: number | null; count: number; chain: string | null }
+) & { fence: number };
 
-export type StoreTruncateResult =
+export type StoreTruncateResult = (
   | { outcome: "truncated"; epoch: number; count: number; chain: string }
-  | { outcome: "mismatch" };
+  | { outcome: "mismatch" | "fenced"; epoch: number | null; count: number; chain: string | null }
+) & { fence: number };
+
+/** What a handshake reads: the head, and the fence it raised. */
+export type SyncHead = { head: SessionHead | null; fence: number };
 
 /** What a reader asks for: records after a cursor, before one, or the last few. */
 export type ReadRequest = {
@@ -51,13 +65,33 @@ export type ReadResult =
   | { kind: "reset"; epoch: number; keep: number };
 
 type Transcript = { header: string; header_hash: string; epoch: number };
-type RecordRow = { cursor: number; id: string | null; hash: string; chain: string; line: string | null };
+type Translation = { atxf_through: number; atxf_error: string | null };
+
+/** A Session's ATXF so far (RFD0035): the header, and records `from` on with `native` restored. */
+export type AtxfRead = {
+  epoch: number | null;
+  count: number;
+  through: number;
+  converter: string | null;
+  error: string | null;
+  header: TranscriptHeader | null;
+  records: EntryRecord[];
+};
+type RecordRow = { cursor: number; id: string | null; hash: string; chain: string; format: string; line: string | null };
 
 /** SQLite holds at most 2 MB in one value; longer lines are kept in parts of this many characters. */
 const PART_CHARS = 500_000;
 const encoder = new TextEncoder();
+/** At most this many records, or about this many bytes of lines, are translated in one alarm. */
+const TRANSLATE_RECORDS = 2048;
+const TRANSLATE_BYTES = 16 * 1_048_576;
+/** Lines read back per query when rebuilding the stream. */
+const REPLAY_PAGE = 256;
 
 export class AxoSessionDO extends DurableObject<Env> {
+  /** The stream that translated records 1..`through` of `epoch`, while this object is in memory. */
+  private translator: { epoch: number; through: number; read: AtxfTranslator } | undefined;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const sql = ctx.storage.sql;
@@ -78,6 +112,27 @@ export class AxoSessionDO extends DurableObject<Env> {
     sql.exec(`CREATE TABLE IF NOT EXISTS record_parts (
       cursor INTEGER NOT NULL, idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (cursor, idx))`);
     sql.exec("CREATE TABLE IF NOT EXISTS cuts (epoch INTEGER PRIMARY KEY, keep INTEGER NOT NULL)");
+    // RFD0035: added columns only, with defaults, so no stored row is rewritten.
+    addColumns(sql, "records", { format: "TEXT NOT NULL DEFAULT 'pi/3'", atxf_hash: "TEXT", atxf: "TEXT" });
+    addColumns(sql, "transcript", { atxf_header: "TEXT", atxf_through: "INTEGER NOT NULL DEFAULT 0", atxf_converter: "TEXT", atxf_error: "TEXT" });
+    sql.exec(`CREATE TABLE IF NOT EXISTS atxf_parts (
+      cursor INTEGER NOT NULL, idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (cursor, idx))`);
+    // RFD0032: the highest fence a HostDO's head read carried; older writes are refused.
+    sql.exec("CREATE TABLE IF NOT EXISTS write_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
+  }
+
+  /**
+   * The head, for a HostDO's handshake, raising the fence to `fence` first: from now on a write
+   * carrying an older fence, or none, is refused. A write a reset HostDO sent before this read can
+   * then never land after it, behind an index the new HostDO trusts (RFD0032, fenceOnVerify).
+   */
+  async syncHead(binding: SessionBinding, fence: number): Promise<SyncHead> {
+    if (!this.owns(binding)) throw new Error("Session identity conflict");
+    if (!Number.isSafeInteger(fence) || fence < 1) throw new Error("A fence is a positive integer");
+    const sql = this.ctx.storage.sql;
+    sql.exec(`INSERT INTO write_fence (singleton, fence) VALUES (1, ?)
+      ON CONFLICT(singleton) DO UPDATE SET fence = MAX(fence, excluded.fence)`, fence);
+    return { head: await this.head(binding), fence: this.fence() };
   }
 
   /** What the cloud holds, or null while it holds nothing. */
@@ -85,6 +140,7 @@ export class AxoSessionDO extends DurableObject<Env> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
     const transcript = this.transcript();
     if (!transcript) return null;
+    await this.catchUp();
     const sql = this.ctx.storage.sql;
     return {
       epoch: transcript.epoch,
@@ -98,12 +154,13 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Commits a batch in one transaction. A batch that starts at or before the count is a retry:
    * its overlap must match what is stored, and only its new tail is added.
    */
-  async append(binding: SessionBinding, params: AppendParams): Promise<StoreAppendResult> {
+  async append(binding: SessionBinding, params: AppendParams, fence?: number): Promise<StoreAppendResult> {
     if (!this.owns(binding, true)) throw new Error("Session identity conflict");
     let transcript = this.transcript();
-    const reject = (outcome: "gap" | "conflict" | "epoch" | "invalid"): StoreAppendResult => ({
-      outcome, epoch: transcript?.epoch ?? null, count: this.count(), chain: transcript ? this.chainAt(this.count(), transcript)! : null,
+    const reject = (outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"): StoreAppendResult => ({
+      outcome, epoch: transcript?.epoch ?? null, count: this.count(), chain: transcript ? this.chainAt(this.count(), transcript)! : null, fence: this.fence(),
     });
+    if (this.fenced(fence)) return reject("fenced");
     if (params.records.some((record) => encoder.encode(record.line).byteLength > PI3_MAX_LINE_BYTES)) return reject("invalid");
     if (!transcript || (params.header !== undefined && params.header !== transcript.header && this.count() === 0 && params.from === 1)) {
       if (params.header === undefined || pi3Entry(params.header) === null) return reject(params.header === undefined ? "gap" : "invalid");
@@ -144,13 +201,20 @@ export class AxoSessionDO extends DurableObject<Env> {
 
     const committed = transcript;
     const before = !this.transcript();
-    return this.ctx.storage.transactionSync(() => {
-      // Hashing awaited; anything that changed the transcript since makes this batch a retry.
+    const result: StoreAppendResult = this.ctx.storage.transactionSync((): StoreAppendResult => {
+      // Hashing awaited: a head read may have raised the fence since, and anything that changed the
+      // transcript makes this batch a retry.
+      if (this.fenced(fence)) return reject("fenced");
       const now = this.transcript();
       if (this.count() !== count || (now ? now.epoch !== committed.epoch || (count > 0 && now.header !== committed.header) : !before))
         return reject("gap");
+      // A new header (only ever on an empty transcript) starts the translation over.
       sql.exec(`INSERT INTO transcript (singleton, header, header_hash, epoch) VALUES (1, ?, ?, ?)
-        ON CONFLICT(singleton) DO UPDATE SET header = excluded.header, header_hash = excluded.header_hash`,
+        ON CONFLICT(singleton) DO UPDATE SET header = excluded.header, header_hash = excluded.header_hash,
+          atxf_header = CASE WHEN header = excluded.header THEN atxf_header END,
+          atxf_converter = CASE WHEN header = excluded.header THEN atxf_converter END,
+          atxf_through = CASE WHEN header = excluded.header THEN atxf_through ELSE 0 END,
+          atxf_error = CASE WHEN header = excluded.header THEN atxf_error END`,
         committed.header, committed.header_hash, committed.epoch);
       rows.forEach((row, index) => {
         const cursor = count + index + 1;
@@ -162,8 +226,10 @@ export class AxoSessionDO extends DurableObject<Env> {
           sql.exec("INSERT INTO record_parts (cursor, idx, data) VALUES (?, ?, ?)", cursor, idx, data));
         for (const id of row.refs) sql.exec("UPDATE records SET referenced = 1 WHERE id = ? AND referenced = 0", id);
       });
-      return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared] } as const;
+      return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared], fence: this.fence() };
     });
+    if (result.outcome === "committed") await this.translateAfterAppend(count);
+    return result;
   }
 
   /** The cloud's chain after each position, or null past its count; position 0 is the header. */
@@ -177,21 +243,32 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Cuts the transcript back to `keep` records if its chain there is `expectedChain`, starts a
    * new epoch, and records the cut so readers of older epochs learn where to drop to.
    */
-  async truncate(binding: SessionBinding, keep: number, expectedChain: string): Promise<StoreTruncateResult> {
+  async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence?: number): Promise<StoreTruncateResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
-    return this.ctx.storage.transactionSync(() => {
+    const result = this.ctx.storage.transactionSync((): StoreTruncateResult => {
       const transcript = this.transcript();
-      if (!transcript || this.chainAt(keep, transcript) !== expectedChain) return { outcome: "mismatch" } as const;
+      const refuse = (outcome: "mismatch" | "fenced"): StoreTruncateResult => ({
+        outcome, epoch: transcript?.epoch ?? null, count: this.count(), chain: transcript ? this.chainAt(this.count(), transcript)! : null, fence: this.fence(),
+      });
+      if (this.fenced(fence)) return refuse("fenced");
+      if (!transcript || this.chainAt(keep, transcript) !== expectedChain) return refuse("mismatch");
       const sql = this.ctx.storage.sql;
       const epoch = transcript.epoch + 1;
       sql.exec("DELETE FROM records WHERE cursor > ?", keep);
       sql.exec("DELETE FROM record_parts WHERE cursor > ?", keep);
+      // The translations of the cut rows went with them; the stream read them, so it starts over.
+      sql.exec("DELETE FROM atxf_parts WHERE cursor > ?", keep);
+      sql.exec("UPDATE transcript SET atxf_through = MIN(atxf_through, ?), atxf_error = NULL", keep);
+      this.translator = undefined;
       sql.exec(`UPDATE records SET referenced = (id IS NOT NULL AND id IN (
         SELECT value FROM records AS later, json_each(later.refs)))`);
       sql.exec("UPDATE transcript SET epoch = ?", epoch);
       sql.exec("INSERT INTO cuts (epoch, keep) VALUES (?, ?)", epoch, keep);
-      return { outcome: "truncated", epoch, count: keep, chain: expectedChain } as const;
+      return { outcome: "truncated", epoch, count: keep, chain: expectedChain, fence: this.fence() };
     });
+    // The cut cleared any stop, since the line that caused it may be gone: try again if records wait.
+    if (result.outcome === "truncated") await this.catchUp();
+    return result;
   }
 
   /**
@@ -202,6 +279,7 @@ export class AxoSessionDO extends DurableObject<Env> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
     const transcript = this.transcript();
     if (!transcript) return { kind: "records", epoch: null, count: 0, records: [], older: null, header: null };
+    await this.catchUp();
     const sql = this.ctx.storage.sql;
     if (request.epoch !== null && request.epoch !== transcript.epoch) {
       const keep = sql.exec<{ keep: number | null }>("SELECT MIN(keep) AS keep FROM cuts WHERE epoch > ?", request.epoch).one().keep;
@@ -228,14 +306,163 @@ export class AxoSessionDO extends DurableObject<Env> {
     }
     chosen.sort((a, b) => a - b);
     const records = chosen.length === 0 ? [] : sql.exec<RecordRow>(
-      "SELECT cursor, id, hash, chain, line FROM records WHERE cursor BETWEEN ? AND ? ORDER BY cursor", chosen[0]!, chosen.at(-1)!,
-    ).toArray().map((row) => ({ cursor: row.cursor, id: row.id, format: PI3_FORMAT, line: row.line ?? this.parts(row.cursor), hash: row.hash }) satisfies ClientRecord);
+      "SELECT cursor, id, hash, chain, format, line FROM records WHERE cursor BETWEEN ? AND ? ORDER BY cursor", chosen[0]!, chosen.at(-1)!,
+    ).toArray().map((row) => ({ cursor: row.cursor, id: row.id, format: row.format as typeof PI3_FORMAT, line: row.line ?? this.parts(row.cursor), hash: row.hash }) satisfies ClientRecord);
     const first = records[0]?.cursor ?? (request.after !== undefined ? request.after + 1 : range.from);
     return { kind: "records", epoch: transcript.epoch, count, records, older: first > 1 ? first : null, header: transcript.header };
   }
 
-  private parts(cursor: number): string {
-    return this.ctx.storage.sql.exec<{ data: string }>("SELECT data FROM record_parts WHERE cursor = ? ORDER BY idx", cursor)
+  /** The ATXF translation so far: the header, and up to `limit` records from cursor `from` (RFD0035). */
+  async atxf(binding: SessionBinding, from = 1, limit = SYNC.clientRecords): Promise<AtxfRead> {
+    if (!this.owns(binding)) throw new Error("Session identity conflict");
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec<{ epoch: number; atxf_header: string | null; atxf_through: number; atxf_converter: string | null; atxf_error: string | null }>(
+      "SELECT epoch, atxf_header, atxf_through, atxf_converter, atxf_error FROM transcript WHERE singleton = 1").toArray()[0];
+    if (!row) return { epoch: null, count: 0, through: 0, converter: null, error: null, header: null, records: [] };
+    // About `SYNC.clientBytes` of lines a page, as `read` sends; a larger record comes alone.
+    const records: EntryRecord[] = [];
+    let bytes = 0;
+    for (const record of sql.exec<{ cursor: number; bytes: number }>(
+      "SELECT cursor, bytes FROM records WHERE cursor >= ? AND cursor <= ? ORDER BY cursor LIMIT ?", from, row.atxf_through, limit).toArray()) {
+      if (records.length > 0 && bytes + record.bytes > SYNC.clientBytes) break;
+      bytes += record.bytes;
+      const stored = sql.exec<{ line: string | null; atxf: string | null }>("SELECT line, atxf FROM records WHERE cursor = ?", record.cursor).one();
+      records.push(withNative(stored.atxf ?? this.parts(record.cursor, "atxf_parts"), stored.line ?? this.parts(record.cursor)));
+    }
+    return {
+      epoch: row.epoch, count: this.count(), through: row.atxf_through, converter: row.atxf_converter, error: row.atxf_error,
+      header: row.atxf_header === null ? null : (JSON.parse(row.atxf_header) as TranscriptHeader), records,
+    };
+  }
+
+  /** Translates what is left, a slice per alarm (RFD0035). */
+  async alarm(): Promise<void> {
+    if (this.translate(TRANSLATE_RECORDS, TRANSLATE_BYTES)) await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /**
+   * Translates a batch just committed after `before` records, in this call when the stream is in
+   * memory and caught up; otherwise, or for what remains, an alarm does it.
+   */
+  private async translateAfterAppend(before: number): Promise<void> {
+    const behind = this.translation();
+    if (!behind || behind.atxf_error !== null) return;
+    const warm = this.translator !== undefined && this.translator.through === before;
+    if (behind.atxf_through === before && (warm || before === 0) && !this.translate(SYNC.appendRecords, TRANSLATE_BYTES)) return;
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /**
+   * Translates records after `atxf_through`, in cursor order, up to `records` records or about
+   * `bytes` bytes of lines, rebuilding the stream first if this object lost it. Returns whether
+   * more remain. Writes nothing but the ATXF columns, and stops for good, with `atxf_error`, at a
+   * line the stream refuses or a stored translation it can't reproduce.
+   */
+  private translate(records: number, bytes: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const transcript = this.transcript();
+    const state = this.translation();
+    if (!transcript || !state || state.atxf_error !== null) return false;
+    const count = this.count();
+    if (state.atxf_through >= count) return false;
+    const stop = (at: number, error: unknown) => {
+      this.translator = undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      sql.exec("UPDATE transcript SET atxf_error = ?", `record ${at}: ${message}`);
+      console.error(JSON.stringify({ event: "session.atxf_stopped", cursor: at, error: message }));
+      return false;
+    };
+
+    let read: AtxfTranslator;
+    try {
+      read = this.resume(transcript, state.atxf_through);
+    } catch (error) {
+      return stop(state.atxf_through, error);
+    }
+    let cursor = state.atxf_through;
+    let spent = 0;
+    let refused: { at: number; error: unknown } | undefined;
+    this.ctx.storage.transactionSync(() => {
+      for (const row of sql.exec<{ cursor: number; line: string | null; bytes: number }>(
+        "SELECT cursor, line, bytes FROM records WHERE cursor > ? ORDER BY cursor LIMIT ?", cursor, records).toArray()) {
+        if (spent > 0 && spent + row.bytes > bytes) break;
+        let record: EntryRecord & { hash: string };
+        try {
+          record = read.next(row.line ?? this.parts(row.cursor));
+        } catch (error) {
+          refused = { at: row.cursor, error };
+          break;
+        }
+        const stored = storedForm(record);
+        const inline = stored.length <= PART_CHARS;
+        sql.exec("UPDATE records SET atxf_hash = ?, atxf = ? WHERE cursor = ?", record.hash, inline ? stored : null, row.cursor);
+        sql.exec("DELETE FROM atxf_parts WHERE cursor = ?", row.cursor);
+        if (!inline) splitParts(stored).forEach((data, idx) =>
+          sql.exec("INSERT INTO atxf_parts (cursor, idx, data) VALUES (?, ?, ?)", row.cursor, idx, data));
+        cursor = row.cursor;
+        spent += row.bytes;
+      }
+      sql.exec("UPDATE transcript SET atxf_through = ?", cursor);
+    });
+    if (refused) return stop(refused.at, refused.error);
+    this.translator = { epoch: transcript.epoch, through: cursor, read };
+    return cursor < count;
+  }
+
+  /** Sets an alarm to translate, if records wait for it (RFD0035): a Session stored before, or one that fell behind. */
+  private async catchUp(): Promise<void> {
+    const state = this.translation();
+    if (state && state.atxf_error === null && state.atxf_through < this.count()) await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /**
+   * The stream that has read records 1..`through`: the one in memory, or a new one that reads them
+   * back and must give the hashes stored for them. Starts the ATXF header on a fresh translation.
+   */
+  private resume(transcript: Transcript, through: number): AtxfTranslator {
+    const held = this.translator;
+    if (held && held.epoch === transcript.epoch && held.through === through) return held.read;
+    this.translator = undefined;
+    const sql = this.ctx.storage.sql;
+    const read = new AtxfTranslator();
+    const header = read.start(transcript.header);
+    if (through === 0) {
+      sql.exec("UPDATE transcript SET atxf_header = ?, atxf_converter = ?", JSON.stringify(header), ATXF_CONVERTER);
+      return read;
+    }
+    const stored = sql.exec<{ atxf_header: string | null; atxf_converter: string | null }>("SELECT atxf_header, atxf_converter FROM transcript").one();
+    if (stored.atxf_converter !== ATXF_CONVERTER) throw new Error(`translated with ${stored.atxf_converter}, not ${ATXF_CONVERTER}`);
+    if (stored.atxf_header !== JSON.stringify(header)) throw new Error("the ATXF header no longer matches its line");
+    for (let after = 0; after < through; after += REPLAY_PAGE) {
+      for (const row of sql.exec<{ cursor: number; line: string | null; atxf_hash: string | null }>(
+        "SELECT cursor, line, atxf_hash FROM records WHERE cursor > ? AND cursor <= ? ORDER BY cursor",
+        after, Math.min(through, after + REPLAY_PAGE)).toArray()) {
+        if (read.next(row.line ?? this.parts(row.cursor)).hash !== row.atxf_hash) throw new Error(`record ${row.cursor} no longer translates to its stored ATXF record`);
+      }
+    }
+    return read;
+  }
+
+  /** The highest fence a head read carried; 0 before any. */
+  private fence(): number {
+    return this.ctx.storage.sql.exec<{ fence: number }>("SELECT fence FROM write_fence WHERE singleton = 1").toArray()[0]?.fence ?? 0;
+  }
+
+  /**
+   * Whether a write with `fence` comes from before the last head read. A write with none comes
+   * from a HostDO that doesn't fence (older code), and is refused once any head read fenced.
+   */
+  private fenced(fence: number | undefined): boolean {
+    const current = this.fence();
+    return fence === undefined ? current > 0 : fence < current;
+  }
+
+  private translation(): Translation | undefined {
+    return this.ctx.storage.sql.exec<Translation>("SELECT atxf_through, atxf_error FROM transcript WHERE singleton = 1").toArray()[0];
+  }
+
+  private parts(cursor: number, table: "record_parts" | "atxf_parts" = "record_parts"): string {
+    return this.ctx.storage.sql.exec<{ data: string }>(`SELECT data FROM ${table} WHERE cursor = ? ORDER BY idx`, cursor)
       .toArray().map((row) => row.data).join("");
   }
 
@@ -280,6 +507,12 @@ export function clearedSlot(line: string): string | null {
     // Not a record a slot waits for.
   }
   return null;
+}
+
+/** Adds the columns `table` does not have yet. */
+function addColumns(sql: SqlStorage, table: string, columns: Record<string, string>): void {
+  const have = new Set(sql.exec<{ name: string }>(`PRAGMA table_info(${table})`).toArray().map((row) => row.name));
+  for (const [name, type] of Object.entries(columns)) if (!have.has(name)) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
 }
 
 /** Cuts a line into parts that each fit a SQLite value, never between a surrogate pair. */

@@ -14,6 +14,8 @@ import { parseAttachments, type PromptAttachment } from "./attachments.js";
  *   `axo.command.queued` before it is accepted, then held here. A Pi that exits, crashes or is
  *   restarted holds it again from the log, so an accepted prompt is never lost, and clients show
  *   it as queued from the log alone.
+ * - **Interrupts stop the run and go next.** What a person tapping Send means: the run stops, as
+ *   a stop would, and the prompt starts the next one, ahead of follow-ups already waiting.
  * - **Follow-ups start the next turn; steers join this one.** A steer is handed to Pi at the end
  *   of a turn that goes on, right before Pi reads its steering queue, so its receipt is still the
  *   entry before its user message. Pi's own queue is never left holding a client's prompt: its
@@ -36,8 +38,8 @@ export const MAX_HELD_PROMPTS = 32;
  */
 export const RUN_START_GRACE_MS = 10_000;
 
-/** When a prompt sent while Pi works reaches it: after this turn, or within it. */
-export type Delivery = "followUp" | "steer";
+/** When a prompt sent while Pi works reaches it: after this run, within it, or now, stopping it. */
+export type Delivery = "followUp" | "steer" | "interrupt";
 
 /** What a client sent, as the log keeps it: attachments are files on this Mac, not bytes. */
 export interface ClientPrompt {
@@ -141,7 +143,13 @@ export class RemoteCommands {
     }
     // Written before the client hears it was accepted.
     this.pi.appendQueued({ commandId, delivery, ...prompt });
-    this.held.push(command);
+    if (delivery === "interrupt") {
+      // Next, after interrupts sent before it; the run stops, and its end delivers it.
+      this.held.splice(this.interrupts(), 0, command);
+      if (!this.pi.isIdle()) this.pi.abort();
+    } else {
+      this.held.push(command);
+    }
     if (this.ready()) this.deliverNext();
     return this.isHeld(commandId) ? "held" : "taken";
   }
@@ -197,10 +205,17 @@ export class RemoteCommands {
     this.deliveredAt = null;
     this.deliveredFrom = null;
     if (this.steering !== null) {
-      this.held.unshift(this.steering);
+      // After interrupts: they were sent to stop the run it was steering.
+      this.held.splice(this.interrupts(), 0, this.steering);
       this.steering = null;
     }
     this.deliverNext();
+  }
+
+  /** How many interrupts lead what is held. */
+  private interrupts(): number {
+    const index = this.held.findIndex(command => command.delivery !== "interrupt");
+    return index < 0 ? this.held.length : index;
   }
 
   get heldCount(): number {
@@ -244,7 +259,7 @@ function queuedOf(entry: SessionEntry): HeldPrompt | null {
   if (entry.type !== "custom" || entry.customType !== QUEUED_ENTRY) return null;
   const data = entry.data as Partial<QueuedCommand> | undefined;
   if (typeof data?.commandId !== "string" || typeof data.text !== "string") return null;
-  const delivery: Delivery = data.delivery === "steer" ? "steer" : "followUp";
+  const delivery: Delivery = data.delivery === "steer" || data.delivery === "interrupt" ? data.delivery : "followUp";
   // Files on this Mac, checked as the bridge checks them; a malformed list keeps the text alone.
   const attachments = data.attachments === undefined ? [] : parseAttachments(data.attachments) ?? [];
   return { commandId: data.commandId, delivery, prompt: { text: data.text, attachments } };

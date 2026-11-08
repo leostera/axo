@@ -25,6 +25,7 @@
     "@axo/apps": "workspace:*",
     "@axo/protocol": "workspace:*",
     "@cfworker/json-schema": "^4.1.4",
+    "@leostera/atxf": "0.2.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "hono": "4.13.13",
     "jose": "^6.2.12",

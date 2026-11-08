@@ -1,10 +1,10 @@
 # RFD0032 - Axo: Push Delivery
 
 - Feature Name: `axo-push-delivery`
-- Status: Draft
+- Status: Accepted; host sync from the index is implemented (2026-11-08)
 - Author: leostera
 - Start Date: 2026-11-05
-- Updated: 2026-11-05
+- Updated: 2026-11-08
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0022](RFD0022-sessions-across-macs.md), [RFD0031](RFD0031-durable-objects-wake-on-demand.md)
 
@@ -129,12 +129,22 @@ These are the rules `specs/push-delivery.ts` checks. Each one breaks a property 
 
 Otherwise it asks the SessionDO, and refreshes and verifies the row from the answer.
 
-The hazard is an index that lags the SessionDO. A commit lands, then the HostDO is reset or loses the answer before it updates the row. If the Mac's file then shrinks back to exactly what the index says, the row agrees with the manifest while the SessionDO holds more. Nothing would ever ask the SessionDO again. `specs/sync-from-index.ts` found this. Two rules close it:
+The hazard is an index that lags the SessionDO. A commit lands, then the HostDO is reset or loses the answer before it updates the row. If the Mac's file then shrinks back to exactly what the index says, the row agrees with the manifest while the SessionDO holds more. Nothing would ever ask the SessionDO again. `specs/sessions/sync-from-index.ts` found this. Two rules close it:
 
 - **distrustWhileWriting.** Before a write (append or truncate) goes to the SessionDO, the row is marked unverified in SQLite. Only the SessionDO's answer verifies it again, whatever the outcome. A lost answer or a reset leaves the row distrusted, so the next handshake asks.
 - **fenceOnVerify.** A write sent before a reset can still land after the new instance read the head. So the HostDO keeps a fence counter in SQLite, raises it on every head read, and passes it with every write. The SessionDO keeps the highest fence a head read carried, and refuses a write with an older one. axod hears such a refusal as the `conflict` (or `mismatch`) it already handles, by handshaking again.
 
 A row is verified only by an answer that carries the SessionDO's fence. An answer from a SessionDO still on older code has no fence, and verifies nothing. During a rollout, Sessions whose SessionDO hasn't adopted the new code are asked, as today.
+
+**Built (2026-11-08),** ahead of the rest, since it needs no new wire and no preparatory release: a rollback to code without it asks every SessionDO, as before, and ignores the new columns.
+
+- `session_index.verified` and a `sync_fence` counter on the HostDO; `write_fence` on the SessionDO. Rows start distrusted, so the first handshake after the deploy asks every Session once.
+- The handshake reads through `AxoSessionDO.syncHead(binding, fence)`, which raises the fence and answers the head with it, so an empty Session (whose `head` is null) can be verified too. A SessionDO still on older code has no `syncHead`; the HostDO falls back to `head`, which verifies nothing.
+- Appends and truncates carry the HostDO's fence. A write with an older fence, or with none once any head read fenced, is answered `fenced`, which axod hears as `conflict` (append) or `mismatch` (truncate). The check runs again inside the commit transaction, because a head read can land while an append awaits its hashes.
+- Every write's answer carries the SessionDO's fence. If it is above the HostDO's, the HostDO adopts it. A SessionDO only ever holds a fence its HostDO gave it, so this changes nothing unless the HostDO lost its counter. If it had, every write would be refused while the index kept answering.
+- An answer from the index carries no `heads`: the index doesn't keep them, and axod doesn't read them (`Uploader::handshake`).
+- `host_sync` events now say how many Sessions were `read`, so the saving shows in Workers Observability.
+- Tests (`tests/session-sync.test.ts`): a quiet reconnect raises no fence; a lagging, distrusted row is read rather than trusted; a write from before a head read is refused as a conflict, and the next one lands.
 
 ### The ClientDO in protocol 3
 
@@ -187,7 +197,7 @@ Go back to release P. HostDOs that adopt it close their protocol 3 sockets. Thos
 | Spec | What it checks | Result |
 |---|---|---|
 | `specs/push-delivery.ts` | One tab and one Session on a HostDO that hibernates, is reset, and loses answers. Properties: noGapsNoDuplicates, holdsWhatTheCloudHolds, oneBatchOutstanding, progressEndsWithItsRecord, catchesUp, readsOnlyAfterForgetting, opensAtHeadReadNothing. 6 scenarios. | Every safety property holds in every state within 24 events with no faults (28M states), and within 14 events with one fault (15.5M states). `catchesUp` holds as far as those depths reach. These are bounded checks, not proofs. With one fault, at depth 16, nothing broke in the 37M states explored before the memory limit. Each rule is needed except sweepStaleRows and tabDropsRecordedProgress. For those two, the search stopped before it could show whether they are needed. |
-| `specs/sync-from-index.ts` | axod, HostDO and SessionDO through rewrites, lost answers and resets mid-write. Properties: believesOnlyWhatIsThere, converges, quietHandshakesAskNothing. | Proved with up to two faults on a path (250k states, every path explored). Each rule is needed. |
+| `specs/sessions/sync-from-index.ts` | axod, HostDO and SessionDO through rewrites, lost answers and resets mid-write. Properties: believesOnlyWhatIsThere, converges, quietHandshakesAskNothing. | Proved with up to two faults on a path (250k states, every path explored). Each rule is needed. |
 | `specs/push-migration.ts` | Deploy and rollback across the ClientDO and HostDO adopting code at different times, with clients on protocol 2 or 3, and a forced update. Properties: neverBroken, keepsHearing. | Proved with one fault (3.4M states). closeUnknownSockets, fallBackToTwo and frozenWire are each needed. |
 
 ### Worker tests
