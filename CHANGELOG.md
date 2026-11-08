@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.32 (Mac app build 303, axod 55)
+
+### Changed
+
+- Apps are called apps everywhere: adding a server answers with the app, and agents read "no app named …" instead of "connection".
+
 ## 0.31 (Mac app build 302, axod 54)
 
 ### Fixed
