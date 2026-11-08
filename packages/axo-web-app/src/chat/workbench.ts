@@ -932,7 +932,7 @@ export class ChatWorkbench {
    * Sends what is typed. On a new chat the first message brings the chat into being: in the
    * Workspace chosen for it, or in the Mac's Home Workspace.
    */
-  async send(delivery: Delivery = "followUp"): Promise<SendOutcome> {
+  async send(delivery: Delivery = "interrupt"): Promise<SendOutcome> {
     const selection = this.selection;
     if (this.isSending || !selection || !this.canSendDraft) return { kind: "failed" };
     if (selection.kind === "chat") return this.sending(() => this.prompt(selection, delivery));
@@ -1019,7 +1019,7 @@ export class ChatWorkbench {
    * in the log; one whose fate is unknown is sent again with the same id, which the Mac takes at
    * most once.
    */
-  private async prompt(selection: Selection & { kind: "chat" }, delivery: Delivery = "followUp"): Promise<SendOutcome> {
+  private async prompt(selection: Selection & { kind: "chat" }, delivery: Delivery = "interrupt"): Promise<SendOutcome> {
     const host = this.openHost;
     const text = this.draft(selection).trim();
     const files = this.attachments(selection);
@@ -1045,10 +1045,17 @@ export class ChatWorkbench {
   private async deliver(host: Host, sessionId: string, pending: PendingPrompt, attempt = 0): Promise<SendOutcome> {
     let outcome: SendOutcome;
     try {
-      await this.connection!.command("axo.remote.session.prompt", {
+      const params = {
         target: this.reference(host), sessionId, text: pending.text, commandId: pending.id,
         ...(pending.attachments.length ? { attachments: [...pending.attachments] } : {}),
-        ...(pending.delivery === "steer" ? { delivery: "steer" as const } : {}),
+      };
+      // A follow-up goes without a delivery, as Macs before RFD0033 take it.
+      await this.connection!.command("axo.remote.session.prompt", {
+        ...params, ...(pending.delivery === "followUp" ? {} : { delivery: pending.delivery }),
+      }).catch(error => {
+        // A Mac from before interrupts refuses one before it reaches Pi: it goes as a follow-up.
+        if (pending.delivery !== "interrupt" || (error as { code?: unknown }).code !== -32602) throw error;
+        return this.connection!.command("axo.remote.session.prompt", params);
       });
       this.failure = null;
       outcome = { kind: "sent" };

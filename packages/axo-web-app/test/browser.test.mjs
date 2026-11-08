@@ -767,9 +767,21 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
 
     // Holding Send offers how a working agent takes the message: Steer waits in the log, shown as Steering.
     await box.fill("use bun");
-    await page.getByRole("button", { name: "Send" }).click({ button: "right" });
+    // Holding Send opens the menu: letting go sends nothing, and the box keeps the focus.
+    const sendButton = page.getByRole("button", { name: "Send" });
+    const sendBox = await sendButton.boundingBox();
+    await page.mouse.move(sendBox.x + sendBox.width / 2, sendBox.y + sendBox.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(600);
+    await page.mouse.up();
     const sendAs = page.getByRole("menu", { name: "Send as" });
-    assert.deepEqual(await sendAs.getByRole("menuitem").evaluateAll(items => items.map(item => item.querySelector(".send-menu-text").firstChild.textContent)), ["Follow up", "Steer"]);
+    await expect(sendAs);
+    assert.equal(steers.length + prompts.length, 1, "holding sends nothing");
+    assert.equal(await box.inputValue(), "use bun");
+    await page.keyboard.press("Escape");
+    assert.equal(await sendAs.count(), 0);
+    await sendButton.click({ button: "right" });
+    assert.deepEqual(await sendAs.getByRole("menuitem").evaluateAll(items => items.map(item => item.querySelector(".send-menu-text").firstChild.textContent)), ["Steer", "Follow up"]);
     await shot("composer-send-as");
     await sendAs.getByRole("menuitem", { name: /Steer/ }).click();
     await expect(page.getByTestId("pending-prompt").getByText("Steering · read at the agent's next step"));

@@ -101,13 +101,15 @@ pub enum PiKey {
     Enter,
 }
 
-/// When a remote person's prompt reaches a working Pi (RFD0033): once the turn ends, or within it.
+/// When a remote person's prompt reaches a working Pi (RFD0033): once the run ends, within it,
+/// or at once, stopping it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ClientDelivery {
     #[default]
     FollowUp,
     Steer,
+    Interrupt,
 }
 
 /// A model a remote person picks for a Session, as Pi's registry names it (RFD0033).

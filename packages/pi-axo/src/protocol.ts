@@ -27,7 +27,7 @@ export type PiControlAction =
    * log with a receipt, and queued in the log while Pi works: `delivery` says whether it waits
    * for the turn to end (`followUp`, the default) or joins it (`steer`, RFD0033).
    */
-  | { kind: "send"; text: string; delivery?: "steer" | "followUp"; commandId?: string; attachments?: PromptAttachment[] }
+  | { kind: "send"; text: string; delivery?: "steer" | "followUp" | "interrupt"; commandId?: string; attachments?: PromptAttachment[] }
   | { kind: "cancel" }
   /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
   | { kind: "stop"; turnId?: string; seen?: string; commandIds?: string[] }
@@ -109,7 +109,7 @@ function parseAction(value: unknown): PiControlAction | null {
     const attachments = value.attachments === undefined ? [] : parseAttachments(value.attachments);
     if (attachments === null) return null;
     if (new TextEncoder().encode(value.text).byteLength > MAX_TEXT_BYTES || (value.text.length === 0 && attachments.length === 0)) return null;
-    if (value.delivery !== undefined && value.delivery !== "steer" && value.delivery !== "followUp") return null;
+    if (value.delivery !== undefined && value.delivery !== "steer" && value.delivery !== "followUp" && value.delivery !== "interrupt") return null;
     if (value.commandId !== undefined && (typeof value.commandId !== "string" || !COMMAND_ID_PATTERN.test(value.commandId))) return null;
     return {
       kind: "send",

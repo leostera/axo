@@ -328,6 +328,9 @@ pub enum PromptDelivery {
     FollowUp,
     /// Only if idle; refused while working.
     Turn,
+    /// Stops the running turn and starts the next one with it, ahead of anything waiting: what a
+    /// person tapping Send means (RFD0033).
+    Interrupt,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

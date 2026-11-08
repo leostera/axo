@@ -103,7 +103,11 @@ export const RECEIPT_ENTRY = "axo.command";
  */
 export const QUEUED_ENTRY = "axo.command.queued";
 
-export type Delivery = "followUp" | "steer";
+/**
+ * When a working agent takes a message: `interrupt` (Send's tap) stops the reply and answers this
+ * now; `steer` joins the reply at its next step; `followUp` waits for it to finish.
+ */
+export type Delivery = "interrupt" | "followUp" | "steer";
 
 /** A client's prompt the log holds, waiting for Pi. */
 export interface QueuedPrompt {
@@ -150,7 +154,7 @@ export function entryOf(record: TranscriptRecord): Entry {
       kind: "queued",
       prompt: {
         commandId: data.commandId,
-        delivery: data.delivery === "steer" ? "steer" : "followUp",
+        delivery: data.delivery === "steer" || data.delivery === "interrupt" ? data.delivery : "followUp",
         text: typeof data.text === "string" ? data.text : "",
         files,
       },

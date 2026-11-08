@@ -405,6 +405,7 @@ fn deliver(
     let delivery = match request.delivery {
         ClientDelivery::FollowUp => PromptDelivery::FollowUp,
         ClientDelivery::Steer => PromptDelivery::Steer,
+        ClientDelivery::Interrupt => PromptDelivery::Interrupt,
     };
     manager
         .prompt_pi(

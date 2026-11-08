@@ -150,7 +150,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   };
 
-  const send = async (delivery: Delivery = "followUp") => {
+  const send = async (delivery: Delivery = "interrupt") => {
     following.current = true;
     await workbench.send(delivery);
   };
@@ -343,7 +343,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     if (!voice || !transcript) return;
     voice.consume(transcript);
     workbench.setDraft(appendTranscript(workbench.draft(), transcript.text));
-    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("followUp");
+    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("interrupt");
     else if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
   }, [voice?.version]);
 
@@ -384,8 +384,8 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !touchTyping()) {
       event.preventDefault();
-      // ⌘↵ steers a working agent; ↵ follows up.
-      if (ready) onSend(event.metaKey || event.ctrlKey ? "steer" : "followUp");
+      // ↵ interrupts a working agent; ⌘↵ steers it, ⌥↵ waits for its reply.
+      if (ready) onSend(event.metaKey || event.ctrlKey ? "steer" : event.altKey ? "followUp" : "interrupt");
     } else if (event.key === "Escape" && !hasDraft) {
       event.preventDefault();
       onEscape();
@@ -425,7 +425,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
       {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
         <form className={dragging ? "composer dragging" : "composer"} onSubmit={event => {
           event.preventDefault();
-          if (ready) onSend("followUp");
+          if (ready) onSend("interrupt");
         }}
         onDragOver={event => {
           if (!canSend || !event.dataTransfer.types.includes("Files")) return;

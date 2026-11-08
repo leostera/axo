@@ -131,17 +131,21 @@ export function SlashMenu({ state, matches, highlighted, onPick, onHighlight }: 
 
 const sourceNames: Record<PiCommand["source"], string> = { extension: "Command", prompt: "Prompt", skill: "Skill" };
 
-const HOLD_MS = 450;
+const HOLD_MS = 400;
 
 /**
- * Send. A press sends; holding it (or a right-click, or the keyboard's ⌘↵) offers how a working
- * agent takes the message: after its reply, or at its next step.
+ * Send. A tap sends now: a working agent stops its reply and answers this. Holding it (or a
+ * right-click) offers the gentler ways: Steer, read at the agent's next step, and Follow up, after
+ * its reply. ⌘↵ and ⌥↵ do the same from the keyboard.
+ *
+ * The press keeps the focus in the box, so a phone's keyboard stays up and the button does not move
+ * from under the finger while it is held; the pointer is captured for the same reason.
  */
 export function SendButton({ ready, onSend }: { ready: boolean; onSend: (delivery: Delivery) => void }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** The press opened the menu, so its click sends nothing. */
+  /** The press opened the menu, so letting go sends nothing. */
   const held = useRef(false);
   useDismiss(open, root, () => setOpen(false));
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -153,45 +157,49 @@ export function SendButton({ ready, onSend }: { ready: boolean; onSend: (deliver
     setOpen(false);
     onSend(delivery);
   };
+  const openMenu = () => {
+    release();
+    held.current = true;
+    setOpen(true);
+  };
   return (
     <div className="send-anchor" ref={root}>
       <button type="button" className={ready ? "round-button send-button ready" : "round-button send-button"} disabled={!ready}
-        aria-label="Send" aria-haspopup="menu" aria-expanded={open} title="Send · hold for Steer"
-        onPointerDown={() => {
+        aria-label="Send" aria-haspopup="menu" aria-expanded={open} title="Send now · hold to steer or follow up"
+        onPointerDown={event => {
+          if (event.button !== 0) return;
+          // The box keeps the focus: no keyboard closing, nothing moving under the finger.
+          event.preventDefault();
+          event.currentTarget.setPointerCapture?.(event.pointerId);
           held.current = false;
           release();
-          timer.current = setTimeout(() => {
-            held.current = true;
-            setOpen(true);
-          }, HOLD_MS);
+          timer.current = setTimeout(openMenu, HOLD_MS);
         }}
-        onPointerUp={release} onPointerLeave={release} onPointerCancel={release}
+        onPointerUp={release} onPointerCancel={release}
         onContextMenu={event => {
           event.preventDefault();
-          release();
-          held.current = true;
-          setOpen(true);
+          openMenu();
         }}
         onClick={() => {
           if (held.current) {
             held.current = false;
             return;
           }
-          onSend("followUp");
+          onSend("interrupt");
         }}>
         <Icon name="arrowUp" size={20} />
       </button>
       {open ? (
         <div className="add-menu send-menu" role="menu" aria-label="Send as">
-          <button type="button" role="menuitem" className="add-menu-item" autoFocus onClick={() => choose("followUp")}>
-            <span className="add-menu-well"><Icon name="arrowUp" size={18} /></span>
-            <span className="send-menu-text">Follow up<small>After the current reply</small></span>
-            <kbd>↵</kbd>
-          </button>
-          <button type="button" role="menuitem" className="add-menu-item" onClick={() => choose("steer")}>
+          <button type="button" role="menuitem" className="add-menu-item" autoFocus onClick={() => choose("steer")}>
             <span className="add-menu-well"><Icon name="sparkles" size={18} /></span>
             <span className="send-menu-text">Steer<small>At the agent's next step</small></span>
             <kbd>⌘↵</kbd>
+          </button>
+          <button type="button" role="menuitem" className="add-menu-item" onClick={() => choose("followUp")}>
+            <span className="add-menu-well"><Icon name="arrowDown" size={18} /></span>
+            <span className="send-menu-text">Follow up<small>After the current reply</small></span>
+            <kbd>⌥↵</kbd>
           </button>
         </div>
       ) : null}

@@ -616,11 +616,12 @@
                   }
                 },
                 "delivery": {
-                  "description": "When a working Pi takes it: once the turn ends (followUp, the default) or within it (steer). Either way it is in the Session's log before it is accepted (RFD0033).",
+                  "description": "When a working Pi takes it: once the run ends (followUp, the default), within it (steer), or at once, stopping it (interrupt). Either way it is in the Session's log before it is accepted (RFD0033).",
                   "type": "string",
                   "enum": [
                     "followUp",
-                    "steer"
+                    "steer",
+                    "interrupt"
                   ]
                 }
               },

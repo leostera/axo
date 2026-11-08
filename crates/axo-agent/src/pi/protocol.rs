@@ -110,12 +110,13 @@ pub struct ModelChoice<'a> {
 }
 
 /// How a working Pi takes a message: `steer` after the current tool calls, `followUp` once the
-/// turn ends.
+/// turn ends, `interrupt` at once, stopping the turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum QueuedDelivery {
     Steer,
     FollowUp,
+    Interrupt,
 }
 
 /// Records Pi sends.

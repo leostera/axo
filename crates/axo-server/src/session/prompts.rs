@@ -145,6 +145,7 @@ impl PiBridge {
         let delivery_on_bridge = match delivery {
             PromptDelivery::Steer => Some(QueuedDelivery::Steer),
             PromptDelivery::FollowUp => Some(QueuedDelivery::FollowUp),
+            PromptDelivery::Interrupt => Some(QueuedDelivery::Interrupt),
             PromptDelivery::Turn => None,
         };
         match self.0.send_message(

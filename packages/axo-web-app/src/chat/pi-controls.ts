@@ -71,7 +71,10 @@ export function pendingLabel(prompt: Pick<WaitingPrompt, "state" | "delivery">):
     case "sent": return "Sent";
     case "waking": return "Waiting for the agent to start…";
     case "uncertain": return "Not confirmed yet · trying again";
-    case "queued": return prompt.delivery === "steer" ? "Steering · read at the agent's next step" : "Queued · answered after the current reply";
+    case "queued":
+      return prompt.delivery === "steer" ? "Steering · read at the agent's next step"
+        : prompt.delivery === "interrupt" ? "Interrupting · answered next"
+          : "Queued · answered after the current reply";
   }
 }
 
