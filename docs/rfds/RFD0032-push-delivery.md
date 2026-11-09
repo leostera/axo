@@ -278,4 +278,4 @@ After each deploy, check that:
 ## Unresolved questions
 
 - Should axod's heartbeat become a fixed frame, so that `setWebSocketAutoResponse` answers it without waking the HostDO? This would make an idle Mac free too. Presence would then come from the auto-response timestamp. Measured, not yet: a quiet Mac's HostDO takes 600–700 frames an hour, its heartbeats every 10 seconds and its peers' traffic, which is 30–35 billable requests. The lease renews on any frame, so the change would save only that much and would move presence onto a timestamp the code doesn't read today. It is worth revisiting if the number of Macs grows.
-- How long should protocol 2 be kept after the native apps update?
+- How long should protocol 2 be kept after the native apps update? Until a week of evidence says nothing speaks it: [RFD0036](RFD0036-retiring-protocol-2.md).
