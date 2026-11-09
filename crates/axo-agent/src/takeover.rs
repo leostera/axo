@@ -395,7 +395,11 @@ pub fn signal_verified_process(
     }
 
     // SAFETY: the group ID equals the PID from the exact authenticated session/pane identity.
-    if unsafe { libc::kill(-process_id.0, signal) } == 0 {
+    // The leader is signalled on its own first: under load macOS can stop signalling a group at
+    // a member that is already exiting, and the Pi must not be the one missed.
+    let leader = unsafe { libc::kill(process_id.0, signal) } == 0;
+    // SAFETY: as above.
+    if unsafe { libc::kill(-process_id.0, signal) } == 0 || leader {
         return Ok(());
     }
     let error = io::Error::last_os_error();

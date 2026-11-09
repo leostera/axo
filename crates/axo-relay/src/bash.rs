@@ -142,10 +142,14 @@ pub async fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     Ok(result)
 }
 
+/// Kills the shell, then everything in its group. The shell goes first: under load, macOS's
+/// `killpg` can stop at a member that is already exiting and miss the rest, and a shell that
+/// survives runs the command's next step after the timeout.
 fn kill_group(group: Option<u32>) {
     if let Some(group) = group {
-        // SAFETY: signals only the command's own process group.
+        // SAFETY: signals only the command's own shell and its process group.
         unsafe {
+            libc::kill(group as libc::pid_t, libc::SIGKILL);
             libc::killpg(group as libc::pid_t, libc::SIGKILL);
         }
     }
@@ -233,7 +237,7 @@ mod tests {
         let started = Instant::now();
         let result = block_on(run(&p)).unwrap();
         assert!(result.timed_out);
-        assert_eq!(result.signal, Some(libc::SIGKILL));
+        assert_eq!(result.signal, Some(libc::SIGKILL), "{result:?}");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -247,7 +251,10 @@ mod tests {
         assert_eq!(result.exit_code, Some(0));
         assert!(!result.timed_out);
         let took = started.elapsed();
-        assert!(took >= DRAIN_GRACE && took < Duration::from_secs(5), "{took:?}");
+        assert!(
+            took >= DRAIN_GRACE && took < Duration::from_secs(5),
+            "{took:?}"
+        );
     }
 
     #[test]
