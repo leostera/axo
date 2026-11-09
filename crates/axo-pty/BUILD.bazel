@@ -11,6 +11,7 @@ rust_library(
         "@crates//:shlex",
         "@crates//:libc",
         "@crates//:log",
+        "@crates//:tokio",
     ],
 )
 

@@ -1,7 +1,8 @@
 //! Axod is the single, permanent reader of every PTY it owns.
 //!
-//! Each shell gets one pump thread from the moment it is spawned until its PTY reaches end of
-//! file. The pump feeds every byte into the shell's headless terminal (its `TerminalScreen`),
+//! Each shell gets one pump from the moment it is spawned until its PTY reaches end of file: a
+//! task on axo-pty's own small runtime, woken by kqueue when the PTY has output (RFD0037), so a
+//! hundred idle shells cost no threads. The pump feeds every byte into the shell's headless terminal (its `TerminalScreen`),
 //! publishes `terminal.output` events, and fans raw bytes out to every attached client. A shell therefore never blocks on a full PTY buffer because no
 //! client is attached, and any number of clients (Mac windows, the web relay, the CLI) can watch
 //! the same shell.
@@ -22,8 +23,10 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::thread;
 use std::time::Duration;
+
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 
 use crate::process::{self, WindowSize};
 
@@ -200,10 +203,15 @@ impl TerminalOutput {
             .stop_signal
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stop_signal);
+        stopping.set_nonblocking(true)?;
         let pump = Arc::clone(&output);
-        thread::Builder::new()
-            .name("axo-pty-output".into())
-            .spawn(move || pump.run(reader, stopping))?;
+        let runtime = pumps()?;
+        // Registering needs the runtime's reactor; the task itself runs there too.
+        let _inside = runtime.enter();
+        let stopping = tokio::net::UnixStream::from_std(stopping)?;
+        // SAFETY: `reader` is a live descriptor owned by the pump until it ends.
+        let readable = unsafe { AsyncFd::register_with_interest(reader, Interest::READABLE) }?;
+        runtime.spawn(async move { pump.run(readable, stopping).await });
         Ok(output)
     }
 
@@ -303,21 +311,26 @@ impl TerminalOutput {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn run(&self, reader: OwnedFd, stopping: UnixStream) {
-        let fd = reader.as_raw_fd();
+    async fn run(&self, reader: AsyncFd<OwnedFd>, mut stopping: tokio::net::UnixStream) {
+        let fd = reader.get_ref().as_raw_fd();
         let mut buffer = vec![0_u8; READ_BUFFER_BYTES];
         let mut sequence = 0_u64;
         let mut total = 0_u64;
+        let mut stop_byte = [0_u8; 1];
         let reason = loop {
             if self.stopped.load(Ordering::Relaxed) {
                 break "stopped";
             }
-            match wait_readable(fd, stopping.as_raw_fd()) {
-                Ok(false) => break "stopped",
-                Ok(true) => {}
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => break "poll_failed",
-            }
+            let mut ready = tokio::select! {
+                ready = reader.readable() => match ready {
+                    Ok(ready) => ready,
+                    Err(_) => break "poll_failed",
+                },
+                // A byte from `stop`, or its end dropped.
+                _ = tokio::io::AsyncReadExt::read(&mut stopping, &mut stop_byte) => break "stopped",
+            };
+            // The master stays blocking (clients share its file description), so it is read
+            // only when it has something: once now, then again while poll says there is more.
             // SAFETY: buffer is writable for its length and fd is owned by this pump.
             let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
             if count > 0 {
@@ -325,10 +338,13 @@ impl TerminalOutput {
                 total = total.saturating_add(output.len() as u64);
                 // Output after a resize is drawn for the new grid, so the screen must have it
                 // first. One ioctl per chunk; clients resize through their own descriptor.
-                self.record_at(process::window_size(&reader).ok(), output);
+                self.record_at(process::window_size(reader.get_ref()).ok(), output);
                 if let Some(binding) = self.binding.get() {
                     binding.sink.publish_terminal_output(sequence, output);
                     sequence = sequence.saturating_add(1);
+                }
+                if !has_more(fd) {
+                    ready.clear_ready();
                 }
                 continue;
             }
@@ -337,8 +353,9 @@ impl TerminalOutput {
             }
             let error = io::Error::last_os_error();
             match error.kind() {
+                io::ErrorKind::Interrupted => continue,
                 // Another holder may have set O_NONBLOCK on the shared file description.
-                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock => continue,
+                io::ErrorKind::WouldBlock => ready.clear_ready(),
                 // macOS reports a hung-up PTY master as EIO once every slave is closed.
                 _ if error.raw_os_error() == Some(libc::EIO) => break "eof",
                 _ => break "read_failed",
@@ -357,21 +374,29 @@ impl TerminalOutput {
     }
 }
 
-/// Waits, with no timeout, until `fd` can be read (`true`) or `stopping` is (`false`: its other
-/// end was written to, or dropped, by `stop`).
-fn wait_readable(fd: RawFd, stopping: RawFd) -> io::Result<bool> {
-    let mut descriptors = [fd, stopping].map(|fd| libc::pollfd {
+/// The runtime every PTY's pump runs on: two threads for all of them, made on first use.
+fn pumps() -> io::Result<&'static tokio::runtime::Runtime> {
+    static PUMPS: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    if let Some(runtime) = PUMPS.get() {
+        return Ok(runtime);
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("axo-pty-output")
+        .enable_io()
+        .build()?;
+    Ok(PUMPS.get_or_init(|| runtime))
+}
+
+/// Whether `fd` can be read again without blocking: more output, end of file or an error.
+fn has_more(fd: RawFd) -> bool {
+    let mut descriptor = libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
-    });
-    // SAFETY: descriptors points to two initialized pollfds for live descriptors.
-    let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
-    if ready == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    // POLLHUP/POLLERR also mean "read now": read reports EOF or the error.
-    Ok(descriptors[1].revents == 0)
+    };
+    // SAFETY: one initialized pollfd; a zero timeout never blocks.
+    unsafe { libc::poll(&mut descriptor, 1, 0) > 0 }
 }
 
 /// One attachment's view of a shell's output.
@@ -681,23 +706,13 @@ mod tests {
     /// the PTY and a stop socket together, not on a timer.
     #[test]
     fn stopping_a_quiet_pump_ends_it_at_once() {
-        let mut master: RawFd = -1;
-        let mut slave: RawFd = -1;
-        // SAFETY: openpty initializes both descriptors on success.
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(opened, 0);
-        // SAFETY: openpty returned owned descriptors.
-        let master = unsafe { OwnedFd::from_raw_fd(master) };
-        // SAFETY: openpty returned owned descriptors; the slave stays open, so no hang-up.
-        let _slave = unsafe { OwnedFd::from_raw_fd(slave) };
+        // As axod opens one: libc's openpty fails now and then under concurrent launches. The
+        // slave stays open, so no hang-up.
+        let crate::process::OpenedPty {
+            master,
+            slave: _slave,
+            ..
+        } = crate::process::open_pty(crate::process::WindowSize::DEFAULT).unwrap();
         let output = TerminalOutput::start(&master).unwrap();
         let (_, subscriber) = output.subscribe(None, None);
         std::thread::sleep(Duration::from_millis(50));
@@ -713,6 +728,46 @@ mod tests {
             "{:?}",
             stopped.elapsed()
         );
+    }
+
+    /// This process's threads, as the kernel counts them.
+    fn thread_count() -> i32 {
+        // SAFETY: proc_pidinfo fills at most `size_of::<proc_taskinfo>()` bytes of `info`.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let filled = unsafe {
+            libc::proc_pidinfo(
+                std::process::id() as libc::c_int,
+                libc::PROC_PIDTASKINFO,
+                0,
+                (&mut info as *mut libc::proc_taskinfo).cast(),
+                size,
+            )
+        };
+        assert_eq!(filled, size);
+        info.pti_threadnum
+    }
+
+    /// A hundred idle shells must not cost a hundred threads: pumps are tasks (RFD0037).
+    #[test]
+    fn pumps_are_tasks_not_threads() {
+        // Made once, on first use, with its two threads.
+        let _ = pumps().unwrap();
+        let before = thread_count();
+        let ptys: Vec<_> = (0..32)
+            .map(|_| {
+                let opened = crate::process::open_pty(crate::process::WindowSize::DEFAULT).unwrap();
+                let output = TerminalOutput::start(&opened.master).unwrap();
+                (opened, output)
+            })
+            .collect();
+        let after = thread_count();
+        // Other tests run beside this one and start threads of their own; 32 pumps as threads
+        // would add 32.
+        assert!(after - before < 16, "{before} threads, then {after}");
+        for (_, output) in &ptys {
+            output.stop();
+        }
     }
 
     #[test]

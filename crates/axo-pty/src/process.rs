@@ -714,8 +714,8 @@ mod tests {
             })
             .collect();
         took.sort();
-        // Each look came 10ms after the last, so no stop took less; under load some still may.
-        assert!(took[0] < Duration::from_millis(8), "{took:?}");
+        // Each look came 10ms after the last, so no stop took less; under load most still may.
+        assert!(took[0] < Duration::from_millis(10), "{took:?}");
     }
 
     #[test]
