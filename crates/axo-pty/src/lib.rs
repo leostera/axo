@@ -6,6 +6,7 @@ pub mod command;
 pub mod exit;
 pub mod output;
 pub mod process;
+mod runtime;
 
 pub use command::CommandLine;
 pub use output::{NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink};

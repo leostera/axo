@@ -1,7 +1,7 @@
 //! Axod is the single, permanent reader of every PTY it owns.
 //!
 //! Each shell gets one pump from the moment it is spawned until its PTY reaches end of file: a
-//! task on axo-pty's own small runtime, woken by kqueue when the PTY has output (RFD0037), so a
+//! task on axo-pty's own small runtime, woken by tokio (`AsyncFd`) when the PTY has output (RFD0037), so a
 //! hundred idle shells cost no threads. The pump feeds every byte into the shell's headless terminal (its `TerminalScreen`),
 //! publishes `terminal.output` events, and fans raw bytes out to every attached client. A shell therefore never blocks on a full PTY buffer because no
 //! client is attached, and any number of clients (Mac windows, the web relay, the CLI) can watch
@@ -205,7 +205,7 @@ impl TerminalOutput {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stop_signal);
         stopping.set_nonblocking(true)?;
         let pump = Arc::clone(&output);
-        let runtime = pumps()?;
+        let runtime = crate::runtime::shared()?;
         // Registering needs the runtime's reactor; the task itself runs there too.
         let _inside = runtime.enter();
         let stopping = tokio::net::UnixStream::from_std(stopping)?;
@@ -372,20 +372,6 @@ impl TerminalOutput {
             );
         }
     }
-}
-
-/// The runtime every PTY's pump runs on: two threads for all of them, made on first use.
-fn pumps() -> io::Result<&'static tokio::runtime::Runtime> {
-    static PUMPS: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    if let Some(runtime) = PUMPS.get() {
-        return Ok(runtime);
-    }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("axo-pty-output")
-        .enable_io()
-        .build()?;
-    Ok(PUMPS.get_or_init(|| runtime))
 }
 
 /// Whether `fd` can be read again without blocking: more output, end of file or an error.
@@ -730,30 +716,12 @@ mod tests {
         );
     }
 
-    /// This process's threads, as the kernel counts them.
-    fn thread_count() -> i32 {
-        // SAFETY: proc_pidinfo fills at most `size_of::<proc_taskinfo>()` bytes of `info`.
-        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-        let filled = unsafe {
-            libc::proc_pidinfo(
-                std::process::id() as libc::c_int,
-                libc::PROC_PIDTASKINFO,
-                0,
-                (&mut info as *mut libc::proc_taskinfo).cast(),
-                size,
-            )
-        };
-        assert_eq!(filled, size);
-        info.pti_threadnum
-    }
-
     /// A hundred idle shells must not cost a hundred threads: pumps are tasks (RFD0037).
     #[test]
     fn pumps_are_tasks_not_threads() {
         // Made once, on first use, with its two threads.
-        let _ = pumps().unwrap();
-        let before = thread_count();
+        let _ = crate::runtime::shared().unwrap();
+        let before = crate::runtime::thread_count();
         let ptys: Vec<_> = (0..32)
             .map(|_| {
                 let opened = crate::process::open_pty(crate::process::WindowSize::DEFAULT).unwrap();
@@ -761,7 +729,7 @@ mod tests {
                 (opened, output)
             })
             .collect();
-        let after = thread_count();
+        let after = crate::runtime::thread_count();
         // Other tests run beside this one and start threads of their own; 32 pumps as threads
         // would add 32.
         assert!(after - before < 16, "{before} threads, then {after}");

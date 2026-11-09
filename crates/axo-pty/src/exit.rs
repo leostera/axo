@@ -1,17 +1,18 @@
-//! A child and the thread that waits for it to exit (RFD0037, "Child processes: one blocking
-//! waiter each").
+//! A child and the task that hears it exit (RFD0037, "Child processes").
 //!
-//! The waiter blocks in `waitid(WEXITED | WNOWAIT)`: it learns of the exit the moment the kernel
-//! does, and leaves the child unreaped. Reaping stays with the owner, through `try_wait`, which
-//! reaps only once the waiter has seen the exit. So a pid is never reaped, and so never reused,
-//! while the waiter or anything signalling the child could still name it.
+//! Each child's watch is a task on axo-pty's runtime, woken by tokio's SIGCHLD stream. On each
+//! wake it asks `waitid(WEXITED | WNOHANG | WNOWAIT)` whether its own child has exited, which
+//! leaves the child unreaped. Reaping stays with the owner, through `try_wait`, which reaps only
+//! once the watch has seen the exit. So a pid is never reaped, and so never reused, while the
+//! watch or anything signalling the child or its process group could still name it. That is
+//! why this is not `tokio::process`: it reaps as soon as it hears.
 
 use std::io;
 use std::process::{Child, ExitStatus};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
-/// What happens when a child exits: callbacks run on its waiter thread.
+/// What happens when a child exits: callbacks run on axo-pty's runtime, so they must not block.
 type OnExit = Box<dyn FnOnce() + Send>;
 
 /// Whether a child has exited, known as soon as the kernel knows.
@@ -57,8 +58,8 @@ impl Exit {
         true
     }
 
-    /// Runs `then` once the child has exited: at once if it already has, otherwise on the
-    /// waiter's thread when it does. `then` must not block.
+    /// Runs `then` once the child has exited: at once if it already has, otherwise on axo-pty's
+    /// runtime when it does. `then` must not block.
     pub fn on_exit(&self, then: impl FnOnce() + Send + 'static) {
         let mut state = self.lock();
         if state.exited {
@@ -86,7 +87,7 @@ impl Exit {
     }
 }
 
-/// A child this process spawned, with its waiter.
+/// A child this process spawned, with its watch.
 #[derive(Debug)]
 pub struct WatchedChild {
     child: Child,
@@ -103,20 +104,12 @@ impl std::fmt::Debug for Exit {
 }
 
 impl WatchedChild {
-    /// Starts the waiter for a child just spawned, before anything could reap it. A child
+    /// Starts the watch for a child just spawned, before anything could reap it. A child
     /// that cannot be watched is killed and reaped.
     pub fn new(mut child: Child) -> io::Result<Self> {
         let exit = Arc::new(Exit::default());
         let pid = child.id() as libc::id_t;
-        let waiting = Arc::clone(&exit);
-        let started = std::thread::Builder::new()
-            .name(format!("axo-exit-{pid}"))
-            .stack_size(64 * 1024)
-            .spawn(move || {
-                wait_for_exit(pid);
-                waiting.exited();
-            });
-        if let Err(error) = started {
+        if let Err(error) = watch(pid, Arc::clone(&exit)) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
@@ -132,8 +125,8 @@ impl WatchedChild {
         &self.exit
     }
 
-    /// Reaps the child if it has exited. Before its waiter has seen the exit this says it is
-    /// still running, so the pid stays the child's until the waiter is done with it.
+    /// Reaps the child if it has exited. Before its watch has seen the exit this says it is
+    /// still running, so the pid stays the child's until the watch is done with it.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         if !self.exit.has_exited() {
             return Ok(None);
@@ -152,16 +145,45 @@ impl WatchedChild {
     }
 }
 
-/// Blocks until `pid` has exited, leaving it unreaped. Returns at once if it is not this
-/// process's child any more (it was reaped), which only `try_wait` above can do, after this.
-fn wait_for_exit(pid: libc::id_t) {
+/// Watches `pid` from axo-pty's runtime and marks `exit` once it has exited.
+fn watch(pid: libc::id_t, exit: Arc<Exit>) -> io::Result<()> {
+    let runtime = crate::runtime::shared()?;
+    let _inside = runtime.enter();
+    // Listening before the first look: an exit after that look still sends a SIGCHLD it hears.
+    let mut children = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+    runtime.spawn(async move {
+        while !has_exited(pid) {
+            // Any child's exit wakes every watch; each asks only about its own.
+            if children.recv().await.is_none() {
+                // The runtime is shutting down with the process.
+                return;
+            }
+        }
+        exit.exited();
+    });
+    Ok(())
+}
+
+/// Whether `pid` has exited, without reaping it or waiting. True too if it is no longer this
+/// process's child (it was reaped), which only `try_wait` above can do, after this.
+fn has_exited(pid: libc::id_t) -> bool {
     loop {
-        // SAFETY: waitid writes into `info`; P_PID names one child; WNOWAIT leaves it unreaped.
+        // SAFETY: waitid writes into `info`; P_PID names one child; WNOWAIT leaves it unreaped
+        // and WNOHANG returns at once, with `info` still zeroed while the child runs.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let result =
-            unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
-        if result == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return;
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return info.si_pid != 0;
+        }
+        if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return true;
         }
     }
 }
@@ -212,7 +234,7 @@ mod tests {
                 .exit()
                 .wait_until(Instant::now() + Duration::from_secs(5))
         );
-        // Callbacks run just after the exit is known, on the waiter's thread.
+        // Callbacks run just after the exit is known, on axo-pty's runtime.
         let deadline = Instant::now() + Duration::from_secs(5);
         while !told.load(Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "the callback never ran");
@@ -226,5 +248,46 @@ mod tests {
             .exit()
             .on_exit(move || telling.store(true, Ordering::SeqCst));
         assert!(late.load(Ordering::SeqCst));
+    }
+
+    /// A hundred running children must not cost a hundred threads: watches are tasks.
+    #[test]
+    fn watching_children_costs_no_thread_each() {
+        let _ = crate::runtime::shared().unwrap();
+        let before = crate::runtime::thread_count();
+        let mut children: Vec<_> = (0..64).map(|_| spawn("sleep 30")).collect();
+        let after = crate::runtime::thread_count();
+        // Other tests run beside this one and start threads of their own; 64 watches as
+        // threads would add 64.
+        assert!(after - before < 16, "{before} threads, then {after}");
+        for child in &mut children {
+            child.kill().unwrap();
+        }
+        for child in &mut children {
+            assert!(
+                child
+                    .exit()
+                    .wait_until(Instant::now() + Duration::from_secs(10)),
+                "every exit is heard, however many share one signal"
+            );
+            assert!(child.try_wait().unwrap().is_some());
+        }
+    }
+
+    /// One child's exit wakes every watch; the others stay running and unreaped.
+    #[test]
+    fn another_childs_exit_is_not_this_ones() {
+        let mut running = spawn("sleep 30");
+        let mut exiting = spawn("exit 0");
+        assert!(
+            exiting
+                .exit()
+                .wait_until(Instant::now() + Duration::from_secs(5))
+        );
+        assert!(exiting.try_wait().unwrap().is_some());
+        assert!(!running.exit().has_exited());
+        assert!(running.try_wait().unwrap().is_none());
+        running.kill().unwrap();
+        assert!(running.wait().is_ok());
     }
 }
