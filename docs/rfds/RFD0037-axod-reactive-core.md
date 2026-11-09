@@ -71,10 +71,10 @@ Checked with `feynman check sessions/upload-wakes --depth 40`: every property ho
 ### Step 2: processes are waited for, not polled
 
 - The per-child waiter above, for shells and Pis. The reaper's 100ms tick (tests only today) goes.
-- Inspection tools, git queries and Pi's controls run as `tokio::process` children with `timeout`.
+- Inspection tools and git queries wait on their child's waiter (`WatchedChild`) until their deadline.
 - `pi_controls` waiting for a Pi to exit awaits the shell's exit instead of polling the Session state every 50ms.
 - Pi's start (`pi_recovery`, 50ms) waits on the Session state's `watch` channel for the pane to run or fail.
-- The transcript lock (`lock.rs`, 5ms and 100ms) has no wake-up: `flock` can't be awaited. When the holder is a Pi axod knows, wait for its exit, then take the lock; otherwise keep the bounded retry, as a deadline.
+- The transcript lock (`lock.rs`, 5ms and 100ms) has no wake-up: `flock` can't be awaited. When the holder is a Pi axod knows, its exit (kqueue `EVFILT_PROC`) wakes the wait; otherwise the bounded retry stays, as a deadline. The 250ms window after a fork that has not exec'd yet stays a 5ms retry: nothing reports an exec.
 
 ### Step 3: the host lease (`specs/relay/host-lease.ts`)
 
@@ -87,19 +87,23 @@ Checked with `feynman check sessions/upload-wakes --depth 40`: every property ho
 
 `axo.session.events.stream` is a connection's first request, as `axo.mcp.open` is: axod answers with the subscription, then sends each batch as an `axo.session.events` notification the moment there is one. The subscription lives as long as the connection. A subscription someone waits on is never reclaimed; one nobody waits on or polled for 60 seconds still is, for an in-process waiter that was cancelled before it unsubscribed. After a lag marker axod ends the stream, and the app opens a new one and relists. `axo.session.subscribe`, `axo.session.events.next` and `axo.session.unsubscribe` go in the same release (no legacy: the app and axod ship together, from one bundle).
 
-### Step 5: the Session manager on tokio
+### Step 5: waits on the Session state are events
 
-- Event queues become tokio channels; `wait_blocking` and the condvars go.
-- The Session state's lock becomes a `tokio::sync::Mutex` only where it is held across an await; elsewhere the state moves into the owner that changes it (RFD0034's split by owner), reached by `mpsc` commands.
-- The relay's request bridges (`spawn_blocking`, `recv_timeout` in `outbound.rs` and `peers/live.rs`) become `async fn`s awaiting a `oneshot`.
+The Session state stays one `std` mutex. Every change to it writes SQLite in the same critical section, so moving it into actors would only move the lock, across 140 call sites, for nothing a person would notice. What this step removes is the waiting: nothing that waits on the state looks again on a timer.
+
+- `StateChanges` counts each release of the state's lock after a write. `wait_for_state` reads the count, checks the state, then sleeps until the count moves: Pi's start and a Pi's controls use it.
+- An `Interrupt` (axo-agent) is a check and a descriptor that turns readable whenever the check may answer differently. axo-server makes one per recovery from `StateChanges`, so a close, a removal, a newer recovery or a shutdown calls a takeover off at once. Process inspection, the bridge's connect and reads, and the lock retry sleep on what they wait for and that descriptor together, with one `poll`, until their deadline.
+- Every write to the state goes through its guard, so no change goes unheard.
+- The relay's request bridges (`recv_timeout` in `outbound.rs`, `peers/live.rs` and `axo-questions`) stay threads blocked on a channel until their answer or deadline: blocked, not polling. Each holds a `spawn_blocking` thread only while one request is outstanding.
 - SQLite stays blocking, on `spawn_blocking` (RFD0034, Closed by the data).
 
 ### Step 6: descriptors on `AsyncFd`
 
-- PTY output pumps: `AsyncFd` on the master, one task per pane.
+- PTY output pumps: `AsyncFd` on the master, one task per pane, on axo-pty's own two-thread runtime, so they work the same in axod and in tests. The master stays blocking (attached clients share its file description), so a pump reads once per readiness and again while `poll` says there is more.
 - The terminal attach listener and each attachment: `tokio::net::UnixListener` and `UnixStream`.
-- Each Pi's bridge: `AsyncFd` and a cancellation token in `select!`, not `poll(2)` in 100ms slices.
-- Sign-in's callback listener: `tokio::net::TcpListener`, not a non-blocking accept every 50ms.
+- Each Pi's bridge: one `poll(2)` on the socket and its `Interrupt`, not 100ms slices.
+- Sign-in's callback listener: one `poll(2)` on its listeners and a wake its serving threads write, not a non-blocking accept every 50ms.
+- The inference side-car's start: one kqueue on its run directory, its log and its exit; its health is asked only when one of them changes.
 
 ### What stays a thread
 
