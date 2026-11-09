@@ -122,10 +122,26 @@ swift_library(
     module_name = "AxoPhoneUITests",
 )
 
+# Before the tests, the simulator's copy of the app goes: reinstalling the same version and build
+# can leave the old one there, and the tests then run stale code.
+# The runner calls it with no arguments, so the bundle id is written into it.
+genrule(
+    name = "uninstall_test_app_script",
+    srcs = ["uninstall_test_app.sh"],
+    outs = ["uninstall_test_app_for_phone.sh"],
+    cmd = "sed 's/@BUNDLE_ID@/%s/' $< > $@" % AXO["apple"]["bundle_ids"]["phone"],
+)
+
+sh_binary(
+    name = "uninstall_test_app",
+    srcs = [":uninstall_test_app_script"],
+)
+
 ios_xctestrun_runner(
     name = "AxoPhoneUITestRunner",
     device_type = AXO["apple"]["simulator"]["device"],
     os_version = AXO["apple"]["simulator"]["os"],
+    pre_action = ":uninstall_test_app",
 )
 
 ios_ui_test(
