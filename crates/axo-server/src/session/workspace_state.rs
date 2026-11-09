@@ -5,6 +5,7 @@
 //! nothing here may hold the catalog lock. One read per Session runs at a time; a settle during a
 //! read reads again once it ends, so the state is never older than the last settle.
 
+use axo_pty::exit::WatchedChild;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -154,7 +155,7 @@ fn without_credentials(url: &str) -> String {
 
 /// One git command's trimmed output, or None if it failed, printed nothing or took too long.
 fn git(directory: &Path, arguments: &[&str]) -> Option<String> {
-    let mut child = Command::new("git")
+    let child = Command::new("git")
         .arg("-C")
         .arg(directory)
         .args(arguments)
@@ -165,26 +166,21 @@ fn git(directory: &Path, arguments: &[&str]) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .ok();
+    let mut child = child?;
     let mut stdout = child.stdout.take()?;
+    let mut child = WatchedChild::new(child).ok()?;
     let reader = std::thread::spawn(move || {
         let mut output = String::new();
         stdout.read_to_string(&mut output).map(|_| output)
     });
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < GIT_TIMEOUT => {
-                std::thread::sleep(Duration::from_millis(10))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
+    // Its exit is heard at once; past the limit it is killed (RFD0037).
+    if !child.exit().wait_until(Instant::now() + GIT_TIMEOUT) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+    let status = child.try_wait().ok()??;
     let output = reader.join().ok()?.ok()?;
     let output = output.trim_end_matches(['\n', '\r']).to_owned();
     (status.success() && !output.trim().is_empty()).then_some(output)
