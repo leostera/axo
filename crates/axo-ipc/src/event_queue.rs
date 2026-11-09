@@ -1,4 +1,4 @@
-//! A bounded per-subscription event queue with both blocking and async waiters.
+//! A bounded per-subscription event queue; its waiters are futures.
 //!
 //! Publishers never block: a full queue marks the subscription lagged and the next take returns
 //! the queue's lag marker alone (discarding the gapped backlog) instead of presenting a silent
@@ -7,8 +7,8 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use tokio::sync::Notify;
 
@@ -17,9 +17,7 @@ pub struct EventQueue<T> {
     capacity: usize,
     /// Delivered alone, in place of the discarded backlog, after the queue overflowed.
     lag_marker: fn() -> T,
-    /// Wakes blocking waiters.
-    ready: Condvar,
-    /// Wakes async waiters.
+    /// Wakes waiters.
     notify: Notify,
 }
 
@@ -48,7 +46,6 @@ impl<T> EventQueue<T> {
             }),
             capacity,
             lag_marker,
-            ready: Condvar::new(),
             notify: Notify::new(),
         }
     }
@@ -87,7 +84,6 @@ impl<T> EventQueue<T> {
     }
 
     fn wake(&self) {
-        self.ready.notify_all();
         self.notify.notify_waiters();
     }
 
@@ -111,24 +107,13 @@ impl<T> EventQueue<T> {
         Some(Ok(state.events.drain(..count).collect()))
     }
 
-    /// Blocks the calling thread for up to `timeout`. An empty result means it timed out.
+    /// [`Self::wait`] for a thread outside any runtime, such as a test's: it runs the same wait
+    /// on a runtime of its own.
     pub fn wait_blocking(&self, timeout: Duration, max_events: usize) -> io::Result<Vec<T>> {
-        let deadline = Instant::now() + timeout;
-        let mut state = self.lock();
-        loop {
-            if let Some(result) = self.take(&mut state, max_events) {
-                return result;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(Vec::new());
-            }
-            state = self
-                .ready
-                .wait_timeout(state, remaining)
-                .map(|(state, _)| state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner().0);
-        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?
+            .block_on(self.wait(timeout, max_events))
     }
 
     /// Waits up to `timeout` without blocking a thread. An empty result means it timed out.
@@ -220,7 +205,7 @@ mod tests {
                 })
                 .collect();
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let started = Instant::now();
+            let started = std::time::Instant::now();
             for (index, queue) in queues.iter().enumerate() {
                 queue.push(index as i64);
             }
