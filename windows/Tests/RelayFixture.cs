@@ -54,6 +54,10 @@ sealed class RelayFixture : IAsyncDisposable
             if(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes))!=hash){context.Response.StatusCode=400;return;}
             fixture.Assets[hash]=bytes;context.Response.StatusCode=201;
         });
+        app.MapGet("/api/v1/accounts/{account}/hosts/{host}/assets/{hash}",async(HttpContext context,string account,string host,string hash)=>{
+            if(account!=Account || context.Request.Headers.Authorization!="Bearer "+fixture.credential){context.Response.StatusCode=401;return;}
+            if(!fixture.Assets.TryGetValue(hash,out var bytes)){context.Response.StatusCode=404;return;}context.Response.ContentLength=bytes.Length;await context.Response.Body.WriteAsync(bytes);
+        });
         await app.StartAsync();fixture.Origin=app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();return fixture;
     }
     async Task ReadAsync(WebSocket ws,CancellationToken token)
@@ -104,6 +108,14 @@ sealed class RelayFixture : IAsyncDisposable
         var id="remote-"+Interlocked.Increment(ref callId);var result=new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);calls[id]=result;
         await SendAsync(socket??throw new IOException("No daemon connection"),new{jsonrpc="2.0",id,method,@params=parameters});
         try{return await result.Task.WaitAsync(TimeSpan.FromSeconds(15));}finally{calls.TryRemove(id,out _);}
+    }
+    public static object SignedAnswer(object target,string id,string action,JsonElement? sealedValue=null)
+    {
+        using var key=System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var point=key.ExportParameters(false).Q;var publicKey=new byte[65];publicKey[0]=4;point.X!.CopyTo(publicKey,1);point.Y!.CopyTo(publicKey,33);
+        string digest=sealedValue is JsonElement s?Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(s.GetProperty("enc").GetString()+"\n"+s.GetProperty("ciphertext").GetString()))):"";
+        byte[] signature=key.SignData(Encoding.UTF8.GetBytes($"axo-answer/v1\n{id}\n{action}\n{digest}"),System.Security.Cryptography.HashAlgorithmName.SHA256,System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        return new {target,elicitationId=id,action,@sealed=sealedValue,device=new {key=Convert.ToBase64String(publicKey),name="Isolated Windows fixture",signature=Convert.ToBase64String(signature)}};
     }
     public string[] Messages(string id)
     {

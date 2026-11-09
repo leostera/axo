@@ -41,12 +41,12 @@ public sealed class TerminalView : FrameworkElement
         var paste = new System.Windows.Controls.MenuItem { Header = "Paste", InputGestureText = "Ctrl+Shift+V" }; paste.Click += async (_, _) => await PasteAsync();
         menu.Items.Add(copy); menu.Items.Add(paste); ContextMenu = menu;
     }
-    public async Task AttachAsync(DaemonClient client, string id)
+    public async Task AttachAsync(DaemonClient client, string id, int shellId = 0)
     {
-        var current = ++generation; daemon = client; session = id; shell = 0; attaching = true; pending.Clear(); decoder.Reset(); screen.Reset(); scroll = 0;
+        var current = ++generation; daemon = client; session = id; shell = shellId; attaching = true; pending.Clear(); decoder.Reset(); screen.Reset(); scroll = 0;
         try
         {
-            var result = await client.CallAsync("axo.terminal.create", new { sessionId = id });
+            var result = shellId == 0 ? await client.CallAsync("axo.terminal.create", new { sessionId = id }) : await client.CallAsync("axo.terminal.replay", new { sessionId = id, shellId });
             if (current != generation) return;
             shell = result.GetProperty("shellId").GetInt32(); inputSequence = result.GetProperty("nextInputSequence").GetUInt64(); outputSequence = 0;
             foreach (var chunk in result.GetProperty("chunks").EnumerateArray())
@@ -69,7 +69,7 @@ public sealed class TerminalView : FrameworkElement
         if (sequence != outputSequence) { _ = ReplayAsync(); return; }
         outputSequence = sequence + 1; Append(bytes); InvalidateVisual();
     }
-    async Task ReplayAsync() { if (daemon is not null && session is not null && !attaching) await AttachAsync(daemon, session); }
+    async Task ReplayAsync() { if (daemon is not null && session is not null && !attaching) await AttachAsync(daemon, session, shell); }
     void Append(byte[] bytes)
     {
         var chars = new char[Encoding.UTF8.GetMaxCharCount(bytes.Length)];

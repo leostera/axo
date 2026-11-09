@@ -86,6 +86,7 @@ public partial class MainWindow : Window
                 if (subscription is null)
                 {
                     subscription = (await daemon.CallAsync("axo.session.subscribe", new { includeTerminalOutput = true }, lifetime.Token)).GetProperty("subscriptionId").GetString();
+                    if (selected is string resumed) await daemon.CallAsync("axo.session.open",new {sessionId=resumed});
                     await RefreshCatalogAsync();
                     ApplyRelayStatus(await daemon.CallAsync("axo.relay.status"));
                     await RefreshComputerQuestionsAsync();
@@ -132,6 +133,7 @@ public partial class MainWindow : Window
             WorkspacePicker.SelectedItem = workspaces.FirstOrDefault(w => w.Id == oldWorkspace) ?? workspaces.FirstOrDefault();
             var result = await daemon.CallAsync("axo.session.list");
             allSessions = result.GetProperty("sessions").EnumerateArray().Select(SessionView.From).ToList();
+            foreach(var item in result.GetProperty("sessions").EnumerateArray()) if(item.GetProperty("id").GetString()==selected) await EmbeddedTerminal.SynchronizeAsync(item);
             FilterSessions();
             if (selected is null && Sessions.Count > 0) SessionList.SelectedItem = Sessions[0];
             NewSessionButton.IsEnabled = workspaces.Count > 0;
@@ -174,7 +176,7 @@ public partial class MainWindow : Window
         if (selected == session.Id) return;
         if (selected is not null) drafts[selected] = Composer.Text;
         selected = session.Id;
-        Composer.Text = drafts.GetValueOrDefault(selected, "");
+        Composer.Text = drafts.GetValueOrDefault(selected, ""); UpdateComposerHint();
         var id = selected;
         EmbeddedTerminal.Detach();
         messageCursor = 0; eventCursor = 0; messageIndex.Clear(); Messages.Clear();
@@ -321,26 +323,30 @@ public partial class MainWindow : Window
         var working = status is "working" or "needsAttention";
         ActivityText.Text = status switch { "working" => "Codex · working…", "needsAttention" => "Codex · needs input", "unavailable" => "Codex · disconnected", _ => "Codex" };
         Composer.IsEnabled = selected is not null && status != "unavailable";
-        SendButton.IsEnabled = Composer.IsEnabled && !working && !sending;
+        SendButton.IsEnabled = Composer.IsEnabled && !sending;
         StopButton.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
         if (SessionList.SelectedItem is SessionView session) session.Status = status;
         Title = (SessionList.SelectedItem as SessionView)?.Name is string name ? name + " — Axo Terminal" : "Axo Terminal";
         UpdateTray();
     }
 
+    readonly Dictionary<string, PasswordBox> secretInputs = new();
+
     void ApplyPending(JsonElement requests)
     {
         lastPendingRequests = requests.Clone();
         var request = requests.EnumerateArray().FirstOrDefault();
         if (computerQuestions.FirstOrDefault() is var computerQuestion && computerQuestion.ValueKind == JsonValueKind.Object)
-            request = JsonSerializer.SerializeToElement(new { id = computerQuestion.GetProperty("id").GetString(), method = "axo.computer.confirm", @params = new { message = computerQuestion.GetProperty("message").GetString() } });
+            request = JsonSerializer.SerializeToElement(new { id = computerQuestion.GetProperty("id").GetString(), method = "axo.computer.confirm", @params = computerQuestion });
         if (request.ValueKind != JsonValueKind.Object)
         {
+            foreach (var input in secretInputs.Values) input.Clear();
+            secretInputs.Clear(); QuestionFields.Children.Clear();
             pendingRequest = null; ApprovalPanel.Visibility = Visibility.Collapsed; return;
         }
         if (pendingRequest is JsonElement previous && previous.GetProperty("id").GetRawText() == request.GetProperty("id").GetRawText()) return;
         pendingRequest = request.Clone();
-        questionInputs.Clear(); QuestionFields.Children.Clear();
+        questionInputs.Clear(); secretInputs.Clear(); QuestionFields.Children.Clear();
         ApprovalPanel.Visibility = Visibility.Visible;
         var method = request.GetProperty("method").GetString();
         var parameters = request.GetProperty("params");
@@ -348,6 +354,17 @@ public partial class MainWindow : Window
         if (method == "axo.computer.confirm")
         {
             ApprovalTitle.Text = "Allow computer use?"; ApprovalDetail.Text = parameters.GetProperty("message").GetString();
+            if (parameters.TryGetProperty("input", out var form) && form.ValueKind == JsonValueKind.Object)
+            {
+                ApprovalTitle.Text = "Fill this form?"; ApproveButton.Content = form.TryGetProperty("submit", out var submit) ? "Fill and " + submit.GetString() : "Fill fields";
+                foreach (var field in form.GetProperty("fields").EnumerateArray())
+                {
+                    QuestionFields.Children.Add(new TextBlock { Text = field.GetProperty("label").GetString(), Margin = new Thickness(0, 4, 0, 4) });
+                    var input = new PasswordBox { MaxLength = 1000, Padding = new Thickness(8), Margin = new Thickness(0, 0, 0, 6) };
+                    System.Windows.Automation.AutomationProperties.SetName(input, field.GetProperty("label").GetString());
+                    secretInputs[field.GetProperty("id").GetString()!] = input; QuestionFields.Children.Add(input);
+                }
+            }
         }
         else if (method == "item/tool/requestUserInput")
         {
@@ -416,16 +433,16 @@ public partial class MainWindow : Window
     async Task SendAsync()
     {
         var id = selected; var text = Composer.Text.Trim();
-        if (id is null || text.Length == 0 || sending) return;
+        if (id is null || text.Length == 0 && attachedFiles.Count == 0 || sending) return;
         sending = true; SendButton.IsEnabled = false; HideError();
         try
         {
-            await daemon.CallAsync("axo.session.prompt", new { sessionId = id, text, delivery = "turn" });
-            drafts.Remove(id);
+            await daemon.CallAsync("axo.session.prompt", new { sessionId = id, text, delivery = deliveryMode, attachments = attachedFiles.ToArray() });
+            drafts.Remove(id); fileDrafts.Remove(id); UpdateComposerHint();
             if (selected == id) { if (Composer.Text.Trim() == text) Composer.Clear(); UpdateStatus("working"); ChatScroll.ScrollToEnd(); }
         }
         catch (Exception error) { ShowError(error.Message); }
-        finally { sending = false; }
+        finally { sending = false; SendButton.IsEnabled = Composer.IsEnabled; }
     }
     async void StopTurn(object sender, RoutedEventArgs e)
     {
@@ -436,7 +453,7 @@ public partial class MainWindow : Window
     async void OpenTerminal(object sender, RoutedEventArgs e)
     {
         if (selected is null) return;
-        try { await AttachTerminalAsync(selected); EmbeddedTerminal.Focus(); }
+        try { if (EmbeddedTerminal.Shells.Count == 0) await AttachTerminalAsync(selected); else { SetTerminalVisible(true); await EmbeddedTerminal.SplitAsync("right"); } EmbeddedTerminal.Focus(); }
         catch (Exception error) { ShowError(error.Message); }
     }
     async void Approve(object sender, RoutedEventArgs e) => await RespondAsync("accept");
@@ -449,7 +466,8 @@ public partial class MainWindow : Window
         {
             if (request.GetProperty("method").GetString() == "axo.computer.confirm")
             {
-                await daemon.CallAsync("axo.elicitation.resolve", new { elicitationId = request.GetProperty("id").GetString(), action = decision });
+                await daemon.CallAsync("axo.elicitation.resolve", new { elicitationId = request.GetProperty("id").GetString(), action = decision, values = decision == "accept" && secretInputs.Count > 0 ? secretInputs.ToDictionary(p => p.Key, p => p.Value.Password) : null });
+                foreach (var input in secretInputs.Values) input.Clear();
                 pendingRequest = null;
                 lastPendingRequests = JsonSerializer.SerializeToElement(Array.Empty<object>());
                 await RefreshComputerQuestionsAsync();

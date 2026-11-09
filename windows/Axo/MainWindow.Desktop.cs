@@ -70,8 +70,8 @@ public partial class MainWindow
         switch (button.Tag)
         {
             case "Axo": Add("Settings…", ShowSettings, "Ctrl+,"); menu.Items.Add(new Separator()); Add("Quit Axo", Quit, "Ctrl+Q"); break;
-            case "Terminal": Add("New Workspace…", OpenFolder, "Ctrl+N"); Add("New Session", ChooseNewSession, "Ctrl+Shift+N"); menu.Items.Add(new Separator()); Add("Split Right", OpenTerminal, "Ctrl+Shift+D", selected is not null); Add("Open External Terminal", OpenExternalTerminal, "", selected is not null); menu.Items.Add(new Separator()); Add("Session", ShowSessionMenu, "", selected is not null); break;
-            case "View": Add("Toggle Sidebar", ToggleSidebar, "Ctrl+B"); Add("Close Terminal Pane", CloseTerminal, "", selected is not null); break;
+            case "Terminal": Add("New Workspace…", OpenFolder, "Ctrl+N"); Add("New Session", ChooseNewSession, "Ctrl+Shift+N"); menu.Items.Add(new Separator()); Add("Split Right", OpenTerminal, "Ctrl+Shift+D", selected is not null); Add("Split Down", SplitDown, "Ctrl+D", selected is not null); Add("Close Terminal", CloseFocusedTerminal, "Ctrl+W", selected is not null); Add("Open External Terminal", OpenExternalTerminal, "", selected is not null); menu.Items.Add(new Separator()); Add("Session", ShowSessionMenu, "", selected is not null); break;
+            case "View": Add("Command Palette…", ShowPalette, "Ctrl+Shift+P"); Add("Toggle Sidebar", ToggleSidebar, "Ctrl+B"); Add("Close Terminal Pane", CloseTerminal, "", selected is not null); break;
         }
         menu.PlacementTarget = button; menu.IsOpen = true;
     }
@@ -116,7 +116,9 @@ public partial class MainWindow
         else if (e.Key == Key.Q) Quit(sender, e);
         else if (e.Key == Key.B) ToggleSidebar(sender, e);
         else if (e.Key == Key.N) { if (shift) ChooseNewSession(sender, e); else OpenFolder(sender, e); }
-        else if (e.Key == Key.D && shift) OpenTerminal(sender, e);
+        else if (e.Key == Key.P && shift) ShowPalette(sender, e);
+        else if (e.Key == Key.W) CloseFocusedTerminal(sender, e);
+        else if (e.Key == Key.D) { if (shift) OpenTerminal(sender, e); else SplitDown(sender,e); }
         else return; e.Handled = true;
     }
     void SystemThemeChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e) => Dispatcher.BeginInvoke(() => { preferences.Apply(); if (SystemParameters.ClientAreaAnimation) trayClock.Start(); else trayClock.Stop(); });

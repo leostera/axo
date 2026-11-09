@@ -16,8 +16,11 @@ use std::io;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use axo_ipc::Extension;
+#[cfg(unix)]
 use axo_ipc::peer::{Caller, Signer};
+#[cfg(unix)]
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::elicitation::{
     Asker, BAD_INPUT, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind,
@@ -27,7 +30,9 @@ use axo_protocol::elicitation::{
 };
 use axo_protocol::rpc::{MethodError, method};
 use axo_protocol::{Event, SessionId, new_uuid_v4};
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+use jsonrpc_core::{Error as RpcError, ErrorCode};
+#[cfg(unix)]
+use jsonrpc_core::IoHandler;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -489,6 +494,7 @@ impl QuestionsExtension {
     }
 }
 
+#[cfg(unix)]
 impl Extension for QuestionsExtension {
     fn name(&self) -> &'static str {
         "questions"

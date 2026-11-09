@@ -50,12 +50,15 @@ The current unified crate dependency resolver still resolves Cua's pinned source
 
 1. Use **+** or **Ctrl+N**, choose a project folder and name the Workspace. Axo creates its first Codex session.
 2. Send a message. Output streams into the conversation; command output and file activity appear
-   while it runs. Use **Stop** to interrupt a turn. Codex's default model is used.
+   while it runs. Use **Stop** to interrupt a turn. The composer’s **⋯** menu offers model/reasoning,
+   queued messages, steering and interrupt-and-send. **+** attaches files (up to eight); images go
+   to Codex as images and other files as local path references. Attachments are snapshotted on send.
 3. **Terminal → New Session** (**Ctrl+Shift+N**) creates another session in a chosen Workspace.
    The sidebar lists sessions across Workspaces, grouped as Pinned, Active and Earlier.
 4. The workbench shows the Codex pane and an embedded PowerShell terminal side by side. **Split Right**
-   (**Ctrl+Shift+D**) reveals the terminal; **View → Close Terminal Pane** hides its view without
-   killing the shell. Terminal text can be selected and copied; Ctrl+Shift+C/V copy and paste.
+   (**Ctrl+Shift+D**) and **Split Down** (**Ctrl+D**) add independent terminals in a nested layout.
+   **Close Terminal** (**Ctrl+W**) asks before stopping the focused shell. Ratios and shell identities
+   survive a daemon restart, with new shell processes. **Ctrl+Shift+P** opens the command palette. Terminal text can be selected and copied; Ctrl+Shift+C/V copy and paste.
    **Open External Terminal** remains available. Axod owns both terminal and agent processes.
 5. Closing the window hides it. The animated Axo in the Windows notification area offers **Open
    Terminal**, **Settings…** and **Quit Axo**. Windows may put this icon in the overflow area.
@@ -96,12 +99,16 @@ folder. `--relay-url` / `AXO_RELAY_URL` can select a development relay; non-loop
 Completed Codex messages are projected into the relay's existing `pi/3` interchange format so
 existing clients can read conversations. Codex's thread and SQLite history remain authoritative.
 The host reports `windows` and only capabilities recognised by the existing production v2 service;
-it never claims to be Pi. Remote clients can create/list/rename/archive sessions, send idle-session
+it never claims to be Pi. Remote clients can create/list/rename/archive sessions, send
 prompts, resolve supported permission requests by their exact elicitation ID, and stop a turn they
 actually saw. Command UUID receipts persist across reconnects to prevent duplicate turns.
 
-Remote steering, mid-run interrupt-and-send, busy-turn follow-up queues, attachments and model switching are not
-implemented in this Windows slice. The Windows host answers the account's typed AXP remote methods;
+Remote steering, interrupt-and-send, follow-up queues, verified attachments, model/reasoning selection
+and nested terminal layouts use the same daemon operations as the desktop. Follow-ups are stored
+in SQLite before acknowledgement, then sent when the turn finishes (or the session is reopened
+after a restart). An uncertain delivery is shown as unconfirmed and is never automatically replayed.
+The remote conversation currently shows a queued message once Codex consumes it; pending queue
+management is available in the Windows client. The Windows host answers the account's typed AXP remote methods;
 the shared relay transports them and never forwards local settings methods. Large permission requests and text questionnaires are handled
 on the PC. A rejected or unsupported remote command is reported as an error rather than accepted
 and discarded. Linking a real account requires the user's fresh pairing code; tests use an isolated relay.
@@ -136,9 +143,30 @@ the MCP bridge. This peer check is not isolation from arbitrary code running as 
 user, which can already modify the user's application files.
 
 Computer tools cannot act on Axo's own UI, use desktop-scope input, unlock the PC, dismiss UAC,
-or bypass Windows integrity boundaries. Composite scripts and sealed secret-input forms are not
-advertised on Windows yet. The word gate is not a complete semantic safety reviewer. Full Access
+or bypass Windows integrity boundaries. **run_steps** supports up to 32 sequential operations,
+with a shared deadline and the same per-operation gates; it stops on error, decline or revocation.
+Raw scripts and nested sequences remain unavailable. The word gate is not a complete semantic safety reviewer. Full Access
 for shell commands remains separate from the computer-use opt-in and its permission requests.
+
+**request_input** presents fields identified from a retained UI Automation form. Local answers go
+directly from Axo to the protected pipe; remote answers use the shared device-signed HPKE envelope,
+with the host key protected by DPAPI. Axo checks the window, field identities and browser document
+origin again before filling through ValuePattern. It refuses forms that cannot be verified; no
+clipboard or keyboard fallback is used. The agent receives a receipt, not the entered values.
+Filled values are masked in subsequent computer text reads. After an input request, screenshots
+are suppressed for that daemon lifetime because Windows does not yet have pixel-level secret
+redaction. Redaction memory does not persist across daemon restart. This protects computer-tool
+results, not arbitrary shell commands allowed by Full Access.
+
+## Install and update
+
+**Settings → About → Install This Build** verifies the bundled SHA-256 manifest, stages a release
+under %LOCALAPPDATA%/Programs/Axo/releases, and adds a Start menu shortcut. **Update from Package…**
+accepts a locally selected Axo ZIP with the manifest at its root. Neither action needs Administrator
+rights, stops a process, nor replaces the running release. Relaunch and restart the daemon when
+you are ready; terminal processes and active turns stop at that point. Previous releases remain
+on disk. There is no automatic download/update feed, startup registration or Authenticode signature
+yet; the manifest checks package integrity, not publisher identity.
 
 ## Mac interface reference
 
@@ -201,8 +229,8 @@ The pipe negotiates only methods actually implemented on Windows. Windows chat/s
 are additive and are not yet the generic AXP agent protocol or wire-compatible replacements for
 Pi's terminal panes; the Apple client is unchanged.
 
-Not included: sealed computer-input forms, composite computer scripts, local inference, the Pi bridge, voice, arbitrary/nested terminal splits,
-full Ghostty terminal features/configuration, auto-update, startup registration, or an installer. Completed chat
+Not included: raw computer scripts, local inference, the Pi bridge, voice,
+full Ghostty terminal features/configuration, automatic updates or startup registration. Completed chat
 messages are persisted locally; live tool output is not retained across desktop restarts. A turn
 interrupted by a daemon crash may have an incomplete local display, while Codex retains its own
 thread history. Terminal replay is bounded to 2 MiB per shell and the native VT surface is a
