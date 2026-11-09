@@ -53,7 +53,8 @@ use crate::outbound::{Priority, RelayChannel};
 use crate::peers::{PeersDependencies, PeersWorker};
 use crate::sync::{SyncWaker, SyncWorker};
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+/// How often axod renews its lease on the HostDO: `LIMITS.heartbeatMs` (RFD0037).
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
 const NOT_LINKED: &str = "This Mac is not linked to an Axo account.";
@@ -408,4 +409,30 @@ async fn run_connection(
     sessions.set_asset_source(None);
     unsubscribe(subscription_id).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HEARTBEAT_INTERVAL;
+    use std::time::Duration;
+
+    /// A limit from `LIMITS` in `packages/axo-api/src/contracts.ts`, in milliseconds.
+    fn cloud_limit(name: &str) -> u64 {
+        let contracts = include_str!("../../../packages/axo-api/src/contracts.ts");
+        let line = contracts
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(&format!("{name}: ")))
+            .unwrap_or_else(|| panic!("LIMITS.{name} is in contracts.ts"));
+        line.trim_end_matches(',').replace('_', "").parse().unwrap()
+    }
+
+    #[test]
+    fn the_heartbeat_is_the_clouds_and_fits_twice_in_its_lease() {
+        // RFD0037 (specs/relay/host-lease.ts): a live Mac never loses its route.
+        let heartbeat = Duration::from_millis(cloud_limit("heartbeatMs"));
+        let lease = Duration::from_millis(cloud_limit("leaseMs"));
+        let deadline = Duration::from_millis(cloud_limit("deadlineMs"));
+        assert_eq!(HEARTBEAT_INTERVAL, heartbeat);
+        assert!(2 * HEARTBEAT_INTERVAL + deadline <= lease);
+    }
 }

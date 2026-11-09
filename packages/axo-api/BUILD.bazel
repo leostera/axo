@@ -8,6 +8,9 @@ package(default_visibility = ["//visibility:public"])
 
 npm_link_all_packages(name = "node_modules")
 
+# axod's relay tests read the limits it shares with the cloud.
+exports_files(["src/contracts.ts"])
+
 # @axo/protocol: the RPC contracts other packages import as TypeScript source.
 npm_package(
     name = "pkg",

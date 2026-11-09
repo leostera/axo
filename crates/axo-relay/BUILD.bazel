@@ -29,7 +29,10 @@ rust_library(
 
 rust_test(
     name = "axo_relay_tests",
-    compile_data = ["//schemas/axo.leostera.dev/v1"],
+    compile_data = [
+        "//packages/axo-api:src/contracts.ts",
+        "//schemas/axo.leostera.dev/v1",
+    ],
     crate = ":axo_relay",
     edition = "2024",
 )
