@@ -83,7 +83,7 @@ A client asks again when it opens the `/` list or the model menu, so neither nee
 
 1. If the Pi is running, axod sends the bridge's existing `shutdown` action. pi-axo aborts a running turn and exits.
 2. Axod waits up to 10 s for the pane to become unavailable. If it does not, axod kills the process.
-3. Axod calls `restart_unavailable_pi(…, ExplicitUserRestart)`, as the Mac's own restart does.
+3. Axod calls `restart_unavailable_pi(…)`, as the Mac's own restart does.
 
 Status goes `starting` → `ready` through the usual snapshots, which is how clients know when the restart has finished. Held prompts survive it, because they are in the log (next section).
 
