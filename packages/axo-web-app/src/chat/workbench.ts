@@ -1,3 +1,4 @@
+import { ConversationFeed } from "./feed.ts";
 import type {
   AccountEvents,
   ClientHello,
@@ -196,6 +197,8 @@ export type HistoryState =
 
 export class Chat {
   transcript: ChatTranscript | null = null;
+  /** Its conversation's rows, kept while it is on screen (RFD0040). */
+  readonly feed = new ConversationFeed();
   pending: PendingPrompt[] = [];
   history: HistoryState = { kind: "none" };
   stopping = false;
@@ -366,6 +369,10 @@ export class ChatWorkbench {
   isSending = false;
   /** Bumped on every change, for `useSyncExternalStore`. */
   version = 0;
+  /** Whether the page is seen (see `setVisible`). */
+  private visible = true;
+  /** The feed of the chat on screen, kept by `keepFeed`. */
+  private screenFeed: ConversationFeed | null = null;
 
   private readonly chats = new Map<string, Chat>();
   /** What the Macs ask, by elicitation id, oldest first (RFD0029). */
@@ -422,8 +429,38 @@ export class ChatWorkbench {
   getVersion = (): number => this.version;
 
   private changed(): void {
+    this.keepFeed();
     this.version += 1;
     for (const listener of this.listeners) listener();
+  }
+
+  /** Whether the page is seen: a hidden tab lets nothing out, and shows what arrives as it is. */
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return;
+    this.visible = visible;
+    this.changed();
+  }
+
+  /**
+   * Keeps the rows of the chat on screen: brought up to date with every change, and told when it
+   * comes on screen or leaves it. The other chats' rows are not kept; one that comes on screen
+   * starts from what it holds, as history.
+   */
+  private keepFeed(): void {
+    const selection = this.selection;
+    const chat = selection?.kind === "chat" ? this.chats.get(selection.sessionId) ?? null : null;
+    const feed = chat && this.visible ? chat.feed : null;
+    if (feed !== this.screenFeed) {
+      this.screenFeed?.closed();
+      this.screenFeed = feed;
+      if (chat && feed) {
+        feed.animates = !reducedMotion();
+        feed.update(chat.transcript, chat.waiting);
+        feed.opened();
+      }
+      return;
+    }
+    if (chat && feed) feed.update(chat.transcript, chat.waiting);
   }
 
   get openHost(): Host | null {
@@ -533,6 +570,7 @@ export class ChatWorkbench {
   }
 
   dispose(): void {
+    this.screenFeed?.dispose();
     this.generation += 1;
     this.clearReconnect();
     for (const timer of this.retries.values()) clearTimeout(timer);
@@ -1269,4 +1307,10 @@ export class ChatWorkbench {
     }
     this.changed();
   }
+}
+
+/** Whether the person asked for less motion; never in a place with no window (the model's tests). */
+function reducedMotion(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }

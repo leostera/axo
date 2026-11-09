@@ -1,0 +1,70 @@
+{
+  "at": "2026-11-09T23:36:42.464Z",
+  "commit": "ad56b47",
+  "dirty": true,
+  "chrome": "157.0.8103.50",
+  "node": "v26.13.0",
+  "history": 400,
+  "results": {
+    "open": {
+      "ms": 1120,
+      "rows": 50,
+      "fromEnd": 0,
+      "lastVisible": true,
+      "lastText": "Step 400: and then the next step of the ",
+      "nodes": 1513,
+      "longTaskMs": 85
+    },
+    "stream": {
+      "renders": {
+        "Conversation": 54,
+        "Message": 2,
+        "Markdown": 44,
+        "Growing": 82
+      },
+      "longTaskMs": 0,
+      "painted": {
+        "worst": 0,
+        "frames": 5
+      },
+      "end": {
+        "rows": 51,
+        "fromEnd": 0,
+        "lastVisible": true,
+        "lastText": "word1 word2 word3 word4 word5 word6 word",
+        "nodes": 1525
+      }
+    },
+    "flood": {
+      "renders": {
+        "Conversation": 114,
+        "Message": 58,
+        "Markdown": 588,
+        "Growing": 530
+      },
+      "longTaskMs": 0,
+      "painted": {
+        "worst": 0,
+        "frames": 90
+      },
+      "end": {
+        "rows": 81,
+        "fromEnd": 0,
+        "lastVisible": true,
+        "lastText": "Flood reply 30: Step 30: andjust now",
+        "nodes": 2326
+      }
+    },
+    "elsewhere": {
+      "renders": {
+        "Conversation": 6
+      },
+      "longTaskMs": 0
+    },
+    "hidden": {
+      "visibility": "hidden",
+      "shownWhileHidden": false,
+      "msToShowOnReturn": 6
+    }
+  }
+}

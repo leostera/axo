@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { attachmentsIn, ChatTranscript } from "../src/chat/transcript.ts";
+import { ConversationFeed } from "../src/chat/feed.ts";
 import { conversationRows, levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
@@ -1173,4 +1174,102 @@ test("a Mac from before interrupts gets the message as a follow-up, at once, wit
   assert.deepEqual(prompts.map(call => [call.params.commandId, call.params.delivery]), [["pending-1", "interrupt"], ["pending-1", undefined]]);
   assert.equal(workbench.failure, null);
   workbench.dispose();
+});
+
+// MARK: - The conversation's rows (RFD0040)
+
+/** A feed on screen, its clock stepped by hand. */
+function feedOf(transcript: ChatTranscript): ConversationFeed {
+  const feed = new ConversationFeed(false);
+  feed.update(transcript, []);
+  feed.opened();
+  return feed;
+}
+const ids = (feed: ConversationFeed) => feed.items.map(item => item.row.kind === "message" ? item.row.message.text : item.id);
+/** Steps the clock until every reply being let out is all out. */
+function letOut(feed: ConversationFeed): void {
+  for (let i = 0; i < 1000 && feed.items.some(item => item.row.kind === "message" && item.row.reveal); i++) feed.tick(32);
+}
+
+test("a feed keeps each row it made: new ones go on the end, an older page on top", () => {
+  const transcript = transcriptOf([said(3, "user", "three"), said(4, "user", "four")]);
+  const feed = feedOf(transcript);
+  const [three, four] = feed.items;
+  transcript.append([said(5, "user", "five")]);
+  feed.update(transcript, []);
+  transcript.prepend([said(1, "user", "one"), said(2, "user", "two")]);
+  feed.update(transcript, []);
+  assert.deepEqual(ids(feed), ["one", "two", "three", "four", "five"]);
+  assert.equal(feed.items[2], three);
+  assert.equal(feed.items[3], four);
+});
+
+test("a feed tells the list only when a row comes or goes, and a row only when it changes", () => {
+  const transcript = transcriptOf([said(1, "user", "hi")]);
+  const feed = feedOf(transcript);
+  let list = 0;
+  feed.subscribe(() => { list += 1; });
+  const first = feed.items[0]!;
+  let row = 0;
+  first.subscribe(() => { row += 1; });
+  // The transcript makes its messages again on every change; the same message keeps its row.
+  transcript.progress("message", { message: { role: "assistant", timestamp: 9, content: [{ type: "text", text: "Hel" }] } });
+  feed.update(transcript, []);
+  assert.equal(list, 1);
+  transcript.progress("message", { message: { role: "assistant", timestamp: 9, content: [{ type: "text", text: "Hello there" }] } });
+  feed.update(transcript, []);
+  assert.equal(list, 1, "a reply growing is not a row added");
+  assert.equal(row, 0, "the row above it does not change");
+});
+
+test("a reply is let out by the feed's clock, with no view, and what follows it comes after", () => {
+  const transcript = transcriptOf([said(1, "user", "hi")]);
+  const feed = feedOf(transcript);
+  transcript.append([said(2, "assistant", "One two three four five six seven eight nine ten", { timestamp: 7 }), said(3, "user", "next")]);
+  feed.update(transcript, []);
+  assert.deepEqual(ids(feed), ["hi", "One two three four five six seven eight nine ten"], "what follows waits for the reply");
+  assert.ok((feed.items[1]!.revealed ?? 0) < 10);
+  letOut(feed);
+  assert.deepEqual(ids(feed), ["hi", "One two three four five six seven eight nine ten", "next"]);
+  assert.equal(feed.items[1]!.revealed, null, "all out, it shows whole");
+});
+
+test("off screen nothing waits: a reveal under way shows whole, and what arrives just shows", () => {
+  const transcript = transcriptOf([said(1, "user", "hi")]);
+  const feed = feedOf(transcript);
+  transcript.append([said(2, "assistant", "A reply with a good many words in it", { timestamp: 7 })]);
+  feed.update(transcript, []);
+  assert.ok(feed.items[1]!.row.kind === "message" && feed.items[1]!.row.reveal);
+  feed.closed();
+  assert.ok(feed.items[1]!.row.kind === "message" && !feed.items[1]!.row.reveal);
+  transcript.append([said(3, "assistant", "Another reply", { timestamp: 8 }), said(4, "user", "next")]);
+  feed.update(transcript, []);
+  assert.deepEqual(ids(feed), ["hi", "A reply with a good many words in it", "Another reply", "next"]);
+  // Back on screen, what it holds is history.
+  feed.opened();
+  assert.ok(feed.items.every(item => item.row.kind === "message" && !item.row.reveal && !item.row.enter));
+});
+
+test("a cut starts the rows again", () => {
+  const transcript = transcriptOf([said(1, "user", "one"), said(2, "user", "two")]);
+  const feed = feedOf(transcript);
+  const one = feed.items[0];
+  transcript.cut(1);
+  feed.update(transcript, []);
+  assert.deepEqual(ids(feed), ["one"]);
+  assert.notEqual(feed.items[0], one);
+});
+
+test("a waiting message is a row, and only a tool's row asks whether Pi works", () => {
+  const transcript = transcriptOf([said(1, "user", "hi")]);
+  const feed = feedOf(transcript);
+  const prompt = { id: "c1", text: "later", files: [], delivery: "followUp" as const, state: "sending" as const, mine: true };
+  feed.update(transcript, [prompt]);
+  assert.deepEqual(ids(feed), ["hi", "pending:c1"]);
+  const hi = feed.items[0]!;
+  let changed = 0;
+  hi.subscribe(() => { changed += 1; });
+  transcript.working = true;
+  feed.update(transcript, [prompt]);
+  assert.equal(changed, 0);
 });

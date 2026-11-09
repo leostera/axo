@@ -5,6 +5,7 @@ import type { AskedQuestion, WaitingPrompt } from "./workbench.ts";
 import { pendingLabel } from "./pi-controls.ts";
 import { Icon, type IconName } from "./icons.tsx";
 import { highlight } from "./highlight.ts";
+import { noteRender } from "./render-count.ts";
 import type { InputFieldKind } from "@axo/protocol";
 
 /** Bold, italics, links and `code` within a line. Remote images are never fetched. */
@@ -58,65 +59,18 @@ function Words({ text }: { text: string }) {
   return <>{text.split(/(\s+)/).map((word, index) => word.trim() ? <span key={index} className="word-in">{word}</span> : word)}</>;
 }
 
-/** The fewest characters a second the reply comes in at; a backlog is caught up within about this long. */
-const REVEAL_CHARS_PER_SECOND = 90;
-const REVEAL_CATCH_UP_SECONDS = 0.6;
-/** How often the shown text moves on: smooth enough, without parsing a long reply every frame. */
-const REVEAL_FRAME_MS = 32;
-const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
 /**
- * The reply being written, let out at an even pace, a word at a time. The Mac sends it in uneven
- * bursts; the pace speeds up with the backlog so the shown text never falls far behind.
+ * A reply or its thinking as far as its words are out (the feed lets them out, RFD0040), its new
+ * words fading in.
  */
-function useRevealedText(text: string): string {
-  const [shown, setShown] = useState(0);
-  useEffect(() => {
-    if (reducedMotion()) {
-      setShown(text.length);
-      return;
-    }
-    let frame = 0;
-    let last = performance.now();
-    let at = Math.min(shown, text.length);
-    const step = (now: number) => {
-      const elapsed = now - last;
-      if (elapsed >= REVEAL_FRAME_MS) {
-        last = now;
-        const backlog = text.length - at;
-        const rate = Math.max(REVEAL_CHARS_PER_SECOND, backlog / REVEAL_CATCH_UP_SECONDS);
-        at = wordEnd(text, Math.min(text.length, at + Math.max(1, Math.round(rate * elapsed / 1000))));
-        setShown(at);
-      }
-      if (at < text.length) frame = requestAnimationFrame(step);
-    };
-    if (at < text.length) frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
-  }, [text]);
-  return text.slice(0, shown);
-}
-
-/** The end of the word `at` falls in, so a word never shows half written. */
-function wordEnd(text: string, at: number): number {
-  const space = text.slice(at).search(/\s/);
-  return space < 0 ? text.length : at + space;
-}
-
-/**
- * A reply or its thinking let out evenly, its new words fading in: while it is written, and on
- * after it is recorded until all of it is out. `final` says no more is coming; once all of a final
- * text is out, `onDone` says so, and what comes after it may show.
- */
-function RevealMarkdown({ text, thinking = false, final, onDone }: { text: string; thinking?: boolean; final: boolean; onDone: () => void }) {
-  const shown = useRevealedText(text);
-  const blocks = useMemo(() => parseMarkdown(shown), [shown]);
-  const done = final && shown.length >= text.length;
-  useEffect(() => { if (done) onDone(); }, [done]);
+function RevealedMarkdown({ text, thinking = false }: { text: string; thinking?: boolean }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
   return <FadeWords.Provider value={true}><Markdown blocks={blocks} thinking={thinking} /></FadeWords.Provider>;
 }
 
 /** A reply, drawn where its look changes: prose, headings, lists, quotes, tables, rules and code. */
 export const Markdown = memo(function Markdown({ blocks, thinking = false }: { blocks: MarkdownBlock[]; thinking?: boolean }) {
+  noteRender("Markdown");
   return (
     <div className={thinking ? "markdown thinking" : "markdown"}>
       {blocks.map((block, index) => {
@@ -218,24 +172,21 @@ function ShareButton({ text }: { text: string }) {
 }
 
 /** How a message written while the chat is on screen is let out (see `RevealMarkdown`). */
-export interface Reveal {
-  /** Nothing more is coming: it is recorded, or more of the reply comes after it. */
-  final: boolean;
-  /** Called with the message's key once all of it is out; stable, so the view stays memoized. */
-  onDone: (key: string) => void;
-}
-
 /**
  * One message. `live` is the reply still being written; `enter` is a message that arrived while the
  * chat was on screen, which comes in with a short rise; `reveal` lets a reply's words out evenly.
  */
-export const MessageView = memo(function MessageView({ message, working, live = false, enter = false, reveal = null }: {
-  message: ChatMessage; working: boolean; live?: boolean; enter?: boolean; reveal?: Reveal | null;
+export const MessageView = memo(function MessageView({ message, working, live = false, enter = false, revealed = null }: {
+  message: ChatMessage; working: boolean; live?: boolean; enter?: boolean;
+  /** How many characters of its words are out, while they are let out; null when it shows whole. */
+  revealed?: number | null;
 }) {
+  // The one growing (being written, or its words let out) apart from the rest, which should not
+  // render at all as it grows.
+  noteRender(live || revealed !== null ? "Growing" : "Message");
   const entering = enter ? " message-enter" : "";
-  const onDone = () => reveal?.onDone(message.key);
-  const text = (thinking: boolean) => reveal
-    ? <RevealMarkdown text={message.text} thinking={thinking} final={reveal.final} onDone={onDone} />
+  const text = (thinking: boolean) => revealed !== null
+    ? <RevealedMarkdown text={message.text.slice(0, revealed)} thinking={thinking} />
     : <Markdown blocks={message.blocks} thinking={thinking} />;
   switch (message.role) {
     case "user":

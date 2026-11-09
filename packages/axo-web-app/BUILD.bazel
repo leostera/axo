@@ -74,6 +74,7 @@ node_test(
     ],
     tests = [
         "test/browser.test.mjs",
+        "test/conversation.test.mjs",
         "test/shared-session.test.mjs",
     ],
     tests_in_data = True,

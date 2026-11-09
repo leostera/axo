@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Icon } from "./icons.tsx";
-import { ElicitationCard, MessageView, PendingView, QuestionCard, type Reveal } from "./message-views.tsx";
+import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
-import type { ChatMessage, ChatTranscript } from "./transcript.ts";
+import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 import { ModelPicker, SendButton, SlashMenu } from "./composer-controls.tsx";
-import { conversationRows, matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
+import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
 import type { Delivery } from "./transcript.ts";
+import { noteRender } from "./render-count.ts";
 
 /** How close to the bottom still counts as following the conversation. */
 const FOLLOW_SLACK_PX = 80;
@@ -29,6 +30,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   /** Tests give their own; otherwise the browser's speech recognition, where there is one. */
   voice?: VoicePrompt | null;
 }) {
+  noteRender("Conversation");
   const host = workbench.openHost;
   const session = workbench.selectedSession;
   const selection = workbench.selection;
@@ -37,7 +39,15 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const online = host?.status === "online" && workbench.link === "connected";
   const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
 
-  const shown = useShownMessages(session?.sessionId ?? null, transcript);
+  // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
+  const feed = session && chat ? chat.feed : noFeed;
+  const feedRef = useRef(feed);
+  feedRef.current = feed;
+  const sessionRef = useRef(session?.sessionId ?? null);
+  sessionRef.current = session?.sessionId ?? null;
+  const dismiss = useCallback((id: string) => {
+    if (sessionRef.current) workbench.dismissPending(sessionRef.current, id);
+  }, [workbench]);
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const lastScrollTop = useRef(0);
@@ -49,31 +59,19 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
    */
   const anchor = useRef<ScrollAnchor | null>(null);
   const messageCount = transcript?.messages.length ?? 0;
-  const firstId = transcript?.messages[0]?.id;
-  const lastId = transcript?.live.at(-1)?.id ?? transcript?.messages.at(-1)?.id;
-  const seenLastId = useRef(lastId);
+  /** The newest row as of the last layout: a different one is something new below. */
+  const seenLastRow = useRef<string | undefined>(undefined);
 
-  // A new chat on screen starts at its newest message.
-  useEffect(() => {
+  // A new chat on screen starts at its newest message; before it is drawn, so it never shows
+  // anywhere else first.
+  useLayoutEffect(() => {
     following.current = true;
     anchor.current = null;
+    seenLastRow.current = feed.items.at(-1)?.id;
     setShowJump(false);
     setHasNew(false);
+    if (scroller.current) scrollToEnd(scroller.current);
   }, [session?.sessionId, selection?.kind]);
-
-  useLayoutEffect(() => {
-    const element = scroller.current;
-    if (!element) return;
-    const grew = lastId !== seenLastId.current;
-    seenLastId.current = lastId;
-    if (following.current) {
-      scrollToEnd(element);
-    } else {
-      restoreAnchor(element, anchor.current);
-      if (grew) setHasNew(true);
-    }
-    anchor.current = findAnchor(element);
-  }, [workbench.version, firstId]);
 
   // The bars float over the transcript, as in the phone app: the transcript leaves room under its
   // last message for however tall the message box has grown, and stays at the end if it was there.
@@ -93,15 +91,23 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     return () => observer.disconnect();
   }, []);
 
-  // A reply let out a word at a time, or held messages showing once it is out, grow the transcript
-  // with nothing new from the Mac: the view follows the end, or keeps what is read where it is.
+  // Where the transcript is scrolled to is decided here alone (RFD0040): whatever changes it (a row
+  // added, a reply growing as its words come out, an older page on top) changes the column's size,
+  // and this runs after layout and before paint. Following, the end; otherwise what is read stays
+  // where it is, and a row added below says something is new.
   useLayoutEffect(() => {
     const element = scroller.current;
     const column = element?.firstElementChild;
     if (!element || !column) return;
     const observer = new ResizeObserver(() => {
+      const last = feedRef.current.items.at(-1)?.id;
+      const added = last !== seenLastRow.current;
+      seenLastRow.current = last;
       if (following.current) scrollToEnd(element);
-      else restoreAnchor(element, anchor.current);
+      else {
+        restoreAnchor(element, anchor.current);
+        if (added) setHasNew(true);
+      }
       anchor.current = findAnchor(element);
     });
     observer.observe(column);
@@ -208,16 +214,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             </div>
           ) : null}
 
-          {conversationRows(shown, session ? chat?.waiting ?? [] : []).map(row => row.kind === "message" ? (
-            <MessageView key={row.message.message.key} message={row.message.message} working={Boolean(transcript?.working)}
-              live={row.message.live} enter={row.message.enter} reveal={row.message.reveal} />
-          ) : (
-            <PendingView
-              key={`pending:${row.prompt.id}`}
-              prompt={row.prompt}
-              onDismiss={() => session && workbench.dismissPending(session.sessionId, row.prompt.id)}
-            />
-          ))}
+          <ConversationRows feed={feed} dismiss={dismiss} />
           {session && workbench.questions(session.sessionId).map(question => (
             <ElicitationCard
               key={question.elicitation.id}
@@ -641,62 +638,6 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
   );
 }
 
-type ShownMessage = { message: ChatMessage; live: boolean; enter: boolean; reveal: Reveal | null };
-
-/**
- * What the transcript shows, in order: its recorded messages, then the reply being written.
- *
- * What the chat opened with, and older pages read in above, are history and just appear. So does a
- * batch caught up at once, as after a reconnect: it was written while nobody watched. What is
- * written while the chat is on screen is presented: a reply (and its thinking) seen live, or arriving
- * on its own, is let out a word at a time, from its first live words through its record, and
- * nothing after it shows until all of it is out; anything else rises in. The person's own messages
- * were on screen already, as pending.
- */
-function useShownMessages(sessionId: string | null, transcript: ChatTranscript | null): ShownMessage[] {
-  const state = useRef({ sessionId: null as string | null, known: new Set<string>(), entering: new Set<string>(), revealing: new Set<string>(), done: new Set<string>() }).current;
-  const [, setRevealed] = useState(0);
-  const onDone = useCallback((key: string) => {
-    if (state.done.has(key)) return;
-    state.done.add(key);
-    setRevealed(count => count + 1);
-  }, [state]);
-  const reveals = useMemo(() => ({ final: { final: true, onDone }, writing: { final: false, onDone } }), [onDone]);
-
-  const messages = transcript?.messages ?? [];
-  const live = transcript?.live ?? [];
-  const all = [...messages.map(message => ({ message, live: false })), ...live.map(message => ({ message, live: true }))];
-  if (state.sessionId !== sessionId || (state.known.size === 0 && messages.length > 0)) {
-    // A chat just opened, or its history just came in: what is recorded is history.
-    state.sessionId = sessionId;
-    state.known = new Set(messages.map(message => message.key));
-    state.entering = new Set();
-    state.revealing = new Set();
-    state.done = new Set();
-  }
-  let lastKnown = -1;
-  all.forEach(({ message }, index) => { if (state.known.has(message.key)) lastKnown = index; });
-  const arrived = all.filter(({ message }, index) => !state.known.has(message.key) && index > lastKnown && message.role !== "user");
-  // Pieces of one record (thinking, words, tool calls) share its id before the `#`.
-  const caughtUp = new Set(arrived.filter(({ live: isLive }) => !isLive).map(({ message }) => message.id.split("#")[0])).size > 1;
-  for (const { message } of all) state.known.add(message.key);
-  for (const { message, live: isLive } of arrived) {
-    const text = message.role === "assistant" || message.role === "thinking";
-    if (text && (isLive || !caughtUp)) state.revealing.add(message.key);
-    else if (!caughtUp) state.entering.add(message.key);
-  }
-
-  const shown: ShownMessage[] = [];
-  for (const [index, { message, live: isLive }] of all.entries()) {
-    const revealing = state.revealing.has(message.key);
-    const final = !isLive || index < all.length - 1;
-    shown.push({ message, live: isLive, enter: state.entering.has(message.key), reveal: revealing ? (final ? reveals.final : reveals.writing) : null });
-    // What comes after a reply waits until all of it is out.
-    if (revealing && !state.done.has(message.key)) break;
-  }
-  return shown;
-}
-
 /**
  * Scrolls only when the view is not there already. Setting the scroll position at all, even to
  * where it is, ends the momentum of a fling on macOS and iOS, so the view would stop dead.
@@ -731,6 +672,27 @@ function restoreAnchor(scroller: HTMLElement, anchor: ScrollAnchor | null): void
   const offset = anchor.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   setScrollTop(scroller, scroller.scrollTop + offset - anchor.offset);
 }
+
+/** The rows of a chat that does not exist yet: none. */
+const noFeed = new ConversationFeed(false);
+
+/**
+ * The conversation's rows, as the feed keeps them: rendered when a row is added or removed, and
+ * not when the conversation around them renders, nor when one of them changes.
+ */
+const ConversationRows = memo(function ConversationRows({ feed, dismiss }: { feed: ConversationFeed; dismiss: (id: string) => void }) {
+  useSyncExternalStore(feed.subscribe, feed.getVersion);
+  return <>{feed.items.map(item => <RowView key={item.id} item={item} dismiss={dismiss} />)}</>;
+});
+
+/** One row: rendered when its own row changes (a reply's words coming out), and only then. */
+const RowView = memo(function RowView({ item, dismiss }: { item: FeedItem; dismiss: (id: string) => void }) {
+  useSyncExternalStore(item.subscribe, item.getVersion);
+  const row = item.row;
+  if (row.kind === "waiting") return <PendingView prompt={row.prompt} onDismiss={() => dismiss(row.prompt.id)} />;
+  return <MessageView message={row.message} working={row.working} live={row.live} enter={row.enter}
+    revealed={row.reveal ? item.revealed ?? 0 : null} />;
+});
 
 /** Typing on a touch screen, where Return has to be how a new line goes in. */
 const touchTyping = () => window.matchMedia("(pointer: coarse)").matches;

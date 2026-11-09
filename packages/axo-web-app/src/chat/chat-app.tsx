@@ -150,6 +150,14 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, appsUrl, base
     return () => workbench.dispose();
   }, [workbench]);
 
+  // A hidden tab lets no reply out a word at a time: what arrives shows as it is (RFD0040).
+  useEffect(() => {
+    const update = () => workbench.setVisible(document.visibilityState !== "hidden");
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, [workbench]);
+
   // ⌘K or ⌘N: a new chat, as on the phone's Chat button.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
