@@ -10,7 +10,7 @@
 
 ## Summary
 
-Everything inside axod waits for a cause, on one tokio runtime. A cause is a message on a channel, bytes on a descriptor, a kernel event (kqueue), a signal, or a deadline that is itself the point (a timeout, a backoff, a heartbeat). Nothing checks on a timer whether something changed, and no thread exists except one blocking waiter per child process, and the blocking calls tokio has no async form of (SQLite, libghostty-vt, accessibility). The host's heartbeat moves from every 10 seconds to every minute.
+Everything inside axod waits for a cause, on one tokio runtime. A cause is a message on a channel, bytes on a descriptor, a file change, a child's exit, a signal, or a deadline that is itself the point (a timeout, a backoff, a heartbeat). Nothing checks on a timer whether something changed, and no thread exists except the blocking calls tokio has no async form of (SQLite, libghostty-vt, accessibility). The host's heartbeat moves from every 10 seconds to every minute.
 
 ## Motivation
 
@@ -34,17 +34,19 @@ Nothing changes for a person except that things arrive sooner: a line Pi writes 
 | --- | --- |
 | Another part of axod did something | a tokio channel (`mpsc`, `watch`, `broadcast`) or `Notify` |
 | Bytes on a socket, pipe or PTY | tokio's `net` types, or `AsyncFd` on the descriptor |
-| A file changed | kqueue `EVFILT_VNODE` (`NOTE_WRITE`, `NOTE_EXTEND`, `NOTE_DELETE`, `NOTE_RENAME`) through `AsyncFd` on the kqueue |
-| A child exited | one blocking `waitpid` thread per child (below), or `tokio::process` |
-| A process that isn't axod's child exited | kqueue `EVFILT_PROC` `NOTE_EXIT` |
+| A file changed | `notify` (FSEvents) on the file's directory, reported through a channel or `Notify` |
+| A child exited | a task per child woken by `tokio::signal::unix`'s SIGCHLD stream (below) |
+| A process that isn't axod's child exited | kqueue `EVFILT_PROC` `NOTE_EXIT`: tokio has no way to watch it, and only the transcript lock needs it |
 | A signal | `tokio::signal::unix` |
 | Time is the point | `tokio::time::sleep_until` / `interval`: timeouts, backoffs, the heartbeat, the WebSocket ping, the reassembly expiry, debouncing |
 
 A timer is allowed only when the deadline is what's being waited for. "Check again in 50ms" is not.
 
-### Child processes: one blocking waiter each
+### Child processes: a task each, woken by SIGCHLD
 
-Each child axod spawns (a shell's program, Pi, an inspection tool) gets one thread that does nothing but `waitpid(pid, 0)`, then sends the exit status on a `oneshot` and ends. Nothing else ever waits on that pid, so the status cannot be stolen, and the exit is seen the instant the kernel reports it, with no SIGCHLD fan-out and no `try_wait` sweep. A thread blocked in `waitpid` costs a stack and nothing else. Waiting for exit becomes awaiting the `oneshot`, with `timeout` where there is a limit. The reaper stops sweeping: it is told which child exited.
+Each child axod spawns (a shell's program, Pi, an inspection tool, the inference side-car) gets a task on axo-pty's runtime that listens to tokio's SIGCHLD stream and, on each wake, asks `waitid(WEXITED | WNOHANG | WNOWAIT)` whether its own child has exited. It listens before it first looks, so no exit falls between. The child stays unreaped: its owner reaps through `try_wait` only once the task has seen the exit, so a pid, and the process group it leads, cannot be reused while anything could still signal it (process inspection kills a leader's whole group after the leader exits). That is why this is not `tokio::process`, which reaps as soon as it hears. Every exit wakes every task, one non-blocking syscall each: about a hundred, a few times a minute. The reaper stops sweeping: it is told which child exited.
+
+As first built (0.38 to 0.43) this was one thread per child blocked in `waitid`: 113 of axod's 132 threads on a working Mac.
 
 ### Step 1: the uploader waits for a cause (`specs/sessions/upload-wakes.ts`)
 
@@ -62,9 +64,9 @@ The 500ms tick, the 60-second check of archived transcripts and the catalog's 50
 Two orderings make this sound, and the spec shows each is needed (`--without` breaks `everyLineReachesTheCloud`):
 
 1. **Watch before reading.** A turn registers its watches, then reads. Pi reports a message's end on its bridge and appends the line in either order; if the turn woken by the event reads before the write, the write's vnode event wakes the next one.
-2. **Watch the directory until the file exists.** Pi creates its transcript with the first line; a watch on a file that doesn't exist is impossible, so the directory's `NOTE_WRITE` stands in for it.
+2. **Watch the directory until the file exists.** Pi creates its transcript with the first line; a watch on a file that doesn't exist is impossible, so the directory stands in for it.
 
-A watch that sees `NOTE_DELETE` or `NOTE_RENAME` (a rewritten transcript) is dropped and registered again on the path by the turn the event wakes. Only open Sessions' transcripts are watched; an archived one changes only by being restored, which is a catalog event. The kqueue is one descriptor in the uploader's `select!` through `AsyncFd`.
+As built, every transcript is watched through its directory, with `notify`'s FSEvents stream (no latency, `NoDefer`): events name the file, so those for other files are dropped, and a transcript rewritten or created later is in the same directory, so nothing registers again. A directory that does not exist yet is stood in for by its nearest existing ancestor, recursively. `notify` starts its stream before `watch` returns, which keeps ordering 1. A write wakes the uploader in about 12 ms; a stream that starts also reports changes from just before it, a wake with nothing new to read. Only open Sessions' transcripts are watched; an archived one changes only by being restored, which is a catalog event. Until 0.43 this was a kqueue of `EVFILT_VNODE` watches, one descriptor per file.
 
 Checked with `feynman check sessions/upload-wakes --depth 40`: every property holds on every path.
 
@@ -103,11 +105,11 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 - The terminal attach listener: one `poll(2)` on the listener and a stop socket, with no timeout. Each attached client keeps its two threads, one streaming output and one waiting for the client to hang up: both are blocked, not polling, and only the panes on screen are attached.
 - Each Pi's bridge: one `poll(2)` on the socket and its `Interrupt`, not 100ms slices.
 - Sign-in's callback listener: one `poll(2)` on its listeners and a wake its serving threads write, not a non-blocking accept every 50ms.
-- The inference side-car's start: one kqueue on its run directory, its log and its exit; its health is asked only when one of them changes.
+- The inference side-car's start: `notify` on its run directory (the socket appearing, the log growing) and its exit; its health is asked only when one of them changes.
 
 ### What stays a thread
 
-- One `waitpid` waiter per child (the largest group: one per open shell).
+- One FSEvents run-loop thread per `notify` watcher: the uploader's, and the side-car's while it starts.
 - Two per attached terminal, and one per Pi's bridge.
 - libghostty-vt, one per terminal (RFD0034), reached through a channel.
 - `spawn_blocking` for SQLite, Cua and accessibility calls, `SecCode` checks and `fork`/`exec`.
@@ -121,7 +123,7 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 
 ## Drawbacks
 
-- kqueue is macOS-specific. So is axod.
+- FSEvents and the transcript lock's kqueue are macOS-specific. So is axod.
 - A missed cause now means a stalled upload rather than a 500ms delay. The upload wakes spec is the argument that none is missed; each reconnect's handshake is the backstop.
 - A 150-second lease shows a Mac that lost power as online for up to 2½ minutes instead of 30 seconds. A socket that closes normally (quitting, sleeping with the network up, axod stopping) is still seen at once.
 
@@ -129,8 +131,9 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 
 - **Keep the tick, lower it.** Halves the delay, doubles the wakeups.
 - **A safety sweep every few minutes.** Hides the bugs the spec exists to find, and wakes an idle Mac.
-- **SIGCHLD and `try_wait` on every child** (the reaper today). Correct, but every exit wakes every waiter, and `tokio::process` would compete with it for the same children. One waiter per child owns its pid.
-- **kqueue `EVFILT_PROC` for children too.** Equally immediate, but the zombie still needs reaping; `waitpid` does both.
+- **`tokio::process`.** Reaps on exit, so a leader's process group id could be reused before inspection's cleanup signals it.
+- **A blocking `waitid` thread per child** (0.38 to 0.43). Immediate, and never shares a wake, but a thread per child: most of axod's threads.
+- **Raw kqueue (`EVFILT_PROC`, `EVFILT_VNODE`).** Immediate and precise, but our own unsafe event loop three times over, where tokio's signals and `notify` already exist.
 
 ## Unresolved questions
 

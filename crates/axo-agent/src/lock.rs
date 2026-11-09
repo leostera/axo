@@ -24,7 +24,9 @@ const FORK_EXEC_POLL: Duration = Duration::from_millis(5);
 /// How often a lock whose holder is unknown is tried again.
 const UNKNOWN_HOLDER_RETRY: Duration = Duration::from_millis(100);
 
-/// A kqueue that turns readable when a process exits: any process, not only a child.
+/// A kqueue that turns readable when a process exits: any process, not only a child. The holder
+/// may be a Pi that outlived the axod that started it, so it is not ours to hear through SIGCHLD,
+/// and tokio has no way to watch another process; this is axod's one kqueue of its own.
 struct ProcessExit(OwnedFd);
 
 impl ProcessExit {
