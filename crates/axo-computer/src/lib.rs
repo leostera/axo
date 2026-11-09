@@ -75,9 +75,9 @@ fn our_name(tool: &str) -> &str {
 /// fills them in (RFD0029). Never reaches `call`.
 pub const REQUEST_INPUT: &str = "request_input";
 
-/// Native AX on macOS and exact AT-SPI object binding on Linux; delivery still needs confirmation.
-pub const FORM_INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
-pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+/// Native form binding uses macOS AX, Linux AT-SPI, or Windows UIA.
+pub const FORM_INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
+pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
 
 #[cfg(target_os = "linux")]
 fn request_input_definition() -> Value {

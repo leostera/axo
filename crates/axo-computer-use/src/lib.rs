@@ -21,16 +21,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axo_computer::form::{FieldKind, FieldReading, Form, FormError, pick_field};
+#[cfg(unix)]
 use axo_ipc::peer::{Caller, Signer};
+#[cfg(unix)]
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::SessionId;
 use axo_protocol::elicitation::{
     Asker, ElicitationAction, InputField, InputFieldKind, InputRequest, MAX_INPUT_FIELDS,
     MAX_MESSAGE_CHARS, TIMEOUT_MS,
 };
+#[cfg(unix)]
 use axo_protocol::rpc::method::COMPUTER_INPUT;
 use axo_protocol::rpc::{MethodError, error_code};
 use axo_relay::computer::ComputerParams;
+#[cfg(unix)]
 use jsonrpc_core::IoHandler;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,6 +42,7 @@ use serde_json::{Value, json};
 #[cfg(target_os = "linux")]
 mod sudo_input;
 
+#[cfg(unix)]
 use axo_ipc::Extension;
 use axo_questions::{Answer, Values};
 #[cfg(target_os = "linux")]
@@ -496,6 +501,7 @@ struct ComputerInput {
     args: Value,
 }
 
+#[cfg(unix)]
 const AXOD_ONLY: Only = Only {
     caller: Caller::Signed(Signer::ThisBinary),
     code: axo_protocol::rpc::error_code::REFUSED,
@@ -514,6 +520,7 @@ impl ComputerExtension {
     }
 }
 
+#[cfg(unix)]
 impl Extension for ComputerExtension {
     fn name(&self) -> &'static str {
         "computer"

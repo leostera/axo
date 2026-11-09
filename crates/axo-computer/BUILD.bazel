@@ -34,6 +34,7 @@ rust_library(
             "@crates//:futures-util",
         ],
         "@platforms//os:windows": [
+            "@crates//:windows",
             "@crates//:cua-driver-core",
             "@crates//:cursor-overlay",
             "@crates//:platform-windows",

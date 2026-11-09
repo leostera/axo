@@ -2,6 +2,13 @@ using System.Diagnostics;
 using System.Text.Json;
 using Axo;
 
+if (args.Length == 3 && args[0] == "--package-check")
+{
+    string installed = Installer.Install(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
+    Console.WriteLine("Verified and staged package: " + Installer.Verify(Path.GetDirectoryName(installed)!));
+    return 0;
+}
+
 if (args.Length == 2 && args[0] == "--computer-fixture") return ComputerChecks.RunFixture(args[1]);
 if (args.Length == 2 && args[0] == "--untrusted-permissions")
 {
@@ -28,6 +35,7 @@ if (!string.Equals(Path.GetFileName(Environment.ProcessPath), "Axo.exe", StringC
     }
     File.Copy(Path.Combine(AppContext.BaseDirectory, "Tests.exe"), Path.Combine(bundle, "Axo.exe"), true);
     File.Copy(Path.GetFullPath(args[0]), Path.Combine(bundle, "axod.exe"), true);
+    if(args.Length != 3)File.Copy(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(args[0])!,"../axo-seal/seal_fixture.exe")),Path.Combine(bundle,"seal_fixture.exe"));
     var launch = new ProcessStartInfo(Path.Combine(bundle, "Axo.exe")) { UseShellExecute = false };
     launch.ArgumentList.Add(Path.Combine(bundle, "axod.exe")); launch.ArgumentList.Add(Path.GetFullPath(args[1])); if (args.Length == 3) launch.ArgumentList.Add(args[2]);
     using var runner = Process.Start(launch)!; await runner.WaitForExitAsync(); return runner.ExitCode;
@@ -97,6 +105,7 @@ try
         });
         views.SetApartmentState(ApartmentState.STA);views.Start();
         Assert(views.Join(TimeSpan.FromSeconds(15))&&viewError is null,"native Settings and segmented appearance picker compose with the shipped WPF resources" + (viewError is null?"":": "+viewError.Message));
+        ParityChecks.Installation(root,Assert);
         var vt=new VtScreen();vt.Resize(12,3);string? reply=null;vt.Reply+=text=>reply=text;
         vt.Feed("hello\r\x1b[2K\x1b[3");vt.Feed("1mworld\x1b[0m\x1b[6n");
         Assert(string.Concat(vt.Visible(0)[0].Select(c=>c.Text)).StartsWith("world")&&reply=="\x1b[1;6R","VT handles split escape sequences, line editing, and cursor-position queries");
@@ -210,7 +219,7 @@ try
     Assert(await Fails("axo.session.open", new { sessionId = id, typo = true }), "misspelled parameters are rejected");
     await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "wait" });
     await Status(id, "working");
-    Assert(await Fails("axo.session.prompt", new { sessionId = id, text = "second concurrent turn" }), "busy session refuses a competing prompt");
+    Assert(await Fails("axo.session.prompt", new { sessionId = id, text = "second concurrent turn", delivery = "turn" }), "busy session refuses an explicit competing turn");
     var newClient = new DaemonClient(pipe);
     var list = await newClient.CallAsync("axo.session.list");
     Assert(list.GetProperty("sessions")[0].GetProperty("status").GetString() == "working", "session keeps working after client reconnection");
@@ -243,14 +252,19 @@ try
     await Status(id,"needsAttention");
     await relay.WaitAsync(()=>!relay.Questions.IsEmpty,"Codex approval did not reach the relay");
     relay.Questions.TryPeek(out var question);
-    remote=await relay.CallAsync("axo.elicitation.resolve",new{target,elicitationId=question.GetProperty("id").GetString(),action="decline"});
+    remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,question.GetProperty("id").GetString()!,"decline"));
     Assert(remote.TryGetProperty("result",out _),"remote approval names and resolves the exact Codex permission request");
     await Status(id,"ready");
-    remote=await relay.CallAsync("axo.elicitation.resolve",new{target,elicitationId=question.GetProperty("id").GetString(),action="accept"});
+    remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,question.GetProperty("id").GetString()!,"accept"));
     Assert(remote.TryGetProperty("error",out _),"resolved remote approval cannot authorize a later request");
+    await ParityChecks.Controls(client,id,workspace,Assert);
     await ComputerChecks.RunAsync(client, daemonPath, pipe, id, relay, target, Assert);
     var stopCommand=Guid.NewGuid().ToString();
     await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="wait",commandId=stopCommand});await Status(id,"working");
+    var queuedRemoteCommand=Guid.NewGuid().ToString();
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="remote queued marker",commandId=queuedRemoteCommand});
+    remote=await relay.CallAsync("axo.remote.session.stop",new{target,sessionId=id,commandIds=new[]{queuedRemoteCommand}});
+    Assert(!remote.GetProperty("result").GetProperty("stopped").GetBoolean(),"a queued remote command cannot stop the preceding turn");
     remote=await relay.CallAsync("axo.remote.session.stop",new{target,sessionId=id,commandIds=new[]{Guid.NewGuid().ToString()}});
     Assert(!remote.GetProperty("result").GetProperty("stopped").GetBoolean(),"remote Stop cannot interrupt a turn the client never saw");
     remote=await relay.CallAsync("axo.remote.session.stop",new{target,sessionId=id,commandIds=new[]{stopCommand}});
@@ -267,6 +281,9 @@ try
     var recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
     Assert(recovered.GetProperty("threadId").GetString() == threadId, "crashed Codex process resumes the existing thread");
     var agentPid = recovered.GetProperty("agentProcessId").GetInt32();
+    await client.CallAsync("axo.session.prompt",new{sessionId=id,text="wait"});await Status(id,"working");
+    await client.CallAsync("axo.session.prompt",new{sessionId=id,text="restart queue marker",delivery="followUp"});
+    var beforeRestart=await client.CallAsync("axo.session.open",new{sessionId=id});
     daemon.Kill(); await daemon.WaitForExitAsync(); daemon.Dispose();
     try
     {
@@ -284,6 +301,11 @@ try
     Assert(recovered.GetProperty("threadId").GetString() == threadId, "daemon restart preserves Codex thread identity");
     Assert(recovered.GetProperty("name").GetString() == "Renamed session", "session name survives daemon restart");
     Assert((await Messages(id)).Contains("Echo: hello\nsecond line"), "chat history survives daemon restart");
+    for(int attempt=0;attempt<150 && !(await Messages(id)).Contains("Echo: restart queue marker");attempt++)await Task.Delay(50);
+    Assert((await Messages(id)).Count(m=>m=="Echo: restart queue marker")==1,"a queued follow-up survives daemon restart and is delivered once");
+    var preferences=await client.CallAsync("axo.session.model",new{sessionId=id});
+    Assert(preferences.GetProperty("model").GetString()=="fixture"&&preferences.GetProperty("effort").GetString()=="high","model and reasoning preferences survive restart");
+    Assert(recovered.GetProperty("layout").GetRawText()==beforeRestart.GetProperty("layout").GetRawText(),"terminal layout and shell identity survive daemon restart");
     await client.CallAsync("axo.session.close", new { sessionId = id });
     list = await client.CallAsync("axo.session.list");
     Assert(list.GetProperty("sessions").GetArrayLength() == 0, "closing session archives it and stops its agent");
