@@ -29,8 +29,9 @@ struct ConversationView: View {
   #else
     private func trace(_ line: String) {}
   #endif
-  /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
-  @State private var scrollAnchor: String?
+  /// Where the end is and how the scroll view is moving, as last measured, and the way to scroll
+  /// it; not observed.
+  @State private var scrolled = Scrolled()
   @State private var scrollToLatestRequest = 0
   /// Pull-to-refresh, played by Axo: the empty chat's Axo, or a small one at the top.
   @State private var pull = ConversationPull()
@@ -42,6 +43,7 @@ struct ConversationView: View {
   /// Bumped when a reply's words are all out, so what waited behind it shows.
   @State private var revealsFinished = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.displayScale) private var displayScale
   private var keyboardIsUp: Bool { bottomInset > 100 }
 
   /// This chat's own state: what it reads is what redraws it, so other chats' events do not.
@@ -68,7 +70,7 @@ struct ConversationView: View {
   }
 
   private var conversation: some View {
-    ScrollViewReader { proxy in
+    ScrollingToEnd(scrolled: scrolled, anchor: Self.endAnchor) {
       let _ = RenderCount.note("Transcript")
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 30) {
@@ -123,8 +125,9 @@ struct ConversationView: View {
           Color.clear.frame(height: 1).id(Self.end)
         }
         .scrollTargetLayout()
+        // No padding at the bottom: the stack's spacing before the end marker is the room under
+        // the last row, and the end is where the content ends.
         .padding(.top, 24)
-        .padding(.bottom, 20)
         // Exactly as wide as the screen: a row that asked for more would otherwise widen the
         // column, and scrolling to the end would slide it sideways.
         .containerRelativeFrame(.horizontal, alignment: .leading)
@@ -135,27 +138,38 @@ struct ConversationView: View {
       .contentMargins(.horizontal, 20, for: .scrollContent)
       .scrollDismissesKeyboard(.interactively)
       .softScrollEdges()
-      // The row at the bottom of the screen stays put when content changes elsewhere (an older
-      // page arriving above keeps the reader's place); the end itself is kept by `follow`.
-      .scrollPosition(id: $scrollAnchor, anchor: Self.endAnchor)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       // The keyboard opening or the composer growing raises the bottom inset (the scroll view
       // itself keeps its size under the bars). A follower keeps the end in view, rather than the
       // last messages going under them.
       .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.bottom } action: { old, new in
-        if new > old, !transcript.messages.isEmpty { move(follow.bottomInsetGrew(), proxy: proxy) }
+        if new > old, !transcript.messages.isEmpty { move(follow.bottomInsetGrew()) }
+      }
+      // Where the end is, measured: rows the lazy stack only estimated change the content's height
+      // after a move, and a move to the end marker lands a bar's height past it. Left there, the
+      // screen shows nothing but the space past the last row, as a busy chat's often did.
+      .onScrollGeometryChange(for: Scrolled.Ends.self) { geometry in
+        Scrolled.Ends(
+          offset: geometry.contentOffset.y,
+          topInset: geometry.contentInsets.top,
+          end: max(
+            -geometry.contentInsets.top,
+            geometry.contentSize.height - geometry.containerSize.height - geometry.contentInsets.top))
+      } action: { _, ends in
+        scrolled.ends = ends
+        keepWithinEnd()
       }
       .onChange(of: endOfConversation) { _, end in
         guard end != EndOfConversation() else { return }
         let decided = follow.contentChangedAtEnd()
         trace("content \(decided)")
-        move(decided, proxy: proxy)
+        move(decided)
       }
       .onChange(of: pending.count) { previous, count in
         // Sending something takes the reader to it.
-        if count > previous { move(follow.sent(), proxy: proxy) }
+        if count > previous { move(follow.sent()) }
       }
-      .onChange(of: scrollToLatestRequest) { move(follow.jumpRequested(), proxy: proxy) }
+      .onChange(of: scrollToLatestRequest) { move(follow.jumpRequested()) }
       // Pull-to-refresh, by hand: `.refreshable` would show the system's spinner, and here Axo
       // plays it. How far the content is past its top, and when the finger lifts.
       .scrollBounceBehavior(.always, axes: .vertical)
@@ -170,13 +184,15 @@ struct ConversationView: View {
       }
       .onScrollPhaseChange { old, new, context in
         pull.touching = new == .interacting
+        scrolled.phase = new
         if old == .interacting, new != .interacting { pull.release(refresh: refresh) }
         // Whether to follow is the reader's to decide, by where they leave the conversation.
         let geometry = context.geometry
         let atEnd = geometry.visibleRect.maxY >= geometry.contentSize.height - 60
         let decided = follow.scrollingChanged(to: Self.scrolling(new), atEnd: atEnd)
         trace("phase \(old)->\(new) atEnd=\(atEnd) following=\(follow.isFollowing) \(decided)")
-        move(decided, proxy: proxy)
+        move(decided)
+        keepWithinEnd()
       }
       .overlay(alignment: .top) {
         if !transcript.messages.isEmpty { SpinningPullMascotView(pull: pull) }
@@ -212,6 +228,54 @@ struct ConversationView: View {
       if took < least { try? await Task.sleep(for: least - took) }
       pull.state.finished()
     }
+  }
+
+  /// The end of the conversation as last measured, and the scroll phase; read by the moves, never
+  /// drawn, so a reference the view holds without observing.
+  private final class Scrolled {
+    struct Ends: Equatable {
+      /// The content's offset, and where it is when the last row is just above the composer.
+      var offset: Double
+      var topInset: Double
+      var end: Double
+    }
+    var ends: Ends?
+    var phase: ScrollPhase = .idle
+    /// The end last corrected to and how many times, so one that does not land is not tried forever.
+    var corrected: (end: Double, tries: Int)?
+    /// Moves the scroll position; set by `ScrollingToEnd`, which holds it.
+    var scroll: (_ to: (inout ScrollPosition) -> Void) -> Void = { _ in }
+  }
+
+  /// Holds the conversation's scroll position, so moving it, as following a streaming reply does
+  /// on every update, redraws this alone: the transcript is built a level down, by `Built`, which
+  /// is the same view as before and is not made again. And what the transcript reads (the reply
+  /// growing) redraws `Built`, not the conversation around it, as `ScrollViewReader` did.
+  private struct ScrollingToEnd<Content: View>: View {
+    let scrolled: Scrolled
+    let anchor: UnitPoint
+    let content: () -> Content
+    /// The row at the bottom of the screen, which holds the reader's place when older pages arrive
+    /// above; or an offset at the end while following.
+    @State private var position = ScrollPosition(idType: String.self)
+
+    init(scrolled: Scrolled, anchor: UnitPoint, @ViewBuilder content: @escaping () -> Content) {
+      self.scrolled = scrolled
+      self.anchor = anchor
+      self.content = content
+    }
+
+    var body: some View {
+      let position = $position
+      Built(content: content)
+        .scrollPosition(position, anchor: anchor)
+        .onAppear { scrolled.scroll = { to in to(&position.wrappedValue) } }
+    }
+  }
+
+  private struct Built<Content: View>: View {
+    let content: () -> Content
+    var body: some View { content() }
   }
 
   /// How far the content is past its top, and how tall the scroll view is.
@@ -254,33 +318,60 @@ struct ConversationView: View {
   /// the column up with the middle of the screen and slides the whole column sideways.
   private static let endAnchor = UnitPoint.bottomLeading
 
-  private func move(_ move: ScrollFollow.Move, proxy: ScrollViewProxy) {
+  private func move(_ move: ScrollFollow.Move) {
     switch move {
     case .stay:
       break
     case .keepAtEnd:
-      // Without animating: as content grows, the end simply stays in view. The scroll position
-      // is the end marker, so SwiftUI keeps *it* at the bottom as rows are added, rather than
-      // the message that was at the bottom (which would leave the new ones below the screen).
-      // Once more on the next turn, after the lazy stack has measured rows it had only
-      // estimated, or the end can land short of the real bottom.
-      var instant = Transaction()
-      instant.disablesAnimations = true
-      withTransaction(instant) {
-        scrollAnchor = Self.end
-        proxy.scrollTo(Self.end, anchor: Self.endAnchor)
-      }
+      // Without animating: as content grows, the end simply stays in view. Once more on the next
+      // turn, after the lazy stack has measured rows it had only estimated (and `keepWithinEnd`
+      // whenever the measured end moves after that).
+      toEnd()
       Task { @MainActor in
         await Task.yield()
-        guard follow.isFollowing else { return }
-        withTransaction(instant) { proxy.scrollTo(Self.end, anchor: Self.endAnchor) }
+        if follow.isFollowing { toEnd() }
       }
     case .goToEnd:
-      withAnimation(.snappy(duration: 0.3)) {
-        scrollAnchor = Self.end
-        proxy.scrollTo(Self.end, anchor: Self.endAnchor)
-      }
+      toEnd(animated: true)
     }
+  }
+
+  /// To the measured end, the last row just above the composer: an offset rather than the end
+  /// marker, which SwiftUI lines up a bar's height too far.
+  private func toEnd(animated: Bool = false) {
+    let to: (inout ScrollPosition) -> Void
+    if let ends = scrolled.ends {
+      // A point in the content, from its top: the offset less the top inset.
+      // On a whole pixel, so it rests in the same place every time.
+      let end = ((ends.end + ends.topInset) * displayScale).rounded() / displayScale
+      to = { $0.scrollTo(y: end) }
+    } else {
+      to = { $0.scrollTo(id: Self.end, anchor: Self.endAnchor) }
+    }
+    if animated {
+      withAnimation(.snappy(duration: 0.3)) { scrolled.scroll(to) }
+    } else {
+      var instant = Transaction()
+      instant.disablesAnimations = true
+      withTransaction(instant) { scrolled.scroll(to) }
+    }
+  }
+
+  /// At rest, a follower stays at the end, and nobody is left past it: nothing a finger or the
+  /// screen is moving, which would fight them.
+  private func keepWithinEnd() {
+    guard scrolled.phase == .idle, let ends = scrolled.ends else { return }
+    // Within half a pixel is there.
+    let slack = 0.5 / displayScale
+    let past = ends.offset > ends.end + slack
+    let short = follow.isFollowing && ends.offset < ends.end - slack
+    guard past || short else { return }
+    // A few tries for one end (SwiftUI may move it again as it settles), but never forever.
+    if scrolled.corrected?.end != ends.end { scrolled.corrected = (ends.end, 0) }
+    guard let tries = scrolled.corrected?.tries, tries < 3 else { return }
+    scrolled.corrected = (ends.end, tries + 1)
+    trace("ends \(Int(ends.offset)) -> \(Int(ends.end))")
+    toEnd()
   }
 
   /// At the top of the conversation: older messages are read as this scrolls into view.

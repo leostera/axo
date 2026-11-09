@@ -75,6 +75,22 @@ final class AxoPhoneFollowTests: XCTestCase {
     XCTAssertFalse(app.buttons["Jump to new message"].exists, "following, nothing is waiting below")
   }
 
+  /// Following rests where the scroll view itself would: at the last row, not past it. A move to
+  /// the end used to land a bar's height beyond it, and a row measured shorter than estimated left
+  /// it further still, to a screen of nothing; a drag let go there bounced back to the real end.
+  @MainActor
+  func testFollowingRestsAtTheEndNotPastIt() {
+    let app = launch()
+    app.buttons["play-flood"].tap()
+    XCTAssertTrue(waitUntil(30) { inView(reply(app, 30), app) }, "the last reply is in view")
+    RunLoop.current.run(until: Date().addingTimeInterval(3))
+    let followed = reply(app, 30).frame.minY
+    app.swipeUp(velocity: .slow)
+    RunLoop.current.run(until: Date().addingTimeInterval(3))
+    let bounced = reply(app, 30).frame.minY
+    XCTAssertEqual(followed, bounced, accuracy: 2, "a drag at the end bounces back to where following left it")
+  }
+
   @MainActor
   func testAfterJumpingToTheNewMessageItKeepsFollowing() {
     let app = launch()
