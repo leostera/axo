@@ -33,7 +33,7 @@ import {
 import { z } from "zod";
 import { hostDOName, type HostCommandOutcome, type HostNotice, type HostSubscription } from "./host-do";
 import { sessionDOName, type ReadRequest, type ReadResult, type SessionBinding } from "./session-store";
-import { recordApiEvent } from "./observability";
+import { clientKind, recordApiEvent } from "./observability";
 
 /**
  * One connected client (RFD0018, ClientDO): a browser tab or an app instance, named by
@@ -288,6 +288,8 @@ export class AxoClientDO extends DurableObject<Env> {
           const params = clientHelloParamsSchema.safeParse(call.params);
           if (!params.success) return failure(id, -32602, "Invalid params");
           if (params.data.clientId !== peer.clientId) return failure(id, -32602, "clientId does not match the socket");
+          // What still speaks protocol 2, before it is removed.
+          recordApiEvent({ event: "client_hello", protocol: params.data.protocolVersion, client: clientKind(peer.clientId) });
           if (params.data.protocolVersion === 3) {
             peer.protocol = 3;
             socket.serializeAttachment(peer);
