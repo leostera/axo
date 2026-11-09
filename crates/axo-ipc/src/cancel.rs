@@ -9,6 +9,7 @@
 //! Outside a request, [`current`] is a cancellation that never fires.
 
 use std::cell::RefCell;
+#[cfg(any(unix, test))]
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -80,6 +81,7 @@ pub fn current() -> Cancellation {
 }
 
 /// Runs `request` with `cancellation` as [`current`], for an async handler.
+#[cfg(any(unix, test))]
 pub(crate) async fn scope<F: Future>(cancellation: Cancellation, request: F) -> F::Output {
     TASK_CANCELLATION.scope(cancellation, request).await
 }

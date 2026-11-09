@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## Windows preview (axod 63; PR #2)
+
+- Windows computer use now supports retained UI Automation input forms, device-signed sealed remote answers, and gated sequential operations. Filled secrets stay out of computer text results; screenshots are suppressed after an input request.
+- Codex sessions support steering, durable follow-ups, interrupt-and-send, file/image attachments, and per-session model and reasoning selection, locally and through the relay.
+- The native client adds nested terminal splits, saved layouts, a command palette and verified per-user package installation/update. Running sessions are never restarted by the installer.
+
 ## 0.39 (Mac app build 310, axod 62)
 
 ### Fixed

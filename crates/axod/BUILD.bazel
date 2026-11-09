@@ -8,21 +8,30 @@ exports_files(["testdata/pi-fixture.sh"])
 
 rust_binary(
     name = "axod",
-    srcs = ["src/main.rs"],
+    srcs = glob(["src/*.rs"]),
+    crate_root = "src/main.rs",
     edition = "2024",
     # The macOS the Mac app requires, so axod's minimum matches the app's (RFD0021).
     rustc_env = {"MACOSX_DEPLOYMENT_TARGET": AXO["apple"]["macos_min"]},
     # Cargo versions are full semver: major.minor.0 from config.json's major.minor.
     version = AXO["version"] + ".0",
-    deps = [
-        "//crates/axo-mcp:axo_mcp",
-        "//crates/axo-pty:axo_pty",
-        "//crates/axo-server:axo_server",
-        "@crates//:clap",
-        "@crates//:env_logger",
-        "@crates//:libc",
-        "@crates//:log",
-    ],
+    deps = select({
+        "@platforms//os:windows": [
+            "//crates/axo-server:axo_server",
+            "@crates//:clap",
+            "@crates//:env_logger",
+            "@crates//:log",
+        ],
+        "//conditions:default": [
+            "//crates/axo-mcp:axo_mcp",
+            "//crates/axo-pty:axo_pty",
+            "//crates/axo-server:axo_server",
+            "@crates//:clap",
+            "@crates//:env_logger",
+            "@crates//:libc",
+            "@crates//:log",
+        ],
+    }),
 )
 
 # The CLI's own tests: terminal attach's raw mode and resize forwarding.

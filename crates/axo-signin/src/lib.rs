@@ -264,7 +264,14 @@ pub fn percent_encode(text: &str) -> String {
 
 /// Opens a URL in the person's default browser, as one argument: no shell parses it.
 pub fn open_in_browser(url: &str) -> io::Result<()> {
-    let status = std::process::Command::new("/usr/bin/open").arg(url).status()?;
+    #[cfg(windows)]
+    let status = std::process::Command::new("explorer.exe")
+        .arg(url)
+        .status()?;
+    #[cfg(not(windows))]
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(url)
+        .status()?;
     if status.success() {
         Ok(())
     } else {

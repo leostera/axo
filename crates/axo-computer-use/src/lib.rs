@@ -15,24 +15,32 @@
 //!    the submit button if asked, and remembers a salted hash of each value, so every later read
 //!    of any window shows `•••• (filled by you)` instead.
 
-use std::sync::{Arc, Mutex};
+#[cfg(any(unix, test))]
+#[cfg(unix)]
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use axo_computer::form::{FieldKind, FieldReading, Form, FormError, pick_field};
+#[cfg(unix)]
 use axo_ipc::peer::{Caller, Signer};
+#[cfg(unix)]
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::SessionId;
 use axo_protocol::elicitation::{
     Asker, ElicitationAction, InputField, InputFieldKind, InputRequest, MAX_INPUT_FIELDS,
     MAX_MESSAGE_CHARS, TIMEOUT_MS,
 };
+#[cfg(unix)]
 use axo_protocol::rpc::method::{COMPUTER_INPUT, COMPUTER_REDACTIONS};
 use axo_relay::computer::ComputerParams;
+#[cfg(unix)]
 use jsonrpc_core::IoHandler;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[cfg(unix)]
 use axo_ipc::Extension;
 use axo_protocol::elicitation::ElicitationOutcome;
 use axo_questions::Values;
@@ -48,6 +56,8 @@ const SHORTEST_REDACTED: usize = 4;
 struct Redactions {
     salt: [u8; 16],
     hashes: Mutex<Vec<[u8; 32]>>,
+    #[cfg(windows)]
+    lengths: Mutex<Vec<usize>>,
 }
 
 impl Default for Redactions {
@@ -63,16 +73,25 @@ impl Default for Redactions {
         Self {
             salt,
             hashes: Mutex::new(Vec::new()),
+            #[cfg(windows)]
+            lengths: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl Redactions {
     fn remember(&self, value: &str) {
-        if value.chars().count() < SHORTEST_REDACTED {
+        if value.is_empty() || (!cfg!(windows) && value.chars().count() < SHORTEST_REDACTED) {
             return;
         }
         let hash = hash(&self.salt, value);
+        #[cfg(windows)]
+        {
+            let mut lengths = self.lengths.lock().unwrap();
+            if !lengths.contains(&value.len()) {
+                lengths.push(value.len());
+            }
+        }
         if let Ok(mut hashes) = self.hashes.lock() {
             if !hashes.contains(&hash) {
                 if hashes.len() >= MAX_REDACTIONS {
@@ -89,12 +108,68 @@ impl Redactions {
             return;
         };
         if !hashes.is_empty() {
+            #[cfg(windows)]
+            {
+                // Windows may receive unmasked one-time codes and phrases in UIA text.
+                // Match salted hashes at every UTF-8 boundary, not just whole words.
+                fn scrub(value: &mut Value, lengths: &[usize], hidden: &dyn Fn(&str) -> bool) {
+                    match value {
+                        Value::String(text) => {
+                            let mut spans = Vec::new();
+                            for (start, _) in text.char_indices() {
+                                for &length in lengths {
+                                    if let Some(candidate) =
+                                        text.get(start..start.saturating_add(length))
+                                    {
+                                        if hidden(candidate) {
+                                            spans.push((start, start + length));
+                                        }
+                                    }
+                                }
+                            }
+                            spans.sort_by_key(|&(start, end)| (start, std::cmp::Reverse(end)));
+                            if !spans.is_empty() {
+                                let mut result = String::new();
+                                let mut cursor = 0;
+                                for (start, end) in spans {
+                                    if start >= cursor {
+                                        result.push_str(&text[cursor..start]);
+                                        result.push_str("•••• (filled by you)");
+                                        cursor = end;
+                                    }
+                                }
+                                result.push_str(&text[cursor..]);
+                                *text = result;
+                            }
+                        }
+                        Value::Array(items) => {
+                            for item in items {
+                                scrub(item, lengths, hidden);
+                            }
+                        }
+                        Value::Object(map) => {
+                            let image = map.get("type") == Some(&json!("image"));
+                            for (key, value) in map {
+                                if !(image && key == "data") {
+                                    scrub(value, lengths, hidden);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                scrub(result, &self.lengths.lock().unwrap(), &|candidate| {
+                    hashes.contains(&hash(&self.salt, candidate))
+                });
+            }
+            #[cfg(not(windows))]
             axo_computer::redact(result, &|candidate| {
                 hashes.contains(&hash(&self.salt, candidate))
             });
         }
     }
 
+    #[cfg(any(unix, test))]
     fn export(&self) -> Value {
         let hashes = self
             .hashes
@@ -115,6 +190,7 @@ fn hash(salt: &[u8], value: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+#[cfg(any(unix, test))]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -220,6 +296,10 @@ struct Asking<'a> {
 
 /// What computer use needs of the rest of axod.
 pub trait ComputerHost: Send + Sync {
+    /// Revalidate the request and permissions after the person answers.
+    fn input_allowed(&self) -> bool {
+        !axo_ipc::cancel::current().is_cancelled()
+    }
     /// Asks the person in `session_id` and waits, for a form when `input` is given.
     fn ask_with(
         &self,
@@ -396,7 +476,12 @@ impl ComputerUse {
             (ElicitationAction::Decline, _) => return refused("Not done: the person declined."),
             _ => return refused("Not done: nobody answered in time."),
         };
-        let receipt = self.fill(window, &form, &picked, &labels, submit, &values, &place);
+        if !host.input_allowed() {
+            return refused("Input permission was revoked or the request was cancelled.");
+        }
+        let receipt = self.fill(
+            host, window, &form, &picked, &labels, submit, &values, &place,
+        );
         log::info!(
             "event=input.filled fields={} submitted={} outcome={}",
             picked.len(),
@@ -413,6 +498,7 @@ impl ComputerUse {
     #[allow(clippy::too_many_arguments)]
     fn fill(
         &self,
+        host: &dyn ComputerHost,
         window: &dyn Window,
         form: &Reading,
         picked: &[(usize, FieldKind)],
@@ -432,12 +518,20 @@ impl ComputerUse {
             self.redactions.remember(value);
         }
         for (position, &(index, _)) in picked.iter().enumerate() {
+            if !host.input_allowed() {
+                return refused(
+                    "Stopped filling: permission was revoked or the request was cancelled. Earlier fields may already be filled.",
+                );
+            }
             let Some(value) = values.get(&format!("f{position}")) else {
                 return refused("Not filled: a value is missing.");
             };
             if let Err(error) = window.fill(index, value) {
                 return refused(format!("Not filled: {error}."));
             }
+        }
+        if submit.is_some() && !host.input_allowed() {
+            return refused("Fields filled, but submission was cancelled or permission revoked.");
         }
         let pressed = match submit {
             Some(index) => match window.press(index) {
@@ -483,11 +577,13 @@ fn title_case(word: &str) -> String {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg(unix)]
 struct ComputerInput {
     session_id: SessionId,
     args: Value,
 }
 
+#[cfg(unix)]
 const AXOD_ONLY: Only = Only {
     caller: Caller::Signed(Signer::ThisBinary),
     code: -32003,
@@ -495,17 +591,20 @@ const AXOD_ONLY: Only = Only {
 };
 
 /// `axo.computer.input` and `axo.computer.redactions`, for axod's own `axod mcp`.
+#[cfg(unix)]
 pub struct ComputerExtension {
     computer: Arc<ComputerUse>,
     host: Arc<dyn ComputerHost>,
 }
 
+#[cfg(unix)]
 impl ComputerExtension {
     pub fn new(computer: Arc<ComputerUse>, host: Arc<dyn ComputerHost>) -> Self {
         Self { computer, host }
     }
 }
 
+#[cfg(unix)]
 impl Extension for ComputerExtension {
     fn name(&self) -> &'static str {
         "computer"
@@ -668,7 +767,11 @@ mod tests {
         redactions.apply(&mut read);
         assert_eq!(
             read["content"][0]["text"],
-            "- [16] AXTextField \"Email\" = \"\u{2022}\u{2022}\u{2022}\u{2022} (filled by you)\"\n- abc"
+            if cfg!(windows) {
+                "- [16] AXTextField \"Email\" = \"•••• (filled by you)\"\n- •••• (filled by you)"
+            } else {
+                "- [16] AXTextField \"Email\" = \"•••• (filled by you)\"\n- abc"
+            }
         );
     }
 
@@ -689,6 +792,7 @@ mod tests {
         /// What an accepted form is answered with.
         values: Option<Values>,
         forms: Mutex<Vec<InputRequest>>,
+        allowed_checks: Mutex<Option<usize>>,
     }
 
     impl Host {
@@ -699,6 +803,7 @@ mod tests {
                 asked: Mutex::default(),
                 values: None,
                 forms: Mutex::default(),
+                allowed_checks: Mutex::default(),
             }
         }
 
@@ -708,6 +813,16 @@ mod tests {
     }
 
     impl ComputerHost for Host {
+        fn input_allowed(&self) -> bool {
+            let mut remaining = self.allowed_checks.lock().unwrap();
+            if let Some(left) = remaining.as_mut() {
+                if *left == 0 {
+                    return false;
+                }
+                *left -= 1;
+            }
+            true
+        }
         fn ask_with(
             &self,
             _session_id: SessionId,
@@ -892,6 +1007,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_extension_offers_input_and_redactions_to_axod_alone() {
         let extension = ComputerExtension::new(
             Arc::default(),
@@ -1095,7 +1211,7 @@ mod tests {
         );
         assert_eq!(receipt["structuredContent"]["submitted"], json!(false));
         assert!(window.pressed.lock().unwrap().is_empty());
-        // Too short to hide wherever it appears.
+        // A prefix of the filled value is not itself a filled value.
         let mut read = json!("123");
         computer.redact(&mut read);
         assert_eq!(read, json!("123"));
@@ -1211,6 +1327,22 @@ mod tests {
             json!({ "filled": ["Email address", "Password"], "submitted": false })
         );
         assert_eq!(window.filled.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn revocation_stops_between_fields_and_before_submission() {
+        for checks in 0..=3 {
+            let host = answering_with(values(&[("f0", "leo@example.com"), ("f1", "hunter22")]));
+            *host.allowed_checks.lock().unwrap() = Some(checks);
+            let window = FakeWindow::sign_in();
+            let result = ask_in(&ComputerUse::default(), &host, &window, sign_in_args());
+            assert_eq!(result["isError"], true);
+            assert_eq!(
+                window.filled.lock().unwrap().len(),
+                checks.saturating_sub(1)
+            );
+            assert!(window.pressed.lock().unwrap().is_empty());
+        }
     }
 
     #[test]

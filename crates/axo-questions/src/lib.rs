@@ -17,19 +17,30 @@ use std::sync::Mutex;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use axo_ipc::Extension;
+#[cfg(unix)]
 use axo_ipc::peer::{Caller, Signer};
+#[cfg(unix)]
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::elicitation::{
     Asker, BAD_INPUT, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind,
-    ElicitationOutcome, InputRequest, MAX_INPUT_CHARS, MAX_MESSAGE_CHARS, MAX_PENDING,
-    NOT_A_PERSON, NOT_A_TOOL, NOT_PENDING, Pending as Listed, Reply, RequestElicitation,
-    ResolveElicitation, Resolved, TIMEOUT_MS,
+    ElicitationOutcome, InputRequest, MAX_INPUT_CHARS, MAX_MESSAGE_CHARS, MAX_PENDING, NOT_PENDING,
+    Reply, RequestElicitation,
 };
+#[cfg(unix)]
+use axo_protocol::elicitation::{
+    NOT_A_PERSON, NOT_A_TOOL, Pending as Listed, ResolveElicitation, Resolved, TIMEOUT_MS,
+};
+#[cfg(unix)]
 use axo_protocol::rpc::method;
 use axo_protocol::{Event, SessionId, new_uuid_v4};
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+#[cfg(unix)]
+use jsonrpc_core::IoHandler;
+use jsonrpc_core::{Error as RpcError, ErrorCode};
+#[cfg(unix)]
 use serde_json::Value;
+#[cfg(any(unix, test))]
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
@@ -322,6 +333,10 @@ impl Questions {
             )
         };
         let asked = self.pending.get(id).ok_or_else(not_pending)?;
+        if asked.expires_at <= unix_millis() {
+            self.cancel(host, id);
+            return Err(not_pending());
+        }
         let action = ElicitationAction::from(answer);
         let values = match (&asked.input, action, reply) {
             (Some(input), ElicitationAction::Accept, reply) => {
@@ -345,6 +360,13 @@ impl Questions {
     /// The questions waiting, oldest first.
     pub fn pending(&self) -> Vec<Elicitation> {
         self.pending.pending()
+    }
+
+    /// Withdraw a daemon-owned request when its session or permission is revoked.
+    pub fn cancel(&self, host: &dyn QuestionsHost, id: &str) {
+        if let Ok(Some(question)) = self.pending.settle(id, ElicitationAction::Cancel) {
+            publish_resolved(host, &question, ElicitationAction::Cancel);
+        }
     }
 }
 
@@ -429,17 +451,20 @@ fn publish_resolved(
 }
 
 /// `axo.elicitation.request`, `.list`, and `.resolve` for Axo.app alone.
+#[cfg(unix)]
 pub struct QuestionsExtension {
     questions: Arc<Questions>,
     host: Arc<dyn QuestionsHost>,
 }
 
+#[cfg(unix)]
 impl QuestionsExtension {
     pub fn new(questions: Arc<Questions>, host: Arc<dyn QuestionsHost>) -> Self {
         Self { questions, host }
     }
 }
 
+#[cfg(unix)]
 impl Extension for QuestionsExtension {
     fn name(&self) -> &'static str {
         "questions"
@@ -498,6 +523,7 @@ impl Extension for QuestionsExtension {
     }
 }
 
+#[cfg(unix)]
 fn server_error(code: i64, message: &str) -> RpcError {
     RpcError {
         code: ErrorCode::ServerError(code),

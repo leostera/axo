@@ -21,6 +21,8 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
     versions = ["1.99.0"],
+    # Keep the formatter's rustc_driver DLL compatible on Windows.
+    rustfmt_version = "1.99.0",
 )
 use_repo(rust, "rust_toolchains")
 
@@ -55,9 +57,18 @@ crate.spec(package = "tokio-tungstenite", version = "0.30.0", features = ["nativ
 crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls", "url"])
 crate.spec(package = "url", version = "2.5.8")
 crate.spec(package = "zeroize", version = "1")
-# Cua Driver (MIT), pinned: only its macOS runtime and core are linked into axod (axo-computer);
+crate.spec(package = "windows", version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"])
+crate.spec(package = "windows-sys", version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+])
+# Cua Driver (MIT), pinned: only its native platform runtime and core are linked into axod;
 # its daemon, MCP server, SDK bindings and telemetry are not.
 crate.spec(package = "platform-macos", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
+crate.spec(package = "platform-windows", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
 crate.spec(package = "cua-driver-core", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
 crate.spec(package = "cursor-overlay", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
 
@@ -74,6 +85,39 @@ crate.from_specs(
     cargo_lockfile = "//bazel/rust:Cargo.lock",
 )
 use_repo(crate, "crates")
+
+# Windows Cua's Rego dependency links the Spectre-mitigated CRT. Fetch the
+# matching Microsoft libraries as a build input, rather than requiring another
+# elevated Visual Studio installation. The package is not shipped with Axo.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "axo_msvc_spectre_x64",
+    urls = ["https://download.visualstudio.microsoft.com/download/pr/67cf767c-5e71-47c2-a54a-cd5631e28942/6d7cb93cc7fdc206f44999850b414600ae1041d0db7d2fe9d0ff658abfb97b58/Microsoft.VC.14.44.17.14.CRT.x64.Desktop.spectre.base.vsix"],
+    sha256 = "6d7cb93cc7fdc206f44999850b414600ae1041d0db7d2fe9d0ff658abfb97b58",
+    type = "zip",
+    strip_prefix = "Contents/VC/Tools/MSVC/14.44.35207/lib/spectre/x64",
+    build_file_content = 'filegroup(name = "libraries", srcs = glob(["*.lib", "*.obj"]), visibility = ["//visibility:public"])\nexports_files(["vcruntime.lib"])',
+)
+crate.annotation(
+    crate = "msvc_spectre_libs",
+    patch_args = ["-p1"],
+    patches = ["//third_party/cua:msvc-spectre-path.patch"],
+    label_injections = {"@axo_msvc_spectre_x64": "@axo_msvc_spectre_x64"},
+    repositories = ["crates"],
+)
+crate.annotation_select(
+    crate = "msvc_spectre_libs",
+    triples = ["x86_64-pc-windows-msvc"],
+    build_script_data = ["@axo_msvc_spectre_x64//:libraries", "@axo_msvc_spectre_x64//:vcruntime.lib"],
+    build_script_env = {"AXO_SPECTRE_LIBRARY": "$(execpath @axo_msvc_spectre_x64//:vcruntime.lib)"},
+    repositories = ["crates"],
+)
+crate.annotation(
+    crate = "windows_x86_64_msvc",
+    patches = ["//third_party/cua:windows-import-libraries.patch"],
+    patch_args = ["-p1"],
+    repositories = ["crates"],
+)
 
 swift_deps = use_extension(
     "@rules_swift_package_manager//:extensions.bzl",

@@ -5,11 +5,17 @@ Thanks for your interest in Axo. The project is under active development, so beh
 ## Before you start
 
 - Axo's native app, daemon, and iOS client are developed on macOS with Xcode.
-- Bazel (**9.3.0**, pinned in `.bazelversion`) is the only build: the native apps, the Rust crates and the JavaScript packages, from one pnpm workspace (`pnpm-lock.yaml`). Install Xcode and its command-line tools as well. Run `pnpm install` at the root only for editor support or `cf dev`.
+- Bazel (**9.3.0**, pinned in `.bazelversion`) builds the Apple apps, Rust crates and JavaScript packages, from one pnpm workspace (`pnpm-lock.yaml`). Install Xcode and its command-line tools for Apple development. Run `pnpm install` at the root only for editor support or `cf dev`. The Windows preview client uses the .NET SDK; see below.
 - `config.json` holds the version, build numbers, bundle ids and minimum OS versions. Settings for your own Mac (your phone, whether to install on it) go in `config.local.json`, which git ignores.
 - Never commit API keys, OAuth secrets, signing credentials, personal session data, agent transcripts, or production configuration. Use local development fixtures and environment files, which should remain untracked.
 
 ## Build and test
+
+For the Windows preview, follow [`windows/README.md`](windows/README.md) and run
+`./windows/build.ps1 -Test`. It builds the Windows Rust targets, the WPF client and the isolated
+process/IPC integration tests. `//...` includes Apple targets and remains the macOS entry point.
+Windows-specific behavior lives behind platform entry points in the existing Rust crates;
+the Mac implementation remains in `crates/axo-server/src/unix.rs` and `crates/axod/src/unix.rs`.
 
 From the repository root:
 

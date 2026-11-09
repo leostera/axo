@@ -116,7 +116,7 @@ pub fn unavailable_status() -> RelayStatus {
         state: RelayState::Disconnected,
         connected_since_unix_millis: None,
         host_name: host_label(),
-        host_kind: HostKind::MacOS,
+        host_kind: HostKind::platform(),
         last_error: Some("Remote access is unavailable on this Mac.".to_owned()),
     }
 }
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn relay_status_tracks_connection_and_manual_retry_states() {
-        let control = RelayControl::new("Test Mac".to_owned(), HostKind::MacOS);
+        let control = RelayControl::new("Test Mac".to_owned(), HostKind::platform());
         assert_eq!(control.snapshot().unwrap().state, RelayState::Disconnected);
 
         control.mark_connected();
@@ -157,7 +157,7 @@ mod tests {
     fn relay_status_observer_sees_only_real_changes() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
-        let control = RelayControl::new("Test Mac".to_owned(), HostKind::MacOS).with_observer(
+        let control = RelayControl::new("Test Mac".to_owned(), HostKind::platform()).with_observer(
             Box::new(move |status| recorder.lock().unwrap().push(status.state)),
         );
         control.mark_connecting();

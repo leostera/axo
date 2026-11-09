@@ -138,7 +138,7 @@ fn redact_text(text: &str, hidden: &dyn Fn(&str) -> bool) -> Option<String> {
 }
 
 /// Whether this build can do computer use at all.
-pub const AVAILABLE: bool = cfg!(target_os = "macos");
+pub const AVAILABLE: bool = cfg!(any(target_os = "macos", windows));
 
 /// The allowlisted tools' definitions: `{ name, description, inputSchema }`.
 pub fn tool_definitions() -> Vec<Value> {
@@ -148,7 +148,7 @@ pub fn tool_definitions() -> Vec<Value> {
             tool["name"] = json!(our_name(name));
         }
     }
-    if AVAILABLE {
+    if cfg!(any(target_os = "macos", windows)) {
         tools.push(request_input_definition());
     }
     tools
@@ -177,7 +177,7 @@ fn refusal_while(tool: &str, locked: impl Fn() -> bool) -> Option<Value> {
 
 /// What a computer call on a locked Mac answers. Locked, the login window owns the screen:
 /// screenshots show it, and clicks and keys go to it, not to the apps (RFD0028).
-pub const LOCKED: &str = "Not done: this Mac is locked, so its screen and input belong to the login window. Computer use needs the person to unlock it; bash and the other tools still work.";
+pub const LOCKED: &str = "Not done: this computer is locked or its interactive desktop is unavailable. Computer use needs the person to unlock it; the other tools still work.";
 
 /// Tools that touch neither the screen nor input, and answer the same locked or not.
 const WORKS_LOCKED: &[&str] = &["check_permissions", "get_guide"];
@@ -363,7 +363,11 @@ mod tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod imp {
     use serde_json::Value;
 

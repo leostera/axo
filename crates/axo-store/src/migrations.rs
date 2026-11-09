@@ -1,6 +1,7 @@
 //! Bringing older catalogs up to the current schema: columns added since the first release,
 //! the Workspace cutover (version 4), and rekeying Sessions by UUID (version 9, RFD0017).
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +33,7 @@ pub(crate) fn back_up_before_uuid_rekey(
         return Ok(());
     }
     database.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;
+    #[cfg(unix)]
     std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     log::info!(
@@ -513,6 +515,7 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!((version, id), (8, 5));
+        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
             0o600

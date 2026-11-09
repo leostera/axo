@@ -415,7 +415,11 @@ pub fn current_timestamp() -> String {
     let seconds = now.as_secs() as libc::time_t;
     let mut broken_down = std::mem::MaybeUninit::<libc::tm>::zeroed();
     // SAFETY: gmtime_r initializes the provided tm on success; seconds is a valid timestamp.
-    if unsafe { libc::gmtime_r(&seconds, broken_down.as_mut_ptr()) }.is_null() {
+    #[cfg(unix)]
+    let failed = unsafe { libc::gmtime_r(&seconds, broken_down.as_mut_ptr()) }.is_null();
+    #[cfg(windows)]
+    let failed = unsafe { libc::gmtime_s(broken_down.as_mut_ptr(), &seconds) } != 0;
+    if failed {
         return "1970-01-01T00:00:00Z".to_owned();
     }
     // SAFETY: gmtime_r returned a non-null pointer and initialized broken_down.

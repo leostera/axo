@@ -1,0 +1,5 @@
+# pi/3 vectors hash the exact bytes of each JSONL line. Git's Windows CRLF
+# conversion changes those identities, so keep transcript fixtures as committed.
+schemas/**/fixtures/*.jsonl text eol=lf
+# Unified patches contain intentional single-space context lines.
+third_party/cua/*.patch -whitespace

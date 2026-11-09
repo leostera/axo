@@ -549,13 +549,32 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 4096];
-                // Up to the end of the headers; an upload's body may come in the same read.
+                // Drain the request body before closing. Windows resets a TCP connection
+                // closed with unread data, which can hide the canned HTTP error from clients.
                 while !request.windows(4).any(|window| window == b"\r\n\r\n") {
                     let read = stream.read(&mut buffer).unwrap();
                     if read == 0 {
                         break;
                     }
                     request.extend_from_slice(&buffer[..read]);
+                }
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let length = String::from_utf8_lossy(&request[..end])
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    while request.len() < end + 4 + length {
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                    }
                 }
                 record
                     .lock()

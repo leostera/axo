@@ -15,6 +15,8 @@ pub mod peers;
 mod relay;
 pub mod signin;
 mod sync;
+mod time;
+pub use time::utc_timestamp;
 
 pub use endpoint::{DEFAULT_RELAY_URL, RelayEndpoint};
 pub use host::{

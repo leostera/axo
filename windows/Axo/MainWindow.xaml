@@ -1,0 +1,59 @@
+<Window x:Class="Axo.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Axo" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Title="Axo Terminal" Width="1000" Height="680" MinWidth="760" MinHeight="480" Loaded="OnLoaded" Closing="OnClosing" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" PreviewKeyDown="WindowKeyDown">
+  <Window.Resources><DataTemplate x:Key="CollapsedSessionTemplate"><Grid Height="28" ToolTip="{Binding Tooltip}"><Grid.ColumnDefinitions><ColumnDefinition Width="9"/><ColumnDefinition Width="18"/></Grid.ColumnDefinitions><TextBlock Text="{Binding StatusSymbol}" FontSize="8" Foreground="{Binding StatusBrush}" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="{Binding Glyph}" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Center"/></Grid></DataTemplate></Window.Resources>
+  <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="30" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/></shell:WindowChrome.WindowChrome>
+  <Grid>
+    <Grid.ColumnDefinitions><ColumnDefinition x:Name="SidebarColumn" Width="220"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0">
+      <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="30"/><RowDefinition Height="26"/><RowDefinition Height="*"/><RowDefinition Height="44"/></Grid.RowDefinitions>
+        <StackPanel x:Name="AppMenu" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <Button Content="Axo" Tag="Axo" Click="ShowAppMenu" Style="{StaticResource PlainButton}" Foreground="{DynamicResource TextBrush}"/>
+          <Button Content="Terminal" Tag="Terminal" Click="ShowAppMenu" Style="{StaticResource PlainButton}" Foreground="{DynamicResource TextBrush}"/>
+          <Button Content="View" Tag="View" Click="ShowAppMenu" Style="{StaticResource PlainButton}" Foreground="{DynamicResource TextBrush}"/>
+        </StackPanel>
+        <Grid x:Name="SidebarHeader" Grid.Row="1" Margin="8,4,8,2">
+          <Button Content="This PC ⌄" HorizontalAlignment="Left" Click="ShowHostMenu" FontWeight="SemiBold" FontSize="12" Style="{StaticResource PlainButton}" Padding="0" AutomationProperties.Name="Sessions on This PC"/>
+          <Button Content="+" FontSize="16" Width="18" Height="18" HorizontalAlignment="Right" Style="{StaticResource PlainButton}" Click="OpenFolder" ToolTip="Create a Workspace (Ctrl+N)" AutomationProperties.Name="New Workspace"/>
+        </Grid>
+        <Grid Grid.Row="2">
+          <ListBox x:Name="SessionList" ItemsSource="{Binding Sessions}" SelectionChanged="OnSessionChanged" MouseRightButtonUp="SessionContextMenu" Margin="2,0" ScrollViewer.CanContentScroll="False">
+            <ListBox.GroupStyle><GroupStyle><GroupStyle.HeaderTemplate><DataTemplate><TextBlock Text="{Binding Name}" FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource MutedBrush}" Margin="6,8,6,2"/></DataTemplate></GroupStyle.HeaderTemplate></GroupStyle></ListBox.GroupStyle>
+            <ListBox.ItemTemplate><DataTemplate><Grid Height="22" ToolTip="{Binding Tooltip}"><Grid.ColumnDefinitions><ColumnDefinition Width="9"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding StatusSymbol}" Foreground="{Binding StatusBrush}" FontSize="8" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="{Binding Glyph}" Foreground="{DynamicResource MutedBrush}" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Center"/><TextBlock Grid.Column="2" Text="{Binding Name}" FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="4,0,0,0"/><TextBlock Grid.Column="3" Text="{Binding Age}" Foreground="{DynamicResource MutedBrush}" FontSize="10" VerticalAlignment="Center" Margin="4,0,0,0"/></Grid></DataTemplate></ListBox.ItemTemplate>
+          </ListBox>
+          <StackPanel x:Name="EmptySidebar" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12" Visibility="Collapsed"><TextBlock Text="▣" FontSize="28" TextAlignment="Center" Foreground="{DynamicResource MutedBrush}"/><TextBlock Text="No Sessions" FontSize="13" FontWeight="SemiBold" TextAlignment="Center" Margin="0,6"/><TextBlock Text="Create a Workspace or Session to get started." TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource MutedBrush}"/></StackPanel>
+        </Grid>
+        <Button Grid.Row="3" Width="36" Height="36" HorizontalAlignment="Left" Margin="8,4" Style="{StaticResource PlainButton}" Click="ToggleSidebar" ToolTip="Toggle Sidebar (Ctrl+B)" AutomationProperties.Name="Toggle Sidebar"><TextBlock Text="◧" FontSize="16"/></Button>
+        <!-- Workspace selection is command context, never a sidebar filter. -->
+        <ComboBox x:Name="WorkspacePicker" Visibility="Collapsed" DisplayMemberPath="Name" SelectedValuePath="Id" SelectionChanged="OnWorkspaceChanged"/>
+        <Button x:Name="NewSessionButton" Visibility="Collapsed" Click="NewSession"/>
+        <TextBlock x:Name="DaemonStatus" Visibility="Collapsed"/>
+      </Grid>
+    </Border>
+    <Grid Grid.Column="1" Background="{DynamicResource TerminalBackground}">
+      <Grid.RowDefinitions><RowDefinition Height="30"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <Grid Background="{DynamicResource TerminalBackground}">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <Button x:Name="TerminalButton" Content="◫" Width="30" Click="OpenTerminal" IsEnabled="False" Style="{StaticResource PlainButton}" ToolTip="Split Right"/>
+          <Button x:Name="MoreButton" Content="···" Width="28" Click="ShowSessionMenu" IsEnabled="False" Style="{StaticResource PlainButton}" ToolTip="Session"/>
+          <Button Content="―" Width="46" Click="Minimize" Style="{StaticResource PlainButton}" AutomationProperties.Name="Minimize"/><Button Content="□" Width="46" Click="Maximize" Style="{StaticResource PlainButton}" AutomationProperties.Name="Maximize"/><Button Content="✕" Width="46" Click="HideWindow" Style="{StaticResource PlainButton}" AutomationProperties.Name="Close"/>
+        </StackPanel>
+        <TextBlock x:Name="SessionTitle" Visibility="Collapsed"/><TextBlock x:Name="WorkspacePath" Visibility="Collapsed"/>
+      </Grid>
+      <Border Grid.Row="1" x:Name="ErrorBanner" Background="{DynamicResource BackgroundBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="8,5" Visibility="Collapsed"><DockPanel><Button Content="✕" DockPanel.Dock="Right" Click="DismissError" Style="{StaticResource PlainButton}"/><TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{DynamicResource TextBrush}"/></DockPanel></Border>
+      <Grid Grid.Row="2" x:Name="Panes">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="SplitDivider" Width="0"/><ColumnDefinition x:Name="TerminalColumn" Width="0"/></Grid.ColumnDefinitions>
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <Grid>
+            <StackPanel x:Name="Welcome" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Text="No Session Selected" Foreground="{DynamicResource TerminalForeground}" FontSize="13" TextAlignment="Center"/><Button Content="New Workspace…" Click="OpenFolder" Margin="0,10" Padding="12,4" HorizontalAlignment="Center"/></StackPanel>
+            <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" Padding="2,10" Visibility="Collapsed"><ItemsControl ItemsSource="{Binding Messages}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Margin="0,0,0,14"><TextBlock Text="{Binding Label}" FontFamily="Cascadia Mono, Consolas" FontSize="12" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,3"/><TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" IsReadOnlyCaretVisible="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource TerminalForeground}" Padding="0" FontFamily="Cascadia Mono, Consolas" FontSize="13"/></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></ScrollViewer>
+          </Grid>
+          <Border Grid.Row="1" x:Name="ApprovalPanel" Background="{DynamicResource BackgroundBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="12" Visibility="Collapsed"><StackPanel><TextBlock x:Name="ApprovalTitle" FontWeight="SemiBold" Margin="0,0,0,6"/><TextBox x:Name="ApprovalDetail" IsReadOnly="True" BorderThickness="0" MaxHeight="160" Background="Transparent" Foreground="{DynamicResource TextBrush}" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Padding="0"/><StackPanel x:Name="QuestionFields" Margin="0,8,0,0"/><StackPanel Orientation="Horizontal" Margin="0,8,0,0"><Button x:Name="ApproveButton" Content="Allow once" Click="Approve" Padding="10,4" Margin="0,0,8,0"/><Button x:Name="DeclineButton" Content="Decline" Click="Decline" Padding="10,4"/></StackPanel></StackPanel></Border>
+          <Grid Grid.Row="2" Margin="2,0,2,10"><Grid.ContextMenu><ContextMenu><MenuItem Header="Attach Files…" Click="AttachFiles"/><MenuItem Header="Model and Reasoning…" Click="ChooseModel"/><MenuItem Header="Queued Messages…" Click="ShowQueue"/></ContextMenu></Grid.ContextMenu><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><StackPanel><TextBlock x:Name="ActivityText" Foreground="{DynamicResource MutedBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" Margin="0,0,0,5" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="AttachmentSummary" Visibility="Collapsed" Foreground="{DynamicResource MutedBrush}" TextTrimming="CharacterEllipsis" Margin="18,0,0,5" ToolTip="Remove attachments from the composer menu"/></StackPanel><Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="›" Foreground="{DynamicResource TerminalForeground}" FontSize="18"/><TextBox Grid.Column="1" x:Name="Composer" Background="Transparent" Foreground="{DynamicResource TerminalForeground}" CaretBrush="{DynamicResource TerminalForeground}" BorderThickness="0" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="26" MaxHeight="150" VerticalScrollBarVisibility="Auto" Padding="0,4" FontFamily="Cascadia Mono, Consolas" FontSize="13" PreviewKeyDown="ComposerKeyDown" IsEnabled="False" AutomationProperties.Name="Message Codex"/><StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom"><Button Content="+" Click="AttachFiles" Style="{StaticResource PlainButton}" ToolTip="Attach Files"/><Button Content="⋯" Click="ComposerMenu" Style="{StaticResource PlainButton}" ToolTip="Model, reasoning and delivery"/><Button x:Name="StopButton" Content="Stop" Click="StopTurn" Visibility="Collapsed" Style="{StaticResource PlainButton}"/><Button x:Name="SendButton" Content="↵" Click="Send" IsEnabled="False" Style="{StaticResource PlainButton}" ToolTip="Send (Enter)" AutomationProperties.Name="Send"/></StackPanel></Grid></Grid>
+        </Grid>
+        <GridSplitter Grid.Column="1" Width="1" HorizontalAlignment="Stretch" Background="{DynamicResource BorderBrush}" ResizeBehavior="PreviousAndNext"/>
+        <local:TerminalWorkspace x:Name="EmbeddedTerminal" Grid.Column="2" Visibility="Collapsed"/>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>

@@ -5,14 +5,19 @@
 pub mod cancel;
 pub mod event_queue;
 pub mod extension;
+#[cfg(unix)]
 pub mod local;
+#[cfg(unix)]
 pub mod peer;
+#[cfg(unix)]
 mod server;
 pub mod stop;
 
 pub use event_queue::{EventQueue, PushOutcome};
 pub use extension::{Conflict, Extension, Methods};
 pub use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+#[cfg(unix)]
 pub use local::{Local, LocalError};
+#[cfg(unix)]
 pub use server::{Only, TypedMethods, Upgraded, Upgrades, serve};
 pub use stop::Stop;
