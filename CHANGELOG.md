@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.44 (Mac app build 315, axod 67)
+
+### Changed
+
+- axod runs on a fraction of the threads it did. Each program running in a Session had a thread of its own waiting for it to exit, most of axod's threads on a busy Mac; one signal now tells all of them.
+
 ## 0.43 (Mac app build 314, axod 66)
 
 ### Changed
