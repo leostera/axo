@@ -70,7 +70,9 @@ fn a_prompt_reaches_pi_and_its_turn_streams_back_and_is_recorded() {
     );
     assert_eq!(accepted["accepted"], true, "{accepted}");
 
-    // Pi's own events come through unchanged, in order, ending with the turn's end.
+    // Pi's own events come through unchanged, in order, ending with the turn's end. What Pi
+    // says of itself once it has started (its state, commands and models, RFD0033) comes
+    // whenever it is ready, so it is not part of the turn.
     let names: Vec<String> = {
         events.wait_for("the turn to end", |event| {
             (event["type"] == "pi.event" && event["name"] == "agent.end").then_some(())
@@ -80,6 +82,7 @@ fn a_prompt_reaches_pi_and_its_turn_streams_back_and_is_recorded() {
             .iter()
             .filter(|e| e["type"] == "pi.event")
             .map(|e| e["name"].as_str().unwrap().to_owned())
+            .filter(|name| !matches!(name.as_str(), "pi.state" | "pi.commands" | "pi.models"))
             .collect()
     };
     assert_eq!(
