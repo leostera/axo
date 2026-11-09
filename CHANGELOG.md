@@ -2,6 +2,13 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.41 (Mac app build 312, axod 64)
+
+### Changed
+
+- The Mac app hears of changes to your Sessions the moment axod makes them, instead of asking again and again. An idle Axo costs nothing while nothing happens.
+- A pane whose program exits closes at once, and stopping a shell no longer waits on a timer to see it gone.
+
 ## 0.40 (Mac app build 311, axod 63)
 
 ### Changed
