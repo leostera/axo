@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.40 (Mac app build 311, axod 63)
+
+### Changed
+
+- What an agent writes reaches the web and the phone at once. The Mac sent a Session's new lines up to half a second late, and woke twice a second to look for them; it now hears of each line as it is written, and does nothing while nothing happens.
+- A Mac renews its place in the cloud once a minute instead of every ten seconds. A laptop that wakes on another network is let back in at once, even while its old connection is still held.
+
+### Fixed
+
+- A command from another Mac or the phone that runs past its time limit is stopped whole. Under load, the shell could outlive the stop and run the command's next step.
+
 ## 0.39 (Mac app build 310, axod 62)
 
 ### Fixed
