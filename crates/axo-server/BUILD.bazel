@@ -27,6 +27,12 @@ rust_library(
     version = AXO["version"] + ".0",
     deps = select({
         "@platforms//os:windows": [
+            "@crates//:sha2",
+            "//crates/axo-computer-use:axo_computer_use",
+            "//crates/axo-questions:axo_questions",
+            "//crates/axo-seal:axo_seal",
+            "@crates//:jsonrpc-core",
+            "@crates//:zeroize",
             "//crates/axo-computer:axo_computer",
             "//crates/axo-relay:axo_relay",
             "//crates/axo-ipc:axo_ipc",
@@ -80,6 +86,12 @@ rust_test(
     version = AXO["version"] + ".0",
     deps = select({
         "@platforms//os:windows": [
+            "@crates//:sha2",
+            "//crates/axo-computer-use:axo_computer_use",
+            "//crates/axo-questions:axo_questions",
+            "//crates/axo-seal:axo_seal",
+            "@crates//:jsonrpc-core",
+            "@crates//:zeroize",
             "//crates/axo-computer:axo_computer",
             "//crates/axo-relay:axo_relay",
             "//crates/axo-ipc:axo_ipc",

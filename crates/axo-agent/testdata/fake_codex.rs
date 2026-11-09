@@ -44,6 +44,22 @@ fn main() {
                 thread = p["threadId"].as_str().unwrap().into();
                 send(json!({"id":id,"result":{"thread":{"id":thread}}}));
             }
+            Some("model/list") => send(
+                json!({"id":id,"result":{"data":[{"id":"fixture","model":"fixture","displayName":"Fixture model","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"low","inputModalities":["text","image"],"isDefault":true}],"nextCursor":null}}),
+            ),
+            Some("turn/steer") => {
+                if p["expectedTurnId"] != active {
+                    send(json!({"id":id,"error":{"code":-32602,"message":"Stale turn"}}));
+                } else {
+                    send(json!({"id":id,"result":{"turnId":active}}));
+                    complete(
+                        &thread,
+                        &active,
+                        "completed",
+                        &format!("Steered: {}", p["input"][0]["text"].as_str().unwrap_or("")),
+                    );
+                }
+            }
             Some("turn/start") => {
                 count += 1;
                 active = format!("turn-{}-{count}", std::process::id());
@@ -75,6 +91,15 @@ fn main() {
                         }
                         complete(&thread, &active, "completed", "flood complete");
                     }
+                    "inspect-controls" => complete(
+                        &thread,
+                        &active,
+                        "completed",
+                        &format!(
+                            "Controls: {} / {} / {}",
+                            p["model"], p["effort"], p["input"]
+                        ),
+                    ),
                     "inspect-policy" => complete(
                         &thread,
                         &active,

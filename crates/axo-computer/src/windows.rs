@@ -34,7 +34,7 @@ fn runtime() -> &'static Runtime {
 const EXCLUDED: &[&str] = &["run_script", "run_steps"];
 
 pub fn tool_definitions() -> Vec<Value> {
-    runtime().registry.tools_list()["tools"]
+    let mut tools: Vec<Value> = runtime().registry.tools_list()["tools"]
         .as_array()
         .into_iter()
         .flatten()
@@ -51,7 +51,9 @@ pub fn tool_definitions() -> Vec<Value> {
             }
             json!({"name":tool["name"],"description":tool["description"],"inputSchema":schema})
         })
-        .collect()
+        .collect();
+    tools.push(json!({"name":"run_steps","description":"Run 1–32 computer calls in order. Every action passes Axo's gate; a decline, failure, disconnect or permission change stops the sequence. Use current window and element tokens.","inputSchema":{"type":"object","required":["steps"],"additionalProperties":false,"properties":{"steps":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","required":["tool","args"],"additionalProperties":false,"properties":{"tool":{"type":"string"},"args":{"type":"object"},"confirm":{"type":"boolean"}}}}}}}));
+    tools
 }
 
 pub fn call(tool: &str, mut args: Value) -> Value {

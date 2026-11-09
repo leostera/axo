@@ -31,6 +31,11 @@ pub struct Computer {
     generation: std::sync::atomic::AtomicU64,
     questions: Mutex<HashMap<String, Question>>,
     execution: Mutex<()>,
+    inputs: axo_questions::Questions,
+    forms: axo_computer_use::ComputerUse,
+    input_key: std::sync::OnceLock<axo_seal::InputKey>,
+    key_lock: Mutex<()>,
+    sensitive: AtomicBool,
 }
 
 #[derive(Deserialize)]
@@ -74,18 +79,28 @@ impl Computer {
         json!({"available":enabled && !locked,"enabled":enabled,"accessibility":!locked,"screenRecording":!locked,"locked":locked,"platform":"windows"})
     }
     pub fn list(&self) -> Vec<Elicitation> {
-        self.questions
+        let mut result: Vec<_> = self
+            .questions
             .lock()
             .unwrap()
             .values()
             .map(|q| q.elicitation.clone())
-            .collect()
+            .collect();
+        result.extend(self.inputs.pending());
+        result
     }
     pub fn pending(&self, session: SessionId) -> Vec<Value> {
         self.list().iter().filter(|q| q.session_id == session)
             .map(|q| json!({"id":q.id,"method":"axo.computer.confirm","params":{"message":q.message}})).collect()
     }
     pub fn resolve(&self, backend: &Backend, id: &str, action: ElicitationAction) -> bool {
+        if self.inputs.pending().iter().any(|q| q.id == id) {
+            if action == ElicitationAction::Cancel {
+                self.inputs.cancel(backend, id);
+                return true;
+            }
+            return false;
+        }
         let question = self.questions.lock().unwrap().remove(id);
         let Some(question) = question else {
             return false;
@@ -126,6 +141,9 @@ impl Computer {
         }
         let generation = self.generation.load(Ordering::Acquire);
         drop(settings);
+        if request.tool == "run_steps" {
+            return self.steps(backend, request, cancelled);
+        }
         const READ_ONLY: &[&str] = &[
             "check_permissions",
             "list_apps",
@@ -179,6 +197,9 @@ impl Computer {
             .is_some()
         {
             request.args["session"] = json!(request.session_id.to_string());
+        }
+        if request.tool == "request_input" {
+            return self.input(backend, request, cancelled, generation);
         }
         let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
         let gate = axo_computer::gate::for_socket(&backend.directory);
@@ -251,9 +272,278 @@ impl Computer {
                 "Not done: the call was cancelled, expired, or computer use was disabled.",
             );
         }
-        let result = axo_computer::call(&request.tool, request.args);
+        let mut result = axo_computer::call(&request.tool, request.args);
+        if self.sensitive.load(Ordering::Acquire) {
+            hide_images(&mut result);
+        }
+        self.forms.redact(&mut result);
         gate.remember(&request.tool, &result);
         result
+    }
+}
+
+fn hide_images(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            items.retain(|v| v["type"] != "image");
+            for item in items {
+                hide_images(item);
+            }
+        }
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if key.contains("screenshot") || key.contains("image") {
+                    *value = Value::Null;
+                } else {
+                    hide_images(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+impl axo_questions::QuestionsHost for Backend {
+    fn has_session(&self, id: SessionId) -> bool {
+        self.session(id).is_ok()
+    }
+    fn publish(&self, event: Event) {
+        self.publish(event);
+    }
+    fn input_key(&self) -> Option<&axo_seal::InputKey> {
+        self.computer.key(&self.directory)
+    }
+}
+
+impl axo_computer_use::ComputerHost for Backend {
+    fn ask_with(
+        &self,
+        session: SessionId,
+        message: &str,
+        asker: Asker,
+        input: Option<axo_protocol::elicitation::InputRequest>,
+        timeout: Duration,
+    ) -> Result<
+        (
+            axo_protocol::elicitation::ElicitationOutcome,
+            Option<axo_questions::Values>,
+        ),
+        jsonrpc_core::Error,
+    > {
+        self.computer
+            .inputs
+            .ask_with(self, session, message, asker, input, timeout)
+    }
+    fn input_key(&self) -> Option<&axo_seal::InputKey> {
+        self.computer.key(&self.directory)
+    }
+    fn agent_socket(&self) -> Option<PathBuf> {
+        Some(self.directory.clone())
+    }
+}
+
+impl Computer {
+    fn key(&self, directory: &Path) -> Option<&axo_seal::InputKey> {
+        use axo_relay::credential::HostCredentialStore;
+        let _lock = self.key_lock.lock().ok()?;
+        if self.input_key.get().is_none() {
+            let store = super::credentials::Credentials(directory.join("credentials"));
+            const ID: &str = "a5c1e7d0-5e4b-4c1f-9d3a-1f0b2c3d4e5f";
+            let key = match store.load(ID) {
+                Ok(bytes) => {
+                    axo_seal::InputKey::from_secret_bytes(&zeroize::Zeroizing::new(bytes))?
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let key = axo_seal::InputKey::generate();
+                    store.store(ID, &key.to_secret_bytes()).ok()?;
+                    key
+                }
+                Err(_) => return None,
+            };
+            let _ = self.input_key.set(key);
+        }
+        self.input_key.get()
+    }
+    pub fn answer(
+        &self,
+        backend: &Backend,
+        id: &str,
+        answer: axo_protocol::elicitation::ElicitationAnswer,
+        reply: axo_protocol::elicitation::Reply,
+    ) -> Result<(), (i64, String)> {
+        if self.inputs.pending().iter().any(|q| q.id == id) {
+            return self.inputs.resolve(backend, id, answer, reply);
+        }
+        if !matches!(reply, axo_protocol::elicitation::Reply::Bare) {
+            return Err((-32602, "Confirmation takes no field values".into()));
+        }
+        if self.resolve(backend, id, answer.into()) {
+            Ok(())
+        } else {
+            Err((
+                axo_protocol::elicitation::NOT_PENDING,
+                "Already answered or expired".into(),
+            ))
+        }
+    }
+    fn input(
+        &self,
+        backend: &Backend,
+        request: Call,
+        cancelled: &AtomicBool,
+        generation: u64,
+    ) -> Value {
+        let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        let _execution = self.execution.lock().unwrap();
+        if cancelled.load(Ordering::Acquire)
+            || generation != self.generation.load(Ordering::Acquire)
+            || axo_computer::screen_locked()
+            || Instant::now() >= deadline
+        {
+            return failed("Input request cancelled or computer unavailable.");
+        }
+        // No screenshot may expose a value after filling, including non-password codes.
+        self.sensitive.store(true, Ordering::Release);
+        let cancellation = axo_ipc::cancel::Cancellation::default();
+        let finished = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let cancellation = &cancellation;
+            let finished = &finished;
+            scope.spawn(move || {
+                while !finished.load(Ordering::Acquire) {
+                    if cancelled.load(Ordering::Acquire)
+                        || generation != self.generation.load(Ordering::Acquire)
+                        || Instant::now() >= deadline
+                    {
+                        cancellation.cancel();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            });
+            let host = InputHost {
+                backend,
+                generation,
+                cancelled,
+                deadline,
+            };
+            let result = axo_ipc::cancel::on_this_thread(cancellation.clone(), || {
+                self.forms.request_input(
+                    &host,
+                    request.session_id,
+                    None,
+                    request.args,
+                    deadline.saturating_duration_since(Instant::now()),
+                )
+            });
+            finished.store(true, Ordering::Release);
+            result
+        })
+    }
+    fn steps(&self, backend: &Backend, request: Call, cancelled: &AtomicBool) -> Value {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Step {
+            tool: String,
+            #[serde(default = "empty_object")]
+            args: Value,
+            #[serde(default)]
+            confirm: bool,
+        }
+        let Some(steps) = request.args.get("steps").and_then(Value::as_array) else {
+            return failed("run_steps needs a steps array.");
+        };
+        if steps.is_empty() || steps.len() > 32 {
+            return failed("Use 1 to 32 steps.");
+        }
+        let steps: Vec<Step> = match serde_json::from_value(Value::Array(steps.clone())) {
+            Ok(s) => s,
+            Err(_) => return failed("Each step needs tool, args and optional confirm."),
+        };
+        if steps
+            .iter()
+            .any(|s| matches!(s.tool.as_str(), "run_steps" | "run_script"))
+        {
+            return failed("Nested scripts are not supported.");
+        }
+        let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        let generation = self.generation.load(Ordering::Acquire);
+        let mut results = vec![];
+        for step in steps {
+            let remaining = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis() as u64;
+            if remaining == 0
+                || cancelled.load(Ordering::Acquire)
+                || generation != self.generation.load(Ordering::Acquire)
+            {
+                return failed("Sequence cancelled, expired, or permission revoked.");
+            }
+            let result = self.call(
+                backend,
+                Call {
+                    session_id: request.session_id,
+                    tool: step.tool,
+                    args: step.args,
+                    confirm: request.confirm || step.confirm,
+                    timeout_ms: remaining,
+                },
+                cancelled,
+            );
+            let failed = result["isError"] == true;
+            results.push(result);
+            if failed {
+                return json!({"content":[{"type":"text","text":"Stopped at the first failed or declined step."}],"structuredContent":{"steps":results},"isError":true});
+            }
+        }
+        json!({"content":[{"type":"text","text":"Steps completed."}],"structuredContent":{"steps":results},"isError":false})
+    }
+}
+
+struct InputHost<'a> {
+    backend: &'a Backend,
+    generation: u64,
+    cancelled: &'a AtomicBool,
+    deadline: Instant,
+}
+impl axo_computer_use::ComputerHost for InputHost<'_> {
+    fn input_allowed(&self) -> bool {
+        !self.cancelled.load(Ordering::Acquire)
+            && Instant::now() < self.deadline
+            && self.generation == self.backend.computer.generation.load(Ordering::Acquire)
+            && self
+                .backend
+                .computer
+                .settings
+                .lock()
+                .unwrap()
+                .computer_use_enabled
+            && !axo_computer::screen_locked()
+    }
+    fn ask_with(
+        &self,
+        session: SessionId,
+        message: &str,
+        asker: Asker,
+        input: Option<axo_protocol::elicitation::InputRequest>,
+        timeout: Duration,
+    ) -> Result<
+        (
+            axo_protocol::elicitation::ElicitationOutcome,
+            Option<axo_questions::Values>,
+        ),
+        jsonrpc_core::Error,
+    > {
+        self.backend
+            .computer
+            .inputs
+            .ask_with(self.backend, session, message, asker, input, timeout)
+    }
+    fn input_key(&self) -> Option<&axo_seal::InputKey> {
+        self.backend.computer.key(&self.backend.directory)
+    }
+    fn agent_socket(&self) -> Option<PathBuf> {
+        Some(self.backend.directory.clone())
     }
 }
 fn now() -> u64 {

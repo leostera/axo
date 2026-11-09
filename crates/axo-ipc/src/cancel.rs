@@ -87,7 +87,6 @@ pub(crate) async fn scope<F: Future>(cancellation: Cancellation, request: F) -> 
 }
 
 /// Runs `method` with `cancellation` as [`current`], for a handler on the blocking pool.
-#[cfg(any(unix, test))]
 pub fn on_this_thread<R>(cancellation: Cancellation, method: impl FnOnce() -> R) -> R {
     let previous = THREAD_CANCELLATION.with(|cell| cell.replace(Some(cancellation)));
     let result = method();

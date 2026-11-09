@@ -422,7 +422,11 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+#[path = "form_windows.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod imp {
     use super::{FieldReading, FormError, fail};
 

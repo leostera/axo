@@ -148,7 +148,7 @@ pub fn tool_definitions() -> Vec<Value> {
             tool["name"] = json!(our_name(name));
         }
     }
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", windows)) {
         tools.push(request_input_definition());
     }
     tools

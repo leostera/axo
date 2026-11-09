@@ -2,8 +2,10 @@
 //! with a Codex app-server agent and a per-user named-pipe transport. Apple-only extensions
 //! are deliberately absent from negotiation. No listener is exposed to the network.
 mod computer;
+mod controls;
 mod credentials;
 mod mcp;
+mod panes;
 mod relay;
 mod security;
 mod terminal;
@@ -37,6 +39,11 @@ const METHODS: &[&str] = &[
     method::SESSION_CLOSE,
     method::SESSION_REOPEN,
     method::SESSION_PROMPT,
+    "axo.session.queue",
+    "axo.session.queue.cancel",
+    "axo.session.models",
+    "axo.session.model",
+    "axo.session.model.set",
     "axo.session.open",
     "axo.session.messages",
     "axo.session.interrupt",
@@ -51,6 +58,8 @@ const METHODS: &[&str] = &[
     method::SESSION_EVENTS_NEXT,
     method::SESSION_UNSUBSCRIBE,
     "axo.terminal.create",
+    "axo.shell.create",
+    "axo.session.layout.set",
     "axo.terminal.replay",
     "axo.terminal.close",
     method::TERMINAL_INPUT,
@@ -76,7 +85,7 @@ struct Runtime {
     event_bytes: usize,
     error: Option<String>,
     terminal: Option<Child>,
-    pseudoconsole: Option<Arc<terminal::Terminal>>,
+    terminals: std::collections::BTreeMap<axo_protocol::ShellId, Arc<terminal::Terminal>>,
     remote_command: Option<String>,
     turn_entries: Vec<String>,
     progress: HashMap<String, String>,
@@ -98,7 +107,7 @@ struct Backend {
     directory: PathBuf,
     relay: Mutex<Option<Arc<relay::Relay>>>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
-    next_shell: std::sync::atomic::AtomicU32,
+
     computer: computer::Computer,
     pipe: String,
 }
@@ -149,7 +158,6 @@ pub fn serve(
             directory,
             relay: Mutex::new(None),
             subscriptions: Mutex::new(HashMap::new()),
-            next_shell: std::sync::atomic::AtomicU32::new(1),
         });
         let endpoint = match relay_url {
             Some(url) => axo_relay::RelayEndpoint::parse(&url)?,
@@ -191,7 +199,7 @@ pub fn serve(
             if let Some(agent) = runtime.agent.take() {
                 agent.stop();
             }
-            if let Some(pty) = runtime.pseudoconsole.take() {
+            for (_, pty) in std::mem::take(&mut runtime.terminals) {
                 pty.stop();
             }
             if let Some(mut terminal) = runtime.terminal.take() {
@@ -455,10 +463,10 @@ impl Backend {
         let mut pending = self.computer.pending(id);
         let attention = !pending.is_empty();
         pending.extend(runtime.pending.values().cloned());
-        let shells=runtime.pseudoconsole.as_ref().map(|t| json!({"id":t.shell,"paneId":null,"role":"terminal","processId":t.pid,"initialPwd":row.initial_pwd,"ptyDevice":"ConPTY","attachSocketPath":"","available":t.is_alive(),"availabilityReason":if t.is_alive() {Value::Null} else {json!("Terminal exited")}})).into_iter().collect::<Vec<_>>();
+        let shells=runtime.terminals.values().map(|t| json!({"id":t.shell,"paneId":null,"role":"terminal","processId":t.pid,"initialPwd":row.initial_pwd,"ptyDevice":"ConPTY","attachSocketPath":"","available":t.is_alive(),"availabilityReason":if t.is_alive() {Value::Null} else {json!("Terminal exited")}})).into_iter().collect::<Vec<_>>();
         Ok(
             json!({"id":id,"agent":"codex","name":row.manual_name.clone().unwrap_or(row.name),
-            "manualName":row.manual_name,"emoji":row.emoji,"piSessionFile":null,"piSessionId":null,"shells":shells,"layout":null,
+            "manualName":row.manual_name,"emoji":row.emoji,"piSessionFile":null,"piSessionId":null,"shells":shells,"layout":axo_store::read_session_layout(&self.database.lock().unwrap(),id)?,
             "initialPwd":row.initial_pwd,"workspaceId":row.workspace_id,"workspaceName":row.workspace_name,
             "createdAt":row.created_at,"lastMessageAt":row.last_message_at,
             "status":if attention {SessionStatus::NeedsAttention} else {runtime.status.unwrap_or(SessionStatus::Ready)},"error":runtime.error,
@@ -544,68 +552,38 @@ impl Backend {
             method::ELICITATION_LIST => Ok(json!({"elicitations":self.computer.list()})),
             method::ELICITATION_RESOLVE => {
                 let p: axo_protocol::elicitation::ResolveElicitation = parse(params)?;
-                if p.values.is_some() {
-                    return Err(
-                        invalid("Secret input forms are not available on Windows yet").into(),
-                    );
-                }
-                if !self
-                    .computer
-                    .resolve(self, &p.elicitation_id, p.action.into())
-                {
-                    return Err(invalid("Approval already answered or expired").into());
-                }
+                self.computer
+                    .answer(
+                        self,
+                        &p.elicitation_id,
+                        p.action,
+                        p.values.map_or(
+                            axo_protocol::elicitation::Reply::Bare,
+                            axo_protocol::elicitation::Reply::Values,
+                        ),
+                    )
+                    .map_err(|(code, message)| RpcError {
+                        code: code as i32,
+                        message,
+                    })?;
                 Ok(json!({"resolved":true}))
             }
-            "axo.terminal.create" => {
-                let id = sid(params)?;
-                let session = self.session(id)?;
-                let _operation = session.operation.lock().unwrap();
-                if let Some(t) = session
-                    .runtime
-                    .lock()
-                    .unwrap()
-                    .pseudoconsole
-                    .as_ref()
-                    .filter(|t| t.is_alive())
-                {
-                    return Ok(t.replay());
+            "axo.terminal.create" | "axo.shell.create" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Create {
+                    session_id: SessionId,
+                    #[serde(default)]
+                    fresh: bool,
                 }
-                let cwd = axo_store::session_initial_pwd(&self.database.lock().unwrap(), id)?;
-                let shell = axo_protocol::ShellId::new(
-                    self.next_shell
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        .into(),
-                )
-                .ok_or_else(|| io::Error::other("Shell ID exhausted"))?;
-                let output = Arc::downgrade(self);
-                let exited = Arc::downgrade(self);
-                let pty = terminal::Terminal::spawn(
-                    &cwd,
-                    shell,
-                    move |sequence, bytes| {
-                        if let Some(b) = output.upgrade() {
-                            b.publish(Event::TerminalOutput {
-                                session_id: id,
-                                shell_id: shell,
-                                sequence,
-                                data: axo_protocol::base64::encode(&bytes),
-                            });
-                        }
-                    },
-                    move || {
-                        if let Some(b) = exited.upgrade() {
-                            b.publish(Event::ShellActivity {
-                                session_id: id,
-                                shell_id: shell,
-                                activity: axo_protocol::ShellActivity::Exited,
-                            });
-                        }
-                    },
-                )?;
-                let replay = pty.replay();
-                session.runtime.lock().unwrap().pseudoconsole = Some(pty);
-                Ok(replay)
+                let p: Create = parse(params)?;
+                self.create_terminal(p.session_id, p.fresh || name == "axo.shell.create")
+                    .map_err(Into::into)
+            }
+            "axo.session.layout.set" => {
+                let id = serde_json::from_value(params["sessionId"].clone())?;
+                self.set_layout(id, serde_json::from_value(params["layout"].clone())?)
+                    .map_err(Into::into)
             }
             "axo.terminal.replay"
             | "axo.terminal.close"
@@ -636,9 +614,8 @@ impl Backend {
                     .runtime
                     .lock()
                     .unwrap()
-                    .pseudoconsole
-                    .as_ref()
-                    .filter(|t| t.shell == shell)
+                    .terminals
+                    .get(&shell)
                     .cloned()
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::NotFound, "Terminal pane not found")
@@ -647,7 +624,23 @@ impl Backend {
                     "axo.terminal.replay" => Ok(pty.replay()),
                     "axo.terminal.close" => {
                         pty.stop();
-                        session.runtime.lock().unwrap().pseudoconsole.take();
+                        session.runtime.lock().unwrap().terminals.remove(&shell);
+                        let remaining = session
+                            .runtime
+                            .lock()
+                            .unwrap()
+                            .terminals
+                            .keys()
+                            .copied()
+                            .collect();
+                        axo_store::archive_shell_and_prune_layout(
+                            &mut self.database.lock().unwrap(),
+                            shell,
+                            id,
+                            "user_closed",
+                            &remaining,
+                        )?;
+                        self.publish_snapshot(id);
                         Ok(json!({"closed":true}))
                     }
                     method::TERMINAL_INPUT => {
@@ -773,51 +766,17 @@ impl Backend {
                 let session = self.session(id)?;
                 let _operation = session.operation.lock().unwrap();
                 self.connect(id, &session)?;
+                self.restore_shells(id, &session)?;
+                let backend = self.clone();
+                std::thread::spawn(move || backend.drain(id));
                 self.record(id).map_err(Into::into)
             }
-            method::SESSION_PROMPT => {
-                let p: rpc::PromptSession = parse(params)?;
-                if p.text.trim().is_empty() || p.text.len() > 16000 {
-                    return Err(invalid("Message must contain 1–16000 bytes").into());
-                }
-                if p.from_session_id.is_some() {
-                    return Err(
-                        invalid("Agent-to-agent prompting is not implemented on Windows").into(),
-                    );
-                }
-                let session = self.session(p.session_id)?;
-                let _operation = session.operation.lock().unwrap();
-                let agent = self.connect(p.session_id, &session)?;
-                let thread =
-                    axo_store::coding::thread_id(&self.database.lock().unwrap(), p.session_id)?
-                        .ok_or_else(|| io::Error::other("Codex thread missing"))?;
-                {
-                    let mut runtime = session.runtime.lock().unwrap();
-                    if runtime.turn.is_some() || runtime.status == Some(SessionStatus::Working) {
-                        return Err(
-                            invalid("Codex is working; wait or stop the current turn").into()
-                        );
-                    }
-                    runtime.status = Some(SessionStatus::Working);
-                    runtime.error = None;
-                    runtime.remote_command = None;
-                    runtime.turn_entries.clear();
-                }
-                match agent.request("turn/start", self.turn_params(&thread, p.text)?) {
-                    Ok(result) => {
-                        let mut runtime = session.runtime.lock().unwrap();
-                        if runtime.status == Some(SessionStatus::Working) && runtime.turn.is_none()
-                        {
-                            runtime.turn = result["turn"]["id"].as_str().map(str::to_owned);
-                        }
-                        Ok(json!({"accepted":true,"turnId":result["turn"]["id"]}))
-                    }
-                    Err(error) => {
-                        session.runtime.lock().unwrap().status = Some(SessionStatus::Ready);
-                        Err(error.into())
-                    }
-                }
-            }
+            method::SESSION_PROMPT => self.prompt(parse(params)?).map_err(Into::into),
+            "axo.session.queue"
+            | "axo.session.queue.cancel"
+            | "axo.session.models"
+            | "axo.session.model"
+            | "axo.session.model.set" => self.controls(name, params).map_err(Into::into),
             "axo.session.interrupt" => {
                 let id = sid(params)?;
                 self.computer.cancel_session(self, id);
@@ -967,9 +926,13 @@ impl Backend {
                 let (agent, terminal, pty) = {
                     let mut r = session.runtime.lock().unwrap();
                     r.generation += 1;
-                    (r.agent.take(), r.terminal.take(), r.pseudoconsole.take())
+                    (
+                        r.agent.take(),
+                        r.terminal.take(),
+                        std::mem::take(&mut r.terminals),
+                    )
                 };
-                if let Some(pty) = pty {
+                for (_, pty) in pty {
                     pty.stop();
                 }
                 if let Some(agent) = agent {
@@ -1062,7 +1025,13 @@ impl Backend {
         Ok(agent)
     }
 
-    fn on_event(&self, id: SessionId, session: &LiveSession, generation: u64, event: Value) {
+    fn on_event(
+        self: &Arc<Self>,
+        id: SessionId,
+        session: &LiveSession,
+        generation: u64,
+        event: Value,
+    ) {
         let mut runtime = session.runtime.lock().unwrap();
         if runtime.generation != generation {
             return;
@@ -1212,6 +1181,10 @@ impl Backend {
                 | "serverRequest/resolved"
         ) || event.get("id").is_some();
         let settled = method == "turn/completed";
+        if settled {
+            let backend = self.clone();
+            std::thread::spawn(move || backend.drain(id));
+        }
         let envelope = json!({"sequence":sequence,"event":event});
         runtime.event_bytes += envelope.to_string().len();
         runtime.events.push_back(envelope);
@@ -1289,7 +1262,6 @@ mod tests {
             directory: std::env::temp_dir(),
             relay: Mutex::new(None),
             subscriptions: Mutex::new(HashMap::new()),
-            next_shell: std::sync::atomic::AtomicU32::new(1),
         };
         let session = LiveSession::default();
         {
@@ -1297,7 +1269,7 @@ mod tests {
             r.generation = 2;
             r.status = Some(SessionStatus::Ready);
         }
-        backend.on_event(
+        Arc::new(backend).on_event(
             SessionId::new_v4().unwrap(),
             &session,
             1,

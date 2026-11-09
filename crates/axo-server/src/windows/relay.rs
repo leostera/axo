@@ -19,6 +19,7 @@ pub(super) struct Host {
     generation: String,
     prompt_lock: Mutex<()>,
     prompts: std::sync::atomic::AtomicUsize,
+    assets: Mutex<Option<axo_relay::assets::AssetSource>>,
 }
 pub(super) struct Relay {
     pub host: Arc<Host>,
@@ -55,6 +56,7 @@ impl Relay {
             generation: axo_protocol::new_uuid_v4()?,
             prompt_lock: Mutex::new(()),
             prompts: std::sync::atomic::AtomicUsize::new(0),
+            assets: Mutex::new(None),
         });
         let credentials = Arc::new(super::credentials::Credentials(
             backend.directory.join("credentials"),
@@ -119,14 +121,10 @@ impl HostLinkStore for Host {
         )
     }
 }
-fn unsupported() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "This control is not available for Codex on Windows",
-    )
-}
-
 impl RelayHost for Host {
+    fn set_asset_source(&self, source: Option<axo_relay::assets::AssetSource>) {
+        *self.assets.lock().unwrap() = source;
+    }
     fn host_id(&self) -> &str {
         &self.id
     }
@@ -173,7 +171,7 @@ impl RelayHost for Host {
         id: &str,
         answer: axo_protocol::elicitation::ElicitationAnswer,
         sealed: Option<axo_protocol::elicitation::Sealed>,
-        _: Option<axo_protocol::elicitation::DeviceProof>,
+        device: Option<axo_protocol::elicitation::DeviceProof>,
     ) -> Result<(), (i64, String)> {
         let missing = || {
             (
@@ -181,15 +179,42 @@ impl RelayHost for Host {
                 "Already answered, expired, or no longer asked".into(),
             )
         };
-        if sealed.is_some() {
+        let proof = device.ok_or_else(|| {
+            (
+                axo_protocol::elicitation::BAD_SIGNATURE,
+                "Answers must be signed by your device.".into(),
+            )
+        })?;
+        let signed = axo_seal::answer_message(
+            id,
+            match answer {
+                axo_protocol::elicitation::ElicitationAnswer::Accept => "accept",
+                _ => "decline",
+            },
+            sealed
+                .as_ref()
+                .map(|s| (s.enc.as_str(), s.ciphertext.as_str())),
+        );
+        if !axo_seal::verify_answer(&proof.key, &proof.signature, &signed) {
             return Err((
-                -32602,
-                "Codex approval does not accept sealed form data".into(),
+                axo_protocol::elicitation::BAD_SIGNATURE,
+                "Invalid answer signature.".into(),
             ));
         }
         let b = self.backend().map_err(|_| missing())?;
-        if b.computer.resolve(&b, id, answer.into()) {
-            return Ok(());
+        if b.computer.list().iter().any(|q| q.id == id) {
+            return b.computer.answer(
+                &b,
+                id,
+                answer,
+                sealed.map_or(
+                    axo_protocol::elicitation::Reply::Bare,
+                    axo_protocol::elicitation::Reply::Sealed,
+                ),
+            );
+        }
+        if sealed.is_some() {
+            return Err((-32602, "Codex approval takes no form values".into()));
         }
         let sessions = b
             .sessions
@@ -410,7 +435,7 @@ impl Host {
         Ok(())
     }
     fn remote_create_shell(&self, id: SessionId) -> io::Result<ShellId> {
-        let result = self.call("axo.terminal.create", json!({"sessionId":id}))?;
+        let result = self.call("axo.shell.create", json!({"sessionId":id}))?;
         serde_json::from_value(result["shellId"].clone()).map_err(io::Error::other)
     }
     fn remote_close_shell(&self, id: SessionId, shell: ShellId) -> io::Result<()> {
@@ -420,8 +445,9 @@ impl Host {
         )?;
         Ok(())
     }
-    fn remote_set_layout(&self, _: SessionId, _: LayoutNode) -> io::Result<()> {
-        Err(unsupported())
+    fn remote_set_layout(&self, id: SessionId, layout: LayoutNode) -> io::Result<()> {
+        self.backend()?.set_layout(id, layout)?;
+        Ok(())
     }
     fn remote_terminal_input(
         &self,
@@ -444,18 +470,9 @@ impl Host {
         attachments: &[axo_protocol::asset::FetchedAttachment],
         delivery: ClientDelivery,
     ) -> io::Result<()> {
-        if !attachments.is_empty() {
-            return Err(unsupported());
-        }
-        if delivery == ClientDelivery::Steer {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Steering is not available for this Codex backend; send a follow-up after the turn",
-            ));
-        }
         let _guard = self.prompt_lock.lock().unwrap();
         let b = self.backend()?;
-        let session = b.session(id)?;
+        b.session(id)?;
         if let Some(c) = command {
             match axo_store::coding::command_state(&b.database.lock().unwrap(), id, c.as_str())?
                 .as_deref()
@@ -469,25 +486,15 @@ impl Host {
                 None => {}
             }
         }
-        {
-            let r = session.runtime.lock().unwrap();
-            if r.turn.is_some() || r.status == Some(SessionStatus::Working) {
-                return Err(invalid("Codex is working; wait or stop the current turn"));
-            }
-        }
         if let Some(c) = command {
             axo_store::coding::reserve_command(&b.database.lock().unwrap(), id, c.as_str())?;
         }
         self.call(
             method::SESSION_PROMPT,
-            json!({"sessionId":id,"text":text,"delivery":"turn"}),
+            json!({"sessionId":id,"text":text,"commandId":command.map(|c| c.as_str()),"delivery":match delivery { ClientDelivery::FollowUp => "followUp", ClientDelivery::Steer => "steer", ClientDelivery::Interrupt => "interrupt" },"attachments":attachments.iter().map(|a| &a.path).collect::<Vec<_>>()}),
         )?;
         if let Some(c) = command {
             axo_store::coding::submit_command(&b.database.lock().unwrap(), id, c.as_str())?;
-            let mut runtime = session.runtime.lock().unwrap();
-            if runtime.status == Some(SessionStatus::Working) || runtime.turn.is_some() {
-                runtime.remote_command = Some(c.as_str().to_owned());
-            }
         }
         Ok(())
     }
@@ -496,16 +503,21 @@ impl Host {
         Ok(vec![])
     }
     fn remote_pi_models(&self, id: SessionId) -> io::Result<Vec<axo_protocol::PiModelInfo>> {
-        self.backend()?.session(id)?;
-        Ok(vec![])
+        let result = self.call("axo.session.models", json!({"sessionId":id}))?;
+        result["models"].as_array().into_iter().flatten().map(|m| serde_json::from_value(json!({"id":m["model"],"provider":"codex","name":m["displayName"],"thinkingLevels":m["supportedReasoningEfforts"].as_array().into_iter().flatten().filter_map(|e| if e["reasoningEffort"] == "none" { Some(axo_protocol::ThinkingLevel::Off) } else { serde_json::from_value::<axo_protocol::ThinkingLevel>(e["reasoningEffort"].clone()).ok() }).collect::<Vec<_>>()})).map_err(io::Error::other)).collect()
     }
     fn remote_set_pi_model(
         &self,
-        _: SessionId,
-        _: Option<&ModelChoice>,
-        _: Option<axo_protocol::ThinkingLevel>,
+        id: SessionId,
+        model: Option<&ModelChoice>,
+        effort: Option<axo_protocol::ThinkingLevel>,
     ) -> io::Result<()> {
-        Err(unsupported())
+        let existing = self.call("axo.session.model", json!({"sessionId":id}))?;
+        if model.is_some_and(|m| m.provider.as_str() != "codex") {
+            return Err(invalid("Choose a Codex model"));
+        }
+        self.call("axo.session.model.set",json!({"sessionId":id,"model":model.map(|m| json!(m.id.as_str())).unwrap_or(existing["model"].clone()),"effort":effort.map(|e| if e == axo_protocol::ThinkingLevel::Off { "none" } else { e.as_str() })}))?;
+        Ok(())
     }
     fn remote_restart_pi(&self, id: SessionId) -> io::Result<()> {
         let b = self.backend()?;

@@ -158,18 +158,29 @@ fn dispatch_remote_call(
         "axo.remote.session.prompt" => {
             let request = parsed!(PromptParams);
             target_ok!(request.target);
-            if !request.attachments.is_empty() {
-                return Err((
-                    -32003,
-                    "Attachments are not supported by the Windows Codex backend",
-                ));
+            if request
+                .attachments
+                .iter()
+                .any(|a| !super::super::controls::safe_name(a.name.as_str()))
+            {
+                return Err((-32602, "Unsupported attachment filename"));
             }
+            let source = sessions.assets.lock().unwrap().clone();
+            let fetched = if request.attachments.is_empty() {
+                vec![]
+            } else {
+                let source = source
+                    .as_ref()
+                    .ok_or((-32003, "The host is not linked for attachments"))?;
+                axo_relay::assets::fetch_all(source, &request.attachments)
+                    .map_err(|_| (-32010, "An attachment could not be fetched or verified"))?
+            };
             sessions
                 .remote_prompt_pi(
                     request.session_id,
                     &request.text,
                     request.command_id.as_ref(),
-                    &[],
+                    &fetched,
                     request.delivery,
                 )
                 .map_err(map_operation_error)?;
@@ -452,6 +463,7 @@ mod tests {
             generation: "current".into(),
             prompt_lock: std::sync::Mutex::new(()),
             prompts: AtomicUsize::new(0),
+            assets: std::sync::Mutex::new(None),
         }
     }
     #[test]

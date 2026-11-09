@@ -24,9 +24,15 @@ static class ComputerChecks
                 button.Click += (_, _) => output.Text = "Fixture count: " + ++count;
                 panel.Children.Add(button);
             }
-            panel.Children.Add(input); panel.Children.Add(output);
-            var window = new Window { Title = "Axo computer-use test fixture", Content = panel, Width = 600, Height = 320, ShowActivated = false };
+            var password = new PasswordBox { Margin = new Thickness(0,8,0,8) };
+            System.Windows.Automation.AutomationProperties.SetName(password,"Fixture password");
+            input.TextChanged += (_,_) => File.WriteAllText(ready+".filled",JsonSerializer.Serialize(new { plain = input.Text == "fixture secret phrase 5294", password = password.Password == "fixture-password-5294" }));
+            password.PasswordChanged += (_,_) => File.WriteAllText(ready+".filled",JsonSerializer.Serialize(new { plain = input.Text == "fixture secret phrase 5294", password = password.Password == "fixture-password-5294" }));
+            panel.Children.Add(input); panel.Children.Add(password); panel.Children.Add(output);
+            var window = new Window { Title = "Axo computer-use test fixture", Content = panel, Width = 600, Height = 420, ShowActivated = false };
             window.Loaded += (_, _) => File.WriteAllText(ready, JsonSerializer.Serialize(new { pid = Environment.ProcessId, window_id = new WindowInteropHelper(window).Handle.ToInt64() }));
+            var clock = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+            clock.Tick += (_,_) => { if(File.Exists(ready+".change")) { File.Delete(ready+".change"); window.Title="Changed fixture window"; } }; clock.Start();
             app.Run(window);
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join(); return 0;
@@ -58,7 +64,7 @@ static class ComputerChecks
         assert((await client.CallAsync("axo.computer.status")).GetProperty("available").GetBoolean(), "local desktop can enable the native Windows computer backend");
         var definitions = await mcp.Tool("computer_tools", new { });
         var names = definitions.GetProperty("structuredContent").GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToArray();
-        assert(names.Contains("get_window_state") && names.Contains("click") && names.Contains("set_value") && !names.Contains("run_script") && !names.Contains("request_input"), "computer tool discovery exposes the real Windows allowlist without unsupported secret forms or scripts");
+        assert(names.Contains("get_window_state") && names.Contains("click") && names.Contains("set_value") && !names.Contains("run_script") && names.Contains("request_input") && names.Contains("run_steps"), "computer tool discovery exposes the real Windows allowlist including sealed forms and gated sequences");
         assert(IsError(await mcp.Tool("computer", new { tool = "run_script", args = new { script = "anything" } })), "unadvertised composite scripts cannot bypass the daemon gate");
         assert(IsError(await mcp.Tool("computer", new { tool = "hotkey", args = new { scope = "desktop", keys = new[] { "enter" } } })), "computer input must target a specific app window");
         assert(IsError(await mcp.Tool("computer", new { tool = "click", args = new { pid = Environment.ProcessId, window_id = 1, x = 1, y = 1 } })), "computer tools cannot click Axo's own permission interface");
@@ -123,6 +129,11 @@ static class ComputerChecks
             assert(IsError(await revoked) && (await client.CallAsync("axo.elicitation.list")).GetProperty("elicitations").GetArrayLength() == 0, "disable then re-enable cannot revive a previously pending permission");
             assert(IsError(await mcp.Tool("computer", new { tool = "screenshot", args = new { screenshot_out_file = Path.Combine(Path.GetTempPath(), "must-not-write.png") } })), "read-only computer tools cannot write arbitrary output files");
 
+            var completedSequence = await client.CallAsync("axo.computer.call",new {sessionId=session,tool="run_steps",args=new {steps=new[]{new{tool="get_screen_size",args=new{}},new{tool="get_cursor_position",args=new{}}}}});
+            assert(!IsError(completedSequence) && completedSequence.GetProperty("structuredContent").GetProperty("steps").GetArrayLength()==2,"a bounded sequence executes each successful operation in order");
+            var sequence = client.CallAsync("axo.computer.call", new { sessionId=session, tool="run_steps", args=new { steps=new object[] {new {tool="get_screen_size",args=new {},confirm=true},new {tool="set_value",args=new {pid,window_id=window,value="must-not-run",element_token=token}}} },timeoutMs=15000 });
+            question=await Question(client);await client.CallAsync("axo.elicitation.resolve",new {elicitationId=question.GetProperty("id").GetString(),action="decline"});
+            assert(IsError(await sequence) && !(await Read()).ToString().Contains("must-not-run"),"a declined step stops the whole sequence before any later input");
             var remote = await relay.CallAsync("axo.apps.computer.status", new { accountId = RelayFixture.Account });
             assert(remote.TryGetProperty("result", out var remoteStatus) && remoteStatus.GetProperty("available").GetBoolean(), "paired relay reports the Windows computer backend status");
             remote = await relay.CallAsync("axo.apps.computer", new { accountId = RelayFixture.Account, callId = Guid.NewGuid().ToString(), tool = "get_window_state", args = new { pid, window_id = window, include_screenshot = false }, sessionId = session, from = "fixture", timeoutMs = 15000 });
@@ -131,7 +142,8 @@ static class ComputerChecks
             assert(remote.TryGetProperty("result", out var remoteImage) && remoteImage.GetProperty("content").EnumerateArray().Any(c => c.GetProperty("type").GetString() == "image" && c.TryGetProperty("attachment", out _)) && relay.Assets.Count > 0, "relay screenshots upload authenticated, hash-verified image assets and return attachment references");
             var attachment=remoteImage.GetProperty("content").EnumerateArray().First(c=>c.GetProperty("type").GetString()=="image").GetProperty("attachment").Clone();
             remote=await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=session,text="must not silently discard this image",attachments=new[]{attachment},commandId=Guid.NewGuid().ToString()});
-            assert(remote.TryGetProperty("error",out _),"host-owned remote dispatch rejects unsupported attachments instead of discarding them");
+            assert(remote.TryGetProperty("result",out _),"host-owned remote dispatch fetches and forwards a hash-verified image attachment");
+            await ParityChecks.SecureInput(client,relay,target,session,pid,window,ready,assert);
             remote=await relay.CallAsync("axo.remote.windows.settings.save",new{target,computerUseEnabled=false,codexFullAccess=true});
             assert(remote.TryGetProperty("error",out var permissionError)&&permissionError.GetProperty("code").GetInt32()==-32601&&(await client.CallAsync("axo.computer.status")).GetProperty("available").GetBoolean(),"account forwarding cannot reach local permission settings");
             remote=await relay.CallAsync("axo.remote.workspace.list",new{target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration="stale"}});

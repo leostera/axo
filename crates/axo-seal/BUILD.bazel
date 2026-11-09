@@ -1,7 +1,15 @@
 load("@aspect_rules_js//js:defs.bzl", "js_library")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "seal_fixture",
+    testonly = True,
+    srcs = ["testdata/seal_fixture.rs"],
+    edition = "2024",
+    deps = [":axo_seal", "@crates//:serde_json"],
+)
 
 # The cases every sealer agrees on: the browser's tests (packages/axo-app, axo-web-app) read them too.
 js_library(

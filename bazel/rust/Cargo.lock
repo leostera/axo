@@ -1207,6 +1207,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tungstenite 0.30.0",
  "url",
+ "windows 0.58.0",
  "windows-sys",
  "zeroize",
 ]

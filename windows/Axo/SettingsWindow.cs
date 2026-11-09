@@ -93,6 +93,14 @@ public sealed class SettingsWindow : Window
         var links = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 14, 0, 0) };
         foreach (var (label, url) in new[] { ("Docs", "https://github.com/leostera/axo#readme"), ("GitHub", "https://github.com/leostera/axo") }) { var button = new Button { Content = label, Margin = new Thickness(6, 0, 6, 0), Padding = new Thickness(10, 4, 10, 4) }; button.Click += (_, _) => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); links.Children.Add(button); }
         about.Children.Add(links);
+        var installation = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0,12,0,0) };
+        var install = new Button { Content = "Install This Build", Margin = new Thickness(4), Padding = new Thickness(8,4,8,4) };
+        var update = new Button { Content = "Update from Package…", Margin = new Thickness(4), Padding = new Thickness(8,4,8,4) };
+        var installStatus = new TextBlock { MaxWidth = 340, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,8,0,0) };
+        async Task Install(string source) { install.IsEnabled=update.IsEnabled=false; try { var executable=await Task.Run(()=>Installer.Install(source,Installer.DefaultRoot)); Installer.AddStartMenuShortcut(executable); installStatus.Text="Installed in your Start menu. Running sessions are unchanged. Open the installed build after quitting Axo and restarting axod when your work is saved."; } catch(Exception error) { installStatus.Text=error.Message; } finally { install.IsEnabled=update.IsEnabled=true; } }
+        install.Click+=async (_,_)=>await Install(AppContext.BaseDirectory);
+        update.Click+=async (_,_)=>{ var picker=new Microsoft.Win32.OpenFileDialog {Title="Choose an Axo Windows package",Filter="Axo package (*.zip)|*.zip"}; if(picker.ShowDialog(this)==true)await Install(picker.FileName); };
+        installation.Children.Add(install);installation.Children.Add(update);about.Children.Add(installation);about.Children.Add(installStatus);
 
         UIElement Scroll(UIElement content) => new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var pages = new Dictionary<string, UIElement> { ["General"] = Scroll(general), ["Appearance"] = Scroll(appearance), ["Remote Access"] = Scroll(remote), ["About"] = about };

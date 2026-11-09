@@ -21,6 +21,7 @@ rust_library(
             "@crates//:tokio",
         ],
         "@platforms//os:windows": [
+            "@crates//:windows",
             "@crates//:cua-driver-core",
             "@crates//:cursor-overlay",
             "@crates//:platform-windows",
