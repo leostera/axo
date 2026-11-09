@@ -60,7 +60,9 @@ struct ConversationView: View {
       .conversationBar(edge: .bottom) { bottomBar }
       .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
       // On screen, what the chat holds is history: it just appears.
-      .onChange(of: session?.sessionId, initial: true) {
+      .onChange(of: session?.sessionId, initial: true) { previous, _ in
+        // The chat left on its own: what it lets out shows whole from now on.
+        if let previous, previous != session?.sessionId { workbench?.chat(previous).feed.closed() }
         actions.chat(session?.sessionId, workbench: workbench, phone: phone)
         feed.animates = !reduceMotion
         feed.opened()

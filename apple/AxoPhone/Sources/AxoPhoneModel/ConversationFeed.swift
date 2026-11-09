@@ -24,6 +24,9 @@ public final class ConversationFeed {
   public final class Item: Identifiable {
     public let id: String
     public fileprivate(set) var row: ConversationRow
+    /// How many characters of its words are out while they are let out, by the feed's clock; nil
+    /// when it shows whole.
+    public fileprivate(set) var revealed: Int?
 
     init(_ row: ConversationRow) {
       id = row.id
@@ -54,6 +57,16 @@ public final class ConversationFeed {
   @ObservationIgnored public var animates = true {
     didSet { if animates != oldValue { rebuild() } }
   }
+  /// Whether the chat is on screen. Off it, nothing is let out: what arrives just shows.
+  @ObservationIgnored public private(set) var onScreen = false
+  /// Lets a reply's words out, a step every `RevealPace.frame`, while one is being let out. The
+  /// feed's own, so no view has to appear, or be laid out, for a reply to come out and what waits
+  /// behind it to follow (RFD0039).
+  @ObservationIgnored private var clock: Task<Void, Never>?
+  /// The rows being let out now: what the clock steps.
+  @ObservationIgnored private var revealing: [Item] = []
+  /// Whether the clock runs on its own; tests step it with `tick(after:)`.
+  @ObservationIgnored private let ticks: Bool
 
   @ObservationIgnored private var transcript = ChatTranscript()
   @ObservationIgnored private var pending: [HostWorkbenchModel.PendingPrompt] = []
@@ -61,7 +74,9 @@ public final class ConversationFeed {
   /// Bumped each time the chat comes on screen: what it holds then is history, shown as it is.
   @ObservationIgnored private var visit = 0
 
-  public nonisolated init() {}
+  public nonisolated init() { ticks = true }
+
+  nonisolated init(ticks: Bool) { self.ticks = ticks }
 
   /// The chat's transcript or its pending messages changed.
   func update(transcript: ChatTranscript, pending: [HostWorkbenchModel.PendingPrompt]) {
@@ -73,22 +88,84 @@ public final class ConversationFeed {
   /// The chat came on screen: everything it holds now just appears.
   public func opened() {
     visit += 1
+    onScreen = true
     rebuild()
   }
 
-  /// All of `key`'s words are out: it shows as it is, and what waited behind it comes.
-  public func finished(_ key: String) {
-    reveal.finished(key)
+  /// The chat left the screen: what is being let out shows whole, and what arrives just shows.
+  public func closed() {
+    onScreen = false
     rebuild()
+  }
+
+  /// Lets every reply being let out on by `seconds`. Rows whose words are all out and final show
+  /// as they are, and what waited behind them comes.
+  func tick(after seconds: Double) {
+    var done = false
+    var moved = false
+    for item in revealing {
+      guard case .message(let shown) = item.row, case .reveal(let final, let hurry) = shown.presentation else { continue }
+      let text = shown.message.text
+      let at = RevealPace.next(shown: reveal.revealed(shown.id), of: text, after: seconds, hurry: hurry)
+      reveal.reveal(shown.id, upTo: at)
+      if at >= text.count, final {
+        reveal.finished(shown.id)
+        done = true
+      } else if item.revealed != at {
+        item.revealed = at
+        moved = true
+      }
+    }
+    if done {
+      rebuild()
+    } else if !moved {
+      // All that has come is out, and more is still to come: nothing to do until it does, and
+      // the update that brings it starts the clock again.
+      runClock(false)
+    }
+  }
+
+  /// Runs the clock while something is being let out, and stops it when nothing is.
+  private func runClock(_ revealing: Bool) {
+    guard ticks else { return }
+    if !revealing {
+      clock?.cancel()
+      clock = nil
+      return
+    }
+    guard clock == nil else { return }
+    clock = Task { [weak self] in
+      var last = ContinuousClock.now
+      while !Task.isCancelled {
+        try? await Task.sleep(for: RevealPace.frame)
+        let now = ContinuousClock.now
+        let elapsed = now - last
+        last = now
+        guard let self else { return }
+        self.tick(after: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+      }
+    }
   }
 
   private func rebuild() {
     let shown: [ConversationReveal.Shown] =
-      animates
+      animates && onScreen
       ? reveal.shown(sessionId: "\(visit)", messages: transcript.messages, live: transcript.live)
       : transcript.messages.map { .init(message: $0, isLive: false, presentation: .plain) }
         + transcript.live.map { .init(message: $0, isLive: true, presentation: .plain) }
     keep(ConversationRow.rows(shown: shown, pending: pending, queued: transcript.queued))
+    // A row being let out shows what is out of it; one that is not, all of it.
+    let wasRevealing = revealing
+    revealing = items.filter { item in
+      guard case .message(let shown) = item.row, case .reveal = shown.presentation else { return false }
+      return true
+    }
+    for item in wasRevealing where !revealing.contains(where: { $0 === item }) { item.revealed = nil }
+    for item in revealing {
+      let out = reveal.revealed(item.id)
+      if item.revealed != out { item.revealed = out }
+    }
+    runClock(!revealing.isEmpty)
     let working = transcript.activity == .working
     if self.working != working { self.working = working }
     let callingTools = working && transcript.messages.contains { $0.tool?.status == .running }

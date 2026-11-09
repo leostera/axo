@@ -32,7 +32,7 @@ final class ConversationFeedTests: XCTestCase {
 
   /// A feed holding a chat that is on screen, with `records` as its history.
   private func opened(_ records: [ClientRecord]) -> (ConversationFeed, ChatTranscript) {
-    let feed = ConversationFeed()
+    let feed = ConversationFeed(ticks: false)
     let transcript = ChatTranscript(records: records)
     feed.update(transcript: transcript, pending: [])
     feed.opened()
@@ -48,6 +48,11 @@ final class ConversationFeedTests: XCTestCase {
   }
 
   private func ids(_ feed: ConversationFeed) -> [ObjectIdentifier] { feed.items.map(ObjectIdentifier.init) }
+
+  /// Steps the feed's clock until nothing is being let out (at most ten seconds of it).
+  private func letOut(_ feed: ConversationFeed) {
+    for _ in 0..<300 where feed.items.contains(where: { $0.revealed != nil }) { feed.tick(after: 0.032) }
+  }
 
   func testAStreamedReplyChangesItsOwnRowAndNotTheList() {
     var (feed, transcript) = opened([user(1, "hi"), reply(2, "Hello")])
@@ -94,7 +99,7 @@ final class ConversationFeedTests: XCTestCase {
     transcript.progress(slot: "message", snapshot: words("Looking", stamp: stamp, tool: true))
     feed.update(transcript: transcript, pending: [sent])
     // Once its first words are all out.
-    feed.finished("reply:\(stamp)#0")
+    letOut(feed)
     XCTAssertEqual(feed.items.map(\.id).suffix(3), ["reply:\(stamp)#0", sent.key, "reply:\(stamp)#1"])
   }
 
@@ -128,9 +133,52 @@ final class ConversationFeedTests: XCTestCase {
     feed.update(transcript: transcript, pending: [])
     XCTAssertEqual(feed.items.map(\.id), ["e1", "reply:\(stamp)#0"], "the person's next message waits for the reply's words")
     let held = ids(feed)
-    feed.finished("reply:\(stamp)#0")
+    letOut(feed)
     XCTAssertEqual(Array(ids(feed).prefix(2)), held)
     XCTAssertEqual(feed.items.map(\.id), ["e1", "reply:\(stamp)#0", "e3"], "and is added after it")
+  }
+
+  /// What the phone's trace showed (RFD0039): a reply whose row no view ever drew held back
+  /// everything after it, as its reveal waited on that view. The feed's clock lets it out alone.
+  func testAReplyNoViewDrawsIsLetOutAndWhatFollowsItComes() {
+    var (feed, transcript) = opened([user(1, "hi")])
+    // One at a time, as they are written while the chat is on screen.
+    for record in [reply(2, "Done: " + String(repeating: "word ", count: 40), stamp: stamp), user(3, "thanks"), reply(4, "Glad to help", stamp: stamp + 1)] {
+      transcript.append([record])
+      feed.update(transcript: transcript, pending: [])
+    }
+    XCTAssertEqual(feed.items.count, 2, "the reply comes out first")
+    XCTAssertEqual(feed.items.last?.revealed, 0)
+    var steps = 0
+    while feed.items.count < 4, steps < 300 {
+      feed.tick(after: 0.032)
+      steps += 1
+    }
+    XCTAssertEqual(feed.items.map(\.id), ["e1", "reply:\(stamp)#0", "e3", "reply:\(stamp + 1)#0"], "and the rest follows")
+    XCTAssertLessThan(Double(steps) * 0.032, 3, "within the time its words take")
+  }
+
+  func testLettingWordsOutChangesTheRowAndNotTheList() {
+    var (feed, transcript) = opened([user(1, "hi")])
+    transcript.append([reply(2, String(repeating: "word ", count: 60), stamp: stamp)])
+    feed.update(transcript: transcript, pending: [])
+    let row = feed.items.last
+    var shown: [Int] = []
+    for _ in 0..<5 {
+      XCTAssertFalse(listChanges(feed) { feed.tick(after: 0.032) })
+      shown.append(row?.revealed ?? -1)
+    }
+    XCTAssertEqual(shown, shown.sorted(), "its words come out in order")
+    XCTAssertGreaterThan(shown.last ?? 0, 0)
+  }
+
+  func testOffScreenWhatArrivesJustShows() {
+    var (feed, transcript) = opened([user(1, "hi")])
+    feed.closed()
+    transcript.append([reply(2, "A long answer", stamp: stamp), user(3, "thanks")])
+    feed.update(transcript: transcript, pending: [])
+    XCTAssertEqual(feed.items.count, 3, "nothing is held back")
+    XCTAssertNil(feed.items[1].revealed)
   }
 
   func testACutStartsTheRowsAgain() {
@@ -188,7 +236,7 @@ final class ConversationFeedTests: XCTestCase {
         transcript.append([reply(cursor, String(repeating: "w ", count: 5), stamp: stamp, tool: true)])
         transcript.settle(working: false)
       }
-      feed.finished("reply:\(stamp)#0")
+      letOut(feed)
     }
     XCTAssertEqual(feed.items.count, 1 + 4 * 3, "each turn: its message, the reply's words and its tool")
   }

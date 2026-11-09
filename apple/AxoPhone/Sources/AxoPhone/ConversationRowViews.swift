@@ -30,10 +30,7 @@ struct ConversationItemView: View {
 
   private func entrance(of shown: ConversationReveal.Shown) -> ChatMessageView.Entrance? {
     guard shown.presentation != .plain else { return nil }
-    let feed = feed
-    return ChatMessageView.Entrance(reveal: feed.reveal, presentation: shown.presentation) {
-      feed.finished(shown.message.key)
-    }
+    return ChatMessageView.Entrance(reveal: feed.reveal, presentation: shown.presentation, item: item)
   }
 }
 

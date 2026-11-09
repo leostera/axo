@@ -18,20 +18,20 @@ struct ChatMessageView: View {
   struct Entrance {
     let reveal: ConversationReveal
     let presentation: ConversationReveal.Presentation
-    /// All of a final reveal is out: what follows may show.
-    let finished: () -> Void
+    /// Its row, whose `revealed` says how much of its words are out while the feed's clock lets
+    /// them out (RFD0039). Read by the words alone, so each step redraws them and not the message.
+    let item: ConversationFeed.Item
   }
 
-  private var revealing: (reveal: ConversationReveal, final: Bool, hurry: Bool, finished: () -> Void)? {
-    guard let entrance, case .reveal(let final, let hurry) = entrance.presentation else { return nil }
-    return (entrance.reveal, final, hurry, entrance.finished)
+  /// Being let out: the feed's clock decides how much shows.
+  private var revealing: Bool {
+    guard let entrance, case .reveal = entrance.presentation else { return false }
+    return true
   }
 
   @ViewBuilder private func prose(isThinking: Bool) -> some View {
-    if let revealing {
-      RevealedMarkdown(
-        key: message.key, text: message.text, isThinking: isThinking, final: revealing.final,
-        hurry: revealing.hurry, reveal: revealing.reveal, finished: revealing.finished)
+    if revealing, let item = entrance?.item {
+      RevealedWords(item: item, text: message.text, blocks: message.blocks, isThinking: isThinking)
     } else {
       ChatMarkdown(blocks: message.blocks, isThinking: isThinking)
     }
@@ -64,7 +64,7 @@ struct ChatMessageView: View {
       VStack(alignment: .leading, spacing: 16) {
         if !message.images.isEmpty { ChatImagesView(images: message.images, alignment: .leading) }
         prose(isThinking: false)
-        if !isLive && revealing == nil {
+        if !isLive && !revealing {
         HStack(spacing: 18) {
           copyButton
           ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
@@ -686,45 +686,20 @@ private struct FullScreenImage: View {
   }
 }
 
-/// A reply or its thinking let out at an even pace, a word at a time: while it is written, and on
-/// after it is recorded until all of it is out (`RevealPace`). Made again (scrolled away and back),
-/// it goes on from where it was.
-private struct RevealedMarkdown: View {
-  let key: String
+/// A reply's words as far as the feed's clock has let them out; all of them once it is done.
+private struct RevealedWords: View {
+  let item: ConversationFeed.Item
   let text: String
+  let blocks: [MarkdownBlock]
   let isThinking: Bool
-  let final: Bool
-  let hurry: Bool
-  let reveal: ConversationReveal
-  let finished: () -> Void
-  @State private var shown: Int?
 
   var body: some View {
-    let count = min(shown ?? reveal.revealed(key), text.count)
-    ChatMarkdown(blocks: MarkdownBlocks.parse(String(text.prefix(count))), isThinking: isThinking)
-      .task(id: Pace(text: text, final: final, hurry: hurry)) { await letOut() }
-  }
-
-  private struct Pace: Equatable {
-    let text: String
-    let final: Bool
-    let hurry: Bool
-  }
-
-  private func letOut() async {
-    var at = shown ?? reveal.revealed(key)
-    var last = ContinuousClock.now
-    while at < text.count {
-      do { try await Task.sleep(for: RevealPace.frame) } catch { return }
-      let now = ContinuousClock.now
-      let elapsed = now - last
-      last = now
-      let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-      at = RevealPace.next(shown: at, of: text, after: seconds, hurry: hurry)
-      shown = at
-      reveal.reveal(key, upTo: at)
+    if let revealed = item.revealed, revealed < text.count {
+      // Only the row being let out parses as it goes; never half a word (`RevealPace`).
+      ChatMarkdown(blocks: MarkdownBlocks.parse(String(text.prefix(revealed))), isThinking: isThinking)
+    } else {
+      ChatMarkdown(blocks: blocks, isThinking: isThinking)
     }
-    if final { finished() }
   }
 }
 
