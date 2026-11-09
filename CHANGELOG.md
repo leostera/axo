@@ -2,6 +2,14 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.42 (Mac app build 313, axod 65)
+
+### Changed
+
+- axod runs on about half as many threads. Each terminal's output used to have a thread of its own; all of them now share two.
+- Closing a Pi pane or restarting it again calls off a takeover still waiting for the old Pi at once, instead of within a tenth of a second. A restart also goes ahead the moment the old Pi exits.
+- Signing in to an app on this Mac, and starting the local model, no longer check every few milliseconds whether they are done; they wake when something happens.
+
 ## 0.41 (Mac app build 312, axod 64)
 
 ### Changed
