@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.45 (Mac app build 316, axod 68)
+
+### Fixed
+
+- A Pi left running from before axod restarted is stopped and started again, even in the middle of a turn. It used to be asked to stop only if idle, so a busy one could keep working with nothing in Axo watching it.
+
 ## 0.44 (Mac app build 315, axod 67)
 
 ### Changed
