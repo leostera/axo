@@ -33,11 +33,14 @@ import {
   type SessionMetadata,
   type SessionStatus,
 } from "@axo/protocol";
-import { hostV1Results, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
-import { AxoHostRelay, hostRemoteMethods, type HostRemoteMethod } from "./axo-host-relay";
+import { hostV1Methods, hostV1Results, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
+import { AxoHostRelay } from "./axo-host-relay";
 import type { CallerContext, Peer } from "./relay/peer";
 import { sessionDOName, type SessionBinding, type SessionHead } from "./session-store";
 import { recordApiEvent } from "./observability";
+import { addColumns, migrate, type SchemaStep } from "./schema";
+import { DIRECT_CLIENT_ROLE, HostClients, isDirectClient } from "./host-clients";
+import { PI3_FORMAT, type ClientRecord } from "@axo/protocol";
 import { z } from "zod";
 
 /**
@@ -113,13 +116,76 @@ type AccountStub = {
   appsCall(call: AppsCall): Promise<HostCommandOutcome>;
 };
 
-/**
- * Presence a HostDO reported while its base class was still being constructed, by generation.
- * The base constructor fences the routes of sockets that did not survive a restart (a deploy, an
- * eviction), which reports the host offline before this class's fields exist. The report waits
- * here, outside the object, and is sent once construction is done.
- */
-const offlineDuringConstruction = new WeakMap<AxoHostDO, string>();
+/** The HostDO's schema, one step per change (RFD0032, Release P). */
+const HOST_SCHEMA: readonly SchemaStep[] = [
+  (sql) => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS host_identity (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL, host_id TEXT NOT NULL)`);
+    // `missing` marks a Session the last manifest did not list: archived, never deleted.
+    sql.exec(`CREATE TABLE IF NOT EXISTS session_index (
+      session_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, metadata_version INTEGER NOT NULL,
+      missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
+    sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
+    // RFD0031: followers stay until their socket closes; `behind` marks one a notice failed to reach.
+    sql.exec("DROP TABLE IF EXISTS subscribers");
+    sql.exec("CREATE TABLE IF NOT EXISTS followers (client_do TEXT PRIMARY KEY, behind INTEGER NOT NULL DEFAULT 0)");
+    sql.exec(`CREATE TABLE IF NOT EXISTS watchers (
+      client_do TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (client_do, session_id))`);
+  },
+  (sql) => {
+    // RFD0032, Host sync from the index: rows start distrusted; the fence only grows.
+    addColumns(sql, "session_index", { verified: "INTEGER NOT NULL DEFAULT 0" });
+    sql.exec("CREATE TABLE IF NOT EXISTS sync_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
+  },
+  (sql) => {
+    // RFD0032, release P: created so a rollback from protocol 3 finds the table; never read.
+    sql.exec(`CREATE TABLE IF NOT EXISTS client_opens (
+      socket_id TEXT NOT NULL, session_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+      sent INTEGER NOT NULL, acked INTEGER NOT NULL, PRIMARY KEY (socket_id, session_id))`);
+  },
+  (sql) => {
+    // RFD0032, protocol 3: what each client socket has of each Session it opened (HostClients).
+    // Release P's table was never written, and allowed no Session without records yet.
+    sql.exec("DROP TABLE IF EXISTS client_opens");
+    sql.exec(`CREATE TABLE client_opens (
+      socket_id TEXT NOT NULL, session_id TEXT NOT NULL, epoch INTEGER, sent INTEGER NOT NULL,
+      acked INTEGER NOT NULL, sent_at REAL NOT NULL, PRIMARY KEY (socket_id, session_id))`);
+    sql.exec("CREATE INDEX IF NOT EXISTS client_opens_by_session ON client_opens(session_id)");
+  },
+  (sql) => {
+    // When the account last recorded this host as seen, so an eviction doesn't lose the throttle.
+    sql.exec(`CREATE TABLE IF NOT EXISTS account_touch (singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      host_generation TEXT NOT NULL, at REAL NOT NULL, last_seen_at TEXT NOT NULL)`);
+  },
+  (sql) => {
+    // The relay's client calls, from before the private fleet went: only role "client" sockets
+    // wrote them, and a HostDO never had one. A rollback's constructor creates them again.
+    sql.exec("DROP TABLE IF EXISTS groups");
+    sql.exec("DROP TABLE IF EXISTS pending");
+  },
+];
+
+/** What a client may ask the Mac to do, through `command`, and the params each takes. */
+const hostRemoteMethods = {
+  "axo.remote.workspace.list": hostV1Methods["axo.remote.workspace.list"],
+  "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
+  "axo.remote.workspace.session.create": hostV1Methods["axo.remote.workspace.session.create"],
+  "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
+  "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
+  "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],
+  "axo.remote.session.rename": hostV1Methods["axo.remote.session.rename"],
+  "axo.remote.session.layout.set": hostV1Methods["axo.remote.session.layout.set"],
+  "axo.remote.terminal.input": hostV1Methods["axo.remote.terminal.input"],
+  "axo.remote.session.prompt": hostV1Methods["axo.remote.session.prompt"],
+  "axo.remote.session.key": hostV1Methods["axo.remote.session.key"],
+  "axo.remote.session.stop": hostV1Methods["axo.remote.session.stop"],
+  "axo.remote.session.restart": hostV1Methods["axo.remote.session.restart"],
+  "axo.remote.session.commands": hostV1Methods["axo.remote.session.commands"],
+  "axo.remote.session.models": hostV1Methods["axo.remote.session.models"],
+  "axo.remote.session.model.set": hostV1Methods["axo.remote.session.model.set"],
+  "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],
+} as const;
+type HostRemoteMethod = keyof typeof hostRemoteMethods;
 
 export class AxoHostDO extends AxoHostRelay {
   /** The newest progress snapshot per Session and slot; never stored (RFD0018, Ephemeral progress). */
@@ -132,47 +198,74 @@ export class AxoHostDO extends AxoHostRelay {
   private readonly elicitations = new Map<string, Elicitation>();
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  /** When each connection's heartbeat last reached the account, and what it answered. */
-  private readonly lastTouch = new Map<string, { at: number; reply: { acknowledged: true; lastSeenAt: string } }>();
-  /** Commands from ClientDOs waiting for the host's reply, by the id they were sent with. */
-  private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; resolve: (outcome: HostCommandOutcome) => void }>();
+  /**
+   * Commands waiting for the host's reply, by the id they were sent with, and the connection they
+   * went out on: only that connection's end leaves their outcome unknown.
+   */
+  private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; connectionId: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `callHost` hops waiting for the daemon's reply, with the socket they were sent on. */
   private readonly hops = new Map<string, { connectionId: string; resolve: (outcome: HostCommandOutcome) => void }>();
   /** `axo.apps.*` calls from the daemon waiting for the account. */
   private appsCalls = 0;
+  /** Protocol 3's client sockets (RFD0032). */
+  private readonly clients: HostClients;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    const sql = ctx.storage.sql;
-    sql.exec(`CREATE TABLE IF NOT EXISTS host_identity (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL, host_id TEXT NOT NULL)`);
-    // `missing` marks a Session the last manifest did not list: archived, never deleted.
-    sql.exec(`CREATE TABLE IF NOT EXISTS session_index (
-      session_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, metadata_version INTEGER NOT NULL,
-      missing INTEGER NOT NULL DEFAULT 0, epoch INTEGER, head INTEGER NOT NULL DEFAULT 0, chain TEXT)`);
-    sql.exec("CREATE TABLE IF NOT EXISTS sync_round (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), round INTEGER NOT NULL)");
-    // RFD0032, Host sync from the index: rows start distrusted; the fence only grows.
-    if (!sql.exec<{ name: string }>("PRAGMA table_info(session_index)").toArray().some((column) => column.name === "verified"))
-      sql.exec("ALTER TABLE session_index ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
-    sql.exec("CREATE TABLE IF NOT EXISTS sync_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
-    // RFD0031: followers stay until their socket closes; `behind` marks one a notice failed to reach.
-    sql.exec("DROP TABLE IF EXISTS subscribers");
-    sql.exec("CREATE TABLE IF NOT EXISTS followers (client_do TEXT PRIMARY KEY, behind INTEGER NOT NULL DEFAULT 0)");
-    sql.exec(`CREATE TABLE IF NOT EXISTS watchers (
-      client_do TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (client_do, session_id))`);
-    const offline = offlineDuringConstruction.get(this);
-    if (offline !== undefined) {
-      offlineDuringConstruction.delete(this);
-      this.presenceChanged("", offline, "offline");
-    }
+    migrate(ctx.storage, HOST_SCHEMA);
+    this.clients = new HostClients(ctx, {
+      hostId: () => this.identity()?.host_id,
+      presence: () => this.presence(),
+      sessions: () => this.ctx.storage.sql.exec<IndexRow>("SELECT * FROM session_index").toArray().map((row) => this.clientSession(row)),
+      head: (sessionId) => {
+        const row = this.indexRow(sessionId);
+        return row && { epoch: row.epoch, head: row.head };
+      },
+      read: (sessionId, request) => this.session(sessionId).read(this.binding(sessionId), request),
+      progress: (sessionId) => [...(this.progress.get(sessionId) ?? [])].map(([slot, snapshot]) => ({ slot, snapshot })),
+      elicitations: () => [...this.elicitations.values()],
+      command: (method, params) => this.command(method, params),
+      resolveElicitation: (params) => this.resolveElicitation(params),
+    });
+    this.reconcile();
   }
 
   // ─── Socket admission and registration ─────────────────────────────────────
 
-  protected override supportsLegacyMachineMethods(): boolean { return false; }
+  /** Protocol 3's client sockets are this class's own (RFD0032). */
+  protected override keeps(attachment: unknown): boolean {
+    return isDirectClient(attachment);
+  }
+
+  /**
+   * A protocol 3 client socket, which the Worker forwards once it has checked that the signed-in
+   * account owns this host; anything else is the daemon's, through the relay.
+   */
+  override async fetch(request: Request): Promise<Response> {
+    if (request.headers.get("X-Axo-Role") !== DIRECT_CLIENT_ROLE) return super.fetch(request);
+    const account = uuid.safeParse(request.headers.get("X-Axo-Account"));
+    const host = uuid.safeParse(request.headers.get("X-Axo-Machine"));
+    if (!account.success || !host.success || !this.bind(account.data, host.data)) return new Response("Invalid internal identity", { status: 403 });
+    return this.clients.accept(request);
+  }
+
+  override async webSocketMessage(socket: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    if (this.clients.serves(socket)) return this.clients.receive(socket, raw);
+    return super.webSocketMessage(socket, raw);
+  }
+
+  override webSocketClose(socket: WebSocket): void {
+    if (this.clients.serves(socket)) return this.clients.closed(socket);
+    super.webSocketClose(socket);
+  }
+
+  override webSocketError(socket: WebSocket): void {
+    if (this.clients.serves(socket)) return this.clients.closed(socket);
+    super.webSocketError(socket);
+  }
 
   protected override async authorizeRelayPeer(request: Request, peer: Peer): Promise<boolean> {
-    if (peer.role !== "daemon" || !this.bind(peer.identity, peer.machineId)) return false;
+    if (!this.bind(peer.identity, peer.machineId)) return false;
     return this.account().authorizeHost(
       peer.machineId,
       request.headers.get("X-Axo-Credential-Id") ?? "",
@@ -181,35 +274,34 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   protected override async storeHostRegistration(registration: unknown): Promise<HostSnapshot> {
-    return this.account().registerHost(registration, Date.now());
+    const now = Date.now();
+    const snapshot = await this.account().registerHost(registration, now);
+    // Registering records the host as seen, as a heartbeat's touch does.
+    this.touched(snapshot.hostGeneration, now, snapshot.lastSeenAt);
+    return snapshot;
   }
 
   protected override async storeHostHeartbeat(reference: unknown): Promise<{ acknowledged: true; lastSeenAt: string }> {
     // The account's last-seen time only needs SYNC.lastSeenMs resolution; presence is here (RFD0031).
+    // It is kept in SQLite: kept in memory, every eviction between heartbeats cost a touch.
     const { hostId, hostGeneration } = reference as { hostId: string; hostGeneration: string };
-    const key = `${hostId}:${hostGeneration}`;
-    const last = this.lastTouch.get(key);
-    if (last && Date.now() - last.at < SYNC.lastSeenMs) return last.reply;
-    const reply = await this.account().touchHost(hostId, hostGeneration, Date.now());
-    this.lastTouch.clear();
-    this.lastTouch.set(key, { at: Date.now(), reply });
+    const last = this.ctx.storage.sql.exec<{ host_generation: string; at: number; last_seen_at: string }>(
+      "SELECT host_generation, at, last_seen_at FROM account_touch WHERE singleton = 1").toArray()[0];
+    if (last && last.host_generation === hostGeneration && Date.now() - last.at < SYNC.lastSeenMs)
+      return { acknowledged: true, lastSeenAt: last.last_seen_at };
+    const now = Date.now();
+    const reply = await this.account().touchHost(hostId, hostGeneration, now);
+    this.touched(hostGeneration, now, reply.lastSeenAt);
     return reply;
   }
 
-  protected override async storeHostSessions(): Promise<{ storedAt: string }> {
-    throw new Error("Sessions are synced with axo.host.sync");
+  private touched(hostGeneration: string, at: number, lastSeenAt: string): void {
+    this.ctx.storage.sql.exec(`INSERT INTO account_touch (singleton, host_generation, at, last_seen_at) VALUES (1, ?, ?, ?)
+      ON CONFLICT(singleton) DO UPDATE SET host_generation = excluded.host_generation, at = excluded.at, last_seen_at = excluded.last_seen_at`,
+      hostGeneration, at, lastSeenAt);
   }
 
-  /** The firehose is gone (RFD0018): a host that still sends it is out of date. */
-  protected override async storeHostEvent(): Promise<void> {
-    throw new Error("Host events are replaced by axo.host.sync");
-  }
-
-  protected override presenceChanged(_hostId: string, hostGeneration: string, status: "online" | "offline"): void {
-    if (this.constructing()) {
-      if (status === "offline") offlineDuringConstruction.set(this, hostGeneration);
-      return;
-    }
+  protected override presenceChanged(hostGeneration: string, status: "online" | "offline"): void {
     if (status === "offline") {
       this.progress.clear();
       this.statuses.clear();
@@ -222,25 +314,16 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override fence(connectionId: string): void {
     super.fence(connectionId);
-    // Nothing waits on a connection while the object is still being built: the maps start empty.
-    if (this.constructing()) return;
     for (const [id, hop] of this.hops) {
       if (hop.connectionId !== connectionId) continue;
       this.hops.delete(id);
       hop.resolve({ error: { code: -32004, message: "Host disconnected; the call may have run" } });
     }
     for (const [id, command] of this.commands) {
+      if (command.connectionId !== connectionId) continue;
       this.commands.delete(id);
       command.resolve({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } });
     }
-  }
-
-  /**
-   * Whether the base class constructor is still running, so this class's fields do not exist
-   * yet. The base constructor calls `fence` and, through it, `presenceChanged`.
-   */
-  private constructing(): boolean {
-    return this.progress === undefined;
   }
 
   // ─── Upload: Axod → HostDO ─────────────────────────────────────────────────
@@ -349,20 +432,11 @@ export class AxoHostDO extends AxoHostRelay {
     return { round, applied: true, sessions: answered, serverOnly: serverOnly.slice(0, SYNC.manifestSessions) };
   }
 
-  /**
-   * A SessionDO's head for the handshake, raising its fence. A SessionDO still on code without
-   * fences answers `head` alone, which verifies nothing (RFD0032, Migration).
-   */
+  /** A SessionDO's head for the handshake, raising its fence. */
   private async syncHead(sessionId: string, fence: number): Promise<{ head: SessionHead | null; fenced: boolean }> {
-    const stub = this.session(sessionId);
-    try {
-      const read = await stub.syncHead(this.binding(sessionId), fence);
-      this.adoptFence(read.fence);
-      return { head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads] }, fenced: read.fence >= fence };
-    } catch (error) {
-      if (!/syncHead/.test(String(error))) throw error;
-      return { head: await stub.head(this.binding(sessionId)), fenced: false };
-    }
+    const read = await this.session(sessionId).syncHead(this.binding(sessionId), fence);
+    this.adoptFence(read.fence);
+    return { head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads] }, fenced: read.fence >= fence };
   }
 
   private currentFence(): number {
@@ -400,9 +474,9 @@ export class AxoHostDO extends AxoHostRelay {
     const result = await this.session(sessionId).append(this.binding(sessionId), input.data, this.currentFence());
     recordApiEvent({ event: "session_append", outcome: result.outcome, records: input.data.records.length });
     this.renewRoute(peer);
-    // Whatever the outcome, the answer says what the SessionDO holds; one with a fence verifies the row.
+    // Whatever the outcome, the answer says what the SessionDO holds, fenced: it verifies the row.
     this.adoptFence(result.fence);
-    this.refreshHead(sessionId, result.epoch, result.count, result.chain, result.fence !== undefined);
+    this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
     // A fenced write reaches axod as the conflict it already handles by handshaking again.
     if (result.outcome === "fenced") return { outcome: "conflict", epoch: result.epoch, count: result.count, chain: result.chain };
     if (result.outcome !== "committed") return { outcome: result.outcome, epoch: result.epoch, count: result.count, chain: result.chain };
@@ -410,6 +484,9 @@ export class AxoHostDO extends AxoHostRelay {
       if (!this.progress.get(sessionId)?.delete(slot)) continue;
       this.queue({ kind: "progress", sessionId, slot, snapshot: null });
     }
+    // The records it just committed go to protocol 3's sockets from here, with no read
+    // (pushFromAppend). Those sends happen before the first await; axod's answer waits for no read.
+    void this.clients.committed(sessionId, result.epoch, committedRecords(input.data, result.count, result.added)).catch(() => undefined);
     return { outcome: "committed", epoch: result.epoch, count: result.count, chain: result.chain };
   }
 
@@ -429,12 +506,10 @@ export class AxoHostDO extends AxoHostRelay {
     const result = await this.session(sessionId).truncate(this.binding(sessionId), keep, expectedChain, this.currentFence());
     recordApiEvent({ event: "session_truncate", outcome: result.outcome });
     this.adoptFence(result.fence);
-    if (result.outcome !== "truncated") {
-      // An answer from code without fences has no head to refresh from; the row stays distrusted.
-      if (result.fence !== undefined) this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
-      return { round, outcome: "mismatch" as const };
-    }
-    this.refreshHead(sessionId, result.epoch, result.count, result.chain, result.fence !== undefined);
+    this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
+    if (result.outcome !== "truncated") return { round, outcome: "mismatch" as const };
+    // This HostDO made the cut, so protocol 3's sockets learn where with no read.
+    this.clients.cut(sessionId, result.epoch, keep);
     this.queue({ kind: "epoch", sessionId, epoch: result.epoch, head: result.count }, true);
     // axod's schema is strict: only what it reads, never the fence.
     return { round, outcome: "truncated" as const, epoch: result.epoch, count: result.count, chain: result.chain };
@@ -476,7 +551,11 @@ export class AxoHostDO extends AxoHostRelay {
     if (verified !== (row.verified === 1)) this.ctx.storage.sql.exec("UPDATE session_index SET verified = ? WHERE session_id = ?", verified ? 1 : 0, sessionId);
     if (row.epoch === epoch && row.head === head && row.chain === chain) return;
     this.ctx.storage.sql.exec("UPDATE session_index SET epoch = ?, head = ?, chain = ? WHERE session_id = ?", epoch, head, chain, sessionId);
-    if (row.epoch !== null && epoch !== null && epoch > row.epoch) this.queue({ kind: "epoch", sessionId, epoch, head }, true);
+    if (row.epoch !== null && epoch !== null && epoch > row.epoch) {
+      // Memory is per epoch: what was held may be past the cut.
+      this.clients.epochMoved(sessionId);
+      this.queue({ kind: "epoch", sessionId, epoch, head }, true);
+    }
     this.queueSession(sessionId);
   }
 
@@ -557,6 +636,7 @@ export class AxoHostDO extends AxoHostRelay {
       this.commands.set(id, {
         method: remote,
         generation: active.route.generation!,
+        connectionId: active.route.connection_id,
         resolve: (outcome) => {
           clearTimeout(timer);
           resolve(outcome);
@@ -579,7 +659,7 @@ export class AxoHostDO extends AxoHostRelay {
       return hop.resolve("error" in reply ? { error: { code: reply.error.code, message: reply.error.message } } : { result: reply.result });
     }
     const command = typeof reply.id === "string" ? this.commands.get(reply.id) : undefined;
-    if (!command) return super.receiveReply(socket, reply);
+    if (!command) return;
     this.commands.delete(reply.id as string);
     // The host is the account's own Mac: its reason reaches the client, bounded.
     if ("error" in reply) return command.resolve({ error: { code: reply.error.code, message: reply.error.message.slice(0, 256) || "Host rejected operation" } });
@@ -670,8 +750,10 @@ export class AxoHostDO extends AxoHostRelay {
     const identity = this.identity();
     if (!identity) return;
     const active = this.active(identity.host_id);
+    // Protocol 3's clients keep their sockets: they see the Mac go offline, its Sessions still
+    // listed, until their next hello, which no longer lists it (as in protocol 2).
     if (active) this.drop(active.socket, 4003, "Host revoked");
-    this.closeHostRelay(identity.host_id);
+    else this.endLease(identity.host_id);
   }
 
   /** Tells the clients following this Mac its new name at once. */
@@ -683,9 +765,9 @@ export class AxoHostDO extends AxoHostRelay {
     return this.presence();
   }
 
-  override presence() {
+  presence() {
     const identity = this.identity();
-    return identity ? super.presence(identity.host_id) : { online: false, hostGeneration: null };
+    return identity ? this.presenceOfMachine(identity.host_id) : { online: false, hostGeneration: null };
   }
 
   // ─── Notices ───────────────────────────────────────────────────────────────
@@ -747,6 +829,7 @@ export class AxoHostDO extends AxoHostRelay {
       else if (behind) sql.exec("UPDATE followers SET behind = 0 WHERE client_do = ?", client_do);
     }));
     if (sent) recordApiEvent({ event: "notice_batch", subscribers: sent, notices: notices.length });
+    await this.clients.deliver(notices);
   }
 
   /** What a follower a notice failed to reach needs: the index, presence, and its Sessions' progress. */
@@ -826,6 +909,16 @@ export class AxoHostDO extends AxoHostRelay {
   private client(name: string): ClientStub {
     return this.ctx.exports.AxoClientDO.getByName(name) as unknown as ClientStub;
   }
+}
+
+/**
+ * The records an append committed, as clients see them: the last `added` of the batch, which end
+ * at `count`. The SessionDO checked each one's line, id and hash before it committed them.
+ */
+export function committedRecords(params: { records: Array<{ id: string | null; line: string; hash: string }> }, count: number, added: number): ClientRecord[] {
+  return params.records.slice(params.records.length - added).map((record, index) => ({
+    cursor: count - added + index + 1, id: record.id, format: PI3_FORMAT, line: record.line, hash: record.hash,
+  }));
 }
 
 /** A verified index row as the handshake's answer; axod ignores `heads`, which the index doesn't keep. */

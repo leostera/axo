@@ -87,7 +87,7 @@ const cloud = defineZone({ name: "Cloudflare", description: "one ClientDO per fo
 const studio = defineZone({ name: "Studio", description: "where the Session runs", place: { column: 2 } });
 
 const deadline = defineLimit({ name: "A command with no reply from the host for this long has an unknown outcome", value: 10, unit: "seconds", sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.command"] });
-const renewal = defineLimit({ name: "The peers socket is renewed after", value: 50, unit: "minutes", sources: ["crates/axo-relay/src/peers/follower.rs#Follower::run"] });
+const renewal = defineLimit({ name: "The peers socket is renewed after", value: 50, unit: "minutes", sources: ["crates/axo-relay/src/peers/follower.rs#Follower::follow"] });
 
 const sameEntries = (a: readonly Entry[], b: readonly Entry[]) => a.length === b.length && a.every((e, i) => e.kind === b[i]!.kind && e.turn === b[i]!.turn && e.command === b[i]!.command);
 /** The turn the log shows running: its last record is a user message. */
@@ -243,7 +243,7 @@ export const MacBookAxod = defineActor({
       description: "The socket is renewed (every 50 minutes) or the network drops it; replies still on it are lost.",
       when: (s) => s.connected,
       sends: [PeerAnswer],
-      sources: ["crates/axo-relay/src/peers/follower.rs#Follower::run"],
+      sources: ["crates/axo-relay/src/peers/follower.rs#Follower::follow"],
       run(state, _i, ctx) {
         state.connected = false;
         for (const key of state.inFlight) {

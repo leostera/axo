@@ -25,6 +25,7 @@ type AccountStub = {
   createLoginCode(accountId: string, digest: string, challenge: string, now: number, expiresAt: number, profile: AccountProfile): Promise<void>;
   redeemLoginCode(digest: string, challenge: string, now: number): Promise<AccountProfile | null>;
   listHosts?(): Promise<unknown>;
+  clientHosts?(): Promise<Array<{ hostId: string }>>;
   revokeHost?(hostId: string, now?: number): Promise<void>;
   createPairing?(codeVerifier: string, pairingId: string, now: number, expiresAt: number): Promise<"created" | "collision" | "limited">;
   cancelPairing?(codeVerifier: string, pairingId: string): Promise<void>;

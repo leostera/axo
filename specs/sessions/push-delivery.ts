@@ -350,6 +350,7 @@ export const HostDO = defineActor({
       with: [atMost(2)],
       label: "axod uploads a record",
       description: "A line from the Mac is appended to the SessionDO; the HostDO keeps it in hand until the SessionDO answers.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.append"],
       when: (s) => !s.busy && s.head < MAX_RECORDS,
       sends: [Commit],
       run(state, _i, ctx) {
@@ -362,6 +363,7 @@ export const HostDO = defineActor({
       with: [atMost(1)],
       label: "axod sends progress",
       description: "A snapshot of the reply being written arrives and goes to every socket with the Session open.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostNotification", "packages/axo-api-worker/src/host-clients.ts#HostClients.deliver", "packages/axo-api-worker/src/host-clients.ts#HostClients.deliverTo"],
       when: (s) => s.head < MAX_RECORDS && s.progress?.text !== "more",
       sends: [Progress],
       run(state, _i, ctx) {
@@ -373,6 +375,7 @@ export const HostDO = defineActor({
       with: [atMost(1)],
       label: "The Session diverged",
       description: "The handshake found a divergence; the SessionDO is cut back to its first record.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.truncate"],
       when: (s) => !s.busy && !s.truncated && s.head >= 2,
       sends: [Cut],
       run(state, _i, ctx) {
@@ -396,6 +399,7 @@ export const HostDO = defineActor({
     hello: {
       on: Hello,
       description: "Takes the socket, replacing an older one of the same client, sweeps the rows of sockets that are gone, and answers with the index.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.hello"],
       sends: [Welcome, Closed],
       run(state, msg, ctx) {
         // One socket per client per Mac: a newer connection replaces the one before (code 4000).
@@ -411,6 +415,7 @@ export const HostDO = defineActor({
     open: {
       on: Open,
       description: "Opens the Session for the socket: from the index when the tab already holds everything, else with a read.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.open"],
       sends: [Opened, ReadOpen],
       run(state, msg, ctx) {
         if (!state.socket || msg.socket !== state.socket) return;
@@ -432,6 +437,7 @@ export const HostDO = defineActor({
     ack: {
       on: Ack,
       description: "The tab took the batch: the next one goes, from memory if the HostDO has it.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.ack"],
       sends: [Records, ReadGap],
       run(state, msg, ctx) {
         const row = openRow(state);
@@ -444,6 +450,7 @@ export const HostDO = defineActor({
     bye: {
       on: Bye,
       description: "The tab's socket closed: its row goes with it.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.closed"],
       run(state, msg) {
         if (msg.socket !== state.socket) return;
         state.rows = state.rows.filter((r) => r.socket !== state.socket);
@@ -456,6 +463,7 @@ export const HostDO = defineActor({
     committed: {
       on: Committed,
       description: "The record is committed: the HostDO keeps it in memory, clears the progress it completes, and pushes it to the tab.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.committed", "packages/axo-api-worker/src/host-clients.ts#RecentRecords.add"],
       sends: [Records, ReadGap, Progress],
       run(state, msg, ctx) {
         // A reply to the instance a reset ended reaches no one.
@@ -504,6 +512,7 @@ export const HostDO = defineActor({
     cutDone: {
       on: CutDone,
       description: "The Session is cut back in a new epoch. The HostDO made the cut, so it tells the tab where, with no read.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.cut"],
       sends: [Reset, Records, ReadGap],
       run(state, msg, ctx) {
         if (!state.busy) return;
@@ -528,6 +537,7 @@ export const HostDO = defineActor({
     readResult: {
       on: ReadResult,
       description: "Records read for the socket: the window for an open, or what the HostDO didn't hold in memory.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.pump"],
       sends: [Opened, Records, ReadGap, ReadOpen],
       run(state, msg, ctx) {
         if (msg.id !== state.reading) return;
@@ -557,6 +567,7 @@ export const HostDO = defineActor({
     readReset: {
       on: ReadReset,
       description: "The tab's copy is from an older epoch: it is told where the Session was cut, and the window is read again from there.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.reset"],
       sends: [Reset, ReadOpen, Records, ReadGap],
       run(state, msg, ctx) {
         if (msg.id !== state.reading) return;
@@ -590,6 +601,7 @@ export const HostDO = defineActor({
     readGapFailed: {
       on: failed(ReadGap),
       description: "The read threw: it is made again at once.",
+      sources: ["packages/axo-api-worker/src/host-clients.ts#HostClients.pump"],
       sends: [Records, ReadGap],
       run(state, f, ctx) {
         if (f.payload.id !== state.reading) return;

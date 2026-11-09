@@ -12,6 +12,7 @@ import {
   type ClientRecord,
 } from "@axo/protocol";
 import type { EntryRecord, TranscriptHeader } from "@leostera/atxf";
+import { addColumns, migrate, type SchemaStep } from "./schema";
 import { ATXF_CONVERTER, AtxfTranslator, storedForm, withNative } from "./session-atxf";
 
 /**
@@ -88,13 +89,9 @@ const TRANSLATE_BYTES = 16 * 1_048_576;
 /** Lines read back per query when rebuilding the stream. */
 const REPLAY_PAGE = 256;
 
-export class AxoSessionDO extends DurableObject<Env> {
-  /** The stream that translated records 1..`through` of `epoch`, while this object is in memory. */
-  private translator: { epoch: number; through: number; read: AtxfTranslator } | undefined;
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    const sql = ctx.storage.sql;
+/** The SessionDO's schema, one step per change (RFD0032, Release P). */
+const SESSION_SCHEMA: readonly SchemaStep[] = [
+  (sql) => {
     // RFD0018 replaces the extension-event history; each Session is rebuilt by its first sync.
     sql.exec("DROP TABLE IF EXISTS pi_events");
     sql.exec(`CREATE TABLE IF NOT EXISTS session_identity (
@@ -112,13 +109,27 @@ export class AxoSessionDO extends DurableObject<Env> {
     sql.exec(`CREATE TABLE IF NOT EXISTS record_parts (
       cursor INTEGER NOT NULL, idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (cursor, idx))`);
     sql.exec("CREATE TABLE IF NOT EXISTS cuts (epoch INTEGER PRIMARY KEY, keep INTEGER NOT NULL)");
+  },
+  (sql) => {
     // RFD0035: added columns only, with defaults, so no stored row is rewritten.
     addColumns(sql, "records", { format: "TEXT NOT NULL DEFAULT 'pi/3'", atxf_hash: "TEXT", atxf: "TEXT" });
     addColumns(sql, "transcript", { atxf_header: "TEXT", atxf_through: "INTEGER NOT NULL DEFAULT 0", atxf_converter: "TEXT", atxf_error: "TEXT" });
     sql.exec(`CREATE TABLE IF NOT EXISTS atxf_parts (
       cursor INTEGER NOT NULL, idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (cursor, idx))`);
+  },
+  (sql) => {
     // RFD0032: the highest fence a HostDO's head read carried; older writes are refused.
     sql.exec("CREATE TABLE IF NOT EXISTS write_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
+  },
+];
+
+export class AxoSessionDO extends DurableObject<Env> {
+  /** The stream that translated records 1..`through` of `epoch`, while this object is in memory. */
+  private translator: { epoch: number; through: number; read: AtxfTranslator } | undefined;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    migrate(ctx.storage, SESSION_SCHEMA);
   }
 
   /**
@@ -154,7 +165,7 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Commits a batch in one transaction. A batch that starts at or before the count is a retry:
    * its overlap must match what is stored, and only its new tail is added.
    */
-  async append(binding: SessionBinding, params: AppendParams, fence?: number): Promise<StoreAppendResult> {
+  async append(binding: SessionBinding, params: AppendParams, fence: number): Promise<StoreAppendResult> {
     if (!this.owns(binding, true)) throw new Error("Session identity conflict");
     let transcript = this.transcript();
     const reject = (outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"): StoreAppendResult => ({
@@ -243,7 +254,7 @@ export class AxoSessionDO extends DurableObject<Env> {
    * Cuts the transcript back to `keep` records if its chain there is `expectedChain`, starts a
    * new epoch, and records the cut so readers of older epochs learn where to drop to.
    */
-  async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence?: number): Promise<StoreTruncateResult> {
+  async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence: number): Promise<StoreTruncateResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
     const result = this.ctx.storage.transactionSync((): StoreTruncateResult => {
       const transcript = this.transcript();
@@ -449,12 +460,10 @@ export class AxoSessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Whether a write with `fence` comes from before the last head read. A write with none comes
-   * from a HostDO that doesn't fence (older code), and is refused once any head read fenced.
+   * Whether a write with `fence` comes from before the last head read.
    */
-  private fenced(fence: number | undefined): boolean {
-    const current = this.fence();
-    return fence === undefined ? current > 0 : fence < current;
+  private fenced(fence: number): boolean {
+    return fence < this.fence();
   }
 
   private translation(): Translation | undefined {
@@ -510,11 +519,6 @@ export function clearedSlot(line: string): string | null {
 }
 
 /** Adds the columns `table` does not have yet. */
-function addColumns(sql: SqlStorage, table: string, columns: Record<string, string>): void {
-  const have = new Set(sql.exec<{ name: string }>(`PRAGMA table_info(${table})`).toArray().map((row) => row.name));
-  for (const [name, type] of Object.entries(columns)) if (!have.has(name)) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
-}
-
 /** Cuts a line into parts that each fit a SQLite value, never between a surrogate pair. */
 function splitParts(line: string): string[] {
   const parts: string[] = [];

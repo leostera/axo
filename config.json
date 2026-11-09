@@ -1,9 +1,9 @@
 {
-  "version": "0.36",
+  "version": "0.39",
   "builds": {
-    "mac": 307,
-    "phone": 26,
-    "axod": 61
+    "mac": 310,
+    "phone": 30,
+    "axod": 62
   },
   "apple": {
     "team": "RGH6S9S55G",

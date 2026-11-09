@@ -28,10 +28,10 @@ function piFile(transcript: FakeTranscript): string {
 }
 
 /** A real axod on a scratch home, against the Worker; stopped when the test ends. */
-async function startAxod(t: TestContext) {
+async function startAxod(t: TestContext, configuration: { entry?: string } = {}) {
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
-  const api = await harness();
+  const api = await harness(configuration);
   // Resolved: a Session's folder must be inside its Workspace, as macOS names both.
   const root = await realpath(await mkdtemp(join(tmpdir(), "axo-axod-peers-")));
   const serverDirectory = join(root, "server");
@@ -58,7 +58,7 @@ async function startAxod(t: TestContext) {
     },
   });
   await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
-  return { api, root, serverDirectory, socketPath, daemon, setStudio: (peer: Peer) => { studio = peer; } };
+  return { api, root, serverDirectory, socketPath, daemon, log: () => readFile(join(serverDirectory, "stderr.log"), "utf8").catch(() => ""), setStudio: (peer: Peer) => { studio = peer; } };
 }
 
 /** Pairs the axod with the account: pairing is all it takes (RFD0022). */
@@ -69,7 +69,7 @@ async function link(api: Awaited<ReturnType<typeof harness>>, account: Awaited<R
 }
 
 test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while it is written (RFD0022)", async (t) => {
-  const { api, root, serverDirectory, socketPath, daemon, setStudio } = await startAxod(t);
+  const { api, root, serverDirectory, socketPath, daemon, log, setStudio } = await startAxod(t);
 
   // The account has another Mac, the Studio, with a chat going.
   const account = await signIn(api);
@@ -92,6 +92,10 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   const copy = join(sessions, studioHost.hostId, "no-workspace", `${transcript.sessionId}.jsonl`);
   const read = async () => (existsSync(copy) ? await readFile(copy, "utf8") : undefined);
   await waitFor("the copy of the Studio's chat", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
+
+  // It follows the Studio on the Studio's HostDO, not through the account (RFD0032, protocol 3).
+  await waitFor("axod on protocol 3", 20_000, async () => ((await log()).includes("event=peers.direct_ready hosts=1") ? true : undefined), daemon);
+  assert.ok(!(await log()).includes("event=peers.protocol_fallback"), await log());
 
   // What the Studio writes next reaches the copy without asking.
   await transcript.write(userMessage("one more thing"));
@@ -161,4 +165,52 @@ test("this Mac's archived Session is deleted once the cloud holds it whole, and 
   await transcript.write(userMessage("one more thing"));
   await writeFile(file, piFile(transcript));
   await waitFor("the next line", 20_000, async () => ((await cloudCount()) === records + 1 ? true : undefined), daemon);
+});
+
+test("a Mac follows over protocol 2 while the cloud can't serve it a Mac's HostDO (RFD0032)", async (t) => {
+  const entry = fileURLToPath(new URL("./fixtures/without-peer-route.ts", import.meta.url));
+  const { api, root, socketPath, daemon, log, setStudio } = await startAxod(t, { entry });
+  const account = await signIn(api);
+  const studioHost = await pairHost(api, account, "Mac Studio");
+  const studio = await connectHost(api, account, studioHost);
+  setStudio(studio);
+  const transcript = await FakeTranscript.create();
+  await transcript.write(userMessage("Fix the relay backoff"));
+  const synced = await studio.call("axo.host.sync", { hostId: studioHost.hostId, hostGeneration: studioHost.hostGeneration, round: 1, sessions: [transcript.manifestRow()] });
+  assert.ok("result" in synced, JSON.stringify(synced));
+  await append(studio, transcript, 1, true);
+
+  await link(api, account, socketPath);
+  const copy = join(root, "sessions", studioHost.hostId, "no-workspace", `${transcript.sessionId}.jsonl`);
+  const read = async () => (existsSync(copy) ? await readFile(copy, "utf8") : undefined);
+  // The Studio's HostDO refuses it, so it says so and keeps the copy through the account.
+  await waitFor("the fallback to protocol 2", 20_000, async () => ((await log()).includes("event=peers.protocol_fallback") ? true : undefined), daemon);
+  await waitFor("the copy over protocol 2", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
+  await transcript.write(userMessage("one more thing"));
+  await append(studio, transcript, 2);
+  await waitFor("the copy to follow", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
+  assert.ok(!(await log()).includes("event=peers.direct_ready"));
+});
+
+test("a Mac's command reaches the Mac it names through that Mac's HostDO, and the answer comes back (RFD0024, RFD0032)", async (t) => {
+  const { api, socketPath, daemon, log, setStudio } = await startAxod(t);
+  const account = await signIn(api);
+  const studioHost = await pairHost(api, account, "Mac Studio");
+  const studio = await connectHost(api, account, studioHost);
+  setStudio(studio);
+  const transcript = await FakeTranscript.create();
+  await transcript.write(userMessage("Fix the relay backoff"));
+  const synced = await studio.call("axo.host.sync", { hostId: studioHost.hostId, hostGeneration: studioHost.hostGeneration, round: 1, sessions: [transcript.manifestRow()] });
+  assert.ok("result" in synced, JSON.stringify(synced));
+  await append(studio, transcript, 1, true);
+  await link(api, account, socketPath);
+  await waitFor("axod on protocol 3", 20_000, async () => ((await log()).includes("event=peers.direct_ready hosts=1") ? true : undefined), daemon);
+
+  const params = { sessionId: transcript.sessionId, text: "and test it" };
+  const prompt = localCall(socketPath, "axo.peer.command", { hostId: studioHost.hostId, method: "axo.remote.session.prompt", params });
+  let forwarded: { id: string; method: string; params: unknown } | undefined;
+  while (forwarded?.method !== "axo.remote.session.prompt") forwarded = (await studio.next()) as typeof forwarded;
+  assert.deepEqual(forwarded.params, { ...params, target: { hostId: studioHost.hostId, hostGeneration: studioHost.hostGeneration } });
+  studio.send({ jsonrpc: "2.0", id: forwarded.id, result: { accepted: true } });
+  assert.deepEqual(await prompt, { accepted: true });
 });

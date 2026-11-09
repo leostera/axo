@@ -220,7 +220,17 @@ export const CLIENT_METHODS = {
   command: "axo.client.command",
   /** Names a Mac of the account (RFD0022). */
   renameHost: "axo.client.host.rename",
+  /** Protocol 3, on a host socket: the Mac came online or went offline (RFD0032). */
+  presence: "axo.client.host.presence",
+  /** Protocol 3, on a host socket: the Mac was named (RFD0032). */
+  label: "axo.client.host.label",
 } as const;
+
+/**
+ * Protocol 3 (RFD0032): the account socket lists the hosts, and a socket on each host's HostDO
+ * carries its index, records, progress and commands. Protocol 2 has the account socket carry it all.
+ */
+export const CLIENT_PROTOCOL = { relayed: 2, direct: 3 } as const;
 
 export const clientIdSchema = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
 
@@ -264,7 +274,8 @@ export type ClientSession = z.infer<typeof clientSessionSchema>;
 export const progressSnapshotSchema = z.object({ slot: progressSlotSchema, snapshot: z.unknown() }).strict();
 export type ProgressSnapshot = z.infer<typeof progressSnapshotSchema>;
 
-export const clientHelloParamsSchema = z.object({ protocolVersion: z.literal(2), clientId: clientIdSchema }).strict();
+/** On the account socket. In protocol 3 it answers with the hosts and no Sessions. */
+export const clientHelloParamsSchema = z.object({ protocolVersion: z.union([z.literal(2), z.literal(3)]), clientId: clientIdSchema }).strict();
 export const clientHelloResultSchema = z.object({
   hosts: z.array(clientHostSchema),
   sessions: z.array(clientSessionSchema),
@@ -272,6 +283,22 @@ export const clientHelloResultSchema = z.object({
 export type ClientHello = z.infer<typeof clientHelloResultSchema>;
 
 export const clientHostsParamsSchema = z.object({ hosts: z.array(clientHostSchema) }).strict();
+
+/**
+ * On a host socket (protocol 3). `connection` grows with each connection the client makes: the
+ * HostDO keeps a client's newest socket, and refuses an older one whose hello comes late.
+ */
+export const clientHostHelloParamsSchema = z.object({
+  protocolVersion: z.literal(3),
+  clientId: clientIdSchema,
+  connection: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+}).strict();
+export const clientPresenceParamsSchema = z.object({ online: z.boolean(), hostGeneration: uuid.nullable() }).strict();
+export type ClientPresence = z.infer<typeof clientPresenceParamsSchema>;
+/** The host's index, and whether it is online. What it is asking follows as notifications. */
+export const clientHostHelloResultSchema = clientPresenceParamsSchema.extend({ sessions: z.array(clientSessionSchema) }).strict();
+export type ClientHostHello = z.infer<typeof clientHostHelloResultSchema>;
+export const clientLabelParamsSchema = z.object({ label: z.string().min(1).max(128) }).strict();
 export const clientSessionsParamsSchema = z.object({ hostId: uuid, sessions: z.array(clientSessionSchema) }).strict();
 
 export const clientOpenParamsSchema = z.object({

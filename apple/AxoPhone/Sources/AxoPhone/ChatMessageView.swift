@@ -107,7 +107,7 @@ struct PendingPromptView: View {
     switch prompt.state {
     case .sending: "Sending…"
     case .sent: "Sent"
-    case .queued: prompt.delivery == .steer ? QueuedPromptView.steering : QueuedPromptView.followUp
+    case .queued: QueuedPromptView.label(prompt.delivery)
     case .uncertain: "Not confirmed yet · trying again"
     case .waitingForPi: "Waiting for Pi to start…"
     }
@@ -148,12 +148,25 @@ struct PendingPromptView: View {
 }
 
 /// A message Pi took while busy and has not started on, as the log holds it (RFD0033): the user's
-/// bubble, dimmed, saying whether it waits for the turn to end or joins it.
+/// bubble, dimmed, saying when Pi takes it: next, at its next step, or once the turn ends.
 struct QueuedPromptView: View {
   let prompt: QueuedPrompt
 
-  static let followUp = "Queued · after the current reply"
-  static let steering = "Steering · within the current reply"
+  static func label(_ delivery: PromptDelivery) -> String {
+    switch delivery {
+    case .interrupt: "Interrupting · answered next"
+    case .steer: "Steering · at the agent's next step"
+    case .followUp: "Queued · after the current reply"
+    }
+  }
+
+  static func icon(_ delivery: PromptDelivery) -> String {
+    switch delivery {
+    case .interrupt: "bolt"
+    case .steer: "arrow.turn.down.right"
+    case .followUp: "clock"
+    }
+  }
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 12) {
@@ -171,8 +184,8 @@ struct QueuedPromptView: View {
           .opacity(0.85)
       }
       HStack(spacing: 4) {
-        Image(systemName: prompt.delivery == .steer ? "arrow.turn.down.right" : "clock")
-        Text(prompt.delivery == .steer ? Self.steering : Self.followUp)
+        Image(systemName: Self.icon(prompt.delivery))
+        Text(Self.label(prompt.delivery))
       }
       .font(.caption).foregroundStyle(.secondary)
     }

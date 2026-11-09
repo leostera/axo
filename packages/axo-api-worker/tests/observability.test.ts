@@ -1,48 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { recordApiEvent } from "../src/observability";
-import { accessHeaders } from "../testing/access-headers";
+import { clientKind, recordApiEvent } from "../src/observability";
 
-test("diagnostics contain only static metadata and never infer execution from replies", () => {
+test("an event is logged as its static fields alone, and its type admits no others", () => {
   const captured: string[] = [];
   const original = console.info;
   console.info = (value) => captured.push(String(value));
   try {
-    recordApiEvent({
-      event: "relay_reply",
-      method: "axo.runtime.startApproved",
-      outcome: "unknown",
-    });
+    recordApiEvent({ event: "host_call", outcome: "timeout" });
   } finally {
     console.info = original;
   }
-  assert.deepEqual(JSON.parse(captured[0]), {
-    event: "relay_reply",
-    method: "axo.runtime.startApproved",
-    outcome: "unknown",
-  });
+  assert.deepEqual(JSON.parse(captured[0]), { event: "host_call", outcome: "timeout" });
   if (false) {
     // @ts-expect-error Credentials cannot be part of the event contract.
     recordApiEvent({ event: "host_registered", token: "must-not-log" });
-    recordApiEvent({
-      event: "relay_reply",
-      method: "axo.runtime.list",
-      // @ts-expect-error Replies are not execution confirmations.
-      outcome: "executed",
-    });
+    // @ts-expect-error A host call has no "executed" outcome: a reply is not proof the call ran.
+    recordApiEvent({ event: "host_call", outcome: "executed" });
   }
 });
 
-test("native Access headers supply the edge cookie and reject cookie/header injection", () => {
-  assert.deepEqual(accessHeaders("header.payload.signature"), {
-    Cookie: "CF_Authorization=header.payload.signature",
-    "Cf-Access-Jwt-Assertion": "header.payload.signature",
-  });
-  for (const value of [
-    "not-a-jwt",
-    "header.payload.signature; other=value",
-    "header.payload.signature\r\nSecret: value",
-    "x".repeat(8193),
-  ])
-    assert.throws(() => accessHeaders(value), /Invalid Access/);
+test("a client's kind comes from its id's prefix, and the id itself is never kept", () => {
+  assert.equal(clientKind("host-38b053a6-5b91-4dad-bbcf-2d2cbc9f0509"), "peer");
+  assert.equal(clientKind("ios-0123456789abcdef"), "phone");
+  assert.equal(clientKind("tab-0123456789"), "web");
+  assert.equal(clientKind("0123456789ab"), "web");
 });

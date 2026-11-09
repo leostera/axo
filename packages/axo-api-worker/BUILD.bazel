@@ -72,10 +72,7 @@ node_test(
     ],
     tests = glob(
         ["tests/*.test.ts"],
-        exclude = _RELAY_TESTS + [
-            # Never part of npm test; it drives a local stack by hand.
-            "tests/local.test.ts",
-        ],
+        exclude = _RELAY_TESTS,
     ),
     tests_in_data = True,
     # About 4 minutes alone, one file at a time; the default 5 is too close under a full run.

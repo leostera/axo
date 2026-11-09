@@ -77,8 +77,9 @@ public struct HostConnection: Sendable {
   /// (RFD0024). The host refuses it when the Session has no Pi running. `attachments` are assets
   /// already in the account (RFD0030): the Mac fetches them all before Pi gets the prompt, or
   /// refuses it. `delivery` says when a working Pi takes it; accepted means it is in the Session's
-  /// log (RFD0033). A Pi still starting answers `PiControlError.starting`, having kept nothing:
-  /// send it again with the same `commandId`.
+  /// log (RFD0033); a follow-up is sent as no delivery at all, which every Mac takes as one. A Pi
+  /// still starting answers `PiControlError.starting`, having kept nothing: send it again with the
+  /// same `commandId`. A Mac before 0.37 refuses an interrupt as invalid params (-32602).
   public func promptPi(
     in id: SessionID, text: String, commandId: UUID, attachments: [Attachment] = [], delivery: PromptDelivery = .followUp
   ) async throws {

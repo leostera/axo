@@ -44,8 +44,9 @@ export default defineConfig(({ isPreview }) => ({
       LOADER: bindings.workerLoader(),
     },
     exports: {
-      AxoHostDirectory: exports.durableObject({ storage: "sqlite" }),
-      AxoHostRelay: exports.durableObject({ storage: "sqlite" }),
+      // The private fleet's relay and directory, before accounts; neither ever held an object.
+      AxoHostDirectory: exports.durableObject({ state: "deleted" }),
+      AxoHostRelay: exports.durableObject({ state: "deleted" }),
       AxoIdentityIndex: exports.durableObject({ storage: "sqlite" }),
       AxoAccountDirectory: exports.durableObject({ storage: "sqlite" }),
       AxoPairingIndex: exports.durableObject({ storage: "sqlite" }),

@@ -1,5 +1,4 @@
 import WebSocket from "ws";
-import { accessHeaders } from "./access-headers";
 import {
   FRAGMENT_METHOD,
   MemoryPartialStore,
@@ -9,8 +8,6 @@ import {
   JSONRPCClient,
   createJSONRPCRequest,
   failure,
-  localEndpointSchema,
-  type LocalEndpoint,
 } from "@axo/protocol";
 
 /** Dummy client: actual network WebSockets, no direct DO admission or retry queue. */
@@ -92,22 +89,7 @@ export class Peer {
       waiter.reject(new Error("Disconnected: outcome may be unknown"));
     }
   }
-  static async connect(
-    url: string,
-    assertion: string,
-    machine: string,
-    role: "client" | "daemon",
-  ) {
-    const socket = new WebSocket(
-      `${url.replace(/^http/, "ws")}v1/machines/${machine}/${role}`,
-      {
-        headers: accessHeaders(assertion),
-        maxPayload: 65_536,
-        followRedirects: false,
-      },
-    );
-    return Peer.open(socket);
-  }
+
   /** A host's socket on the account path, served by its HostDO (RFD0018). */
   static async connectHostDaemon(
     url: string,
@@ -131,6 +113,29 @@ export class Peer {
     });
     return Peer.open(socket);
   }
+  /** A client's socket on one host, served by that host's HostDO (RFD0032, protocol 3). */
+  static async connectHostClient(url: string, hostId: string, clientId: string, headers: Record<string, string>) {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/account/hosts/${hostId}/client?clientId=${clientId}`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket);
+  }
+  /** A paired Mac's socket on another host of its account (RFD0032, protocol 3), with its host credential. */
+  static async connectPeerHostClient(url: string, accountId: string, hostId: string, targetId: string, headers: Record<string, string>) {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/accounts/${accountId}/hosts/${hostId}/peers/${targetId}/client`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket);
+  }
+  /** Whether the server closed this socket, and how; null while it is open. */
+  closedWith(): Promise<{ code: number; reason: string }> {
+    if (this.socket.readyState === WebSocket.CLOSED) return Promise.resolve({ code: -1, reason: "already closed" });
+    return new Promise((resolve) => this.socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() })));
+  }
   /** A client's one socket, served by its ClientDO (RFD0018). */
   static async connectClient(url: string, clientId: string, headers: Record<string, string>) {
     const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/account/client?clientId=${clientId}`, {
@@ -140,35 +145,8 @@ export class Peer {
     });
     return Peer.open(socket);
   }
-  static async connectHost(
-    url: string,
-    assertion: string,
-    host: string,
-    role: "client" | "daemon",
-    origin?: string,
-  ) {
-    const socket = new WebSocket(
-      `${url.replace(/^http/, "ws")}v1/hosts/${host}/${role}`,
-      {
-        headers: {
-          ...accessHeaders(assertion),
-          ...(origin ? { Origin: origin } : {}),
-        },
-        maxPayload: 65_536,
-        followRedirects: false,
-      },
-    );
-    return Peer.open(socket);
-  }
-  static async connectLocal(discovery: LocalEndpoint) {
-    const endpoint = localEndpointSchema.parse(discovery);
-    return Peer.open(
-      new WebSocket(endpoint.endpoint, {
-        maxPayload: 65_536,
-        followRedirects: false,
-      }),
-    );
-  }
+
+
   private static async open(socket: WebSocket) {
     const peer = new Peer(socket);
     await new Promise<void>((resolve, reject) => {

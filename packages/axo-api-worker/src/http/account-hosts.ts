@@ -2,6 +2,7 @@ import { clientIdSchema, uuid } from "@axo/protocol";
 import { hostIdSchema, hostListResultSchema } from "@axo/protocol/v1";
 import { clientDOName, peerClientId } from "../client-do";
 import { hostDOName } from "../host-do";
+import { DIRECT_CLIENT_ROLE } from "../host-clients";
 import { requireAccount, type AuthExports } from "../auth/account-access";
 import type { AuthEnvironment } from "../auth/config";
 
@@ -142,6 +143,89 @@ export async function upgradeAccountClient(
       Upgrade: "websocket",
       "X-Axo-Account": caller.accountId,
       "X-Axo-Client": clientId.data,
+      "X-Axo-Expiry": String(caller.expiresAt),
+    },
+  }));
+}
+
+/**
+ * A paired Mac's socket on one of its account's hosts (RFD0032, protocol 3), for following that
+ * host's Sessions (RFD0022) or reading back its own (RFD0027). Signed in with the Mac's host
+ * credential, as `/peers` is; it is not a person, so it neither sees nor answers what a Mac asks.
+ */
+export async function upgradePeerHostClient(
+  request: Request,
+  ctx: ExecutionContext,
+  rawAccountId: string,
+  rawHostId: string,
+  rawTargetId: string,
+): Promise<Response> {
+  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+    return new Response("WebSocket required", { status: 426, headers: privateHeaders });
+  if (request.headers.has("Origin")) return json({ error: "Origin not allowed" }, 403);
+  const hostId = hostIdSchema.safeParse(rawHostId);
+  const targetId = hostIdSchema.safeParse(rawTargetId);
+  const accountId = uuid.safeParse(rawAccountId);
+  if (!hostId.success || !targetId.success) return json({ error: "Invalid host" }, 400);
+  if (!accountId.success) return json({ error: "Invalid account" }, 400);
+  const credential = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get("Authorization") ?? "")?.[1];
+  const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
+  if (!credential || !uuid.safeParse(credentialId).success) return json({ error: "Host authentication required" }, 401);
+  try {
+    const account = ctx.exports.AxoAccountDirectory.getByName(accountId.data) as unknown as HostAuthorizer & { clientHosts(): Promise<Array<{ hostId: string }>> };
+    if (!(await account.authorizeHost(hostId.data, credentialId, credential))) return json({ error: "Host authentication required" }, 401);
+    if (!(await account.clientHosts()).some((host) => host.hostId === targetId.data)) return json({ error: "Unknown host" }, 404);
+  } catch {
+    return unavailable();
+  }
+  return ctx.exports.AxoHostDO.getByName(hostDOName(accountId.data, targetId.data)).fetch(new Request("https://host.internal/", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Role": DIRECT_CLIENT_ROLE,
+      "X-Axo-Account": accountId.data,
+      "X-Axo-Machine": targetId.data,
+      "X-Axo-Client": peerClientId(hostId.data),
+      "X-Axo-Person": "0",
+      "X-Axo-Expiry": String(Date.now() + PEERS_SIGN_IN_MS),
+    },
+  }));
+}
+
+/**
+ * A client's socket on one of the account's hosts (RFD0032, protocol 3), signed in like the
+ * account socket, and served by that host's HostDO. A host the account doesn't own, or revoked,
+ * is refused.
+ */
+export async function upgradeHostClient(
+  request: Request,
+  env: PairingEnvironment,
+  exports: AuthExports,
+  ctx: ExecutionContext,
+  rawHostId: string,
+): Promise<Response> {
+  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+    return new Response("WebSocket required", { status: 426, headers: privateHeaders });
+  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
+  if (!clientId.success) return json({ error: "Valid clientId required" }, 400);
+  const hostId = uuid.safeParse(rawHostId);
+  if (!hostId.success) return json({ error: "Invalid host" }, 400);
+  const caller = await requireAccount(request, env, exports, "change");
+  if (caller instanceof Response) return caller;
+  try {
+    const hosts = await exports.AxoAccountManager?.getByName(caller.accountId).clientHosts?.();
+    if (!hosts) return unavailable();
+    if (!hosts.some((host) => host.hostId === hostId.data)) return json({ error: "Unknown host" }, 404);
+  } catch {
+    return unavailable();
+  }
+  return ctx.exports.AxoHostDO.getByName(hostDOName(caller.accountId, hostId.data)).fetch(new Request("https://host.internal/", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Role": DIRECT_CLIENT_ROLE,
+      "X-Axo-Account": caller.accountId,
+      "X-Axo-Machine": hostId.data,
+      "X-Axo-Client": clientId.data,
+      "X-Axo-Person": "1",
       "X-Axo-Expiry": String(caller.expiresAt),
     },
   }));

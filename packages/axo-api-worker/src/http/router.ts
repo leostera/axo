@@ -1,13 +1,9 @@
 import { Hono, type Context } from "hono";
 import { uuid } from "@axo/protocol";
-import { edgePrincipal, type Principal } from "../access";
-import { serveDiscovery } from "./rpc";
 import { authExports } from "../auth/account-access";
 import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
-import { serveMachines } from "./machines";
-import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
-import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon, upgradeHostPeers } from "./account-hosts";
+import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostClient, upgradeHostDaemon, upgradeHostPeers, upgradePeerHostClient } from "./account-hosts";
 import { serveAccountAssets, serveHostAssets, type AssetRoute } from "./assets";
 import { completeConnectionSignIn, serveApps, startConnectionSignIn, type AppsRoute } from "./apps";
 
@@ -57,12 +53,7 @@ const corsMiddleware = async (context: Context<Api>, next: () => Promise<void>) 
   });
 };
 
-app.use("/v1/*", corsMiddleware);
 app.use("/api/v1/*", corsMiddleware);
-
-async function authorizeCaller(_context: Context<Api>, role: "client" | "daemon"): Promise<Principal | Response> {
-  return edgePrincipal(role);
-}
 
 app.all("/api/auth/cloudflare/start", context =>
   startLogin(
@@ -199,12 +190,32 @@ app.all("/api/v1/account/client", context =>
   ),
 );
 
+app.all("/api/v1/account/hosts/:host/client", context =>
+  upgradeHostClient(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    context.executionCtx as ExecutionContext,
+    context.req.param("host"),
+  ),
+);
+
 app.all("/api/v1/accounts/:account/hosts/:host/peers", context =>
   upgradeHostPeers(
     context.req.raw,
     context.executionCtx as ExecutionContext,
     context.req.param("account"),
     context.req.param("host"),
+  ),
+);
+
+app.all("/api/v1/accounts/:account/hosts/:host/peers/:target/client", context =>
+  upgradePeerHostClient(
+    context.req.raw,
+    context.executionCtx as ExecutionContext,
+    context.req.param("account"),
+    context.req.param("host"),
+    context.req.param("target"),
   ),
 );
 
@@ -216,106 +227,6 @@ app.all("/api/v1/accounts/:account/hosts/:host/daemon", context =>
     context.req.param("host"),
   ),
 );
-
-app.all("/v1/rpc", async context => {
-  const principal = await authorizeCaller(context, "client");
-  if (principal instanceof Response) return principal;
-  return serveDiscovery(context.req.raw, principal, context.executionCtx as ExecutionContext);
-});
-
-app.all("/v1/machines/", async context => {
-  const principal = await authorizeCaller(context, "client");
-  if (principal instanceof Response) return principal;
-  return serveMachines(context.req.raw, principal, context.executionCtx as ExecutionContext);
-});
-
-app.all("/v1/hosts", async context => {
-  const principal = await authorizeHttpHostClient(context.req.raw, context.env);
-  if (principal instanceof Response) return principal;
-  return serveHosts(context.req.raw, principal, context.executionCtx as ExecutionContext);
-});
-
-app.all("/v1/hosts/", async context => {
-  const principal = await authorizeHttpHostClient(context.req.raw, context.env);
-  if (principal instanceof Response) return principal;
-  return serveHosts(context.req.raw, principal, context.executionCtx as ExecutionContext);
-});
-
-app.all("/v1/hosts/:host/sessions", async context => {
-  const principal = await authorizeHttpHostClient(context.req.raw, context.env);
-  if (principal instanceof Response) return principal;
-  return serveHostSessions(
-    context.req.raw,
-    principal,
-    context.executionCtx as ExecutionContext,
-    context.req.param("host"),
-  );
-});
-
-app.all("/v1/hosts/:host/:role", async context => {
-  const role = context.req.param("role");
-  if (role !== "daemon" && role !== "client") return context.text("Not found", 404);
-  const principal = await authorizeCaller(context, role);
-  if (principal instanceof Response) return principal;
-  const host = uuid.safeParse(context.req.param("host"));
-  if (!host.success) return context.text("Invalid host", 400);
-  const request = context.req.raw;
-  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-    return context.text("WebSocket required", 426);
-  }
-  if (!isAllowedWebSocketOrigin(request, role)) return context.text("Origin not allowed", 403);
-  const ctx = context.executionCtx as ExecutionContext;
-  const directory = ctx.exports.AxoHostDirectory.getByName("private-fleet");
-  const admission = await directory.admitHost(host.data, principal);
-  if (admission !== "admitted") {
-    return new Response(admission, { status: admission === "capacity" ? 429 : admission === "conflict" ? 403 : 404 });
-  }
-  if (principal.expiresAt <= Date.now()) return context.text("Access expired", 401);
-  return ctx.exports.AxoHostRelay.getByName(host.data).fetch(new Request("https://host.internal/", {
-    headers: {
-      Upgrade: "websocket",
-      "X-Axo-Role": role,
-      "X-Axo-Identity": principal.identity,
-      "X-Axo-Expiry": String(principal.expiresAt),
-      "X-Axo-Machine": host.data,
-    },
-  }));
-});
-
-app.all("/v1/machines/:machine/:role", async context => {
-  const role = context.req.param("role");
-  if (role !== "daemon" && role !== "client") return context.text("Not found", 404);
-  const principal = await authorizeCaller(context, role);
-  if (principal instanceof Response) return principal;
-  const machine = uuid.safeParse(context.req.param("machine"));
-  if (!machine.success) return context.text("Invalid machine", 400);
-  const request = context.req.raw;
-  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-    return context.text("WebSocket required", 426);
-  }
-  if (!isAllowedWebSocketOrigin(request, role)) return context.text("Origin not allowed", 403);
-  const ctx = context.executionCtx as ExecutionContext;
-  const admission = await ctx.exports.AxoHostDirectory.getByName("private-fleet").admit(machine.data, principal);
-  if (admission !== "admitted") {
-    return new Response(admission, { status: admission === "capacity" ? 429 : admission === "conflict" ? 403 : 404 });
-  }
-  if (principal.expiresAt <= Date.now()) return context.text("Access expired", 401);
-  // Fresh headers only: caller-supplied headers never reach the Durable Object.
-  return ctx.exports.AxoHostRelay.getByName(machine.data).fetch(new Request("https://machine.internal/", {
-    headers: {
-      Upgrade: "websocket",
-      "X-Axo-Role": role,
-      "X-Axo-Identity": principal.identity,
-      "X-Axo-Expiry": String(principal.expiresAt),
-      "X-Axo-Machine": machine.data,
-    },
-  }));
-});
-
-function isAllowedWebSocketOrigin(request: Request, role: "client" | "daemon"): boolean {
-  const origin = request.headers.get("Origin");
-  return origin === null || (role === "client" && origin === APP_ORIGIN);
-}
 
 app.notFound(context => context.text("Not found", 404));
 // Hono's default exception logger is deliberately replaced: no payload-bearing stack traces.

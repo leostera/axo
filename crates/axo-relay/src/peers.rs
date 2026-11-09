@@ -23,6 +23,7 @@ mod follower;
 mod index;
 mod live;
 mod mirror;
+mod socket;
 
 #[cfg(test)]
 mod test_support;
@@ -36,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use follower::Follower;
+use follower::{Follower, Protocol};
 use tungstenite::protocol::WebSocketConfig;
 
 use crate::credential::HostCredentialStore;
@@ -47,6 +48,9 @@ use futures_util::StreamExt;
 use crate::relay::{MAX_FRAME_BYTES, connect_websocket, host_websocket_request};
 
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// How long axod speaks protocol 2 after protocol 3 failed before every Mac said hello: the cloud
+/// may not serve it (RFD0032). It tries 3 again after.
+const RELAYED_AFTER_REFUSAL: Duration = Duration::from_secs(10 * 60);
 
 /// Where following the account writes: every Mac's transcripts, and this Mac's index of them.
 #[derive(Clone)]
@@ -116,27 +120,21 @@ async fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
     let dependencies = Arc::new(dependencies);
     let mut mirror = Mirror::new(dependencies.sessions_directory.clone());
     let mut delay = Duration::from_secs(1);
+    let mut protocols = ProtocolChoice::default();
     while !stop.is_stopped() {
-        let links = Arc::clone(&dependencies.links);
-        let account = match tokio::task::spawn_blocking(move || links.load_link()).await {
-            Ok(Ok(link)) => link.account().cloned(),
-            Ok(Err(error)) => {
-                log::warn!("event=peers.link_unavailable reason={error}");
-                None
-            }
-            Err(error) => {
-                log::warn!("event=peers.link_unavailable reason={error}");
-                None
-            }
-        };
-        let Some(account) = account else {
+        let Some(account) = paired_account(&dependencies).await else {
             // Not paired: nothing to follow until it is.
             wait(&stop, Duration::from_secs(5)).await;
             continue;
         };
         let started = Instant::now();
-        let outcome = follow(&dependencies, account, &mut mirror, &stop).await;
-        match outcome {
+        let protocol = protocols.next(started);
+        let ended = follow(&dependencies, account, &mut mirror, &stop, protocol).await;
+        if ended.refused_direct {
+            log::warn!("event=peers.protocol_fallback protocol=2");
+            protocols.refused(Instant::now());
+        }
+        match ended.outcome {
             Ok(()) => log::info!("event=peers.socket_renewed"),
             Err(error) => log::warn!("event=peers.connection_retry reason={error}"),
         }
@@ -150,35 +148,101 @@ async fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
     }
 }
 
-/// One socket's life, from connecting to its end.
+/// The account this Mac is paired with, if it is. The link is read off the runtime: it may
+/// wait on the Keychain.
+async fn paired_account(dependencies: &PeersDependencies) -> Option<crate::link::AccountLink> {
+    let links = Arc::clone(&dependencies.links);
+    let loaded = tokio::task::spawn_blocking(move || links.load_link())
+        .await
+        .map_err(io::Error::other)
+        .and_then(|loaded| loaded);
+    match loaded {
+        Ok(link) => link.account().cloned(),
+        Err(error) => {
+            log::warn!("event=peers.link_unavailable reason={error}");
+            None
+        }
+    }
+}
+
+/// Which protocol the next connection speaks: 3, unless the cloud refused it in the last
+/// `RELAYED_AFTER_REFUSAL` (RFD0032).
+#[derive(Default)]
+struct ProtocolChoice {
+    relayed_until: Option<Instant>,
+}
+
+impl ProtocolChoice {
+    fn next(&self, now: Instant) -> Protocol {
+        match self.relayed_until {
+            Some(until) if now < until => Protocol::Relayed,
+            _ => Protocol::Direct,
+        }
+    }
+
+    fn refused(&mut self, now: Instant) {
+        self.relayed_until = Some(now + RELAYED_AFTER_REFUSAL);
+    }
+}
+
+/// One connection's life, from connecting to its end.
 async fn follow(
     dependencies: &Arc<PeersDependencies>,
     account: crate::link::AccountLink,
     mirror: &mut Mirror,
     stop: &axo_ipc::Stop,
-) -> io::Result<()> {
-    let request = {
-        let dependencies = Arc::clone(dependencies);
-        // The credential comes from the Keychain, which may take its time.
-        tokio::task::spawn_blocking(move || {
-            host_websocket_request(
-                dependencies
-                    .endpoint
-                    .peers_url(account.account_id(), &dependencies.host_id),
-                &account,
-                dependencies.credentials.as_ref(),
-            )
-        })
-        .await
-        .map_err(io::Error::other)??
+    protocol: Protocol,
+) -> follower::Ended {
+    let url = dependencies
+        .endpoint
+        .peers_url(account.account_id(), &dependencies.host_id);
+    let (sink, stream) = match connect(Arc::clone(dependencies), account.clone(), url).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            // Not reaching the cloud says nothing of what it serves.
+            return follower::Ended {
+                outcome: Err(error),
+                refused_direct: false,
+            };
+        }
     };
+    // Each Mac's HostDO, in protocol 3, signed in with the same credential.
+    let connect_host: follower::Connect = {
+        let dependencies = Arc::clone(dependencies);
+        Box::new(move |target: String| {
+            let dependencies = Arc::clone(&dependencies);
+            let account = account.clone();
+            Box::pin(async move {
+                let url = dependencies.endpoint.peer_host_url(
+                    account.account_id(),
+                    &dependencies.host_id,
+                    &target,
+                );
+                connect(dependencies, account, url).await
+            })
+        })
+    };
+    Follower::new(mirror, dependencies, stop, protocol, connect_host)
+        .run(sink, stream)
+        .await
+}
+
+/// Opens one of the host's account routes with its credential.
+async fn connect(
+    dependencies: Arc<PeersDependencies>,
+    account: crate::link::AccountLink,
+    url: url::Url,
+) -> io::Result<(crate::relay::RelaySink, crate::relay::RelayStream)> {
+    // The credential comes from the Keychain, which may take its time.
+    let request = tokio::task::spawn_blocking(move || {
+        host_websocket_request(url, &account, dependencies.credentials.as_ref())
+    })
+    .await
+    .map_err(io::Error::other)??;
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES));
-    let (sink, stream) = connect_websocket(request, config).await?.split();
-    Follower::new(mirror, dependencies, stop)
-        .run(sink, stream)
-        .await
+    Ok(connect_websocket(request, config).await?.split())
 }
 
 /// Where this Mac's own transcripts are fetched to before they are checked and moved into
@@ -188,4 +252,26 @@ pub fn restore_directory(index: &Path) -> PathBuf {
         || PathBuf::from("restoring"),
         |server| server.join("restoring"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_3_refused_is_not_tried_again_for_a_while() {
+        let mut protocols = ProtocolChoice::default();
+        let start = Instant::now();
+        assert_eq!(protocols.next(start), Protocol::Direct, "3 first");
+        protocols.refused(start);
+        assert_eq!(
+            protocols.next(start + Duration::from_secs(60)),
+            Protocol::Relayed
+        );
+        assert_eq!(
+            protocols.next(start + RELAYED_AFTER_REFUSAL),
+            Protocol::Direct,
+            "then 3 again"
+        );
+    }
 }

@@ -28,6 +28,10 @@ The `phone install:` line of the report says what happened: installed and opened
 
 - The build number is `builds.phone` in `config.json`. Bump it in a commit when a build should be
   told apart from the last one Leo has.
+- **To try again, `bazel run //apple/AxoPhone:reinstall`.** The build installs each new build
+  once: Bazel's action cache skips the install while the build is the same, and the report keeps
+  repeating the last result (often "the phone is locked"). `reinstall` installs and opens the last
+  device build every time it runs, and prints what happened.
 - Check the phone is reachable first if the install fails: `xcrun devicectl list devices`
   (it should be `available (paired)`).
 - Report the build number in your reply, so Leo knows which build he is holding.

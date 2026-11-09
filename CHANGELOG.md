@@ -2,6 +2,30 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.39 (Mac app build 310, axod 62)
+
+### Fixed
+
+- When you unpair a Mac, your other Macs let go of it cleanly. Before, one that was still opening that Mac's Sessions could ask the cloud for it, drop its connection and follow through the account for ten minutes; a command waiting on it now fails as offline at once.
+- On the web and the phone, a message for a Mac they haven't connected to yet says it wasn't sent, instead of being taken for an older Mac and sent again another way.
+
+## 0.38 (Mac app build 309, axod 61)
+
+### Changed
+
+- A Mac follows your other Macs' Sessions straight from each Mac's cloud host, instead of through the account. A reconnect costs one hello per Mac, and a Session whose copy is already current opens without reading anything. If the cloud can't serve that yet, the Mac follows through the account as before, and tries again ten minutes later.
+
+## 0.37 (Mac app build 308, axod 60)
+
+### Changed
+
+- **Send interrupts.** A message sent from the web or the phone while the agent works stops its reply and is answered next, ahead of anything waiting. Hold Send for the gentler ways: Steer (read at the agent's next step) or Follow up (after its reply). On the web, ⌘↵ steers and ⌥↵ follows up. Every message is still written to the Session's log before it is accepted.
+- Holding Send works on the phone and on a phone's browser, and the phone's Send is a plain solid circle again.
+
+### Fixed
+
+- A message sent while the agent works stays where it was sent, instead of sinking below every new reply until the agent took it. A `/axo-share` sent from a client no longer leaves a bubble waiting at the end.
+
 ## 0.36 (Mac app build 307, axod 59)
 
 ### Changed

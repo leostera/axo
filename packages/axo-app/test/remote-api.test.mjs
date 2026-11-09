@@ -61,12 +61,13 @@ class FakeWebSocket {
   }
 }
 
+/** Protocol 2: the account socket carries everything (RFD0018). */
 function connect(events = {}) {
   let socket;
   const api = new RemoteAxoApi("https://api.example.test/", (url) => {
     socket = new FakeWebSocket(url);
     return socket;
-  });
+  }, { protocol: 2 });
   return api.connect(clientId, events).then((connection) => ({ connection, socket: () => socket }));
 }
 
@@ -140,4 +141,109 @@ test("host, Session, progress and reset notices reach the app, and a close says 
   socket().close(4000, "Replaced");
   assert.deepEqual(seen, [["hosts", 1], ["sessions", hostId, 1], ["progress", "question", null], ["reset", 2, 1], ["closed", "Replaced"]]);
   assert.equal(connection.active, false);
+});
+
+/**
+ * Protocol 3 (RFD0032): the ClientDO's account socket lists hosts; each host's socket carries its
+ * index, records and commands. `accountRefuses` plays a cloud that only speaks protocol 2.
+ */
+class FakeCloud {
+  sockets = [];
+  constructor({ accountRefuses = false, hostRefuses = false } = {}) {
+    this.accountRefuses = accountRefuses;
+    this.hostRefuses = hostRefuses;
+  }
+  make = (url) => {
+    const socket = new FakeWebSocket(url);
+    const host = /\/hosts\/([^/]+)\/client/.exec(url)?.[1];
+    socket.send = (raw) => {
+      const request = JSON.parse(raw);
+      socket.sent.push(request);
+      const reply = (result) => queueMicrotask(() => socket.emit({ jsonrpc: "2.0", id: request.id, result }));
+      const refuse = (code, message) => queueMicrotask(() => socket.emit({ jsonrpc: "2.0", id: request.id, error: { code, message } }));
+      if (request.method === "axo.client.hello" && !host) {
+        if (request.params.protocolVersion === 3 && this.accountRefuses) return refuse(-32602, "Invalid params");
+        if (request.params.protocolVersion === 2) return reply({ hosts: [clientHost], sessions: [{ hostId, sessionId: sid(1), metadata, epoch: 1, head: 2, status: "ready" }] });
+        return reply({ hosts: [{ ...clientHost, online: false }], sessions: [] });
+      }
+      if (request.method === "axo.client.hello") {
+        if (this.hostRefuses) return queueMicrotask(() => socket.close(4010, "Protocol not served"));
+        reply({ online: true, hostGeneration, sessions: [{ hostId, sessionId: sid(1), metadata, epoch: 1, head: 2, status: "ready" }] });
+        return queueMicrotask(() => socket.emit({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: { hostId, elicitation: { id: sid(9), sessionId: sid(1), kind: "confirm", askedBy: "computerUse", message: "Go?", createdAt: 1, expiresAt: 2 } } }));
+      }
+      if (request.method === "axo.client.session.open") return reply({ epoch: 1, records: [], cursor: 2, older: null, progress: [] });
+    };
+    this.sockets.push(socket);
+    return socket;
+  };
+  account() {
+    return this.sockets.find((socket) => socket.url.includes("/account/client"));
+  }
+  hostSockets() {
+    return this.sockets.filter((socket) => socket.url.includes("/hosts/"));
+  }
+}
+
+test("protocol 3 lists hosts from the account, Sessions and presence from each host's socket, and routes opens to it", async () => {
+  const cloud = new FakeCloud();
+  const asked = [];
+  const connection = await new RemoteAxoApi("https://api.example.test/", cloud.make).connect(clientId, { elicitationRequested: (from, elicitation) => asked.push([from, elicitation.id]) });
+  assert.deepEqual(cloud.account().sent[0].params, { protocolVersion: 3, clientId });
+  const [host] = cloud.hostSockets();
+  assert.equal(host.url, `wss://api.example.test/api/v1/account/hosts/${hostId}/client?clientId=${clientId}`);
+  assert.equal(host.sent[0].params.protocolVersion, 3);
+  assert.ok(host.sent[0].params.connection > 0);
+  assert.equal(connection.hello.hosts[0].online, true, "presence comes from the host's socket");
+  assert.equal(connection.hello.sessions[0].sessionId, sid(1));
+  assert.deepEqual(asked, [[hostId, sid(9)]], "what the host asks follows the listing");
+
+  await connection.open({ hostId, sessionId: sid(1), have: { epoch: 1, cursor: 2 } });
+  assert.equal(host.sent.at(-1).method, "axo.client.session.open");
+  host.emit({ jsonrpc: "2.0", method: "axo.client.session.records", params: { sessionId: sid(1), epoch: 1, records: [record(3)], cursor: 3 } });
+  assert.deepEqual(host.sent.at(-1), { jsonrpc: "2.0", method: "axo.client.session.ack", params: { sessionId: sid(1), cursor: 3 } }, "acknowledged on the socket it came from");
+  connection.closeSession(sid(1));
+  assert.equal(host.sent.at(-1).method, "axo.client.session.close");
+  connection.close();
+});
+
+test("protocol 3 merges a host's presence and name into the host list as they change, and a host socket that closes closes the connection", async () => {
+  const cloud = new FakeCloud();
+  const seen = [];
+  const connection = await new RemoteAxoApi("https://api.example.test/", cloud.make).connect(clientId, {
+    hosts: (hosts) => seen.push(["hosts", hosts[0].online, hosts[0].label]),
+    closed: (error) => seen.push(["closed", error.message]),
+  });
+  const [host] = cloud.hostSockets();
+  host.emit({ jsonrpc: "2.0", method: "axo.client.host.presence", params: { online: false, hostGeneration: null } });
+  host.emit({ jsonrpc: "2.0", method: "axo.client.host.label", params: { label: "Studio" } });
+  host.close(4000, "Replaced");
+  assert.deepEqual(seen, [["hosts", false, "Test Mac"], ["hosts", false, "Studio"], ["closed", "Replaced"]]);
+  assert.equal(connection.active, false);
+});
+
+test("protocol 3 refuses a command for a host it has no socket on as offline, and sends it nowhere", async () => {
+  const cloud = new FakeCloud();
+  const connection = await new RemoteAxoApi("https://api.example.test/", cloud.make).connect(clientId, {});
+  const sent = () => cloud.sockets.reduce((count, socket) => count + socket.sent.length, 0);
+  const before = sent();
+  const stranger = { hostId: "0b0b0b0b-0000-4000-8000-00000000000b", hostGeneration };
+  // -32602 would read as "this Mac is too old for these fields", and the app would try again without them.
+  await assert.rejects(
+    connection.command("axo.remote.session.prompt", { target: stranger, sessionId: sid(1), text: "hi" }),
+    (error) => error.code === -32005,
+  );
+  assert.equal(sent(), before);
+  connection.close();
+});
+
+test("protocol 3 falls back to protocol 2 when the account socket or a host socket refuses it", async () => {
+  for (const refusal of [{ accountRefuses: true }, { hostRefuses: true }]) {
+    const cloud = new FakeCloud(refusal);
+    const connection = await new RemoteAxoApi("https://api.example.test/", cloud.make).connect(clientId, {});
+    const accounts = cloud.sockets.filter((socket) => socket.url.includes("/account/client"));
+    assert.equal(accounts.length, 2, JSON.stringify(refusal));
+    assert.equal(accounts[1].sent[0].params.protocolVersion, 2);
+    assert.equal(connection.hello.sessions[0].sessionId, sid(1), "protocol 2's hello lists the Sessions");
+    connection.close();
+  }
 });

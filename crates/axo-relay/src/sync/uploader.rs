@@ -268,18 +268,26 @@ impl Uploader {
         }
         let (mut unknown, mut behind, mut diverged) = (0, 0, 0);
         for state in reply.sessions {
-            let Some(session) = self.sessions.get(&state.session_id) else {
+            let session_id = state.session_id();
+            let Some(session) = self.sessions.get(&session_id) else {
                 continue;
             };
             let local = session.file.transcript();
-            let (epoch, count) = (state.epoch.unwrap_or(1), state.count.unwrap_or(0));
-            let prefix = local.is_none_or(|local| {
-                count <= local.count() && local.chain_at(count) == state.chain.as_deref()
-            });
-            let cloud = if state.state == "unknown" {
+            let CloudState::Known {
+                epoch,
+                count,
+                chain,
+                ..
+            } = state
+            else {
                 unknown += 1;
-                Cloud { epoch: 1, count: 0 }
-            } else if prefix {
+                self.adopt(session_id, Cloud { epoch: 1, count: 0 })?;
+                continue;
+            };
+            let prefix = local.is_none_or(|local| {
+                count <= local.count() && local.chain_at(count) == Some(chain.as_str())
+            });
+            let cloud = if prefix {
                 // In sync, or the cloud holds a prefix. A Mac with no transcript leaves the
                 // cloud's copy as it is.
                 if local.is_some_and(|local| count < local.count()) {
@@ -288,28 +296,35 @@ impl Uploader {
                 Cloud { epoch, count }
             } else {
                 diverged += 1;
-                match self.realign(state.session_id, count)? {
+                match self.realign(session_id, count)? {
                     Some(cloud) => cloud,
                     None => continue,
                 }
             };
-            let chain = self.sessions[&state.session_id]
-                .file
-                .transcript()
-                .and_then(|transcript| transcript.chain_at(cloud.count))
-                .map(str::to_owned);
-            if let Some(chain) = chain {
-                self.host
-                    .store_sync_cursor(state.session_id, cloud.count, &chain)?;
-            }
-            if let Some(session) = self.sessions.get_mut(&state.session_id) {
-                session.cloud = Some(cloud);
-            }
+            self.adopt(session_id, cloud)?;
         }
         log::info!(
             "event=sync.handshake sessions={} unknown={unknown} behind={behind} diverged={diverged}",
             self.sessions.len()
         );
+        Ok(())
+    }
+
+    /// Takes what the cloud holds of a Session as its upload's starting point, and stores the
+    /// cursor where this Mac's copy agrees with it.
+    fn adopt(&mut self, session_id: SessionId, cloud: Cloud) -> io::Result<()> {
+        let chain = self.sessions[&session_id]
+            .file
+            .transcript()
+            .and_then(|transcript| transcript.chain_at(cloud.count))
+            .map(str::to_owned);
+        if let Some(chain) = chain {
+            self.host
+                .store_sync_cursor(session_id, cloud.count, &chain)?;
+        }
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.cloud = Some(cloud);
+        }
         Ok(())
     }
 
@@ -378,16 +393,17 @@ impl Uploader {
         )?;
         log::info!(
             "event=sync.diverged session_id={session_id} keep={keep} header_differs={header_differs} outcome={}",
-            reply.outcome
+            reply.outcome.name()
         );
-        if reply.round != self.round || reply.outcome != "truncated" {
-            self.handshake_due = true;
-            return Ok(None);
+        match reply.outcome {
+            TruncateOutcome::Truncated { epoch } if reply.round == self.round => {
+                Ok(Some(Cloud { epoch, count: keep }))
+            }
+            _ => {
+                self.handshake_due = true;
+                Ok(None)
+            }
         }
-        Ok(Some(Cloud {
-            epoch: reply.epoch.unwrap_or(1),
-            count: keep,
-        }))
     }
 
     /// Uploads one batch of the Session that most needs it. Returns whether there was one.
@@ -446,30 +462,31 @@ impl Uploader {
         log::debug!(
             "event=sync.append session_id={session_id} from={from} records={} outcome={}",
             to - from + 1,
-            result.outcome
+            result.outcome.name()
         );
         let committed_chain = transcript.chain_at(result.count).map(str::to_owned);
-        match result.outcome.as_str() {
-            "committed" => {
+        match result.outcome {
+            AppendOutcome::Committed { epoch } => {
                 if let Some(chain) = committed_chain {
                     self.host
                         .store_sync_cursor(session_id, result.count, &chain)?;
                 }
                 if let Some(session) = self.sessions.get_mut(&session_id) {
                     session.cloud = Some(Cloud {
-                        epoch: result.epoch.unwrap_or(cloud.epoch),
+                        epoch,
                         count: result.count,
                     });
                 }
             }
-            "invalid" => {
+            AppendOutcome::Invalid => {
                 // The cloud cannot take this line; the next handshake tries again.
                 log::warn!("event=sync.invalid_line session_id={session_id} position={from}");
                 if let Some(session) = self.sessions.get_mut(&session_id) {
                     session.cloud = None;
                 }
             }
-            _ => self.handshake_due = true,
+            // A gap, a conflict or another epoch: only a handshake can tell where the cloud is.
+            AppendOutcome::Other => self.handshake_due = true,
         }
         Ok(true)
     }
@@ -615,14 +632,29 @@ struct SyncReply {
     sessions: Vec<CloudState>,
 }
 
+/// What the cloud holds of one Session, as the handshake answers.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CloudState {
-    session_id: SessionId,
-    state: String,
-    epoch: Option<u64>,
-    count: Option<u64>,
-    chain: Option<String>,
+#[serde(tag = "state", rename_all = "camelCase")]
+enum CloudState {
+    #[serde(rename_all = "camelCase")]
+    Known {
+        session_id: SessionId,
+        epoch: u64,
+        count: u64,
+        chain: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Unknown { session_id: SessionId },
+}
+
+impl CloudState {
+    fn session_id(&self) -> SessionId {
+        match self {
+            CloudState::Known { session_id, .. } | CloudState::Unknown { session_id } => {
+                *session_id
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -631,16 +663,126 @@ struct ChainAtReply {
     chains: Vec<Option<String>>,
 }
 
+/// A truncate's answer: cut, starting `epoch`, or refused (the chain moved, or a fence).
 #[derive(Deserialize)]
 struct TruncateReply {
     round: u64,
-    outcome: String,
-    epoch: Option<u64>,
+    #[serde(flatten)]
+    outcome: TruncateOutcome,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+enum TruncateOutcome {
+    Truncated {
+        epoch: u64,
+    },
+    #[serde(other)]
+    Refused,
+}
+
+impl TruncateOutcome {
+    fn name(&self) -> &'static str {
+        match self {
+            TruncateOutcome::Truncated { .. } => "truncated",
+            TruncateOutcome::Refused => "refused",
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct AppendReply {
-    outcome: String,
-    epoch: Option<u64>,
+    #[serde(flatten)]
+    outcome: AppendOutcome,
     count: u64,
+}
+
+/// An append's answer. `Other` is a gap, a conflict or another epoch: the cloud is not where this
+/// Mac thought, and a handshake finds out where.
+#[derive(Deserialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+enum AppendOutcome {
+    Committed {
+        epoch: u64,
+    },
+    Invalid,
+    #[serde(other)]
+    Other,
+}
+
+impl AppendOutcome {
+    fn name(&self) -> &'static str {
+        match self {
+            AppendOutcome::Committed { .. } => "committed",
+            AppendOutcome::Invalid => "invalid",
+            AppendOutcome::Other => "other",
+        }
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    const SESSION: &str = "8f8f8f8f-0000-4000-8000-000000000001";
+
+    #[test]
+    fn a_handshake_answer_is_known_with_where_the_cloud_is_or_unknown() {
+        let known: CloudState = serde_json::from_value(json!({
+            "sessionId": SESSION, "state": "known", "epoch": 2, "count": 7, "chain": "sha256:ab", "heads": [],
+        }))
+        .unwrap();
+        assert!(
+            matches!(known, CloudState::Known { epoch: 2, count: 7, ref chain, .. } if chain == "sha256:ab")
+        );
+        let unknown: CloudState =
+            serde_json::from_value(json!({ "sessionId": SESSION, "state": "unknown" })).unwrap();
+        assert_eq!(unknown.session_id().to_string(), SESSION);
+        // Known without where: a broken answer, not the start of a Session.
+        assert!(
+            serde_json::from_value::<CloudState>(json!({ "sessionId": SESSION, "state": "known" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn an_append_answer_is_committed_in_an_epoch_invalid_or_something_a_handshake_sorts_out() {
+        let committed: AppendReply = serde_json::from_value(
+            json!({ "outcome": "committed", "epoch": 3, "count": 9, "chain": "sha256:cd" }),
+        )
+        .unwrap();
+        assert!(matches!(
+            committed.outcome,
+            AppendOutcome::Committed { epoch: 3 }
+        ));
+        assert_eq!(committed.count, 9);
+        for outcome in ["gap", "conflict", "epoch"] {
+            let other: AppendReply = serde_json::from_value(
+                json!({ "outcome": outcome, "epoch": null, "count": 0, "chain": null }),
+            )
+            .unwrap();
+            assert!(matches!(other.outcome, AppendOutcome::Other), "{outcome}");
+        }
+        let invalid: AppendReply = serde_json::from_value(
+            json!({ "outcome": "invalid", "epoch": 1, "count": 4, "chain": "sha256:ef" }),
+        )
+        .unwrap();
+        assert!(matches!(invalid.outcome, AppendOutcome::Invalid));
+    }
+
+    #[test]
+    fn a_truncate_answer_is_cut_into_an_epoch_or_refused() {
+        let cut: TruncateReply = serde_json::from_value(json!({
+            "round": 4, "outcome": "truncated", "epoch": 2, "count": 3, "chain": "sha256:01",
+        }))
+        .unwrap();
+        assert!(matches!(
+            cut.outcome,
+            TruncateOutcome::Truncated { epoch: 2 }
+        ));
+        assert_eq!(cut.round, 4);
+        let refused: TruncateReply =
+            serde_json::from_value(json!({ "round": 4, "outcome": "mismatch" })).unwrap();
+        assert!(matches!(refused.outcome, TruncateOutcome::Refused));
+    }
 }

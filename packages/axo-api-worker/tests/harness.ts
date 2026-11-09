@@ -1,7 +1,6 @@
 import { build } from "esbuild";
 import { builtinModules } from "node:module";
 import { Miniflare, Response as MiniflareResponse, convertV4MiniflareOptions } from "miniflare";
-import { generateKeyPair, SignJWT } from "jose";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +9,6 @@ import { fileURLToPath } from "node:url";
 export { Peer } from "../testing/client";
 
 export const root = fileURLToPath(new URL("../../../", import.meta.url));
-export const issuer = "https://private-test.cloudflareaccess.com";
 export const testSessionSecret = "isolated-axo-test-session-secret-at-least-32-bytes";
 
 export const APP_ORIGIN = "https://axo.leostera.dev";
@@ -177,12 +175,15 @@ export type Harness = Awaited<ReturnType<typeof harness>>;
 /** Answers the Worker's outbound requests to hosts other than the identity provider; undefined passes them on. */
 export type Outbound = (request: Request) => Promise<Response | undefined> | Response | undefined;
 
-export async function harness(configuration: { audience?: string; bindings?: Record<string, string>; outbound?: Outbound } = {}) {
-  const audience = configuration.audience ?? "private-test";
+/**
+ * `entry` replaces the Worker's entry module, for a test that runs another release's code (a
+ * fixture under `tests/fixtures/`).
+ */
+export async function harness(configuration: { bindings?: Record<string, string>; outbound?: Outbound; entry?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const bundle = join(directory, "worker.mjs");
   await build({
-    entryPoints: [resolve(root, "packages/axo-api-worker/src/index.ts")],
+    entryPoints: [configuration.entry ?? resolve(root, "packages/axo-api-worker/src/index.ts")],
     outfile: bundle,
     bundle: true,
     format: "esm",
@@ -195,8 +196,6 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     // CommonJS packages require them; production's build turns those into imports, esbuild needs a `require`.
     banner: { js: 'import { createRequire as __axoRequire } from "node:module"; const require = __axoRequire("/");' },
   });
-  const keys = await generateKeyPair("RS256", { extractable: true });
-  const keyId = "harness-key";
   const provider = new Provider();
   const options = convertV4MiniflareOptions({
     name: "api-test",
@@ -213,8 +212,6 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     compatibilityDate: "2026-10-09",
     compatibilityFlags: ["nodejs_compat", "enable_ctx_exports"],
     exports: {
-      AxoHostDirectory: { type: "durable-object", storage: "sqlite" },
-      AxoHostRelay: { type: "durable-object", storage: "sqlite" },
       AxoIdentityIndex: { type: "durable-object", storage: "sqlite" },
       AxoAccountDirectory: { type: "durable-object", storage: "sqlite" },
       AxoPairingIndex: { type: "durable-object", storage: "sqlite" },
@@ -225,8 +222,6 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       AxoAssetsDO: { type: "durable-object", storage: "sqlite" },
     },
     durableObjects: {
-      TEST_DIRECTORY: { className: "AxoHostDirectory", useSQLite: true },
-      TEST_MACHINE: { className: "AxoHostRelay", useSQLite: true },
       TEST_IDENTITIES: { className: "AxoIdentityIndex", useSQLite: true },
       TEST_ACCOUNTS: { className: "AxoAccountDirectory", useSQLite: true },
       TEST_PAIRINGS: { className: "AxoPairingIndex", useSQLite: true },
@@ -250,48 +245,6 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     await rm(directory, { recursive: true, force: true });
     throw error;
   }
-  async function token(
-    role: "client" | "daemon",
-    overrides: Record<string, unknown> = {},
-    expiration: string | number = "5m",
-  ) {
-    return new SignJWT({
-      type: "app",
-      ...(role === "client"
-        ? { email: "human@example.com", sub: "human-subject" }
-        : { common_name: "daemon.access", sub: "" }),
-      ...overrides,
-    })
-      .setProtectedHeader({ alg: "RS256", kid: keyId })
-      .setIssuer(issuer)
-      .setAudience(audience)
-      .setExpirationTime(expiration)
-      .sign(keys.privateKey);
-  }
-  async function list(assertion: string) {
-    const response = await fetch(`${url}v1/rpc`, {
-      method: "POST",
-      headers: { "Cf-Access-Jwt-Assertion": assertion },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "discover",
-        method: "axo.machine.list",
-        params: {},
-      }),
-    });
-    if (response.status !== 200)
-      throw new Error(`Discovery HTTP ${response.status}`);
-    return (await response.json()) as {
-      result: {
-        machines: Array<{
-          machineId: string;
-          label: string;
-          online: boolean;
-          hostGeneration: string | null;
-        }>;
-      };
-    };
-  }
   return {
     provider,
     get mf() {
@@ -300,8 +253,6 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     get url() {
       return url;
     },
-    token,
-    list,
     /** Where Durable Objects keep their SQLite files, for tests that edit storage while stopped. */
     storagePath: join(directory, "storage"),
     /** Stops the runtime, runs `whileStopped`, and starts it again. */

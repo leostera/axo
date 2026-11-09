@@ -59,6 +59,15 @@ public struct RelayEndpoint: Equatable, Sendable {
     return components.url!
   }
 
+  /// A client's socket on one host's HostDO (RFD0032, protocol 3).
+  public func hostClientSocketURL(host: UUID, clientID: ClientID) -> URL {
+    var components = URLComponents(
+      url: url("/api/v1/account/hosts/\(host.uuidString.lowercased())/client"), resolvingAgainstBaseURL: false)!
+    components.scheme = components.scheme == "https" ? "wss" : "ws"
+    components.queryItems = [URLQueryItem(name: "clientId", value: clientID.rawValue)]
+    return components.url!
+  }
+
   /// Settings › Apps' API: `/api/v1/account/apps` and the routes under it.
   public func appsURL(_ path: String = "", query: [URLQueryItem] = []) -> URL {
     var components = URLComponents(url: url("/api/v1/account/apps" + path), resolvingAgainstBaseURL: false)!
