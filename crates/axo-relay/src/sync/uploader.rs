@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::metadata::{SessionMetadata, StoredSyncState};
 use super::unix_seconds;
+use super::watch::TranscriptWatch;
 use crate::host::RelayHost;
 use crate::outbound::{Priority, RelayCallError, RelayChannel};
 
@@ -21,12 +22,22 @@ const BATCH_RECORDS: usize = 64;
 const BATCH_BYTES: usize = 1_048_576;
 /// Every request has this long to be answered; a timeout starts the handshake again.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// How often open Sessions' files and the catalog are checked for changes.
-const POLL_OPEN: Duration = Duration::from_millis(500);
-/// How often archived Sessions' files are checked; they rarely change.
-const POLL_ARCHIVED: Duration = Duration::from_secs(60);
 /// The wait before a handshake that failed is tried again.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// The wait before a handshake after an append failed, so a cloud that keeps refusing is not
+/// asked in a loop.
+const APPEND_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// What the uploader does after a turn.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Next {
+    /// There is more to send: turn again at once.
+    Now,
+    /// Retry at this instant, unless something wakes it first.
+    At(Instant),
+    /// Nothing to do until something changes.
+    Idle,
+}
 /// Positions one `chainAt` asks for.
 const CHAIN_AT_POSITIONS: u64 = 32;
 /// Heads the manifest carries per Session; they are informational until ATXF merges.
@@ -41,8 +52,9 @@ struct Cloud {
 
 struct SessionSync {
     file: TranscriptFile,
-    /// When `file` was last read for changes.
-    checked_at: Option<Instant>,
+    /// Whether `file` was read since its path last changed. An open Session's is read every turn;
+    /// an archived one's changes only by being restored, which changes its path.
+    read: bool,
     metadata: SessionMetadata,
     metadata_version: u64,
     /// The highest metadata version the cloud acknowledged.
@@ -58,7 +70,7 @@ struct SessionSync {
 impl SessionSync {
     /// Reads the file for lines appended or rewritten since the last check.
     fn refresh(&mut self) -> io::Result<bool> {
-        self.checked_at = Some(Instant::now());
+        self.read = true;
         self.file.refresh()
     }
 }
@@ -66,48 +78,60 @@ impl SessionSync {
 pub(super) struct Uploader {
     host: Arc<dyn RelayHost>,
     channel: Arc<RelayChannel>,
+    /// The kernel's events on open Sessions' transcripts, registered before they are read.
+    watch: Arc<TranscriptWatch>,
     sessions: HashMap<SessionId, SessionSync>,
     /// The socket the last handshake ran on; another socket needs a new one.
     synced_on: Option<u64>,
     handshake_due: bool,
     retry_at: Option<Instant>,
     round: u64,
-    catalog_at: Option<Instant>,
+    /// The catalog is read on the next turn: at start, after a Session event, or after a read
+    /// that failed.
+    catalog_due: bool,
     /// What `axo.db` held at start: cursors and metadata versions.
     stored: Option<HashMap<String, StoredSyncState>>,
 }
 
 impl Uploader {
-    pub(super) fn new(host: Arc<dyn RelayHost>, channel: Arc<RelayChannel>) -> Self {
+    pub(super) fn new(
+        host: Arc<dyn RelayHost>,
+        channel: Arc<RelayChannel>,
+        watch: Arc<TranscriptWatch>,
+    ) -> Self {
         Self {
             host,
             channel,
+            watch,
             sessions: HashMap::new(),
             synced_on: None,
             handshake_due: true,
             retry_at: None,
             round: 0,
-            catalog_at: None,
+            catalog_due: true,
             stored: None,
         }
     }
 
-    /// One step of work; returns how long to wait before the next (zero: at once).
-    pub(super) fn turn(&mut self) -> Duration {
+    /// One step of work, woken by something; `catalog_changed` when a Session event or a new
+    /// socket said the catalog may have changed. Returns what to do next.
+    pub(super) fn turn(&mut self, catalog_changed: bool) -> Next {
+        self.catalog_due |= catalog_changed;
+        // A new socket wakes the uploader.
         let Some(socket) = self.channel.epoch() else {
             self.synced_on = None;
-            return POLL_OPEN;
+            return Next::Idle;
         };
         if self.synced_on != Some(socket) {
             self.handshake_due = true;
         }
         if let Err(error) = self.refresh() {
             log::warn!("event=sync.catalog_unavailable reason={error}");
-            return RETRY_DELAY;
+            return Next::At(Instant::now() + RETRY_DELAY);
         }
         if self.handshake_due {
-            if self.retry_at.is_some_and(|at| Instant::now() < at) {
-                return POLL_OPEN;
+            if let Some(at) = self.retry_at.filter(|at| Instant::now() < *at) {
+                return Next::At(at);
             }
             match self.handshake() {
                 Ok(()) => {
@@ -117,32 +141,37 @@ impl Uploader {
                 }
                 Err(error) => {
                     log::warn!("event=sync.handshake outcome=failed reason={error}");
-                    self.retry_at = Some(Instant::now() + RETRY_DELAY);
-                    return POLL_OPEN;
+                    let at = Instant::now() + RETRY_DELAY;
+                    self.retry_at = Some(at);
+                    return Next::At(at);
                 }
             }
         }
         self.send_metadata_and_status();
         match self.upload_next() {
-            Ok(true) => Duration::ZERO,
-            Ok(false) => {
-                if let Err(error) = self.evict_next() {
+            Ok(true) => Next::Now,
+            Ok(false) => match self.evict_next() {
+                Ok(true) => Next::Now,
+                Ok(false) => Next::Idle,
+                Err(error) => {
                     log::warn!("event=sync.evict outcome=failed reason={error}");
+                    Next::Idle
                 }
-                POLL_OPEN
-            }
+            },
             Err(error) => {
                 log::warn!("event=sync.append outcome=failed reason={error}");
                 self.handshake_due = true;
-                POLL_OPEN
+                let at = Instant::now() + APPEND_RETRY_DELAY;
+                self.retry_at = Some(at);
+                Next::At(at)
             }
         }
     }
 
-    /// Reads the catalog and checks files: open Sessions every turn, archived ones rarely.
+    /// Reads the catalog if it may have changed, registers the open Sessions' transcripts with
+    /// the kernel, then reads them: the watches first, so a write after the read is seen.
     pub(super) fn refresh(&mut self) -> io::Result<()> {
-        if self.catalog_at.is_none_or(|at| at.elapsed() >= POLL_OPEN) {
-            self.catalog_at = Some(Instant::now());
+        if self.catalog_due {
             if self.stored.is_none() {
                 self.stored = Some(
                     self.host
@@ -169,7 +198,7 @@ impl Uploader {
                         session.session_id,
                         SessionSync {
                             file: TranscriptFile::new(session.pi_session_file.clone()),
-                            checked_at: None,
+                            read: false,
                             metadata: known.unwrap_or_else(|| metadata.clone()),
                             metadata_version: state.metadata_version,
                             metadata_sent: 0,
@@ -191,7 +220,7 @@ impl Uploader {
                     .flatten();
                 if entry.file.path() != path.as_deref() {
                     entry.file = TranscriptFile::new(path);
-                    entry.checked_at = None;
+                    entry.read = false;
                 }
                 if entry.metadata != metadata || entry.metadata_version == 0 {
                     entry.metadata = metadata;
@@ -205,14 +234,16 @@ impl Uploader {
                 }
                 entry.status = session.status;
             }
+            self.catalog_due = false;
         }
+        self.watch.watch(
+            self.sessions
+                .values()
+                .filter(|session| !session.metadata.archived)
+                .filter_map(|session| session.file.path()),
+        );
         for session in self.sessions.values_mut() {
-            let every = if session.metadata.archived {
-                POLL_ARCHIVED
-            } else {
-                POLL_OPEN
-            };
-            if session.checked_at.is_none_or(|at| at.elapsed() >= every)
+            if (!session.metadata.archived || !session.read)
                 && session.refresh()?
                 && session
                     .cloud
@@ -492,8 +523,9 @@ impl Uploader {
     }
 
     /// Deletes one archived Session's transcript the cloud holds whole (RFD0027). Its file is
-    /// read again first: a line written since then waits for its upload.
-    fn evict_next(&mut self) -> io::Result<()> {
+    /// read again first: a line written since then waits for its upload. Returns whether it
+    /// did anything, so the next candidate gets its turn at once; none left is false.
+    fn evict_next(&mut self) -> io::Result<bool> {
         let candidate = self.sessions.iter().find_map(|(id, session)| {
             let count = session.file.count();
             (session.metadata.archived
@@ -503,11 +535,12 @@ impl Uploader {
             .then_some(*id)
         });
         let Some(session_id) = candidate else {
-            return Ok(());
+            return Ok(false);
         };
         let session = self.sessions.get_mut(&session_id).expect("found above");
         if session.refresh()? {
-            return Ok(());
+            // Changed since: uploaded first.
+            return Ok(true);
         }
         let count = session.file.count();
         let (Some(length), Some(chain)) = (
@@ -518,10 +551,13 @@ impl Uploader {
                 .and_then(|transcript| transcript.chain_at(count))
                 .map(str::to_owned),
         ) else {
-            return Ok(());
+            // Not whole: it stays until the Session changes, and the next candidate goes.
+            session.eviction_refused = true;
+            return Ok(true);
         };
         if session.cloud.is_none_or(|cloud| cloud.count != count) {
-            return Ok(());
+            session.eviction_refused = true;
+            return Ok(true);
         }
         let evicted = self
             .host
@@ -533,12 +569,12 @@ impl Uploader {
         if let Some(session) = self.sessions.get_mut(&session_id) {
             if evicted {
                 session.file = TranscriptFile::new(None);
-                session.checked_at = None;
+                session.read = false;
             } else {
                 session.eviction_refused = true;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Open Sessions first, the most recently active first, then archived ones.

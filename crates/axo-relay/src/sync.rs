@@ -14,34 +14,54 @@
 //! restores the file.
 //!
 //! This runs as a task on axod's runtime, its turns on the blocking pool, and reaches the cloud
-//! through `RelayChannel`.
+//! through `RelayChannel`. It waits for a cause, never for a tick (RFD0037,
+//! `specs/sessions/upload-wakes.ts`): a Session event or a new socket (`SyncWaker`), the kernel
+//! reporting a write to an open transcript (`TranscriptWatch`), its own commit when there is more
+//! to send, or a retry's deadline.
 
 mod metadata;
+#[cfg(test)]
+mod tests;
 mod uploader;
+mod watch;
 
 pub use metadata::{SessionMetadata, StoredSyncState, SyncSession, WorkspaceState};
 
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use uploader::Uploader;
+use uploader::{Next, Uploader};
+use watch::TranscriptWatch;
 
 use crate::host::RelayHost;
 use crate::outbound::RelayChannel;
 
-/// Wakes the uploader early: a Session changed, or the socket reconnected. A wake while the
-/// uploader works is kept, so its next wait ends at once.
+/// Wakes the uploader: a Session changed, or the socket reconnected, so the catalog is read
+/// again. A wake while the uploader works is kept, so its next wait ends at once.
 #[derive(Clone, Default)]
-pub struct SyncWaker(Arc<tokio::sync::Notify>);
+pub struct SyncWaker(Arc<Wakes>);
+
+#[derive(Default)]
+struct Wakes {
+    notify: tokio::sync::Notify,
+    catalog_changed: AtomicBool,
+}
 
 impl SyncWaker {
     pub fn wake(&self) {
-        self.0.notify_one();
+        self.0.catalog_changed.store(true, Ordering::SeqCst);
+        self.0.notify.notify_one();
     }
 
     async fn woken(&self) {
-        self.0.notified().await;
+        self.0.notify.notified().await;
+    }
+
+    /// Whether the catalog changed since the last call.
+    fn take_catalog_changed(&self) -> bool {
+        self.0.catalog_changed.swap(false, Ordering::SeqCst)
     }
 }
 
@@ -63,25 +83,50 @@ impl SyncWorker {
         runtime: tokio::runtime::Handle,
         stop: axo_ipc::Stop,
     ) -> io::Result<Self> {
+        let watch = {
+            let _runtime = runtime.enter();
+            Arc::new(TranscriptWatch::new()?)
+        };
         let task = runtime.spawn(async move {
-            let mut uploader = Uploader::new(host, channel);
+            let mut uploader = Uploader::new(host, channel, Arc::clone(&watch));
+            // The first turn reads the catalog.
+            let mut catalog_changed = true;
             while !stop.is_stopped() {
                 let turn = tokio::task::spawn_blocking(move || {
-                    let delay = uploader.turn();
-                    (uploader, delay)
+                    let next = uploader.turn(catalog_changed);
+                    (uploader, next)
                 });
-                let delay;
-                (uploader, delay) = match turn.await {
+                let next;
+                (uploader, next) = match turn.await {
                     Ok(done) => done,
                     Err(error) => std::panic::resume_unwind(error.into_panic()),
                 };
-                if !delay.is_zero() {
-                    tokio::select! {
-                        () = tokio::time::sleep(delay) => {}
-                        () = waker.woken() => {}
-                        () = stop.stopped() => {}
+                let deadline = match next {
+                    Next::Now => {
+                        catalog_changed = waker.take_catalog_changed();
+                        continue;
                     }
+                    Next::At(at) => Some(tokio::time::Instant::from_std(at)),
+                    Next::Idle => None,
+                };
+                // Only a retry has a deadline; an idle uploader waits for a cause alone.
+                let retry = async move {
+                    match deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    () = retry => {}
+                    () = waker.woken() => {}
+                    changed = watch.changed() => {
+                        if let Err(error) = changed {
+                            log::warn!("event=sync.watch outcome=failed reason={error}");
+                        }
+                    }
+                    () = stop.stopped() => {}
                 }
+                catalog_changed = waker.take_catalog_changed();
             }
         });
         Ok(Self {
