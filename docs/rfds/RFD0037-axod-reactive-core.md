@@ -1,0 +1,132 @@
+# RFD0037 - Axo: axod's reactive core
+
+- Feature Name: `axod-reactive-core`
+- Status: Accepted
+- Author: leostera
+- Start Date: 2026-11-09
+- Updated: 2026-11-09
+- Document Type: Proposal
+- Amends: [RFD0034](RFD0034-axod-as-an-axp-server.md) (step 7), [RFD0018](RFD0018-session-sync-and-client-delivery.md) (Upload)
+
+## Summary
+
+Everything inside axod waits for a cause, on one tokio runtime. A cause is a message on a channel, bytes on a descriptor, a kernel event (kqueue), a signal, or a deadline that is itself the point (a timeout, a backoff, a heartbeat). Nothing checks on a timer whether something changed, and no thread exists except one blocking waiter per child process, and the blocking calls tokio has no async form of (SQLite, libghostty-vt, accessibility). The host's heartbeat moves from every 10 seconds to every minute.
+
+## Motivation
+
+RFD0032 made the cloud and the clients push-based; the inside of axod is still partly polled and partly threads.
+
+- **Records wait for a tick.** The uploader checks every open transcript and rereads the catalog every 500ms. Every record reaches the cloud, and so the phone, up to half a second late, and an idle Mac wakes twice a second to find nothing.
+- **Waiting for a process to exit is a loop.** Stopping a shell, a git query, an inspection tool, a Pi's controls and Pi's start each check `try_wait` or the Session state, then sleep 5 to 50ms.
+- **The Mac app long-polls.** `TerminalCatalogSync` asks `axo.session.events.next` again after every batch, and axod reclaims subscriptions nobody polls.
+- **The core is synchronous.** The Session manager, its event queues and the relay's request bridges use `std` mutexes, condvars and `recv_timeout`; tokio reaches them through about 15 `spawn_blocking` bridges. PTY output, terminal attachments, each Pi's bridge and the sign-in listener each have a thread.
+- **The heartbeat is more frequent than it needs to be.** It only renews a lease that matters when a socket dies silently; every 10 seconds costs requests for nothing.
+
+## Guide-level explanation
+
+Nothing changes for a person except that things arrive sooner: a line Pi writes is in the cloud within milliseconds, a pane that exits closes at once, and the Mac app hears of every change as it happens. An idle Mac does nothing at all until something happens.
+
+## Reference-level explanation
+
+### What counts as a cause
+
+| Cause | Mechanism |
+| --- | --- |
+| Another part of axod did something | a tokio channel (`mpsc`, `watch`, `broadcast`) or `Notify` |
+| Bytes on a socket, pipe or PTY | tokio's `net` types, or `AsyncFd` on the descriptor |
+| A file changed | kqueue `EVFILT_VNODE` (`NOTE_WRITE`, `NOTE_EXTEND`, `NOTE_DELETE`, `NOTE_RENAME`) through `AsyncFd` on the kqueue |
+| A child exited | one blocking `waitpid` thread per child (below), or `tokio::process` |
+| A process that isn't axod's child exited | kqueue `EVFILT_PROC` `NOTE_EXIT` |
+| A signal | `tokio::signal::unix` |
+| Time is the point | `tokio::time::sleep_until` / `interval`: timeouts, backoffs, the heartbeat, the WebSocket ping, the reassembly expiry, debouncing |
+
+A timer is allowed only when the deadline is what's being waited for. "Check again in 50ms" is not.
+
+### Child processes: one blocking waiter each
+
+Each child axod spawns (a shell's program, Pi, an inspection tool) gets one thread that does nothing but `waitpid(pid, 0)`, then sends the exit status on a `oneshot` and ends. Nothing else ever waits on that pid, so the status cannot be stolen, and the exit is seen the instant the kernel reports it, with no SIGCHLD fan-out and no `try_wait` sweep. A thread blocked in `waitpid` costs a stack and nothing else. Waiting for exit becomes awaiting the `oneshot`, with `timeout` where there is a limit. The reaper stops sweeping: it is told which child exited.
+
+### Step 1: the uploader waits for a cause (`specs/sessions/upload-wakes.ts`)
+
+A turn runs only when woken by:
+
+- a Session event (anything but a streaming update): `forward_event`, as today;
+- the catalog changing: `SessionSnapshot`, `SessionRemoved`, a lagged subscription;
+- the kernel: a write to an open Session's transcript, or a file created in the directory of one that doesn't exist yet;
+- the last append committing (there may be more);
+- the socket connecting;
+- a retry deadline after a failure.
+
+The 500ms tick, the 60-second check of archived transcripts and the catalog's 500ms throttle go. The catalog is reread when a catalog event or Session event says it changed, not on every wake.
+
+Two orderings make this sound, and the spec shows each is needed (`--without` breaks `everyLineReachesTheCloud`):
+
+1. **Watch before reading.** A turn registers its watches, then reads. Pi reports a message's end on its bridge and appends the line in either order; if the turn woken by the event reads before the write, the write's vnode event wakes the next one.
+2. **Watch the directory until the file exists.** Pi creates its transcript with the first line; a watch on a file that doesn't exist is impossible, so the directory's `NOTE_WRITE` stands in for it.
+
+A watch that sees `NOTE_DELETE` or `NOTE_RENAME` (a rewritten transcript) is dropped and registered again on the path by the turn the event wakes. Only open Sessions' transcripts are watched; an archived one changes only by being restored, which is a catalog event. The kqueue is one descriptor in the uploader's `select!` through `AsyncFd`.
+
+Checked with `feynman check sessions/upload-wakes --depth 40`: every property holds on every path.
+
+### Step 2: processes are waited for, not polled
+
+- The per-child waiter above, for shells and Pis. The reaper's 100ms tick (tests only today) goes.
+- Inspection tools, git queries and Pi's controls run as `tokio::process` children with `timeout`.
+- `pi_controls` waiting for a Pi to exit awaits the shell's exit instead of polling the Session state every 50ms.
+- Pi's start (`pi_recovery`, 50ms) waits on the Session state's `watch` channel for the pane to run or fail.
+- The transcript lock (`lock.rs`, 5ms and 100ms) has no wake-up: `flock` can't be awaited. When the holder is a Pi axod knows, wait for its exit, then take the lock; otherwise keep the bounded retry, as a deadline.
+
+### Step 3: the host lease (`specs/relay/host-lease.ts`)
+
+- axod heartbeats every 60 seconds (`HEARTBEAT_INTERVAL`).
+- The HostDO keeps a route for 150 seconds without one (`LIMITS.leaseMs`): two heartbeats and a deadline. A test pins `leaseMs >= 2 × heartbeat + deadline`.
+- **A new socket from the same Mac replaces the old route** instead of being refused with 409 while the old lease lasts. Otherwise a laptop that woke on another network, whose old socket died where the HostDO couldn't see it, would be refused for up to 150 seconds. The old socket is fenced and closed (4002), as RFD0032 does for clients.
+- Order: the Worker first (a 150-second lease is fine with 10-second heartbeats), then axod.
+
+### Step 4: axod pushes to the Mac app
+
+`axo.session.events.subscribe` answers once, then axod sends each batch as a JSON-RPC notification on the same Unix socket. The subscription lives as long as the connection, so the reclaiming of unpolled subscriptions goes. `axo.session.events.next` stays only for the transition, then goes (no legacy: the app and axod ship together, from one bundle).
+
+### Step 5: the Session manager on tokio
+
+- Event queues become tokio channels; `wait_blocking` and the condvars go.
+- The Session state's lock becomes a `tokio::sync::Mutex` only where it is held across an await; elsewhere the state moves into the owner that changes it (RFD0034's split by owner), reached by `mpsc` commands.
+- The relay's request bridges (`spawn_blocking`, `recv_timeout` in `outbound.rs` and `peers/live.rs`) become `async fn`s awaiting a `oneshot`.
+- SQLite stays blocking, on `spawn_blocking` (RFD0034, Closed by the data).
+
+### Step 6: descriptors on `AsyncFd`
+
+- PTY output pumps: `AsyncFd` on the master, one task per pane.
+- The terminal attach listener and each attachment: `tokio::net::UnixListener` and `UnixStream`.
+- Each Pi's bridge: `AsyncFd` and a cancellation token in `select!`, not `poll(2)` in 100ms slices.
+- Sign-in's callback listener: `tokio::net::TcpListener`, not a non-blocking accept every 50ms.
+
+### What stays a thread
+
+- One `waitpid` waiter per child.
+- libghostty-vt, one per terminal (RFD0034), reached through a channel.
+- `spawn_blocking` for SQLite, Cua and accessibility calls, `SecCode` checks and `fork`/`exec`.
+- `axod attach` and `axod mcp` are separate processes, the terminal's and Pi's side; their copy loops are not axod's core.
+
+### Measuring it
+
+- Record latency: from Pi's write to the SessionDO's commit, before and after step 1 (axod's `sync.append` log has both times).
+- Idle wakeups: `sudo powermetrics --samplers tasks` on an idle Mac, for axod, before and after.
+- Threads: `ps -M` on axod, before and after each step.
+
+## Drawbacks
+
+- kqueue is macOS-specific. So is axod.
+- A missed cause now means a stalled upload rather than a 500ms delay. The upload wakes spec is the argument that none is missed; each reconnect's handshake is the backstop.
+- A 150-second lease shows a Mac that lost power as online for up to 2½ minutes instead of 30 seconds. A socket that closes normally (quitting, sleeping with the network up, axod stopping) is still seen at once.
+
+## Rationale and alternatives
+
+- **Keep the tick, lower it.** Halves the delay, doubles the wakeups.
+- **A safety sweep every few minutes.** Hides the bugs the spec exists to find, and wakes an idle Mac.
+- **SIGCHLD and `try_wait` on every child** (the reaper today). Correct, but every exit wakes every waiter, and `tokio::process` would compete with it for the same children. One waiter per child owns its pid.
+- **kqueue `EVFILT_PROC` for children too.** Equally immediate, but the zombie still needs reaping; `waitpid` does both.
+
+## Unresolved questions
+
+- Whether the Mac app's other loops (`AutomaticPiRestarter`, the phone's `ConversationPull`) poll something axod could push. They are looked at with step 4.
