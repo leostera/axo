@@ -2,6 +2,14 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.43 (Mac app build 314, axod 66)
+
+### Changed
+
+- Workspaces are gone. Each Session has its own folder: New Session in Folder… (⌘N) starts one wherever you choose, the palette lists the folders you are working in, and New Session (⌘T) starts one beside the Session you are in. Cloning a GitHub repository opens a Session in the clone.
+- Closing a Session no longer asks first or opens another in its place; Reopen Closed Session (⌘⇧T) brings it back. With none open, the sidebar offers a new one.
+- On the phone and the web, chats show the name of their folder, and the phone's grouped menu groups them by it.
+
 ## 0.42 (Mac app build 313, axod 65)
 
 ### Changed
