@@ -1,3 +1,4 @@
+import ImageIO
 import XCTest
 
 /// A conversation follows what is new: replies landing keep the end in view, a reader who
@@ -33,21 +34,36 @@ final class AxoPhoneFollowTests: XCTestCase {
     return frame.maxY > 0 && frame.minY < composer.minY && frame.maxY <= composer.minY + 1
   }
 
-  /// The left edge of whichever flood replies are on screen: the transcript's column.
+  /// The left edge of what the transcript draws, in points: the leftmost dark pixel between the
+  /// header and the composer. What is drawn, not what accessibility reports: a row being resized
+  /// reports a frame laid out for its next size for a moment, while it is drawn where it was.
   @MainActor
   private func columnEdges(_ app: XCUIApplication) -> Set<Int> {
-    // One snapshot of the whole tree: listing the replies and then asking each for its frame
-    // fails when one scrolls out of the lazy stack in between.
-    guard let root = try? app.snapshot() else { return [] }
-    var edges = Set<Int>()
-    func visit(_ element: any XCUIElementSnapshot) {
-      if element.elementType == .staticText, element.label.hasPrefix("Flood reply "), element.frame.maxY > 0 {
-        edges.insert(Int(element.frame.minX.rounded()))
+    guard
+      let source = CGImageSourceCreateWithData(app.screenshot().pngRepresentation as CFData, nil),
+      let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+    else { return [] }
+    let scale = Double(image.width) / Double(app.frame.width)
+    let width = image.width, height = image.height
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard
+      let context = CGContext(
+        data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return [] }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    let top = Int(120 * scale), bottom = Int((app.textFields["composer"].frame.minY - 60) * scale)
+    var left = Int.max
+    for y in stride(from: top, to: bottom, by: 2) {
+      for x in 0..<min(width, Int(60 * scale)) {
+        let i = (y * width + x) * 4
+        if Int(pixels[i]) + Int(pixels[i + 1]) + Int(pixels[i + 2]) < 3 * 128 {
+          left = min(left, x)
+          break
+        }
       }
-      element.children.forEach(visit)
     }
-    visit(root)
-    return edges
+    return left == .max ? [] : [Int((Double(left) / scale).rounded())]
   }
 
   private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {

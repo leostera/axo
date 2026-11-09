@@ -43,7 +43,9 @@ struct ChatMessageView: View {
   }
 
   @ViewBuilder private var content: some View {
-    let _ = RenderCount.note("Message")
+    // The one growing (being written, or its words let out) apart from the rest, which should not
+    // redraw at all as it grows.
+    let _ = RenderCount.note(isLive || revealing ? "Growing" : "Message")
     switch message.role {
     case .user:
       VStack(alignment: .trailing, spacing: 12) {

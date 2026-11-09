@@ -59,7 +59,8 @@ final class ConversationRowActions {
   }
 }
 
-/// At the top of the conversation: older messages are read as this scrolls into view.
+/// At the top of the conversation: older messages, read as the reader scrolls up to them (by the
+/// list) or asks for them here.
 struct OlderHistoryRow: View {
   let chat: Chat?
   let load: () -> Void
@@ -69,7 +70,6 @@ struct OlderHistoryRow: View {
     case .loaded(_, true):
       Button("Load earlier messages", action: load)
         .font(.caption).frame(maxWidth: .infinity)
-        .onAppear(perform: load)
     case .loadingOlder:
       LoadingMascotView(label: "Loading earlier messages").frame(height: 44).frame(maxWidth: .infinity)
     default:

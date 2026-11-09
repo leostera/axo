@@ -65,6 +65,11 @@ public final class ConversationFeed {
   @ObservationIgnored private var clock: Task<Void, Never>?
   /// The rows being let out now: what the clock steps.
   @ObservationIgnored private var revealing: [Item] = []
+  /// Called once the rows have changed (one added, taken away, or grown), in the same turn: the list
+  /// lays itself out at once, so a row and the room made for it are drawn in the same frame.
+  @ObservationIgnored public var changed: ((_ grew: Set<String>) -> Void)?
+  /// The rows changed since the list was last told, by id.
+  @ObservationIgnored private var touched: Set<String> = []
   /// Whether the clock runs on its own; tests step it with `tick(after:)`.
   @ObservationIgnored private let ticks: Bool
 
@@ -77,6 +82,9 @@ public final class ConversationFeed {
   public nonisolated init() { ticks = true }
 
   nonisolated init(ticks: Bool) { self.ticks = ticks }
+
+  /// The row with `id`, while the feed holds it.
+  public func item(_ id: String) -> Item? { byID[id] }
 
   /// The chat's transcript or its pending messages changed.
   func update(transcript: ChatTranscript, pending: [HostWorkbenchModel.PendingPrompt]) {
@@ -102,7 +110,7 @@ public final class ConversationFeed {
   /// as they are, and what waited behind them comes.
   func tick(after seconds: Double) {
     var done = false
-    var moved = false
+    var behind = false
     for item in revealing {
       guard case .message(let shown) = item.row, case .reveal(let final, let hurry) = shown.presentation else { continue }
       let text = shown.message.text
@@ -111,17 +119,22 @@ public final class ConversationFeed {
       if at >= text.count, final {
         reveal.finished(shown.id)
         done = true
-      } else if item.revealed != at {
-        item.revealed = at
-        moved = true
+      } else {
+        if item.revealed != at {
+          item.revealed = at
+          touched.insert(item.id)
+        }
+        // A step may let nothing out (the pace keeps whole words): it is still on its way.
+        if at < text.count { behind = true }
       }
     }
     if done {
       rebuild()
-    } else if !moved {
+    } else {
+      tell()
       // All that has come is out, and more is still to come: nothing to do until it does, and
       // the update that brings it starts the clock again.
-      runClock(false)
+      if !behind { runClock(false) }
     }
   }
 
@@ -138,6 +151,7 @@ public final class ConversationFeed {
       var last = ContinuousClock.now
       while !Task.isCancelled {
         try? await Task.sleep(for: RevealPace.frame)
+        guard !Task.isCancelled else { return }
         let now = ContinuousClock.now
         let elapsed = now - last
         last = now
@@ -160,10 +174,16 @@ public final class ConversationFeed {
       guard case .message(let shown) = item.row, case .reveal = shown.presentation else { return false }
       return true
     }
-    for item in wasRevealing where !revealing.contains(where: { $0 === item }) { item.revealed = nil }
+    for item in wasRevealing where !revealing.contains(where: { $0 === item }) {
+      item.revealed = nil
+      touched.insert(item.id)
+    }
     for item in revealing {
       let out = reveal.revealed(item.id)
-      if item.revealed != out { item.revealed = out }
+      if item.revealed != out {
+        item.revealed = out
+        touched.insert(item.id)
+      }
     }
     runClock(!revealing.isEmpty)
     let working = transcript.activity == .working
@@ -171,6 +191,14 @@ public final class ConversationFeed {
     let callingTools = working && transcript.messages.contains { $0.tool?.status == .running }
     if self.callingTools != callingTools { self.callingTools = callingTools }
     if question != transcript.question { question = transcript.question }
+    tell()
+  }
+
+  /// Tells the list which rows changed, if any did.
+  private func tell() {
+    let grew = touched
+    touched = []
+    changed?(grew)
   }
 
   /// Brings the rows to `wanted`, the order the conversation would have them in now, without
@@ -196,7 +224,10 @@ public final class ConversationFeed {
       wantedIDs.insert(row.id)
       if let item = byID[row.id] {
         reachedHeld = true
-        if item.row != row { item.row = row }
+        if item.row != row {
+          item.row = row
+          touched.insert(item.id)
+        }
       } else {
         let item = Item(row)
         byID[row.id] = item

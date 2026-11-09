@@ -57,14 +57,6 @@ final class ScrollFollowTests: XCTestCase {
     XCTAssertTrue(follow.isFollowing)
     XCTAssertFalse(follow.hasNew)
   }
-
-  func testTheKeyboardRisingKeepsAFollowersEndInView() {
-    var follow = ScrollFollow()
-    XCTAssertEqual(follow.bottomInsetGrew(), .keepAtEnd)
-    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
-    _ = follow.scrollingChanged(to: .idle, atEnd: false)
-    XCTAssertEqual(follow.bottomInsetGrew(), .stay)
-  }
 }
 
 extension ScrollFollowTests {

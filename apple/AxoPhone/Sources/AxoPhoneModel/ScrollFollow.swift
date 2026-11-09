@@ -72,11 +72,6 @@ public struct ScrollFollow: Equatable, Sendable {
     }
   }
 
-  /// The view grew taller at the bottom or the keyboard rose: a follower keeps the end in view.
-  public mutating func bottomInsetGrew() -> Move {
-    isFollowing && scrolling != .byReader ? .keepAtEnd : .stay
-  }
-
   /// The person sent a message: they want to see it go.
   public mutating func sent() -> Move { goToEnd() }
 

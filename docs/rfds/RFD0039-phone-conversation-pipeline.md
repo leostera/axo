@@ -1,7 +1,7 @@
 # RFD0039 - Axo: The Phone's Conversation Pipeline
 
 - Feature Name: `axo-phone-conversation-pipeline`
-- Status: Proposed
+- Status: Accepted
 - Author: leostera
 - Start Date: 2026-11-09
 - Updated: 2026-11-09
@@ -85,7 +85,8 @@ Nothing else sets the offset. Whether to follow is still `ScrollFollow`'s decisi
 
 `ConversationFeed` keeps its contract from c1cd910: `items` only gain rows at the end, except for an older page (top), a message taken back, and a reset. It changes in two ways:
 
-- **Changes are announced.** `ConversationFeed.Change` is `.appended([ID])`, `.prepended([ID])`, `.removed([ID])` or `.reset([ID])`. The list subscribes to them through a closure, set when the list is made. The feed keeps `items` too, for tests and for whatever reads the count.
+- **Changes are announced, in the same turn.** After every change to its rows, the feed calls `changed(grew:)` synchronously, with the ids of the rows whose content changed (a reply's words coming out, a record taking a live row's place). The list applies its snapshot (the feed's ids, so a diff of appends at the end, an older page at the top, or a removal) and sizes the rows that grew. All of it happens before the frame is drawn.
+  - At first I let the list observe `items` and apply on the next turn, but the rows came one frame late and the cells were sized in a later layout pass. In between, a reply's new lines were drawn over the rows below it, and a finished reply's buttons over the next reply. Screenshots of the flood at 5 a second caught it in about half the frames.
 - **The reveal clock.** `ConversationFeed.Item` gets `revealed: Int?`, the number of characters of its text let out, nil when it shows whole. A clock task on the main actor runs only while some row is revealing and the chat is on screen (`feed.onScreen`). Every `RevealPace.frame` (32 ms) it advances each revealing row by `RevealPace.next`. A row whose text is all out, and which is final (its record is in), stops revealing, and the rows it held come in. `ConversationReveal`'s decisions (what is history, what rises, what reveals, the "caught up" rule) stay as they are. Only who advances the reveal moves: from the view's `.task` to the feed's clock.
   - Off screen or with motion reduced, no reveal starts, and those under way finish at once.
   - `RevealedMarkdown` becomes a plain view of `item.revealed` characters of the text.
@@ -96,8 +97,13 @@ Nothing else sets the offset. Whether to follow is still `ScrollFollow`'s decisi
 
 - **Layout:** `UICollectionViewCompositionalLayout` with one section of full-width items. Heights are estimated (`.estimated(120)`) and self-sizing. Spacing is 30 points between rows, as now.
 - **Data source:** `UICollectionViewDiffableDataSource<Section, ID>` with sections `top` (the older-history control), `rows` and `bottom` (the question, the activity row, the extensions' cards). Each change from the feed is one snapshot change: `appendItems`, `insertItems(beforeItem:)` for the top, `deleteItems`, or a new snapshot for a reset. It is applied without animation, except a removal, which fades.
-- **Cells:** `UICollectionViewCell` with `contentConfiguration = UIHostingConfiguration { ConversationItemView(item:…) }.margins(.all, 0)`, registered once per kind. The row's SwiftUI view observes its item, so content changes redraw it. Self-sizing invalidation (`selfSizingInvalidation = .enabledIncludingConstraints`, the default) resizes the cell in place. The environment the rows read is passed in explicitly, since a hosting configuration does not inherit it: the `SidewaysScrolling` model, the tint and the colour scheme.
-- **Insets:** the bars above and below stay SwiftUI. The list takes their heights as `contentInset` from the representable, which is told the safe-area insets by SwiftUI. It sets `contentInsetAdjustmentBehavior = .never`, so UIKit's own adjustment does not double them.
+- **Cells:** `UICollectionViewCell` with `contentConfiguration = UIHostingConfiguration { ConversationItemView(item:…) }.margins(.all, 0)`, registered once per kind. The row's SwiftUI view observes its item, so content changes redraw it. The environment the rows read is passed in explicitly, since a hosting configuration does not inherit it: the `SidewaysScrolling` model and the tint. The colour scheme comes through UIKit's traits.
+- **Sizing:** a row that grew is sized at once. Its cell is asked for its size again (`invalidateIntrinsicContentSize`, UIKit's own path for this), and the list lays out now (`layoutIfNeeded`) rather than in the next pass. Invalidating the item in the layout instead made every visible row's view run again on every step of a reveal (63 extra message redraws for 20 streamed updates).
+- **Rows are never empty, and never wider than the column** (`LeadingColumn`).
+  - A row is at least a point tall. A cell with no height is not among the visible cells, and a cell that is not visible never hears that its content grew. A reply whose reveal starts at no characters stayed hidden for good, the same trap the old list had.
+  - A row is exactly as wide as the column and starts at its leading edge. A hosted cell centres content wider than itself, and a half-written code block is.
+- **Cells clip** what they draw to their frame, so nothing is ever drawn over the row below.
+- **Insets:** the bars above and below stay SwiftUI. The list runs under them (`ignoresSafeArea`) and takes their heights, and the keyboard's, as `contentInset`. They are measured where the list would sit without them (`onGeometryChange` on the safe area) and handed to it directly, without redrawing the screen. It sets `contentInsetAdjustmentBehavior = .never`, so UIKit's own adjustment does not double them. Touches where the bars cover the list go to the bars (`hitTest`); otherwise the full-screen list took the menu button's taps.
 
 ### The scroll owner
 
@@ -114,7 +120,9 @@ case .free: break
 }
 ```
 
-- `scroller.mode` is `.following` while `ScrollFollow.isFollowing`. It is `.anchored` for the one pass after a prepend; the coordinator records the first visible row and its `minY` before applying that snapshot. Otherwise it is `.free`.
+- `scroller.mode` is `.following` while `ScrollFollow.isFollowing` and nothing holds the list (a finger, a coast, an animated move to the end).
+  - Otherwise, after every pass, the reader's row stays where it was. That row is the first whose top is in view, recorded by its place in the content at the end of each pass. However rows above it grew, or an older page arrived, the offset moves by what moved that row, less what the layout moved the offset by itself.
+  - That one rule covers both the prepend and rows measured late as the reader scrolls up, so there is no separate `.anchored` mode.
 - The scroll view delegate reports phases to `ScrollFollow` as today: dragging is `byReader`, deceleration ends in `idle`. It also reports when the reader is within one screen of the top. Only then is an older page read, and only once the reader has scrolled.
 - "Jump to new message" and sending set the mode to `.following` and animate to the end with `setContentOffset(_:animated:)`.
 - The pull-to-refresh mascot reads the overscroll at the top from `scrollViewDidScroll`, as `Overscroll` does today.
@@ -130,14 +138,15 @@ case .free: break
 
 ### Tests
 
-- **Feed (model tests):**
-  - I1, I2, I3 and I5 through scripted runs, with a fake clock.
-  - A regression for the trace: a reveal that no view ever shows still finishes, and the rows behind it come in.
+- **Feed (model tests, `ConversationFeedTests`):**
+  - I1, I2, I3 and I5 through scripted runs, stepping the clock by hand.
+  - A regression for the trace: a reply no view ever draws is still let out, and the rows behind it come in, within the time its words take.
+  - Letting words out changes the row, not the list. The list is told which rows changed, and only those.
 - **List (UI tests, through the preview's fake Mac):**
-  - Opening a long chat (this session's own 1,500-record log as a fixture) shows its last row just above the box in the first screenshot after loading, with no older page read.
-  - A flood of 30 replies, sampled every 100 ms, has a row visible in every sample, and the last row exactly above the box at rest (I4).
-  - Scrolled up, the row in view stays within a pixel while replies land and an older page loads.
-  - The render counts: 20 streamed updates apply at most 2 snapshots, and run only the reply's row view (I6).
+  - A flood of 30 replies keeps the last one in view, and nothing is drawn left of the column in any sample. The column is checked from screenshots, not accessibility frames, which a row being resized reports for its next size for a moment (`AxoPhoneFollowTests`).
+  - Following rests at the end, not past it. Scrolled up, the reader is left where they were and told something is new. "Jump to new message" follows to the last reply.
+  - The render counts: while a reply streams, the messages above it redraw at most once, and the list only when a row is added (`AxoPhoneRenderTests`).
+  - Not yet built: opening a long chat (a real 1,500-record log as a fixture) shows its last row in the first screenshot with no older page read, and a reader's row holds within a pixel as an older page loads above it.
 - **Device:** the trace's scenario on Leo's phone: open a busy chat; it shows its newest rows.
 
 ## Drawbacks
@@ -165,7 +174,5 @@ I recommend the proposal, with the reveal clock built first. It is needed whiche
 
 These are slices, each tested, committed and installed on the phone:
 
-1. The reveal clock in the feed, and its regression test. This alone fixes the stall.
-2. `ConversationList` for the rows, following and the end pin, behind the existing views. The top, bottom and pull-to-refresh stay where they are for this slice.
-3. The top and bottom sections, older pages read on scrolling up, and prepend anchoring.
-4. Pull-to-refresh and the jump button on the list. Remove `ScrollingToEnd`, `Scrolled`, `keepWithinEnd` and the lazy stack.
+1. The reveal clock in the feed, and its regression test. This alone fixes the stall (72bfc14).
+2. `ConversationList` with all of it, in one change: the rows, top and bottom, following and the end pin, the reader's row kept in place, older pages read on scrolling up, and pull-to-refresh. It replaces `ScrollingToEnd`, `Scrolled`, `keepWithinEnd` and the lazy stack. Splitting it did not pay: the old and new lists could not share the scroll position, so a half-way slice would have had two owners, which is what this RFD removes.

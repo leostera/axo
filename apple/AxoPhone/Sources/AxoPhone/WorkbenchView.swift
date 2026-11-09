@@ -186,18 +186,16 @@ struct WorkbenchView: View {
         }
         if PreviewFixture.live == "flood" {
           // Thirty long replies, ten a second, when a test is ready.
-          Button("Play flood") {
-            guard let current = workbench.current, let id = current.selectedSessionID else { return }
-            Task {
-              for event in PreviewFixture.floodEvents(replies: 30) {
-                current.playForPreview([event], in: id)
-                try? await Task.sleep(for: .milliseconds(100))
-              }
-            }
-          }
+          Button("Play flood") { playFlood() }
           .font(.system(size: 12)).buttonStyle(.plain).contentShape(Rectangle())
           .padding(.top, 120)
           .accessibilityIdentifier("play-flood")
+          // Played by itself, for looking at it by hand: AXO_PHONE_PREVIEW_AUTOPLAY=1.
+          .task {
+            guard ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_AUTOPLAY"] == "1" else { return }
+            try? await Task.sleep(for: .seconds(2))
+            playFlood()
+          }
         }
       #endif
     }
@@ -1086,5 +1084,20 @@ extension ClientID {
     }
 
     func close() { sink.finish() }
+  }
+#endif
+
+#if DEBUG && targetEnvironment(simulator)
+  extension WorkbenchView {
+    /// Thirty long replies, ten a second, into the chat on screen.
+    fileprivate func playFlood() {
+      guard let current = workbench.current, let id = current.selectedSessionID else { return }
+      Task {
+        for event in PreviewFixture.floodEvents(replies: 30) {
+          current.playForPreview([event], in: id)
+          try? await Task.sleep(for: .milliseconds(100))
+        }
+      }
+    }
   }
 #endif

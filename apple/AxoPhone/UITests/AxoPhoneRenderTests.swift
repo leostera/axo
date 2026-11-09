@@ -101,9 +101,11 @@ final class AxoPhoneRenderTests: XCTestCase {
     XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'word20'")).firstMatch.waitForExistence(timeout: 15))
     let streamed = delta(before, counts(app))
     print("RENDERS stream 20 updates:", streamed.sorted { $0.key < $1.key })
-    // The growing reply redraws once an update; the messages above it do not. Its words are let
-    // out about thirty times a second, which redraws its text alone.
-    XCTAssertLessThanOrEqual(streamed["Message", default: 0], 25)
+    // The messages above the growing reply do not redraw (but for the one before it, as the reply
+    // first arrives). The reply redraws as its words are let out, about thirty times a second,
+    // and as it is sized for them.
+    XCTAssertLessThanOrEqual(streamed["Message", default: 0], 4, "the messages above it stay as they are")
+    XCTAssertLessThanOrEqual(streamed["Growing", default: 0], 120)
     XCTAssertLessThanOrEqual(streamed["Markdown", default: 0], 90)
     XCTAssertLessThanOrEqual(streamed["Conversation", default: 0], 6, "only as Pi starts and stops")
     // The list of rows redraws only as a row is added (the reply's first words, its record), not

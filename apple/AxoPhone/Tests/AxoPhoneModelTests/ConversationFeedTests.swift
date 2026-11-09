@@ -172,6 +172,20 @@ final class ConversationFeedTests: XCTestCase {
     XCTAssertGreaterThan(shown.last ?? 0, 0)
   }
 
+  /// The list sizes the rows the feed says changed, in the same turn (RFD0039): it is told of a
+  /// row added, and of a reply growing as its words come out, and of nothing else.
+  func testTheListIsToldWhichRowsChanged() {
+    var (feed, transcript) = opened([user(1, "hi")])
+    var told: [Set<String>] = []
+    feed.changed = { told.append($0) }
+    transcript.append([reply(2, String(repeating: "word ", count: 60), stamp: stamp)])
+    feed.update(transcript: transcript, pending: [])
+    XCTAssertEqual(told.last, ["reply:\(stamp)#0"], "a row added")
+    feed.tick(after: 0.032)
+    XCTAssertEqual(told.last, ["reply:\(stamp)#0"], "its words coming out")
+    XCTAssertFalse(told.joined().contains("e1"), "the row above it is left alone")
+  }
+
   func testOffScreenWhatArrivesJustShows() {
     var (feed, transcript) = opened([user(1, "hi")])
     feed.closed()
