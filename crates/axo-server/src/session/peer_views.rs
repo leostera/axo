@@ -408,8 +408,8 @@ impl SessionManager {
         let timeout = Duration::from_millis(
             request
                 .timeout_ms
-                .unwrap_or(rpc::MAX_EVENTS_TIMEOUT_MS)
-                .min(rpc::MAX_EVENTS_TIMEOUT_MS),
+                .unwrap_or(rpc::MAX_WAIT_MS)
+                .min(rpc::MAX_WAIT_MS),
         );
         let version = if request.version == 0 {
             access.live.version()

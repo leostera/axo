@@ -2,8 +2,8 @@
 //!
 //! Invariant: the executor never blocks. Each connection is its own task, each request its own
 //! task, and synchronous handlers (SQLite, process control, the catalog mutex) run on tokio's
-//! blocking pool via `add_blocking_method`. Waiting requests such as `axo.session.events.next`
-//! are plain futures, so thousands of them cost no threads and never delay unrelated requests.
+//! blocking pool via `add_blocking_method`. Waiting requests, and connections taken over by an
+//! upgrade such as an events stream, are plain futures, so thousands of them cost no threads and never delay unrelated requests.
 
 use std::collections::HashMap;
 use std::io;
@@ -27,8 +27,7 @@ use crate::peer::Caller;
 const MAX_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
 /// Requests one connection may have in flight before its reader waits.
 const MAX_IN_FLIGHT_PER_CONNECTION: usize = 64;
-/// Requests slower than this are logged once with their method and duration. Long-polls
-/// (`axo.session.events.next`) wait by design and are excluded.
+/// Requests slower than this are logged once with their method and duration.
 const SLOW_REQUEST: Duration = Duration::from_millis(100);
 
 /// Registers handlers that take typed parameters and return typed results. Parameters are parsed
@@ -453,9 +452,6 @@ fn log_if_slow(request: &str, elapsed: Duration) {
         .ok()
         .and_then(|name| name.method)
         .filter(|method| method.len() <= 64 && method.bytes().all(|b| b.is_ascii_graphic()));
-    if method == Some("axo.session.events.next") {
-        return;
-    }
     log::warn!(
         "event=ipc.slow_request method={} elapsed_ms={}",
         method.unwrap_or("unknown"),

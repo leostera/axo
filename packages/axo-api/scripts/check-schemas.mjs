@@ -46,7 +46,7 @@ const fixture = async (name) =>
 const localCallSchema = "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/Call";
 validateWith(localCallSchema, await fixture("session-list.call.json"));
 validateWith(localCallSchema, await fixture("negotiate.call.json"));
-validateWith(localCallSchema, await fixture("events-next.call.json"));
+validateWith(localCallSchema, await fixture("events-stream.call.json"));
 validateWith(localCallSchema, await fixture("terminal-input.local.call.json"));
 validateWith(localCallSchema, await fixture("terminal-resize.local.call.json"));
 validateWith(localCallSchema, await fixture("client-viewport-set.local.call.json"));
@@ -76,12 +76,8 @@ validateWith(
   await fixture("terminal-output.event.json"),
 );
 validateWith(
-  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/EventsNextResult",
-  { event: null },
-);
-validateWith(
-  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/EventsNextResult",
-  { events: [{ type: "subscription.lagged" }] },
+  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/EventsNotification",
+  { jsonrpc: "2.0", method: "axo.session.events", params: { events: [{ type: "subscription.lagged" }] } },
 );
 validateWith(
   "https://schemas.axo.leostera.dev/v1/events.schema.json#/$defs/LocalEvent",
@@ -106,12 +102,6 @@ validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/ShellBusyResult",
   { busy: true, foregroundProcess: "sleep" },
 );
-validateWith(localCallSchema, {
-  jsonrpc: "2.0",
-  id: 1,
-  method: "axo.session.events.next",
-  params: { subscriptionId: "00000000-0000-4000-8000-000000000001", timeoutMs: 15000, maxEvents: 64 },
-});
 validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/SessionListResult",
   await fixture("session-list.result.json"),

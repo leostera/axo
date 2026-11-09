@@ -6,8 +6,7 @@ import AxoProtocol
 final class AxodCapabilities {
   /// Methods every supported Axod must offer.
   static let requiredMethods: Set<AxodMethodName> = [
-    .sessionList, .workspaceList, .workspaceCreate, .workspaceSessionCreate, .sessionSubscribe,
-    .sessionEventsNext, .sessionUnsubscribe,
+    .sessionList, .workspaceList, .workspaceCreate, .workspaceSessionCreate,
   ]
 
   private let client: AxodClient

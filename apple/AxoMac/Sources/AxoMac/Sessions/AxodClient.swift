@@ -13,10 +13,8 @@ protocol AxodClient: AnyObject {
   func listSessionSnapshot() async throws -> TerminalSessionListSnapshot
   func listWorkspaces() async throws -> [WorkspaceRecord]
 
-  func subscribeToCatalog() async throws -> TerminalSubscriptionID
-  /// The next batch of events, in order; empty when the long-poll timed out.
-  func nextEvents(for subscription: TerminalSubscriptionID) async throws -> [TerminalSessionEvent]
-  func unsubscribe(_ subscription: TerminalSubscriptionID) async throws
+  /// The catalog's events as axod pushes them, until the stream ends.
+  func openCatalogEvents() async throws -> any CatalogEvents
 
   func createSession() async throws -> TerminalSession
   func createSession(inWorkspace workspaceID: String) async throws -> TerminalSession
@@ -58,15 +56,15 @@ protocol AxodSettingsClient: AnyObject {
 /// Production's client: one persistent connection to the local Axod (see `AxoClient`). The
 /// remaining methods already match.
 extension AxodConnection: AxodClient, AxodSettingsClient {
-  /// Long-poll window; the daemon caps waits at 20 seconds.
-  static let eventPollTimeout: Duration = .seconds(15)
-
-  func subscribeToCatalog() async throws -> TerminalSubscriptionID {
-    try await subscribe(to: nil, includeTerminalOutput: false)
-  }
-
-  func nextEvents(for subscription: TerminalSubscriptionID) async throws -> [TerminalSessionEvent] {
-    try await nextEvents(
-      for: subscription, timeout: Self.eventPollTimeout, maxEvents: Self.maxEventsPerPoll)
+  func openCatalogEvents() async throws -> any CatalogEvents {
+    try await openEventStream(to: nil, includeTerminalOutput: false)
   }
 }
+
+/// A stream of catalog events: batches in order, `nil` once it ended.
+protocol CatalogEvents: AnyObject, Sendable {
+  func next() async -> [TerminalSessionEvent]?
+  func close() async
+}
+
+extension AxodEventStream: CatalogEvents {}

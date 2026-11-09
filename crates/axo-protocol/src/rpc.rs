@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigKey, Event, LayoutNode, SessionId, SessionRecord, ShellId, WorkspaceRecord};
+use crate::{ConfigKey, LayoutNode, SessionId, SessionRecord, ShellId, WorkspaceRecord};
 
 /// Method names, in the order `axo.protocol.negotiate` advertises them.
 pub mod method {
@@ -29,9 +29,6 @@ pub mod method {
     pub const SESSION_PI_RESTART_FORCE: &str = "axo.session.pi.restart.force.v2";
     pub const SESSION_PI_RESTART_AUTO: &str = "axo.session.pi.restart.auto.v1";
     pub const SESSION_LAYOUT_SET: &str = "axo.session.layout.set";
-    pub const SESSION_SUBSCRIBE: &str = "axo.session.subscribe";
-    pub const SESSION_EVENTS_NEXT: &str = "axo.session.events.next";
-    pub const SESSION_UNSUBSCRIBE: &str = "axo.session.unsubscribe";
     pub const SHELL_CREATE: &str = "axo.shell.create";
     pub const SHELL_CLOSE: &str = "axo.shell.close";
     pub const SHELL_BUSY: &str = "axo.shell.busy";
@@ -90,9 +87,6 @@ pub mod method {
         SESSION_PI_RESTART_FORCE,
         SESSION_PI_RESTART_AUTO,
         SESSION_LAYOUT_SET,
-        SESSION_SUBSCRIBE,
-        SESSION_EVENTS_NEXT,
-        SESSION_UNSUBSCRIBE,
         SHELL_CREATE,
         SHELL_CLOSE,
         SHELL_BUSY,
@@ -161,10 +155,10 @@ pub mod forwarded {
 
 /// The only protocol version.
 pub const PROTOCOL_VERSION: u32 = 2;
-/// Upper bound for `NextEvents::timeout_ms`.
-pub const MAX_EVENTS_TIMEOUT_MS: u64 = 20_000;
-/// Upper bound for `NextEvents::max_events`.
-pub const MAX_EVENTS_PER_POLL: usize = 256;
+/// Upper bound for a request that waits for something new (`WatchPeerSession::timeout_ms`).
+pub const MAX_WAIT_MS: u64 = 20_000;
+/// Most events in one `axo.session.events` notification.
+pub const MAX_EVENTS_PER_BATCH: usize = 256;
 
 // Parameters.
 
@@ -256,23 +250,6 @@ pub struct Subscribe {
 
 fn default_true() -> bool {
     true
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct NextEvents {
-    pub subscription_id: String,
-    /// `1..=MAX_EVENTS_TIMEOUT_MS`.
-    pub timeout_ms: u64,
-    /// `1..=MAX_EVENTS_PER_POLL`. When absent the result carries at most one `event`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_events: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Unsubscribe {
-    pub subscription_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -433,23 +410,6 @@ pub struct Subscribed {
     pub subscription_id: String,
 }
 
-/// `axo.session.events.next`: one optional event for legacy pollers, or a batch when the caller
-/// passed `maxEvents`. Both are empty when the wait timed out.
-///
-/// Generic so a server can serialize shared (`Arc`) events without copying them.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum EventsNext<E = Event> {
-    Batch { events: Vec<E> },
-    Single { event: Option<E> },
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Unsubscribed {
-    pub unsubscribed: bool,
-}
-
 /// Every Session on this Mac: open ones as `axo.session.list` reports them, and archived ones.
 /// Another Mac of the account, as this Mac follows it (RFD0024).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -499,7 +459,7 @@ pub struct WatchPeerSession {
     /// The `version` of the last answer; 0 the first time, which answers at once.
     #[serde(default)]
     pub version: u64,
-    /// How long to wait for something new, at most `MAX_EVENTS_TIMEOUT_MS`.
+    /// How long to wait for something new, at most `MAX_WAIT_MS`.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     /// How many records to read when starting over, newest last.
@@ -723,19 +683,5 @@ mod tests {
     fn subscriptions_include_terminal_output_unless_declined() {
         let subscribe: Subscribe = serde_json::from_value(json!({})).unwrap();
         assert!(subscribe.include_terminal_output && subscribe.session_id.is_none());
-    }
-
-    #[test]
-    fn event_polls_answer_in_the_shape_the_caller_asked_for() {
-        let single = serde_json::to_value(EventsNext::<Event>::Single { event: None }).unwrap();
-        assert_eq!(single, json!({ "event": null }));
-        let batch = serde_json::to_value(EventsNext::Batch {
-            events: vec![Event::SubscriptionLagged],
-        })
-        .unwrap();
-        assert_eq!(
-            batch,
-            json!({ "events": [{ "type": "subscription.lagged" }] })
-        );
     }
 }

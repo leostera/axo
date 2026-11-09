@@ -104,24 +104,6 @@ struct SessionSubscribeRequest: Encodable {
   private enum CodingKeys: String, CodingKey { case sessionId, includeTerminalOutput }
 }
 
-struct SessionEventsNextRequest: Encodable {
-  let subscriptionId: String
-  let timeoutMs: UInt64
-  let maxEvents: Int
-}
-
-struct SessionEventsNextResponse: Decodable {
-  let events: [TerminalSessionEvent]
-}
-
-struct SessionUnsubscribeRequest: Encodable {
-  let subscriptionId: String
-}
-
-struct SessionUnsubscribeResponse: Decodable {
-  let unsubscribed: Bool
-}
-
 /// Wire parameters for methods that take none.
 typealias NoParams = String?
 
@@ -157,9 +139,6 @@ enum AxodMethods {
   /// Starts the Session's terminals and resumes its Pi before answering.
   static let sessionReopen = AxodMethod<NoParams, TerminalSession>(.sessionReopen, timeout: .seconds(20))
   static let sessionLayoutSet = AxodMethod<SetSessionLayoutRequest, SessionLayoutAcknowledgement>(.sessionLayoutSet)
-  static let sessionSubscribe = AxodMethod<SessionSubscribeRequest, TerminalSubscriptionID>(.sessionSubscribe)
-  static let sessionEventsNext = AxodMethod<SessionEventsNextRequest, SessionEventsNextResponse>(.sessionEventsNext)
-  static let sessionUnsubscribe = AxodMethod<SessionUnsubscribeRequest, SessionUnsubscribeResponse>(.sessionUnsubscribe)
   static let piRestartForce = AxodMethod<RestartPiSessionRequest, TerminalSession>(.piRestartForce, timeout: .seconds(20))
   static let piRestartAuto = AxodMethod<RestartPiSessionRequest, TerminalSession>(.piRestartAuto, timeout: .seconds(20))
   static let workspaceList = AxodMethod<NoParams, WorkspaceList>(.workspaceList)

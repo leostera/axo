@@ -1,24 +1,6 @@
 import Foundation
 import Network
 
-extension Duration {
-  var milliseconds: Int {
-    let components = components
-    guard components.seconds >= 0 else { return 1 }
-    guard components.seconds < 20 else { return 20_000 }
-    let whole = components.seconds * 1_000
-    let fractional = components.attoseconds / 1_000_000_000_000_000
-    return Int(min(20_000, max(1, whole + fractional)))
-  }
-
-  var nanoseconds: UInt64 {
-    let components = components
-    let seconds = UInt64(max(0, components.seconds))
-    let attoseconds = UInt64(max(0, components.attoseconds))
-    return seconds * 1_000_000_000 + attoseconds / 1_000_000_000
-  }
-}
-
 /// Apps to a local axod: newline-delimited JSON over a Unix socket.
 public struct UnixSocketTransport: AxoTransport {
   public let socketPath: UnixSocketPath
@@ -41,7 +23,7 @@ public struct UnixSocketTransport: AxoTransport {
 /// continuation are themselves thread-safe.
 final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   /// The largest single message accepted; a longer line ends the connection. Whole-catalog
-  /// replies (`axo.session.list`, the first `axo.session.events.next` batch) grow with every
+  /// replies (`axo.session.list`, the first `axo.session.events` batch) grow with every
   /// Session, so this must stay far above any realistic catalog. At 64 KiB, sixty Sessions with
   /// UUID IDs no longer fit and Axo could never get past its launch splash.
   static let maximumMessageBytes = 16 * 1024 * 1024

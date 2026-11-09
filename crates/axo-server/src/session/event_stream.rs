@@ -89,7 +89,7 @@ async fn stream(
     let mut ignored = [0_u8; 1024];
     loop {
         let events = tokio::select! {
-            events = sessions.next_events_async(subscription_id, WAIT, rpc::MAX_EVENTS_PER_POLL) => events?,
+            events = sessions.next_events_async(subscription_id, WAIT, rpc::MAX_EVENTS_PER_BATCH) => events?,
             // The client says nothing more on this connection; its closing ends the stream.
             read = upgraded.reader.read(&mut ignored) => match read? {
                 0 => return Ok(()),

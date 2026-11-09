@@ -5,6 +5,53 @@ import XCTest
 
 @testable import AxoMac
 
+/// A catalog stream the test pushes events on, or ends.
+final class FakeCatalogEvents: CatalogEvents, @unchecked Sendable {
+  private let lock = NSLock()
+  private var queued: [[TerminalSessionEvent]?] = []
+  private var waiter: CheckedContinuation<[TerminalSessionEvent]?, Never>?
+  private var closed = false
+
+  var isClosed: Bool { lock.withLock { closed } }
+
+  func push(_ event: TerminalSessionEvent) { deliver([event]) }
+  func push(batch: [TerminalSessionEvent]) { deliver(batch) }
+  func end() { deliver(nil) }
+
+  private func deliver(_ batch: [TerminalSessionEvent]?) {
+    let waiting: CheckedContinuation<[TerminalSessionEvent]?, Never>? = lock.withLock {
+      guard let waiter else {
+        queued.append(batch)
+        return nil
+      }
+      self.waiter = nil
+      return waiter
+    }
+    waiting?.resume(returning: batch)
+  }
+
+  func next() async -> [TerminalSessionEvent]? {
+    await withCheckedContinuation { continuation in
+      let ready: [TerminalSessionEvent]?? = lock.withLock {
+        if closed { return .some(nil) }
+        if !queued.isEmpty { return .some(queued.removeFirst()) }
+        waiter = continuation
+        return .none
+      }
+      if let ready { continuation.resume(returning: ready) }
+    }
+  }
+
+  func close() async {
+    let waiting = lock.withLock {
+      closed = true
+      defer { waiter = nil }
+      return waiter
+    }
+    waiting?.resume(returning: nil)
+  }
+}
+
 /// An in-memory Axod for catalog tests: listing returns `sessions`, events come from `events`.
 @MainActor
 final class FakeAxodClient: AxodClient {
@@ -21,19 +68,19 @@ final class FakeAxodClient: AxodClient {
   private(set) var listCount = 0
   private(set) var workspaceListCount = 0
   private(set) var subscribeCount = 0
-  private(set) var unsubscribed: [TerminalSubscriptionID] = []
+  /// The streams opened, in order; the last is the one events go to.
+  private(set) var streams: [FakeCatalogEvents] = []
   private(set) var layoutWrites: [(SessionID, SessionLayout)] = []
-  private var queuedEvents: [TerminalSessionEvent] = []
-  private var waiters: [CheckedContinuation<[TerminalSessionEvent], Error>] = []
-  /// When set, subscribing fails with this error.
+  /// When set, opening a stream fails with this error.
   var subscribeError: Error?
 
+  /// Events pushed before any stream opened, for the first one.
+  private var early: [TerminalSessionEvent] = []
+
+  /// Pushes `event` on the open stream, or the first one to open.
   func push(_ event: TerminalSessionEvent) {
-    if waiters.isEmpty {
-      queuedEvents.append(event)
-    } else {
-      waiters.removeFirst().resume(returning: [event])
-    }
+    guard let stream = streams.last else { return early.append(event) }
+    stream.push(event)
   }
 
   var protocolVersion = ProtocolNegotiation.supportedVersion
@@ -60,22 +107,16 @@ final class FakeAxodClient: AxodClient {
     return workspaces
   }
 
-  func subscribeToCatalog() async throws -> TerminalSubscriptionID {
+  func openCatalogEvents() async throws -> any CatalogEvents {
     subscribeCount += 1
     if let subscribeError { throw subscribeError }
-    return TerminalSubscriptionID(subscriptionId: "sub-\(subscribeCount)")
-  }
-
-  func nextEvents(for subscription: TerminalSubscriptionID) async throws -> [TerminalSessionEvent] {
-    if !queuedEvents.isEmpty {
-      defer { queuedEvents.removeAll() }
-      return queuedEvents
+    let stream = FakeCatalogEvents()
+    streams.append(stream)
+    if !early.isEmpty {
+      stream.push(batch: early)
+      early.removeAll()
     }
-    return try await withCheckedThrowingContinuation { waiters.append($0) }
-  }
-
-  func unsubscribe(_ subscription: TerminalSubscriptionID) async throws {
-    unsubscribed.append(subscription)
+    return stream
   }
 
   func createSession() async throws -> TerminalSession { throw Unsupported() }
@@ -425,7 +466,7 @@ final class TerminalCatalogTests: XCTestCase {
     sync.start()
     defer { sync.stop() }
 
-    try await waitUntil { model.sessions.count == 1 }
+    try await waitUntil { model.sessions.count == 1 && client.streams.count == 1 }
     XCTAssertEqual(client.subscribeCount, 1)
 
     client.push(.sessionSnapshot(session(2, shells: [20])))
@@ -437,7 +478,24 @@ final class TerminalCatalogTests: XCTestCase {
     try await waitUntil { model.sessions.count == 3 }
     XCTAssertEqual(client.subscribeCount, 2)
     XCTAssertEqual(client.listCount, 2)
-    XCTAssertEqual(client.unsubscribed.map(\.subscriptionId), ["sub-1"])
+    XCTAssertTrue(client.streams[0].isClosed, "the lagged stream is closed")
+    XCTAssertFalse(client.streams[1].isClosed)
+  }
+
+  func testAStreamAxodEndsIsReopenedAndTheCatalogRelisted() async throws {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10])]
+    let model = makeModel(client)
+    let sync = TerminalCatalogSync(
+      sessions: model, client: client, minimumBackoff: .milliseconds(1))
+    sync.start()
+    defer { sync.stop() }
+    try await waitUntil { model.sessions.count == 1 && client.streams.count == 1 }
+
+    client.sessions = [session(1, shells: [10]), session(2, shells: [20])]
+    client.streams[0].end()
+    try await waitUntil { model.sessions.count == 2 && client.streams.count == 2 }
+    XCTAssertEqual(client.listCount, 2)
   }
 
   func testSyncReportsConnectionLossAndAsksForHealthCheckOnce() async throws {

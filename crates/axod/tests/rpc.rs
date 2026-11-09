@@ -185,6 +185,67 @@ fn rpc(socket: &std::path::Path, method: &str) -> Value {
     rpc_with_params(socket, method, json!({}))
 }
 
+/// `axo.session.events.stream`: events pushed on a connection of their own, read one at a time.
+struct EventStream {
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
+    pending: std::collections::VecDeque<Value>,
+    partial: String,
+}
+
+impl EventStream {
+    fn open(socket: &std::path::Path, params: Value) -> Self {
+        let mut stream = UnixStream::connect(socket).unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "axo.session.events.stream", "params": params })
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut answer = String::new();
+        reader.read_line(&mut answer).unwrap();
+        let answer: Value = serde_json::from_str(&answer).unwrap();
+        assert!(answer["result"]["subscriptionId"].is_string(), "{answer}");
+        Self {
+            stream,
+            reader,
+            pending: Default::default(),
+            partial: String::new(),
+        }
+    }
+
+    /// The next event within `timeout`, if one came.
+    fn next(&mut self, timeout: Duration) -> Option<Value> {
+        if let Some(event) = self.pending.pop_front() {
+            return Some(event);
+        }
+        self.stream.set_read_timeout(Some(timeout)).unwrap();
+        match self.reader.read_line(&mut self.partial) {
+            Ok(0) => panic!("axod ended the stream"),
+            Ok(_) if self.partial.ends_with('\n') => {}
+            Ok(_) | Err(_) => return None,
+        }
+        let line = std::mem::take(&mut self.partial);
+        let notification: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            notification["method"], "axo.session.events",
+            "{notification}"
+        );
+        self.pending.extend(
+            notification["params"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+        self.pending.pop_front()
+    }
+}
+
 fn rpc_with_params(socket: &std::path::Path, method: &str, params: Value) -> Value {
     let mut stream = UnixStream::connect(socket).unwrap_or_else(|error| {
         let log_path = socket.parent().unwrap().join("server/stderr.log");
@@ -610,21 +671,10 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     let session_id = session["id"].as_str().unwrap().to_owned();
     let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
-    let subscription = rpc_with_params(
-        &socket,
-        "axo.session.subscribe",
-        json!({ "sessionId": session_id }),
-    )["result"]["subscriptionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let initial = rpc_with_params(
-        &socket,
-        "axo.session.events.next",
-        json!({ "subscriptionId": subscription, "timeoutMs": 1000 }),
-    );
-    assert_eq!(initial["result"]["event"]["type"], "session.snapshot");
-    assert_eq!(initial["result"]["event"]["session"]["id"], session_id);
+    let mut events = EventStream::open(&socket, json!({ "sessionId": session_id }));
+    let initial = events.next(Duration::from_secs(1)).expect("a first event");
+    assert_eq!(initial["type"], "session.snapshot");
+    assert_eq!(initial["session"]["id"], session_id);
 
     let mut attach = ChildGuard(start_terminal_attach(
         shell["attachSocketPath"].as_str().unwrap(),
@@ -633,12 +683,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     let output = output_channel(attach.0.stdout.take().unwrap());
     let attach_deadline = Instant::now() + READY_WAIT;
     loop {
-        let event = rpc_with_params(
-            &socket,
-            "axo.session.events.next",
-            json!({ "subscriptionId": subscription, "timeoutMs": 500 }),
-        )["result"]["event"]
-            .clone();
+        let event = events.next(Duration::from_millis(500)).unwrap_or_default();
         if event["type"] == "shell.activity" && event["activity"] == "attached" {
             break;
         }
@@ -692,12 +737,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     let event_deadline = Instant::now() + READY_WAIT;
     let mut output_event_seen = false;
     while Instant::now() < event_deadline {
-        let event = rpc_with_params(
-            &socket,
-            "axo.session.events.next",
-            json!({ "subscriptionId": subscription, "timeoutMs": 500 }),
-        )["result"]["event"]
-            .clone();
+        let event = events.next(Duration::from_millis(500)).unwrap_or_default();
         if event["type"] == "terminal.output"
             && event["sessionId"] == session_id
             && event["shellId"] == shell_id
@@ -755,18 +795,13 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     shell_busy(false);
 
     attach.stop();
-    let unsubscribed = rpc_with_params(
-        &socket,
-        "axo.session.unsubscribe",
-        json!({ "subscriptionId": subscription }),
-    );
-    assert_eq!(unsubscribed["result"]["unsubscribed"], true);
+    drop(events);
     daemon.stop();
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn long_polls_never_delay_unrelated_requests() {
+fn open_event_streams_never_delay_unrelated_requests() {
     let root = unique_test_directory("axo-lp");
     let server_directory = root.join("server");
     let socket = root.join("axod.sock");
@@ -775,44 +810,14 @@ fn long_polls_never_delay_unrelated_requests() {
     let session_id = create_session(&socket)["id"].as_str().unwrap().to_owned();
 
     // Regression: axod used to serve requests one at a time, so each waiting long-poll delayed
-    // every other request by up to its full timeout.
-    let subscriptions: Vec<String> = (0..16)
+    // every other request by up to its full timeout. Streams wait the same way.
+    let mut streams: Vec<EventStream> = (0..48)
         .map(|_| {
-            let subscription = rpc_with_params(
-                &socket,
-                "axo.session.subscribe",
-                json!({ "includeTerminalOutput": false }),
-            )["result"]["subscriptionId"]
-                .as_str()
-                .unwrap()
-                .to_owned();
-            // Drain the initial snapshots so the next poll really waits.
-            rpc_with_params(
-                &socket,
-                "axo.session.events.next",
-                json!({ "subscriptionId": subscription, "timeoutMs": 1, "maxEvents": 256 }),
-            );
-            subscription
+            let mut stream = EventStream::open(&socket, json!({ "includeTerminalOutput": false }));
+            while stream.next(Duration::from_millis(20)).is_some() {}
+            stream
         })
         .collect();
-    // Served one at a time, a request waits behind at least one whole 2.5 s poll; served
-    // concurrently it takes well under the 1 s allowed even on a loaded machine (up to ~0.5 s
-    // seen). Each poll outlasts the checks (200 ms + two requests under 1 s), so all 64 are
-    // still waiting while they run.
-    let pollers: Vec<_> = (0..64)
-        .map(|index| {
-            let socket = socket.clone();
-            let subscription = subscriptions[index % subscriptions.len()].clone();
-            std::thread::spawn(move || {
-                rpc_with_params(
-                    &socket,
-                    "axo.session.events.next",
-                    json!({ "subscriptionId": subscription, "timeoutMs": 2500, "maxEvents": 256 }),
-                )
-            })
-        })
-        .collect();
-    std::thread::sleep(Duration::from_millis(200));
 
     for method in ["axo.session.list", "axo.shell.create"] {
         let started = Instant::now();
@@ -828,13 +833,20 @@ fn long_polls_never_delay_unrelated_requests() {
         );
         assert!(
             elapsed < Duration::from_secs(1),
-            "{method} waited {elapsed:?} behind long-polls"
+            "{method} waited {elapsed:?} behind open streams"
         );
     }
-    for poller in pollers {
-        let response = poller.join().unwrap();
-        assert!(response["result"]["events"].is_array(), "{response}");
+    // Every stream hears of the new shell.
+    for stream in &mut streams {
+        let deadline = Instant::now() + READY_WAIT;
+        while stream.next(Duration::from_millis(500)).is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "a stream never heard of the new shell"
+            );
+        }
     }
+    drop(streams);
     daemon.stop();
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1437,9 +1449,6 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     );
     assert_eq!(negotiated["result"]["protocolVersion"], 2);
     for method in [
-        "axo.session.subscribe",
-        "axo.session.events.next",
-        "axo.session.unsubscribe",
         "axo.session.pi.restart.force.v2",
         "axo.session.pi.restart.auto.v1",
         "axo.workspace.list",

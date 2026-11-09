@@ -196,46 +196,16 @@ fn events_are_pushed_on_their_own_connection_until_it_closes() {
 }
 
 #[test]
-fn a_subscription_sees_sessions_change_and_ends_when_asked() {
+fn events_are_not_polled_for() {
     let axod = Axod::start();
-    let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
-    let session = axod.ok("axo.session.create", json!({}));
-    let id = session["id"].clone();
-    events.wait_for("the new Session's event", |event| {
-        (event.to_string().contains(id.as_str().unwrap())).then_some(())
-    });
-
-    // Bounds on a poll are checked.
-    let too_long = axod.err(
+    for method in [
+        "axo.session.subscribe",
         "axo.session.events.next",
-        json!({ "subscriptionId": events.id, "timeoutMs": 999_999 }),
-    );
-    assert_eq!(too_long.code, INVALID_PARAMS, "{too_long:?}");
-    let too_many = axod.err(
-        "axo.session.events.next",
-        json!({ "subscriptionId": events.id, "timeoutMs": 10, "maxEvents": 100_000 }),
-    );
-    assert_eq!(too_many.code, INVALID_PARAMS, "{too_many:?}");
-
-    // Without maxEvents, a poll answers at most one event (the legacy shape).
-    let single = axod.ok(
-        "axo.session.events.next",
-        json!({ "subscriptionId": events.id, "timeoutMs": 10 }),
-    );
-    assert!(single.get("event").is_some(), "{single}");
-
-    let subscription = events.id.clone();
-    let ended = axod.ok(
         "axo.session.unsubscribe",
-        json!({ "subscriptionId": subscription }),
-    );
-    assert_eq!(ended["unsubscribed"], true);
-    let gone = axod.err(
-        "axo.session.events.next",
-        json!({ "subscriptionId": subscription, "timeoutMs": 10 }),
-    );
-    assert!(gone.code < 0, "{gone:?}");
-    std::mem::forget(events);
+    ] {
+        let gone = axod.err(method, json!({}));
+        assert_eq!(gone.code, METHOD_NOT_FOUND, "{method}: {gone:?}");
+    }
 }
 
 #[test]

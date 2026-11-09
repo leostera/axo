@@ -1,4 +1,4 @@
-//! Events axod publishes to subscribers (`axo.session.subscribe`) and the relay.
+//! Events axod publishes to streams (`axo.session.events.stream`) and the relay.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

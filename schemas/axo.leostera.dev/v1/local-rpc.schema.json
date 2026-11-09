@@ -60,13 +60,7 @@
           "$ref": "#/$defs/ShellCloseCall"
         },
         {
-          "$ref": "#/$defs/SubscribeCall"
-        },
-        {
-          "$ref": "#/$defs/EventsNextCall"
-        },
-        {
-          "$ref": "#/$defs/UnsubscribeCall"
+          "$ref": "#/$defs/EventsStreamCall"
         },
         {
           "$ref": "#/$defs/TerminalInputCall"
@@ -508,7 +502,8 @@
         "params"
       ]
     },
-    "SubscribeCall": {
+    "EventsStreamCall": {
+      "description": "Opens a stream on a connection of its own, as its first request. axod answers with EventsStreamResult, then sends each batch as an EventsNotification until the connection closes. The subscription lives as long as the connection; after a subscription.lagged event axod ends the stream.",
       "allOf": [
         {
           "$ref": "#/$defs/BaseCall"
@@ -516,7 +511,7 @@
         {
           "properties": {
             "method": {
-              "const": "axo.session.subscribe"
+              "const": "axo.session.events.stream"
             },
             "params": {
               "type": "object",
@@ -529,37 +524,6 @@
                   "type": "boolean",
                   "default": true,
                   "description": "Catalog subscribers pass false to receive only catalog events (session, workspace, focus and shell activity); terminal output and Pi stream events are excluded."
-                }
-              }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": [
-        "params"
-      ]
-    },
-    "UnsubscribeCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.session.unsubscribe"
-            },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "subscriptionId"
-              ],
-              "properties": {
-                "subscriptionId": {
-                  "type": "string",
-                  "format": "uuid"
                 }
               }
             }
@@ -1037,7 +1001,7 @@
         }
       }
     },
-    "SubscribeResult": {
+    "EventsStreamResult": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1047,18 +1011,6 @@
         "subscriptionId": {
           "type": "string",
           "format": "uuid"
-        }
-      }
-    },
-    "UnsubscribeResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "unsubscribed"
-      ],
-      "properties": {
-        "unsubscribed": {
-          "const": true
         }
       }
     },
@@ -1166,87 +1118,28 @@
         }
       }
     },
-    "EventsNextCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.session.events.next"
-            },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "subscriptionId",
-                "timeoutMs"
-              ],
-              "properties": {
-                "subscriptionId": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "timeoutMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 20000
-                },
-                "maxEvents": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 256,
-                  "description": "When present, the result carries an `events` batch: the first event waits up to timeoutMs, the rest are already queued."
-                }
-              }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": [
-        "params"
-      ]
-    },
-    "EventsNextResult": {
-      "oneOf": [
-        {
+    "EventsNotification": {
+      "description": "One batch of events axod pushes on an events stream, in order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "axo.session.events" },
+        "params": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "event"
-          ],
-          "properties": {
-            "event": {
-              "anyOf": [
-                {
-                  "$ref": "events.schema.json#/$defs/LocalEvent"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "events"
-          ],
+          "required": ["events"],
           "properties": {
             "events": {
               "type": "array",
+              "minItems": 1,
               "maxItems": 256,
-              "items": {
-                "$ref": "events.schema.json#/$defs/LocalEvent"
-              }
+              "items": { "$ref": "events.schema.json#/$defs/LocalEvent" }
             }
           }
         }
-      ]
+      }
     }
   }
 }

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::SessionManager;
-use super::events::SharedEvent;
 use super::prompts::PromptError;
 use axo_agent::takeover::TakeoverPolicy;
 use axo_ipc::TypedMethods;
@@ -407,41 +406,6 @@ impl SessionManager {
 
         let manager = Arc::clone(self);
         handler.add_typed(
-            method::SESSION_SUBSCRIBE,
-            "expected {sessionId?, includeTerminalOutput?}",
-            move |request: rpc::Subscribe| {
-                manager
-                    .subscribe(request.session_id, request.include_terminal_output)
-                    .map(|subscription_id| rpc::Subscribed { subscription_id })
-                    .map_err(internal_rpc_error)
-            },
-        );
-
-        let manager = Arc::clone(self);
-        // Long-polls wait as futures, never on a thread (see `axo_ipc`).
-        handler.add_typed_async(
-            method::SESSION_EVENTS_NEXT,
-            "expected {subscriptionId, timeoutMs, maxEvents?}",
-            move |request: rpc::NextEvents| {
-                let manager = Arc::clone(&manager);
-                async move { manager.next_events_for_rpc(request).await }
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
-            method::SESSION_UNSUBSCRIBE,
-            "expected {subscriptionId}",
-            move |request: rpc::Unsubscribe| {
-                manager
-                    .unsubscribe(&request.subscription_id)
-                    .map(|()| rpc::Unsubscribed { unsubscribed: true })
-                    .map_err(internal_rpc_error)
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
             method::TERMINAL_INPUT,
             "expected {sessionId, shellId, sequence, data}",
             move |request: rpc::TerminalInput| {
@@ -806,33 +770,4 @@ impl SessionManager {
 
     // Catalog commands shared by local RPC and the relay: each performs the change and publishes
     // the events that describe it, so every client sees the same sequence.
-
-    async fn next_events_for_rpc(
-        &self,
-        request: rpc::NextEvents,
-    ) -> Result<rpc::EventsNext<SharedEvent>, RpcError> {
-        if !(1..=rpc::MAX_EVENTS_TIMEOUT_MS).contains(&request.timeout_ms) {
-            return Err(invalid_params("timeoutMs must be between 1 and 20000"));
-        }
-        let max_events = match request.max_events {
-            None => 1,
-            Some(max_events) if (1..=rpc::MAX_EVENTS_PER_POLL).contains(&max_events) => max_events,
-            Some(_) => return Err(invalid_params("maxEvents must be between 1 and 256")),
-        };
-        let timeout = Duration::from_millis(request.timeout_ms);
-        let events = self
-            .next_events_async(&request.subscription_id, timeout, max_events)
-            .await
-            .map_err(internal_rpc_error)?
-            .into_iter()
-            .map(SharedEvent);
-        Ok(match request.max_events {
-            None => rpc::EventsNext::Single {
-                event: events.into_iter().next(),
-            },
-            Some(_) => rpc::EventsNext::Batch {
-                events: events.collect(),
-            },
-        })
-    }
 }

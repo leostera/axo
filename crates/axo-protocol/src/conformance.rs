@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::rpc::{ConfigValue, NextEvents, ProtocolNegotiated, TerminalInput, TerminalResize};
+use crate::rpc::{ConfigValue, ProtocolNegotiated, Subscribe, TerminalInput, TerminalResize};
 use crate::{
     Availability, Event, Layout, PaneRole, RelayStatus, SessionId, SessionRecord, SessionStatus,
     ShellId, ShellRecord,
@@ -39,7 +39,7 @@ fn json(source: &str) -> Value {
 #[test]
 fn exactly_specified_fixtures_round_trip() {
     round_trips::<Event>(&json(fixture!("terminal-output.event.json"))["params"]["event"]);
-    round_trips::<NextEvents>(&json(fixture!("events-next.call.json"))["params"]);
+    round_trips::<Subscribe>(&json(fixture!("events-stream.call.json"))["params"]);
     round_trips::<TerminalInput>(&json(fixture!("terminal-input.local.call.json"))["params"]);
     round_trips::<TerminalResize>(&json(fixture!("terminal-resize.local.call.json"))["params"]);
     round_trips::<crate::Viewport>(

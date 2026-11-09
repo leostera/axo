@@ -73,6 +73,29 @@ impl Client {
         })
     }
 
+    /// The next notification axod pushed (an events stream's batch), or `None` if none came
+    /// within the read timeout.
+    pub fn notification<R: DeserializeOwned>(&mut self) -> Result<Option<R>, CallError> {
+        match self.reader.read_line(&mut self.line) {
+            Ok(0) => return Err(CallError::Protocol("connection closed".to_owned())),
+            Ok(_) if self.line.ends_with('\n') => {}
+            Ok(_) => return Ok(None),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let line = std::mem::take(&mut self.line);
+        let notification: Notification<R> = serde_json::from_str(&line)
+            .map_err(|error| CallError::Protocol(format!("notification: {error}")))?;
+        Ok(Some(notification.params))
+    }
+
     pub fn call<P: Serialize, R: DeserializeOwned>(
         &mut self,
         method: &str,
@@ -93,7 +116,8 @@ impl Client {
         if self.reader.read_line(&mut self.line)? == 0 {
             return Err(CallError::Protocol("connection closed".to_owned()));
         }
-        let response: Response<R> = serde_json::from_str(&self.line)
+        let line = std::mem::take(&mut self.line);
+        let response: Response<R> = serde_json::from_str(&line)
             .map_err(|error| CallError::Protocol(format!("{method}: {error}")))?;
         if response.id != id {
             return Err(CallError::Protocol(format!(
@@ -184,18 +208,13 @@ pub struct Subscribe {
     pub include_terminal_output: bool,
 }
 
+/// An events stream's answer; only its arrival matters.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Subscription {
-    pub subscription_id: String,
-}
+pub struct Subscription {}
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NextEvents<'a> {
-    pub subscription_id: &'a str,
-    pub timeout_ms: u64,
-    pub max_events: u32,
+#[derive(Deserialize)]
+struct Notification<P> {
+    params: P,
 }
 
 #[derive(Deserialize)]

@@ -105,18 +105,6 @@ pub const PARITY: &[Parity] = &[
         Remote::Call("axo.remote.session.layout.set"),
     ),
     row(
-        method::SESSION_SUBSCRIBE,
-        Remote::Events("axo.host.subscribe"),
-    ),
-    row(
-        method::SESSION_EVENTS_NEXT,
-        Remote::Events("axo.host.subscribe"),
-    ),
-    row(
-        method::SESSION_UNSUBSCRIBE,
-        Remote::Events("axo.host.unsubscribe"),
-    ),
-    row(
         method::SHELL_CREATE,
         Remote::Call("axo.remote.shell.create"),
     ),

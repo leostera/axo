@@ -491,16 +491,6 @@ impl Events<'_> {
     }
 }
 
-impl Drop for Events<'_> {
-    fn drop(&mut self) {
-        let _ = call(
-            &self.axod.socket(),
-            "axo.session.unsubscribe",
-            json!({ "subscriptionId": self.id }),
-        );
-    }
-}
-
 /// A Session's pane with `role` (`pi` or `terminal`).
 #[track_caller]
 pub fn pane<'a>(session: &'a Value, role: &str) -> &'a Value {

@@ -3,10 +3,10 @@ import Foundation
 
 /// Keeps `TerminalSessionsModel` synchronized with Axod through one catalog subscription.
 ///
-/// Subscribes before listing so no change between the listing and the first poll is lost, then
-/// applies events as they arrive. A lagged stream, a daemon restart or any transport failure
-/// leads to a fresh subscription and a full listing, with bounded backoff. There is no periodic
-/// polling: an idle catalog costs one long-poll request per `AxodConnection.eventPollTimeout`.
+/// Opens the event stream before listing so no change between the listing and the first event
+/// is lost, then applies events as axod pushes them. A lagged or ended stream, a daemon restart
+/// or any transport failure leads to a fresh stream and a full listing, with bounded backoff.
+/// Nothing is polled: an idle catalog costs nothing.
 @MainActor
 final class TerminalCatalogSync {
   /// Consecutive failures after which the daemon itself is re-verified.
@@ -58,10 +58,10 @@ final class TerminalCatalogSync {
     var backoff = minimumBackoff
     var consecutiveFailures = 0
     while !Task.isCancelled {
-      var subscription: TerminalSubscriptionID?
+      var stream: (any CatalogEvents)?
       do {
-        let opened = try await client.subscribeToCatalog()
-        subscription = opened
+        let opened = try await client.openCatalogEvents()
+        stream = opened
         try await sessions.resynchronize()
         await sessions.elicitations.refresh()
         await remoteAccess?.refresh()
@@ -72,7 +72,10 @@ final class TerminalCatalogSync {
         backoff = minimumBackoff
         consecutiveFailures = 0
         streaming: while !Task.isCancelled {
-          for event in try await client.nextEvents(for: opened) {
+          guard let batch = await opened.next() else {
+            throw SessionCommandError("Axod ended the event stream")
+          }
+          for event in batch {
             if case .daemonReady = event, !axodReady {
               axodReady = true
               sessions.setCatalogConnection(.live)
@@ -94,10 +97,7 @@ final class TerminalCatalogSync {
         try? await Task.sleep(for: backoff)
         backoff = min(backoff * 2, maximumBackoff)
       }
-      if let subscription {
-        // Best effort; Axod also reclaims subscriptions nobody polls.
-        try? await client.unsubscribe(subscription)
-      }
+      await stream?.close()
     }
   }
 }

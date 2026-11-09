@@ -7,12 +7,11 @@ import Foundation
 /// for the key or Session asked about, an acknowledgement that is actually positive), so callers
 /// only see well-formed answers or an `AxoClientError`.
 public final class AxodConnection: Sendable {
-  /// The daemon's per-poll batch limit.
-  public static let maxEventsPerPoll = 256
-
   private let rpc: JSONRPCConnection
+  private let transport: any AxoTransport
 
   public init(transport: any AxoTransport) {
+    self.transport = transport
     rpc = JSONRPCConnection(transport: transport)
   }
 
@@ -240,40 +239,15 @@ public final class AxodConnection: Sendable {
 
   // MARK: - Events
 
-  /// Opens an event subscription. Catalog consumers pass `includeTerminalOutput: false` to
-  /// receive only catalog events (no terminal output or Pi stream events).
-  public func subscribe(to sessionID: SessionID?, includeTerminalOutput: Bool) async throws
-    -> TerminalSubscriptionID
+  /// Opens a stream of events on a connection of its own: axod pushes each batch the moment
+  /// there is one, so nothing is polled. Catalog consumers pass `includeTerminalOutput: false`.
+  public func openEventStream(to sessionID: SessionID?, includeTerminalOutput: Bool) async throws
+    -> AxodEventStream
   {
-    try await call(
-      AxodMethods.sessionSubscribe,
-      SessionSubscribeRequest(sessionId: sessionID, includeTerminalOutput: includeTerminalOutput))
-  }
-
-  /// Waits up to `timeout` (at most 20 s) for the next event and returns it with any already
-  /// queued after it, in order. An empty result means the wait timed out.
-  public func nextEvents(
-    for subscription: TerminalSubscriptionID, timeout: Duration, maxEvents: Int
-  ) async throws -> [TerminalSessionEvent] {
-    let timeoutMilliseconds = min(20_000, max(1, timeout.milliseconds))
-    let request = SessionEventsNextRequest(
-      subscriptionId: subscription.subscriptionId,
-      timeoutMs: UInt64(timeoutMilliseconds),
-      maxEvents: min(Self.maxEventsPerPoll, max(1, maxEvents)))
-    // The call outlives the server-side wait by a second.
-    return try await call(
-      AxodMethods.sessionEventsNext, request,
-      timeout: .milliseconds(timeoutMilliseconds + 1_000)
-    ).events
-  }
-
-  public func unsubscribe(_ subscription: TerminalSubscriptionID) async throws {
-    let response = try await call(
-      AxodMethods.sessionUnsubscribe,
-      SessionUnsubscribeRequest(subscriptionId: subscription.subscriptionId))
-    guard response.unsubscribed else {
-      throw AxoClientError.invalidResponse("daemon did not unsubscribe the session event stream")
-    }
+    try await AxodEventStream.open(
+      transport: transport,
+      request: SessionSubscribeRequest(
+        sessionId: sessionID, includeTerminalOutput: includeTerminalOutput))
   }
 
   // MARK: - Calls

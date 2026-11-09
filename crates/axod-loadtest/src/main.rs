@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 use clap::{Parser, ValueEnum};
 
 use client::{
-    Client, ConfigGet, Layout, NextEvents, NoParams, PaneRole, Resize, Session, SessionList,
-    SessionRef, SetLayout, Shell, ShellRef, Subscribe, Subscription, TerminalInput, base64,
+    Client, ConfigGet, Layout, NoParams, PaneRole, Resize, Session, SessionList, SessionRef,
+    SetLayout, Shell, ShellRef, Subscribe, Subscription, TerminalInput, base64,
 };
 use daemon::Daemon;
 use stats::{Budget, Recorder, Report};
@@ -306,31 +306,33 @@ fn subscribe_until(
     } else {
         "catalog"
     };
+    // A lagged stream ends after its marker; the subscriber opens a new one, as the app does.
     let result = (|| -> Result<(), String> {
-        let mut client =
-            Client::connect(&socket, Duration::from_secs(30)).map_err(|e| e.to_string())?;
-        let subscription: Subscription = client
-            .call(
-                "axo.session.subscribe",
-                &Subscribe {
-                    session_id,
-                    include_terminal_output,
-                },
-            )
-            .map_err(|e| e.to_string())?;
         while !stop.load(Ordering::Relaxed) {
-            let batch: client::EventBatch = client
+            let mut client =
+                Client::connect(&socket, Duration::from_millis(500)).map_err(|e| e.to_string())?;
+            let _: Subscription = client
                 .call(
-                    "axo.session.events.next",
-                    &NextEvents {
-                        subscription_id: &subscription.subscription_id,
-                        timeout_ms: 500,
-                        max_events: 256,
+                    "axo.session.events.stream",
+                    &Subscribe {
+                        session_id: session_id.clone(),
+                        include_terminal_output,
                     },
                 )
                 .map_err(|e| e.to_string())?;
-            for event in &batch.events {
-                recorder.count_event(label, &event.kind);
+            'stream: while !stop.load(Ordering::Relaxed) {
+                let Some(batch) = client
+                    .notification::<client::EventBatch>()
+                    .map_err(|e| e.to_string())?
+                else {
+                    continue;
+                };
+                for event in &batch.events {
+                    recorder.count_event(label, &event.kind);
+                    if event.kind == "subscription.lagged" {
+                        break 'stream;
+                    }
+                }
             }
         }
         Ok(())

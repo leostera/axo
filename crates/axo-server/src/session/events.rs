@@ -2,7 +2,7 @@
 //! terminal output fan-out to them.
 
 use std::io;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -100,8 +100,9 @@ impl LocalSubscriber {
 }
 
 /// Consumer side of a local event subscription; see `EventQueue` for lag semantics.
-/// Subscriptions nobody polls for `SUBSCRIPTION_IDLE_EXPIRY` are reclaimed so crashed clients
-/// cannot exhaust capacity.
+/// Subscriptions nobody waits on and nobody polled for `SUBSCRIPTION_IDLE_EXPIRY` are reclaimed
+/// so abandoned ones cannot exhaust capacity; one being waited on is never reclaimed, however
+/// long the wait (a stream waits for as long as nothing happens).
 ///
 /// The registry mutex only guards membership. A poll clones the `Arc` out and waits on the
 /// subscription's own queue, so one long-poll never blocks other subscribers, the relay,
@@ -109,9 +110,31 @@ impl LocalSubscriber {
 pub(super) struct LocalSubscription {
     queue: Arc<EventQueue<Arc<Event>>>,
     pub(super) last_polled: Mutex<Instant>,
+    /// Waits in progress on this subscription.
+    pub(super) waiters: AtomicUsize,
+}
+
+/// Counts a wait for as long as it lasts, however it ends.
+struct Waiting<'a>(&'a LocalSubscription);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.mark_polled();
+        self.0.waiters.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl LocalSubscription {
+    fn waiting(&self) -> Waiting<'_> {
+        self.waiters.fetch_add(1, Ordering::AcqRel);
+        Waiting(self)
+    }
+
+    fn abandoned(&self, now: Instant) -> bool {
+        self.waiters.load(Ordering::Acquire) == 0
+            && now.duration_since(self.last_polled()) >= SUBSCRIPTION_IDLE_EXPIRY
+    }
+
     fn last_polled(&self) -> Instant {
         self.last_polled
             .lock()
@@ -162,9 +185,7 @@ impl SessionManager {
         let now = Instant::now();
         let expired: Vec<String> = subscriptions
             .iter()
-            .filter(|(_, subscription)| {
-                now.duration_since(subscription.last_polled()) >= SUBSCRIPTION_IDLE_EXPIRY
-            })
+            .filter(|(_, subscription)| subscription.abandoned(now))
             .map(|(id, _)| id.clone())
             .collect();
         for id in &expired {
@@ -194,6 +215,7 @@ impl SessionManager {
             Arc::new(LocalSubscription {
                 queue: Arc::clone(&queue),
                 last_polled: Mutex::new(now),
+                waiters: AtomicUsize::new(0),
             }),
         );
         subscribers.push(LocalSubscriber {
@@ -255,9 +277,8 @@ impl SessionManager {
         max_events: usize,
     ) -> io::Result<Vec<Arc<Event>>> {
         let subscription = self.subscription(id)?;
-        let events = subscription.queue.wait_blocking(timeout, max_events);
-        subscription.mark_polled();
-        events
+        let _waiting = subscription.waiting();
+        subscription.queue.wait_blocking(timeout, max_events)
     }
 
     /// Like `next_events`, but waits without occupying a thread.
@@ -268,9 +289,8 @@ impl SessionManager {
         max_events: usize,
     ) -> io::Result<Vec<Arc<Event>>> {
         let subscription = self.subscription(id)?;
-        let events = subscription.queue.wait(timeout, max_events).await;
-        subscription.mark_polled();
-        events
+        let _waiting = subscription.waiting();
+        subscription.queue.wait(timeout, max_events).await
     }
 
     pub(super) fn unsubscribe(&self, id: &str) -> io::Result<()> {
@@ -536,6 +556,45 @@ mod tests {
         );
         manager.unsubscribe(&replacement).unwrap();
         manager.unsubscribe(&output).unwrap();
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn a_subscription_someone_waits_on_is_never_reclaimed() {
+        let directory = test_directory("axow");
+        fs::create_dir_all(&directory).unwrap();
+        let manager = Arc::new(open_with_silent_shell(&directory));
+        let streamed = manager.subscribe(None, false).unwrap();
+        while manager
+            .next_event(&streamed, Duration::from_millis(1))
+            .unwrap()
+            .is_some()
+        {}
+        // A stream waits for as long as nothing happens.
+        let waiting = Arc::clone(&manager);
+        let id = streamed.clone();
+        let waiter =
+            std::thread::spawn(move || waiting.next_events(&id, Duration::from_secs(5), 1));
+        let subscription = manager.subscriptions.lock().unwrap()[&streamed].clone();
+        while subscription.waiters.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        *subscription.last_polled.lock().unwrap() = Instant::now()
+            .checked_sub(SUBSCRIPTION_IDLE_EXPIRY)
+            .unwrap();
+        let other = manager.subscribe(None, false).unwrap();
+        assert!(
+            manager
+                .subscriptions
+                .lock()
+                .unwrap()
+                .contains_key(&streamed),
+            "a waited-on subscription was reclaimed"
+        );
+        manager.publish_event(Event::PeerSessionsChanged);
+        assert_eq!(waiter.join().unwrap().unwrap().len(), 1);
+        manager.unsubscribe(&other).unwrap();
+        manager.unsubscribe(&streamed).unwrap();
         let _ = fs::remove_dir_all(directory);
     }
 }

@@ -78,16 +78,13 @@ final class AxodInteropTests: XCTestCase {
     let sessionsAfterCreate = try await axod.listSessionSnapshot().sessions
     XCTAssertEqual(
       Set(sessionsAfterCreate.map(\.id)), Set([baselineSession.id, createdSession.id]))
-    let subscription = try await axod.subscribe(to: createdSession.id, includeTerminalOutput: true)
-    let initialEvents = try await axod.nextEvents(
-      for: subscription,
-      timeout: .seconds(1),
-      maxEvents: AxodConnection.maxEventsPerPoll)
+    let stream = try await axod.openEventStream(to: createdSession.id, includeTerminalOutput: true)
+    let initialEvents = await stream.next() ?? []
     guard case .sessionSnapshot(let snapshot) = initialEvents.first else {
-      return XCTFail("subscription should begin with a current session snapshot")
+      return XCTFail("a stream should begin with a current session snapshot")
     }
     XCTAssertEqual(snapshot.id, createdSession.id)
-    try await axod.unsubscribe(subscription)
+    await stream.close()
     XCTAssertEqual(
       sessionsAfterCreate.first(where: { $0.id == createdSession.id })?.shells.map(\.id),
       createdSession.shells.map(\.id) + [createdShell.id]
@@ -106,25 +103,24 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(remainingSessions.map(\.id), [baselineSession.id])
   }
 
-  /// One connection carries many calls at once: a long-poll waiting on it holds up nothing.
-  func testALongPollDoesNotHoldUpOtherCallsOnTheSameConnection() async throws {
+  /// Axod pushes a change the moment it happens, on the stream's own connection.
+  func testAChangeIsPushedAsItHappens() async throws {
     try await withDaemon { axod in
-      let subscription = try await axod.subscribe(to: nil, includeTerminalOutput: false)
-      // The first poll returns the current snapshot; the next one waits.
-      _ = try await axod.nextEvents(for: subscription, timeout: .seconds(1), maxEvents: 256)
+      let stream = try await axod.openEventStream(to: nil, includeTerminalOutput: false)
+      let created = try await axod.createSession()
       let started = ContinuousClock.now
-      async let quiet = axod.nextEvents(for: subscription, timeout: .seconds(3), maxEvents: 256)
-      try await withThrowingTaskGroup(of: Void.self) { group in
-        for _ in 0..<32 {
-          group.addTask { _ = try await axod.listSessionSnapshot() }
+      var heard = false
+      while !heard, let batch = await stream.next() {
+        heard = batch.contains { event in
+          if case .sessionSnapshot(let session) = event { return session.id == created.id }
+          return false
         }
-        try await group.waitForAll()
       }
-      let callsTook = ContinuousClock.now - started
-      XCTAssertLessThan(callsTook, .seconds(2), "32 calls waited on the long-poll: \(callsTook)")
-      let events = try await quiet
-      XCTAssertEqual(events.count, 0)
-      XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(2_900))
+      XCTAssertTrue(heard, "the stream ended before the new Session's event")
+      XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
+      await stream.close()
+      let afterClose = await stream.next()
+      XCTAssertNil(afterClose, "a closed stream has ended")
     }
   }
 

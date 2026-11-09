@@ -85,7 +85,7 @@ Checked with `feynman check sessions/upload-wakes --depth 40`: every property ho
 
 ### Step 4: axod pushes to the Mac app
 
-`axo.session.events.subscribe` answers once, then axod sends each batch as a JSON-RPC notification on the same Unix socket. The subscription lives as long as the connection, so the reclaiming of unpolled subscriptions goes. `axo.session.events.next` stays only for the transition, then goes (no legacy: the app and axod ship together, from one bundle).
+`axo.session.events.stream` is a connection's first request, as `axo.mcp.open` is: axod answers with the subscription, then sends each batch as an `axo.session.events` notification the moment there is one. The subscription lives as long as the connection. A subscription someone waits on is never reclaimed; one nobody waits on or polled for 60 seconds still is, for an in-process waiter that was cancelled before it unsubscribed. After a lag marker axod ends the stream, and the app opens a new one and relists. `axo.session.subscribe`, `axo.session.events.next` and `axo.session.unsubscribe` go in the same release (no legacy: the app and axod ship together, from one bundle).
 
 ### Step 5: the Session manager on tokio
 
