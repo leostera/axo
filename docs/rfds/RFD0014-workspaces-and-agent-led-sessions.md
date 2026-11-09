@@ -1,7 +1,7 @@
 # RFD0014 - Axo: workspaces and agent-led sessions
 
 - Feature Name: `axo-workspaces-and-agent-led-sessions`
-- Status: Proposal
+- Status: Superseded by [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) (Workspaces)
 - Author: leostera
 - Start Date: 2026-10-17
 - Updated: 2026-10-17
