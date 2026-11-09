@@ -12,8 +12,6 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case sessionRemoved(sessionID: SessionID)
   case shellActivity(sessionID: SessionID, shellID: ShellID, activity: TerminalShellActivity)
   case terminalOutput(sessionID: SessionID, shellID: ShellID, sequence: UInt64, data: Data)
-  /// A workspace was created, renamed or archived; reload the workspace list.
-  case workspaceChanged(workspaceID: String)
   /// Axod asks clients to show this session, for example after `/resume`.
   case sessionFocus(sessionID: SessionID)
   /// Remote-access connection state changed.
@@ -34,7 +32,7 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case unknown(type: String)
 
   private enum CodingKeys: String, CodingKey {
-    case type, session, sessionId, shellId, activity, sequence, data, workspaceId, status
+    case type, session, sessionId, shellId, activity, sequence, data, status
     case elicitation, id, action
   }
 
@@ -63,8 +61,6 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
         data: data)
     case "relay.status":
       self = .relayStatus(try container.decode(RemoteAccessStatus.self, forKey: .status))
-    case "workspace.changed":
-      self = .workspaceChanged(workspaceID: try container.decode(String.self, forKey: .workspaceId))
     case "session.focus":
       self = .sessionFocus(sessionID: try container.decode(SessionID.self, forKey: .sessionId))
     case "peer.sessions.changed":

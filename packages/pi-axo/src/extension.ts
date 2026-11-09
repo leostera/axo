@@ -209,7 +209,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   };
 
   pi.registerCommand("axo-import", {
-    description: "Import a Pi JSONL transcript as a new Axo Session in this Workspace",
+    description: "Import a Pi JSONL transcript as a new Axo Session in this folder",
     handler: async (args, commandContext) => {
       const argument = args.trim();
       const quotedPath = argument.match(/^(?:\"([^\"]+)\"|'([^']+)')$/);
@@ -221,7 +221,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       const sourcePath = resolve(commandContext.cwd, rawPath);
       if (!(await commandContext.ui.confirm(
         "Import Pi Session into Axo",
-        `Create a new Session in this Workspace from ${sourcePath}? The current Session and source file will be left unchanged.`,
+        `Create a new Session in this folder from ${sourcePath}? The current Session and source file will be left unchanged.`,
       ))) return;
       await publish("session.import.requested", { sourcePath });
       commandContext.ui.notify("Axo is importing the transcript as a new Session.", "info");

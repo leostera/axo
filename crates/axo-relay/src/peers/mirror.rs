@@ -1,5 +1,5 @@
-//! The copies on disk: one file per Session at the same place under `sessions/` as on the Mac
-//! that owns it, with a state file saying how far it is valid.
+//! The copies on disk: one file per Session in its Mac's folder under `sessions/`, with a state
+//! file saying how far it is valid.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -22,25 +22,21 @@ pub struct ClientRecord {
     pub line: String,
 }
 
-/// Which copy: the Mac that owns the Session, its Workspace there, and the Session.
+/// Which copy: the Mac that owns the Session, and the Session.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Place {
     pub host_id: String,
-    pub workspace: String,
     pub session_id: String,
 }
 
 impl Place {
-    /// The place of a listed Session, if every part is a safe folder name. A Session without a
-    /// Workspace goes in `no-workspace`.
-    pub fn of(host_id: &str, workspace_id: Option<&str>, session_id: &str) -> Option<Self> {
-        let workspace = workspace_id.unwrap_or("no-workspace");
-        [host_id, workspace, session_id]
+    /// The place of a listed Session, if both parts are safe folder names.
+    pub fn of(host_id: &str, session_id: &str) -> Option<Self> {
+        [host_id, session_id]
             .iter()
             .all(|part| is_id(part))
             .then(|| Self {
                 host_id: host_id.to_owned(),
-                workspace: workspace.to_owned(),
                 session_id: session_id.to_owned(),
             })
     }
@@ -69,7 +65,7 @@ impl Mirror {
     }
 
     fn folder(&self, place: &Place) -> PathBuf {
-        self.root.join(&place.host_id).join(&place.workspace)
+        self.root.join(&place.host_id)
     }
 
     pub fn file(&self, place: &Place) -> PathBuf {
@@ -312,33 +308,25 @@ pub fn read_copy(
 mod tests {
     use super::*;
     use crate::peers::test_support::{
-        HEADER, HOST, SESSION, Scratch, WORKSPACE, copy, expected, place, record, records,
+        HEADER, HOST, SESSION, Scratch, copy, expected, place, record, records,
     };
 
     #[test]
-    fn a_copy_is_at_the_same_place_under_sessions_as_on_its_mac() {
+    fn a_copy_is_in_its_macs_folder_under_sessions() {
         let scratch = Scratch::new();
         let mirror = Mirror::new(scratch.0.clone());
         assert_eq!(
             mirror.file(&place()),
-            scratch
-                .0
-                .join(HOST)
-                .join(WORKSPACE)
-                .join(format!("{SESSION}.jsonl"))
-        );
-        assert_eq!(
-            Place::of(HOST, None, SESSION).unwrap().workspace,
-            "no-workspace"
+            scratch.0.join(HOST).join(format!("{SESSION}.jsonl"))
         );
     }
 
     #[test]
     fn a_place_the_cloud_names_must_be_ids() {
-        assert!(Place::of("..", Some(WORKSPACE), SESSION).is_none());
-        assert!(Place::of(HOST, Some("../../server"), SESSION).is_none());
-        assert!(Place::of(HOST, Some(WORKSPACE), "a/b").is_none());
-        assert!(Place::of(HOST, Some(""), SESSION).is_none());
+        assert!(Place::of("..", SESSION).is_none());
+        assert!(Place::of("../../server", SESSION).is_none());
+        assert!(Place::of(HOST, "a/b").is_none());
+        assert!(Place::of("", SESSION).is_none());
     }
 
     #[test]
@@ -464,7 +452,7 @@ mod tests {
             vec![3, 4],
             "starting over reads the newest `limit`"
         );
-        let elsewhere = Place::of(HOST, None, SESSION).unwrap();
+        let elsewhere = Place::of(HOST, "8f8f8f8f-0000-4000-8000-000000000002").unwrap();
         assert!(read_copy(&scratch.0, &elsewhere, 0, 10).unwrap().is_none());
     }
 

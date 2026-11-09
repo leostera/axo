@@ -1,8 +1,9 @@
 //! Where Pi transcripts live (RFD0022).
 //!
 //! Every Mac's transcripts are kept by host, the same way on every Mac:
-//! `~/.axo/sessions/<hostId>/<workspaceId>/<sessionId>.jsonl`. This Mac writes its own under its
-//! host id; the other Macs' are copies (see `axo_relay::peers`). `~/.axo/server/` keeps only this
+//! `~/.axo/sessions/<hostId>/<sessionId>.jsonl` (RFD0038; Sessions made while there were
+//! Workspaces stay where the catalog says). This Mac writes its own
+//! under its host id; the other Macs' are copies (see `axo_relay::peers`). `~/.axo/server/` keeps only this
 //! Mac's server state: its database, and Pi's bridge sockets in `server/pi-sessions/`.
 //!
 //! Transcripts used to live in `server/pi-sessions/<workspaceId>/`. Opening moves each such
@@ -81,7 +82,7 @@ fn move_older_transcripts(
 ) -> io::Result<()> {
     for entry in fs::read_dir(bridges)? {
         let entry = entry?;
-        // Workspace folders only: sockets stay, and a symlink is a folder already moved.
+        // Folders only (one per old Workspace): sockets stay, and a symlink is a folder already moved.
         if !entry.file_type()?.is_dir() {
             continue;
         }

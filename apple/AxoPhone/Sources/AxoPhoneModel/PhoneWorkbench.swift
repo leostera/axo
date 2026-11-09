@@ -329,7 +329,6 @@ public final class PhoneWorkbench {
       let workbench = makeWorkbench(remote)
       workbench.link = link
       current = workbench
-      Task { await workbench.refreshWorkspaces() }
     }
     selection = Selection(host: hostID, session: session)
     guard let workbench = current else { return }
@@ -342,7 +341,7 @@ public final class PhoneWorkbench {
   public var canChooseHost: Bool { isDrafting && hosts.hosts.count > 1 }
 
   /// The Mac a new chat starts on, chosen by the message box: what is typed comes along, and the
-  /// chat goes back to that Mac's Home Workspace, since Workspaces are a Mac's own. Only a new chat
+  /// chat starts in that Mac's home folder. Only a new chat
   /// can move, and only to another Mac of the account that is online.
   public func chooseHost(_ hostID: UUID) {
     guard let draft = selection, draft.session == nil, draft.host != hostID,
@@ -452,7 +451,7 @@ public final class PhoneWorkbench {
   }
 
   /// Sends what is typed in the open chat. On a new chat, the first message brings the chat into
-  /// being in the Mac's Home Workspace. The words leave the box as they go and come back if the
+  /// being in the Mac's home folder. The words leave the box as they go and come back if the
   /// Mac refuses them. `delivery` says when a working Pi takes it (RFD0033): by default it
   /// interrupts, so the agent answers it now.
   public func send(delivery: PromptDelivery = .interrupt) async -> SendOutcome {
@@ -464,7 +463,7 @@ public final class PhoneWorkbench {
   }
 
   /// Starts the new chat in `place` with what is typed in it: how a chat starts somewhere other
-  /// than Home.
+  /// than the home folder.
   public func send(in place: NewChatPlace) async -> SendOutcome {
     guard !isSending, let selection, selection.session == nil, canSendDraft else { return .failed }
     isSending = true
@@ -555,8 +554,8 @@ public final class PhoneWorkbench {
 
 /// Where a new chat starts on its Mac.
 public enum NewChatPlace: Equatable, Hashable, Sendable {
-  /// The Mac's Home Workspace (its home folder): where a chat goes unless it is told otherwise.
+  /// The Mac's home folder: where a chat goes unless it is told otherwise.
   case home
-  /// One of the Mac's Workspaces, chosen by the person.
-  case workspace(UUID)
+  /// The folder of another of the Mac's chats.
+  case beside(SessionID)
 }

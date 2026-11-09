@@ -4,7 +4,7 @@
 //! scripts. `axod mcp` opens [`OPEN`] on axod's socket and from then on only copies bytes: this
 //! server runs in axod, on that connection. Each tool is one `axo.*` method, called in process
 //! as the connection's peer (`axo_ipc::Local`); this server only translates. It
-//! knows which Session it serves, so tools accept `"self"` for a Session or Workspace ID and
+//! knows which Session it serves, so tools accept `"self"` for a Session ID and
 //! every prompt it sends names its Session as the sender. There is no authentication: Axo
 //! trusts everything running as the person's user.
 
@@ -35,14 +35,14 @@ const AXOD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLS_IN_FLIGHT: usize = 16;
 const SELF: &str = "self";
 
-const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi conversation (the "pi" pane) with a terminal pane beside it, grouped into Workspaces (a directory each). These tools see and drive every Session on this Mac.
+const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi conversation (the "pi" pane) with a terminal pane beside it, working in a folder. These tools see and drive every Session on this Mac.
 
 - `whoami` returns this agent's own Session, including its panes' shell IDs.
-- Anywhere a tool takes `sessionId` or `workspaceId`, "self" means this agent's own Session or Workspace.
+- Anywhere a tool takes a Session ID (`sessionId`, `like`), "self" means this agent's own Session.
 - `session_catalog` lists open Sessions (with their panes) and archived ones. Each has `piSessionFile`, the absolute path of its Pi transcript: a JSONL file, one JSON record per line. Records with `"type":"message"` carry `message.role` ("user", "assistant", "toolResult") and `message.content`, a list of blocks such as `{"type":"text","text":...}`. Search and read transcripts with ordinary tools, e.g. `rg -l -i "backoff" <files>`, or `jq -r 'select(.type=="message" and .message.role=="user") | .message.content[]? | select(.type=="text") | .text' <file>`. A file may not exist if Pi never wrote to it.
 - `session_prompt` sends a message to a Session's agent, including this one ("self"). `delivery`: "followUp" (default; after its current turn), "steer" (after its current tool calls) or "turn" (only if idle). Prompts between agents are limited: at most 8 in a chain since a person last spoke, 30 a minute, 10 a minute to "self".
 - `terminal_write` types text into a pane: end a command with "\r" to run it; "\u0003" is Ctrl-C. `terminal_screen` reads a pane's screen and scrollback as plain text.
-- `workspace_session_create` starts a new Session (Pi plus a terminal) in a Workspace.
+- `session_create` starts a new Session (Pi plus a terminal) in a folder: `folder` (an absolute path), `like` (another Session's folder; "self" for this one's), or with neither the home directory.
 - `apps_*` reach this person's Axo account, if this Mac is linked to one. The account's Macs are reached by name: `codemode.hosts.list()` lists them (name, online, whether computer use works there), `codemode.bash.run({ host, command })` runs a command on one, and `codemode.computer.run({ host, tool, args, confirm? })` drives its apps like the `computer` tool, asking the person when an action needs them; screenshots come back as `{ type: "image", attachment }`, and returning them from the script shows them to you. `host` is a name from `hosts.list()` or "self". `apps_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `apps_run` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.bash.run({ host: "studio", command: "uptime" })).stdout`; `apps_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `apps_list` lists the apps and their accounts; `apps_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. A apps script may run for up to 5 minutes: when calling `apps_run` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
 - `computer` sees and operates this Mac's apps (computer use), in the background where possible: read a window with `get_window_state` (elements plus a screenshot), act with `run_steps` (it can report what changed), or run a JavaScript `run_script` for loops and checks. `computer_tools` gives each tool's schema; `get_guide` explains the approach. Prefer an app's own CLI, MCP server or connection when there is one. It acts as the person in their real apps: an action that may send, post, pay or delete is checked on this Mac, and the person is asked on their own devices before it runs; pass `confirm: true` to have them asked about any call. You cannot approve for them. Read back what you typed. Never ask the person for a password, login or one-time code in the chat, and never type one yourself: call `request_input` ({ pid, window_id, fields: [{ kind, label? }], submit? }), and they fill it in on their own device; it goes into the app without passing through you, and reads show it as •••• (filled by you). `screenshot` captures the whole screen.
 - Every tool here answers JSON in `structuredContent`, typed by its output schema: in a codemode script, `(await tools.mcp__axo__apps_run({ code })).structuredContent.result` is the script's return value as is. `content` repeats it as text for display: never `JSON.parse` it.
@@ -78,7 +78,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "whoami",
         method: None,
-        description: "This agent's own Session: its ID, Workspace, transcript path and panes.",
+        description: "This agent's own Session: its ID, folder, transcript path and panes.",
         properties: || json!({}),
         required: &[],
         output: Some(whoami_output),
@@ -96,21 +96,16 @@ const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
-        name: "workspace_list",
-        method: Some(method::WORKSPACE_LIST),
-        description: "The open Workspaces: ID, name and directory.",
-        properties: || json!({}),
+        name: "session_create",
+        method: Some(method::SESSION_CREATE),
+        description: "Starts a new Session (Pi beside a terminal) and returns it: in `folder`, in the folder of the Session `like`, or in the home directory.",
+        properties: || {
+            json!({
+                "folder": { "type": "string", "description": "An absolute path to an existing directory." },
+                "like": { "type": "string", "description": "A Session ID, or \"self\": the new Session starts in its folder." }
+            })
+        },
         required: &[],
-        output: None,
-        read_only: true,
-        destructive: false,
-    },
-    Tool {
-        name: "workspace_session_create",
-        method: Some(method::WORKSPACE_SESSION_CREATE),
-        description: "Starts a new Session (Pi beside a terminal) in a Workspace and returns it.",
-        properties: || json!({ "workspaceId": { "type": "string", "description": "A Workspace ID, or \"self\"." } }),
-        required: &["workspaceId"],
         output: None,
         read_only: false,
         destructive: false,
@@ -539,7 +534,7 @@ impl McpServer {
             None => self.own_session().await.map(|session| {
                 json!({
                     "sessionId": session["id"],
-                    "workspaceId": session["workspaceId"],
+                    "folder": session["folder"],
                     "session": session,
                 })
             }),
@@ -579,12 +574,8 @@ impl McpServer {
         if arguments.get("sessionId").and_then(Value::as_str) == Some(SELF) {
             arguments.insert("sessionId".into(), json!(self.session_id));
         }
-        if arguments.get("workspaceId").and_then(Value::as_str) == Some(SELF) {
-            let workspace = self.own_session().await?["workspaceId"].clone();
-            if workspace.is_null() {
-                return Err(ToolError("this Session has no Workspace".into()));
-            }
-            arguments.insert("workspaceId".into(), workspace);
+        if arguments.get("like").and_then(Value::as_str) == Some(SELF) {
+            arguments.insert("like".into(), json!(self.session_id));
         }
         if tool.method == Some(method::SESSION_PROMPT) {
             arguments.insert("fromSessionId".into(), json!(self.session_id));
@@ -870,7 +861,7 @@ fn whoami_output() -> Value {
     object_schema(
         json!({
             "sessionId": { "type": "string" },
-            "workspaceId": { "type": ["string", "null"] },
+            "folder": { "type": "string", "description": "The Session's folder." },
             "session": { "type": "object", "description": "The Session as session_catalog lists it." }
         }),
         &["sessionId", "session"],

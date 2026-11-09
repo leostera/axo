@@ -159,7 +159,7 @@ fn resolve_extension_path() -> io::Result<PathBuf> {
                 "bundled Pi Axo extension was not found",
             )
         })?;
-    // Pi runs in the Workspace, not Axod's cwd. Resolve relative resource
+    // Pi runs in its Session's folder, not Axod's cwd. Resolve relative resource
     // overrides before handing them across that process boundary.
     fs::canonicalize(path)
 }

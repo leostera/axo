@@ -152,11 +152,3 @@ fn unix_seconds() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-
-fn is_uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.char_indices().all(|(index, c)| match index {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        })
-}

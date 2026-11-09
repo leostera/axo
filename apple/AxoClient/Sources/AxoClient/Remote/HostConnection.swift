@@ -14,32 +14,26 @@ public struct HostConnection: Sendable {
     self.host = host
   }
 
-  // MARK: - Workspaces and Sessions
+  // MARK: - Sessions
 
-  public func workspaces() async throws -> [RemoteWorkspace] {
-    try await call("axo.remote.workspace.list", Target(target: host), as: RemoteWorkspaceList.self)
-      .workspaces
-  }
-
+  /// A new Session in the Mac's home folder.
   public func createSession() async throws -> RemoteSession {
     try await session(from: call("axo.remote.session.create", Target(target: host)))
   }
 
-  public func createSession(inWorkspace workspaceID: UUID) async throws -> RemoteSession {
+  /// A new Session in the folder of the Mac's open Session `sessionID` (RFD0038).
+  public func createSession(like sessionID: SessionID) async throws -> RemoteSession {
     try await session(
-      from: call(
-        "axo.remote.workspace.session.create",
-        WorkspaceTarget(target: host, workspaceId: workspaceID)))
+      from: call("axo.remote.session.create", LikeTarget(target: host, like: sessionID)))
   }
 
-  /// Closes a Session; the host may answer with the replacement it opened if that was the last.
-  public func closeSession(_ id: SessionID) async throws -> RemoteSession? {
+  /// Closes a Session; nothing opens in its place.
+  public func closeSession(_ id: SessionID) async throws {
     let closed: ClosedSession = try await call(
       "axo.remote.session.close", SessionTarget(target: host, sessionId: id))
     guard closed.closed, closed.sessionId == id else {
       throw AxoClientError.invalidResponse("the host did not close that Session")
     }
-    return closed.replacement
   }
 
   public func renameSession(_ id: SessionID, to name: String) async throws {
@@ -216,17 +210,9 @@ public enum PiControlError {
 // MARK: - Wire shapes
 
 private struct Target: Encodable, Sendable { let target: RemoteHostRef }
-private struct WorkspaceTarget: Encodable, Sendable {
+private struct LikeTarget: Encodable, Sendable {
   let target: RemoteHostRef
-  let workspaceId: UUID
-
-  private enum CodingKeys: String, CodingKey { case target, workspaceId }
-
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(target, forKey: .target)
-    try container.encode(workspaceId.uuidString.lowercased(), forKey: .workspaceId)
-  }
+  let like: SessionID
 }
 private struct SessionTarget: Encodable, Sendable {
   let target: RemoteHostRef
@@ -336,7 +322,6 @@ private struct CreatedSession: Decodable, Sendable { let session: RemoteSession 
 private struct ClosedSession: Decodable, Sendable {
   let closed: Bool
   let sessionId: SessionID
-  let replacement: RemoteSession?
 }
 private struct CreatedShell: Decodable, Sendable {
   let hostId: UUID

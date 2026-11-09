@@ -358,7 +358,7 @@ impl Axod {
         }
     }
 
-    /// A new Session in the home Workspace, as listed once its Pi has bound the bridge.
+    /// A new Session at home, as listed once its Pi has bound the bridge.
     pub fn new_session(&self) -> Value {
         let session = self.ok("axo.session.create", json!({}));
         self.wait_for_pi(&session)

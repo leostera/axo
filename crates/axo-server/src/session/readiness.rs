@@ -119,7 +119,7 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::pi_bridge::PiRuntimeBinding;
-    use crate::session::test_support::PiRecoveryFixture;
+    use crate::session::test_support::{PiRecoveryFixture, new_session};
 
     /// Every Pi the manager is running, as its bridge worker would name it.
     fn running_pis(manager: &SessionManager) -> Vec<PiRuntimeBinding> {
@@ -144,6 +144,7 @@ mod tests {
     fn axod_is_ready_once_the_pis_it_started_are_up() {
         let fixture = PiRecoveryFixture::new();
         let directory = fixture.lifecycle.directory.clone();
+        new_session(&fixture.lifecycle.manager);
         fixture.lifecycle.manager.shutdown();
 
         let next = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
@@ -157,7 +158,7 @@ mod tests {
                 .collect()
         };
         events();
-        // The restored Session's and the Home Workspace's: ready only when both are up.
+        // Both restored Sessions': ready only when both are up.
         let pis = running_pis(&next);
         assert_eq!(pis.len(), 2);
         assert!(pis.iter().any(|pi| pi.session_id == fixture.session_id));

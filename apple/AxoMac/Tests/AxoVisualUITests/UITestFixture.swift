@@ -75,12 +75,13 @@ final class UITestFixture {
     app.windows["Axo Terminal"]
   }
 
-  func createWorkspace(at directory: URL) async throws {
-    let createButton = app.buttons["new-workspace-button"]
+  /// Starts a Session in `directory` through the sidebar's + and the folder picker.
+  func startSession(in directory: URL) async throws {
+    let createButton = app.buttons["new-session-in-folder-button"]
     XCTAssertTrue(createButton.waitForExistence(timeout: 5), app.debugDescription)
     createButton.click()
 
-    let browseButton = app.buttons["workspace-choose-directory-button"]
+    let browseButton = app.buttons["choose-folder-button"]
     XCTAssertTrue(browseButton.waitForExistence(timeout: 3), app.debugDescription)
     browseButton.click()
 
@@ -102,16 +103,6 @@ final class UITestFixture {
     XCTAssertTrue(folder.waitForExistence(timeout: 3), app.debugDescription)
     folder.click()
     chooseDirectory.click()
-
-    let nameField = app.textFields["workspace-name-field"]
-    XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
-    nameField.click()
-    nameField.typeKey("a", modifierFlags: [.command])
-    nameField.typeText("Workspace E2E")
-
-    let commitButton = app.buttons["Create Workspace"]
-    XCTAssertTrue(commitButton.waitForExistence(timeout: 3), app.debugDescription)
-    commitButton.click()
   }
 
   func waitForWindow() async throws {

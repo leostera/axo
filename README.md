@@ -6,7 +6,7 @@ Axo is an agentic workspace for working with coding agents across your Mac, iPho
 
 ## What is in this repository?
 
-- **Mac app and host** — `apple/AxoMac/` contains the native macOS app; `crates/` contains the Rust daemon and supporting crates. The host manages workspaces, agent sessions, and terminal panes.
+- **Mac app and host** — `apple/AxoMac/` contains the native macOS app; `crates/` contains the Rust daemon and supporting crates. The host manages agent sessions, each in its own folder, and terminal panes.
 - **iPhone app** — `apple/AxoPhone/` contains the native iOS client and its UI tests.
 - **Web client and service** — `packages/axo-web-app/`, `packages/axo-api-worker/`, and `sites/axo.leostera.dev/` contain the web app and its Cloudflare Worker deployment.
 - **Shared protocols and Pi integration** — `packages/axo-api/`, `packages/pi-axo/`, and `schemas/` contain shared API types, the first-party Pi extension, and versioned schemas.

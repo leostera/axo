@@ -109,7 +109,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                 // Not read since axod started: read it once now, for the next round.
                 self.0
                     .workspace_states
-                    .refresh(session.id, session.initial_pwd.clone());
+                    .refresh(session.id, session.folder.clone());
             }
             axo_relay::SyncSession {
                 session_id: session.id,
@@ -121,8 +121,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                             .unwrap_or_else(|| session.name.clone()),
                     ),
                     emoji: session.emoji.clone(),
-                    workspace_id: session.workspace_id.clone(),
-                    workspace_name: session.workspace_name.clone(),
+                    folder_name: axo_protocol::folder_name(&session.folder),
                     has_agent: session.has_agent(),
                     created_at: (session.created_at > 0).then_some(session.created_at),
                     last_message_at: session.last_message_at,
@@ -142,9 +141,8 @@ impl axo_relay::RelayHost for RelayHostAdapter {
                 session_id: session.id,
                 metadata: axo_relay::SessionMetadata {
                     name: Some(session.name),
+                    folder_name: axo_protocol::folder_name(&session.folder),
                     emoji: session.emoji,
-                    workspace_id: session.workspace_id,
-                    workspace_name: session.workspace_name,
                     has_agent: session.pi_session_file.is_some(),
                     created_at: None,
                     last_message_at: session.last_message_at,
@@ -472,18 +470,6 @@ impl SessionManager {
 
         let manager = Arc::clone(self);
         handler.add_typed(
-            method::WORKSPACE_LIST,
-            "expected no parameters",
-            move |_: rpc::NoParams| {
-                manager
-                    .list_workspaces()
-                    .map(|workspaces| rpc::WorkspaceList { workspaces })
-                    .map_err(internal_rpc_error)
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
             method::PEER_SESSIONS_LIST,
             "expected no parameters",
             move |_: rpc::NoParams| manager.peer_sessions().map_err(internal_rpc_error),
@@ -593,71 +579,20 @@ impl SessionManager {
 
         let manager = Arc::clone(self);
         handler.add_typed(
-            method::WORKSPACE_RENAME,
-            "expected {workspaceId, name}",
-            move |request: rpc::RenameWorkspace| {
-                manager
-                    .rename_workspace(&request.workspace_id, &request.name)
-                    .map_err(|error| {
-                        invalid_input_or_internal(error, Some("Workspace ID or name is invalid"))
-                    })
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
-            method::WORKSPACE_ARCHIVE,
-            "expected {workspaceId}",
-            move |request: rpc::WorkspaceRef| {
-                manager
-                    .archive_workspace(&request.workspace_id)
-                    .map(|archived_session_ids| rpc::WorkspaceArchived {
-                        archived_workspace_id: request.workspace_id,
-                        archived_session_ids,
-                    })
-                    .map_err(|error| {
-                        invalid_input_or_internal(error, Some("Workspace ID is invalid"))
-                    })
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
-            method::WORKSPACE_CREATE,
-            "expected {name, directoryPath, optional directoryBookmark}",
-            move |request: rpc::CreateWorkspace| {
-                manager.create_workspace(request).map_err(|error| match error.kind() {
-                    io::ErrorKind::InvalidInput => invalid_params(&error.to_string()),
-                    io::ErrorKind::NotFound => invalid_params("Workspace directory no longer exists or is unavailable"),
-                    io::ErrorKind::PermissionDenied => invalid_params(
-                        "Axo cannot access the selected folder; choose it again in the folder picker",
-                    ),
-                    _ => internal_rpc_error(error),
-                })
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
-            method::WORKSPACE_SESSION_CREATE,
-            "expected {workspaceId}",
-            move |request: rpc::WorkspaceRef| {
-                manager
-                    .create_session_in_workspace(&request.workspace_id)
-                    .map_err(|error| {
-                        invalid_input_or_internal(error, Some("Workspace ID is invalid"))
-                    })
-            },
-        );
-
-        let manager = Arc::clone(self);
-        handler.add_typed(
             method::SESSION_CREATE,
-            "expected no parameters",
-            move |_: rpc::NoParams| {
+            "expected {folder} or {like}, or no parameters",
+            move |request: rpc::CreateSession| {
                 manager
-                    .create_session_and_publish()
-                    .map_err(internal_rpc_error)
+                    .create_session(request)
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::InvalidInput | io::ErrorKind::NotFound => {
+                            invalid_params(&error.to_string())
+                        }
+                        io::ErrorKind::PermissionDenied => {
+                            invalid_params("Axo cannot open that folder")
+                        }
+                        _ => internal_rpc_error(error),
+                    })
             },
         );
 
@@ -668,9 +603,8 @@ impl SessionManager {
             move |request: rpc::SessionRef| {
                 manager
                     .close_session_and_publish(request.session_id)
-                    .map(|replacement| rpc::SessionClosed {
+                    .map(|()| rpc::SessionClosed {
                         archived_session_id: request.session_id,
-                        replacement,
                     })
                     .map_err(internal_rpc_error)
             },

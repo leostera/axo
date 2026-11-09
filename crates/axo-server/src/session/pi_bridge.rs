@@ -611,7 +611,7 @@ mod tests {
     fn stale_runtime_callbacks_cannot_mutate_a_replacement_pi() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = session.shells[0].id;
         let old_runtime = manager
             .lock_state()
@@ -724,7 +724,7 @@ mod tests {
     fn activity_snapshot_restores_working_state_after_bridge_reconnect() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = session.shells[0].id;
         let runtime_id = {
             let mut state = manager.lock_state().unwrap();

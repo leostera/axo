@@ -203,7 +203,7 @@ enum Wire {
     let status = status.map { #""\#($0)""# } ?? "null"
     let created = createdAt.map(String.init) ?? "null"
     let epoch = epoch.map(String.init) ?? "null"
-    return #"{"hostId":"\#(host.uuidString.lowercased())","sessionId":"\#(id.rawValue)","epoch":\#(epoch),"head":\#(head),"status":\#(status),"metadata":{"name":"\#(name)","emoji":null,"workspaceId":null,"workspaceName":null,"hasAgent":true,"createdAt":\#(created),"lastMessageAt":null,"archived":\#(archived)}}"#
+    return #"{"hostId":"\#(host.uuidString.lowercased())","sessionId":"\#(id.rawValue)","epoch":\#(epoch),"head":\#(head),"status":\#(status),"metadata":{"name":"\#(name)","emoji":null,"folderName":null,"hasAgent":true,"createdAt":\#(created),"lastMessageAt":null,"archived":\#(archived)}}"#
   }
 
   static func listing(hosts: [String] = [], sessions: [String] = []) -> String {

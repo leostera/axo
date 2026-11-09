@@ -2,7 +2,6 @@
 //! viewport they carry.
 
 use super::agents::AgentState;
-use super::transcripts::PiDirectories;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -15,7 +14,6 @@ use super::catalog::{
     open_shell_ids, remove_session_shells, running_shell_record, session_metadata,
 };
 use super::spawn::spawn_shell;
-use super::workspaces::create_workspace_session;
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
 use axo_panes::{Pane, UnavailablePane};
 use axo_protocol::rpc;
@@ -27,8 +25,7 @@ use axo_store::{
     archive_session, archive_shell, archive_shell_and_prune_layout, read_open_sessions,
     session_initial_pwd, store_viewport,
 };
-use axo_store::{insert_terminal_shell, open_session_workspace_id};
-use axo_store::{open_session_ids_in_workspace, set_manual_session_name, write_session_layout};
+use axo_store::{insert_terminal_shell, set_manual_session_name, write_session_layout};
 
 /// Wakes the reaper: a child exited (its waiter says so, RFD0037), or axod is stopping. It never
 /// looks on its own.
@@ -104,39 +101,16 @@ pub(super) fn close_session(
     state: &mut SessionState,
     agents: &mut AgentState,
     id: SessionId,
-    attach_socket_path: &Path,
-    pi_directories: &PiDirectories,
-) -> io::Result<(Option<SessionRecord>, Vec<RunningShell>)> {
+) -> io::Result<Vec<RunningShell>> {
     if open_shell_ids(state, id).is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "session is not open",
         ));
     }
-
-    let workspace_id = open_session_workspace_id(&state.database, id)?;
-    let replacement = if let Some(workspace_id) = workspace_id {
-        let workspace_session_count =
-            open_session_ids_in_workspace(&state.database, &workspace_id)?.len();
-        (workspace_session_count == 1)
-            .then(|| {
-                create_workspace_session(
-                    state,
-                    attach_socket_path,
-                    pi_directories,
-                    &workspace_id,
-                    None,
-                )
-            })
-            .transpose()?
-    } else {
-        None
-    };
-
     archive_session(&mut state.database, id, "explicit_close")?;
     agents.forget(id);
-    let shells = remove_session_shells(state, id);
-    Ok((replacement, shells))
+    Ok(remove_session_shells(state, id))
 }
 
 fn close_shell(
@@ -144,8 +118,6 @@ fn close_shell(
     agents: &mut AgentState,
     session_id: SessionId,
     shell_id: ShellId,
-    attach_socket_path: &Path,
-    pi_directories: &PiDirectories,
 ) -> io::Result<(rpc::ShellClosed, Vec<RunningShell>)> {
     let Some(pane) = state.panes.get(shell_id) else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "shell is not open"));
@@ -163,18 +135,11 @@ fn close_shell(
 
     let sibling_count = open_shell_ids(state, session_id).len();
     if sibling_count == 1 || role == PaneRole::Pi {
-        let (replacement, shells) = close_session(
-            state,
-            agents,
-            session_id,
-            attach_socket_path,
-            pi_directories,
-        )?;
+        let shells = close_session(state, agents, session_id)?;
         return Ok((
             rpc::ShellClosed {
                 archived_shell_id: shell_id,
                 archived_session_id: Some(session_id),
-                replacement,
             },
             shells,
         ));
@@ -198,7 +163,6 @@ fn close_shell(
         rpc::ShellClosed {
             archived_shell_id: shell_id,
             archived_session_id: None,
-            replacement: None,
         },
         shell,
     ))
@@ -226,22 +190,14 @@ pub(super) enum IdlePis {
 }
 
 impl SessionManager {
-    /// Creates a Session in the Home Workspace; `create_session_in_workspace` publishes it.
-    pub(super) fn create_session_and_publish(self: &Arc<Self>) -> io::Result<SessionRecord> {
-        self.create_session_in_workspace(&self.home_workspace_id)
-    }
-
-    /// Returns the replacement session created when the last one closes.
+    /// Closes a Session; nothing opens in its place (RFD0038).
     pub(super) fn close_session_and_publish(
         self: &Arc<Self>,
         session_id: SessionId,
-    ) -> io::Result<Option<SessionRecord>> {
-        let replacement = self.close_session(session_id)?;
+    ) -> io::Result<()> {
+        self.close_session(session_id)?;
         self.publish_session_removed(session_id);
-        if let Some(session) = &replacement {
-            self.publish_event(Event::snapshot(session.clone()));
-        }
-        Ok(replacement)
+        Ok(())
     }
 
     pub(super) fn create_shell_and_publish(
@@ -262,9 +218,6 @@ impl SessionManager {
         let closed = self.close_shell(session_id, shell_id)?;
         if closed.archived_session_id.is_some() {
             self.publish_session_removed(session_id);
-            if let Some(replacement) = &closed.replacement {
-                self.publish_event(Event::snapshot(replacement.clone()));
-            }
         } else {
             self.publish_session_snapshot(session_id)?;
         }
@@ -514,25 +467,13 @@ impl SessionManager {
         Ok(session)
     }
 
-    pub(super) fn close_session(
-        self: &Arc<Self>,
-        id: SessionId,
-    ) -> io::Result<Option<SessionRecord>> {
-        let (replacement, shells_to_terminate) = {
+    pub(super) fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<()> {
+        let shells_to_terminate = {
             let mut state = self.lock_state()?;
-            close_session(
-                &mut state,
-                &mut self.lock_agents(),
-                id,
-                &self.attach_socket_path,
-                &self.pi_directories,
-            )?
+            close_session(&mut state, &mut self.lock_agents(), id)?
         };
         self.terminate_shells_in_background(shells_to_terminate);
-        if let Some(session) = &replacement {
-            self.start_pi_bridge_for_session(session)?;
-        }
-        Ok(replacement)
+        Ok(())
     }
 
     fn close_shell(
@@ -542,19 +483,9 @@ impl SessionManager {
     ) -> io::Result<rpc::ShellClosed> {
         let (closed, shells_to_terminate) = {
             let mut state = self.lock_state()?;
-            close_shell(
-                &mut state,
-                &mut self.lock_agents(),
-                session_id,
-                shell_id,
-                &self.attach_socket_path,
-                &self.pi_directories,
-            )?
+            close_shell(&mut state, &mut self.lock_agents(), session_id, shell_id)?
         };
         self.terminate_shells_in_background(shells_to_terminate);
-        if let Some(session) = &closed.replacement {
-            self.start_pi_bridge_for_session(session)?;
-        }
         Ok(closed)
     }
 
@@ -700,7 +631,6 @@ impl SessionManager {
         for session_id in changed_sessions {
             self.publish_session_snapshot(session_id)?;
         }
-        self.ensure_open_workspace_sessions()?;
         Ok(())
     }
 }
@@ -719,6 +649,7 @@ mod tests {
         let directory = test_directory("axo-reap");
         std::fs::create_dir_all(&directory).unwrap();
         let manager = open_with_silent_shell(&directory);
+        new_session(&manager);
         let running = |manager: &SessionManager| -> Vec<(ShellId, u32)> {
             let state = manager.lock_state().unwrap();
             state
@@ -807,12 +738,7 @@ mod tests {
             catalog_lock_is_free(manager),
             "startup restoration held the shared catalog lock during takeover"
         );
-        let home = manager
-            .list_sessions()
-            .unwrap()
-            .into_iter()
-            .find(|session| session.id != fixture.session_id)
-            .unwrap();
+        let home = new_session(manager);
         assert!(home.shells.iter().any(|shell| shell.is_available()));
         bridge::write_record(bridge.get_mut(), &json!({ "type": "protocolError" })).unwrap();
         worker.join().unwrap().unwrap();
@@ -830,7 +756,7 @@ mod tests {
     #[test]
     fn restoring_sessions_does_not_replace_an_existing_runtime() {
         let fixture = LifecycleFixture::new();
-        let session = fixture.manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&fixture.manager);
         let shell_id = session.shells[0].id;
         let runtime = fixture
             .manager
@@ -858,7 +784,9 @@ mod tests {
     fn a_terminal_whose_directory_is_gone_is_archived_instead_of_failing_restore() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.create_session_and_publish().unwrap();
+        let session = manager
+            .create_session(rpc::CreateSession::default())
+            .unwrap();
         let terminal = terminal_shell(&session);
         let missing = fixture.directory.join("deleted-workspace");
         {
@@ -893,8 +821,12 @@ mod tests {
     fn reaper_isolates_wait_errors_without_guessing_process_exit() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let uncertain = manager.create_session_and_publish().unwrap();
-        let exited = manager.create_session_and_publish().unwrap();
+        let uncertain = manager
+            .create_session(rpc::CreateSession::default())
+            .unwrap();
+        let exited = manager
+            .create_session(rpc::CreateSession::default())
+            .unwrap();
         let uncertain_shell = terminal_shell(&uncertain);
         let exited_shell = terminal_shell(&exited);
         {
@@ -941,7 +873,9 @@ mod tests {
     fn closing_a_session_stops_every_pane_together_on_one_worker() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.create_session_and_publish().unwrap();
+        let session = manager
+            .create_session(rpc::CreateSession::default())
+            .unwrap();
         manager.create_shell(session.id).unwrap();
         manager.create_shell(session.id).unwrap();
         let process_ids: Vec<libc::pid_t> = {
@@ -1010,7 +944,7 @@ mod tests {
     fn the_latest_viewport_sizes_unattached_panes_and_new_ones() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let pi = session
             .shells
             .iter()

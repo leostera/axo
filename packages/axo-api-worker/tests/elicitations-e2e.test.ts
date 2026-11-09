@@ -65,8 +65,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
     const phone = await open("phone");
     const browser = await open("browser");
 
-    const { sessions } = (await localCall(socketPath, "axo.session.list")) as { sessions: Array<{ id: string }> };
-    const sessionId = sessions[0]!.id;
+    const { id: sessionId } = (await localCall(socketPath, "axo.session.create", {})) as { id: string };
 
     // The agent's MCP server, as Pi starts it for this Session.
     mcp = spawn(axodBinary, ["mcp"], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, AXO_SOCKET: socketPath, AXO_SESSION_ID: sessionId } });

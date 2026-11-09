@@ -1,6 +1,6 @@
 import FuzzyMatch
 
-/// Ranking for things a client already holds: Session and Workspace names, panes and commands.
+/// Ranking for things a client already holds: Session names, folders, panes and commands.
 /// Platform-neutral and free of UI, so every Axo client ranks the same way.
 ///
 /// Matching itself is FuzzyMatch's Smith-Waterman mode (word-start, camelCase and acronym
@@ -11,7 +11,7 @@ import FuzzyMatch
 public struct SearchDocument: Equatable, Sendable {
   /// The primary text; matches here count fully and are highlighted.
   public var title: String
-  /// Secondary text (a Workspace, a directory); matches count half and are highlighted.
+  /// Secondary text (a folder, a Mac); matches count half and are highlighted.
   public var subtitle: String
   /// Hidden words that also find the item ("pane", "shell"); count half, never shown.
   public var keywords: [String]

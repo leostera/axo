@@ -142,22 +142,29 @@ fn the_account_creates_renames_and_closes_sessions_on_the_mac() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
 
-    let workspaces = hub.ok("axo.remote.workspace.list", json!({ "target": target }));
-    let names: Vec<_> = workspaces["workspaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|workspace| workspace["name"].clone())
-        .collect();
-    assert_eq!(names, [json!("Home")], "{workspaces}");
-    assert!(
-        workspaces["workspaces"][0].get("directoryPath").is_none(),
-        "the account sees names, not paths: {workspaces}"
-    );
-
     let created = hub.ok("axo.remote.session.create", json!({ "target": target }));
     let session = created["session"]["sessionId"].clone();
     assert!(session.is_string(), "{created}");
+    let home = std::fs::canonicalize(axod.home()).unwrap();
+    assert_eq!(
+        created["session"]["folderName"],
+        json!(home.file_name().unwrap().to_string_lossy()),
+        "the account sees the folder's name, not its path: {created}"
+    );
+    assert!(!created.to_string().contains(&*home.to_string_lossy()));
+    let beside = hub.ok(
+        "axo.remote.session.create",
+        json!({ "target": target, "like": session }),
+    );
+    let beside_id = beside["session"]["sessionId"].clone();
+    let folder_of = |id: &Value| {
+        axod.sessions()
+            .into_iter()
+            .find(|listed| listed["id"] == *id)
+            .unwrap()["folder"]
+            .clone()
+    };
+    assert_eq!(folder_of(&beside_id), folder_of(&session));
     assert!(
         axod.sessions().iter().any(|listed| listed["id"] == session),
         "the Mac lists the Session the account created"
@@ -213,7 +220,7 @@ fn the_account_is_refused_for_another_mac_and_for_what_it_cannot_ask() {
 fn a_prompt_from_the_account_reaches_pi() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
-    let listed = axod.sessions()[0].clone();
+    let listed = axod.new_session().clone();
     axod.wait_for_pi(&listed);
     let session = listed["id"].clone();
 
@@ -249,7 +256,7 @@ fn the_session(axod: &Axod, session: &Value) -> Value {
 fn a_prompt_from_the_account_says_when_a_working_pi_takes_it() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
-    let session = axod.wait_for_pi(&axod.sessions()[0])["id"].clone();
+    let session = axod.new_session()["id"].clone();
 
     hub.ok(
         "axo.remote.session.prompt",
@@ -264,7 +271,10 @@ fn a_prompt_from_the_account_says_when_a_working_pi_takes_it() {
         json!({ "target": target, "sessionId": session, "text": "stop, this instead", "delivery": "interrupt", "commandId": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d" }),
     );
     let log = axod.pi_log();
-    assert!(log.contains("DELIVERY:interrupt:stop, this instead"), "{log}");
+    assert!(
+        log.contains("DELIVERY:interrupt:stop, this instead"),
+        "{log}"
+    );
     assert!(
         log.contains("DELIVERY:followUp:after this"),
         "a follow-up unless it says otherwise:\n{log}"
@@ -290,7 +300,7 @@ fn a_prompt_to_a_starting_pi_is_answered_once_pi_has_it_in_its_log() {
             ..Options::default()
         },
     );
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.ok("axo.session.create", json!({}))["id"].clone();
     let accepted = hub.ok(
         "axo.remote.session.prompt",
         json!({ "target": target, "sessionId": session, "text": "early", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" }),
@@ -310,7 +320,7 @@ fn a_pi_too_slow_to_start_is_answered_as_starting_and_the_retry_is_taken_once() 
             ..Options::default()
         },
     );
-    let listed = axod.sessions()[0].clone();
+    let listed = axod.ok("axo.session.create", json!({}));
     let prompt = json!({ "target": target, "sessionId": listed["id"], "text": "patient", "commandId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b" });
     let starting = hub
         .call("axo.remote.session.prompt", prompt.clone())
@@ -332,7 +342,7 @@ fn a_pi_too_slow_to_start_is_answered_as_starting_and_the_retry_is_taken_once() 
 fn the_account_sees_the_model_pi_runs_and_switches_it() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
-    let session = axod.wait_for_pi(&axod.sessions()[0])["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let pi = axod.wait_for("Pi to say what it runs", || {
         let pi = the_session(&axod, &session)["pi"].clone();
         pi.is_object().then_some(pi)
@@ -408,7 +418,7 @@ fn the_account_restarts_a_working_pi_on_the_same_conversation() {
             ..Options::default()
         },
     );
-    let before = axod.wait_for_pi(&axod.sessions()[0]);
+    let before = axod.new_session();
     let session = before["id"].clone();
     hub.ok(
         "axo.remote.session.prompt",
@@ -479,7 +489,7 @@ fn the_account_runs_a_command_on_the_mac_and_hears_how_it_ended() {
 fn a_sessions_apps_calls_go_to_the_account_and_its_answer_comes_back() {
     let hub = FakeHub::start();
     let (axod, _target) = linked(&hub, Pi::Fake);
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
 
     hub.respond(
         "axo.apps.list",
@@ -508,7 +518,7 @@ fn a_sessions_apps_calls_go_to_the_account_and_its_answer_comes_back() {
 fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves() {
     let hub = FakeHub::start();
     let (axod, _target) = linked(&hub, Pi::Fake);
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     {
         let mut stream = std::os::unix::net::UnixStream::connect(axod.socket()).unwrap();
         use std::io::Write;
@@ -535,13 +545,7 @@ fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves()
 fn the_account_drives_a_sessions_panes_keys_and_layout() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
-    let home = hub.ok("axo.remote.workspace.list", json!({ "target": target }))["workspaces"][0]
-        ["workspaceId"]
-        .clone();
-    let created = hub.ok(
-        "axo.remote.workspace.session.create",
-        json!({ "target": target, "workspaceId": home }),
-    );
+    let created = hub.ok("axo.remote.session.create", json!({ "target": target }));
     let session = created["session"]["sessionId"].clone();
     let listed = axod
         .sessions()

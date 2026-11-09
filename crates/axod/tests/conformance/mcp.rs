@@ -11,7 +11,7 @@ use support::{Axod, Mcp};
 const THIS_FILE: &str = include_str!("mcp.rs");
 
 fn first_session(axod: &Axod) -> (Value, String) {
-    let session = axod.wait_for_pi(&axod.sessions()[0]);
+    let session = axod.new_session();
     let id = session["id"].as_str().unwrap().to_owned();
     (session, id)
 }
@@ -55,13 +55,13 @@ fn an_unknown_session_is_refused_at_startup() {
 }
 
 #[test]
-fn an_agent_finds_itself_and_the_sessions_and_workspaces_around_it() {
+fn an_agent_finds_itself_and_the_sessions_around_it() {
     let axod = Axod::start();
     let (session, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
     let me = mcp.ok("whoami", json!({}));
     assert_eq!(me["sessionId"], session["id"]);
-    assert_eq!(me["workspaceId"], session["workspaceId"]);
+    assert_eq!(me["folder"], session["folder"]);
     assert_eq!(
         me["session"]["piSessionFile"], session["piSessionFile"],
         "{me}"
@@ -76,12 +76,6 @@ fn an_agent_finds_itself_and_the_sessions_and_workspaces_around_it() {
             .any(|s| s["id"] == session["id"]),
         "{catalog}"
     );
-    let workspaces = mcp.ok("workspace_list", json!({}));
-    assert_eq!(
-        workspaces["workspaces"].as_array().unwrap().len(),
-        1,
-        "{workspaces}"
-    );
     assert_eq!(mcp.close().code(), Some(0));
 }
 
@@ -90,9 +84,15 @@ fn an_agent_starts_names_and_prompts_another_session() {
     let axod = Axod::start();
     let (_, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
-    let other = mcp.ok("workspace_session_create", json!({ "workspaceId": "self" }));
+    let other = mcp.ok("session_create", json!({ "like": "self" }));
     let other_id = other["id"].clone();
     assert_ne!(other_id, json!(id));
+    let mine = axod
+        .sessions()
+        .into_iter()
+        .find(|s| s["id"] == json!(id))
+        .unwrap();
+    assert_eq!(other["folder"], mine["folder"], "beside this one");
     mcp.ok(
         "session_rename",
         json!({ "sessionId": other_id, "name": "Helper" }),

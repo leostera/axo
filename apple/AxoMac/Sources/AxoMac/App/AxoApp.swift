@@ -12,7 +12,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
   @State private var mascot: AxoMascot
   @State private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
-  @State private var isPresentingWorkspaceCreation = false
+  @State private var isPresentingNewSessionInFolder = false
   @State private var palette = CommandPaletteModel()
   @AppStorage(AxoPreferenceKey.appearanceTheme) private var appearanceTheme: AppearanceTheme = .system
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
@@ -101,7 +101,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         ghostty: ghostty,
         settingsSection: $settingsSection,
         pairingLink: pairingLink,
-        isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
+        isPresentingNewSessionInFolder: $isPresentingNewSessionInFolder,
         palette: palette,
         isDaemonRunningOverride: environment.startsDaemon ? nil : true
       )
@@ -183,8 +183,8 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         palette: palette, sessions: sessions, isSidebarCollapsed: $isSidebarCollapsed)
 
       CommandMenu("Terminal") {
-        Button("New Workspace…") {
-          isPresentingWorkspaceCreation = true
+        Button("New Session in Folder…") {
+          isPresentingNewSessionInFolder = true
         }
         .keyboardShortcut("n", modifiers: .command)
 
@@ -309,7 +309,7 @@ private struct TerminalAppWindow: View {
   var ghostty: GhosttyRuntime
   @Binding var settingsSection: SettingsSection
   var pairingLink: PairingLinkRouter
-  @Binding var isPresentingWorkspaceCreation: Bool
+  @Binding var isPresentingNewSessionInFolder: Bool
   var palette: CommandPaletteModel
   var isDaemonRunningOverride: Bool?
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
@@ -320,7 +320,7 @@ private struct TerminalAppWindow: View {
     TerminalWorkbenchView(
       daemon: daemon,
       sessions: sessions,
-      isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
+      isPresentingNewSessionInFolder: $isPresentingNewSessionInFolder,
       daemonIsRunningOverride: isDaemonRunningOverride
     )
     .overlay { CommandPaletteOverlay(palette: palette, onChoose: perform) }
@@ -358,7 +358,7 @@ private struct TerminalAppWindow: View {
     CommandPalettePerformer(
       sessions: sessions,
       toggleSidebar: { isSidebarCollapsed.toggle() },
-      newWorkspace: { isPresentingWorkspaceCreation = true },
+      chooseFolderForNewSession: { isPresentingNewSessionInFolder = true },
       cloneGitHubRepository: cloneGitHubRepository,
       openSettings: {
         settingsSection = .general
@@ -369,31 +369,22 @@ private struct TerminalAppWindow: View {
 
   private func cloneGitHubRepository(_ repository: GitHubRepository) {
     guard !isCloningRepository else { return }
-    sessions.dismissWorkspaceCreationError()
+    sessions.dismissSessionCreationError()
     repositoryCloneError = nil
     isCloningRepository = true
     Task {
       defer { isCloningRepository = false }
       do {
-        let directory = try await GitHubWorkspaceCloner.clone(repository)
-        if let workspace = sessions.workspaces.first(where: {
-          URL(fileURLWithPath: $0.directoryPath).standardizedFileURL.path
-            == directory.standardizedFileURL.path
+        let directory = try await GitHubCloner.clone(repository).resolvingSymlinksInPath()
+        // Already cloned and open here: show that Session rather than start another.
+        if let session = sessions.sessions.first(where: {
+          URL(fileURLWithPath: $0.folder).resolvingSymlinksInPath().path == directory.path
         }) {
-          if let session = sessions.sessions.first(where: { $0.workspaceId == workspace.workspaceId }) {
-            sessions.showSession(session.id)
-          } else {
-            await sessions.createSession(in: workspace.workspaceId)
-          }
+          sessions.showSession(session.id)
           return
         }
-
-        let bookmark = try? directory.bookmarkData(
-          options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil
-        ).base64EncodedString()
-        await sessions.createWorkspace(
-          name: repository.name, directoryPath: directory.path, directoryBookmark: bookmark)
-        repositoryCloneError = sessions.workspaceCreationError
+        await sessions.createSession(inFolder: directory.path)
+        repositoryCloneError = sessions.sessionCreationError
       } catch {
         repositoryCloneError = error.localizedDescription
       }

@@ -67,18 +67,21 @@ extension AxoVisualUITests {
     throw UITestError.timedOut("axod did not verify the exact Pi session-file binding")
   }
 
-  func waitForWorkspaceSession(model: TerminalSessionsModel) async throws {
+  /// The Session in `folder`, once axod lists it.
+  func waitForSession(in folder: URL, model: TerminalSessionsModel) async throws -> TerminalSession {
     let deadline = Date().addingTimeInterval(20)
+    let path = folder.resolvingSymlinksInPath().path
     while Date() < deadline {
       await model.refresh()
-      let homeID = model.workspaces.first(where: \.isHome)?.workspaceId
-      if model.sessions.contains(where: { $0.workspaceId != nil && $0.workspaceId != homeID }) {
-        return
+      if let session = model.sessions.first(where: {
+        URL(fileURLWithPath: $0.folder).resolvingSymlinksInPath().path == path
+      }) {
+        return session
       }
       try await Task.sleep(for: .milliseconds(100))
     }
     throw UITestError.timedOut(
-      "axod did not create the Workspace Agent Session: \(model.errorMessage ?? "no RPC error reported")")
+      "axod did not start a Session in \(path): \(model.errorMessage ?? "no RPC error reported")")
   }
 
   func waitForSessionCount(_ count: Int, model: TerminalSessionsModel) async throws {

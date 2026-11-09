@@ -58,7 +58,7 @@ final class PhoneWorld {
   private(set) var made: [HostWorkbenchModel] = []
 
   init(
-    _ macs: [Mac], workspaces: [(UUID, String)] = [], createsSession: SessionID? = 99, refusesPrompts: Bool = false,
+    _ macs: [Mac], createsSession: SessionID? = 99, refusesPrompts: Bool = false,
     answers: Bool = true,
     uploadAsset: @escaping @Sendable (Data, String, String) async throws -> Attachment = { _, _, _ in
       throw AxoClientError.invalidResponse("no uploads in this test")
@@ -66,7 +66,7 @@ final class PhoneWorld {
   ) {
     transport = ScriptedTransport(listing: Mac.listing(macs))
     feed = AccountConnection(transport: transport, clientID: ClientID(rawValue: "test-client")!)
-    if answers { transport.responder = Self.responder(workspaces: workspaces, createsSession: createsSession, refusesPrompts: refusesPrompts, creations: creations) }
+    if answers { transport.responder = Self.responder(createsSession: createsSession, refusesPrompts: refusesPrompts, creations: creations) }
     let feed = feed
     let account = account
     workbench = PhoneWorkbench(
@@ -83,22 +83,20 @@ final class PhoneWorld {
 
   /// Answers the Macs' commands and opens every chat empty.
   private static func responder(
-    workspaces: [(UUID, String)], createsSession: SessionID?, refusesPrompts: Bool, creations: Creations
+    createsSession: SessionID?, refusesPrompts: Bool, creations: Creations
   ) -> @Sendable (ScriptedRequest) -> ScriptedReply? {
-    let spaces = workspaces.map { #"{"workspaceId":"\#($0.0.uuidString.lowercased())","name":"\#($0.1)"}"# }
     return { request in
       switch request.method {
       case "axo.client.session.open": return .result(Wire.opened(epoch: nil, []))
-      case "axo.remote.workspace.list": return .result(#"{"workspaces":[\#(spaces.joined(separator: ","))]}"#)
-      case "axo.remote.session.create", "axo.remote.workspace.session.create":
+      case "axo.remote.session.create":
         let target = request.params["target"] as? [String: Any]
         guard let session = createsSession, let host = (target?["hostId"] as? String).flatMap(UUID.init) else {
           return .error(-32003, "Operation failed")
         }
-        if request.method == "axo.remote.session.create" {
+        if let like = (request.params["like"] as? String).flatMap(SessionID.init(rawValue:)) {
+          creations.record(.beside(like))
+        } else {
           creations.record(.home)
-        } else if let workspace = (request.params["workspaceId"] as? String).flatMap(UUID.init) {
-          creations.record(.workspace(workspace))
         }
         let number = Int(session.rawValue.prefix(8), radix: 16)!
         return .result(#"{"session":\#(sessionJSON(host: host, id: number, name: "New chat", shells: []))}"#)
@@ -132,8 +130,6 @@ private struct NoProfile: SignedInAccountLoading {
 
 @MainActor
 final class PhoneWorkbenchTests: XCTestCase {
-  private func workspaces(_ names: [String]) -> [(UUID, String)] { names.map { (UUID(), $0) } }
-
   /// Types `text` into the open chat's box.
   private func type(_ text: String, in workbench: PhoneWorkbench) throws {
     workbench.setDraft(text, for: try XCTUnwrap(workbench.selection))
@@ -153,10 +149,10 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(workbench.hosts.hosts.map(\.label), ["Studio", "Empty"], "online Macs first")
   }
 
-  func testAChatStartsInTheMacsHomeWorkspaceWithItsFirstMessage() async throws {
+  func testAChatStartsInTheMacsHomeFolderWithItsFirstMessage() async throws {
     let offline = Mac("Old", online: false, sessions: [1])
     let online = Mac("New", online: true)
-    let world = PhoneWorld([offline, online], workspaces: workspaces(["Project", "Website"]))
+    let world = PhoneWorld([offline, online])
     try await world.start()
     let workbench = world.workbench!
     XCTAssertEqual(workbench.selection, PhoneWorkbench.Selection(host: online.id, session: nil), "a blank chat on the Mac that is online")
@@ -165,7 +161,7 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(sent, .sent)
     XCTAssertEqual(workbench.selection, PhoneWorkbench.Selection(host: online.id, session: 99))
     XCTAssertEqual(workbench.current?.selectedSession?.displayName, "New chat")
-    XCTAssertEqual(world.creations.places, [.home], "however many Workspaces there are, a new chat goes Home")
+    XCTAssertEqual(world.creations.places, [.home], "a new chat starts in the Mac's home folder")
     XCTAssertEqual(world.creations.prompts, ["hello"], "the first message goes to the chat it created")
     XCTAssertFalse(workbench.isDrafting)
     XCTAssertEqual(workbench.draft(for: PhoneWorkbench.Selection(host: online.id, session: nil)), "", "the blank chat's box is empty again")
@@ -174,26 +170,25 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(workbench.current?.pendingPrompts[99]?.first?.state, .sent)
   }
 
-  func testAChatCanStartInAChosenWorkspaceInstead() async throws {
+  func testAChatCanStartBesideAnotherInstead() async throws {
     let online = Mac("New", online: true, sessions: [1])
-    let spaces = workspaces(["One", "Two"])
-    let world = PhoneWorld([online], workspaces: spaces)
+    let world = PhoneWorld([online])
     try await world.start()
     let workbench = world.workbench!
     try type("hello", in: workbench)
-    let sent = await workbench.send(in: .workspace(spaces[1].0))
+    let sent = await workbench.send(in: .beside(1))
     XCTAssertEqual(sent, .sent)
-    XCTAssertEqual(world.creations.places, [.workspace(spaces[1].0)])
+    XCTAssertEqual(world.creations.places, [.beside(1)])
     XCTAssertEqual(world.creations.prompts, ["hello"])
     XCTAssertEqual(workbench.selection?.session, 99)
     try type("more", in: workbench)
-    let again = await workbench.send(in: .workspace(spaces[0].0))
-    XCTAssertEqual(again, .failed, "only a new chat can be placed; an open one already has its Workspace")
+    let again = await workbench.send(in: .beside(1))
+    XCTAssertEqual(again, .failed, "only a new chat can be placed; an open one already has its folder")
     XCTAssertEqual(world.creations.places.count, 1)
   }
 
   func testAChatIsOnlyCreatedByItsFirstMessageAndTheChatButtonJustGoesBackToABlankOne() async throws {
-    let world = PhoneWorld([Mac("New", online: true, sessions: [1, 2])], workspaces: workspaces(["Project"]))
+    let world = PhoneWorld([Mac("New", online: true, sessions: [1, 2])])
     try await world.start()
     let workbench = world.workbench!
     XCTAssertTrue(workbench.isDrafting)
@@ -588,10 +583,10 @@ final class PhoneWorkbenchTests: XCTestCase {
   }
 
   func testTheBackgroundLetsTheSocketGoAndTheForegroundComesBack() async throws {
-    let world = PhoneWorld([Mac("A", online: true)], workspaces: workspaces(["Project"]))
+    let world = PhoneWorld([Mac("A", online: true)])
     try await world.start()
     let workbench = world.workbench!
-    try await eventually { workbench.current?.workspaceList.isEmpty == false }
+    try await eventually { workbench.current != nil }
     workbench.suspend()
     XCTAssertEqual(workbench.link, .suspended)
     XCTAssertEqual(workbench.current?.link, .suspended)

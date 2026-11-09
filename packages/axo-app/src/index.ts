@@ -40,7 +40,6 @@ import {
   type hostV1Results,
   remoteSessionCreateResultSchema,
   remoteSessionCloseResultSchema,
-  remoteWorkspaceListResultSchema,
   remoteLayoutSetResultSchema,
   remoteShellCreateResultSchema,
   remoteShellCloseResultSchema,
@@ -149,8 +148,6 @@ const rpcIdSchema = z.union([
 ]);
 const appRemoteResults = {
   "axo.remote.session.create": remoteSessionCreateResultSchema,
-  "axo.remote.workspace.session.create": remoteSessionCreateResultSchema,
-  "axo.remote.workspace.list": remoteWorkspaceListResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.session.rename": remoteLayoutSetResultSchema,
   "axo.remote.session.layout.set": remoteLayoutSetResultSchema,

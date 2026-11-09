@@ -3,9 +3,8 @@
 //! Pairing is the sign-in: axod opens the account's client socket at `/peers` with its host
 //! credential, and the cloud serves it as an ordinary client that leaves out this Mac's own
 //! Sessions. Every other Mac's Session is opened from where its copy ends, and every record batch
-//! is appended to `~/.axo/sessions/<hostId>/<workspaceId>/<sessionId>.jsonl` before it is
-//! acknowledged: the same lines Pi wrote, at the same place under `sessions/` as on the Mac that
-//! owns it. So the history is already here when a Session is continued on this Mac.
+//! is appended to `~/.axo/sessions/<hostId>/<sessionId>.jsonl` before it is
+//! acknowledged: the same lines Pi wrote, in the folder of the Mac that owns it. So the history is already here when a Session is continued on this Mac.
 //!
 //! Invariants:
 //! - A copy is Pi's header line and then records 1..=cursor of one epoch, in order, and nothing

@@ -30,16 +30,10 @@
           "$ref": "#/$defs/RemoteSessionCreateCall"
         },
         {
-          "$ref": "#/$defs/RemoteWorkspaceSessionCreateCall"
-        },
-        {
           "$ref": "#/$defs/RemoteSessionCloseCall"
         },
         {
           "$ref": "#/$defs/RemoteSessionRenameCall"
-        },
-        {
-          "$ref": "#/$defs/RemoteWorkspaceListCall"
         },
         {
           "$ref": "#/$defs/RemoteShellCreateCall"
@@ -333,40 +327,10 @@
               "properties": {
                 "target": {
                   "$ref": "common.schema.json#/$defs/HostRef"
-                }
-              }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": [
-        "params"
-      ]
-    },
-    "RemoteWorkspaceSessionCreateCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.remote.workspace.session.create"
-            },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "target",
-                "workspaceId"
-              ],
-              "properties": {
-                "target": {
-                  "$ref": "common.schema.json#/$defs/HostRef"
                 },
-                "workspaceId": {
-                  "$ref": "common.schema.json#/$defs/HostId"
+                "like": {
+                  "$ref": "common.schema.json#/$defs/SessionId",
+                  "description": "An open Session whose folder the new one starts in; the Mac's home directory without it."
                 }
               }
             }
@@ -896,16 +860,12 @@
         }
       }
     },
-    "RemoteWorkspaceSessionCreateResult": {
-      "$ref": "#/$defs/RemoteSessionCreateResult"
-    },
     "RemoteSessionCloseResult": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "closed",
-        "sessionId",
-        "replacement"
+        "sessionId"
       ],
       "properties": {
         "closed": {
@@ -913,16 +873,6 @@
         },
         "sessionId": {
           "$ref": "common.schema.json#/$defs/SessionId"
-        },
-        "replacement": {
-          "anyOf": [
-            {
-              "$ref": "common.schema.json#/$defs/SessionSnapshot"
-            },
-            {
-              "type": "null"
-            }
-          ]
         }
       }
     },
@@ -1021,68 +971,6 @@
     },
     "RemoteSessionRenameResult": {
       "$ref": "local-rpc.schema.json#/$defs/LayoutSetResult"
-    },
-    "RemoteWorkspaceListCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.remote.workspace.list"
-            },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "target"
-              ],
-              "properties": {
-                "target": {
-                  "$ref": "common.schema.json#/$defs/HostRef"
-                }
-              }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": [
-        "params"
-      ]
-    },
-    "RemoteWorkspaceListResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "workspaces"
-      ],
-      "properties": {
-        "workspaces": {
-          "type": "array",
-          "maxItems": 256,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "workspaceId",
-              "name"
-            ],
-            "properties": {
-              "workspaceId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 256
-              }
-            }
-          }
-        }
-      }
     },
     "RemoteSessionRestartCall": {
       "allOf": [

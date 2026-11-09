@@ -67,6 +67,9 @@ final class TerminalUITestAutomation {
       }
       try type(text, into: shellID)
     case "wait-ready":
+      // axod opens no Session by itself (RFD0038): a test starts where a person would.
+      await sessions.refresh()
+      if sessions.sessions.isEmpty { await sessions.createSession() }
       try await waitForTerminalSurface()
     case "wait-surface-count":
       try await waitForSurfaceCount(request.minimumSurfaceCount ?? 0)

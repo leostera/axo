@@ -61,26 +61,6 @@ pub const PARITY: &[Parity] = &[
         Remote::Call("axo.remote.session.create"),
     ),
     row(
-        method::WORKSPACE_LIST,
-        Remote::Call("axo.remote.workspace.list"),
-    ),
-    row(
-        method::WORKSPACE_CREATE,
-        Remote::LocalOnly("a Workspace is a directory picked on this Mac"),
-    ),
-    row(
-        method::WORKSPACE_RENAME,
-        Remote::LocalOnly("clients list chats, not Workspaces"),
-    ),
-    row(
-        method::WORKSPACE_ARCHIVE,
-        Remote::LocalOnly("clients list chats, not Workspaces"),
-    ),
-    row(
-        method::WORKSPACE_SESSION_CREATE,
-        Remote::Call("axo.remote.workspace.session.create"),
-    ),
-    row(
         method::SESSION_CLOSE,
         Remote::Call("axo.remote.session.close"),
     ),

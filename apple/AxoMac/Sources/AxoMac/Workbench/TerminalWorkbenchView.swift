@@ -6,7 +6,7 @@ import SwiftUI
 struct TerminalWorkbenchView: View {
   var daemon: DaemonController
   var sessions: TerminalSessionsModel
-  @Binding var isPresentingWorkspaceCreation: Bool
+  @Binding var isPresentingNewSessionInFolder: Bool
   var daemonIsRunningOverride: Bool? = nil
   @Environment(GhosttyRuntime.self) private var ghostty
   @Environment(\.displayScale) private var displayScale
@@ -22,7 +22,7 @@ struct TerminalWorkbenchView: View {
     HStack(spacing: 0) {
       // Its own view: Session status and names change on every Pi turn, and only the sidebar
       // presents them. The terminal area reads pane-level projections that those leave alone.
-      WorkbenchSidebar(sessions: sessions, isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation)
+      WorkbenchSidebar(sessions: sessions, isPresentingNewSessionInFolder: $isPresentingNewSessionInFolder)
 
       Divider()
 
@@ -52,35 +52,8 @@ struct TerminalWorkbenchView: View {
     // WindowDragStrip stands in for the hidden title bar.
     .ignoresSafeArea(.container, edges: .top)
     .frame(minWidth: 760, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
-    .sheet(isPresented: $isPresentingWorkspaceCreation) {
-      WorkspaceCreationSheet(sessions: sessions)
-    }
-    .confirmationDialog(
-      "Archive \(sessions.pendingWorkspaceArchiveConfirmation?.workspaceName ?? "Workspace")?",
-      isPresented: Binding(
-        get: { sessions.pendingWorkspaceArchiveConfirmation != nil },
-        set: { isPresented in
-          if !isPresented { sessions.cancelWorkspaceArchiveConfirmation() }
-        }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Archive Workspace and Sessions", role: .destructive) {
-        guard let confirmation = sessions.pendingWorkspaceArchiveConfirmation else { return }
-        Task { await sessions.confirmWorkspaceArchiveAndCloseSession(confirmation) }
-      }
-      .accessibilityIdentifier("confirm-archive-workspace-last-session")
-
-      Button("Cancel", role: .cancel) {
-        sessions.cancelWorkspaceArchiveConfirmation()
-      }
-    } message: {
-      if let confirmation = sessions.pendingWorkspaceArchiveConfirmation {
-        Text(
-          "This is the last Session in “\(confirmation.workspaceName)”. "
-            + "Archiving this Workspace will close its Sessions and preserve their histories."
-        )
-      }
+    .sheet(isPresented: $isPresentingNewSessionInFolder) {
+      NewSessionInFolderSheet(sessions: sessions)
     }
     .confirmationDialog(
       "Close this pane?",

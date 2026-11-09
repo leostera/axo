@@ -85,8 +85,8 @@ export type WorkspaceState = z.infer<typeof workspaceStateSchema>;
 export const sessionMetadataSchema = z.object({
   name: z.string().min(1).max(80).nullable(),
   emoji: emoji.nullable(),
-  workspaceId: z.uuid().nullable(),
-  workspaceName: z.string().max(80).nullable(),
+  /** The last component of the Session's folder (RFD0038). */
+  folderName: z.string().min(1).max(255).nullable(),
   hasAgent: z.boolean(),
   /** Unix seconds. */
   createdAt: unixSeconds.nullable(),

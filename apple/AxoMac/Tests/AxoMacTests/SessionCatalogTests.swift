@@ -10,7 +10,7 @@ final class SessionCatalogTests: XCTestCase {
   }
 
   private func session(_ id: SessionID, _ shells: [ShellID], name: String = "") -> TerminalSession {
-    TerminalSession(id: id, initialPwd: "/", shells: shells.map(shell), name: name)
+    TerminalSession(id: id, folder: "/", shells: shells.map(shell), name: name)
   }
 
   func testSessionsAreSortedByIDAndTheLastDuplicateWins() {

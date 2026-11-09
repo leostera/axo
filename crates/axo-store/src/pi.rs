@@ -132,7 +132,6 @@ pub struct PiHistoryOwner {
     pub session_id: SessionId,
     pub lifecycle: StoredLifecycle,
     pub initial_pwd: PathBuf,
-    pub workspace_id: Option<String>,
 }
 
 /// Every Session, open or archived, whose Pi history is `session_file`. More than one means
@@ -142,9 +141,7 @@ pub fn pi_history_owners(
     session_file: &str,
 ) -> io::Result<Vec<PiHistoryOwner>> {
     let mut statement = database
-        .prepare(
-            "SELECT id, state, initial_pwd, workspace_id FROM sessions WHERE pi_session_file = ?1",
-        )
+        .prepare("SELECT id, state, initial_pwd FROM sessions WHERE pi_session_file = ?1")
         .map_err(io::Error::other)?;
     statement
         .query_map(params![session_file], |row| {
@@ -152,7 +149,6 @@ pub fn pi_history_owners(
                 session_id: stored_session_id(row.get::<_, String>(0)?)?,
                 lifecycle: row.get(1)?,
                 initial_pwd: PathBuf::from(row.get::<_, String>(2)?),
-                workspace_id: row.get(3)?,
             })
         })
         .map_err(io::Error::other)?

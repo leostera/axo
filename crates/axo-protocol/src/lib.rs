@@ -24,9 +24,9 @@ pub use event::{Event, EventScope, ShellActivity};
 pub use ids::{InvalidId, InvalidSessionId, SessionId, ShellId, new_uuid_v4};
 pub use layout::{Layout, LayoutDirection, LayoutError, LayoutNode, is_uuid};
 pub use model::{
-    Availability, ConfigKey, DORMANT_PANE_REASON, PaneRole, PiCommandInfo, PiCommandSource, PiModelInfo,
-    PiModelRef, PiRuntime, RemoteSessionSnapshot, RemoteShell, RemoteWorkspace, SessionRecord, SessionStatus,
-    ShellRecord, ThinkingLevel, WorkspaceRecord, WorkspaceState,
+    Availability, ConfigKey, DORMANT_PANE_REASON, PaneRole, PiCommandInfo, PiCommandSource,
+    PiModelInfo, PiModelRef, PiRuntime, RemoteSessionSnapshot, RemoteShell, SessionRecord,
+    SessionStatus, ShellRecord, ThinkingLevel, folder_name,
 };
 pub use relay::{HostKind, RelayState, RelayStatus};
 pub use viewport::{GridSize, Padding, PixelSize, Size, Viewport, ViewportError};

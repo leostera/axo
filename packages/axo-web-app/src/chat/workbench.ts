@@ -25,21 +25,14 @@ import { ChatTranscript, type Delivery, type TranscriptRecord } from "./transcri
  * first, a page at a time, and only as far back as the person scrolls.
  */
 
-export interface Workspace {
-  readonly workspaceId: string;
-  readonly name: string;
-  /** The Home Workspace, which is listed first. */
-  readonly home?: true;
-}
-
 /** A chat as the menu and the conversation show it. */
 export interface Session {
   readonly hostId: string;
   readonly sessionId: string;
   readonly name: string | null;
   readonly emoji: string | null;
-  readonly workspaceId: string | null;
-  readonly workspaceName: string | null;
+  /** The last component of its folder on the Mac; never the path (RFD0038). */
+  readonly folderName: string | null;
   readonly hasAgent: boolean;
   /** Unix seconds. */
   readonly createdAt: number | null;
@@ -65,8 +58,7 @@ type CreatedSession = {
   sessionId: string;
   name?: string;
   emoji?: string | null;
-  workspaceId?: string | null;
-  workspaceName?: string | null;
+  folderName?: string | null;
   createdAt?: number;
 };
 
@@ -80,9 +72,7 @@ export interface AccountLink {
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
   resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof, sealed?: Sealed): Promise<void>;
-  command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
-  command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
   command(method: "axo.remote.session.commands", params: { target: HostRef; sessionId: string }): Promise<{ commands: PiCommand[] }>;
@@ -249,10 +239,9 @@ export class Chat {
 }
 
 /**
- * The open chat, or a new one waiting for its first message on the open Mac: in the Workspace
- * chosen for it, or with none chosen in the Mac's Home Workspace.
+ * The open chat, or a new one waiting for its first message on the open Mac, in its home folder.
  */
-export type Selection = { kind: "chat"; sessionId: string } | { kind: "new"; workspaceId: string | null };
+export type Selection = { kind: "chat"; sessionId: string } | { kind: "new" };
 
 export type SendOutcome =
   | { kind: "sent" }
@@ -372,7 +361,6 @@ export class ChatWorkbench {
   hostsPhase: "loading" | "loaded" | "failed" = "loading";
   openHostId: string | null = null;
   link: Link = "idle";
-  workspaces: Workspace[] = [];
   selection: Selection | null = null;
   failure: string | null = null;
   isSending = false;
@@ -500,7 +488,6 @@ export class ChatWorkbench {
         const next = this.hosts.find(host => host.status === "online") ?? this.hosts[0];
         if (next) this.openMac(next.hostId);
       }
-      void this.refreshWorkspaces();
       // What was open before the gap opens again from what is held.
       const opened = this.opened;
       this.opened = null;
@@ -655,7 +642,7 @@ export class ChatWorkbench {
     const selection = this.selection;
     if (selection?.kind === "chat" && this.openHost && !this.selectedSession && !this.chats.get(selection.sessionId)?.pending.length) {
       // The chat on screen is gone from its Mac.
-      this.selection = { kind: "new", workspaceId: null };
+      this.selection = { kind: "new" };
     }
   }
 
@@ -663,26 +650,10 @@ export class ChatWorkbench {
   openMac(hostId: string): void {
     if (hostId === this.openHostId) return;
     this.openHostId = hostId;
-    this.workspaces = [];
-    this.selection = { kind: "new", workspaceId: null };
+    this.selection = { kind: "new" };
     this.closeOpened();
     this.failure = null;
-    void this.refreshWorkspaces();
     this.changed();
-  }
-
-  async refreshWorkspaces(): Promise<Workspace[] | null> {
-    const host = this.openHost;
-    if (!host || host.status !== "online" || !this.connection?.active) return null;
-    try {
-      const { workspaces } = await this.connection.command("axo.remote.workspace.list", { target: this.reference(host) });
-      if (host.hostId !== this.openHostId) return null;
-      this.workspaces = workspaces;
-      this.changed();
-      return workspaces;
-    } catch {
-      return null;
-    }
   }
 
   // MARK: - Records
@@ -819,18 +790,17 @@ export class ChatWorkbench {
     this.changed();
   }
 
-  /** A new chat on `hostId` (the open Mac when not given), in `workspaceId` if chosen. */
-  newChat(hostId: string | null = null, workspaceId: string | null = null): void {
+  /** A new chat on `hostId` (the open Mac when not given). */
+  newChat(hostId: string | null = null): void {
     if (hostId && hostId !== this.openHostId) this.openMac(hostId);
-    this.selection = { kind: "new", workspaceId };
+    this.selection = { kind: "new" };
     this.closeOpened();
     this.failure = null;
     this.changed();
   }
 
   /**
-   * The Mac a new chat starts on, chosen by the message box: what is typed comes along, and the
-   * Workspace goes back to the Mac's Home, since Workspaces are a Mac's own.
+   * The Mac a new chat starts on, chosen by the message box: what is typed comes along.
    */
   chooseHost(hostId: string): void {
     const selection = this.selection;
@@ -853,7 +823,7 @@ export class ChatWorkbench {
   // MARK: - Drafts and sending
 
   private draftKey(selection: Selection): string {
-    return selection.kind === "chat" ? `${this.openHostId}/chat/${selection.sessionId}` : `${this.openHostId}/new/${selection.workspaceId ?? ""}`;
+    return selection.kind === "chat" ? `${this.openHostId}/chat/${selection.sessionId}` : `${this.openHostId}/new`;
   }
 
   draft(selection: Selection | null = this.selection): string {
@@ -929,8 +899,8 @@ export class ChatWorkbench {
   }
 
   /**
-   * Sends what is typed. On a new chat the first message brings the chat into being: in the
-   * Workspace chosen for it, or in the Mac's Home Workspace.
+   * Sends what is typed. On a new chat the first message brings the chat into being, in the
+   * Mac's home folder.
    */
   async send(delivery: Delivery = "interrupt"): Promise<SendOutcome> {
     const selection = this.selection;
@@ -946,9 +916,7 @@ export class ChatWorkbench {
       const target = this.reference(host);
       let created: CreatedSession;
       try {
-        ({ session: created } = draft.workspaceId
-          ? await this.connection!.command("axo.remote.workspace.session.create", { target, workspaceId: draft.workspaceId })
-          : await this.connection!.command("axo.remote.session.create", { target }));
+        ({ session: created } = await this.connection!.command("axo.remote.session.create", { target }));
       } catch (error) {
         return this.report(`Could not start the chat: ${describe(error)}`);
       }
@@ -962,8 +930,7 @@ export class ChatWorkbench {
         metadata: {
           name: created.name ?? null,
           emoji: created.emoji ?? null,
-          workspaceId: created.workspaceId ?? null,
-          workspaceName: created.workspaceName ?? null,
+          folderName: created.folderName ?? null,
           hasAgent: true,
           createdAt: created.createdAt ?? Math.floor(Date.now() / 1000),
           lastMessageAt: null,

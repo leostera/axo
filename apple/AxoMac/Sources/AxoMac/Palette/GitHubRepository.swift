@@ -50,7 +50,7 @@ struct GitHubRepository: Hashable, Sendable {
   }
 }
 
-enum GitHubWorkspaceCloneError: LocalizedError {
+enum GitHubCloneError: LocalizedError {
   case destinationAlreadyExists(URL)
   case cloneFailed(ssh: String, https: String)
 
@@ -69,7 +69,7 @@ private struct GitCloneAttemptError: LocalizedError {
   var errorDescription: String { details.isEmpty ? "Git could not clone this repository." : details }
 }
 
-enum GitHubWorkspaceCloner {
+enum GitHubCloner {
   static func clone(_ repository: GitHubRepository) async throws -> URL {
     let root = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
       .appendingPathComponent("Developer/github.com", isDirectory: true)
@@ -82,7 +82,7 @@ enum GitHubWorkspaceCloner {
       guard FileManager.default.fileExists(
         atPath: destination.appendingPathComponent(".git").path
       ) else {
-        throw GitHubWorkspaceCloneError.destinationAlreadyExists(destination)
+        throw GitHubCloneError.destinationAlreadyExists(destination)
       }
       return destination
     }
@@ -100,7 +100,7 @@ enum GitHubWorkspaceCloner {
           repository.httpsURL.absoluteString, destination: staging, workingDirectory: ownerDirectory)
       } catch {
         try? FileManager.default.removeItem(at: staging)
-        throw GitHubWorkspaceCloneError.cloneFailed(
+        throw GitHubCloneError.cloneFailed(
           ssh: sshError.localizedDescription, https: error.localizedDescription)
       }
       return try installClone(staging, at: destination)

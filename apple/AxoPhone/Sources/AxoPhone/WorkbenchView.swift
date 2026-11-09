@@ -52,13 +52,13 @@ struct WorkbenchView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
-  /// The Workspaces folded away in the menu, by section id, one a line; kept across launches.
-  @AppStorage("collapsedWorkspaces") private var collapsedWorkspaceList = ""
-  /// The Workspaces showing their older chats too. Not kept: that is a look back, not a way the
+  /// The folders folded away in the menu, by section id, one a line; kept across launches.
+  @AppStorage("collapsedFolders") private var collapsedFolderList = ""
+  /// The folders showing their older chats too. Not kept: that is a look back, not a way the
   /// menu stays.
   @State private var showingOlder: Set<String> = []
   /// Whether the menu lists chats as the Mac's sidebar does (Pinned, Active, Earlier) or under
-  /// their Workspaces; kept across launches.
+  /// their folders; kept across launches.
   @AppStorage("chatListMode") private var chatListMode: ChatListMode = .recent
   /// Pins, seen marks and how to group, kept on this phone (Settings › Chats).
   @State private var chatPrefs = ChatListPreferences(defaults: Self.chatListDefaults())
@@ -292,22 +292,14 @@ struct WorkbenchView: View {
         }
         if chatListMode == .recent, !sections.isEmpty {
           groupedChats
-        } else if chatListMode == .workspaces {
-          // Pinned chats lead in Workspaces too, as in the grouped list.
+        } else if chatListMode == .folders {
+          // Pinned chats lead in folders too, as in the grouped list.
           ForEach(pinnedEntries, id: \.key) { entry in chatRow(entry, showsAge: false, pinned: true) }
         }
-        ForEach(chatListMode == .workspaces ? sections : []) { section in
-          switch section.kind {
-          case .project:
-            let collapsed = collapsedWorkspaces.contains(section.id)
-            sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
-            if !collapsed { sectionChats(section) }
-          case .home:
-            // Home's chats are the everyday ones: listed under the projects, newest first,
-            // with no title to fold them away.
-            Color.clear.frame(height: section.id == sections.first?.id ? 4 : MenuLayout.sectionTopSpacing + 8)
-            sectionChats(section)
-          }
+        ForEach(chatListMode == .folders ? sections : []) { section in
+          let collapsed = collapsedFolders.contains(section.id)
+          sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
+          if !collapsed { sectionChats(section) }
         }
         if sections.isEmpty {
           if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
@@ -392,7 +384,7 @@ struct WorkbenchView: View {
     }
   }
 
-  /// Pinned chats, in pin order: the top of the Workspaces list.
+  /// Pinned chats, in pin order: the top of the folders list.
   private var pinnedEntries: [ChatMenuEntry] {
     let all = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
     return ChatGrouping.sections(
@@ -449,17 +441,17 @@ struct WorkbenchView: View {
     .padding(.horizontal, MenuLayout.rowInset)
   }
 
-  private var collapsedWorkspaces: Set<String> {
-    Set(collapsedWorkspaceList.split(separator: "\n").map(String.init))
+  private var collapsedFolders: Set<String> {
+    Set(collapsedFolderList.split(separator: "\n").map(String.init))
   }
 
   private func toggleCollapsed(_ id: String) {
-    var collapsed = collapsedWorkspaces
+    var collapsed = collapsedFolders
     if collapsed.remove(id) == nil { collapsed.insert(id) }
-    collapsedWorkspaceList = collapsed.sorted().joined(separator: "\n")
+    collapsedFolderList = collapsed.sorted().joined(separator: "\n")
   }
 
-  /// A Workspace's title, which folds it away; a dot says a chat in a folded one is busy.
+  /// A folder's title, which folds it away; a dot says a chat in a folded one is busy.
   private func sectionHeader(_ section: ChatMenuSection, collapsed: Bool, first: Bool) -> some View {
     Button {
       withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { toggleCollapsed(section.id) }
@@ -485,10 +477,10 @@ struct WorkbenchView: View {
     .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
     .accessibilityHint(collapsed ? "Shows its chats" : "Hides its chats")
     .accessibilityAddTraits(.isHeader)
-    .accessibilityIdentifier("workspace-section")
+    .accessibilityIdentifier("folder-section")
   }
 
-  /// An open Workspace's chats: those active in the last 8 hours (and busy ones, and the open one),
+  /// An open folder's chats: those active in the last 8 hours (and busy ones, and the open one),
   /// then the rest when asked for.
   @ViewBuilder private func sectionChats(_ section: ChatMenuSection) -> some View {
     let recent = section.recentChats(now: .now) { entry in
@@ -496,7 +488,7 @@ struct WorkbenchView: View {
     }
     let olderCount = section.chats.count - recent.count
     let expanded = showingOlder.contains(section.id)
-    // Pinned chats are listed above the Workspaces, not again in theirs.
+    // Pinned chats are listed above the folders, not again in theirs.
     ForEach((expanded ? section.chats : recent).filter { !chatPrefs.pins.contains($0.session.sessionId) },
       id: \.session.sessionId)
     { entry in
@@ -517,12 +509,6 @@ struct WorkbenchView: View {
       .buttonStyle(.layerRow)
       .padding(.horizontal, MenuLayout.rowInset)
     }
-    if section.chats.isEmpty, section.kind == .project {
-      Text("No chats yet")
-        .font(.callout).foregroundStyle(.tertiary)
-        .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
-        .frame(height: MenuLayout.rowHeight)
-    }
   }
 
   /// A chat in the menu, which opens it; a long press pins it to the top, or unpins it.
@@ -540,7 +526,7 @@ struct WorkbenchView: View {
         name: entry.session.displayName,
         status: entry.session.status,
         lastActive: showsAge ? ChatMenu.activity(entry.session) : nil,
-        // In Workspaces the section's title names the Mac; the recent list mixes them.
+        // In folders the section's title names the Mac; the recent list mixes them.
         hostLabel: showsAge && workbench.hosts.hosts.count > 1 ? entry.host.label : nil,
         pinned: pinned,
         unseen: unseen ? marker : nil)
@@ -560,13 +546,9 @@ struct WorkbenchView: View {
     }
   }
 
-  /// The chats, by Workspace, the most recently active first (see `ChatMenu`).
+  /// The chats, by folder, the most recently active first (see `ChatMenu`).
   private var sections: [ChatMenuSection] {
-    let hosts = workbench.hosts.hosts
-    let open = workbench.current.flatMap { current in hosts.first { $0.hostId == current.reference.hostId } }
-    return ChatMenu.sections(
-      hosts: hosts, sessionsOf: workbench.sessions(of:), openHost: open,
-      workspaces: workbench.current?.workspaceList ?? [])
+    ChatMenu.sections(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
   }
 
   /// The account and its Macs, under the chats.
@@ -597,14 +579,14 @@ struct WorkbenchView: View {
         .frame(height: 34)
       Spacer(minLength: 8)
       Button {
-        chatListMode = chatListMode == .workspaces ? .recent : .workspaces
+        chatListMode = chatListMode == .folders ? .recent : .folders
         held.groups = liveGroups(now: .now)
       } label: {
-        Image(systemName: chatListMode == .workspaces ? "clock" : "list.bullet.indent")
+        Image(systemName: chatListMode == .folders ? "clock" : "list.bullet.indent")
           .font(.system(size: 18, weight: .medium))
           .floatingCircle()
       }
-      .accessibilityLabel(chatListMode == .workspaces ? "Show recent chats" : "Show Workspaces")
+      .accessibilityLabel(chatListMode == .folders ? "Show recent chats" : "Show folders")
       .accessibilityIdentifier("chat-list-mode")
       // The account and its Macs are also one more swipe to the right.
       Button {
@@ -670,7 +652,7 @@ private struct SessionRow: View {
   let selection: PhoneWorkbench.Selection
   let name: String
   let status: RemoteSessionStatus?
-  /// When the chat was last active, shown as a short age in the recent list; nil in Workspaces.
+  /// When the chat was last active, shown as a short age in the recent list; nil in folders.
   var lastActive: Date?
   /// The Mac the chat is on, when there is more than one to tell apart.
   var hostLabel: String?
@@ -1008,7 +990,7 @@ extension ClientID {
   }
 
   /// Answers just enough of the account's socket for the app to run: it lists the sample Macs,
-  /// opens their chats, lists one Mac's Workspaces, takes key presses, and refuses prompts to a
+  /// opens their chats, takes key presses, and refuses prompts to a
   /// chat whose agent is idle (there is no agent behind it). A chat listed as working takes them,
   /// queued in its log, as a busy Pi does (RFD0033); every chat lists its Pi's commands and
   /// models, switches them, and restarts.
@@ -1086,8 +1068,6 @@ extension ClientID {
           (params?["sessionId"] as? String).flatMap(SessionID.init(rawValue:)).map(PreviewFixture.opened(_:))
         case "axo.client.command":
           switch params?["method"] as? String {
-          case "axo.remote.workspace.list":
-            #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
           case "axo.remote.session.key": #"{"accepted":true}"#
           case "axo.remote.session.stop": #"{"stopped":true}"#
           case "axo.remote.session.prompt": queue(params?["params"] as? [String: Any]) ? #"{"accepted":true}"# : nil

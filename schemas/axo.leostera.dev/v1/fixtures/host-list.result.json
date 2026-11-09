@@ -26,8 +26,7 @@
         {
           "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
           "sessionId": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
-          "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
-          "workspaceName": "Axo",
+          "folderName": "axo",
           "name": "Ship the remote Workbench",
           "emoji": "🦀",
           "status": "working",

@@ -5,13 +5,11 @@ extension TerminalSession {
   func replacing(shells: [TerminalShell]) -> TerminalSession {
     TerminalSession(
       id: id,
-      initialPwd: initialPwd,
+      folder: folder,
       shells: shells,
       layout: layout,
       piSessionFile: piSessionFile,
       piSessionId: piSessionId,
-      workspaceId: workspaceId,
-      workspaceName: workspaceName,
       name: name,
       manualName: manualName,
       emoji: emoji,

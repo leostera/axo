@@ -3,24 +3,20 @@ import SwiftUI
 
 enum SidebarRenameTarget: Identifiable {
   case session(TerminalSession)
-  case workspace(WorkspaceRecord)
 
   enum ID: Hashable {
     case session(SessionID)
-    case workspace(String)
   }
 
   var id: ID {
     switch self {
     case .session(let session): .session(session.id)
-    case .workspace(let workspace): .workspace(workspace.workspaceId)
     }
   }
 
   var name: String {
     switch self {
     case .session(let session): session.displayName
-    case .workspace(let workspace): workspace.name
     }
   }
 }

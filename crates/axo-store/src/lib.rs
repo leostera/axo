@@ -11,7 +11,6 @@
 //! | `migrations` | Upgrading older catalogs, including the UUID rekey (RFD0017) |
 //! | `sessions` | Session rows: create, read, rename, layout, archive, reopen |
 //! | `shells` | Shell (pane) rows |
-//! | `workspaces` | Workspace rows and the Home Workspace |
 //! | `pi` | Each Session's Pi history file, bridge socket and credential |
 //! | `metadata` | `daemon_metadata`: settings, host identity, viewport |
 //! | `host_link` | The host's link to an Axo account |
@@ -27,7 +26,6 @@ mod schema;
 mod sessions;
 mod shells;
 mod sync;
-mod workspaces;
 
 #[cfg(test)]
 mod test_support;
@@ -41,7 +39,6 @@ pub use schema::*;
 pub use sessions::*;
 pub use shells::*;
 pub use sync::*;
-pub use workspaces::*;
 
 pub use rusqlite::Connection;
 

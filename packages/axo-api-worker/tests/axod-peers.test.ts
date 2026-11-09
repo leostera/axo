@@ -32,7 +32,7 @@ async function startAxod(t: TestContext, configuration: { entry?: string } = {})
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
   const api = await harness(configuration);
-  // Resolved: a Session's folder must be inside its Workspace, as macOS names both.
+  // Resolved, as macOS names it: paths axod compares are canonical.
   const root = await realpath(await mkdtemp(join(tmpdir(), "axo-axod-peers-")));
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
@@ -89,7 +89,7 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
 
   // Every Mac's transcripts are kept by host beside server/, the same way on every Mac.
   const sessions = join(root, "sessions");
-  const copy = join(sessions, studioHost.hostId, "no-workspace", `${transcript.sessionId}.jsonl`);
+  const copy = join(sessions, studioHost.hostId, `${transcript.sessionId}.jsonl`);
   const read = async () => (existsSync(copy) ? await readFile(copy, "utf8") : undefined);
   await waitFor("the copy of the Studio's chat", 20_000, async () => ((await read()) === piFile(transcript) ? true : undefined), daemon);
 
@@ -181,7 +181,7 @@ test("a Mac follows over protocol 2 while the cloud can't serve it a Mac's HostD
   await append(studio, transcript, 1, true);
 
   await link(api, account, socketPath);
-  const copy = join(root, "sessions", studioHost.hostId, "no-workspace", `${transcript.sessionId}.jsonl`);
+  const copy = join(root, "sessions", studioHost.hostId, `${transcript.sessionId}.jsonl`);
   const read = async () => (existsSync(copy) ? await readFile(copy, "utf8") : undefined);
   // The Studio's HostDO refuses it, so it says so and keeps the copy through the account.
   await waitFor("the fallback to protocol 2", 20_000, async () => ((await log()).includes("event=peers.protocol_fallback") ? true : undefined), daemon);

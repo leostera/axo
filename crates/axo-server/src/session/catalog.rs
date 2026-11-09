@@ -299,9 +299,7 @@ pub(super) fn session_metadata(
     attach_socket_path: &Path,
 ) -> io::Result<SessionRecord> {
     let StoredSessionRow {
-        initial_pwd,
-        workspace_id,
-        workspace_name,
+        folder,
         name,
         manual_name,
         emoji,
@@ -354,15 +352,13 @@ pub(super) fn session_metadata(
         id,
         pi_session_file,
         pi_session_id,
-        workspace_id,
-        workspace_name,
         name,
         manual_name,
         emoji,
         last_message_at,
         created_at,
         status,
-        initial_pwd,
+        folder,
         shells,
         layout,
         pi: agents
@@ -507,8 +503,6 @@ mod tests {
 
     use crate::session::test_support::*;
 
-    use axo_protocol::new_uuid_v4;
-
     use rusqlite::params;
 
     #[test]
@@ -550,59 +544,30 @@ mod tests {
     }
 
     #[test]
-    fn session_metadata_reads_emoji_workspace_name_and_ignores_a_corrupt_layout() {
+    fn session_metadata_reads_emoji_and_folder_and_ignores_a_corrupt_layout() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.create_session_and_publish().unwrap();
-        let workspace_id = new_uuid_v4().unwrap();
-        {
-            let state = manager.lock_state().unwrap();
-            state
-                .database
-                .execute(
-                    "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at)
-                     VALUES (?1, 'Axo', '/tmp', 'open', 0)",
-                    params![workspace_id],
-                )
-                .unwrap();
-            state
-                .database
-                .execute(
-                    "UPDATE sessions SET emoji = '🦀', workspace_id = ?1, layout_json = '{\"not\": 1}'
-                     WHERE id = ?2",
-                    params![workspace_id, session.id.to_string()],
-                )
-                .unwrap();
-            let record = session_metadata(
-                &state,
-                &manager.lock_agents(),
-                session.id,
-                &manager.attach_socket_path,
+        let session = manager
+            .create_session(axo_protocol::rpc::CreateSession::default())
+            .unwrap();
+        let state = manager.lock_state().unwrap();
+        state
+            .database
+            .execute(
+                "UPDATE sessions SET emoji = '🦀', layout_json = '{\"not\": 1}' WHERE id = ?1",
+                params![session.id.to_string()],
             )
             .unwrap();
-            assert_eq!(record.emoji.as_deref(), Some("🦀"));
-            assert_eq!(record.workspace_id.as_deref(), Some(workspace_id.as_str()));
-            assert_eq!(record.workspace_name.as_deref(), Some("Axo"));
-            assert_eq!(record.layout, None, "a corrupt stored layout is ignored");
-            assert_eq!(record.shells.len(), 2, "Pi and its terminal");
-
-            // A Session whose Workspace is gone is inconsistent, not Workspace-less.
-            state
-                .database
-                .execute(
-                    "UPDATE workspaces SET state = 'archived' WHERE workspace_id = ?1",
-                    params![workspace_id],
-                )
-                .unwrap();
-            assert!(
-                session_metadata(
-                    &state,
-                    &manager.lock_agents(),
-                    session.id,
-                    &manager.attach_socket_path
-                )
-                .is_err()
-            );
-        }
+        let record = session_metadata(
+            &state,
+            &manager.lock_agents(),
+            session.id,
+            &manager.attach_socket_path,
+        )
+        .unwrap();
+        assert_eq!(record.emoji.as_deref(), Some("🦀"));
+        assert_eq!(record.folder, manager.home);
+        assert_eq!(record.layout, None, "a corrupt stored layout is ignored");
+        assert_eq!(record.shells.len(), 2, "Pi and its terminal");
     }
 }

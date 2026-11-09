@@ -84,15 +84,25 @@ impl Drop for RunningShellGuard {
     }
 }
 
-/// Opens a manager whose shells (the home Session's included) run a silent stand-in for the
-/// login shell: no profile, no history, and no output to race a test's event assertions.
+/// A new Session with Pi beside a terminal, in the test's own directory: axod opens none itself.
+pub(super) fn new_session(manager: &Arc<SessionManager>) -> axo_protocol::SessionRecord {
+    manager
+        .create_session(axo_protocol::rpc::CreateSession {
+            folder: Some(manager.sessions_directory.clone()),
+            like: None,
+        })
+        .unwrap()
+}
+
+/// Opens a manager whose shells run a silent stand-in for the login shell: no profile, no
+/// history, and no output to race a test's event assertions.
 pub(super) fn open_with_silent_shell(directory: &Path) -> Arc<SessionManager> {
     let shell = directory.join("silent-shell");
     fs::write(&shell, "#!/bin/sh\nexec /bin/sleep 3600\n").unwrap();
     fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
     let mut database = Connection::open(directory.join(DATABASE_FILE)).unwrap();
     initialize_database(&mut database).unwrap();
-    // The Home Workspace's Session starts at once; it must not launch the user's real Pi.
+    // A Session's Pi must not launch the user's real Pi.
     database
         .execute(
             "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1), ('agent_command', ?1)
@@ -122,7 +132,7 @@ impl LifecycleFixture {
         )
         .unwrap();
         fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
-        // The Home Workspace's Session starts at once; it must not launch the user's real Pi.
+        // A Session's Pi must not launch the user's real Pi.
         let agent = directory.join("fixture-agent");
         fs::write(&agent, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
         fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();

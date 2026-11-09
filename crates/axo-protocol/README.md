@@ -7,7 +7,7 @@ Every type is parsed at the boundary: deserializing one establishes its invarian
 | Module | Owns |
 | --- | --- |
 | `ids` | `SessionId` (UUID, RFD0017) and `ShellId` (positive, never reused) |
-| `model` | Sessions, panes, Workspaces and configuration as clients see them |
+| `model` | Sessions, panes and configuration as clients see them |
 | `layout`, `viewport` | Pane layouts (a binary tree of splits) and the grid each pane gets, computed as the Mac client does |
 | `rpc` | Local JSON-RPC method names, parameters and results; `method::ADVERTISED` |
 | `event` | Events axod publishes to subscribers and the relay |

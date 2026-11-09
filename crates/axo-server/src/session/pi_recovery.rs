@@ -12,19 +12,18 @@ use super::lifecycle::close_session;
 use super::pi_bridge::{PiRuntimeBinding, log_socket_cleanup};
 use super::spawn::{pi_environment, spawn_shell};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
-use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_agent::interrupt::Interrupt;
 use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess};
 use axo_agent::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
 use axo_agent::{AgentCommand, WriterLock};
 use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
-use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, new_uuid_v4};
+use axo_protocol::{PaneRole, SessionId, SessionRecord, ShellId, new_uuid_v4};
 use axo_pty::WindowSize;
 use axo_pty::process::PtyProcess;
 use axo_store::Connection;
 use axo_store::{
     PiHistoryOwner, archived_pi_pane_count, pi_history_owners, recently_closed_sessions,
-    reopen_archived_session, workspace_directory,
+    reopen_archived_session,
 };
 use axo_store::{
     StoredLifecycle, archive_shell_and_prune_layout, load_pi_bridge_token, read_open_sessions,
@@ -506,7 +505,6 @@ impl SessionManager {
             session_id,
             lifecycle,
             initial_pwd,
-            workspace_id,
         } = {
             let state = self.lock_state()?;
             if !requester.is_current(&state) {
@@ -536,7 +534,6 @@ impl SessionManager {
             session_id,
             lifecycle,
             initial_pwd,
-            workspace_id,
         };
         self.reopen_archived(&owner, |state| requester.is_current(state))?;
         self.complete_pi_resume(requester, session_id)
@@ -591,36 +588,15 @@ impl SessionManager {
         let PiHistoryOwner {
             session_id,
             initial_pwd,
-            workspace_id,
             ..
         } = owner;
         let session_id = *session_id;
-        let workspace_access = if let Some(workspace_id) = &workspace_id {
-            let (directory_path, bookmark) =
-                workspace_directory(&self.lock_state()?.database, workspace_id)?;
-            let access =
-                WorkspaceDirectoryAccess::open(Path::new(&directory_path), bookmark.as_deref())?;
-            // The access holds the root canonical; so must the Session's directory, which is
-            // stored as given (`$HOME` may lead through a symlink, as `/tmp` does).
-            let canonical_pwd = initial_pwd
-                .canonicalize()
-                .unwrap_or_else(|_| initial_pwd.clone());
-            if !canonical_pwd.starts_with(access.path()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Session working directory is outside its Workspace",
-                ));
-            }
-            Some((workspace_id.clone(), access))
-        } else {
-            if !initial_pwd.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "the Session's working directory is unavailable",
-                ));
-            }
-            None
-        };
+        if !initial_pwd.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the Session's folder is unavailable",
+            ));
+        }
 
         if archived_pi_pane_count(&self.lock_state()?.database, session_id)? != 1 {
             return Err(io::Error::new(
@@ -649,13 +625,7 @@ impl SessionManager {
             }
 
             super::cloud_transcripts::reopened_with_transcript(&state.database, session_id)?;
-            reopen_archived_session(&mut state.database, session_id, workspace_id.as_deref())?;
-            if let Some((workspace_id, access)) = workspace_access {
-                self.workspace_access
-                    .lock()
-                    .map_err(|_| io::Error::other("Workspace access lock was poisoned"))?
-                    .insert(workspace_id, access);
-            }
+            reopen_archived_session(&mut state.database, session_id)?;
 
             let record = read_open_sessions(&state.database)?
                 .into_iter()
@@ -723,7 +693,7 @@ impl SessionManager {
         target_session_id: SessionId,
     ) -> io::Result<SessionId> {
         let requester_session_id = requester.session_id;
-        let (replacement, shells) = {
+        let shells = {
             let mut state = self.lock_state()?;
             if state.shutting_down || !requester.is_current(&state) {
                 return Err(io::Error::new(
@@ -750,27 +720,15 @@ impl SessionManager {
                 ));
             }
             if requester_session_id != target_session_id {
-                close_session(
-                    &mut state,
-                    &mut self.lock_agents(),
-                    requester_session_id,
-                    &self.attach_socket_path,
-                    &self.pi_directories,
-                )?
+                close_session(&mut state, &mut self.lock_agents(), requester_session_id)?
             } else {
-                (None, Vec::new())
+                Vec::new()
             }
         };
 
         if requester_session_id != target_session_id {
             self.terminate_shells_in_background(shells);
-            if let Some(session) = &replacement {
-                self.start_pi_bridge_for_session(session)?;
-            }
             self.publish_session_removed(requester_session_id);
-            if let Some(replacement) = replacement {
-                self.publish_event(Event::snapshot(replacement.clone()));
-            }
         }
 
         self.request_session_focus(target_session_id)?;
@@ -829,12 +787,7 @@ mod tests {
             catalog_lock_is_free(manager),
             "recovery held the shared catalog lock during authentication"
         );
-        let home = manager
-            .list_sessions()
-            .unwrap()
-            .into_iter()
-            .find(|session| session.id != fixture.session_id)
-            .unwrap();
+        let home = new_session(manager);
         manager.rename_session(home.id, "Still responsive").unwrap();
         let attachment = manager.attach_shell(home.shells[0].id).unwrap();
         manager.mark_detached(home.shells[0].id, attachment.runtime_id);
@@ -1322,12 +1275,7 @@ mod tests {
     fn resume_handoff_preserves_requester_when_target_or_runtime_is_unavailable() {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
-        let home = manager
-            .list_sessions()
-            .unwrap()
-            .into_iter()
-            .find(|session| session.id != fixture.session_id)
-            .unwrap();
+        let home = new_session(manager);
         let requester = {
             let mut state = manager.lock_state().unwrap();
             let shell = state.panes.running_mut(home.shells[0].id).unwrap();
@@ -1790,9 +1738,8 @@ mod tests {
         let shell_id = shid(902);
         let session_uuid = session_id.to_string();
         let pane_id = new_uuid_v4().unwrap();
-        let workspace_id = new_uuid_v4().unwrap();
-        let workspace_root = PathBuf::from("/tmp").canonicalize().unwrap();
-        let workspace_root_string = workspace_root.to_string_lossy().into_owned();
+        let folder = PathBuf::from("/tmp").canonicalize().unwrap();
+        let folder_string = folder.to_string_lossy().into_owned();
         let session_file = pi_session_directory.join(format!("{session_uuid}.jsonl"));
         let history = b"archived Pi conversation must remain canonical\n";
         fs::write(&session_file, history).unwrap();
@@ -1801,29 +1748,16 @@ mod tests {
         initialize_database(&mut database).unwrap();
         database
             .execute(
-                "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at, archived_at)
-                 VALUES (?1, 'Archived Workspace', ?2, 'archived', ?3, ?4)",
-                params![
-                    workspace_id,
-                    workspace_root_string,
-                    unix_timestamp(),
-                    unix_timestamp()
-                ],
-            )
-            .unwrap();
-        database
-            .execute(
                 "INSERT INTO sessions
                     (id, initial_pwd, state, created_at, archived_at, termination_reason,
-                     layout_json, workspace_id, pi_session_file, pi_session_id)
-                 VALUES (?1, ?2, 'archived', ?3, ?4, 'pi_exited', ?5, ?6, ?7, 'pi-session-archived')",
+                     layout_json, pi_session_file, pi_session_id)
+                 VALUES (?1, ?2, 'archived', ?3, ?4, 'pi_exited', ?5, ?6, 'pi-session-archived')",
                 params![
                     session_id.to_string(),
-                    workspace_root_string,
+                    folder_string,
                     unix_timestamp(),
                     unix_timestamp(),
                     serde_json::to_string(&Layout::single(shell_id)).unwrap(),
-                    workspace_id,
                     session_file.to_string_lossy(),
                 ],
             )
@@ -1836,7 +1770,7 @@ mod tests {
                 params![
                     shell_id.get(),
                     session_id.to_string(),
-                    workspace_root_string,
+                    folder_string,
                     unix_timestamp(),
                     unix_timestamp(),
                     pane_id
@@ -1851,15 +1785,14 @@ mod tests {
         fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o700)).unwrap();
         manager.lock_state().unwrap().agent_command =
             AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
-        let active_workspace = manager
-            .create_workspace(rpc::CreateWorkspace {
-                name: "Active Workspace".to_owned(),
-                directory_path: PathBuf::from("/tmp").canonicalize().unwrap(),
-                directory_bookmark: None,
+        let requester = manager
+            .create_session(rpc::CreateSession {
+                folder: Some(folder.clone()),
+                like: None,
             })
             .unwrap();
-        let requester_session_id = active_workspace.session.id;
-        let requester_shell_id = active_workspace.session.shells[0].id;
+        let requester_session_id = requester.id;
+        let requester_shell_id = requester.shells[0].id;
         let requester = PiRuntimeBinding {
             session_id: requester_session_id,
             shell_id: requester_shell_id,
@@ -1899,7 +1832,7 @@ mod tests {
             resumed.pi_session_file.as_deref(),
             Some(session_file.as_path())
         );
-        assert_eq!(resumed.workspace_id.as_deref(), Some(workspace_id.as_str()));
+        assert_eq!(resumed.folder, folder);
         assert_eq!(resumed.shells.len(), 1);
         assert_eq!(resumed.shells[0].id, shell_id);
         assert!(resumed.shells[0].is_available());
@@ -1925,18 +1858,6 @@ mod tests {
             requester_state,
             ("archived".to_owned(), Some("explicit_close".to_owned()))
         );
-        let workspace_state: String = manager
-            .lock_state()
-            .unwrap()
-            .database
-            .query_row(
-                "SELECT state FROM workspaces WHERE workspace_id = ?1",
-                params![workspace_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(workspace_state, "open");
-
         manager.shutdown();
         drop(manager);
         fs::remove_dir_all(directory).unwrap();

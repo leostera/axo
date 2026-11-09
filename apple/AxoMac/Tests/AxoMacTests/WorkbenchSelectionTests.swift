@@ -13,12 +13,12 @@ final class WorkbenchSelectionTests: XCTestCase {
 
   private func session(
     _ id: SessionID, _ shells: [ShellID], agentShell: ShellID? = nil,
-    layout: SessionLayout? = nil, workspace: String? = nil
+    layout: SessionLayout? = nil, folder: String = "/"
   ) -> TerminalSession {
     TerminalSession(
-      id: id, initialPwd: "/",
+      id: id, folder: folder,
       shells: shells.map { shell($0, role: $0 == agentShell ? .pi : .terminal) },
-      layout: layout, workspaceId: workspace)
+      layout: layout)
   }
 
   private func selection(_ sessions: [TerminalSession]) -> WorkbenchSelection {
@@ -79,10 +79,10 @@ final class WorkbenchSelectionTests: XCTestCase {
     XCTAssertNotEqual(selection.focusedShellID, 11)
   }
 
-  func testRemovingTheShownSessionSelectsItsSuccessorInTheSameWorkspace() {
+  func testRemovingTheShownSessionSelectsItsSuccessorInTheSameFolder() {
     let before = [
-      session(1, [10], workspace: "a"), session(2, [20], workspace: "b"),
-      session(3, [30], workspace: "a"),
+      session(1, [10], folder: "/a"), session(2, [20], folder: "/b"),
+      session(3, [30], folder: "/a"),
     ]
     var selection = selection(before)
     selection.select(3, in: before)

@@ -3,29 +3,21 @@ import AxoSearch
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct WorkspaceCreationSheet: View {
-  private enum Step: Equatable { case directory, name }
-
+/// Picks a folder, from those under the home directory or any other, and starts a Session in it
+/// (RFD0038).
+struct NewSessionInFolderSheet: View {
   var sessions: TerminalSessionsModel
   @Environment(\.dismiss) private var dismiss
-  @State private var step = Step.directory
-  @State private var name = ""
   @State private var directoryQuery = ""
   @State private var directories: [URL] = []
   @State private var directoryIndex = SearchIndex<URL>([]) {
     SearchDocument(title: $0.lastPathComponent, subtitle: $0.path)
   }
   @State private var selectedDirectoryIndex = 0
-  @State private var directoryURL: URL?
   @State private var isChoosingDirectory = false
   @State private var isCreating = false
   @State private var directorySelectionError: String?
   @FocusState private var isDirectorySearchFocused: Bool
-  @FocusState private var isNameFocused: Bool
-
-  private var normalizedName: String {
-    name.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
 
   private var directoryResults: [SearchResult<URL>] {
     directoryIndex.search(SearchQuery(directoryQuery)).prefix(8).map { $0 }
@@ -33,20 +25,16 @@ struct WorkspaceCreationSheet: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      if step == .directory {
-        directoryStep
-      } else {
-        nameStep
-      }
+      directoryStep
 
-      if let error = sessions.workspaceCreationError ?? directorySelectionError {
+      if let error = sessions.sessionCreationError ?? directorySelectionError {
         Label(error, systemImage: "exclamationmark.triangle.fill")
           .font(.caption)
           .foregroundStyle(.red)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(12)
-          .accessibilityIdentifier("workspace-creation-form-error")
+          .accessibilityIdentifier("new-session-in-folder-error")
       }
     }
     .frame(width: 560)
@@ -68,7 +56,7 @@ struct WorkspaceCreationSheet: View {
       }
     }
     .task {
-      sessions.dismissWorkspaceCreationError()
+      sessions.dismissSessionCreationError()
       let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
       let found = await Task.detached(priority: .utility) {
         Self.directories(under: home, limit: 10_000)
@@ -78,7 +66,7 @@ struct WorkspaceCreationSheet: View {
         SearchDocument(title: $0.lastPathComponent, subtitle: $0.path)
       }
     }
-    .defaultFocus($isDirectorySearchFocused, step == .directory)
+    .defaultFocus($isDirectorySearchFocused, true)
   }
 
   private var directoryStep: some View {
@@ -88,13 +76,13 @@ struct WorkspaceCreationSheet: View {
         HStack(spacing: 10) {
           Image(systemName: "folder.badge.plus")
             .foregroundStyle(.secondary)
-          TextField("Search folders in your home directory", text: $directoryQuery)
+          TextField("New Session in… (search folders in your home directory)", text: $directoryQuery)
             .textFieldStyle(.plain)
             .font(.system(size: 18, weight: .light))
             .focused($isDirectorySearchFocused)
             .onSubmit(chooseSelectedDirectory)
             .onChange(of: directoryQuery) { _, _ in selectedDirectoryIndex = 0 }
-            .accessibilityIdentifier("workspace-directory-search")
+            .accessibilityIdentifier("folder-search")
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
@@ -131,74 +119,17 @@ struct WorkspaceCreationSheet: View {
 
       Divider()
       HStack(spacing: 8) {
-        Text("↑↓ Select   ↵ Choose")
+        Text("↑↓ Select   ↵ Start Session")
           .font(.caption)
           .foregroundStyle(.secondary)
         Spacer()
         Button("Choose Another Folder…") { isChoosingDirectory = true }
           .buttonStyle(.plain)
           .foregroundStyle(.secondary)
-          .accessibilityIdentifier("workspace-choose-directory-button")
+          .accessibilityIdentifier("choose-folder-button")
       }
       .padding(.horizontal, 12)
       .frame(height: 40)
-    }
-  }
-
-  private var nameStep: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 10) {
-        Image(systemName: "folder.badge.plus")
-          .foregroundStyle(.secondary)
-        TextField("Workspace name", text: $name)
-          .textFieldStyle(.plain)
-          .font(.system(size: 18, weight: .light))
-          .focused($isNameFocused)
-          .accessibilityIdentifier("workspace-name-field")
-      }
-      .padding(.horizontal, 14)
-      .frame(height: 48)
-      Divider()
-
-      HStack(spacing: 10) {
-        Image(systemName: "folder")
-          .foregroundStyle(.secondary)
-          .frame(width: 18)
-        VStack(alignment: .leading, spacing: 2) {
-          Text(directoryURL?.lastPathComponent ?? "")
-            .lineLimit(1)
-          Text(directoryURL?.path ?? "")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-        Spacer(minLength: 8)
-        Button("Change…") {
-          step = .directory
-          directoryQuery = ""
-          isDirectorySearchFocused = true
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-      }
-      .padding(.horizontal, 14)
-      .frame(height: 64)
-
-      Divider()
-      HStack(spacing: 8) {
-        Button("Cancel") { dismiss() }
-          .keyboardShortcut(.cancelAction)
-        Spacer()
-        Text("↵ Create")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Button(isCreating ? "Creating…" : "Create Workspace") { createWorkspace() }
-          .keyboardShortcut(.defaultAction)
-          .disabled(isCreating || normalizedName.isEmpty || directoryURL == nil)
-      }
-      .padding(.horizontal, 12)
-      .frame(height: 44)
     }
   }
 
@@ -216,11 +147,14 @@ struct WorkspaceCreationSheet: View {
   }
 
   private func chooseDirectory(_ url: URL) {
-    directoryURL = url.standardizedFileURL
-    name = url.lastPathComponent
+    guard !isCreating else { return }
     directorySelectionError = nil
-    step = .name
-    isNameFocused = true
+    Task {
+      isCreating = true
+      defer { isCreating = false }
+      await sessions.createSession(inFolder: url.standardizedFileURL.path)
+      if sessions.sessionCreationError == nil { dismiss() }
+    }
   }
 
   nonisolated private static func directories(under root: URL, limit: Int) -> [URL] {
@@ -243,29 +177,6 @@ struct WorkspaceCreationSheet: View {
       results.append(url.standardizedFileURL)
     }
     return results.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-  }
-
-  private func createWorkspace() {
-    guard let directoryURL else { return }
-    Task {
-      isCreating = true
-      let hasScopedAccess = directoryURL.startAccessingSecurityScopedResource()
-      defer {
-        if hasScopedAccess { directoryURL.stopAccessingSecurityScopedResource() }
-        isCreating = false
-      }
-      let directoryBookmark = try? directoryURL.bookmarkData(
-        options: [.withSecurityScope],
-        includingResourceValuesForKeys: nil,
-        relativeTo: nil
-      ).base64EncodedString()
-      await sessions.createWorkspace(
-        name: normalizedName,
-        directoryPath: directoryURL.path,
-        directoryBookmark: directoryBookmark
-      )
-      if sessions.workspaceCreationError == nil { dismiss() }
-    }
   }
 }
 
@@ -333,7 +244,7 @@ private struct DirectorySearchRow: View {
     }
     .buttonStyle(.plain)
     .onHover { isHovered = $0 }
-    .accessibilityIdentifier("workspace-directory-\(result.item.lastPathComponent)")
+    .accessibilityIdentifier("folder-\(result.item.lastPathComponent)")
     .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }

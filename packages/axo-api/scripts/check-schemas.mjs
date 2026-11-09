@@ -288,4 +288,4 @@ for (const name of parity.planned) {
   assert.ok(!(name in hostV1Methods), `${name} exists: move it from planned to required in remote-parity.json and the Rust table`);
 }
 
-console.log(`Validated ${schemaNames.length} v1 schemas, pairing fixtures, and Workspace/Session invariants.`);
+console.log(`Validated ${schemaNames.length} v1 schemas, pairing fixtures, and Session invariants.`);

@@ -40,6 +40,7 @@ import { sessionDOName, type SessionBinding, type SessionHead } from "./session-
 import { recordApiEvent } from "./observability";
 import { addColumns, migrate, type SchemaStep } from "./schema";
 import { DIRECT_CLIENT_ROLE, HostClients, isDirectClient } from "./host-clients";
+import { withoutWorkspace } from "./stored-metadata";
 import { PI3_FORMAT, type ClientRecord } from "@axo/protocol";
 import { z } from "zod";
 
@@ -163,13 +164,20 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
     sql.exec("DROP TABLE IF EXISTS groups");
     sql.exec("DROP TABLE IF EXISTS pending");
   },
+  (sql) => {
+    // RFD0038: Workspaces are gone; a Session has a folder. Stored metadata names its folder by the
+    // last component of the path its git state records, the folder the Mac would send now.
+    const rows = sql.exec<{ session_id: string; metadata_json: string }>(
+      "SELECT session_id, metadata_json FROM session_index").toArray();
+    for (const row of rows) sql.exec(
+      "UPDATE session_index SET metadata_json = ? WHERE session_id = ?",
+      JSON.stringify(withoutWorkspace(JSON.parse(row.metadata_json))), row.session_id);
+  },
 ];
 
 /** What a client may ask the Mac to do, through `command`, and the params each takes. */
 const hostRemoteMethods = {
-  "axo.remote.workspace.list": hostV1Methods["axo.remote.workspace.list"],
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
-  "axo.remote.workspace.session.create": hostV1Methods["axo.remote.workspace.session.create"],
   "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
   "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
   "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],

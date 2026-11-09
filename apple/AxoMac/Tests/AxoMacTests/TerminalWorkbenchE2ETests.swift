@@ -233,7 +233,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       defer { defaults.removePersistentDomain(forName: suite) }
       let root = TerminalWorkbenchView(
         daemon: DaemonController(defaults: defaults), sessions: model,
-        isPresentingWorkspaceCreation: .constant(false), daemonIsRunningOverride: true
+        isPresentingNewSessionInFolder: .constant(false), daemonIsRunningOverride: true
       ).environment(runtime)
       let window = NSWindow(
         contentRect: CGRect(x: 0, y: 0, width: 1600, height: 1000),
@@ -326,34 +326,40 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     XCTAssertEqual(reopenedModel.layout?.firstShellID, firstShell.id)
   }
 
-  func testClosingNewWorkspaceSessionReturnsToPreviousSessionInWorkspace() async throws {
+  func testClosingASessionStartedBesideAnotherReturnsToIt() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("axo-session-focus-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
 
     try await withWorkbench { model, _ in
-      await model.createWorkspace(
-        name: "Session Focus",
-        directoryPath: directory.path,
-        directoryBookmark: nil
-      )
-      XCTAssertNil(model.workspaceCreationError)
+      await model.createSession(inFolder: directory.path)
+      XCTAssertNil(model.sessionCreationError)
 
       let previousSessionID = try XCTUnwrap(model.selectedSessionID)
-      let workspaceID = try XCTUnwrap(model.session(for: previousSessionID)?.workspaceId)
+      let folder = try XCTUnwrap(model.session(for: previousSessionID)?.folder)
+      XCTAssertEqual(
+        URL(fileURLWithPath: folder).resolvingSymlinksInPath(), directory.resolvingSymlinksInPath())
       await model.createSessionInCurrentContext()
 
       let newSessionID = try XCTUnwrap(model.selectedSessionID)
       XCTAssertNotEqual(newSessionID, previousSessionID)
-      XCTAssertEqual(model.session(for: newSessionID)?.workspaceId, workspaceID)
+      XCTAssertEqual(model.session(for: newSessionID)?.folder, folder, "beside the selected one")
       let shell = try XCTUnwrap(model.session(for: newSessionID)?.shells.first)
 
       await model.closeShell(shell.id)
 
       XCTAssertEqual(model.selectedSessionID, previousSessionID)
-      XCTAssertEqual(model.session(for: previousSessionID)?.workspaceId, workspaceID)
       XCTAssertNil(model.errorMessage)
+    }
+  }
+
+  func testAFolderThatIsGoneIsRefusedAndSaidSo() async throws {
+    try await withWorkbench { model, _ in
+      let before = model.sessions.map(\.id)
+      await model.createSession(inFolder: "/nonexistent/axo-\(UUID().uuidString)")
+      XCTAssertNotNil(model.sessionCreationError)
+      XCTAssertEqual(model.sessions.map(\.id), before)
     }
   }
 
@@ -364,11 +370,9 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     try await withWorkbench { model, _ in
-      await model.createWorkspace(
-        name: "Session Pair", directoryPath: directory.path, directoryBookmark: nil)
+      await model.createSession(inFolder: directory.path)
       let firstSessionID = try XCTUnwrap(model.selectedSessionID)
-      let workspaceID = try XCTUnwrap(model.session(for: firstSessionID)?.workspaceId)
-      await model.createSession(in: workspaceID)
+      await model.createSessionInCurrentContext()
       let secondSessionID = try XCTUnwrap(model.selectedSessionID)
 
       for sessionID in [firstSessionID, secondSessionID] {
@@ -417,9 +421,9 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       let secondSessionID = try XCTUnwrap(model.selectedSessionID)
       XCTAssertNotEqual(firstSessionID, secondSessionID)
       let secondSession = try XCTUnwrap(model.session(for: secondSessionID))
-      let home = try XCTUnwrap(model.workspaces.first(where: \.isHome))
-      XCTAssertEqual(secondSession.workspaceId, home.workspaceId, "new Sessions go to Home")
-      XCTAssertEqual(secondSession.initialPwd, daemon.homeDirectory.path)
+      XCTAssertEqual(
+        URL(fileURLWithPath: secondSession.folder).resolvingSymlinksInPath(),
+        daemon.homeDirectory.resolvingSymlinksInPath(), "a Session nobody placed starts at home")
 
       model.showNextSession()
       XCTAssertEqual(model.selectedSessionID, firstSessionID)
@@ -440,22 +444,17 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 
     try await withWorkbench { model, _ in
       let firstHomeID = try XCTUnwrap(model.selectedSessionID)
-      await model.createWorkspace(
-        name: "A Project",
-        directoryPath: directory.path,
-        directoryBookmark: nil
-      )
-      let firstWorkspaceSessionID = try XCTUnwrap(model.selectedSessionID)
-      let workspaceID = try XCTUnwrap(model.session(for: firstWorkspaceSessionID)?.workspaceId)
-      await model.createSession(in: workspaceID)
-      let secondWorkspaceSessionID = try XCTUnwrap(model.selectedSessionID)
+      await model.createSession(inFolder: directory.path)
+      let firstProjectSessionID = try XCTUnwrap(model.selectedSessionID)
+      await model.createSessionInCurrentContext()
+      let secondProjectSessionID = try XCTUnwrap(model.selectedSessionID)
       await model.createSession()
       let secondHomeID = try XCTUnwrap(model.selectedSessionID)
 
-      // One list, latest activity first, whatever Workspace each Session is in.
+      // One list, latest activity first, whatever folder each Session is in.
       let ordered = model.sidebarOrderedSessions.map(\.id)
       XCTAssertEqual(
-        Set(ordered), [firstHomeID, secondHomeID, firstWorkspaceSessionID, secondWorkspaceSessionID])
+        Set(ordered), [firstHomeID, secondHomeID, firstProjectSessionID, secondProjectSessionID])
       model.showSession(ordered[0])
       model.showNextSession()
       XCTAssertEqual(model.selectedSessionID, ordered[1])
@@ -469,34 +468,16 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
-  func testClosingLastWorkspaceSessionRequiresConfirmationToArchiveWorkspace() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("axo-last-session-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-
+  func testClosingTheLastSessionAsksNothingAndLeavesNone() async throws {
     try await withWorkbench { model, _ in
-      await model.createWorkspace(
-        name: "Last Session",
-        directoryPath: directory.path,
-        directoryBookmark: nil
-      )
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let workspaceID = try XCTUnwrap(model.session(for: sessionID)?.workspaceId)
+      XCTAssertEqual(model.sessions.map(\.id), [sessionID])
 
       await model.requestCloseSession(sessionID)
 
-      XCTAssertEqual(model.pendingWorkspaceArchiveConfirmation?.workspaceID, workspaceID)
-      XCTAssertEqual(model.pendingWorkspaceArchiveConfirmation?.sessionID, sessionID)
-      XCTAssertNotNil(model.session(for: sessionID))
-      XCTAssertTrue(model.workspaces.contains { $0.workspaceId == workspaceID })
-
-      let confirmation = try XCTUnwrap(model.pendingWorkspaceArchiveConfirmation)
-      await model.confirmWorkspaceArchiveAndCloseSession(confirmation)
-
-      XCTAssertNil(model.pendingWorkspaceArchiveConfirmation)
       XCTAssertNil(model.session(for: sessionID))
-      XCTAssertFalse(model.workspaces.contains { $0.workspaceId == workspaceID })
+      XCTAssertTrue(model.sessions.isEmpty, "nothing replaces it (RFD0038)")
+      XCTAssertNil(model.selectedSessionID)
       XCTAssertNil(model.errorMessage)
     }
   }
@@ -520,21 +501,21 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
-  func testExitingPiSelectsTheDaemonReplacement() async throws {
+  func testClosingPiClosesItsSessionAndShowsTheOneBeforeIt() async throws {
     try await withWorkbench { model, daemon in
-      let oldSessionID = try XCTUnwrap(model.selectedSessionID)
-      let oldPi = try piShell(in: oldSessionID, of: model)
+      let earlierSessionID = try XCTUnwrap(model.selectedSessionID)
+      let earlierTerminal = try terminal(in: earlierSessionID, of: model)
+      await model.createSession()
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let pi = try piShell(in: sessionID, of: model)
 
-      // Closing Pi closes its Session; Home's last Session is replaced.
-      await model.closeShell(oldPi.id)
-      try await waitUntilSessionIsGone(oldSessionID, from: model)
+      // Closing Pi closes its Session; nothing opens in its place.
+      await model.closeShell(pi.id)
+      try await waitUntilSessionIsGone(sessionID, from: model)
 
-      let replacementID = try XCTUnwrap(model.selectedSessionID)
-      XCTAssertNotEqual(replacementID, oldSessionID)
-      let replacementPi = try piShell(in: replacementID, of: model)
-      let replacementTerminal = try terminal(in: replacementID, of: model)
-      XCTAssertEqual(model.layout?.orderedShellIDs, [replacementPi.id, replacementTerminal.id])
-      try daemon.assertCanRunCommand(in: replacementTerminal)
+      XCTAssertEqual(model.sessions.map(\.id), [earlierSessionID])
+      XCTAssertEqual(model.selectedSessionID, earlierSessionID)
+      try daemon.assertCanRunCommand(in: earlierTerminal)
     }
   }
 
@@ -711,7 +692,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 private final class DaemonFixture {
   let executableURL: URL
   let socketPath: URL
-  /// The daemon's `HOME`, where the Home Workspace is.
+  /// The daemon's `HOME`, where a Session nobody placed starts.
   let homeDirectory: URL
   private let root: URL
   private let daemon: Process

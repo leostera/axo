@@ -66,8 +66,8 @@ final class CommandPaletteModel {
         CommandPaletteItem(
           id: "command:github:\(repository.slug)", kind: .command,
           title: "github:\(repository.slug)",
-          subtitle: "Clone and create a Workspace",
-          keywords: ["GitHub", "clone", "repository", "workspace"],
+          subtitle: "Clone and start a Session in it",
+          keywords: ["GitHub", "clone", "repository", "folder"],
           shortcut: nil, isCurrent: false,
           action: .cloneGitHubRepository(repository)))
     }

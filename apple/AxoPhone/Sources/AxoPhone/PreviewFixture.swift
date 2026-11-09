@@ -106,26 +106,26 @@ enum PreviewFixture {
       // The menu lists the most recently active first: in the order they are written here. Times
       // are relative to now, so the last 8 hours (what the menu lists before "older") stay put.
       func ago(_ seconds: TimeInterval) -> Int64 { Int64(Date.now.addingTimeInterval(-seconds).timeIntervalSince1970) }
-      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> (number: Int, host: UUID, json: String) {
+      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ folder: String, status: String = "ready", active: Int64) -> (number: Int, host: UUID, json: String) {
         let status = overrides[id] ?? status
         let hostID = host
         let host = host.uuidString.lowercased()
         let pi = #","pi":\#(Self.pi)"#
-        // The Axo chats are in the repository, with a couple of files changed; Home is no repository.
-        let path = workspace == "Axo" ? "/Users/leo/Developer/axo" : "/Users/leo"
-        let state = workspace == "Axo"
+        // The axo chats are in the repository, with a couple of files changed; home is no repository.
+        let path = folder == "axo" ? "/Users/leo/Developer/axo" : "/Users/leo"
+        let state = folder == "axo"
           ? #"{"path":"\#(path)","repoRoot":"\#(path)","remote":"https://github.com/leostera/axo","branch":"main","head":"e71752e0c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5a6","upstreamHead":"c22a4480c1d2b3a4f5e6d7c8b9a0f1e2d3c4b5a6","dirty":["apple/AxoPhone/BUILD.bazel","README.md"],"dirtyMore":0,"at":\#(active)}"#
           : #"{"path":"\#(path)","repoRoot":null,"remote":null,"branch":null,"head":null,"upstreamHead":null,"dirty":[],"dirtyMore":0,"at":\#(active)}"#
-        let json = #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","workspaceId":null,"workspaceName":"\#(workspace)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false,"workspaceState":\#(state)\#(pi)}}"#
+        let json = #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","epoch":1,"head":\#(records(for: sessionID(id)).count),"status":"\#(status)","metadata":{"name":"\#(name)","emoji":"\#(emoji)","folderName":"\#(folder)","hasAgent":true,"createdAt":null,"lastMessageAt":\#(active),"archived":false,"workspaceState":\#(state)\#(pi)}}"#
         return (id, hostID, json)
       }
       return [
-        session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: ago(20 * 60)),
-        session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: ago(2 * 3600)),
-        session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600)),
-        session(studio, 6, "Plan the week", "🗓️", "Home", active: ago(10 * 60)),
-        session(studio, 7, "Draft the release notes", "📝", "Home", active: ago(5 * 3600)),
-        session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)),
+        session(studio, 1, "Ship the remote Workbench", "🦀", "axo", status: "working", active: ago(20 * 60)),
+        session(studio, 2, "Fix the sidebar spacing", "🎨", "axo", active: ago(2 * 3600)),
+        session(studio, 3, "Explain the relay", "📡", "axo", active: ago(3 * 3600)),
+        session(studio, 6, "Plan the week", "🗓️", "leo", active: ago(10 * 60)),
+        session(studio, 7, "Draft the release notes", "📝", "leo", active: ago(5 * 3600)),
+        session(imac, 5, "Photo library cleanup", "📷", "leo", active: ago(12 * 86400)),
       ]
     }
 

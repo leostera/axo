@@ -2,14 +2,14 @@ import AxoProtocol
 import SwiftUI
 
 /// The sidebar's header: a menu of which Macs' Sessions it lists (this Mac, each other Mac,
-/// or all of them), and a button to create a Workspace.
+/// or all of them), and a button to start a Session in a folder.
 struct SidebarHeader: View {
   let title: String
   let selection: SidebarMacs
   let hosts: [PeerHost]
   let topPadding: CGFloat
   let onSelect: (SidebarMacs) -> Void
-  let onNewWorkspace: () -> Void
+  let onNewSessionInFolder: () -> Void
 
   var body: some View {
     HStack(spacing: 2) {
@@ -40,16 +40,16 @@ struct SidebarHeader: View {
       .accessibilityLabel("Sessions on \(title)")
       .accessibilityIdentifier("sidebar-macs-menu")
       Spacer(minLength: 0)
-      Button(action: onNewWorkspace) {
+      Button(action: onNewSessionInFolder) {
         Image(systemName: "plus")
           .font(.system(size: 11, weight: .semibold))
           .frame(width: 18, height: 18)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help("Create a Workspace (⌘N)")
-      .accessibilityLabel("New Workspace")
-      .accessibilityIdentifier("new-workspace-button")
+      .help("New Session in a folder (⌘N)")
+      .accessibilityLabel("New Session in Folder")
+      .accessibilityIdentifier("new-session-in-folder-button")
     }
     .padding(.horizontal, 8)
     .padding(.top, topPadding)

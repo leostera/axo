@@ -135,11 +135,7 @@ fn known_sessions(index: &PeerIndex) -> impl Iterator<Item = Listed<'_>> {
 }
 
 fn place_of(listed: &Listed<'_>) -> Option<Place> {
-    Place::of(
-        listed.host_id,
-        listed.value["metadata"]["workspaceId"].as_str(),
-        &listed.session_id.to_string(),
-    )
+    Place::of(listed.host_id, &listed.session_id.to_string())
 }
 
 fn host_of(index: &PeerIndex, host_id: &str) -> Option<PeerHost> {
@@ -256,7 +252,6 @@ impl SessionManager {
         let copy = place_of(listed).map(|place| {
             sessions_directory
                 .join(&place.host_id)
-                .join(&place.workspace)
                 .join(format!("{}.jsonl", place.session_id))
         });
         PeerSession {
@@ -265,15 +260,13 @@ impl SessionManager {
                 id: listed.session_id,
                 pi_session_file: copy.filter(|path| path.is_file()),
                 pi_session_id: None,
-                workspace_id: metadata["workspaceId"].as_str().map(str::to_owned),
-                workspace_name: metadata["workspaceName"].as_str().map(str::to_owned),
                 name: metadata["name"].as_str().unwrap_or("Session").to_owned(),
                 manual_name: None,
                 emoji: metadata["emoji"].as_str().map(str::to_owned),
                 last_message_at: metadata["lastMessageAt"].as_i64(),
                 created_at: metadata["createdAt"].as_i64().unwrap_or(0),
                 status: status_of(listed.value).unwrap_or(SessionStatus::Ready),
-                initial_pwd: view.map_or_else(
+                folder: view.map_or_else(
                     || view_directory(listed.value, home),
                     |view| view.running.initial_pwd.clone(),
                 ),
@@ -535,7 +528,7 @@ mod tests {
             json!({
                 "hostId": host, "sessionId": id, "epoch": 1, "head": 2, "status": "working",
                 "metadata": {
-                    "name": "Fix the bug", "emoji": "🐛", "workspaceId": null, "workspaceName": null,
+                    "name": "Fix the bug", "emoji": "🐛", "folderName": "axo",
                     "hasAgent": true, "createdAt": 10, "lastMessageAt": 20, "archived": archived,
                 },
             })
@@ -555,7 +548,7 @@ mod tests {
     }
 
     fn place() -> Place {
-        Place::of(STUDIO, None, SESSION).unwrap()
+        Place::of(STUDIO, SESSION).unwrap()
     }
 
     fn record(cursor: u64) -> ClientRecord {

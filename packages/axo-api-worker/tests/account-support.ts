@@ -63,7 +63,7 @@ export async function connectClient(h: Harness, session: AccountSession, clientI
 }
 
 export function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
-  return { name: "A chat", emoji: null, workspaceId: null, workspaceName: null, hasAgent: true, createdAt: 1_700_000_000, lastMessageAt: null, archived: false, ...overrides };
+  return { name: "A chat", emoji: null, folderName: "project", hasAgent: true, createdAt: 1_700_000_000, lastMessageAt: null, archived: false, ...overrides };
 }
 
 /** A Pi transcript the test writes line by line, hashed as axod hashes it. */

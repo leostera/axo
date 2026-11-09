@@ -386,7 +386,7 @@ final class SessionControlsTests: XCTestCase {
   // MARK: - Protocol
 
   func testTheListingCarriesPiAndAnUnknownLevelHidesOnlyTheLevel() throws {
-    let json = #"{"hostId":"18355f00-95fd-4c93-8586-a71a8a52bf73","sessionId":"\#(SessionID.fixture(1).rawValue)","epoch":1,"head":0,"status":"ready","metadata":{"name":"One","emoji":null,"workspaceId":null,"workspaceName":null,"hasAgent":true,"createdAt":null,"lastMessageAt":null,"archived":false,"pi":{"model":{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1"},"thinkingLevel":"ultra"}}}"#
+    let json = #"{"hostId":"18355f00-95fd-4c93-8586-a71a8a52bf73","sessionId":"\#(SessionID.fixture(1).rawValue)","epoch":1,"head":0,"status":"ready","metadata":{"name":"One","emoji":null,"folderName":null,"hasAgent":true,"createdAt":null,"lastMessageAt":null,"archived":false,"pi":{"model":{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1"},"thinkingLevel":"ultra"}}}"#
     let session = RemoteSession(try JSONDecoder().decode(ClientSession.self, from: Data(json.utf8)))
     XCTAssertEqual(session.pi?.model?.name, "Opus 4.1")
     XCTAssertNil(session.pi?.thinkingLevel)

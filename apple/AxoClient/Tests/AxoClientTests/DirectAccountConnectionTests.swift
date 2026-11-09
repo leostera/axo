@@ -20,7 +20,7 @@ final class DirectAccountConnectionTests: XCTestCase {
 
   /// What the host's HostDO answers hello: its presence and its index.
   private var hostHello: String {
-    #"{"online":true,"hostGeneration":"\#(lower(newGeneration))","sessions":[{"hostId":"\#(lower(host.hostId))","sessionId":"\#(session)","metadata":{"name":"Chat","emoji":null,"workspaceId":null,"workspaceName":null,"hasAgent":true,"createdAt":null,"lastMessageAt":null,"archived":false},"epoch":1,"head":2,"status":"ready"}]}"#
+    #"{"online":true,"hostGeneration":"\#(lower(newGeneration))","sessions":[{"hostId":"\#(lower(host.hostId))","sessionId":"\#(session)","metadata":{"name":"Chat","emoji":null,"folderName":null,"hasAgent":true,"createdAt":null,"lastMessageAt":null,"archived":false},"epoch":1,"head":2,"status":"ready"}]}"#
   }
 
   private func lower(_ id: UUID) -> String { id.uuidString.lowercased() }

@@ -4,7 +4,7 @@
 //! They are ordinary methods of axod, beside the local ones, that answer only
 //! [`Caller::Relay`]: the relay is a transport that hands each request to axod as the account
 //! and sends the answer back. The account sees a redacted view: Sessions as
-//! [`RemoteSessionSnapshot`]s (Workspace names, no paths) and layouts pruned to terminals.
+//! [`RemoteSessionSnapshot`]s (folder names, no paths) and layouts pruned to terminals.
 //!
 //! Every call names the Mac it is for (`target`); a call for an earlier identity of this Mac is
 //! refused as stale, so a phone holding an old list can't act on a Mac that was reset.
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axo_ipc::peer::Caller;
 use axo_ipc::{Extension, Only, TypedMethods};
-use axo_protocol::rpc::PromptDelivery;
+use axo_protocol::rpc::{self, PromptDelivery};
 use axo_protocol::{Layout, LayoutNode, RemoteSessionSnapshot, SessionId, SessionRecord, ShellId};
 use axo_pty::WindowSize;
 use axo_relay::{ClientDelivery, CommandId, ModelChoice, PiKey, StopTarget, TurnId};
@@ -115,20 +115,13 @@ impl Extension for Remote {
             handler,
             manager,
             "axo.remote.session.create",
-            |m, _: TargetParams| {
-                let session = m.create_session_and_publish().map_err(failed)?;
-                Ok(Answer::Session {
-                    session: m.remote(&session),
-                })
-            },
-        );
-        add(
-            handler,
-            manager,
-            "axo.remote.workspace.session.create",
-            |m, request: WorkspaceSessionTargetParams| {
+            // The account names no paths: a new Session starts beside another, or at home.
+            |m, request: CreateSessionParams| {
                 let session = m
-                    .create_session_in_workspace(&request.workspace_id)
+                    .create_session(rpc::CreateSession {
+                        folder: None,
+                        like: request.like,
+                    })
                     .map_err(failed)?;
                 Ok(Answer::Session {
                     session: m.remote(&session),
@@ -140,28 +133,12 @@ impl Extension for Remote {
             manager,
             "axo.remote.session.close",
             |m, request: SessionTargetParams| {
-                let replacement = m
-                    .close_session_and_publish(request.session_id)
+                m.close_session_and_publish(request.session_id)
                     .map_err(failed)?;
                 Ok(Answer::SessionClosed {
                     closed: true,
                     session_id: request.session_id,
-                    replacement: replacement.map(|session| m.remote(&session)),
                 })
-            },
-        );
-        add(
-            handler,
-            manager,
-            "axo.remote.workspace.list",
-            |m, _: TargetParams| {
-                let workspaces = m
-                    .list_workspaces()
-                    .map_err(failed)?
-                    .iter()
-                    .map(axo_protocol::RemoteWorkspace::from)
-                    .collect();
-                Ok(Answer::Workspaces { workspaces })
             },
         );
         add(
@@ -428,7 +405,6 @@ enum Answer {
     SessionClosed {
         closed: bool,
         session_id: SessionId,
-        replacement: Option<RemoteSessionSnapshot>,
     },
     ShellCreated {
         host_id: String,
@@ -443,9 +419,6 @@ enum Answer {
     },
     Saved {
         saved: bool,
-    },
-    Workspaces {
-        workspaces: Vec<axo_protocol::RemoteWorkspace>,
     },
     InputAccepted {
         accepted: bool,
@@ -510,9 +483,8 @@ macro_rules! params {
 }
 
 params! {
-    TargetParams {}
     SessionTargetParams { session_id: SessionId }
-    WorkspaceSessionTargetParams { workspace_id: String }
+    CreateSessionParams { like: Option<SessionId> = default }
     RenameSessionParams { session_id: SessionId, name: String }
     ShellTargetParams { session_id: SessionId, shell_id: ShellId }
     LayoutSetParams { session_id: SessionId, layout: LayoutNode }
@@ -596,26 +568,36 @@ mod tests {
         let params = json!({ "target": target(&fixture) });
 
         // A local program sees no such method, even with a valid call.
-        let local = call(&handler, "axo.remote.workspace.list", params.clone());
+        let local = call(&handler, "axo.remote.session.create", params.clone());
         assert_eq!(
             local["error"],
             json!({ "code": -32601, "message": "Method not found" })
         );
 
-        let listed = as_account(&handler, "axo.remote.workspace.list", params);
-        let workspaces = listed["result"]["workspaces"].as_array().unwrap();
-        assert!(!workspaces.is_empty(), "{listed}");
-        // The account sees names, not paths.
-        assert!(
-            !listed
-                .to_string()
-                .contains(&*fixture.directory.to_string_lossy()),
-            "{listed}"
+        let created = as_account(&handler, "axo.remote.session.create", params);
+        let session = &created["result"]["session"];
+        let beside = as_account(
+            &handler,
+            "axo.remote.session.create",
+            json!({ "target": target(&fixture), "like": session["sessionId"] }),
         );
+        assert_eq!(
+            beside["result"]["session"]["folderName"], session["folderName"],
+            "{beside}"
+        );
+        // The account sees names, not paths.
+        for answer in [&created, &beside] {
+            assert!(
+                !answer
+                    .to_string()
+                    .contains(&*fixture.manager.home.to_string_lossy()),
+                "{answer}"
+            );
+        }
 
         let stale = as_account(
             &handler,
-            "axo.remote.workspace.list",
+            "axo.remote.session.create",
             json!({ "target": { "hostId": fixture.manager.host_id, "hostGeneration": "an-earlier-one" } }),
         );
         assert_eq!(

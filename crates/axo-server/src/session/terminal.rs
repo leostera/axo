@@ -674,7 +674,7 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         manager.stop_workers.store(false, Ordering::Relaxed);
-        let shell_id = manager.list_sessions().unwrap().remove(0).shells[0].id;
+        let shell_id = new_session(&manager).shells[0].id;
         let (mut client, server) = UnixStream::pair().unwrap();
         writeln!(client, "{}", shell_id.get()).unwrap();
         let active = Arc::new(AtomicUsize::new(0));
@@ -712,7 +712,7 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         manager.stop_workers.store(false, Ordering::Relaxed);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = session.shells[0].id;
         let output = Arc::clone(
             &manager
@@ -773,7 +773,7 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         manager.stop_workers.store(false, Ordering::Relaxed);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = session.shells[0].id;
         let output = Arc::clone(
             &manager
@@ -978,7 +978,7 @@ mod tests {
         let directory = test_directory("axo-cancel");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, _log) = manager_recording_input(&directory);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let command_id =
             axo_relay::CommandId::try_from("00000000-0000-4000-8000-000000000001".to_owned())
                 .unwrap();
@@ -1022,7 +1022,7 @@ mod tests {
         let directory = test_directory("axo-prompt");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = pi_shell(&session);
 
         // No Pi in the Session: nothing to prompt.
@@ -1171,7 +1171,7 @@ mod tests {
         let directory = test_directory("axo-key");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = pi_shell(&session);
 
         manager
@@ -1231,7 +1231,7 @@ mod tests {
         let directory = test_directory("axo-commands");
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, _log) = manager_recording_input(&directory);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         // pi-axo stops only the turn "turn-running"; any other is not running.
         let actions = fake_pi_bridge_answering(&manager, &session, |action| {
             if action["kind"] == "stop" && action["turnId"] != "turn-running" {
@@ -1286,7 +1286,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         // Its shell is `sleep`, which never reads what is typed.
         let manager = open_with_silent_shell(&directory);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = terminal_shell(&session);
         // A paste larger than a PTY holds for a program that doesn't read it.
         let paste =

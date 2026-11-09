@@ -62,7 +62,7 @@ struct SessionInfoPanel: View {
 
   private var subtitle: String {
     guard let workbench else { return "No Mac" }
-    return [session?.workspaceName, workbench.hostLabel].compactMap { $0 }.joined(separator: " · ")
+    return [session?.folderName, workbench.hostLabel].compactMap { $0 }.joined(separator: " · ")
   }
 }
 
@@ -77,7 +77,7 @@ private struct SessionFacts: View {
     VStack(spacing: 0) {
       Fact(label: "Status", value: status)
       Fact(label: "Mac", value: workbench.status == .online ? "\(workbench.hostLabel), online" : "\(workbench.hostLabel), offline")
-      if let workspace = session.workspaceName { Fact(label: "Workspace", value: workspace) }
+      if let folder = session.folderName { Fact(label: "Folder", value: folder) }
       Fact(label: "Messages", value: messages(chat))
       Fact(label: "Terminals", value: session.shells.count.formatted())
       // The latest finished message (or its creation): `updatedAt` only says when the listing was sent.

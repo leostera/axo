@@ -164,8 +164,6 @@ public final class HostWorkbenchModel {
   }
   /// The account socket's state, as `PhoneWorkbench` sees it.
   public internal(set) var link: Link = .idle
-  /// The Mac's Workspaces as last read, so the menu can show the ones with no chats yet.
-  public private(set) var workspaceList: [RemoteWorkspace] = []
 
   /// The chat on screen. Nothing selects one on its own: the person (or a new chat) does.
   public var selectedSessionID: SessionID?
@@ -200,15 +198,9 @@ public final class HostWorkbenchModel {
     sessions.first { $0.sessionId == selectedSessionID }
   }
 
-  /// Reads the Mac's Workspaces for the menu; a failure leaves the last list and says nothing.
-  public func refreshWorkspaces() async {
-    if let found = try? await connection.workspaces() { workspaceList = found }
-  }
-
   /// The account's socket connected again: the open chat reads on from what it holds, the others
-  /// will when opened, and the Workspaces are read again.
+  /// will when opened.
   func reconnected() async {
-    Task { await refreshWorkspaces() }
     let reopen = opened
     opened = nil
     if let reopen { await loadHistory(of: reopen) }
@@ -405,15 +397,14 @@ public final class HostWorkbenchModel {
 
   // MARK: - Actions
 
-  /// Starts a chat in `place` and opens it. A chat is a Session in a Workspace, running the agent
-  /// in the Workspace's directory; every Mac has a Home Workspace, its home folder, which is
-  /// where a chat goes unless it is started somewhere else.
+  /// Starts a chat in `place` and opens it. A chat is a Session, running the agent in its folder
+  /// on the Mac: the Mac's home folder unless it is started beside another chat (RFD0038).
   public func createChat(in place: NewChatPlace) async {
     await attempt {
       let session =
         switch place {
         case .home: try await connection.createSession()
-        case .workspace(let workspace): try await connection.createSession(inWorkspace: workspace)
+        case .beside(let sessionID): try await connection.createSession(like: sessionID)
         }
       created[session.sessionId] = session
       update([session])
@@ -426,12 +417,11 @@ public final class HostWorkbenchModel {
 
   public func closeSession(_ id: SessionID) async {
     await attempt {
-      let replacement = try await connection.closeSession(id)
+      try await connection.closeSession(id)
       sessions.removeAll { $0.sessionId == id }
       chatStore[id] = nil
       if selectedSessionID == id { selectedSessionID = nil }
       if opened == id { stop() }
-      if let replacement { update([replacement]) }
     }
   }
 

@@ -88,8 +88,7 @@ test("a password typed on the phone reaches a Safari form on the Mac sealed, and
 
       // The local `computer` tool asks the same way: axod mcp hands the request to axod, and the
       // agent's own Session gets the question.
-      const { sessions } = (await localCall(socketPath, "axo.session.list")) as { sessions: Array<{ id: string }> };
-      const ownSession = sessions[0]!.id;
+      const { id: ownSession } = (await localCall(socketPath, "axo.session.create", {})) as { id: string };
       const mcp = spawn(axodBinary, ["mcp"], { env: { ...process.env, AXO_SOCKET: socketPath, AXO_SESSION_ID: ownSession } });
       const lines: string[] = [];
       let buffered = "";

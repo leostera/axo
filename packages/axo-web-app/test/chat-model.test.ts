@@ -16,7 +16,6 @@ import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, ty
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
-const workspaceId = "04d389d1-9896-420e-9b42-fc7835522937";
 const hash = `sha256:${"0".repeat(64)}`;
 
 /** A Pi session file line at `cursor`: a message entry. */
@@ -187,9 +186,9 @@ test("a line the format does not know, or a format it does not know, shows nothi
 
 /** A Session ID for fixture `n`; they sort like the numbers they come from. */
 const sid = (n: number) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
-function session(n: number, workspaceName: string | null = "Axo", extra: Partial<Session> = {}): Session {
+function session(n: number, folderName: string | null = "axo", extra: Partial<Session> = {}): Session {
   return {
-    hostId, sessionId: sid(n), workspaceId: workspaceName ? workspaceId : null, workspaceName, name: `Chat ${n}`, emoji: null,
+    hostId, sessionId: sid(n), folderName, name: `Chat ${n}`, emoji: null,
     hasAgent: true, createdAt: null, lastMessageAt: null, archived: false, status: "ready", ...extra,
   };
 }
@@ -216,7 +215,7 @@ test("the recent list puts every chat on every Mac in one list, the most recentl
     session(4, null, { createdAt: at("2026-10-27T10:00:00Z") }),
     session(5, null, { archived: true, lastMessageAt: at("2026-10-27T11:58:00Z") }),
   ]), laptop]);
-  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1].map(sid), "no bare terminals or archived chats; across Workspaces and Macs");
+  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1].map(sid), "no bare terminals or archived chats; across folders and Macs");
 });
 
 // MARK: - Pins and groups
@@ -321,7 +320,7 @@ test("the URL names the open chat on its Mac, and anything else is a new chat", 
     assert.deepEqual(parseRoute("/app", path), { kind: "new" }, path);
   }
   assert.equal(routePath("/app", hostId, { kind: "chat", sessionId: sid(12) }), `/app/${hostId}/${sid(12)}`);
-  assert.equal(routePath("/app", hostId, { kind: "new", workspaceId: null }), "/app");
+  assert.equal(routePath("/app", hostId, { kind: "new" }), "/app");
   assert.equal(routePath("/app", null, null), "/app");
 });
 
@@ -443,7 +442,6 @@ class FakeAccount implements AccountLink {
   failNext: Error | null = null;
   /** The commands' failures after `failNext`, in turn. */
   failAfter: Error[] = [];
-  workspaces = [{ workspaceId, name: "Axo" }];
   /** What a method answers, when not just `{accepted: true}`. */
   answers = new Map<string, unknown>();
   /** Each Session's records in the cloud. */
@@ -495,7 +493,6 @@ class FakeAccount implements AccountLink {
       throw error;
     }
     if (this.answers.has(method)) return this.answers.get(method) as never;
-    if (method === "axo.remote.workspace.list") return { workspaces: this.workspaces } as never;
     if (method.endsWith("session.create")) return { session: { sessionId: sid(7), name: "Chat 7" } } as never;
     return { accepted: true } as never;
   }
@@ -599,29 +596,19 @@ test("status and progress from the socket show whether the agent works and what 
   workbench.dispose();
 });
 
-test("a new chat's first message starts it in the Mac's Home Workspace and moves the words there", async () => {
+test("a new chat's first message starts it in the Mac's home folder and moves the words there", async () => {
   const { workbench, account } = await workbenchWith();
-  account.workspaces = [{ workspaceId, name: "Axo" }, { workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "Home" }];
   workbench.setDraft("Fix the bug");
   assert.deepEqual(await workbench.send(), { kind: "sent" });
   assert.deepEqual(workbench.selection, { kind: "chat", sessionId: sid(7) });
   assert.equal(workbench.selectedSession?.name, "Chat 7", "listed at once, before the Mac's own listing");
   const created = account.commands.filter(call => call.method.endsWith("session.create"));
-  assert.deepEqual(created.map(call => call.method), ["axo.remote.session.create"], "however many Workspaces, a new chat goes Home");
+  assert.deepEqual(created.map(call => call.method), ["axo.remote.session.create"]);
+  assert.deepEqual(created[0]?.params, { target: { hostId, hostGeneration } }, "no folder: the Mac's home");
   const prompt = account.commands.find(call => call.method === "axo.remote.session.prompt");
   assert.deepEqual([prompt?.params.text, prompt?.params.sessionId, prompt?.params.target], ["Fix the bug", sid(7), { hostId, hostGeneration }]);
   assert.equal(workbench.draft(), "");
   assert.equal(workbench.chat(sid(7)).pending[0]?.state, "sent");
-  workbench.dispose();
-});
-
-test("a new chat started from a Workspace in the menu starts in that Workspace", async () => {
-  const { workbench, account } = await workbenchWith();
-  workbench.newChat(hostId, workspaceId);
-  workbench.setDraft("Hello");
-  assert.deepEqual(await workbench.send(), { kind: "sent" });
-  const created = account.commands.filter(call => call.method.endsWith("session.create"));
-  assert.deepEqual(created.map(call => [call.method, call.params.workspaceId]), [["axo.remote.workspace.session.create", workspaceId]]);
   workbench.dispose();
 });
 

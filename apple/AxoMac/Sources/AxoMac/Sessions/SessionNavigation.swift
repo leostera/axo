@@ -30,21 +30,19 @@ enum SessionNavigation {
     return (start + direction.rawValue + count) % count
   }
 
-  /// The Session to show after `closed` goes away: the most recent Session in the same
-  /// Workspace, then Axod's replacement, then any Session in the same Workspace, then any.
+  /// The Session to show after `closed` goes away: the most recent Session in the same folder,
+  /// then any Session in the same folder, then any.
   static func successor(
     afterClosing closed: TerminalSession,
     in sessions: [TerminalSession],
-    recent: RecentSessions,
-    replacement: TerminalSession? = nil
+    recent: RecentSessions
   ) -> SessionID? {
     let remaining = sessions.filter { $0.id != closed.id }
     func isOpenSibling(_ id: SessionID) -> Bool {
-      remaining.contains { $0.id == id && $0.workspaceId == closed.workspaceId }
+      remaining.contains { $0.id == id && $0.folder == closed.folder }
     }
     if let recentSibling = recent.ids.first(where: isOpenSibling) { return recentSibling }
-    if let replacement, isOpenSibling(replacement.id) { return replacement.id }
-    return remaining.first(where: { $0.workspaceId == closed.workspaceId })?.id
+    return remaining.first(where: { $0.folder == closed.folder })?.id
       ?? remaining.first?.id
   }
 }

@@ -249,32 +249,18 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
-  func testTheMenuGroupsChatsByWorkspaceShowsEmptyOnesAndWhoIsWorking() {
-    let app = launch(listing: "workspaces")
+  func testTheMenuGroupsChatsByFolderAndSaysWhoIsWorking() {
+    let app = launch(listing: "folders")
     app.buttons["Chats menu"].tapWhereItIs()
-    XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.buttons["Home · Old iMac"].exists)
-    XCTAssertTrue(app.buttons["Website · Studio"].waitForExistence(timeout: 5), "a Workspace with no chats is listed")
-    XCTAssertTrue(app.staticTexts["No chats yet"].exists)
+    XCTAssertTrue(app.buttons["axo · Studio"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["leo · Studio"].exists)
+    XCTAssertTrue(app.buttons["leo · Old iMac"].exists)
     XCTAssertEqual(app.buttons["Ship the remote Workbench"].value as? String, "Working")
   }
 
   @MainActor
-  func testHomeChatsAreListedUnderTheProjectsWithNoTitleOfTheirOwn() {
-    let app = launch(listing: "workspaces")
-    app.buttons["Chats menu"].tapWhereItIs()
-    let lastProject = app.buttons["Website · Studio"]
-    let newest = app.buttons["Plan the week"]
-    let older = app.buttons["Draft the release notes"]
-    XCTAssertTrue(newest.waitForExistence(timeout: 5))
-    XCTAssertFalse(app.buttons["Home · Studio"].exists, "the open Mac's Home has no folding title")
-    XCTAssertGreaterThanOrEqual(newest.frame.minY, lastProject.frame.maxY, "under every project")
-    XCTAssertGreaterThanOrEqual(older.frame.minY, newest.frame.maxY, "newest first")
-  }
-
-  @MainActor
-  func testChatsQuietForEightHoursWaitBehindAButtonAndAWorkspaceFoldsAway() {
-    let app = launch(listing: "workspaces")
+  func testChatsQuietForEightHoursWaitBehindAButtonAndAFolderFoldsAway() {
+    let app = launch(listing: "folders")
     app.buttons["Chats menu"].tapWhereItIs()
     let older = app.buttons["Show 1 older chat"]
     XCTAssertTrue(older.waitForExistence(timeout: 5))
@@ -284,10 +270,10 @@ final class AxoPhoneUITests: XCTestCase {
     app.buttons["Show fewer"].tapWhereItIs()
     XCTAssertTrue(waitUntil(5) { !app.buttons["Photo library cleanup"].exists })
 
-    let axo = app.buttons["Axo · Studio"]
+    let axo = app.buttons["axo · Studio"]
     XCTAssertEqual(axo.value as? String, "Expanded")
     axo.tapWhereItIs()
-    XCTAssertTrue(waitUntil(5) { !app.buttons["Fix the sidebar spacing"].exists }, "a folded Workspace hides its chats")
+    XCTAssertTrue(waitUntil(5) { !app.buttons["Fix the sidebar spacing"].exists }, "a folded folder hides its chats")
     XCTAssertEqual(axo.value as? String, "Collapsed")
     axo.tapWhereItIs()
     XCTAssertTrue(app.buttons["Fix the sidebar spacing"].waitForExistence(timeout: 5))
@@ -305,8 +291,8 @@ final class AxoPhoneUITests: XCTestCase {
     let toggle = app.buttons["chat-list-mode"]
     XCTAssertTrue(toggle.waitForExistence(timeout: 5))
     if toggle.label == "Show recent chats" { toggle.tapWhereItIs() }
-    XCTAssertTrue(waitUntil(5) { toggle.label == "Show Workspaces" }, "listed as the Mac lists them by default")
-    XCTAssertFalse(app.buttons["Axo · Studio"].exists, "no Workspace titles")
+    XCTAssertTrue(waitUntil(5) { toggle.label == "Show folders" }, "listed as the Mac lists them by default")
+    XCTAssertFalse(app.buttons["axo · Studio"].exists, "no folder titles")
     // Active: working (or waiting on the person), unseen, or active in the last 3 minutes. Then
     // Earlier, by last message, offline Macs and quiet chats too.
     let active = app.buttons["chat-group-active"]
@@ -348,20 +334,20 @@ final class AxoPhoneUITests: XCTestCase {
       waitUntil(5) { (rows[4].value as? String)?.hasPrefix("Pinned, on Studio") == true }, "\(rows[4].value ?? "")")
     capture(app, named: "menu-grouped-light")
 
-    // In Workspaces, pinned chats lead too.
+    // In folders, pinned chats lead too.
     toggle.tapWhereItIs()
-    XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
-    XCTAssertLessThan(rows[4].frame.minY, app.buttons["Axo · Studio"].frame.minY)
+    XCTAssertTrue(app.buttons["axo · Studio"].waitForExistence(timeout: 5))
+    XCTAssertLessThan(rows[4].frame.minY, app.buttons["axo · Studio"].frame.minY)
     rows[4].press(forDuration: 0.8)
     XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 5))
     app.buttons["Unpin"].tap()
-    XCTAssertTrue(waitUntil(5) { rows[4].frame.minY > app.buttons["Axo · Studio"].frame.minY }, "back in its Workspace")
+    XCTAssertTrue(waitUntil(5) { rows[4].frame.minY > app.buttons["axo · Studio"].frame.minY }, "back in its folder")
 
     app.terminate()
     app = launch()
     app.buttons["Chats menu"].tapWhereItIs()
     XCTAssertTrue(app.buttons["Show recent chats"].waitForExistence(timeout: 5), "kept across launches")
-    XCTAssertTrue(app.buttons["Axo · Studio"].exists)
+    XCTAssertTrue(app.buttons["axo · Studio"].exists)
   }
 
   @MainActor

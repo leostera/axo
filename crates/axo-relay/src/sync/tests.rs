@@ -41,8 +41,7 @@ impl RelayHost for Host {
             metadata: SessionMetadata {
                 name: None,
                 emoji: None,
-                workspace_id: None,
-                workspace_name: None,
+                folder_name: None,
                 has_agent: true,
                 created_at: None,
                 last_message_at: None,

@@ -6,7 +6,7 @@ import AxoProtocol
 final class AxodCapabilities {
   /// Methods every supported Axod must offer.
   static let requiredMethods: Set<AxodMethodName> = [
-    .sessionList, .workspaceList, .workspaceCreate, .workspaceSessionCreate,
+    .sessionList, .sessionCreate,
   ]
 
   private let client: AxodClient
@@ -47,7 +47,7 @@ final class AxodCapabilities {
   func require(_ method: AxodMethodName) async throws {
     guard try await supports(method) else {
       throw SessionCommandError(
-        "This action requires a newer Axod. Your Sessions and Workspace are unchanged.")
+        "This action requires a newer Axod. Your Sessions are unchanged.")
     }
   }
 }

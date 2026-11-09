@@ -318,13 +318,6 @@ impl SessionManager {
         self.subscribers.publish(event)
     }
 
-    /// Remote-access state changed; a catalog event so Settings never polls for it.
-    pub(super) fn publish_workspace_changed(&self, workspace_id: &str) {
-        self.publish_event(Event::WorkspaceChanged {
-            workspace_id: workspace_id.to_owned(),
-        });
-    }
-
     pub(super) fn publish_session_snapshot(&self, session_id: SessionId) -> io::Result<()> {
         let session = {
             let state = self.lock_state()?;
@@ -365,7 +358,7 @@ mod tests {
 
     use axo_protocol::Event;
 
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::fs;
 
     use std::io::{self};
@@ -461,35 +454,35 @@ mod tests {
                 started.elapsed() < Duration::from_secs(1),
                 "a concurrent long-poll blocked another subscriber"
             );
-            manager.publish_workspace_changed("wake");
+            manager.publish_session_removed(sid(1));
             let woken = waiter.join().unwrap().unwrap().unwrap();
-            assert!(matches!(*woken, Event::WorkspaceChanged { .. }));
+            assert!(matches!(*woken, Event::SessionRemoved { .. }));
         });
         drain(&catalog);
         manager.unsubscribe(&late).unwrap();
 
-        for name in ["a", "b", "c"] {
-            manager.publish_workspace_changed(name);
+        for id in [1, 2, 3] {
+            manager.publish_session_removed(sid(id));
         }
         let batch = manager
             .next_events(&catalog, Duration::from_millis(1), 2)
             .unwrap();
         assert_eq!(batch.len(), 2, "batches are bounded by maxEvents");
-        assert_eq!(wire(&*batch[0])["workspaceId"], "a");
-        assert_eq!(wire(&*batch[1])["workspaceId"], "b");
+        assert_eq!(wire(&*batch[0])["sessionId"], json!(sid(1)));
+        assert_eq!(wire(&*batch[1])["sessionId"], json!(sid(2)));
         drain(&catalog);
         drain(&output);
 
-        manager.publish_workspace_changed("workspace");
+        manager.publish_session_removed(sid(4));
         let changed = manager
             .next_event(&catalog, Duration::from_millis(1))
             .unwrap()
             .unwrap();
-        assert_eq!(wire(changed)["workspaceId"], "workspace");
+        assert_eq!(wire(changed)["sessionId"], json!(sid(4)));
         drain(&output);
 
         for _ in 0..=MAX_QUEUED_EVENTS_PER_SUBSCRIPTION {
-            manager.publish_workspace_changed("flood");
+            manager.publish_session_removed(sid(5));
         }
         assert_eq!(
             manager

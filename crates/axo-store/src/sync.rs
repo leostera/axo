@@ -99,7 +99,6 @@ pub fn mark_transcript_in_cloud(
 pub struct StoredTranscript {
     pub session_id: String,
     pub pi_session_file: Option<String>,
-    pub workspace_id: Option<String>,
     pub archived: bool,
     pub in_cloud: bool,
     /// What the cloud acknowledged: its record count and the chain there.
@@ -115,7 +114,7 @@ pub fn load_transcript(
 ) -> io::Result<Option<StoredTranscript>> {
     database
         .query_row(
-            "SELECT s.id, s.pi_session_file, s.workspace_id, s.state = 'archived', \
+            "SELECT s.id, s.pi_session_file, s.state = 'archived', \
              COALESCE(r.in_cloud, 0), COALESCE(r.position, 0), r.chain \
              FROM sessions s LEFT JOIN relay_sync r ON r.session_id = s.id \
              WHERE s.id = ?1 OR (?1 IS NULL AND s.pi_session_file = ?2) LIMIT 1",
@@ -124,11 +123,10 @@ pub fn load_transcript(
                 Ok(StoredTranscript {
                     session_id: row.get(0)?,
                     pi_session_file: row.get(1)?,
-                    workspace_id: row.get(2)?,
-                    archived: row.get(3)?,
-                    in_cloud: row.get(4)?,
-                    position: row.get::<_, i64>(5)?.max(0) as u64,
-                    chain: row.get(6)?,
+                    archived: row.get(2)?,
+                    in_cloud: row.get(3)?,
+                    position: row.get::<_, i64>(4)?.max(0) as u64,
+                    chain: row.get(5)?,
                 })
             },
         )

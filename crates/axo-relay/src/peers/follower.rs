@@ -613,8 +613,7 @@ impl<'a> Follower<'a> {
             ) else {
                 continue;
             };
-            let workspace_id = session["metadata"]["workspaceId"].as_str();
-            let Some(place) = Place::of(host_id, workspace_id, session_id) else {
+            let Some(place) = Place::of(host_id, session_id) else {
                 log::warn!("event=peers.unsafe_place session_id={session_id}");
                 continue;
             };
@@ -1087,7 +1086,7 @@ mod tests {
     fn studio_hello() -> Value {
         json!({
             "online": true, "hostGeneration": GENERATION,
-            "sessions": [{ "sessionId": SESSION, "epoch": 1, "head": 2, "metadata": { "workspaceId": null } }],
+            "sessions": [{ "sessionId": SESSION, "epoch": 1, "head": 2, "metadata": { "folderName": "axo" } }],
         })
     }
 

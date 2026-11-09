@@ -30,21 +30,6 @@
           "$ref": "#/$defs/SessionCreateCall"
         },
         {
-          "$ref": "#/$defs/WorkspaceListCall"
-        },
-        {
-          "$ref": "#/$defs/WorkspaceCreateCall"
-        },
-        {
-          "$ref": "#/$defs/WorkspaceRenameCall"
-        },
-        {
-          "$ref": "#/$defs/WorkspaceArchiveCall"
-        },
-        {
-          "$ref": "#/$defs/WorkspaceSessionCreateCall"
-        },
-        {
           "$ref": "#/$defs/SessionCloseCall"
         },
         {
@@ -273,103 +258,18 @@
             },
             "params": {
               "type": "object",
-              "maxProperties": 0
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false
-    },
-    "WorkspaceListCall": {
-      "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
-        { "properties": { "method": { "const": "axo.workspace.list" }, "params": { "type": "object", "maxProperties": 0 } } }
-      ],
-      "unevaluatedProperties": false
-    },
-    "WorkspaceCreateCall": {
-      "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
-        {
-          "properties": {
-            "method": { "const": "axo.workspace.create" },
-            "params": {
-              "type": "object",
               "additionalProperties": false,
-              "required": ["name", "directoryPath"],
+              "maxProperties": 1,
+              "description": "Where the Session starts: an absolute folder, the folder of an open Session, or with neither the home directory.",
               "properties": {
-                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-                "directoryPath": { "type": "string", "minLength": 1 },
-                "directoryBookmark": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 65536,
-                  "description": "Optional Base64-encoded macOS security-scoped bookmark; ordinary accessible folders are opened by path."
-                }
+                "folder": { "type": "string", "minLength": 1 },
+                "like": { "$ref": "common.schema.json#/$defs/SessionId" }
               }
             }
           }
         }
       ],
-      "unevaluatedProperties": false,
-      "required": ["params"]
-    },
-    "WorkspaceRenameCall": {
-      "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
-        {
-          "properties": {
-            "method": { "const": "axo.workspace.rename" },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["workspaceId", "name"],
-              "properties": {
-                "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
-                "name": { "type": "string", "minLength": 1, "maxLength": 80 }
-              }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": ["params"]
-    },
-    "WorkspaceArchiveCall": {
-      "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
-        {
-          "properties": {
-            "method": { "const": "axo.workspace.archive" },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["workspaceId"],
-              "properties": { "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" } }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": ["params"]
-    },
-    "WorkspaceSessionCreateCall": {
-      "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
-        {
-          "properties": {
-            "method": { "const": "axo.workspace.session.create" },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["workspaceId"],
-              "properties": { "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" } }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": ["params"]
+      "unevaluatedProperties": false
     },
     "SessionCloseCall": {
       "allOf": [
@@ -523,7 +423,7 @@
                 "includeTerminalOutput": {
                   "type": "boolean",
                   "default": true,
-                  "description": "Catalog subscribers pass false to receive only catalog events (session, workspace, focus and shell activity); terminal output and Pi stream events are excluded."
+                  "description": "Catalog subscribers pass false to receive only catalog events (session, focus and shell activity); terminal output and Pi stream events are excluded."
                 }
               }
             }
@@ -863,68 +763,6 @@
         }
       }
     },
-    "WorkspaceListResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["workspaces"],
-      "properties": {
-        "workspaces": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["workspaceId", "name", "directoryPath"],
-            "properties": {
-              "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
-              "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-              "directoryPath": { "type": "string", "minLength": 1 }
-            }
-          }
-        }
-      }
-    },
-    "WorkspaceCreateResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["workspace", "session"],
-      "properties": {
-        "workspace": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["workspaceId", "name", "directoryPath", "state"],
-          "properties": {
-            "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
-            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-            "directoryPath": { "type": "string", "minLength": 1 },
-            "state": { "const": "open" }
-          }
-        },
-        "session": { "$ref": "common.schema.json#/$defs/LocalSession" }
-      }
-    },
-    "WorkspaceRenameResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["workspaceId", "name", "directoryPath"],
-      "properties": {
-        "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
-        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "directoryPath": { "type": "string", "minLength": 1 }
-      }
-    },
-    "WorkspaceArchiveResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["archivedWorkspaceId", "archivedSessionIds"],
-      "properties": {
-        "archivedWorkspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
-        "archivedSessionIds": {
-          "type": "array",
-          "items": { "$ref": "common.schema.json#/$defs/SessionId" }
-        }
-      }
-    },
-    "WorkspaceSessionCreateResult": { "$ref": "common.schema.json#/$defs/LocalSession" },
     "SessionCreateResult": {
       "$ref": "common.schema.json#/$defs/LocalSession"
     },
@@ -933,22 +771,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "archivedSessionId",
-        "replacement"
+        "archivedSessionId"
       ],
       "properties": {
         "archivedSessionId": {
           "$ref": "common.schema.json#/$defs/SessionId"
-        },
-        "replacement": {
-          "anyOf": [
-            {
-              "$ref": "common.schema.json#/$defs/LocalSession"
-            },
-            {
-              "type": "null"
-            }
-          ]
         }
       }
     },
@@ -960,8 +787,7 @@
       "additionalProperties": false,
       "required": [
         "archivedShellId",
-        "archivedSessionId",
-        "replacement"
+        "archivedSessionId"
       ],
       "properties": {
         "archivedShellId": {
@@ -971,16 +797,6 @@
           "anyOf": [
             {
               "$ref": "common.schema.json#/$defs/SessionId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "replacement": {
-          "anyOf": [
-            {
-              "$ref": "common.schema.json#/$defs/LocalSession"
             },
             {
               "type": "null"

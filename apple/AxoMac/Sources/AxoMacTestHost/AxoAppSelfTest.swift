@@ -27,10 +27,11 @@ enum AxoAppSelfTest {
       throw SelfTestError.daemonUnavailable
     }
 
-    let baselineSessions = try await axod.listSessionSnapshot().sessions
-    guard baselineSessions.count == 1 else {
+    // axod opens no Session by itself (RFD0038); one opened first must outlive the next's changes.
+    guard try await axod.listSessionSnapshot().sessions.isEmpty else {
       throw SelfTestError.unexpectedInitialSession
     }
+    let baselineSessions = [try await axod.createSession()]
     // A new Session opens with Pi and a terminal beside it; only terminals are typed into.
     let session = try await axod.createSession()
     do {
@@ -68,27 +69,21 @@ enum AxoAppSelfTest {
 
       for baselineSession in baselineSessions {
         let closedBaseline = try await axod.closeSession(baselineSession.id)
-        guard closedBaseline.archivedSessionId == baselineSession.id,
-          closedBaseline.replacement == nil
-        else {
+        guard closedBaseline.archivedSessionId == baselineSession.id else {
           throw SelfTestError.independentSessionCloseFailed
         }
       }
 
-      // Closing Pi closes its Session; Home's last Session is replaced.
+      // Closing Pi closes its Session, and nothing opens in its place (RFD0038).
       let closedPi = try await axod.closeShell(piShell.id, inSession: session.id)
       guard closedPi.archivedShellId == piShell.id,
-        closedPi.archivedSessionId == session.id,
-        let replacement = closedPi.replacement,
-        replacement.id != session.id
+        closedPi.archivedSessionId == session.id
       else {
-        throw SelfTestError.lastShellDidNotReplaceSession
+        throw SelfTestError.lastShellDidNotArchiveSession
       }
       let remainingSessions = try await axod.listSessionSnapshot().sessions
-      guard remainingSessions.contains(where: { $0.id == replacement.id }),
-        !remainingSessions.contains(where: { $0.id == session.id })
-      else {
-        throw SelfTestError.replacementSessionMissing
+      guard remainingSessions.isEmpty else {
+        throw SelfTestError.closedSessionWasReplaced
       }
     } catch {
       _ = try? await axod.closeSession(session.id)
@@ -218,8 +213,8 @@ private enum SelfTestError: Error, LocalizedError {
   case independentSessionCloseFailed
   case splitShellSetMismatch
   case splitShellCloseArchivedSession
-  case lastShellDidNotReplaceSession
-  case replacementSessionMissing
+  case lastShellDidNotArchiveSession
+  case closedSessionWasReplaced
   case helperMissing(String)
   case helperClosedBeforeMarker
   case outputReadFailed(String)
@@ -236,7 +231,7 @@ private enum SelfTestError: Error, LocalizedError {
     case .createdShellMissing:
       "axod did not return a shell in the self-test session."
     case .unexpectedInitialSession:
-      "axod must start with exactly one default Session before the self-test begins."
+      "axod must start with no Session before the self-test begins."
     case .independentSessionChanged:
       "Splitting or closing a shell changed an unrelated session."
     case .independentSessionCloseFailed:
@@ -245,10 +240,10 @@ private enum SelfTestError: Error, LocalizedError {
       "The shells returned by axod did not match the expected session layout."
     case .splitShellCloseArchivedSession:
       "Closing a split shell unexpectedly archived its session."
-    case .lastShellDidNotReplaceSession:
-      "Closing the last shell did not archive its session and create a replacement."
-    case .replacementSessionMissing:
-      "The replacement session was not present in axod's active session list."
+    case .lastShellDidNotArchiveSession:
+      "Closing the Pi pane did not archive its session."
+    case .closedSessionWasReplaced:
+      "Closing the last session opened another in its place."
     case .helperMissing(let path):
       "The terminal-attach helper is missing or not executable at \(path)."
     case .helperClosedBeforeMarker:

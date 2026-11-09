@@ -371,7 +371,6 @@ fn forward_event(event: Event, context: &RelaySessionContext) {
         | Event::TerminalOutput { .. }
         | Event::DaemonReady
         | Event::SessionFocus { .. }
-        | Event::WorkspaceChanged { .. }
         | Event::RelayStatus { .. }
         | Event::PeerSessionsChanged => {}
     }

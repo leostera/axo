@@ -60,8 +60,8 @@ export { layoutSchema };
 export const sessionSnapshotSchema = z.object({
   hostId: hostIdSchema,
   sessionId: sessionIdSchema,
-  workspaceId: z.uuid().nullable().optional(),
-  workspaceName: z.string().max(80).nullable().optional(),
+  /** The last component of the Session's folder on the Mac, never its path (RFD0038). */
+  folderName: z.string().min(1).max(255).nullable().optional(),
   name: z.string().min(1).max(80).optional(),
   emoji: z.string().min(1).max(16).refine(value => value.trim() === value && !/[\p{Cc}\p{White_Space}]/u.test(value)).nullable().optional(),
   status: z.enum(["starting", "ready", "working", "needsAttention", "unavailable"]).optional(),
@@ -175,7 +175,6 @@ const emptyParamsSchema = z.object({}).strict();
 const subscriptionIdSchema = z.object({ subscriptionId: z.uuid() }).strict();
 const targetSchema = z.object({ target: hostRefSchema }).strict();
 const sessionTargetSchema = targetSchema.extend({ sessionId: sessionIdSchema }).strict();
-const workspaceSessionTargetSchema = targetSchema.extend({ workspaceId: z.uuid() }).strict();
 const shellTargetSchema = sessionTargetSchema.extend({ shellId: shellIdSchema }).strict();
 
 export const hostV1Methods = {
@@ -186,9 +185,8 @@ export const hostV1Methods = {
   "axo.host.sessions.list": hostRefSchema,
   "axo.host.subscribe": hostRefSchema,
   "axo.host.unsubscribe": subscriptionIdSchema,
-  "axo.remote.workspace.list": targetSchema,
-  "axo.remote.session.create": targetSchema,
-  "axo.remote.workspace.session.create": workspaceSessionTargetSchema,
+  // In the folder of the open Session `like`, or the Mac's home directory (RFD0038).
+  "axo.remote.session.create": targetSchema.extend({ like: sessionIdSchema.optional() }).strict(),
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,
   "axo.remote.shell.close": shellTargetSchema,
@@ -238,7 +236,6 @@ export const hostMutationMethods = [
   "axo.host.subscribe",
   "axo.host.unsubscribe",
   "axo.remote.session.create",
-  "axo.remote.workspace.session.create",
   "axo.remote.session.close",
   "axo.remote.session.rename",
   "axo.remote.shell.create",
@@ -268,14 +265,10 @@ export const hostSessionsListResultSchema = z.object({
 }).strict();
 export const hostSubscribeResultSchema = z.object({ subscriptionId: z.uuid() }).strict();
 export const hostUnsubscribeResultSchema = z.object({ unsubscribed: z.literal(true) }).strict();
-export const remoteWorkspaceListResultSchema = z.object({
-  workspaces: z.array(z.object({ workspaceId: z.uuid(), name: z.string().min(1).max(256), home: z.literal(true).optional() }).strict()).max(256),
-}).strict();
 export const remoteSessionCreateResultSchema = z.object({ session: sessionSnapshotSchema }).strict();
 export const remoteSessionCloseResultSchema = z.object({
   closed: z.literal(true),
   sessionId: sessionIdSchema,
-  replacement: sessionSnapshotSchema.nullable(),
 }).strict();
 export const remoteShellCreateResultSchema = z.object({
   hostId: hostIdSchema,
@@ -313,9 +306,7 @@ export const hostV1Results = {
   "axo.host.sessions.list": hostSessionsListResultSchema,
   "axo.host.subscribe": hostSubscribeResultSchema,
   "axo.host.unsubscribe": hostUnsubscribeResultSchema,
-  "axo.remote.workspace.list": remoteWorkspaceListResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
-  "axo.remote.workspace.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.shell.create": remoteShellCreateResultSchema,
   "axo.remote.shell.close": remoteShellCloseResultSchema,

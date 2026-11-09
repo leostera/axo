@@ -99,6 +99,8 @@ fn ensure_session_indexes(transaction: &rusqlite::Transaction<'_>) -> rusqlite::
     )
 }
 
+/// `workspaces` and `sessions.workspace_id` are neither read nor written since Workspaces went
+/// (RFD0038); they stay so every catalog keeps one shape and its migrations still apply.
 pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS workspaces (

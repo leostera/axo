@@ -106,7 +106,7 @@ struct WorkbenchSelection: Equatable {
     }
   }
 
-  /// A Session Axod just created (or returned as a replacement) joins the workbench. Its layout
+  /// A Session Axod just created or reopened joins the workbench. Its layout
   /// is saved only when Axod had none.
   mutating func add(_ session: TerminalSession) {
     let layout = session.layout.map(TerminalLayout.init)
@@ -120,7 +120,6 @@ struct WorkbenchSelection: Equatable {
     _ sessionIDs: Set<SessionID>,
     remaining sessions: [TerminalSession],
     closing: TerminalSession?,
-    replacement: TerminalSession?,
     fallback: ([TerminalSession]) -> SessionID?
   ) {
     for sessionID in sessionIDs {
@@ -133,8 +132,7 @@ struct WorkbenchSelection: Equatable {
       return
     }
     let successor = closing.flatMap {
-      SessionNavigation.successor(
-        afterClosing: $0, in: sessions, recent: recent, replacement: replacement)
+      SessionNavigation.successor(afterClosing: $0, in: sessions, recent: recent)
     }
     select(successor ?? fallback(sessions), in: sessions)
   }

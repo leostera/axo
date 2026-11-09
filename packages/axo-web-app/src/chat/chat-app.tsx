@@ -422,7 +422,7 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
   const host = workbench.openHost;
   const session = workbench.selectedSession;
   const chat = session ? workbench.chat(session.sessionId) : null;
-  const subtitle = [session?.workspaceName, host?.label].filter(Boolean).join(" · ") || "No Mac";
+  const subtitle = [session?.folderName, host?.label].filter(Boolean).join(" · ") || "No Mac";
   const messages = chat?.transcript
     ? `${chat.transcript.messages.length}${chat.history.kind === "loadingOlder" || (chat.history.kind === "loaded" && chat.history.hasOlder) ? "+" : ""}`
     : "Not loaded";
@@ -445,7 +445,7 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
             <div><dt>Status</dt><dd>{restarting ? "Restarting…" : session.status ? statusNames[session.status] : "Unknown"}</dd></div>
             {runs ? <div><dt>Model</dt><dd>{runs}</dd></div> : null}
             <div><dt>Mac</dt><dd>{host.label}, {host.status === "online" ? "online" : "offline"}</dd></div>
-            {session.workspaceName ? <div><dt>Workspace</dt><dd>{session.workspaceName}</dd></div> : null}
+            {session.folderName ? <div><dt>Folder</dt><dd>{session.folderName}</dd></div> : null}
             <div><dt>Messages</dt><dd>{messages}</dd></div>
             {Number.isNaN(updated) ? null : <div><dt>Last active</dt><dd>{relativeTime(updated)}</dd></div>}
             <div><dt>Chat</dt><dd className="mono">{session.sessionId}</dd></div>
@@ -549,7 +549,7 @@ function SettingsSheet({ onClose, onSignOut, onApps }: { onClose: () => void; on
   );
 }
 
-/** Finds a chat by its name or its Workspace, across every Mac. Names only, not conversation text. */
+/** Finds a chat by its name or its folder, across every Mac. Names only, not conversation text. */
 function SearchSheet({ workbench, onClose, onChoose }: {
   workbench: ChatWorkbench;
   onClose: () => void;
@@ -558,13 +558,13 @@ function SearchSheet({ workbench, onClose, onChoose }: {
   const [query, setQuery] = useState("");
   const words = query.trim().toLocaleLowerCase();
   const matches = words ? recentChatList(workbench.hosts).filter(({ session }) =>
-    chatTitle(session).toLocaleLowerCase().includes(words) || (session.workspaceName ?? "").toLocaleLowerCase().includes(words)) : [];
+    chatTitle(session).toLocaleLowerCase().includes(words) || (session.folderName ?? "").toLocaleLowerCase().includes(words)) : [];
   return (
     <Sheet title="Search" onClose={onClose}>
       <div className="grouped">
         <label className="grouped-row search-row">
           <Icon name="search" size={18} />
-          <input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Workspace or chat name"
+          <input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Chat or folder name"
             aria-label="Search chats" autoCapitalize="off" autoCorrect="off" spellCheck={false}
             onKeyDown={event => {
               const first = matches[0];
@@ -574,7 +574,7 @@ function SearchSheet({ workbench, onClose, onChoose }: {
         </label>
       </div>
       {!words ? (
-        <div className="sheet-empty"><Icon name="search" size={28} /><strong>Search chats</strong><p>Search by chat or workspace name.</p></div>
+        <div className="sheet-empty"><Icon name="search" size={28} /><strong>Search chats</strong><p>Search by chat or folder name.</p></div>
       ) : matches.length === 0 ? (
         <div className="sheet-empty"><Icon name="search" size={28} /><strong>No results for “{query.trim()}”</strong><p>Check the spelling or try a new search.</p></div>
       ) : (
@@ -583,13 +583,13 @@ function SearchSheet({ workbench, onClose, onChoose }: {
             <button key={`${host.hostId}/${session.sessionId}`} className="grouped-row search-result" onClick={() => onChoose(host.hostId, session.sessionId)}>
               <span className="search-result-copy">
                 <span>{chatTitle(session)}</span>
-                <small>{[session.workspaceName, host.label].filter(Boolean).join(" · ")}</small>
+                <small>{[session.folderName, host.label].filter(Boolean).join(" · ")}</small>
               </span>
             </button>
           ))}
         </div>
       )}
-      <p className="sheet-note">Search uses chat and workspace names only, not conversation text.</p>
+      <p className="sheet-note">Search uses chat and folder names only, not conversation text.</p>
     </Sheet>
   );
 }

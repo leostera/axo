@@ -12,7 +12,7 @@ const clientId = "tab-client-0001";
 const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 
 const clientHost = { hostId, hostGeneration, label: "Test Mac", hostKind: "macos", online: true, lastSeenAt: timestamp };
-const metadata = { name: "Chat", emoji: null, workspaceId: null, workspaceName: null, hasAgent: true, createdAt: null, lastMessageAt: null, archived: false };
+const metadata = { name: "Chat", emoji: null, folderName: null, hasAgent: true, createdAt: null, lastMessageAt: null, archived: false };
 
 function record(cursor, line = JSON.stringify({ type: "message", id: `e${cursor}`, parentId: null, message: { role: "user", content: "hi" } })) {
   return { cursor, id: `e${cursor}`, format: "pi/3", line, hash: `sha256:${"0".repeat(64)}` };

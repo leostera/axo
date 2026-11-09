@@ -6,7 +6,7 @@ use std::io;
 use axo_protocol::{SessionId, ShellId};
 use rusqlite::Connection;
 
-/// The `state` column of a Session, shell or Workspace row. Parsed when read, so a corrupt or
+/// The `state` column of a Session or shell row. Parsed when read, so a corrupt or
 /// unknown state fails the query instead of being compared as a string downstream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoredLifecycle {

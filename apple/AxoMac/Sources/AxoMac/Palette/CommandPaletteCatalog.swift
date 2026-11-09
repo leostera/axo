@@ -16,8 +16,10 @@ enum CommandPaletteAction: Hashable {
 /// something else if the catalog changed while the palette was open.
 enum CommandPaletteCommand: Hashable {
   case newSession
-  case newSessionInWorkspace(workspaceID: String)
-  case newWorkspace
+  /// A new Session in a folder one of this Mac's Sessions works in.
+  case newSessionInFolder(String)
+  /// Asks which folder, then starts a Session there.
+  case chooseFolderForNewSession
   case splitRight
   case splitDown
   case closeShell(ShellID)
@@ -58,7 +60,8 @@ struct CommandPaletteContext {
   var sessions: [TerminalSession]
   /// The Mac each other Mac's Session runs on, by name; this Mac's Sessions are not in it.
   var hostLabels: [SessionID: String] = [:]
-  var workspaces: [WorkspaceRecord]
+  /// The folders this Mac's Sessions work in, most recently active first.
+  var folders: [String]
   /// Most recently shown first.
   var recentSessionIDs: [SessionID]
   var selectedSessionID: SessionID?
@@ -96,8 +99,8 @@ enum CommandPaletteCatalog {
         kind: .session,
         title: [session.emoji, session.displayName].compactMap { $0 }.joined(separator: " "),
         subtitle: [
-          context.hostLabels[session.id], session.workspaceName, lastMessage, status,
-          abbreviated(session.initialPwd, context),
+          context.hostLabels[session.id], lastMessage, status,
+          abbreviated(session.folder, context),
         ]
         .compactMap { $0 }.joined(separator: " · "),
         keywords: ["session"],
@@ -124,8 +127,7 @@ enum CommandPaletteCatalog {
           kind: .pane,
           title: "\(name) — \(session.displayName)",
           subtitle: abbreviated(shell.initialPwd, context),
-          keywords: ["pane", shell.isPi ? "agent" : "terminal"]
-            + [session.workspaceName].compactMap { $0 },
+          keywords: ["pane", shell.isPi ? "agent" : "terminal", session.folderName],
           shortcut: nil,
           isCurrent: false,
           action: .focusPane(shell.id))
@@ -151,16 +153,18 @@ enum CommandPaletteCatalog {
     }
 
     add(
-      .newSession, "New Session", subtitle: selected?.workspaceName ?? "",
+      .newSession, "New Session", subtitle: selected.map { abbreviated($0.folder, context) } ?? "",
       keywords: ["create", "tab"], shortcut: "⌘T")
-    for workspace in context.workspaces {
+    for folder in context.folders {
       add(
-        .newSessionInWorkspace(workspaceID: workspace.workspaceId),
-        "New Session in \(workspace.name)",
-        subtitle: abbreviated(workspace.directoryPath, context),
-        keywords: ["create", "workspace"], id: "new-session-in:\(workspace.workspaceId)")
+        .newSessionInFolder(folder),
+        "New Session in \((folder as NSString).lastPathComponent)",
+        subtitle: abbreviated(folder, context),
+        keywords: ["create", "folder"], id: "new-session-in:\(folder)")
     }
-    add(.newWorkspace, "New Workspace…", keywords: ["create", "folder"], shortcut: "⌘N")
+    add(
+      .chooseFolderForNewSession, "New Session in Folder…", keywords: ["create", "folder", "open"],
+      shortcut: "⌘N")
     if availability.hasFocusedShell {
       add(.splitRight, "Split Right", keywords: ["pane", "vertical"], shortcut: "⌘D")
       add(.splitDown, "Split Down", keywords: ["pane", "horizontal"], shortcut: "⇧⌘D")

@@ -4,12 +4,6 @@ import XCTest
 @testable import AxoMac
 
 final class CloseConfirmationsTests: XCTestCase {
-  private func session(_ id: SessionID, workspace: String? = nil) -> TerminalSession {
-    TerminalSession(id: id, initialPwd: "/", shells: [], workspaceId: workspace)
-  }
-
-  private let workspaceA = WorkspaceRecord(workspaceId: "a", name: "Alpha", directoryPath: "/a")
-
   func testClosingAPaneAsksExactlyWhenItIsBusyOrAxodCannotSay() {
     let idle = TerminalShellBusy(busy: false, foregroundProcess: nil)
     let vim = TerminalShellBusy(busy: true, foregroundProcess: "vim")
@@ -20,62 +14,6 @@ final class CloseConfirmationsTests: XCTestCase {
     XCTAssertEqual(Reason(closing: .pi, busy: vim), .piWorking)
     XCTAssertEqual(Reason(closing: .terminal, busy: nil), .unknown)
     XCTAssertEqual(Reason(closing: .pi, busy: nil), .unknown)
-  }
-
-  func testOnlyAWorkspacesLastSessionNeedsArchiveConfirmation() {
-    let standalone = session(1)
-    let onlyInA = session(2, workspace: "a")
-    XCTAssertEqual(
-      SessionClosePlan(closing: standalone, sessions: [standalone], workspaces: [workspaceA]),
-      .close)
-    XCTAssertEqual(
-      SessionClosePlan(closing: onlyInA, sessions: [standalone, onlyInA], workspaces: [workspaceA]),
-      .confirmArchive(
-        WorkspaceArchiveConfirmation(workspaceID: "a", workspaceName: "Alpha", sessionID: 2)))
-
-    let siblingInA = session(3, workspace: "a")
-    XCTAssertEqual(
-      SessionClosePlan(closing: onlyInA, sessions: [onlyInA, siblingInA], workspaces: [workspaceA]),
-      .close)
-  }
-
-  func testHomesLastSessionClosesWithoutOfferingToArchiveHome() {
-    let home = WorkspaceRecord(workspaceId: "h", name: "Home", directoryPath: "/Users/me", isHome: true)
-    let onlyInHome = session(4, workspace: "h")
-    XCTAssertEqual(
-      SessionClosePlan(closing: onlyInHome, sessions: [onlyInHome], workspaces: [home, workspaceA]),
-      .close, "Axod replaces Home's last Session; Home is never archived")
-  }
-
-  func testTheWorkspaceHomeFlagIsDecodedAndDefaultsToFalse() throws {
-    let decoder = JSONDecoder()
-    let home = try decoder.decode(
-      WorkspaceRecord.self,
-      from: Data(#"{"workspaceId":"h","name":"Home","directoryPath":"/Users/me","home":true}"#.utf8))
-    XCTAssertTrue(home.isHome)
-    let other = try decoder.decode(
-      WorkspaceRecord.self, from: Data(#"{"workspaceId":"a","name":"A","directoryPath":"/a"}"#.utf8))
-    XCTAssertFalse(other.isHome)
-  }
-
-  func testTheLastSessionOfAnUnlistedWorkspaceIsNotClosedBlind() {
-    let onlyInA = session(2, workspace: "a")
-    XCTAssertEqual(
-      SessionClosePlan(closing: onlyInA, sessions: [onlyInA], workspaces: []),
-      .workspaceUnavailable)
-  }
-
-  func testAnArchiveConfirmationLapsesWhenItsWorkspaceChanges() {
-    let confirmation = WorkspaceArchiveConfirmation(
-      workspaceID: "a", workspaceName: "Alpha", sessionID: 2)
-    let onlyInA = session(2, workspace: "a")
-    XCTAssertTrue(confirmation.stillApplies(sessions: [onlyInA], workspaces: [workspaceA]))
-    // A Session joined the Workspace, the Session went away, or the Workspace did.
-    XCTAssertFalse(
-      confirmation.stillApplies(
-        sessions: [onlyInA, session(3, workspace: "a")], workspaces: [workspaceA]))
-    XCTAssertFalse(confirmation.stillApplies(sessions: [], workspaces: [workspaceA]))
-    XCTAssertFalse(confirmation.stillApplies(sessions: [onlyInA], workspaces: []))
   }
 
   func testAPendingSplitResizesOnlyWhileCreatingAndStaysInsideThePane() {
@@ -128,8 +66,8 @@ final class AxodCapabilitiesTests: XCTestCase {
     let capabilities = AxodCapabilities(client: client)
     try await capabilities.negotiate()
     do {
-      try await capabilities.require(.workspaceRename)
-      XCTFail("an Axod without workspace rename must refuse it")
+      try await capabilities.require(.shellBusy)
+      XCTFail("an Axod without shell busy must refuse it")
     } catch {
       XCTAssertTrue(error is SessionCommandError)
     }

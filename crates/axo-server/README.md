@@ -9,9 +9,8 @@ It has no SQL outside its tests (that is `axo-store`), launches processes throug
 | Module | Owns |
 | --- | --- |
 | `lib.rs` | `serve_ipc`: the server directory, PID file, socket, signal handling, relay startup. `rpc_handler` assembles axod's methods from its extensions (`daemon`, `relay`, `sessions`, `axo_apps::Apps`, `axo_assets::Assets`, `axo_questions::QuestionsExtension` and `axo_computer_use::ComputerExtension`); a method two of them register stops axod at startup |
-| `session` | `SessionManager`, `open`/`shutdown` and the shared state. Each module under `session/` adds its part of `impl SessionManager`: `catalog`, `handlers`, `events`, `terminal`, `prompts`, `lifecycle`, `spawn`, `workspaces`, `pi_bridge`, `pi_recovery`, `settings`, `questions` and `computer` (the hosts of `axo-questions` and `axo-computer-use`), `input_key`, `peer_views`, `cloud_transcripts`, `transcripts`, `workspace_state` |
+| `session` | `SessionManager`, `open`/`shutdown` and the shared state. Each module under `session/` adds its part of `impl SessionManager`: `catalog`, `handlers`, `events`, `terminal`, `prompts`, `lifecycle`, `spawn`, `create`, `pi_bridge`, `pi_recovery`, `settings`, `questions` and `computer` (the hosts of `axo-questions` and `axo-computer-use`), `input_key`, `peer_views`, `cloud_transcripts`, `transcripts`, `workspace_state` |
 | `permissions` | The macOS privacy permissions (TCC) that Sessions need |
-| `workspace_access` | Security-scoped bookmarks for Workspace folders on macOS |
 
 The runtime and attachment invariants, and what each `session` module owns, are in [`crates/axod/README.md`](../axod/README.md).
 

@@ -62,7 +62,7 @@ fn linking_with_a_relay_that_is_not_there_fails_and_leaves_the_mac_unlinked() {
 #[test]
 fn the_accounts_apps_are_not_connected_without_an_account() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let quickly = |started: Instant| {
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -133,7 +133,7 @@ fn other_macs_are_none_without_an_account() {
 #[test]
 fn only_axods_own_tools_fetch_assets_or_ask_for_input() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let fetch = axod.err("axo.assets.fetch", json!({ "attachments": [] }));
     assert!(fetch.message.contains("only axod"), "{fetch:?}");
     let input = axod.err(

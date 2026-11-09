@@ -481,7 +481,7 @@ final class AccountConnectionTests: XCTestCase {
   private let clientID = ClientID(rawValue: "ios-test-client")!
 
   private var hello: String {
-    #"{"hosts":[{"hostId":"\#(host.hostId.uuidString.lowercased())","hostGeneration":"\#(host.hostGeneration.uuidString.lowercased())","label":"Studio","hostKind":"macos","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"}],"sessions":[{"hostId":"\#(host.hostId.uuidString.lowercased())","sessionId":"00000003-0000-4000-8000-000000000003","metadata":{"name":"Chat","emoji":null,"workspaceId":null,"workspaceName":null,"hasAgent":true,"createdAt":null,"lastMessageAt":null,"archived":false},"epoch":1,"head":2,"status":"ready"}]}"#
+    #"{"hosts":[{"hostId":"\#(host.hostId.uuidString.lowercased())","hostGeneration":"\#(host.hostGeneration.uuidString.lowercased())","label":"Studio","hostKind":"macos","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"}],"sessions":[{"hostId":"\#(host.hostId.uuidString.lowercased())","sessionId":"00000003-0000-4000-8000-000000000003","metadata":{"name":"Chat","emoji":null,"folderName":null,"hasAgent":true,"createdAt":null,"lastMessageAt":null,"archived":false},"epoch":1,"head":2,"status":"ready"}]}"#
   }
 
   private func connect() async throws -> (AccountConnection, FakeChannel) {
@@ -534,12 +534,12 @@ final class AccountConnectionTests: XCTestCase {
       hostId: UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!,
       hostGeneration: UUID(uuidString: "C3B6DA28-55C0-4BB0-AC04-DD458FD41A2B")!)
     let connection = HostConnection(account: account, host: upper)
-    async let created = connection.createSession(inWorkspace: UUID(uuidString: "7F1918D3-8B6D-4AF4-A57E-7E6AE28E89E2")!)
+    async let created = connection.createSession(like: SessionID(rawValue: "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2")!)
     let sent = try await request(channel, 0)
     XCTAssertEqual(sent["method"] as? String, "axo.client.command")
     let params = try XCTUnwrap(sent["params"] as? [String: Any])
     XCTAssertEqual(params["hostId"] as? String, "abcdef00-95fd-4c93-8586-a71a8a52bf73")
-    XCTAssertEqual(params["method"] as? String, "axo.remote.workspace.session.create")
+    XCTAssertEqual(params["method"] as? String, "axo.remote.session.create")
     let raw = String(decoding: try await channel.rawRequests(count: 1)[0], as: UTF8.self)
     XCTAssertTrue(raw.contains("c3b6da28-55c0-4bb0-ac04-dd458fd41a2b"), raw)
     XCTAssertTrue(raw.contains("7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2"), raw)

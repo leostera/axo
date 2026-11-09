@@ -2,7 +2,7 @@ import AxoPhoneModel
 import AxoProtocol
 import SwiftUI
 
-/// Finds a Session by its name or its Workspace, across every Mac. Names only, not conversation text.
+/// Finds a Session by its name or its folder, across every Mac. Names only, not conversation text.
 struct SessionSearchView: View {
   let hosts: [RemoteHost]
   /// A Mac's Sessions as they are now (the open Mac's are live).
@@ -27,7 +27,7 @@ struct SessionSearchView: View {
         // Chats only: a bare terminal has nothing to read here.
         $0.hasAgent != false
           && ($0.displayName.localizedCaseInsensitiveContains(trimmedQuery)
-          || ($0.workspaceName ?? "").localizedCaseInsensitiveContains(trimmedQuery))
+          || ($0.folderName ?? "").localizedCaseInsensitiveContains(trimmedQuery))
       }.map { Match(host: host, session: $0) }
     }
   }
@@ -38,7 +38,7 @@ struct SessionSearchView: View {
         Section {
           HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Workspace or chat name", text: $query)
+            TextField("Chat or folder name", text: $query)
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
               .focused($searchFocused)
@@ -54,7 +54,7 @@ struct SessionSearchView: View {
         if trimmedQuery.isEmpty {
           ContentUnavailableView(
             "Search chats", systemImage: "magnifyingglass",
-            description: Text("Search by chat or workspace name."))
+            description: Text("Search by chat or folder name."))
         } else if matches.isEmpty {
           ContentUnavailableView.search(text: query)
         } else {
@@ -65,7 +65,7 @@ struct SessionSearchView: View {
             } label: {
               VStack(alignment: .leading, spacing: 3) {
                 Text(match.session.displayName).font(.body)
-                Text([match.session.workspaceName, match.host.label].compactMap { $0 }.joined(separator: " · "))
+                Text([match.session.folderName, match.host.label].compactMap { $0 }.joined(separator: " · "))
                   .font(.caption).foregroundStyle(.secondary)
               }
               // The whole row, not only its words, takes the tap.
@@ -76,7 +76,7 @@ struct SessionSearchView: View {
             .accessibilityIdentifier("search-result")
           }
         }
-        Text("Search uses chat and workspace names only, not conversation text.")
+        Text("Search uses chat and folder names only, not conversation text.")
           .font(.footnote).foregroundStyle(.secondary)
       }
       .navigationTitle("Search")

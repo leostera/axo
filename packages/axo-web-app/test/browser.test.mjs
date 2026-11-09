@@ -12,8 +12,6 @@ import { createServer as createViteServer } from "vite";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
-const workspaceId = "04d389d1-9896-420e-9b42-fc7835522937";
-const homeWorkspaceId = "8f8f8f8f-0000-4000-8000-000000000001";
 const now = "2026-10-16T12:00:00.000Z";
 const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -26,7 +24,7 @@ const studioHost = { hostId: "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7", hostGenerat
 function listed({ sessionId, status = "ready", head = 0, ...metadata }) {
   return {
     hostId, sessionId, epoch: head ? 1 : null, head, status,
-    metadata: { name: null, emoji: null, workspaceId: null, workspaceName: null, hasAgent: true, createdAt: null, lastMessageAt: null, archived: false, ...metadata },
+    metadata: { name: null, emoji: null, folderName: null, hasAgent: true, createdAt: null, lastMessageAt: null, archived: false, ...metadata },
   };
 }
 
@@ -80,8 +78,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
 }, async () => {
   const sessions = [listed({
     sessionId: sid(1),
-    workspaceId,
-    workspaceName: "Browser Workspace",
+    folderName: "browser-project",
     name: "Browser Agent",
     emoji: "🦀",
     head: 4,
@@ -90,14 +87,12 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     lastMessageAt: Math.floor(Date.now() / 1000) - 60,
   }), listed({
     sessionId: sid(5),
-    workspaceId,
-    workspaceName: "Browser Workspace",
+    folderName: "browser-project",
     name: "Old idea",
     lastMessageAt: Math.floor(Date.now() / 1000) - 3 * 7 * 86_400,
   }), listed({
     sessionId: sid(4),
-    workspaceId: homeWorkspaceId,
-    workspaceName: "Home",
+    folderName: "leo",
     name: "Plan the week",
     createdAt: Math.floor(Date.now() / 1000) - 2 * 3_600,
   }), listed({
@@ -406,15 +401,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       }
       const { method, params } = call.params;
       methods.push(method);
-      if (method === "axo.remote.workspace.list") {
-        reply({ workspaces: [{ workspaceId: homeWorkspaceId, name: "Home", home: true }, { workspaceId, name: "Browser Workspace" }] });
-      } else if (method === "axo.remote.session.create") {
+      if (method === "axo.remote.session.create") {
         sessionCreateCount++;
-        assert.equal(params.workspaceId, undefined, "a new chat goes to the Mac's Home Workspace");
+        assert.equal(params.like, undefined, "a new chat starts in the Mac's home folder");
         const createdAt = Math.floor(Date.now() / 1000);
-        const created = listed({ sessionId: sid(2), workspaceId: homeWorkspaceId, workspaceName: "Home", name: "Session 2", status: "starting", createdAt });
+        const created = listed({ sessionId: sid(2), folderName: "leo", name: "Session 2", status: "starting", createdAt });
         sessions.push(created);
-        reply({ session: { hostId, sessionId: sid(2), workspaceId: homeWorkspaceId, workspaceName: "Home", name: "Session 2", status: "starting", createdAt, hasAgent: true, shells: [], layout: null, updatedAt: new Date().toISOString() } });
+        reply({ session: { hostId, sessionId: sid(2), folderName: "leo", name: "Session 2", status: "starting", createdAt, hasAgent: true, shells: [], layout: null, updatedAt: new Date().toISOString() } });
         setTimeout(() => notify(socket, "axo.client.sessions", { hostId, sessions: [created] }), 10);
       } else if (method === "axo.remote.session.prompt" && params.delivery === "steer") {
         // Pi is busy elsewhere in this fixture: the steer waits in the log, and a restart delivers it.
@@ -598,7 +591,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(await group("Pinned").count(), 0);
     assert.deepEqual(await group("Earlier").locator(".chat-row-name").allTextContents(), ["Plan the week", "Old idea"]);
     assert.equal(await page.getByText("Standalone Shell").count(), 0);
-    assert.equal(await chats.getByRole("button", { name: "Browser Workspace", exact: true }).count(), 0, "no Workspace tree");
+    assert.equal(await chats.getByRole("button", { name: "browser-project", exact: true }).count(), 0, "no folder tree");
     await shot("recent-chats");
     // Nothing is opened on its own: a new chat waits for its first message.
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
@@ -850,7 +843,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(answers[0].device.name, "Chrome on Mac");
     assert.equal(answers[0].device.key.length, 88);
 
-    // A new chat: its first message starts it in the Mac's Home Workspace.
+    // A new chat: its first message starts it in the Mac's home folder.
     await chats.getByRole("button", { name: "New chat", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
     await box.fill("Start fresh");
@@ -881,7 +874,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // The chat's info.
     await page.getByRole("button", { name: "Chat info" }).click();
     const info = page.getByRole("complementary", { name: "Chat info" });
-    await expect(info.getByText("Workspace", { exact: true }));
+    await expect(info.getByText("Folder", { exact: true }));
     await expect(info.getByText("Browser fixture Mac, online"));
     await shot("info");
     await info.getByRole("button", { name: "Close chat info" }).click();

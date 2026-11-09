@@ -37,7 +37,13 @@ fn the_account_s_calls_are_answered_without_waiting_for_a_poll() {
     let mut took: Vec<Duration> = (0..40)
         .map(|_| {
             let started = Instant::now();
-            hub.ok("axo.remote.workspace.list", json!({ "target": target }));
+            // Refused by axod itself, so the time is the relay's and axod's, not a Pi's.
+            let unknown = "8f8f8f8f-0000-4000-8000-000000000001";
+            let renamed = hub.call(
+                "axo.remote.session.rename",
+                json!({ "target": target, "sessionId": unknown, "name": "x" }),
+            );
+            assert!(renamed.is_err(), "{renamed:?}");
             started.elapsed()
         })
         .collect();
@@ -56,7 +62,7 @@ fn the_account_s_calls_are_answered_without_waiting_for_a_poll() {
 fn a_command_reaches_pi_without_waiting_for_a_poll() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub);
-    let session = axod.wait_for_pi(&axod.sessions()[0])["id"].clone();
+    let session = axod.new_session()["id"].clone();
     // Pi says what it runs once it is bound, so the bridge is up.
     axod.wait_for("Pi's bridge to bind", || {
         let listed = axod.ok("axo.session.catalog", json!({}));

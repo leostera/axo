@@ -34,7 +34,7 @@ final class BoundaryValueTests: XCTestCase {
     let sessionJSON = """
       {
         "id": "00000007-0000-4000-8000-000000000007",
-        "initialPwd": "/tmp",
+        "folder": "/tmp",
         "status": "unavailable",
         "shells": [{
           "id": 19,

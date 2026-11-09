@@ -54,8 +54,6 @@ pub enum Event {
         name: String,
         data: Value,
     },
-    #[serde(rename = "workspace.changed")]
-    WorkspaceChanged { workspace_id: String },
     #[serde(rename = "relay.status")]
     RelayStatus { status: RelayStatus },
     /// The other Macs or their Sessions changed, or a remote pane opened or closed: read
@@ -99,8 +97,7 @@ impl Event {
             | Event::PiEvent { session_id, .. }
             | Event::ElicitationResolved { session_id, .. } => Some(*session_id),
             Event::ElicitationRequested { elicitation } => Some(elicitation.session_id),
-            Event::WorkspaceChanged { .. }
-            | Event::RelayStatus { .. }
+            Event::RelayStatus { .. }
             | Event::PeerSessionsChanged
             | Event::DaemonReady
             | Event::SubscriptionLagged => None,

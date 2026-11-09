@@ -1,4 +1,4 @@
-//! The catalog as clients see it: sessions, their panes, workspaces and configuration.
+//! The catalog as clients see it: sessions, their panes and configuration.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -119,8 +119,6 @@ pub struct SessionRecord {
     pub id: SessionId,
     pub pi_session_file: Option<PathBuf>,
     pub pi_session_id: Option<String>,
-    pub workspace_id: Option<String>,
-    pub workspace_name: Option<String>,
     /// Pi's title for the Session. Clients show `manual_name` when it is set, and this otherwise.
     pub name: String,
     pub manual_name: Option<String>,
@@ -132,7 +130,8 @@ pub struct SessionRecord {
     #[serde(default)]
     pub created_at: i64,
     pub status: SessionStatus,
-    pub initial_pwd: PathBuf,
+    /// The Session's folder, where its panes start (RFD0038).
+    pub folder: PathBuf,
     pub shells: Vec<ShellRecord>,
     pub layout: Option<Layout>,
     /// What the Session's Pi runs, once it has said (RFD0033).
@@ -238,8 +237,8 @@ impl SessionRecord {
 pub struct RemoteSessionSnapshot {
     pub host_id: String,
     pub session_id: SessionId,
-    pub workspace_id: Option<String>,
-    pub workspace_name: Option<String>,
+    /// The last component of the Session's folder; never the path (RFD0038).
+    pub folder_name: Option<String>,
     pub name: String,
     pub emoji: Option<String>,
     pub status: SessionStatus,
@@ -274,8 +273,7 @@ impl RemoteSessionSnapshot {
         RemoteSessionSnapshot {
             host_id: host_id.to_owned(),
             session_id: record.id,
-            workspace_id: record.workspace_id.clone(),
-            workspace_name: record.workspace_name.clone(),
+            folder_name: folder_name(&record.folder),
             // What the Mac shows: a name someone typed wins over the one Pi chose.
             name: record.manual_name.as_ref().unwrap_or(&record.name).clone(),
             emoji: record.emoji.clone(),
@@ -297,47 +295,11 @@ impl RemoteSessionSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum WorkspaceState {
-    Open,
-}
-
-/// A named directory sessions can be created in.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceRecord {
-    pub workspace_id: String,
-    pub name: String,
-    pub directory_path: String,
-    /// Present only in `axo.workspace.create` results.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<WorkspaceState>,
-    /// The Home Workspace, at the user's home directory: it always exists and cannot be
-    /// archived. Omitted for every other Workspace.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub home: bool,
-}
-
-/// A Workspace as a remote person sees it: its name, never its directory on the Mac.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteWorkspace {
-    pub workspace_id: String,
-    pub name: String,
-    /// The Home Workspace, which clients list first. Omitted for every other Workspace.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub home: bool,
-}
-
-impl From<&WorkspaceRecord> for RemoteWorkspace {
-    fn from(record: &WorkspaceRecord) -> Self {
-        RemoteWorkspace {
-            workspace_id: record.workspace_id.clone(),
-            name: record.name.clone(),
-            home: record.home,
-        }
-    }
+/// What remote clients show for a folder: its last component.
+pub fn folder_name(folder: &std::path::Path) -> Option<String> {
+    folder
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }
 
 /// A daemon setting clients may read and change.
@@ -434,15 +396,13 @@ mod tests {
             id: SessionId::from_u128(5),
             pi_session_file: Some("/private/pi.jsonl".into()),
             pi_session_id: None,
-            workspace_id: Some("w".to_owned()),
-            workspace_name: Some("private".to_owned()),
             name: "Fix".to_owned(),
             manual_name: None,
             emoji: Some("🦀".to_owned()),
             last_message_at: None,
             created_at: 0,
             status: SessionStatus::Ready,
-            initial_pwd: "/private/path".into(),
+            folder: "/private/path".into(),
             shells: vec![shell(11, PaneRole::Pi), shell(12, PaneRole::Terminal)],
             layout: Some(Layout::single(ShellId::new(12).unwrap())),
             pi: None,
@@ -451,8 +411,9 @@ mod tests {
         let wire = serde_json::to_value(&remote).unwrap();
         assert_eq!(wire["shells"], json!([{ "shellId": 12 }]));
         assert_eq!(wire["hasAgent"], true);
+        assert_eq!(wire["folderName"], "path");
         let text = wire.to_string();
-        for secret in ["/private/path", "/dev/ttys001", "1234", "pi.jsonl"] {
+        for secret in ["/private", "/dev/ttys001", "1234", "pi.jsonl"] {
             assert!(!text.contains(secret), "{secret} leaked");
         }
     }
@@ -461,8 +422,8 @@ mod tests {
     fn a_remote_snapshot_says_what_pi_runs_once_it_has_said() {
         let mut record: SessionRecord = serde_json::from_value(json!({
             "id": SessionId::from_u128(5), "piSessionFile": null, "piSessionId": null,
-            "workspaceId": null, "workspaceName": null, "name": "Fix", "manualName": null,
-            "emoji": null, "status": "ready", "initialPwd": "/", "shells": [], "layout": null,
+            "name": "Fix", "manualName": null,
+            "emoji": null, "status": "ready", "folder": "/", "shells": [], "layout": null,
         }))
         .unwrap();
         let wire = serde_json::to_value(RemoteSessionSnapshot::from_record(&record, "host", "now"))
@@ -495,15 +456,13 @@ mod tests {
             id: SessionId::from_u128(5),
             pi_session_file: None,
             pi_session_id: None,
-            workspace_id: None,
-            workspace_name: None,
             name: "Pi's title".to_owned(),
             manual_name: None,
             emoji: None,
             last_message_at: None,
             created_at: 0,
             status: SessionStatus::Ready,
-            initial_pwd: "/".into(),
+            folder: "/".into(),
             shells: vec![shell(12, PaneRole::Terminal)],
             layout: None,
             pi: None,

@@ -45,9 +45,6 @@ final class TerminalSessionsModel {
   /// Which menu commands apply. The menus read only this, so Session updates and switches that
   /// leave every command's availability alone do not re-evaluate the App scene and its menus.
   private(set) var commandAvailability = TerminalCommandAvailability()
-  private(set) var workspaces: [WorkspaceRecord] = [] {
-    didSet { projectCommandAvailability() }
-  }
   // Projected from `selection`; see `projectSelection()`.
   private(set) var selectedSessionID: SessionID? {
     didSet {
@@ -63,8 +60,7 @@ final class TerminalSessionsModel {
   private(set) var layout: TerminalLayout?
   private(set) var errorMessage: String?
   private(set) var catalogConnection = CatalogConnection.connecting
-  private(set) var workspaceCreationError: String?
-  private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
+  private(set) var sessionCreationError: String?
   private(set) var pendingShellCloseConfirmation: ShellCloseConfirmation?
   private(set) var pendingTerminalSplit: PendingTerminalSplit?
   private(set) var automaticallyRestartUnavailablePi: Bool
@@ -435,10 +431,7 @@ final class TerminalSessionsModel {
   private func reloadCatalog() async throws {
     let client = try requireClient()
     try await requireCapabilities().negotiate()
-    async let snapshotTask = client.listSessionSnapshot()
-    async let workspacesTask = client.listWorkspaces()
-    let snapshot = try await snapshotTask
-    assign(\.workspaces, try await workspacesTask)
+    let snapshot = try await client.listSessionSnapshot()
     // This Mac's Sessions as listed, beside the other Macs' as last listed.
     applyCatalog(
       SessionCatalog(snapshot.sessions + peerSessions.values.map(\.session)),
@@ -515,13 +508,6 @@ final class TerminalSessionsModel {
     case .sessionRemoved(let sessionID):
       guard session(for: sessionID) != nil else { return true }
       applyCatalog(catalog.removing([sessionID]), focusing: nil)
-    case .workspaceChanged:
-      guard let client else { return true }
-      do {
-        assign(\.workspaces, try await client.listWorkspaces())
-      } catch {
-        report(error)
-      }
     case .sessionFocus(let sessionID):
       showSession(sessionID)
     case .peerSessionsChanged:
@@ -612,45 +598,33 @@ final class TerminalSessionsModel {
     piRestarter.schedule(for: sessions)
   }
 
-  // MARK: - Sessions and Workspaces
+  // MARK: - Sessions
 
-  func createWorkspace(name: String, directoryPath: String, directoryBookmark: String?) async {
-    let interval = AxoTrace.beginInterval("command.workspace.create")
-    defer { AxoTrace.endInterval(interval) }
-    workspaceCreationError = nil
-    do {
-      let created = try await requireClient().createWorkspace(
-        name: name, directoryPath: directoryPath, directoryBookmark: directoryBookmark)
-      guard created.session.workspaceId == created.workspace.workspaceId else {
-        throw SessionCommandError(
-          "Workspace creation did not return its first Session.")
-      }
-      if !workspaces.contains(where: { $0.id == created.workspace.id }) {
-        // As Axod lists them: Home first, the rest by name.
-        workspaces = (workspaces + [created.workspace]).sorted {
-          if $0.isHome != $1.isHome { return $0.isHome }
-          return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-      }
-      adopt(created.session)
-    } catch {
-      report(error)
-      workspaceCreationError = error.localizedDescription
-    }
-  }
-
-  func dismissWorkspaceCreationError() {
-    workspaceCreationError = nil
-  }
-
-  func createSession(in workspaceID: String) async {
+  /// Opens a new Session in `folder` (RFD0038). A failure is kept for whoever asked, in
+  /// `sessionCreationError`, as a folder chosen by hand can be gone or unreadable.
+  func createSession(inFolder folder: String) async {
     let interval = AxoTrace.beginInterval("command.session.create")
     defer { AxoTrace.endInterval(interval) }
+    sessionCreationError = nil
     do {
-      adopt(try await requireClient().createSession(inWorkspace: workspaceID))
+      adopt(try await requireClient().createSession(inFolder: folder))
     } catch {
       report(error)
+      sessionCreationError = error.localizedDescription
     }
+  }
+
+  func dismissSessionCreationError() {
+    sessionCreationError = nil
+  }
+
+  /// The folders this Mac's Sessions work in, the most recently active first, without repeats.
+  var recentFolders: [String] {
+    var seen = Set<String>()
+    return sessions.filter { !isPeerSession($0.id) }
+      .sorted { ($0.lastMessageAt ?? $0.createdAt ?? 0) > ($1.lastMessageAt ?? $1.createdAt ?? 0) }
+      .map(\.folder)
+      .filter { seen.insert($0).inserted }
   }
 
   func createSession() async {
@@ -667,11 +641,17 @@ final class TerminalSessionsModel {
     }
   }
 
+  /// A new Session beside the selected one, in its folder; at home when none of this Mac's is
+  /// selected.
   func createSessionInCurrentContext() async {
-    if let workspaceID = selectedSessionID.flatMap(session(for:))?.workspaceId {
-      await createSession(in: workspaceID)
-    } else {
-      await createSession()
+    guard let selected = selectedSessionID, session(for: selected) != nil, !isPeerSession(selected)
+    else { return await createSession() }
+    let interval = AxoTrace.beginInterval("command.session.create")
+    defer { AxoTrace.endInterval(interval) }
+    do {
+      adopt(try await requireClient().createSession(like: selected))
+    } catch {
+      report(error)
     }
   }
 
@@ -701,49 +681,21 @@ final class TerminalSessionsModel {
     }
   }
 
-  /// Closes a Session, first asking for confirmation when it is the last one in its Workspace
-  /// (closing it archives the Workspace).
+  /// Closes a Session; it can be reopened (⌘⇧T), so nothing asks first.
   func requestCloseSession(_ sessionID: SessionID) async {
-    guard let closingSession = session(for: sessionID) else { return }
+    guard session(for: sessionID) != nil else { return }
     // Another Mac's Session is only shown here: closing it closes this Mac's pane.
     if isPeerSession(sessionID) { return await closePeerPane(sessionID) }
     errorMessage = nil
-    switch SessionClosePlan(closing: closingSession, sessions: sessions, workspaces: workspaces) {
-    case .close:
-      await closeSession(sessionID)
-    case .confirmArchive(let confirmation):
-      pendingWorkspaceArchiveConfirmation = confirmation
-    case .workspaceUnavailable:
-      errorMessage = "The Workspace is unavailable, so the last Session was not closed."
-    }
-  }
-
-  func cancelWorkspaceArchiveConfirmation() {
-    pendingWorkspaceArchiveConfirmation = nil
-  }
-
-  func confirmWorkspaceArchiveAndCloseSession(_ confirmation: WorkspaceArchiveConfirmation) async {
-    if pendingWorkspaceArchiveConfirmation == confirmation {
-      pendingWorkspaceArchiveConfirmation = nil
-    }
-    guard confirmation.stillApplies(sessions: sessions, workspaces: workspaces) else {
-      errorMessage = "The Workspace changed before it could be archived. Please review it again."
-      return
-    }
-    do {
-      try await archiveWorkspace(confirmation.workspaceID)
-      errorMessage = nil
-    } catch {
-      report(error)
-    }
+    await closeSession(sessionID)
   }
 
   func archiveSession(_ sessionID: SessionID) async throws {
     let interval = AxoTrace.beginInterval("command.session.close")
     defer { AxoTrace.endInterval(interval) }
     let closingSession = session(for: sessionID)
-    let closed = try await requireClient().closeSession(sessionID)
-    removeSessions([sessionID], closing: closingSession, replacement: closed.replacement)
+    _ = try await requireClient().closeSession(sessionID)
+    removeSessions([sessionID], closing: closingSession)
   }
 
   func renameSession(_ sessionID: SessionID, to name: String) async throws {
@@ -757,33 +709,6 @@ final class TerminalSessionsModel {
       throw SessionCommandError("axod did not apply the Session name.")
     }
     upsert(renamed)
-  }
-
-  func renameWorkspace(_ workspaceID: String, to name: String) async throws {
-    let client = try requireClient()
-    try await requireCapabilities().require(.workspaceRename)
-    let renamed = try await client.renameWorkspace(workspaceID, to: name)
-    guard renamed.workspaceId == workspaceID, renamed.name == name else {
-      throw SessionCommandError("axod did not apply the Workspace name.")
-    }
-    if let index = workspaces.firstIndex(where: { $0.workspaceId == workspaceID }) {
-      workspaces[index] = renamed
-    }
-  }
-
-  func archiveWorkspace(_ workspaceID: String) async throws {
-    let client = try requireClient()
-    try await requireCapabilities().require(.workspaceArchive)
-    let archived = try await client.archiveWorkspace(workspaceID)
-    guard archived.archivedWorkspaceId == workspaceID else {
-      throw SessionCommandError("axod archived a different Workspace.")
-    }
-    workspaces.removeAll { $0.workspaceId == workspaceID }
-    // With the Workspace gone, prefer a Session in Home over another Workspace's.
-    let homeWorkspaceID = workspaces.first(where: \.isHome)?.workspaceId
-    removeSessions(
-      Set(archived.archivedSessionIds), closing: nil, replacement: nil,
-      fallback: { $0.first(where: { $0.workspaceId == homeWorkspaceID })?.id ?? $0.first?.id })
   }
 
   // MARK: - Panes
@@ -919,8 +844,7 @@ final class TerminalSessionsModel {
     await closeShell(confirmation.shellID)
   }
 
-  /// Closes one pane. Closing a Session's last pane archives the Session (Axod may return a
-  /// replacement); otherwise focus moves to the pane the layout places next to the closed one.
+  /// Closes one pane. Closing a Session's last pane (or its Pi's) archives the Session; otherwise focus moves to the pane the layout places next to the closed one.
   func closeShell(_ shellID: ShellID) async {
     guard let client,
       let session = session(containing: shellID)
@@ -938,7 +862,7 @@ final class TerminalSessionsModel {
       AxoTrace.commands.notice(
         "event=shell.close_rpc_returned shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: rpcStart), privacy: .public)")
       if closed.archivedSessionId != nil {
-        removeSessions([sessionID], closing: session, replacement: closed.replacement)
+        removeSessions([sessionID], closing: session)
       } else if let currentSession = self.session(for: sessionID) {
         let remainingShells = currentSession.shells.filter { $0.id != shellID }
         replace(currentSession, withShells: remainingShells)
@@ -1061,23 +985,19 @@ final class TerminalSessionsModel {
     add(session)
     select(session.id)
     assign(\.errorMessage, nil)
-    workspaceCreationError = nil
+    sessionCreationError = nil
   }
 
-  /// Drops Sessions Axod archived, installs any replacement, and moves selection away from a
-  /// removed Session: by default to `closing`'s successor, else to `fallback`'s choice.
+  /// Drops Sessions Axod archived and moves selection away from a removed Session: by default
+  /// to `closing`'s successor, else to `fallback`'s choice.
   private func removeSessions(
     _ sessionIDs: Set<SessionID>,
     closing: TerminalSession?,
-    replacement: TerminalSession?,
     fallback: ([TerminalSession]) -> SessionID? = { $0.first?.id }
   ) {
     for sessionID in sessionIDs { layoutWriter.discard(sessionID: sessionID) }
     catalog.remove(sessionIDs)
-    if let replacement { add(replacement) }
-    selection.remove(
-      sessionIDs, remaining: sessions, closing: closing, replacement: replacement,
-      fallback: fallback)
+    selection.remove(sessionIDs, remaining: sessions, closing: closing, fallback: fallback)
   }
 
   /// Selects `sessionID` (or nothing) and shows its layout and focus.

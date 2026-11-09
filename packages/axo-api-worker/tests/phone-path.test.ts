@@ -68,18 +68,16 @@ test("a phone signed in with a token starts a chat on the Mac and prompts its Pi
     assert.deepEqual(client.hosts.map((listed) => [listed.hostId, listed.online]), [[host.hostId, true]]);
     const command = client.connection.command.bind(client.connection);
 
-    // A chat is a Session in a Workspace, which starts Pi in the Workspace's directory.
-    const workspaceDirectory = join(root, "project");
-    await mkdir(workspaceDirectory);
-    await localCall(socketPath, "axo.workspace.create", { name: "Project", directoryPath: workspaceDirectory });
-    const { workspaces } = await command("axo.remote.workspace.list", { target });
-    assert.deepEqual(workspaces.map((workspace) => workspace.name), ["Home", "Project"], "the phone sees names, not paths");
-    const project = workspaces.find((workspace) => workspace.name === "Project")!;
-    const { session } = await command("axo.remote.workspace.session.create", { target, workspaceId: project.workspaceId });
+    // A chat is a Session with a folder; a new one beside another starts Pi in the same folder.
+    const projectDirectory = join(root, "project");
+    await mkdir(projectDirectory);
+    const local = await localCall(socketPath, "axo.session.create", { folder: projectDirectory }) as { id: string };
+    const { session } = await command("axo.remote.session.create", { target, like: local.id });
+    assert.equal(session.folderName, "project", "the phone sees the folder's name, not its path");
     assert.equal(session.hostId, host.hostId);
     assert.equal(session.hasAgent, true, "a chat is a Session with a Pi");
     const listed = await waitFor("the new chat in the phone's list", 15_000, async () => client!.sessions.get(session.sessionId), daemon);
-    assert.equal(listed.metadata.workspaceName, "Project");
+    assert.equal(listed.metadata.folderName, "project");
     assert.equal(listed.metadata.hasAgent, true);
     await client.open(host.hostId, session.sessionId);
 

@@ -56,17 +56,15 @@ final class FakeCatalogEvents: CatalogEvents, @unchecked Sendable {
 @MainActor
 final class FakeAxodClient: AxodClient {
   var sessions: [TerminalSession] = []
-  var workspaces: [WorkspaceRecord] = []
   var resumeSessionID: SessionID?
   /// Other Macs' Sessions, listed when `methods` offers them.
   var peers = PeerSessionList(connected: true, hosts: [], sessions: [])
   private(set) var openedPeers: [SessionID] = []
   private(set) var closedPeers: [SessionID] = []
   var methods: [String] = (AxodCapabilities.requiredMethods.union([
-    .sessionRename, .sessionReopen, .workspaceRename, .workspaceArchive, .shellBusy,
+    .sessionRename, .sessionReopen, .shellBusy,
   ])).map(\.rawValue)
   private(set) var listCount = 0
-  private(set) var workspaceListCount = 0
   private(set) var subscribeCount = 0
   /// The streams opened, in order; the last is the one events go to.
   private(set) var streams: [FakeCatalogEvents] = []
@@ -102,11 +100,6 @@ final class FakeAxodClient: AxodClient {
     return TerminalSessionListSnapshot(sessions: sessions, resumeSessionId: resumeSessionID)
   }
 
-  func listWorkspaces() async throws -> [WorkspaceRecord] {
-    workspaceListCount += 1
-    return workspaces
-  }
-
   func openCatalogEvents() async throws -> any CatalogEvents {
     subscribeCount += 1
     if let subscribeError { throw subscribeError }
@@ -120,12 +113,12 @@ final class FakeAxodClient: AxodClient {
   }
 
   func createSession() async throws -> TerminalSession { throw Unsupported() }
-  func createSession(inWorkspace workspaceID: String) async throws -> TerminalSession {
+  func createSession(inFolder folder: String) async throws -> TerminalSession {
     throw Unsupported()
   }
-  func createWorkspace(
-    name: String, directoryPath: String, directoryBookmark: String?
-  ) async throws -> CreatedWorkspace { throw Unsupported() }
+  func createSession(like sessionID: SessionID) async throws -> TerminalSession {
+    throw Unsupported()
+  }
   func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
     throw Unsupported()
   }
@@ -143,12 +136,6 @@ final class FakeAxodClient: AxodClient {
     let session = closedSessions.removeFirst()
     sessions.append(session)
     return session
-  }
-  func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord {
-    throw Unsupported()
-  }
-  func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace {
-    throw Unsupported()
   }
   func createShell(inSession sessionID: SessionID) async throws -> TerminalShell { throw Unsupported() }
   var shellBusyResult: Result<TerminalShellBusy, Error> = .success(
@@ -253,7 +240,7 @@ final class TerminalCatalogTests: XCTestCase {
   }
 
   private func session(_ id: SessionID, shells: [ShellID], name: String? = nil) -> TerminalSession {
-    TerminalSession(id: id, initialPwd: "/tmp", shells: shells.map(shell), name: name)
+    TerminalSession(id: id, folder: "/tmp", shells: shells.map(shell), name: name)
   }
 
   private func makeModel(_ client: FakeAxodClient) -> TerminalSessionsModel {
@@ -275,7 +262,7 @@ final class TerminalCatalogTests: XCTestCase {
 
   func testRefreshRejectsDaemonWithoutSubscriptions() async {
     let client = FakeAxodClient()
-    client.methods = ["axo.session.list", "axo.workspace.list"]
+    client.methods = ["axo.session.list"]
     let model = makeModel(client)
 
     await model.refresh()
@@ -389,21 +376,6 @@ final class TerminalCatalogTests: XCTestCase {
     XCTAssertTrue(model.sessionLayouts.contains(try XCTUnwrap(model.layout).sessionLayout))
   }
 
-  /// A Session can arrive before its Workspace does (the Workspace list is refetched after a
-  /// `workspace.changed` event). It must still be listed and navigable meanwhile.
-  func testASessionWhoseWorkspaceIsNotListedYetStaysInTheSidebar() async {
-    let client = FakeAxodClient()
-    client.sessions = [
-      TerminalSession(id: 1, initialPwd: "/tmp", shells: [shell(10)]),
-      TerminalSession(id: 2, initialPwd: "/tmp", shells: [shell(20)], workspaceId: "new"),
-    ]
-    let model = makeModel(client)
-    await model.refresh()
-
-    XCTAssertEqual(Set(model.sidebarOrderedSessions.map(\.id)), [1, 2])
-    XCTAssertTrue(model.commandAvailability.canNavigateSessions)
-  }
-
   func testShellChangesUpdatePaneProjections() async {
     let client = FakeAxodClient()
     client.sessions = [session(1, shells: [10])]
@@ -436,19 +408,6 @@ final class TerminalCatalogTests: XCTestCase {
 
     XCTAssertEqual(model.sessions.map(\.id), [1])
     XCTAssertEqual(model.selectedSessionID, 1)
-  }
-
-  func testWorkspaceChangedRelistsOnlyWorkspaces() async {
-    let client = FakeAxodClient()
-    let model = makeModel(client)
-    await model.refresh()
-    client.workspaces = [WorkspaceRecord(workspaceId: "w", name: "Work", directoryPath: "/tmp")]
-
-    let applied = await model.apply(.workspaceChanged(workspaceID: "w"))
-    XCTAssertTrue(applied)
-
-    XCTAssertEqual(model.workspaces.map(\.workspaceId), ["w"])
-    XCTAssertEqual(client.listCount, 1)
   }
 
   func testLaggedEventRequestsResync() async {

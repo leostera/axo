@@ -14,7 +14,6 @@ use jsonrpc_core::IoHandler;
 
 pub mod permissions;
 mod session;
-mod workspace_access;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
 
@@ -397,7 +396,7 @@ impl Extension for Relay {
     }
 }
 
-/// Sessions, Workspaces, panes, Pi, questions, computer use: the Session manager's methods,
+/// Sessions, panes, Pi, questions, computer use: the Session manager's methods,
 /// until they move into extensions of their own (RFD0034 step 5).
 struct Sessions(Arc<session::SessionManager>);
 

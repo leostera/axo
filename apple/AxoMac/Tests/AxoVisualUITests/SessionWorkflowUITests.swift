@@ -9,7 +9,7 @@ import XCTest
 @testable import AxoMac
 
 
-/// Context menus, Workspaces, Sessions, splits and relaunch survival.
+/// Context menus, folders, Sessions, splits and relaunch survival.
 extension AxoVisualUITests {
   func testTerminalContextMenuRoutesSplitsAndCloseThroughAxo() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
@@ -115,7 +115,7 @@ extension AxoVisualUITests {
     XCTAssertTrue(app.textFields["rename-session-\(session.id)"].waitForExistence(timeout: 3))
   }
 
-  func testWorkspaceNameFieldReceivesPasteShortcut() async throws {
+  func testTheFolderSearchReceivesThePasteShortcut() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let pasteboardSnapshot = PasteboardSnapshot()
     defer { pasteboardSnapshot.restore() }
@@ -126,21 +126,15 @@ extension AxoVisualUITests {
     try await fixture.waitForWindow()
     try await fixture.waitForTerminalReady()
 
-    let createWorkspaceButton = app.buttons["new-workspace-button"]
-    XCTAssertTrue(createWorkspaceButton.waitForExistence(timeout: 5), app.debugDescription)
-    createWorkspaceButton.click()
+    let newSessionButton = app.buttons["new-session-in-folder-button"]
+    XCTAssertTrue(newSessionButton.waitForExistence(timeout: 5), app.debugDescription)
+    newSessionButton.click()
 
-    let directorySearch = app.textFields["workspace-directory-search"]
-    XCTAssertTrue(directorySearch.waitForExistence(timeout: 5), app.debugDescription)
-    directorySearch.typeText("home")
-    XCTAssertTrue(app.buttons["workspace-directory-home"].waitForExistence(timeout: 8))
-    directorySearch.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
-
-    let nameField = app.textFields["workspace-name-field"]
+    let nameField = app.textFields["folder-search"]
     XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
     nameField.click()
 
-    let pastedName = "AXO_WORKSPACE_PASTE_\(UUID().uuidString)"
+    let pastedName = "AXO_FOLDER_PASTE_\(UUID().uuidString)"
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(pastedName, forType: .string)
     nameField.typeKey("v", modifierFlags: .command)
@@ -155,41 +149,25 @@ extension AxoVisualUITests {
       .matching(identifier: "axo-terminal-surface").firstMatch
     XCTAssertFalse((terminal.value as? String ?? "").contains(pastedName))
   }
-  func testCreateWorkspaceShowsFirstSessionAndPiSurvivesAppCloseAndReopen() async throws {
+  func testANewSessionInAFolderShowsAndPiSurvivesAppCloseAndReopen() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let app = XCUIApplication()
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
-    let workspaceDirectory = fixture.root.appendingPathComponent("workspace", isDirectory: true)
-    try FileManager.default.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
+    let projectDirectory = fixture.root.appendingPathComponent("project", isDirectory: true)
+    try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
 
     let socketPath = try UnixSocketPath(fixture.socketURL.path)
     let model = TerminalSessionsModel(socketPath: socketPath)
     fixture.launchApp()
     try await fixture.waitForWindow()
-    try await fixture.createWorkspace(at: workspaceDirectory)
-    try await waitForWorkspaceSession(model: model)
-
-    let homeID = model.workspaces.first(where: \.isHome)?.workspaceId
-    let original = try XCTUnwrap(
-      model.sessions.first(where: { $0.workspaceId != nil && $0.workspaceId != homeID }))
-    let workspaceID = try XCTUnwrap(original.workspaceId)
-    let workspace = try XCTUnwrap(model.workspaces.first(where: { $0.id == workspaceID }))
-    XCTAssertEqual(workspace.name, "Workspace E2E")
-    XCTAssertEqual(
-      URL(fileURLWithPath: workspace.directoryPath).resolvingSymlinksInPath().path,
-      workspaceDirectory.resolvingSymlinksInPath().path
-    )
-    XCTAssertEqual(
-      model.sessions.filter { $0.workspaceId == workspace.id }.count,
-      1,
-      "Creating a Workspace should expose its initial Session in the sidebar catalog."
-    )
+    try await fixture.startSession(in: projectDirectory)
+    let original = try await waitForSession(in: projectDirectory, model: model)
     XCTAssertTrue(
       app.descendants(matching: .any)
         .matching(identifier: "session-row-\(original.id)").firstMatch
         .waitForExistence(timeout: 3),
-      "The Workspace's first Session should appear in the sidebar immediately."
+      "The new Session should appear in the sidebar immediately."
     )
 
     let originalShell = try XCTUnwrap(original.shells.first)
@@ -197,7 +175,7 @@ extension AxoVisualUITests {
     let interactionMarker = "AXO_PI_SESSION_E2E_\(UUID().uuidString)"
     XCTAssertEqual(originalShell.role, .pi)
     XCTAssertTrue(transcriptPath.hasPrefix("/"))
-    XCTAssertTrue(transcriptPath.contains(workspaceID))
+    XCTAssertTrue(transcriptPath.contains(original.id.rawValue))
 
     try await fixture.selectSession(original.id)
     try await fixture.waitForTerminalReady()
@@ -229,52 +207,26 @@ extension AxoVisualUITests {
     let persistedTranscript = try String(contentsOfFile: transcriptPath, encoding: .utf8)
     XCTAssertTrue(persistedTranscript.contains(interactionMarker))
 
-    await model.closeSession(original.id)
-    let replacementDeadline = Date().addingTimeInterval(10)
-    var workspaceReplacement: TerminalSession?
-    while Date() < replacementDeadline {
-      await model.refresh()
-      workspaceReplacement = model.sessions.first {
-        $0.workspaceId == workspaceID && $0.id != original.id
-      }
-      if workspaceReplacement != nil { break }
-      try await Task.sleep(for: .milliseconds(100))
-    }
-    guard let workspaceReplacement else {
-      return XCTFail("Closing the last Workspace Session should create its replacement.")
-    }
-    XCTAssertEqual(workspaceReplacement.workspaceId, workspaceID)
-    XCTAssertEqual(
-      URL(fileURLWithPath: workspaceReplacement.initialPwd).resolvingSymlinksInPath().path,
-      workspaceDirectory.resolvingSymlinksInPath().path
-    )
-
-    try await fixture.selectSession(workspaceReplacement.id)
+    // ⌘T starts a Session beside the selected one, in its folder; closing it (⌘W on its Pi)
+    // returns to the one it was started beside.
+    try await fixture.selectSession(original.id)
     let countBeforeCommandT = model.sessions.count
     fixture.terminalWindow.typeKey("t", modifierFlags: .command)
     try await waitForSessionCount(countBeforeCommandT + 1, model: model)
     let commandTSession = try XCTUnwrap(
-      model.sessions
-        .filter { $0.workspaceId == workspaceID }
-        .max { ($0.createdAt ?? 0) < ($1.createdAt ?? 0) }
-    )
-    XCTAssertEqual(commandTSession.workspaceId, workspaceID)
-    XCTAssertEqual(
-      URL(fileURLWithPath: commandTSession.initialPwd).resolvingSymlinksInPath().path,
-      workspaceDirectory.resolvingSymlinksInPath().path
-    )
+      model.sessions.max { ($0.createdAt ?? 0) < ($1.createdAt ?? 0) })
+    XCTAssertNotEqual(commandTSession.id, original.id)
+    XCTAssertEqual(commandTSession.folder, original.folder)
 
     fixture.terminalWindow.typeKey("w", modifierFlags: .command)
     let focusReturnDeadline = Date().addingTimeInterval(10)
-    while Date() < focusReturnDeadline, model.selectedSessionID != workspaceReplacement.id {
+    while Date() < focusReturnDeadline, model.selectedSessionID != original.id {
       await model.refresh()
       try await Task.sleep(for: .milliseconds(100))
     }
     XCTAssertEqual(
-      model.selectedSessionID,
-      workspaceReplacement.id,
-      "Closing the new Workspace Session should return focus to the previously active Workspace Session."
-    )
+      model.selectedSessionID, original.id,
+      "Closing the new Session should return focus to the one it was started beside.")
   }
 
   func testLaunchSplitCloseExitSessionSelectionAndSurvivingShell() async throws {
@@ -468,8 +420,9 @@ extension AxoVisualUITests {
     window.typeKey("t", modifierFlags: .command)
     try await waitForSessionCount(2, model: model)
     XCTAssertEqual(
-      model.session(for: try XCTUnwrap(model.selectedSessionID))?.workspaceId,
-      model.workspaces.first(where: \.isHome)?.workspaceId)
+      model.session(for: try XCTUnwrap(model.selectedSessionID))?.folder,
+      model.session(for: try XCTUnwrap(model.sessions.first?.id))?.folder,
+      "⌘T starts beside the selected Session")
     try await fixture.waitForSurfaceCount(2)
     let newSession = try fixture.capture("13-new-session", in: window)
     try fixture.assertDoesNotContainText("AXO VISUAL SURVIVOR 5690", in: newSession)

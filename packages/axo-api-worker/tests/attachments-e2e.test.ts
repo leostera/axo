@@ -53,12 +53,10 @@ test("a photo attached on the phone reaches Pi on the Mac as a checked local fil
     const target = { hostId: host.hostId, hostGeneration: host.hostGeneration };
     client = await TestAccountClient.connect(api.url, phone);
     const command = client.connection.command.bind(client.connection);
-    const workspaceDirectory = join(root, "project");
-    await mkdir(workspaceDirectory);
-    await localCall(socketPath, "axo.workspace.create", { name: "Project", directoryPath: workspaceDirectory });
-    const { workspaces } = await command("axo.remote.workspace.list", { target });
-    const project = workspaces.find((workspace) => workspace.name === "Project")!;
-    const { session } = await command("axo.remote.workspace.session.create", { target, workspaceId: project.workspaceId });
+    const projectDirectory = join(root, "project");
+    await mkdir(projectDirectory);
+    const local = await localCall(socketPath, "axo.session.create", { folder: projectDirectory }) as { id: string };
+    const { session } = await command("axo.remote.session.create", { target, like: local.id });
 
     // The phone uploads the photo first, then prompts with it.
     const photo = new TextEncoder().encode("\u0089PNG pretend photo of a whiteboard");

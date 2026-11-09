@@ -14,13 +14,12 @@ private func shell(_ id: ShellID, _ role: PaneRole = .terminal, pwd: String = "/
 }
 
 private func session(
-  _ id: SessionID, _ name: String, shells: [TerminalShell] = [], workspace: String? = nil,
+  _ id: SessionID, _ name: String, shells: [TerminalShell] = [],
   emoji: String? = nil, lastMessageAt: Int64? = nil,
   status: TerminalSessionStatus? = nil, pwd: String = "/"
 ) -> TerminalSession {
   TerminalSession(
-    id: id, initialPwd: pwd, shells: shells, workspaceId: workspace,
-    workspaceName: workspace.map { $0.capitalized }, name: name, emoji: emoji,
+    id: id, folder: pwd, shells: shells, name: name, emoji: emoji,
     lastMessageAt: lastMessageAt, status: status)
 }
 
@@ -35,12 +34,12 @@ private func availability(focused: Bool = true, selected: Bool = true)
 
 final class CommandPaletteCatalogTests: XCTestCase {
   private func context(
-    sessions: [TerminalSession] = [], workspaces: [WorkspaceRecord] = [],
+    sessions: [TerminalSession] = [], folders: [String] = [],
     recent: [SessionID] = [], selected: SessionID? = nil, focused: ShellID? = nil,
     availability: TerminalCommandAvailability = availability()
   ) -> CommandPaletteContext {
     CommandPaletteContext(
-      sessions: sessions, workspaces: workspaces, recentSessionIDs: recent,
+      sessions: sessions, folders: folders, recentSessionIDs: recent,
       selectedSessionID: selected, focusedShellID: focused, availability: availability,
       homeDirectory: "/Users/me")
   }
@@ -57,17 +56,17 @@ final class CommandPaletteCatalogTests: XCTestCase {
     XCTAssertEqual(repeated.filter { $0.kind == .session }.map(\.action), [3, 1, 2, 4].map { .showSession($0) })
   }
 
-  func testASessionShowsItsEmojiNameWorkspaceStatusAndShortDirectory() throws {
+  func testASessionShowsItsEmojiNameStatusAndShortFolder() throws {
     let items = CommandPaletteCatalog.items(
       context(sessions: [
         session(
-          1, "deploy", workspace: "api", emoji: "🚀", status: .needsAttention,
+          1, "deploy", emoji: "🚀", status: .needsAttention,
           pwd: "/Users/me/src/api"),
         session(2, "notes", status: .ready, pwd: "/Users/meadow"),
       ]))
     let deploy = try XCTUnwrap(items.first { $0.action == .showSession(1) })
     XCTAssertEqual(deploy.title, "🚀 deploy")
-    XCTAssertEqual(deploy.subtitle, "Api · Needs attention · ~/src/api")
+    XCTAssertEqual(deploy.subtitle, "Needs attention · ~/src/api")
     XCTAssertEqual(deploy.id, "session:\(SessionID.fixture(1))")
     let notes = try XCTUnwrap(items.first { $0.action == .showSession(2) })
     XCTAssertEqual(notes.subtitle, "/Users/meadow", "ready says nothing; only whole home is ~")
@@ -100,11 +99,11 @@ final class CommandPaletteCatalogTests: XCTestCase {
     XCTAssertEqual(panes.last?.subtitle, "~/x")
   }
 
-  func testWorkspaceNameMatchesItsSessionsAndPanes() {
+  func testAFolderNameMatchesItsSessionsAndPanes() {
     let items = CommandPaletteCatalog.items(
       context(sessions: [
-        session(1, "deploy", shells: [shell(10, .pi), shell(11), shell(12)], workspace: "api"),
-        session(2, "website", shells: [shell(20, .pi), shell(21)], workspace: "web"),
+        session(1, "deploy", shells: [shell(10, .pi), shell(11), shell(12)], pwd: "/src/api"),
+        session(2, "website", shells: [shell(20, .pi), shell(21)], pwd: "/src/web"),
       ]))
     let matches = SearchIndex(items) { $0.document }.search(SearchQuery("Api"))
 
@@ -117,13 +116,13 @@ final class CommandPaletteCatalogTests: XCTestCase {
     func commands(_ context: CommandPaletteContext) -> [String] {
       CommandPaletteCatalog.items(context).filter { $0.kind == .command }.map(\.title)
     }
-    let always = ["New Session", "New Workspace…", "Toggle Sidebar", "Settings…"]
+    let always = ["New Session", "New Session in Folder…", "Toggle Sidebar", "Settings…"]
     XCTAssertEqual(commands(context(availability: availability(focused: false, selected: false))), always)
 
     let open = context(sessions: [session(1, "a", shells: [shell(10)])], selected: 1, focused: 10)
     XCTAssertEqual(
       commands(open),
-      ["New Session", "New Workspace…", "Split Right", "Split Down", "Close Focused Shell",
+      ["New Session", "New Session in Folder…", "Split Right", "Split Down", "Close Focused Shell",
        "Close Session", "Toggle Sidebar", "Settings…"])
 
     // The menus' availability decides, as for the same commands in the menu bar.
@@ -141,25 +140,19 @@ final class CommandPaletteCatalogTests: XCTestCase {
     XCTAssertEqual(close.subtitle, "a")
   }
 
-  func testEachWorkspaceOffersANewSessionInIt() throws {
-    let items = CommandPaletteCatalog.items(
-      context(workspaces: [
-        WorkspaceRecord(workspaceId: "w1", name: "API", directoryPath: "/Users/me/src/api")
-      ]))
-    let item = try XCTUnwrap(items.first { $0.title == "New Session in API" })
-    XCTAssertEqual(item.action, .run(.newSessionInWorkspace(workspaceID: "w1")))
+  func testEachFolderInUseOffersANewSessionInIt() throws {
+    let items = CommandPaletteCatalog.items(context(folders: ["/Users/me/src/api"]))
+    let item = try XCTUnwrap(items.first { $0.title == "New Session in api" })
+    XCTAssertEqual(item.action, .run(.newSessionInFolder("/Users/me/src/api")))
     XCTAssertEqual(item.subtitle, "~/src/api")
-    XCTAssertEqual(item.id, "command:new-session-in:w1")
+    XCTAssertEqual(item.id, "command:new-session-in:/Users/me/src/api")
   }
 
   func testEntryIDsAreUnique() {
     let items = CommandPaletteCatalog.items(
       context(
         sessions: [session(1, "a", shells: [shell(10), shell(11)]), session(2, "b")],
-        workspaces: [
-          WorkspaceRecord(workspaceId: "w1", name: "A", directoryPath: "/"),
-          WorkspaceRecord(workspaceId: "w2", name: "A", directoryPath: "/"),
-        ],
+        folders: ["/a", "/b/a"],
         selected: 1, focused: 10))
     XCTAssertEqual(Set(items.map(\.id)).count, items.count)
   }
@@ -229,7 +222,7 @@ final class CommandPaletteModelTests: XCTestCase {
     XCTAssertTrue(palette.isPresented)
   }
 
-  func testGitHubRepositoryQueryAddsACloneWorkspaceAction() throws {
+  func testGitHubRepositoryQueryAddsACloneAction() throws {
     let palette = CommandPaletteModel()
     palette.present(items.map { item($0) })
     palette.query = "github:leostera/myrepo"
@@ -237,7 +230,7 @@ final class CommandPaletteModelTests: XCTestCase {
     XCTAssertEqual(
       palette.selectedResult?.item.action,
       .cloneGitHubRepository(repository))
-    XCTAssertEqual(palette.selectedResult?.item.subtitle, "Clone and create a Workspace")
+    XCTAssertEqual(palette.selectedResult?.item.subtitle, "Clone and start a Session in it")
   }
 }
 
@@ -261,17 +254,17 @@ final class GitHubRepositoryTests: XCTestCase {
 @MainActor
 final class CommandPalettePerformerTests: XCTestCase {
   private var toggled = 0
-  private var newWorkspaces = 0
+  private var foldersChosen = 0
   private var settings = 0
   private var clonedRepository: GitHubRepository?
 
   private func model() async -> TerminalSessionsModel {
     let client = FakeAxodClient()
     client.sessions = [
-      session(1, "a", shells: [shell(10), shell(11)]),
-      session(2, "b", shells: [shell(20)]),
+      session(1, "a", shells: [shell(10), shell(11)], lastMessageAt: 100, pwd: "/w"),
+      session(2, "b", shells: [shell(20)], lastMessageAt: 200, pwd: "/v"),
+      session(3, "c", shells: [shell(30)], lastMessageAt: 50, pwd: "/w"),
     ]
-    client.workspaces = [WorkspaceRecord(workspaceId: "w1", name: "W", directoryPath: "/")]
     let model = TerminalSessionsModel(client: client)
     await model.refresh()
     return model
@@ -281,7 +274,7 @@ final class CommandPalettePerformerTests: XCTestCase {
     CommandPalettePerformer(
       sessions: sessions,
       toggleSidebar: { self.toggled += 1 },
-      newWorkspace: { self.newWorkspaces += 1 },
+      chooseFolderForNewSession: { self.foldersChosen += 1 },
       cloneGitHubRepository: { self.clonedRepository = $0 },
       openSettings: { self.settings += 1 })
   }
@@ -303,7 +296,6 @@ final class CommandPalettePerformerTests: XCTestCase {
     let perform = performer(sessions)
     XCTAssertFalse(perform.perform(.showSession(9)))
     XCTAssertFalse(perform.perform(.focusPane(99)))
-    XCTAssertFalse(perform.perform(.run(.newSessionInWorkspace(workspaceID: "gone"))))
     XCTAssertFalse(perform.perform(.run(.closeSession(2))), "2 is not the selected Session")
     XCTAssertFalse(perform.perform(.run(.closeShell(11))), "11 is not the focused pane")
     XCTAssertEqual(sessions.selectedSessionID, 1)
@@ -324,11 +316,10 @@ final class CommandPalettePerformerTests: XCTestCase {
     let perform = performer(sessions)
     let repository = try XCTUnwrap(GitHubRepository.parsePaletteInput("github:axo/app"))
     XCTAssertTrue(perform.perform(.run(.toggleSidebar)))
-    XCTAssertTrue(perform.perform(.run(.newWorkspace)))
+    XCTAssertTrue(perform.perform(.run(.chooseFolderForNewSession)))
     XCTAssertTrue(perform.perform(.cloneGitHubRepository(repository)))
     XCTAssertTrue(perform.perform(.run(.openSettings)))
-    XCTAssertTrue(perform.perform(.run(.newSessionInWorkspace(workspaceID: "w1"))))
-    XCTAssertEqual([toggled, newWorkspaces, settings], [1, 1, 1])
+    XCTAssertEqual([toggled, foldersChosen, settings], [1, 1, 1])
     XCTAssertEqual(clonedRepository, repository)
   }
 
@@ -341,7 +332,7 @@ final class CommandPalettePerformerTests: XCTestCase {
     XCTAssertEqual(Array(context.recentSessionIDs.prefix(2)), [1, 2])
     XCTAssertEqual(context.selectedSessionID, 1)
     XCTAssertEqual(context.focusedShellID, sessions.focusedShellID)
-    XCTAssertEqual(context.workspaces.map(\.workspaceId), ["w1"])
+    XCTAssertEqual(context.folders, ["/v", "/w"], "this Mac's folders, most recently active first")
     XCTAssertEqual(context.homeDirectory, "/h")
   }
 }

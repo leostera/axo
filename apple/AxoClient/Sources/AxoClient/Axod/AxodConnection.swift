@@ -126,32 +126,25 @@ public final class AxodConnection: Sendable {
     }
   }
 
-  // MARK: - Sessions and Workspaces
+  // MARK: - Sessions
 
   public func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {
     try await call(AxodMethods.sessionList)
   }
 
-  public func listWorkspaces() async throws -> [WorkspaceRecord] {
-    try await call(AxodMethods.workspaceList).workspaces
-  }
-
+  /// A new Session at home (RFD0038).
   public func createSession() async throws -> TerminalSession {
-    try await call(AxodMethods.sessionCreate)
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: nil))
   }
 
-  public func createSession(inWorkspace workspaceID: String) async throws -> TerminalSession {
-    try await call(
-      AxodMethods.workspaceSessionCreate, WorkspaceSessionCreateRequest(workspaceId: workspaceID))
+  /// A new Session in `folder`, an absolute path to a directory that exists.
+  public func createSession(inFolder folder: String) async throws -> TerminalSession {
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: folder, like: nil))
   }
 
-  public func createWorkspace(
-    name: String, directoryPath: String, directoryBookmark: String?
-  ) async throws -> CreatedWorkspace {
-    try await call(
-      AxodMethods.workspaceCreate,
-      WorkspaceCreateRequest(
-        name: name, directoryPath: directoryPath, directoryBookmark: directoryBookmark))
+  /// A new Session in the folder of the open Session `sessionID`.
+  public func createSession(like sessionID: SessionID) async throws -> TerminalSession {
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: sessionID))
   }
 
   public func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
@@ -187,18 +180,6 @@ public final class AxodConnection: Sendable {
   {
     try await call(
       AxodMethods.sessionRename, SessionRenameRequest(sessionId: sessionID, name: name))
-  }
-
-  public func renameWorkspace(_ workspaceID: String, to name: String) async throws
-    -> WorkspaceRecord
-  {
-    try await call(
-      AxodMethods.workspaceRename, WorkspaceRenameRequest(workspaceId: workspaceID, name: name))
-  }
-
-  public func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace {
-    try await call(
-      AxodMethods.workspaceArchive, WorkspaceArchiveRequest(workspaceId: workspaceID))
   }
 
   public func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {

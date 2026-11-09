@@ -10,8 +10,8 @@ final class RemoteModelsTests: XCTestCase {
 
   func testACreatedSessionsSnapshotDecodes() throws {
     let json = """
-      {"hostId":"\(host)","sessionId":"00000009-0000-4000-8000-000000000009","workspaceId":"7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
-      "workspaceName":"Axo","name":"Ship it","emoji":"🦀","status":"working","hasAgent":true,"shells":[{"shellId":12}],
+      {"hostId":"\(host)","sessionId":"00000009-0000-4000-8000-000000000009",
+      "folderName":"axo","name":"Ship it","emoji":"🦀","status":"working","hasAgent":true,"shells":[{"shellId":12}],
       "layout":{"kind":"pane","shellId":12},"updatedAt":"2026-10-15T23:59:00Z"}
       """
     let session = try JSONDecoder().decode(RemoteSession.self, from: Data(json.utf8))
@@ -27,15 +27,15 @@ final class RemoteModelsTests: XCTestCase {
       {"hosts":[{"hostId":"\(host)","hostGeneration":"\(generation)","label":"Axo Mac","hostKind":"macos",
       "online":false,"lastSeenAt":"2026-10-16T00:00:00Z"}],
       "sessions":[{"hostId":"\(host)","sessionId":"00000009-0000-4000-8000-000000000009","epoch":2,"head":40,
-      "status":"working","metadata":{"name":"Ship it","emoji":"🦀","workspaceId":"7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
-      "workspaceName":"Axo","hasAgent":true,"createdAt":1700000000,"lastMessageAt":1700000100,"archived":false}}]}
+      "status":"working","metadata":{"name":"Ship it","emoji":"🦀",
+      "folderName":"axo","hasAgent":true,"createdAt":1700000000,"lastMessageAt":1700000100,"archived":false}}]}
       """
     let hello = try JSONDecoder().decode(ClientHello.self, from: Data(json.utf8))
     let listed = try XCTUnwrap(hello.sessions.first)
     XCTAssertEqual([listed.epoch, listed.head], [2, 40])
     let session = RemoteSession(listed)
     XCTAssertEqual(session.sessionId, 9)
-    XCTAssertEqual(session.workspaceName, "Axo")
+    XCTAssertEqual(session.folderName, "axo")
     XCTAssertEqual(session.status, .working)
     XCTAssertEqual(session.lastMessageAt, 1_700_000_100)
     XCTAssertEqual(session.shells, [], "terminals stay on the Mac")
@@ -49,12 +49,12 @@ final class RemoteModelsTests: XCTestCase {
     let head = String(repeating: "a1", count: 20)
     let json = """
       {"hosts":[],"sessions":[{"hostId":"\(host)","sessionId":"00000009-0000-4000-8000-000000000009","epoch":2,"head":40,
-      "status":"ready","metadata":{"name":"Ship it","emoji":null,"workspaceId":null,"workspaceName":"Axo","hasAgent":true,
+      "status":"ready","metadata":{"name":"Ship it","emoji":null,"folderName":"axo","hasAgent":true,
       "createdAt":1700000000,"lastMessageAt":null,"archived":false,"workspaceState":{"path":"/Users/leo/axo/apple",
       "repoRoot":"/Users/leo/axo","remote":"https://github.com/leostera/axo","branch":"main","head":"\(head)",
       "upstreamHead":null,"dirty":["README.md","apple/BUILD.bazel"],"dirtyMore":3,"at":1700000200}}},
       {"hostId":"\(host)","sessionId":"00000001-0000-4000-8000-000000000001","epoch":null,"head":0,"status":null,
-      "metadata":{"name":null,"emoji":null,"workspaceId":null,"workspaceName":null,"hasAgent":true,"createdAt":null,
+      "metadata":{"name":null,"emoji":null,"folderName":null,"hasAgent":true,"createdAt":null,
       "lastMessageAt":null,"archived":false}}]}
       """
     let hello = try JSONDecoder().decode(ClientHello.self, from: Data(json.utf8))

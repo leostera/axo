@@ -83,12 +83,8 @@ impl SessionManager {
         if file.exists() && axo_agent::pi::transcript_chain(&file)? == expected {
             return Ok(());
         }
-        let place = Place::of(
-            &self.host_id,
-            transcript.workspace_id.as_deref(),
-            &transcript.session_id,
-        )
-        .ok_or_else(|| unavailable("its place is not valid"))?;
+        let place = Place::of(&self.host_id, &transcript.session_id)
+            .ok_or_else(|| unavailable("its place is not valid"))?;
         let access = self.peer_access()?;
         log::info!(
             "event=session.transcript_restore session_id={} records={}",

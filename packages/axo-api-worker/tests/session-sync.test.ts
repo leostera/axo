@@ -7,6 +7,8 @@ import {
   truncateResultSchema,
   type ClientRecord,
 } from "@axo/protocol";
+import { sessionMetadataSchema } from "@axo/protocol";
+import { withoutWorkspace } from "../src/stored-metadata";
 import { Peer } from "../testing/client";
 import { harness, signIn, type AccountSession, type Harness } from "./harness";
 import { objectRows } from "./storage";
@@ -516,4 +518,17 @@ test("a write from before the last head read is refused as a conflict, and the n
   assert.equal(hostFence(h), 50, "the HostDO took up the higher fence");
   assert.equal((await sync(daemon, host, 2, [transcript.manifestRow()])).sessions[0]!.state, "known");
   assert.deepEqual(await append(daemon, transcript, 4), { outcome: "committed", epoch: 1, count: 4, chain: transcript.transcript.chain });
+});
+
+test("metadata stored before Workspaces went is read as a Mac sends it now (RFD0038)", () => {
+  const stored = {
+    name: "A chat", emoji: null, workspaceId: "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2", workspaceName: "Axo",
+    hasAgent: true, createdAt: 1_700_000_000, lastMessageAt: null, archived: true,
+  };
+  const withGit = { ...stored, workspaceState: { path: "/Users/ada/src/axo", repoRoot: null, remote: null, branch: null, head: null, upstreamHead: null, dirty: [], dirtyMore: 0, at: 1 } };
+  assert.equal(sessionMetadataSchema.parse(withoutWorkspace(withGit)).folderName, "axo", "named by the folder git saw");
+  assert.equal(sessionMetadataSchema.parse(withoutWorkspace(stored)).folderName, null, "a folder nobody recorded is unnamed");
+  const { workspaceId: _id, workspaceName: _name, ...rest } = stored;
+  const current = { ...rest, folderName: "kept" };
+  assert.deepEqual(withoutWorkspace(current), current, "metadata already in the new shape is left alone");
 });

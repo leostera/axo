@@ -1,10 +1,6 @@
 import AxoProtocol
 import Foundation
 
-struct WorkspaceList: Decodable {
-  let workspaces: [WorkspaceRecord]
-}
-
 struct ConfigGetRequest: Encodable {
   let key: AxoConfigKey
 }
@@ -14,28 +10,15 @@ struct ConfigSetRequest: Encodable {
   let value: String
 }
 
-struct WorkspaceCreateRequest: Encodable {
-  let name: String
-  let directoryPath: String
-  let directoryBookmark: String?
-}
-
-struct WorkspaceSessionCreateRequest: Encodable {
-  let workspaceId: String
+/// `axo.session.create`: in `folder`, beside the open Session `like`, or, with neither, at home.
+struct SessionCreateRequest: Encodable {
+  let folder: String?
+  let like: SessionID?
 }
 
 struct SessionRenameRequest: Encodable {
   let sessionId: SessionID
   let name: String
-}
-
-struct WorkspaceRenameRequest: Encodable {
-  let workspaceId: String
-  let name: String
-}
-
-struct WorkspaceArchiveRequest: Encodable {
-  let workspaceId: String
 }
 
 struct ProtocolNegotiationRequest: Encodable {
@@ -129,7 +112,7 @@ enum AxodMethods {
   static let configGet = AxodMethod<ConfigGetRequest, AxoConfigValue>(.configGet)
   static let configSet = AxodMethod<ConfigSetRequest, AxoConfigValue>(.configSet)
   static let sessionList = AxodMethod<NoParams, TerminalSessionListSnapshot>(.sessionList)
-  static let sessionCreate = AxodMethod<NoParams, TerminalSession>(.sessionCreate)
+  static let sessionCreate = AxodMethod<SessionCreateRequest, TerminalSession>(.sessionCreate)
   static let sessionClose = AxodMethod<CloseTerminalSessionRequest, ClosedTerminalSession>(.sessionClose)
   static let sessionRename = AxodMethod<SessionRenameRequest, TerminalSession>(.sessionRename)
   static let peerSessionsList = AxodMethod<NoParams, PeerSessionList>(.peerSessionsList)
@@ -141,11 +124,6 @@ enum AxodMethods {
   static let sessionLayoutSet = AxodMethod<SetSessionLayoutRequest, SessionLayoutAcknowledgement>(.sessionLayoutSet)
   static let piRestartForce = AxodMethod<RestartPiSessionRequest, TerminalSession>(.piRestartForce, timeout: .seconds(20))
   static let piRestartAuto = AxodMethod<RestartPiSessionRequest, TerminalSession>(.piRestartAuto, timeout: .seconds(20))
-  static let workspaceList = AxodMethod<NoParams, WorkspaceList>(.workspaceList)
-  static let workspaceCreate = AxodMethod<WorkspaceCreateRequest, CreatedWorkspace>(.workspaceCreate)
-  static let workspaceRename = AxodMethod<WorkspaceRenameRequest, WorkspaceRecord>(.workspaceRename)
-  static let workspaceArchive = AxodMethod<WorkspaceArchiveRequest, ArchivedWorkspace>(.workspaceArchive)
-  static let workspaceSessionCreate = AxodMethod<WorkspaceSessionCreateRequest, TerminalSession>(.workspaceSessionCreate)
   static let shellCreate = AxodMethod<CreateTerminalShellRequest, TerminalShell>(.shellCreate)
   static let shellClose = AxodMethod<ShellRequest, ClosedTerminalShell>(.shellClose)
   static let shellBusy = AxodMethod<ShellRequest, TerminalShellBusy>(.shellBusy)

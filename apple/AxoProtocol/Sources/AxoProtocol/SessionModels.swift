@@ -22,8 +22,6 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let id: SessionID
   public let piSessionFile: String?
   public let piSessionId: String?
-  public let workspaceId: String?
-  public let workspaceName: String?
   public let name: String?
   public let manualName: String?
   public let emoji: String?
@@ -32,21 +30,22 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   /// Unix timestamp in seconds when the Session was created; absent from older daemons.
   public let createdAt: Int64?
   public let status: TerminalSessionStatus?
-  public let initialPwd: String
+  /// Where the Session works: its Pi and new terminals start here (RFD0038).
+  public let folder: String
   public let shells: [TerminalShell]
   public let layout: SessionLayout?
 
   public var displayName: String { manualName ?? name ?? "Session" }
+  /// The folder's last component, as the account sees it.
+  public var folderName: String { (folder as NSString).lastPathComponent }
 
   public init(
     id: SessionID,
-    initialPwd: String,
+    folder: String,
     shells: [TerminalShell],
     layout: SessionLayout? = nil,
     piSessionFile: String? = nil,
     piSessionId: String? = nil,
-    workspaceId: String? = nil,
-    workspaceName: String? = nil,
     name: String? = nil,
     manualName: String? = nil,
     emoji: String? = nil,
@@ -57,15 +56,13 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     self.id = id
     self.piSessionFile = piSessionFile
     self.piSessionId = piSessionId
-    self.workspaceId = workspaceId
-    self.workspaceName = workspaceName
     self.name = name
     self.manualName = manualName
     self.emoji = emoji
     self.lastMessageAt = lastMessageAt
     self.createdAt = createdAt
     self.status = status
-    self.initialPwd = initialPwd
+    self.folder = folder
     self.shells = shells
     self.layout = layout
   }
@@ -155,48 +152,8 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
   }
 }
 
-public struct WorkspaceRecord: Decodable, Equatable, Identifiable, Sendable {
-  public let workspaceId: String
-  public let name: String
-  public let directoryPath: String
-  /// The Home Workspace, at the user's home directory: it always exists and cannot be archived.
-  public let isHome: Bool
-  public var id: String { workspaceId }
-
-  public init(workspaceId: String, name: String, directoryPath: String, isHome: Bool = false) {
-    self.workspaceId = workspaceId
-    self.name = name
-    self.directoryPath = directoryPath
-    self.isHome = isHome
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case workspaceId, name, directoryPath
-    case isHome = "home"
-  }
-
-  public init(from decoder: any Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    workspaceId = try container.decode(String.self, forKey: .workspaceId)
-    name = try container.decode(String.self, forKey: .name)
-    directoryPath = try container.decode(String.self, forKey: .directoryPath)
-    isHome = try container.decodeIfPresent(Bool.self, forKey: .isHome) ?? false
-  }
-}
-
-public struct ArchivedWorkspace: Decodable, Equatable, Sendable {
-  public let archivedWorkspaceId: String
-  public let archivedSessionIds: [SessionID]
-}
-
-public struct CreatedWorkspace: Decodable, Equatable, Sendable {
-  public let workspace: WorkspaceRecord
-  public let session: TerminalSession
-}
-
 public struct ClosedTerminalSession: Decodable, Equatable, Sendable {
   public let archivedSessionId: SessionID
-  public let replacement: TerminalSession?
 }
 
 /// Whether closing a shell would interrupt work (`axo.shell.busy`).
@@ -214,5 +171,4 @@ public struct TerminalShellBusy: Decodable, Equatable, Sendable {
 public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
   public let archivedShellId: ShellID
   public let archivedSessionId: SessionID?
-  public let replacement: TerminalSession?
 }

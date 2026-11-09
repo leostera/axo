@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigKey, LayoutNode, SessionId, SessionRecord, ShellId, WorkspaceRecord};
+use crate::{ConfigKey, LayoutNode, SessionId, SessionRecord, ShellId};
 
 /// Method names, in the order `axo.protocol.negotiate` advertises them.
 pub mod method {
@@ -18,11 +18,6 @@ pub mod method {
     pub const SESSION_CATALOG: &str = "axo.session.catalog";
     pub const SESSION_PROMPT: &str = "axo.session.prompt";
     pub const SESSION_CREATE: &str = "axo.session.create";
-    pub const WORKSPACE_LIST: &str = "axo.workspace.list";
-    pub const WORKSPACE_CREATE: &str = "axo.workspace.create";
-    pub const WORKSPACE_RENAME: &str = "axo.workspace.rename";
-    pub const WORKSPACE_ARCHIVE: &str = "axo.workspace.archive";
-    pub const WORKSPACE_SESSION_CREATE: &str = "axo.workspace.session.create";
     pub const SESSION_CLOSE: &str = "axo.session.close";
     pub const SESSION_REOPEN: &str = "axo.session.reopen";
     pub const SESSION_RENAME: &str = "axo.session.rename";
@@ -76,11 +71,6 @@ pub mod method {
         SESSION_LIST,
         SESSION_CATALOG,
         SESSION_CREATE,
-        WORKSPACE_LIST,
-        WORKSPACE_CREATE,
-        WORKSPACE_RENAME,
-        WORKSPACE_ARCHIVE,
-        WORKSPACE_SESSION_CREATE,
         SESSION_CLOSE,
         SESSION_REOPEN,
         SESSION_RENAME,
@@ -201,27 +191,17 @@ pub struct RenameSession {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// Where `axo.session.create` makes its Session (RFD0038): at most one of the two, and the
+/// home directory with neither.
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkspaceRef {
-    pub workspace_id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RenameWorkspace {
-    pub workspace_id: String,
-    pub name: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateWorkspace {
-    pub name: String,
-    pub directory_path: PathBuf,
-    /// A security-scoped bookmark granting access to `directory_path`, base64.
+pub struct CreateSession {
+    /// An absolute path to an existing directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub directory_bookmark: Option<String>,
+    pub folder: Option<PathBuf>,
+    /// An open Session whose folder the new one starts in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like: Option<SessionId>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -525,9 +505,7 @@ pub struct ArchivedSessionRecord {
     pub id: SessionId,
     pub name: String,
     pub emoji: Option<String>,
-    pub workspace_id: Option<String>,
-    pub workspace_name: Option<String>,
-    pub initial_pwd: PathBuf,
+    pub folder: PathBuf,
     /// Pi's JSONL transcript; it may not exist if Pi never wrote to it.
     pub pi_session_file: Option<PathBuf>,
     pub last_message_at: Option<i64>,
@@ -590,30 +568,8 @@ pub struct ShellBusy {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkspaceList {
-    pub workspaces: Vec<WorkspaceRecord>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceCreated {
-    pub workspace: WorkspaceRecord,
-    pub session: SessionRecord,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceArchived {
-    pub archived_workspace_id: String,
-    pub archived_session_ids: Vec<SessionId>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SessionClosed {
     pub archived_session_id: SessionId,
-    /// Closing the last session creates a fresh one.
-    pub replacement: Option<SessionRecord>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -622,7 +578,6 @@ pub struct ShellClosed {
     pub archived_shell_id: ShellId,
     /// Set when this was the session's last pane.
     pub archived_session_id: Option<SessionId>,
-    pub replacement: Option<SessionRecord>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

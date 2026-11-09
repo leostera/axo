@@ -8,7 +8,7 @@ import Foundation
 struct CommandPalettePerformer {
   let sessions: TerminalSessionsModel
   let toggleSidebar: () -> Void
-  let newWorkspace: () -> Void
+  let chooseFolderForNewSession: () -> Void
   let cloneGitHubRepository: (GitHubRepository) -> Void
   let openSettings: () -> Void
 
@@ -34,13 +34,10 @@ struct CommandPalettePerformer {
     switch command {
     case .newSession:
       Task { await sessions.createSessionInCurrentContext() }
-    case .newSessionInWorkspace(let workspaceID):
-      guard sessions.workspaces.contains(where: { $0.workspaceId == workspaceID }) else {
-        return skipped(.run(command))
-      }
-      Task { await sessions.createSession(in: workspaceID) }
-    case .newWorkspace:
-      newWorkspace()
+    case .newSessionInFolder(let folder):
+      Task { await sessions.createSession(inFolder: folder) }
+    case .chooseFolderForNewSession:
+      chooseFolderForNewSession()
     case .splitRight:
       Task { await sessions.split(.right) }
     case .splitDown:
@@ -75,7 +72,7 @@ extension TerminalSessionsModel {
         uniqueKeysWithValues: peerHostBySession.keys.compactMap { id in
           hostLabel(for: id).map { (id, $0) }
         }),
-      workspaces: workspaces,
+      folders: recentFolders,
       recentSessionIDs: recentSessionIDs,
       selectedSessionID: selectedSessionID,
       focusedShellID: focusedShellID,

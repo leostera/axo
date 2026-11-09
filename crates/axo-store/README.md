@@ -10,9 +10,8 @@ Axod's SQLite catalog: the schema and its migrations, and every read and write t
 | --- | --- |
 | `schema` | `open`, `initialize_database`, the current tables and indexes, `SCHEMA_VERSION` |
 | `migrations` | Upgrading older catalogs: added columns, the Workspace cutover (v4), rekeying Sessions by UUID (v9, RFD0017) |
-| `sessions` | Session rows: creating a Workspace Session with its panes, reading open and archived Sessions, names, layouts, archiving and reopening |
+| `sessions` | Session rows: creating a Session with its panes, reading open and archived Sessions, names, layouts, archiving and reopening |
 | `shells` | Shell (pane) rows: inserting terminals, archiving one pane and pruning it from the layout |
-| `workspaces` | Workspace rows and the Home Workspace |
 | `pi` | Each Session's Pi history file, bridge socket path and bridge credential |
 | `metadata` | `daemon_metadata`: settings, the host ID, the last client viewport |
 | `host_link` | The host's link to an Axo account (one row) |
@@ -25,7 +24,7 @@ Every module is re-exported from the crate root, so callers write `axo_store::ar
 
 - Reads parse what they return: a malformed Session ID, shell ID or lifecycle state fails the query instead of reaching callers.
 - Writes to open rows check that exactly one row changed and return `NotFound` otherwise, so a write to a closed Session is an error, not a no-op.
-- Changes that span tables (creating a Session with its panes, archiving a Workspace, reopening a Session) run in one transaction.
+- Changes that span tables (creating a Session with its panes, reopening a Session) run in one transaction.
 - Every query has a test against an in-memory database, next to it; shared fixtures are in `test_support`.
 
 ## Build and test

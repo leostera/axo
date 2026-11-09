@@ -18,9 +18,6 @@
           "$ref": "#/$defs/TerminalOutputEvent"
         },
         {
-          "$ref": "#/$defs/WorkspaceChangedEvent"
-        },
-        {
           "$ref": "#/$defs/SessionFocusEvent"
         },
         {
@@ -81,24 +78,6 @@
         },
         "session": {
           "$ref": "common.schema.json#/$defs/LocalSession"
-        }
-      }
-    },
-    "WorkspaceChangedEvent": {
-      "description": "A workspace was created, renamed or archived; reload the workspace list.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "type",
-        "workspaceId"
-      ],
-      "properties": {
-        "type": {
-          "const": "workspace.changed"
-        },
-        "workspaceId": {
-          "type": "string",
-          "format": "uuid"
         }
       }
     },

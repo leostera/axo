@@ -5,7 +5,7 @@ import SwiftUI
 /// expanded or collapsed, with inline renaming.
 struct WorkbenchSidebar: View {
   var sessions: TerminalSessionsModel
-  @Binding var isPresentingWorkspaceCreation: Bool
+  @Binding var isPresentingNewSessionInFolder: Bool
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
   @State private var renameTarget: SidebarRenameTarget?
   @State private var renameDraft = ""
@@ -34,7 +34,7 @@ struct WorkbenchSidebar: View {
             onSelect: { macs in
               withAnimation(.easeInOut(duration: 0.15)) { sessions.setSidebarMacs(macs) }
             },
-            onNewWorkspace: { isPresentingWorkspaceCreation = true })
+            onNewSessionInFolder: { isPresentingNewSessionInFolder = true })
 
           recentList
         }
@@ -42,13 +42,20 @@ struct WorkbenchSidebar: View {
       }
       .overlay {
         if sessions.sidebarOrderedSessions.isEmpty {
-          ContentUnavailableView(
-            "No Sessions", systemImage: "terminal",
-            description: Text(
+          ContentUnavailableView {
+            Label("No Sessions", systemImage: "terminal")
+          } description: {
+            Text(
               sessions.errorMessage
                 ?? (sessions.sidebarMacs == .thisMac
-                  ? "Create a Workspace or Session to get started."
-                  : "No Sessions on \(sessions.sidebarMacsTitle).")))
+                  ? "Start one at home, or in a folder (⌘N)."
+                  : "No Sessions on \(sessions.sidebarMacsTitle)."))
+          } actions: {
+            if sessions.sidebarMacs == .thisMac {
+              Button("New Session") { Task { await sessions.createSession() } }
+                .accessibilityIdentifier("empty-sidebar-new-session")
+            }
+          }
         }
       }
 
@@ -62,7 +69,7 @@ struct WorkbenchSidebar: View {
           .accessibilityIdentifier("sidebar-action-error")
       }
 
-      if let error = sessions.workspaceCreationError {
+      if let error = sessions.sessionCreationError {
         HStack(alignment: .top, spacing: 8) {
           Label(error, systemImage: "exclamationmark.triangle.fill")
             .font(.caption)
@@ -70,16 +77,16 @@ struct WorkbenchSidebar: View {
             .fixedSize(horizontal: false, vertical: true)
           Spacer(minLength: 0)
           Button {
-            sessions.dismissWorkspaceCreationError()
+            sessions.dismissSessionCreationError()
           } label: {
             Image(systemName: "xmark")
           }
           .buttonStyle(.plain)
-          .accessibilityLabel("Dismiss Workspace creation error")
+          .accessibilityLabel("Dismiss Session creation error")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .accessibilityIdentifier("workspace-creation-error")
+        .accessibilityIdentifier("session-creation-error")
       }
 
       sidebarToggle(isCollapsed: false)
@@ -93,7 +100,7 @@ struct WorkbenchSidebar: View {
   }
 
   /// Every listed Session in its group (pinned, active A to Z, then earlier), without
-  /// Workspaces: the project keyword at the front of each title says what it is about. Rows
+  /// folders: the project keyword at the front of each title says what it is about. Rows
   /// hold still while the pointer is over the list and move when it leaves.
   private var recentList: some View {
     let sections = sessions.sidebarSections
@@ -248,8 +255,6 @@ struct WorkbenchSidebar: View {
         switch target {
         case .session(let session):
           try await sessions.renameSession(session.id, to: name)
-        case .workspace(let workspace):
-          try await sessions.renameWorkspace(workspace.workspaceId, to: name)
         }
         cancelRename()
         sidebarActionError = nil

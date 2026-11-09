@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { metaParamsSchema } from "../src/session-sync.ts";
 
 const metadata = {
-  name: "Relay backoff", emoji: null, workspaceId: null, workspaceName: null,
+  name: "Relay backoff", emoji: null, folderName: "axo",
   hasAgent: true, createdAt: 1, lastMessageAt: 2, archived: false,
 };
 

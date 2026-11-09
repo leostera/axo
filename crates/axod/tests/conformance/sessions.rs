@@ -33,28 +33,48 @@ fn alive(pid: i32) -> bool {
 }
 
 #[test]
-fn a_new_axod_has_one_session_in_its_home_workspace() {
+fn a_new_axod_opens_no_session_and_starts_each_where_it_is_asked() {
     let axod = Axod::start();
-    let sessions = axod.sessions();
-    assert_eq!(sessions.len(), 1, "{sessions:#?}");
-    let roles: Vec<&str> = sessions[0]["shells"]
+    assert!(axod.sessions().is_empty(), "nothing opens by itself");
+    let project = axod.directory.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = std::fs::canonicalize(&project).unwrap();
+
+    let first = axod.ok("axo.session.create", json!({ "folder": project }));
+    assert_eq!(first["folder"], json!(project), "{first}");
+    let roles: Vec<&str> = first["shells"]
         .as_array()
         .unwrap()
         .iter()
         .map(|p| p["role"].as_str().unwrap())
         .collect();
+    assert_eq!(roles, ["pi", "terminal"], "Pi beside a terminal: {first}");
+    let beside = axod.ok("axo.session.create", json!({ "like": first["id"] }));
+    assert_eq!(beside["folder"], json!(project), "{beside}");
+    let home = axod.ok("axo.session.create", json!({}));
     assert_eq!(
-        roles.iter().filter(|role| **role == "pi").count(),
-        1,
-        "{roles:?}"
+        home["folder"],
+        json!(std::fs::canonicalize(axod.home()).unwrap()),
+        "{home}"
     );
-    assert!(roles.contains(&"terminal"), "{roles:?}");
-    let workspaces = axod.ok("axo.workspace.list", json!({}));
-    assert_eq!(
-        workspaces["workspaces"].as_array().unwrap().len(),
-        1,
-        "{workspaces}"
-    );
+    for refused in [
+        json!({ "folder": "relative/path" }),
+        json!({ "folder": project.join("missing") }),
+        json!({ "folder": project, "like": first["id"] }),
+        json!({ "workspaceId": "gone" }),
+    ] {
+        assert_eq!(
+            axod.err("axo.session.create", refused.clone()).code,
+            INVALID_PARAMS,
+            "{refused}"
+        );
+    }
+
+    for session in [&first, &beside, &home] {
+        let closed = axod.ok("axo.session.close", json!({ "sessionId": session["id"] }));
+        assert_eq!(closed, json!({ "archivedSessionId": session["id"] }));
+    }
+    assert!(axod.sessions().is_empty(), "nothing replaces the last one");
 }
 
 #[test]
@@ -208,7 +228,7 @@ fn a_prompt_sent_while_pi_starts_waits_for_it() {
 #[test]
 fn renaming_sets_the_persons_name_beside_pis() {
     let axod = Axod::start();
-    let id = axod.sessions()[0]["id"].clone();
+    let id = axod.new_session()["id"].clone();
     let pis = session(&axod, &id)["name"].clone();
     let renamed = axod.ok(
         "axo.session.rename",
@@ -443,59 +463,6 @@ fn sessions_survive_axod_crashing() {
 }
 
 #[test]
-fn workspaces_are_created_renamed_archived_and_hold_sessions() {
-    let axod = Axod::start();
-    let directory = axod.directory.join("project");
-    std::fs::create_dir_all(&directory).unwrap();
-    let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
-    let workspace = axod.ok(
-        "axo.workspace.create",
-        json!({ "name": "Project", "directoryPath": directory }),
-    );
-    // Creating a Workspace opens its first Session.
-    let workspace_id = workspace["workspace"]["workspaceId"].clone();
-    assert_eq!(
-        workspace["session"]["workspaceId"], workspace_id,
-        "{workspace}"
-    );
-    assert!(workspace_id.is_string(), "{workspace}");
-    events.wait_for("workspace.changed", |e| {
-        (e["type"] == "workspace.changed").then_some(())
-    });
-
-    axod.ok(
-        "axo.workspace.rename",
-        json!({ "workspaceId": workspace_id, "name": "Renamed" }),
-    );
-    let listed = axod.ok("axo.workspace.list", json!({}));
-    assert!(listed.to_string().contains("Renamed"), "{listed}");
-
-    let inside = axod.ok(
-        "axo.workspace.session.create",
-        json!({ "workspaceId": workspace_id }),
-    );
-    assert_eq!(inside["workspaceId"], workspace_id, "{inside}");
-    let pwd = std::fs::canonicalize(inside["initialPwd"].as_str().unwrap()).unwrap();
-    assert_eq!(pwd, std::fs::canonicalize(&directory).unwrap());
-
-    axod.ok(
-        "axo.workspace.archive",
-        json!({ "workspaceId": workspace_id }),
-    );
-    assert!(
-        axod.sessions()
-            .iter()
-            .all(|s| s["workspaceId"] != workspace_id),
-        "its Sessions close with it"
-    );
-    let empty = axod.err(
-        "axo.workspace.rename",
-        json!({ "workspaceId": workspace_id, "name": "" }),
-    );
-    assert!(empty.code < 0, "{empty:?}");
-}
-
-#[test]
 fn a_sleeping_pi_leaves_the_session_usable() {
     // A Pi that never binds its bridge (an old Pi, or one stuck starting): axod still serves.
     let axod = Axod::with(Options {
@@ -507,7 +474,7 @@ fn a_sleeping_pi_leaves_the_session_usable() {
         (health["ready"] == true).then_some(health)
     });
     assert_eq!(health["status"], "running");
-    let id = axod.sessions()[0]["id"].clone();
+    let id = axod.ok("axo.session.create", json!({}))["id"].clone();
     let accepted = axod.ok(
         "axo.session.prompt",
         json!({ "sessionId": id, "text": "queued" }),

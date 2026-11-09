@@ -25,16 +25,6 @@ pub(crate) fn insert_session(database: &Connection, state: &str) -> SessionId {
     id
 }
 
-pub(crate) fn insert_workspace_row(database: &Connection, id: &str, name: &str, state: &str) {
-    database
-        .execute(
-            "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at)
-             VALUES (?1, ?2, ?3, ?4, 0)",
-            params![id, name, format!("/work/{name}"), state],
-        )
-        .unwrap();
-}
-
 pub(crate) fn kind<T: std::fmt::Debug>(result: io::Result<T>) -> io::ErrorKind {
     result.unwrap_err().kind()
 }

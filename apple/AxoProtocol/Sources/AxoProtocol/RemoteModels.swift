@@ -43,8 +43,8 @@ public struct RemoteShell: Decodable, Hashable, Sendable {
 public struct RemoteSession: Decodable, Equatable, Sendable {
   public let hostId: UUID
   public let sessionId: SessionID
-  public let workspaceId: UUID?
-  public let workspaceName: String?
+  /// The last component of the Session's folder on its Mac; never the path (RFD0038).
+  public let folderName: String?
   public let name: String?
   public let emoji: String?
   public let status: RemoteSessionStatus?
@@ -65,7 +65,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   public var displayName: String { name ?? "Session" }
 
   public init(
-    hostId: UUID, sessionId: SessionID, workspaceId: UUID? = nil, workspaceName: String? = nil,
+    hostId: UUID, sessionId: SessionID, folderName: String? = nil,
     name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil,
     shells: [RemoteShell] = [], layout: SessionLayout? = nil, updatedAt: String = "",
     lastMessageAt: Int64? = nil, createdAt: Int64? = nil, workspaceState: WorkspaceState? = nil,
@@ -73,8 +73,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   ) {
     self.hostId = hostId
     self.sessionId = sessionId
-    self.workspaceId = workspaceId
-    self.workspaceName = workspaceName
+    self.folderName = folderName
     self.name = name
     self.emoji = emoji
     self.status = status
@@ -92,8 +91,8 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   /// terminals, which stay on the Mac.
   public init(_ listed: ClientSession) {
     self.init(
-      hostId: listed.hostId, sessionId: listed.sessionId, workspaceId: listed.metadata.workspaceId,
-      workspaceName: listed.metadata.workspaceName, name: listed.metadata.name, emoji: listed.metadata.emoji,
+      hostId: listed.hostId, sessionId: listed.sessionId, folderName: listed.metadata.folderName,
+      name: listed.metadata.name, emoji: listed.metadata.emoji,
       status: listed.status, hasAgent: listed.metadata.hasAgent,
       lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt,
       workspaceState: listed.metadata.workspaceState, pi: listed.metadata.pi)
@@ -135,43 +134,13 @@ public struct RemoteHost: Equatable, Sendable {
   }
 }
 
-public struct RemoteWorkspace: Decodable, Equatable, Sendable {
-  public let workspaceId: UUID
-  public let name: String
-  /// The Home Workspace, which is listed first.
-  public let isHome: Bool
-
-  public init(workspaceId: UUID, name: String, isHome: Bool = false) {
-    self.workspaceId = workspaceId
-    self.name = name
-    self.isHome = isHome
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case workspaceId, name
-    case isHome = "home"
-  }
-
-  public init(from decoder: any Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    workspaceId = try container.decode(UUID.self, forKey: .workspaceId)
-    name = try container.decode(String.self, forKey: .name)
-    isHome = try container.decodeIfPresent(Bool.self, forKey: .isHome) ?? false
-  }
-}
-
-public struct RemoteWorkspaceList: Decodable, Equatable, Sendable {
-  public let workspaces: [RemoteWorkspace]
-}
-
 // MARK: - The account's client (RFD0018)
 
 /// What a client lists a Session by. The host owns it and raises its version on every change.
 public struct SessionMetadata: Decodable, Equatable, Sendable {
   public let name: String?
   public let emoji: String?
-  public let workspaceId: UUID?
-  public let workspaceName: String?
+  public let folderName: String?
   public let hasAgent: Bool
   /// Unix seconds.
   public let createdAt: Int64?
@@ -185,14 +154,13 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
   public let pi: PiRuntime?
 
   public init(
-    name: String? = nil, emoji: String? = nil, workspaceId: UUID? = nil, workspaceName: String? = nil,
+    name: String? = nil, emoji: String? = nil, folderName: String? = nil,
     hasAgent: Bool = true, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false,
     workspaceState: WorkspaceState? = nil, pi: PiRuntime? = nil
   ) {
     self.name = name
     self.emoji = emoji
-    self.workspaceId = workspaceId
-    self.workspaceName = workspaceName
+    self.folderName = folderName
     self.hasAgent = hasAgent
     self.createdAt = createdAt
     self.lastMessageAt = lastMessageAt

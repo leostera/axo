@@ -36,7 +36,7 @@ fn pending(axod: &Axod) -> Vec<Value> {
 #[test]
 fn an_agents_question_is_shown_to_every_client_and_listed_until_answered() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
     assert!(pending(&axod).is_empty());
 
@@ -61,7 +61,7 @@ fn an_agents_question_is_shown_to_every_client_and_listed_until_answered() {
 #[test]
 fn only_axo_app_answers_on_this_mac() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let _asking = ask_in_background(&axod, json!({ "sessionId": session, "message": "Go?" }));
     let id = axod.wait_for("the question", || {
         pending(&axod).first().map(|q| q["id"].clone())
@@ -99,7 +99,7 @@ fn only_axo_app_answers_on_this_mac() {
 #[test]
 fn only_axods_own_tools_ask_as_a_tool() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let refused = axod.err(
         "axo.elicitation.request",
         json!({ "sessionId": session, "message": "Click Buy?", "askedBy": "computerUse" }),
@@ -111,7 +111,7 @@ fn only_axods_own_tools_ask_as_a_tool() {
 #[test]
 fn questions_are_checked_before_anyone_sees_them() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     for message in ["", "   ", "x".repeat(5_000).as_str()] {
         let refused = axod.err(
             "axo.elicitation.request",
@@ -130,7 +130,7 @@ fn questions_are_checked_before_anyone_sees_them() {
 #[test]
 fn an_agent_can_wait_on_several_questions_at_once() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let _askers: Vec<_> = (0..3)
         .map(|n| {
             ask_in_background(
@@ -149,7 +149,7 @@ fn an_agent_can_wait_on_several_questions_at_once() {
 #[test]
 fn an_asker_that_goes_away_withdraws_its_question() {
     let axod = Axod::start();
-    let session = axod.sessions()[0]["id"].clone();
+    let session = axod.new_session()["id"].clone();
     let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
     {
         let mut stream = std::os::unix::net::UnixStream::connect(axod.socket()).unwrap();

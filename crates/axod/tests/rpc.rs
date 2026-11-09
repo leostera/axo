@@ -889,45 +889,6 @@ fn sharing_a_conversation_needs_a_mac_linked_to_its_axo_account() {
 }
 
 #[test]
-fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark() {
-    let directory = unique_test_directory("axo-workspace-error");
-    let server_directory = directory.join("server");
-    let socket = directory.join("axod.sock");
-    std::fs::create_dir_all(&directory).unwrap();
-
-    let mut daemon = start_axod(&server_directory, &socket);
-    wait_for_socket(&socket, &mut daemon);
-
-    let invalid_name = rpc_with_params(
-        &socket,
-        "axo.workspace.create",
-        json!({ "name": "", "directoryPath": directory }),
-    );
-    assert_eq!(invalid_name["error"]["code"], -32602);
-    assert_eq!(
-        invalid_name["error"]["message"],
-        "Workspace name is invalid"
-    );
-
-    let missing_directory = rpc_with_params(
-        &socket,
-        "axo.workspace.create",
-        json!({
-            "name": "Workspace",
-            "directoryPath": directory.join("missing"),
-        }),
-    );
-    assert_eq!(missing_directory["error"]["code"], -32602);
-    assert_eq!(
-        missing_directory["error"]["message"],
-        "Workspace directory no longer exists or is unavailable"
-    );
-
-    daemon.stop();
-    let _ = std::fs::remove_dir_all(directory);
-}
-
-#[test]
 fn stores_validated_allowlisted_configuration_for_future_processes() {
     let directory = unique_test_directory("axo-config");
     let server_directory = directory.join("server");
@@ -1025,10 +986,12 @@ fn axod_starts_when_pi_cannot_launch() {
         rpc(&socket, "axo.daemon.health")["result"]["status"],
         "running"
     );
-    let workspaces = rpc(&socket, "axo.workspace.list")["result"]["workspaces"].clone();
+    let refused = rpc(&socket, "axo.session.create");
+    assert!(refused["error"].is_object(), "{refused}");
     assert_eq!(
-        workspaces[0]["home"], true,
-        "Home exists even without a Session: {workspaces}"
+        rpc(&socket, "axo.daemon.health")["result"]["status"],
+        "running",
+        "a Pi that cannot start fails its Session, not axod"
     );
     assert!(active_sessions(&socket).is_empty());
 
@@ -1059,7 +1022,7 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
     let mut cleanup = SessionProcessCleanup::default();
     let mut daemon = start_axod_with_pi(&server_directory, &socket, &pi);
     wait_for_socket(&socket, &mut daemon);
-    let session = active_sessions(&socket).remove(0);
+    let session = create_session(&socket);
     cleanup.track(&session);
 
     // Pi is told where Axod listens and which axod to run for its MCP server.
@@ -1160,7 +1123,7 @@ fn axod_mcp_serves_one_sessions_agent_over_stdio() {
     let mut cleanup = SessionProcessCleanup::default();
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
-    let session = active_sessions(&socket).remove(0);
+    let session = create_session(&socket);
     cleanup.track(&session);
 
     // An unknown Session is refused at startup.
@@ -1234,7 +1197,7 @@ fn axod_mcp_serves_one_sessions_agent_over_stdio() {
     };
     let me = call(&mut request, "whoami", json!({}));
     assert_eq!(me["sessionId"], session["id"]);
-    assert_eq!(me["workspaceId"], session["workspaceId"]);
+    assert_eq!(me["folder"], session["folder"]);
 
     // "self" reaches this Session's own terminal pane.
     let terminal = terminal_shell(&session)["id"].clone();
@@ -1288,7 +1251,7 @@ fn closed_sessions_reopen_most_recent_first_with_the_panes_they_closed_with() {
     let nothing = rpc(&socket, "axo.session.reopen");
     assert_eq!(nothing["error"]["code"], -32005, "{nothing}");
 
-    let first = active_sessions(&socket).remove(0);
+    let first = create_session(&socket);
     let second = create_session(&socket);
     cleanup.track(&first);
     cleanup.track(&second);
@@ -1368,72 +1331,7 @@ fn closed_sessions_reopen_most_recent_first_with_the_panes_they_closed_with() {
 }
 
 #[test]
-fn the_home_workspace_always_has_a_session_and_cannot_be_archived() {
-    let directory = unique_test_directory("axo-home-workspace");
-    let server_directory = directory.join("server");
-    let socket = directory.join("axod.sock");
-
-    let mut cleanup = SessionProcessCleanup::default();
-    let mut daemon = start_axod(&server_directory, &socket);
-    wait_for_socket(&socket, &mut daemon);
-
-    let workspaces = rpc(&socket, "axo.workspace.list")["result"]["workspaces"].clone();
-    let home = workspaces
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|workspace| workspace["name"] == "Home")
-        .unwrap_or_else(|| panic!("axod should create the Home Workspace: {workspaces}"))
-        .clone();
-    assert_eq!(home["directoryPath"], std::env::var("HOME").unwrap());
-    assert_eq!(home["home"], true);
-    let sessions = active_sessions(&socket);
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0]["workspaceId"], home["workspaceId"]);
-    cleanup.track(&sessions[0]);
-
-    // A Session created outside any other Workspace goes to Home.
-    let created = create_session(&socket);
-    cleanup.track(&created);
-    assert_eq!(created["workspaceId"], home["workspaceId"]);
-    assert!(
-        active_sessions(&socket)
-            .iter()
-            .all(|session| !session["workspaceId"].is_null())
-    );
-
-    for session in [&sessions[0], &created] {
-        let close = rpc_with_params(
-            &socket,
-            "axo.session.close",
-            json!({ "sessionId": session["id"] }),
-        );
-        if let Some(replacement) = close["result"]["replacement"].as_object() {
-            cleanup.track(&Value::Object(replacement.clone()));
-        }
-    }
-    let remaining = active_sessions(&socket);
-    assert_eq!(
-        remaining.len(),
-        1,
-        "closing Home's last Session replaces it"
-    );
-    assert_eq!(remaining[0]["workspaceId"], home["workspaceId"]);
-
-    let archive = rpc_with_params(
-        &socket,
-        "axo.workspace.archive",
-        json!({ "workspaceId": home["workspaceId"] }),
-    );
-    assert_eq!(archive["error"]["code"], -32602, "{archive}");
-    assert_eq!(active_sessions(&socket).len(), 1);
-
-    daemon.stop();
-    let _ = std::fs::remove_dir_all(directory);
-}
-
-#[test]
-fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
+fn a_created_session_survives_a_restart_and_nothing_replaces_the_last_one() {
     let mut cleanup = SessionProcessCleanup::default();
     let directory = unique_test_directory("axo-e2e");
     let server_directory = directory.join("server");
@@ -1451,11 +1349,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     for method in [
         "axo.session.pi.restart.force.v2",
         "axo.session.pi.restart.auto.v1",
-        "axo.workspace.list",
-        "axo.workspace.create",
-        "axo.workspace.rename",
-        "axo.workspace.archive",
-        "axo.workspace.session.create",
+        "axo.session.create",
         "axo.session.rename",
         "axo.shell.busy",
         "axo.terminal.input",
@@ -1493,15 +1387,19 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     );
 
     let home = std::env::var("HOME").unwrap();
-    let sessions = active_sessions(&socket);
-    assert_eq!(sessions.len(), 1, "axod should start one default Session");
-    let session = sessions[0].clone();
-    cleanup.track(&session);
-    assert_eq!(session["initialPwd"], home);
-    let home_workspace_id = session["workspaceId"].clone();
     assert!(
-        home_workspace_id.is_string(),
-        "the default Session is in Home"
+        active_sessions(&socket).is_empty(),
+        "axod opens no Session itself"
+    );
+    let session = create_session(&socket);
+    cleanup.track(&session);
+    assert_eq!(
+        session["folder"],
+        std::fs::canonicalize(&home)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref(),
+        "a Session nobody placed starts at home"
     );
     assert_eq!(
         session["shells"].as_array().unwrap().len(),
@@ -1605,7 +1503,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         .iter()
         .find(|restored_shell| restored_shell["id"] == split_shell["id"])
         .unwrap();
-    assert_eq!(restored[0]["initialPwd"], home);
+    assert_eq!(restored[0]["folder"], session["folder"]);
     assert_ne!(
         restored_split_shell["processId"], split_shell["processId"],
         "restart should recreate each shell process"
@@ -1660,33 +1558,12 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         "axo.session.close",
         json!({ "sessionId": session_id }),
     );
-    assert_eq!(close["result"]["archivedSessionId"], session_id);
-    let replacement = &close["result"]["replacement"];
-    assert!(
-        replacement.is_object(),
-        "closing the last session creates a replacement"
-    );
-    cleanup.track(replacement);
-    assert_ne!(replacement["id"], session_id);
-    assert_eq!(replacement["initialPwd"], home);
-    assert_eq!(replacement["workspaceId"], home_workspace_id);
-    assert_eq!(active_sessions(&socket).len(), 1);
-
-    let replacement_id = replacement["id"].as_str().unwrap().to_owned();
-    let replacement_shell_id = replacement["shells"][0]["id"].as_i64().unwrap();
-    let close_last_shell = rpc_with_params(
-        &socket,
-        "axo.shell.close",
-        json!({ "sessionId": replacement_id, "shellId": replacement_shell_id }),
-    );
     assert_eq!(
-        close_last_shell["result"]["archivedSessionId"],
-        replacement_id
+        close["result"],
+        json!({ "archivedSessionId": session_id }),
+        "nothing replaces the last Session"
     );
-    let final_replacement = &close_last_shell["result"]["replacement"];
-    assert!(final_replacement.is_object());
-    cleanup.track(final_replacement);
-    assert_eq!(active_sessions(&socket).len(), 1);
+    assert!(active_sessions(&socket).is_empty());
 
     restarted.stop();
     drop(restarted);

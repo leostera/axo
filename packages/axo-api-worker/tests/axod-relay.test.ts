@@ -82,7 +82,9 @@ test("an isolated axod pairs with an account, then the account drives it through
     // The account's client lists the host and the Sessions axod synced, never paths or PTYs.
     client = await TestAccountClient.connect(api.url, account);
     assert.deepEqual(client.hosts.map((host) => [host.hostId, host.online]), [[hostId, true]]);
-    const firstSession = await waitFor("axod's initial Session in the client's list", 15_000, async () =>
+    // axod opens no Session by itself (RFD0038): one made on the Mac reaches the account.
+    await localCall(socketPath, "axo.session.create", {});
+    const firstSession = await waitFor("the Mac's Session in the client's list", 15_000, async () =>
       [...client!.sessions.values()].find((session) => session.hostId === hostId), daemon);
     assert.equal(JSON.stringify([...client.sessions.values()]).match(/attachSocketPath|ptyDevice|terminalOutput|pi-sessions/gi), null);
     const command = client.connection.command.bind(client.connection);
@@ -114,7 +116,7 @@ test("an isolated axod pairs with an account, then the account drives it through
     assert.deepEqual(strangerClient.hosts, []);
     assert.equal(strangerClient.sessions.size, 0);
     // In protocol 3 it has no socket on this host, so nothing is sent: refused as offline (-32005).
-    await assert.rejects(strangerClient.connection.command("axo.remote.workspace.list", { target }), { code: -32005 }, "a client of another account cannot reach this host");
+    await assert.rejects(strangerClient.connection.command("axo.remote.session.create", { target }), { code: -32005 }, "a client of another account cannot reach this host");
     strangerClient.close();
 
     // The call is wired through the Worker to the host, which refuses a Session it does not have
@@ -129,10 +131,10 @@ test("an isolated axod pairs with an account, then the account drives it through
     assert.equal(created.hostId, hostId);
     await waitFor("the new Session in the client's list", 10_000, async () => client!.sessions.get(created.sessionId), daemon);
 
-    // A person lists the host's Workspaces: names only, never directories on the Mac.
-    const workspaceReply = await command("axo.remote.workspace.list", { target });
-    assert.ok(Array.isArray(workspaceReply.workspaces));
-    assert.equal(JSON.stringify(workspaceReply).includes(serverDirectory), false);
+    // A new Session beside another starts in its folder, which the person sees by name only.
+    const beside = (await command("axo.remote.session.create", { target, like: created.sessionId })).session;
+    assert.equal(beside.folderName, created.folderName);
+    assert.equal(JSON.stringify([created, beside]).includes(serverDirectory), false);
 
     // A person renames the Session from afar; the new name reaches the account's clients.
     const renamed = await command("axo.remote.session.rename", { target, sessionId: created.sessionId, name: "Named from the relay" });

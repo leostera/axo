@@ -88,15 +88,13 @@ fn produced_session_records_conform_to_the_schema() {
         id: SessionId::from_u128(9),
         pi_session_file: Some("/tmp/session.jsonl".into()),
         pi_session_id: Some("pi-session".to_owned()),
-        workspace_id: Some("7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2".to_owned()),
-        workspace_name: Some("Axo".to_owned()),
         name: "Session 1".to_owned(),
         manual_name: None,
         emoji: Some("🦀".to_owned()),
         last_message_at: None,
         created_at: 0,
         status: SessionStatus::Ready,
-        initial_pwd: "/tmp".into(),
+        folder: "/tmp".into(),
         shells: vec![
             shell(
                 12,

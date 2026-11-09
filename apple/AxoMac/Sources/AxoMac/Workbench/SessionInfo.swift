@@ -10,8 +10,7 @@ enum SessionInfo {
   static func text(for session: TerminalSession, hostLabel: String? = nil) -> String {
     var lines = ["Axo Session \"\(session.displayName)\""]
     lines.append("Session ID: \(session.id.rawValue)")
-    if let workspace = session.workspaceName { lines.append("Workspace: \(workspace)") }
-    lines.append("Directory: \(session.initialPwd)")
+    lines.append("Folder: \(session.folder)")
     if let hostLabel {
       lines.append("Runs on: \(hostLabel)")
     } else if let transcript = session.piSessionFile {

@@ -6,8 +6,8 @@ import XCTest
 @testable import AxoMac
 
 final class SessionNavigationTests: XCTestCase {
-  private func session(_ id: SessionID, workspace: String? = nil) -> TerminalSession {
-    TerminalSession(id: id, initialPwd: "/", shells: [], workspaceId: workspace)
+  private func session(_ id: SessionID, folder: String = "/") -> TerminalSession {
+    TerminalSession(id: id, folder: folder, shells: [])
   }
 
   func testRecentSessionsAreNewestFirstUniqueAndBounded() {
@@ -23,7 +23,7 @@ final class SessionNavigationTests: XCTestCase {
   }
 
   private func active(_ id: SessionID, message: Int64? = nil, created: Int64? = nil) -> TerminalSession {
-    TerminalSession(id: id, initialPwd: "/", shells: [], lastMessageAt: message, createdAt: created)
+    TerminalSession(id: id, folder: "/", shells: [], lastMessageAt: message, createdAt: created)
   }
 
   func testRecentActivityPutsTheLatestMessageFirstAndNewSessionsByCreation() {
@@ -82,16 +82,16 @@ final class SessionNavigationTests: XCTestCase {
     let now: Int64 = 10_000
     let seen = SessionSeen(baseline: 5_000)
     let sessions = [
-      TerminalSession(id: 1, initialPwd: "/", shells: [], name: "zeta", lastMessageAt: now - 10),
-      TerminalSession(id: 2, initialPwd: "/", shells: [], name: "alpha", lastMessageAt: now - 5),
-      TerminalSession(id: 3, initialPwd: "/", shells: [], name: "old", lastMessageAt: 1_000),
-      TerminalSession(id: 4, initialPwd: "/", shells: [], name: "older", lastMessageAt: 900),
+      TerminalSession(id: 1, folder: "/", shells: [], name: "zeta", lastMessageAt: now - 10),
+      TerminalSession(id: 2, folder: "/", shells: [], name: "alpha", lastMessageAt: now - 5),
+      TerminalSession(id: 3, folder: "/", shells: [], name: "old", lastMessageAt: 1_000),
+      TerminalSession(id: 4, folder: "/", shells: [], name: "older", lastMessageAt: 900),
       // Quiet for an hour but finished after this Mac last looked: still Active.
-      TerminalSession(id: 5, initialPwd: "/", shells: [], name: "mid", lastMessageAt: now - 3_600),
+      TerminalSession(id: 5, folder: "/", shells: [], name: "mid", lastMessageAt: now - 3_600),
       // Quiet but still working: Active.
       TerminalSession(
-        id: 6, initialPwd: "/", shells: [], name: "busy", lastMessageAt: 800, status: .working),
-      TerminalSession(id: 7, initialPwd: "/", shells: [], name: "pinned", lastMessageAt: 100),
+        id: 6, folder: "/", shells: [], name: "busy", lastMessageAt: 800, status: .working),
+      TerminalSession(id: 7, folder: "/", shells: [], name: "pinned", lastMessageAt: 100),
     ]
     let sections = SessionGrouping.sections(sessions, pins: SessionPins([7]), seen: seen, now: now)
     XCTAssertEqual(sections.map(\.group), [.pinned, .active, .earlier])
@@ -99,7 +99,7 @@ final class SessionNavigationTests: XCTestCase {
 
     // More activity in an Active Session moves nothing: A to Z doesn't care.
     var busier = sessions
-    busier[0] = TerminalSession(id: 1, initialPwd: "/", shells: [], name: "zeta", lastMessageAt: now)
+    busier[0] = TerminalSession(id: 1, folder: "/", shells: [], name: "zeta", lastMessageAt: now)
     XCTAssertEqual(
       SessionGrouping.sections(busier, pins: SessionPins([7]), seen: seen, now: now)[1].sessions.map(\.id),
       [2, 6, 5, 1])
@@ -118,11 +118,11 @@ final class SessionNavigationTests: XCTestCase {
     let seen = SessionSeen(baseline: 5_000)
     let sessions = [
       TerminalSession(
-        id: 1, initialPwd: "/", shells: [], name: "b", lastMessageAt: now - 600, createdAt: 10),
+        id: 1, folder: "/", shells: [], name: "b", lastMessageAt: now - 600, createdAt: 10),
       TerminalSession(
-        id: 2, initialPwd: "/", shells: [], name: "a", lastMessageAt: now - 30, createdAt: 20),
+        id: 2, folder: "/", shells: [], name: "a", lastMessageAt: now - 30, createdAt: 20),
       TerminalSession(
-        id: 3, initialPwd: "/", shells: [], name: "c", lastMessageAt: 1_000, createdAt: 30),
+        id: 3, folder: "/", shells: [], name: "c", lastMessageAt: 1_000, createdAt: 30),
     ]
     var settings = SidebarGroupingSettings()
     let ids = { (settings: SidebarGroupingSettings) in
@@ -163,7 +163,7 @@ final class SessionNavigationTests: XCTestCase {
 
   func testAHeldSidebarKeepsEachRowInItsGroupAndPlace() {
     let session = { (id: SessionID, name: String, at: Int64) in
-      TerminalSession(id: id, initialPwd: "/", shells: [], name: name, lastMessageAt: at)
+      TerminalSession(id: id, folder: "/", shells: [], name: name, lastMessageAt: at)
     }
     let held = [
       SidebarSection(group: .active, sessions: [session(1, "a", 0), session(2, "b", 0)]),
@@ -198,8 +198,8 @@ final class SessionNavigationTests: XCTestCase {
     client.methods.append(AxodMethodName.piRestartAuto.rawValue)
     client.restartsPi = true
     client.sessions = [
-      TerminalSession(id: 1, initialPwd: "/", shells: [dormantPi]),
-      TerminalSession(id: 2, initialPwd: "/", shells: []),
+      TerminalSession(id: 1, folder: "/", shells: [dormantPi]),
+      TerminalSession(id: 2, folder: "/", shells: []),
     ]
     defaults.set(SessionID(2).rawValue, forKey: AxoPreferenceKey.selectedSession)
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
@@ -228,8 +228,8 @@ final class SessionNavigationTests: XCTestCase {
     let now = Int64(Date.now.timeIntervalSince1970)
     let client = FakeAxodClient()
     client.sessions = [
-      TerminalSession(id: 1, initialPwd: "/", shells: [], name: "old", lastMessageAt: now - 7_200),
-      TerminalSession(id: 2, initialPwd: "/", shells: [], name: "other", lastMessageAt: now - 7_200),
+      TerminalSession(id: 1, folder: "/", shells: [], name: "old", lastMessageAt: now - 7_200),
+      TerminalSession(id: 2, folder: "/", shells: [], name: "other", lastMessageAt: now - 7_200),
     ]
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     var looking = false
@@ -240,7 +240,7 @@ final class SessionNavigationTests: XCTestCase {
 
     // New activity while nobody looks: unseen, so Active, and it stays Active past the window.
     client.sessions[1] = TerminalSession(
-      id: 2, initialPwd: "/", shells: [], name: "other", lastMessageAt: now + 5)
+      id: 2, folder: "/", shells: [], name: "other", lastMessageAt: now + 5)
     await model.refresh()
     model.advanceSidebarClock(to: .now.addingTimeInterval(3_600))
     XCTAssertTrue(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
@@ -294,19 +294,15 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertNil(SessionNavigation.adjacentIndex(from: nil, count: 0, direction: .next))
   }
 
-  func testSuccessorPrefersRecentSiblingThenReplacementThenWorkspaceThenAny() {
-    let closed = session(1, workspace: "w")
-    let sessions = [closed, session(2, workspace: "w"), session(3, workspace: "w"), session(4)]
+  func testSuccessorPrefersRecentSiblingThenTheSameFolderThenAny() {
+    let closed = session(1, folder: "/w")
+    let sessions = [closed, session(2, folder: "/w"), session(3, folder: "/w"), session(4)]
     var recent = RecentSessions()
     recent.remember(4)
     recent.remember(3)
     recent.remember(1)
     XCTAssertEqual(
       SessionNavigation.successor(afterClosing: closed, in: sessions, recent: recent), 3)
-    XCTAssertEqual(
-      SessionNavigation.successor(
-        afterClosing: closed, in: sessions, recent: RecentSessions(),
-        replacement: session(3, workspace: "w")), 3)
     XCTAssertEqual(
       SessionNavigation.successor(afterClosing: closed, in: sessions, recent: RecentSessions()), 2)
     XCTAssertEqual(
@@ -324,10 +320,10 @@ final class SessionNavigationTests: XCTestCase {
 final class TerminalSessionsModelPublishingTests: XCTestCase {
   func testReopeningAClosedSessionShowsItAndBeepsWorthyWhenNoneAreLeft() async {
     let client = FakeAxodClient()
-    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [])]
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [])]
     client.closedSessions = [
-      TerminalSession(id: 7, initialPwd: "/", shells: []),
-      TerminalSession(id: 4, initialPwd: "/", shells: []),
+      TerminalSession(id: 7, folder: "/", shells: []),
+      TerminalSession(id: 4, folder: "/", shells: []),
     ]
     let model = TerminalSessionsModel(client: client)
     await model.refresh()
@@ -352,11 +348,10 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let client = FakeAxodClient()
-    client.workspaces = [WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/")]
     client.sessions = [
-      TerminalSession(id: 1, initialPwd: "/", shells: [], workspaceId: "a", lastMessageAt: 100),
-      TerminalSession(id: 2, initialPwd: "/", shells: [], workspaceId: "a", lastMessageAt: 300),
-      TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 200),
+      TerminalSession(id: 1, folder: "/a", shells: [], lastMessageAt: 100),
+      TerminalSession(id: 2, folder: "/a", shells: [], lastMessageAt: 300),
+      TerminalSession(id: 3, folder: "/", shells: [], lastMessageAt: 200),
     ]
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await model.refresh()
@@ -369,7 +364,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     // While the pointer holds the list still, the shortcuts step through the rows as shown.
     model.holdRecentOrder(true)
     client.sessions[0] = TerminalSession(
-      id: 1, initialPwd: "/", shells: [], workspaceId: "a", lastMessageAt: 400)
+      id: 1, folder: "/a", shells: [], lastMessageAt: 400)
     await model.refresh()
     model.showNextSession()
     XCTAssertEqual(model.selectedSessionID, 1)
@@ -388,10 +383,10 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
   func testPreviousAndNextSessionStepThroughTheRowsAsShownWhileOtherSessionsMoveUp() async throws {
     let client = FakeAxodClient()
     client.sessions = [
-      TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100),
-      TerminalSession(id: 2, initialPwd: "/", shells: [], lastMessageAt: 300),
-      TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 200),
-      TerminalSession(id: 4, initialPwd: "/", shells: [], lastMessageAt: 50),
+      TerminalSession(id: 1, folder: "/", shells: [], lastMessageAt: 100),
+      TerminalSession(id: 2, folder: "/", shells: [], lastMessageAt: 300),
+      TerminalSession(id: 3, folder: "/", shells: [], lastMessageAt: 200),
+      TerminalSession(id: 4, folder: "/", shells: [], lastMessageAt: 50),
     ]
     let model = TerminalSessionsModel(client: client)
     model.sessionStepHold = .milliseconds(100)
@@ -403,7 +398,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
 
     // An agent writes in 1 between presses. The list holds still, so the next press goes to the
     // row after 3 as shown, not to the row after 3's new place.
-    client.sessions[0] = TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 400)
+    client.sessions[0] = TerminalSession(id: 1, folder: "/", shells: [], lastMessageAt: 400)
     await model.refresh()
     XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1, 4])
     model.showNextSession()
@@ -422,9 +417,9 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let client = FakeAxodClient()
     client.sessions = [
-      TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100),
-      TerminalSession(id: 2, initialPwd: "/", shells: [], lastMessageAt: 300),
-      TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 200),
+      TerminalSession(id: 1, folder: "/", shells: [], lastMessageAt: 100),
+      TerminalSession(id: 2, folder: "/", shells: [], lastMessageAt: 300),
+      TerminalSession(id: 3, folder: "/", shells: [], lastMessageAt: 200),
     ]
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await model.refresh()
@@ -434,7 +429,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     XCTAssertTrue(model.isPinned(1))
     XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3], "pinned first")
     // More activity elsewhere doesn't move anything above a pinned Session.
-    client.sessions[2] = TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 900)
+    client.sessions[2] = TerminalSession(id: 3, folder: "/", shells: [], lastMessageAt: 900)
     await model.refresh()
     XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 3, 2])
 
@@ -480,7 +475,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let client = FakeAxodClient()
     client.methods.append(AxodMethodName.peerSessionsList.rawValue)
-    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100)]
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [], lastMessageAt: 100)]
     let studio = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7"
     let air = "8f8f8f8f-0000-4000-8000-000000000009"
     client.peers = PeerSessionList(
@@ -492,7 +487,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
       sessions: [
         PeerSession(
           hostId: studio,
-          session: TerminalSession(id: 9, initialPwd: "/", shells: [], name: "Fix it", lastMessageAt: 200))
+          session: TerminalSession(id: 9, folder: "/", shells: [], name: "Fix it", lastMessageAt: 200))
       ])
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await model.refresh()
@@ -537,14 +532,14 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let client = FakeAxodClient()
     client.methods.append(AxodMethodName.peerSessionsList.rawValue)
-    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [], lastMessageAt: 100)]
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [], lastMessageAt: 100)]
     let studio = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7"
     client.peers = PeerSessionList(
       connected: true, hosts: [PeerHost(hostId: studio, label: "Mac Studio", online: true)],
       sessions: [
         PeerSession(
           hostId: studio,
-          session: TerminalSession(id: 9, initialPwd: "/", shells: [], name: "Fix it", lastMessageAt: 200))
+          session: TerminalSession(id: 9, folder: "/", shells: [], name: "Fix it", lastMessageAt: 200))
       ])
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await model.refresh()
@@ -588,13 +583,13 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     let client = FakeAxodClient()
     let shell = TerminalShell(
       id: 10, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s")
-    let session = TerminalSession(id: 1, initialPwd: "/", shells: [shell])
+    let session = TerminalSession(id: 1, folder: "/", shells: [shell])
     client.sessions = [session]
     let model = TerminalSessionsModel(client: client)
     await model.refresh()
 
     let changed = await observesChange(of: {
-      _ = (model.sessions, model.workspaces, model.selectedSessionID, model.focusedShellID,
+      _ = (model.sessions, model.selectedSessionID, model.focusedShellID,
         model.layout, model.errorMessage)
     }) {
       await model.apply(.sessionSnapshot(model.sessions[0]))
@@ -609,7 +604,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     let shell = TerminalShell(
       id: 10, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s",
       role: .pi, availability: .unavailable(reason: "Pi exited."))
-    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [shell])]
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [shell])]
     let model = TerminalSessionsModel(client: client)
     await model.refresh()
 
@@ -630,7 +625,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
       XCTAssertEqual(
         error as? SessionCommandError,
         SessionCommandError(
-          "This action requires a newer Axod. Your Sessions and Workspace are unchanged."))
+          "This action requires a newer Axod. Your Sessions are unchanged."))
     }
   }
 }

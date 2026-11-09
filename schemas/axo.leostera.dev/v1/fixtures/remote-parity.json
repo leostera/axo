@@ -2,8 +2,6 @@
   "required": [
     "axo.host.sessions.list",
     "axo.remote.session.create",
-    "axo.remote.workspace.list",
-    "axo.remote.workspace.session.create",
     "axo.remote.session.close",
     "axo.remote.session.rename",
     "axo.remote.session.restart",

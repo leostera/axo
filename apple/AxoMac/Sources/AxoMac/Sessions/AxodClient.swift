@@ -11,21 +11,16 @@ protocol AxodClient: AnyObject {
   /// Includes whether Axod has finished starting (`ready`).
   func health() async throws -> DaemonHealth
   func listSessionSnapshot() async throws -> TerminalSessionListSnapshot
-  func listWorkspaces() async throws -> [WorkspaceRecord]
 
   /// The catalog's events as axod pushes them, until the stream ends.
   func openCatalogEvents() async throws -> any CatalogEvents
 
   func createSession() async throws -> TerminalSession
-  func createSession(inWorkspace workspaceID: String) async throws -> TerminalSession
-  func createWorkspace(
-    name: String, directoryPath: String, directoryBookmark: String?
-  ) async throws -> CreatedWorkspace
+  func createSession(inFolder folder: String) async throws -> TerminalSession
+  func createSession(like sessionID: SessionID) async throws -> TerminalSession
   func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession
   func reopenClosedSession() async throws -> TerminalSession
   func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession
-  func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord
-  func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace
 
   func createShell(inSession sessionID: SessionID) async throws -> TerminalShell
   func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell

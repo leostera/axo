@@ -20,11 +20,11 @@ all_test_cases=(
   testTerminalScrollWheelReachesMouseReportingChild
   testTerminalContextMenuRoutesSplitsAndCloseThroughAxo
   testSessionSidebarContextMenuRenamesAndArchives
-  testWorkspaceNameFieldReceivesPasteShortcut
+  testTheFolderSearchReceivesThePasteShortcut
   testTerminalAccessibilityExposesVisibleScreenText
   testClipboardReadsRequireApprovalAndRejectDenialOrCancellation
   testClipboardWritesRequireApprovalAndRejectDenialOrCancellation
-  testCreateWorkspaceShowsFirstSessionAndPiSurvivesAppCloseAndReopen
+  testANewSessionInAFolderShowsAndPiSurvivesAppCloseAndReopen
   testLaunchSplitCloseExitSessionSelectionAndSurvivingShell
   testCommandPaletteRunsCommandsAndReturnsTypingToTheTerminal
 )
@@ -260,7 +260,7 @@ axod=$(resolve_runfile "$AXO_UI_AXOD_RUNFILE") || fail "could not resolve the is
 [[ -x "$axod" ]] || fail "the isolated axod binary is not executable: $axod"
 npm --prefix "$workspace_root/packages/pi-axo" run build
 pi_executable=$(command -v pi || true)
-[[ -n "$pi_executable" && -x "$pi_executable" ]] || fail "Pi CLI is required for the isolated Workspace E2E"
+[[ -n "$pi_executable" && -x "$pi_executable" ]] || fail "Pi CLI is required for the isolated Session E2E"
 
 [[ -f "$workspace_runfiles/apple/xcodeproj_execution_root_file" ]] ||
   fail "Xcode-project runner support files are missing from runfiles"

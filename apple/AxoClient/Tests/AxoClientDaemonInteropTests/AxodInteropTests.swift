@@ -49,9 +49,12 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(relayStatus.hostKind, "macos")
 
     let initialSessions = try await axod.listSessionSnapshot().sessions
-    XCTAssertEqual(initialSessions.count, 1)
-    let baselineSession = try XCTUnwrap(initialSessions.first)
-    // The Home Session starts with Pi beside a terminal.
+    XCTAssertEqual(initialSessions.count, 0, "axod opens no Session by itself (RFD0038)")
+    let baselineSession = try await axod.createSession()
+    // A Session starts at home, with Pi beside a terminal.
+    XCTAssertEqual(
+      URL(fileURLWithPath: baselineSession.folder).resolvingSymlinksInPath(),
+      directory.appendingPathComponent("home").resolvingSymlinksInPath())
     let baselineShell = try XCTUnwrap(baselineSession.shells.first { $0.role == .terminal })
     do {
       _ = try await axod.restartPi(
@@ -72,8 +75,9 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(renamedBaseline.manualName, "Sidebar label")
     XCTAssertEqual(renamedBaseline.name, baselineSession.name)
 
-    let createdSession = try await axod.createSession()
+    let createdSession = try await axod.createSession(like: baselineSession.id)
     XCTAssertNotEqual(createdSession.id, baselineSession.id)
+    XCTAssertEqual(createdSession.folder, baselineSession.folder, "beside the one it is like")
     let createdShell = try await axod.createShell(inSession: createdSession.id)
     let sessionsAfterCreate = try await axod.listSessionSnapshot().sessions
     XCTAssertEqual(
@@ -98,7 +102,6 @@ final class AxodInteropTests: XCTestCase {
 
     let closedSession = try await axod.closeSession(createdSession.id)
     XCTAssertEqual(closedSession.archivedSessionId, createdSession.id)
-    XCTAssertNil(closedSession.replacement)
     let remainingSessions = try await axod.listSessionSnapshot().sessions
     XCTAssertEqual(remainingSessions.map(\.id), [baselineSession.id])
   }
@@ -187,8 +190,7 @@ final class AxodInteropTests: XCTestCase {
     try await waitForSocket(at: socketPath, from: daemon)
     let axod = AxodConnection(socketPath: socketPath)
 
-    let sessions = try await axod.listSessionSnapshot().sessions
-    let session = try XCTUnwrap(sessions.first)
+    let session = try await axod.createSession()
     let shell = try XCTUnwrap(session.shells.first { $0.role == .terminal })
     let attachSocket = try UnixSocketPath(shell.attachSocketPath)
     let first = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
@@ -222,8 +224,7 @@ final class AxodInteropTests: XCTestCase {
 }
 
 /// Starts Axod with its catalog in `directory`. Pi panes run the declared inert fixtures, never
-/// the developer's Pi or extension: without an extension Axod cannot start a Workspace Session,
-/// and a test expecting the Home Session would find none.
+/// the developer's Pi or extension: without an extension Axod cannot start a Session.
 private func startAxod(socket: UnixSocketPath, in directory: URL) throws -> Process {
   let home = directory.appendingPathComponent("home", isDirectory: true)
   try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)

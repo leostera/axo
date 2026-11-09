@@ -1,12 +1,10 @@
-//! What the uploader knows of each Session: the metadata the cloud lists it by, its Workspace's
-//! folder and repository, and what `axo.db` keeps of the cloud's acknowledgements.
+//! What the uploader knows of each Session: the metadata the cloud lists it by, its folder and
+//! repository, and what `axo.db` keeps of the cloud's acknowledgements.
 
 use std::path::PathBuf;
 
 use axo_protocol::{SessionId, SessionStatus};
 use serde::{Deserialize, Serialize};
-
-use super::is_uuid;
 
 /// What the cloud lists a Session by. The host owns it, and raises its version on every change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,8 +12,8 @@ use super::is_uuid;
 pub struct SessionMetadata {
     pub name: Option<String>,
     pub emoji: Option<String>,
-    pub workspace_id: Option<String>,
-    pub workspace_name: Option<String>,
+    /// The last component of the Session's folder (RFD0038).
+    pub folder_name: Option<String>,
     pub has_agent: bool,
     pub created_at: Option<i64>,
     pub last_message_at: Option<i64>,
@@ -93,10 +91,19 @@ impl SessionMetadata {
                 && emoji.chars().count() <= 16
                 && !emoji.chars().any(|c| c.is_whitespace() || c.is_control())
         });
-        self.workspace_id = self.workspace_id.filter(|id| is_uuid(id));
-        self.workspace_name = self
-            .workspace_name
-            .map(|name| name.chars().take(80).collect());
+        // The cloud counts UTF-16 units, as JavaScript does.
+        self.folder_name = self
+            .folder_name
+            .map(|name| {
+                let mut units = 0;
+                name.chars()
+                    .take_while(|c| {
+                        units += c.len_utf16();
+                        units <= 255
+                    })
+                    .collect::<String>()
+            })
+            .filter(|name| !name.is_empty());
         self.created_at = self.created_at.filter(|at| *at >= 0);
         self.last_message_at = self.last_message_at.filter(|at| *at >= 0);
         self.workspace_state = self.workspace_state.map(WorkspaceState::bounded);
@@ -161,8 +168,7 @@ mod tests {
         SessionMetadata {
             name: Some("Relay".into()),
             emoji: None,
-            workspace_id: None,
-            workspace_name: None,
+            folder_name: None,
             has_agent: true,
             created_at: None,
             last_message_at: None,
@@ -236,8 +242,7 @@ mod tests {
         let metadata = SessionMetadata {
             name: Some("  ".into()),
             emoji: Some("a b".into()),
-            workspace_id: Some("not-a-uuid".into()),
-            workspace_name: Some("w".repeat(100)),
+            folder_name: Some("🦀".repeat(200)),
             has_agent: true,
             created_at: Some(-1),
             last_message_at: Some(5),
@@ -248,8 +253,12 @@ mod tests {
         .bounded();
         assert_eq!(metadata.name, None);
         assert_eq!(metadata.emoji, None);
-        assert_eq!(metadata.workspace_id, None);
-        assert_eq!(metadata.workspace_name.unwrap().chars().count(), 80);
+        let folder = metadata.folder_name.unwrap();
+        assert_eq!(
+            folder.encode_utf16().count(),
+            254,
+            "whole characters, at most 255 units"
+        );
         assert_eq!(metadata.created_at, None);
         assert_eq!(metadata.last_message_at, Some(5));
     }

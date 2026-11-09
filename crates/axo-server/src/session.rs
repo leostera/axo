@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_agent::pi::BridgeSocketPath;
 use axo_agent::takeover::TakeoverGrace;
 use axo_agent::{AgentCommand, WriterLock};
@@ -27,6 +26,7 @@ mod agents;
 mod catalog;
 mod cloud_transcripts;
 mod computer;
+mod create;
 mod devices;
 pub(crate) mod event_stream;
 mod events;
@@ -51,7 +51,6 @@ mod terminal_input;
 mod test_support;
 mod transcripts;
 mod workspace_state;
-mod workspaces;
 
 use self::events::{EventBus, LocalSubscription};
 pub(crate) use self::handlers::RelayHostAdapter;
@@ -60,7 +59,6 @@ use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
 pub(crate) use self::remote::Remote;
 use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};
 use self::transcripts::PiDirectories;
-use self::workspaces::restore_workspace_accesses;
 
 const ATTACH_SOCKET_FILE: &str = "attach.sock";
 
@@ -169,14 +167,10 @@ pub struct SessionManager {
     subscribers: EventBus,
     next_subscription_id: AtomicU64,
     pending_resume_focus: Mutex<Option<(SessionId, Instant)>>,
-    workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
-    /// The Workspace at the user's home directory, where Sessions created outside any other
-    /// Workspace live. It always exists and cannot be archived.
-    home_workspace_id: String,
+    /// The user's home directory, canonical: where a Session starts when nothing says where.
+    home: PathBuf,
     /// Each Session's folder as git saw it when the agent last settled (RFD0022).
     workspace_states: workspace_state::WorkspaceStates,
-    /// When each Workspace last failed to get a Session; see `ensure_open_workspace_sessions`.
-    workspace_session_failures: Mutex<HashMap<String, Instant>>,
     /// Every Mac's transcripts by host (RFD0022); other Macs' are copies.
     sessions_directory: PathBuf,
     /// The other Macs, once the relay follows them (RFD0024).
@@ -226,8 +220,7 @@ impl SessionManager {
         remove_abandoned_pi_bridge_sockets(&database)?;
 
         let previous_stop = take_previous_stop(&database)?;
-        let home_workspace_id = axo_store::ensure_home_workspace(&mut database, &initial_pwd)?;
-        let workspace_access = restore_workspace_accesses(&database)?;
+        let home = initial_pwd.canonicalize().unwrap_or(initial_pwd);
         let subscribers = EventBus::default();
         let reaper = Arc::new(lifecycle::Reaper::default());
         let manager = Arc::new(Self {
@@ -258,9 +251,7 @@ impl SessionManager {
             subscribers,
             next_subscription_id: AtomicU64::new(1),
             pending_resume_focus: Mutex::new(None),
-            workspace_access: Mutex::new(workspace_access),
-            home_workspace_id,
-            workspace_session_failures: Mutex::new(HashMap::new()),
+            home,
             workspace_states: Default::default(),
             sessions_directory: sessions_directory.to_path_buf(),
             peers: Default::default(),
@@ -280,7 +271,6 @@ impl SessionManager {
         if let Some(stop) = &previous_stop {
             manager.tell_interrupted_sessions(stop);
         }
-        manager.ensure_open_workspace_sessions()?;
         manager.begin_launch()?;
         manager.start_attachment_listener()?;
         manager.start_reaper();
@@ -429,7 +419,7 @@ mod tests {
     fn shutdown_does_not_hold_the_catalog_lock_during_child_cleanup() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = terminal_shell(&session);
         let termed = fixture.directory.join("termed");
         {
@@ -482,7 +472,7 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         manager.stop_workers.store(false, Ordering::Relaxed);
-        let session = manager.list_sessions().unwrap().remove(0);
+        let session = new_session(&manager);
         let shell_id = session.shells[0].id;
         let (mut client, server) = UnixStream::pair().unwrap();
         client

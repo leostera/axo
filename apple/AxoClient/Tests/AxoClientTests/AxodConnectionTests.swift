@@ -52,7 +52,7 @@ final class AxodConnectionTests: XCTestCase {
 
   func testServerRejectionPreservesItsRpcCodeAndMessage() async throws {
     let fixture = try OneResponseUnixSocket(
-      response: #"{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"Workspace creation failed"}}"#
+      response: #"{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"Session creation failed"}}"#
     )
     let responder = Task.detached {
       try fixture.receiveOneRequestAndReply()
@@ -66,10 +66,10 @@ final class AxodConnectionTests: XCTestCase {
         return XCTFail("Unexpected RPC error: \(error)")
       }
       XCTAssertEqual(code, 1)
-      XCTAssertEqual(message, "Workspace creation failed")
+      XCTAssertEqual(message, "Session creation failed")
       XCTAssertEqual(
         error.localizedDescription,
-        "axod rejected the request (1): Workspace creation failed"
+        "axod rejected the request (1): Session creation failed"
       )
     }
     _ = try await responder.value

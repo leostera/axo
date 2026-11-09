@@ -27,14 +27,12 @@ impl Drop for Scratch {
 
 pub(super) const HOST: &str = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7";
 
-pub(super) const WORKSPACE: &str = "04d389d1-9896-420e-9b42-fc7835522937";
-
 pub(super) const SESSION: &str = "8f8f8f8f-0000-4000-8000-000000000001";
 
 pub(super) const HEADER: &str = r#"{"type":"session","version":3,"id":"8f8f8f8f-0000-4000-8000-000000000001","cwd":"/Users/leo/src/axo"}"#;
 
 pub(super) fn place() -> Place {
-    Place::of(HOST, Some(WORKSPACE), SESSION).unwrap()
+    Place::of(HOST, SESSION).unwrap()
 }
 
 pub(super) fn record(cursor: u64) -> ClientRecord {
