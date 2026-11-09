@@ -6,11 +6,13 @@
 
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::interrupt::Interrupt;
 
 #[derive(Debug)]
 pub struct WriterLock(OwnedFd);
@@ -19,6 +21,56 @@ pub struct WriterLock(OwnedFd);
 /// that child execs. Generous: exec waits on the loader, which is slow on a loaded machine.
 const FORK_EXEC_WINDOW: Duration = Duration::from_millis(250);
 const FORK_EXEC_POLL: Duration = Duration::from_millis(5);
+/// How often a lock whose holder is unknown is tried again.
+const UNKNOWN_HOLDER_RETRY: Duration = Duration::from_millis(100);
+
+/// A kqueue that turns readable when a process exits: any process, not only a child.
+struct ProcessExit(OwnedFd);
+
+impl ProcessExit {
+    /// `None` when `pid` has already exited.
+    fn watch(pid: u32) -> io::Result<Option<Self>> {
+        // SAFETY: kqueue returns a new descriptor, owned at once.
+        let queue = unsafe { libc::kqueue() };
+        if queue == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `queue` was just created and is owned only here.
+        let queue = unsafe { OwnedFd::from_raw_fd(queue) };
+        axo_pty::process::set_cloexec(queue.as_raw_fd())?;
+        let change = libc::kevent {
+            ident: pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // SAFETY: one initialized change and no event list; returns at once.
+        let result = unsafe {
+            libc::kevent(
+                queue.as_raw_fd(),
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        if result == -1 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ESRCH) => Ok(None),
+                _ => Err(error),
+            };
+        }
+        Ok(Some(Self(queue)))
+    }
+
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
 
 fn lock_path(session_file: &Path) -> PathBuf {
     session_file.with_extension("jsonl.lock")
@@ -64,15 +116,13 @@ impl WriterLock {
     /// belongs to the shared open file description. So for a moment after Axod releases a lock
     /// (a probe, a failed launch), it still looks held. Taking that for a live Pi would send a
     /// shutdown request to a Pi that does not exist. `WouldBlock` after `FORK_EXEC_WINDOW`.
-    pub fn acquire_settled(
-        session_file: &Path,
-        check_current: &impl Fn() -> io::Result<()>,
-    ) -> io::Result<Self> {
+    pub fn acquire_settled(session_file: &Path, interrupt: &Interrupt<'_>) -> io::Result<Self> {
         match Self::poll(
             session_file,
             FORK_EXEC_WINDOW,
             FORK_EXEC_POLL,
-            check_current,
+            None,
+            interrupt,
         ) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -82,17 +132,30 @@ impl WriterLock {
         }
     }
 
-    /// Retries `acquire` until `timeout`, then fails with `TimedOut`.
+    /// Retries `acquire` until `timeout`, then fails with `TimedOut`. Nothing says when a lock
+    /// is released, so with an unknown holder this tries again every `UNKNOWN_HOLDER_RETRY`.
     pub fn wait(
         session_file: &Path,
         timeout: Duration,
-        check_current: &impl Fn() -> io::Result<()>,
+        interrupt: &Interrupt<'_>,
+    ) -> io::Result<Self> {
+        Self::poll(session_file, timeout, UNKNOWN_HOLDER_RETRY, None, interrupt)
+    }
+
+    /// Like `wait`, for a lock held by the process `holder`: tries again the moment it exits.
+    /// A lock still held after that (a child it left holding it) is retried as with `wait`.
+    pub fn wait_for_holder(
+        session_file: &Path,
+        holder: u32,
+        timeout: Duration,
+        interrupt: &Interrupt<'_>,
     ) -> io::Result<Self> {
         Self::poll(
             session_file,
             timeout,
-            Duration::from_millis(100),
-            check_current,
+            UNKNOWN_HOLDER_RETRY,
+            Some(holder),
+            interrupt,
         )
     }
 
@@ -100,11 +163,16 @@ impl WriterLock {
         session_file: &Path,
         timeout: Duration,
         interval: Duration,
-        check_current: &impl Fn() -> io::Result<()>,
+        holder: Option<u32>,
+        interrupt: &Interrupt<'_>,
     ) -> io::Result<Self> {
         let deadline = Instant::now() + timeout;
+        let mut exit = match holder {
+            Some(holder) => ProcessExit::watch(holder)?,
+            None => None,
+        };
         loop {
-            check_current()?;
+            interrupt.check()?;
             match Self::acquire(session_file) {
                 Ok(lock) => return Ok(lock),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -114,7 +182,21 @@ impl WriterLock {
                             "Pi did not release its transcript lock",
                         ));
                     }
-                    thread::sleep(interval);
+                    // While the holder lives, only its exit (or the deadline) is worth waking
+                    // for; after it, or without one, try again after `interval`.
+                    let next = match &exit {
+                        Some(_) => deadline,
+                        None => deadline.min(Instant::now() + interval),
+                    };
+                    let watching: Vec<_> = exit
+                        .iter()
+                        .map(|exit| (exit.as_raw_fd(), libc::POLLIN))
+                        .collect();
+                    match interrupt.wait(&watching, Some(next), "the next try") {
+                        Ok(_) => exit = None,
+                        Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+                        Err(error) => return Err(error),
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -173,6 +255,7 @@ impl AsRawFd for WriterLock {
 mod tests {
     use super::*;
     use std::fs;
+    use std::thread;
 
     #[test]
     fn liveness_follows_the_writer_lock_without_creating_it() {
@@ -220,7 +303,7 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
             child.exec()
         });
-        WriterLock::acquire_settled(&session_file, &|| Ok(())).unwrap();
+        WriterLock::acquire_settled(&session_file, &Interrupt::never()).unwrap();
         assert!(spawning.join().unwrap().success());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -232,7 +315,7 @@ mod tests {
         let _writer = WriterLock::acquire(&session_file).unwrap();
         let started = Instant::now();
         assert_eq!(
-            WriterLock::acquire_settled(&session_file, &|| Ok(()))
+            WriterLock::acquire_settled(&session_file, &Interrupt::never())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::WouldBlock

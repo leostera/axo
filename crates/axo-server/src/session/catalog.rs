@@ -173,12 +173,58 @@ pub(super) struct CatalogGuard<'a> {
 pub(super) struct StateChanges {
     version: std::sync::Mutex<u64>,
     changed: std::sync::Condvar,
+    /// Descriptors waiters sleep on beside their own (`axo_agent::interrupt`), by id.
+    wakes: std::sync::Mutex<Vec<(u64, axo_agent::interrupt::Waker)>>,
+    next_wake: std::sync::atomic::AtomicU64,
+}
+
+/// Turns readable whenever the Session state changes, until dropped.
+pub(super) struct StateWake<'a> {
+    changes: &'a StateChanges,
+    id: u64,
+    reader: std::os::unix::net::UnixStream,
+}
+
+impl StateWake<'_> {
+    pub(super) fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.reader)
+    }
+}
+
+impl Drop for StateWake<'_> {
+    fn drop(&mut self) {
+        self.changes
+            .wakes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(id, _)| *id != self.id);
+    }
 }
 
 impl StateChanges {
     fn changed(&self) {
         *self.version.lock().unwrap_or_else(|p| p.into_inner()) += 1;
         self.changed.notify_all();
+        for (_, waker) in self.wakes.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+            waker.wake();
+        }
+    }
+
+    /// A descriptor that turns readable on each change from now on.
+    pub(super) fn wake(&self) -> io::Result<StateWake<'_>> {
+        let (waker, reader) = axo_agent::interrupt::wake_pair()?;
+        let id = self
+            .next_wake
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.wakes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((id, waker));
+        Ok(StateWake {
+            changes: self,
+            id,
+            reader,
+        })
     }
 
     pub(super) fn version(&self) -> u64 {

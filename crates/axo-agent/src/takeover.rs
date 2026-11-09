@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use axo_protocol::{SessionId, new_uuid_v4};
 
+use crate::interrupt::Interrupt;
 use crate::pi::protocol::{Action, CommandResult, Outgoing, ProtocolVersion, Record};
 use crate::pi::{BridgeSocketPath, bridge};
 use crate::{WriterLock, process_inspection};
@@ -112,7 +113,7 @@ pub fn take_over(
     target: TakeoverTarget<'_>,
     takeover_policy: TakeoverPolicy,
     grace: TakeoverGrace,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
     signal: &impl Fn(VerifiedProcessId, libc::c_int) -> io::Result<()>,
 ) -> io::Result<WriterLock> {
     let TakeoverTarget {
@@ -124,8 +125,8 @@ pub fn take_over(
         pane_id,
         previous_token,
     } = target;
-    check_current()?;
-    match WriterLock::acquire_settled(session_file, check_current) {
+    interrupt.check()?;
+    match WriterLock::acquire_settled(session_file, interrupt) {
         Ok(lock) => Ok(lock),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             log::info!(
@@ -143,15 +144,15 @@ pub fn take_over(
                         session_file,
                     },
                     takeover_policy,
-                    check_current,
+                    interrupt,
                 ) {
                     Ok(attempt) => attempt,
                     Err(error)
                         if takeover_policy == TakeoverPolicy::ExplicitUserRestart
                             && bridge_unavailable_for_restart(&error) =>
                     {
-                        check_current()?;
-                        shutdown_attempt_from_lock(session_id, session_file, error, check_current)?
+                        interrupt.check()?;
+                        shutdown_attempt_from_lock(session_id, session_file, error, interrupt)?
                     }
                     Err(error) if bridge_gone(&error) => {
                         // pi-axo closes the bridge when Pi's session shuts down, before Pi
@@ -162,12 +163,12 @@ pub fn take_over(
                             "event=session.pi_takeover_waiting session_id={} reason=bridge_gone",
                             session_id
                         );
-                        return WriterLock::wait(session_file, TAKEOVER_TIMEOUT, check_current);
+                        return WriterLock::wait(session_file, TAKEOVER_TIMEOUT, interrupt);
                     }
                     Err(error) => return Err(error),
                 },
                 None if takeover_policy == TakeoverPolicy::ExplicitUserRestart => {
-                    check_current()?;
+                    interrupt.check()?;
                     shutdown_attempt_from_lock(
                         session_id,
                         session_file,
@@ -175,7 +176,7 @@ pub fn take_over(
                             io::ErrorKind::ConnectionRefused,
                             "Pi bridge credential is unavailable",
                         ),
-                        check_current,
+                        interrupt,
                     )?
                 }
                 None => {
@@ -188,7 +189,12 @@ pub fn take_over(
             let lock = match takeover_policy {
                 TakeoverPolicy::PreserveExistingProcess => {
                     shutdown_attempt.graceful_shutdown?;
-                    WriterLock::wait(session_file, TAKEOVER_TIMEOUT, check_current)?
+                    WriterLock::wait_for_holder(
+                        session_file,
+                        shutdown_attempt.process_id.0 as u32,
+                        TAKEOVER_TIMEOUT,
+                        interrupt,
+                    )?
                 }
                 TakeoverPolicy::ExplicitUserRestart => {
                     if let Err(error) = &shutdown_attempt.graceful_shutdown {
@@ -202,7 +208,7 @@ pub fn take_over(
                         session_file,
                         shutdown_attempt.process_id,
                         grace,
-                        check_current,
+                        interrupt,
                         signal,
                     )?
                 }
@@ -221,10 +227,15 @@ fn wait_then_terminate(
     session_file: &Path,
     process_id: VerifiedProcessId,
     grace: TakeoverGrace,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
     signal: &impl Fn(VerifiedProcessId, libc::c_int) -> io::Result<()>,
 ) -> io::Result<WriterLock> {
-    match WriterLock::wait(session_file, grace.before_terminate, check_current) {
+    match WriterLock::wait_for_holder(
+        session_file,
+        process_id.0 as u32,
+        grace.before_terminate,
+        interrupt,
+    ) {
         Ok(lock) => return Ok(lock),
         Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
         Err(error) => return Err(error),
@@ -240,7 +251,12 @@ fn wait_then_terminate(
         process_id.0
     );
     signal(process_id, libc::SIGTERM)?;
-    match WriterLock::wait(session_file, grace.before_kill, check_current) {
+    match WriterLock::wait_for_holder(
+        session_file,
+        process_id.0 as u32,
+        grace.before_kill,
+        interrupt,
+    ) {
         Ok(lock) => {
             log::info!("event=session.pi_force_termination_completed signal=term");
             return Ok(lock);
@@ -255,16 +271,17 @@ fn wait_then_terminate(
     }
 
     signal(process_id, libc::SIGKILL)?;
-    let lock = WriterLock::wait(session_file, KILL_WAIT, check_current).map_err(|error| {
-        if error.kind() == io::ErrorKind::TimedOut {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Pi still holds its transcript lock after termination",
-            )
-        } else {
-            error
-        }
-    })?;
+    let lock = WriterLock::wait_for_holder(session_file, process_id.0 as u32, KILL_WAIT, interrupt)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Pi still holds its transcript lock after termination",
+                )
+            } else {
+                error
+            }
+        })?;
     log::info!("event=session.pi_force_termination_completed signal=kill");
     Ok(lock)
 }
@@ -272,7 +289,7 @@ fn wait_then_terminate(
 fn connect_to_bridge(
     target: BridgeTarget<'_>,
     deadline: Instant,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<(BufReader<UnixStream>, VerifiedProcessId)> {
     let BridgeTarget {
         bridge_socket,
@@ -282,7 +299,7 @@ fn connect_to_bridge(
         initial_pwd,
         session_file,
     } = target;
-    let mut stream = bridge::connect_until(bridge_socket, deadline, check_current)?;
+    let mut stream = bridge::connect_until(bridge_socket, deadline, interrupt)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     bridge::write_record(
@@ -295,7 +312,7 @@ fn connect_to_bridge(
     let mut reader = BufReader::new(stream);
     let mut authenticated = false;
     loop {
-        match bridge::read_record_until(&mut reader, deadline, check_current)? {
+        match bridge::read_record_until(&mut reader, deadline, interrupt)? {
             Record::Authenticated { .. } => authenticated = true,
             Record::Hello { identity, .. } if authenticated => {
                 let process_id = VerifiedProcessId::new(identity.process_id)?;
@@ -331,13 +348,13 @@ fn connect_to_bridge(
 fn request_shutdown(
     target: BridgeTarget<'_>,
     takeover_policy: TakeoverPolicy,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<ShutdownAttempt> {
     let session_uuid = target.session_uuid;
-    check_current()?;
+    interrupt.check()?;
     let deadline = Instant::now() + BRIDGE_REQUEST_TIMEOUT;
-    let (mut reader, process_id) = connect_to_bridge(target, deadline, check_current)?;
-    check_current()?;
+    let (mut reader, process_id) = connect_to_bridge(target, deadline, interrupt)?;
+    interrupt.check()?;
     let request_id = format!("takeover-{}", new_uuid_v4()?);
     let action = match takeover_policy {
         TakeoverPolicy::PreserveExistingProcess => Action::ShutdownIfIdle,
@@ -350,7 +367,7 @@ fn request_shutdown(
     };
     let graceful_shutdown = bridge::write_record(reader.get_mut(), &command).and_then(|()| {
         loop {
-            match bridge::read_record_until(&mut reader, deadline, check_current)? {
+            match bridge::read_record_until(&mut reader, deadline, interrupt)? {
                 Record::CommandResult {
                     request_id: answered,
                     result,
@@ -413,13 +430,15 @@ fn shutdown_attempt_from_lock(
     session_id: SessionId,
     session_file: &Path,
     error: io::Error,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<ShutdownAttempt> {
     let started = Instant::now();
-    let process_id = writer_process_id_from_lock(session_file, check_current).inspect_err(|error| {
+    let process_id = writer_process_id_from_lock(session_file, interrupt).inspect_err(|error| {
         log::info!(
             "event=session.pi_lock_inspection_rejected session_id={} elapsed_ms={} error_kind={:?}",
-            session_id, started.elapsed().as_millis(), error.kind()
+            session_id,
+            started.elapsed().as_millis(),
+            error.kind()
         );
     })?;
     log::warn!(
@@ -457,7 +476,7 @@ fn bridge_unavailable_for_restart(error: &io::Error) -> bool {
 
 fn writer_process_id_from_lock(
     session_file: &Path,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<VerifiedProcessId> {
     let deadline = Instant::now() + OWNER_INSPECTION_TIMEOUT;
     let lock_path = session_file.with_extension("jsonl.lock");
@@ -466,7 +485,7 @@ fn writer_process_id_from_lock(
             .args(["-n", "-P", "-t"])
             .arg(&lock_path),
         deadline,
-        check_current,
+        interrupt,
     )?;
     if !output.status.success() {
         return Err(io::Error::new(
@@ -491,7 +510,7 @@ fn writer_process_id_from_lock(
                 "comm=",
             ]),
             deadline,
-            check_current,
+            interrupt,
         )?;
         if !output.status.success() {
             return Err(io::Error::new(
@@ -502,7 +521,7 @@ fn writer_process_id_from_lock(
         owners.push(parse_lock_owner(process_id, &output.stdout)?);
     }
 
-    check_current()?;
+    interrupt.check()?;
     if Instant::now() >= deadline {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -699,7 +718,7 @@ mod tests {
             target,
             TakeoverPolicy::PreserveExistingProcess,
             TakeoverGrace::default(),
-            &|| Ok(()),
+            &Interrupt::never(),
             &|_, _| panic!("no Pi to signal"),
         )
         .unwrap();
@@ -734,7 +753,7 @@ mod tests {
             target,
             TakeoverPolicy::PreserveExistingProcess,
             TakeoverGrace::default(),
-            &|| Ok(()),
+            &Interrupt::never(),
             &|_, _| panic!("an exiting Pi is not signalled"),
         )
         .unwrap();
@@ -849,14 +868,15 @@ mod tests {
         let session_file = directory.join("session.jsonl");
         let lock = WriterLock::acquire(&session_file).unwrap();
         let checks = AtomicUsize::new(0);
-        let error = writer_process_id_from_lock(&session_file, &|| {
+        let check = || {
             if checks.fetch_add(1, Ordering::Relaxed) == 0 {
                 Ok(())
             } else {
                 Err(io::Error::from(io::ErrorKind::Interrupted))
             }
-        })
-        .unwrap_err();
+        };
+        let error =
+            writer_process_id_from_lock(&session_file, &Interrupt::new(&check, None)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(checks.load(Ordering::Relaxed) >= 2);
         drop(lock);

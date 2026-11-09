@@ -614,7 +614,7 @@ impl SessionManager {
 
     pub(super) fn mark_detached(&self, id: ShellId, runtime_id: RuntimeId) {
         let session_id = {
-            let Ok(mut state) = self.state.lock() else {
+            let Ok(mut state) = self.lock_state() else {
                 return;
             };
             let state = &mut *state;
@@ -1154,7 +1154,9 @@ mod tests {
         assert!(matches!(to_self("again"), Err(PromptError::RateLimited)));
 
         // Nothing was typed into the pane except what the person typed.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Starting a process can take seconds on a loaded Mac (each exec is vetted); what is typed
+        // waits in the terminal until it reads.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while std::fs::read_to_string(&log).unwrap_or_default().is_empty()
             && Instant::now() < deadline
         {

@@ -4,18 +4,22 @@
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::thread;
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
+use axo_pty::exit::WatchedChild;
+
+use crate::interrupt::{Interrupt, wake_pair};
+
+/// How long `confirm_wait_ownership` retries a `waitid` interrupted by a signal.
+const OWNERSHIP_RETRY: Duration = Duration::from_millis(25);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_INSPECTION_OUTPUT_BYTES: usize = 16 * 1024;
 
 // Remain the exclusive waiter. In particular, do not reap a leader while its
 // descendants retain stdout: cleanup still needs the unreused process-group ID.
 struct InspectionChild {
-    child: Child,
+    child: WatchedChild,
     owns_wait: bool,
 }
 
@@ -39,7 +43,7 @@ impl InspectionChild {
         // SAFETY: waitid receives initialized writable storage and probes only
         // the child we launched. WNOWAIT preserves its PID until explicit reap.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let deadline = Instant::now() + POLL_INTERVAL;
+        let deadline = Instant::now() + OWNERSHIP_RETRY;
         loop {
             // SAFETY: P_PID selects this owned child; WNOHANG never waits for exit.
             let result = unsafe {
@@ -80,18 +84,16 @@ impl Drop for InspectionChild {
         unsafe { libc::kill(-pid, libc::SIGKILL) };
         // Also cover the directly owned child; never adopt an inspected Pi PID.
         let _ = self.child.kill();
-        let deadline = Instant::now() + CLEANUP_TIMEOUT;
-        loop {
-            match self.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
-                Err(_) => return, // try_wait already reported lost ownership.
-                Ok(None) => {
-                    log::error!(
-                        "event=session.pi_inspection_cleanup_unconfirmed pid={pid} phase=reap error_kind=TimedOut"
-                    );
-                    return;
-                }
+        self.child
+            .exit()
+            .wait_until(Instant::now() + CLEANUP_TIMEOUT);
+        match self.try_wait() {
+            // try_wait already reported lost ownership.
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => {
+                log::error!(
+                    "event=session.pi_inspection_cleanup_unconfirmed pid={pid} phase=reap error_kind=TimedOut"
+                );
             }
         }
     }
@@ -110,9 +112,9 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
 pub(crate) fn run(
     command: &mut Command,
     deadline: Instant,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<Output> {
-    check_current()?;
+    interrupt.check()?;
     remaining(deadline)?;
     command
         .stdin(Stdio::null())
@@ -128,15 +130,17 @@ pub(crate) fn run(
             }
         });
     }
+    let mut spawned = command.spawn()?;
+    let stdout = spawned.stdout.take();
     let mut process = InspectionChild {
-        child: command.spawn()?,
+        child: WatchedChild::new(spawned)?,
         owns_wait: true,
     };
-    let mut stdout = process
-        .child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("process inspection's stdout is not piped"))?;
+    let mut stdout =
+        stdout.ok_or_else(|| io::Error::other("process inspection's stdout is not piped"))?;
+    // Its exit, as something to sleep on beside the cancellation.
+    let (exit_waker, exited) = wake_pair()?;
+    process.child.exit().on_exit(move || exit_waker.wake());
     let fd = stdout.as_raw_fd();
     // SAFETY: only the owned pipe's status flags are read/updated here.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -146,13 +150,13 @@ pub(crate) fn run(
     let mut output = Vec::new();
     let mut eof = false;
     loop {
-        check_current()?;
-        let time = remaining(deadline)?;
+        interrupt.check()?;
+        remaining(deadline)?;
         if eof {
             if let Some(status) = process.try_wait()? {
                 // Revalidate after the final wait too; partial/stale inspection
                 // output must not authorize a subsequent lifecycle action.
-                check_current()?;
+                interrupt.check()?;
                 remaining(deadline)?;
                 return Ok(Output {
                     status,
@@ -160,7 +164,11 @@ pub(crate) fn run(
                     stderr: Vec::new(),
                 });
             }
-            thread::sleep(time.min(POLL_INTERVAL));
+            interrupt.wait(
+                &[(exited.as_raw_fd(), libc::POLLIN)],
+                Some(deadline),
+                "Pi owner inspection timed out",
+            )?;
             continue;
         }
         let mut chunk = [0_u8; 4096];
@@ -179,25 +187,11 @@ pub(crate) fn run(
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let mut poll = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: poll receives one live, initialized owned pipe record.
-                if unsafe {
-                    libc::poll(
-                        &mut poll,
-                        1,
-                        time.min(POLL_INTERVAL).as_millis().max(1) as libc::c_int,
-                    )
-                } == -1
-                {
-                    let error = io::Error::last_os_error();
-                    if error.kind() != io::ErrorKind::Interrupted {
-                        return Err(error);
-                    }
-                }
+                interrupt.wait(
+                    &[(fd, libc::POLLIN)],
+                    Some(deadline),
+                    "Pi owner inspection timed out",
+                )?;
             }
             Err(error) => return Err(error),
         }
@@ -211,6 +205,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
+    use std::thread;
 
     fn shell(script: &str) -> Command {
         let mut command = Command::new("/bin/sh");
@@ -226,7 +221,7 @@ mod tests {
         let output = run(
             &mut shell("printf 'metadata'; printf 'discarded' >&2; exit 7"),
             Instant::now() + Duration::from_secs(2),
-            &|| Ok(()),
+            &Interrupt::never(),
         )
         .unwrap();
         assert_eq!(output.stdout, b"metadata");
@@ -240,7 +235,7 @@ mod tests {
         let output = run(
             &mut shell(&script),
             Instant::now() + Duration::from_secs(2),
-            &|| Ok(()),
+            &Interrupt::never(),
         )
         .unwrap();
         assert!(output.status.success());
@@ -248,7 +243,7 @@ mod tests {
         let error = run(
             &mut shell("while :; do printf '0123456789abcdef'; done"),
             Instant::now() + Duration::from_secs(2),
-            &|| Ok(()),
+            &Interrupt::never(),
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -261,7 +256,7 @@ mod tests {
             let error = run(
                 &mut shell(script),
                 start + Duration::from_millis(150),
-                &|| Ok(()),
+                &Interrupt::never(),
             )
             .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
@@ -276,26 +271,30 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&cancelled);
         let (started, ready) = mpsc::sync_channel(1);
+        let (waker, wake) = crate::interrupt::wake_pair().unwrap();
         let worker = thread::spawn(move || {
             let checks = AtomicUsize::new(0);
+            let check = || {
+                if checks.fetch_add(1, Ordering::Relaxed) == 1 {
+                    started.send(()).unwrap();
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    Err(io::Error::from(io::ErrorKind::Interrupted))
+                } else {
+                    Ok(())
+                }
+            };
             run(
                 &mut shell("exec /bin/sleep 60"),
-                Instant::now() + Duration::from_secs(5),
-                &|| {
-                    if checks.fetch_add(1, Ordering::Relaxed) == 1 {
-                        started.send(()).unwrap();
-                    }
-                    if cancel.load(Ordering::Relaxed) {
-                        Err(io::Error::from(io::ErrorKind::Interrupted))
-                    } else {
-                        Ok(())
-                    }
-                },
+                // Far off: only the cancellation can end this in time.
+                Instant::now() + Duration::from_secs(60),
+                &Interrupt::new(&check, Some(std::os::fd::AsFd::as_fd(&wake))),
             )
         });
         ready.recv_timeout(Duration::from_secs(2)).unwrap();
         let start = Instant::now();
         cancelled.store(true, Ordering::Relaxed);
+        waker.wake();
         assert_eq!(
             worker.join().unwrap().unwrap_err().kind(),
             io::ErrorKind::Interrupted
@@ -310,7 +309,7 @@ mod tests {
             run(
                 &mut invalid,
                 Instant::now() - Duration::from_secs(1),
-                &|| Ok(())
+                &Interrupt::never()
             )
             .unwrap_err()
             .kind(),
@@ -320,7 +319,7 @@ mod tests {
             run(
                 &mut invalid,
                 Instant::now() + Duration::from_secs(1),
-                &|| Err(io::Error::from(io::ErrorKind::Interrupted))
+                &Interrupt::new(&|| Err(io::Error::from(io::ErrorKind::Interrupted)), None)
             )
             .unwrap_err()
             .kind(),
@@ -330,7 +329,7 @@ mod tests {
             run(
                 &mut invalid,
                 Instant::now() + Duration::from_secs(1),
-                &|| Ok(())
+                &Interrupt::never()
             )
             .unwrap_err()
             .kind(),
@@ -345,13 +344,17 @@ mod tests {
         run(
             &mut shell("/bin/sleep 0.1; printf 'first'"),
             deadline,
-            &|| Ok(()),
+            &Interrupt::never(),
         )
         .unwrap();
         assert_eq!(
-            run(&mut shell("exec /bin/sleep 60"), deadline, &|| Ok(()))
-                .unwrap_err()
-                .kind(),
+            run(
+                &mut shell("exec /bin/sleep 60"),
+                deadline,
+                &Interrupt::never()
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::TimedOut
         );
         // The second tool stops at the shared deadline, not a fresh 2 s after the first ended.
@@ -384,7 +387,7 @@ mod tests {
             let result = run(
                 &mut command,
                 Instant::now() + Duration::from_secs(1),
-                &|| Ok(()),
+                &Interrupt::never(),
             );
             drop(writer);
             result
@@ -415,7 +418,7 @@ mod tests {
             });
         }
         let mut process = InspectionChild {
-            child: command.spawn().unwrap(),
+            child: WatchedChild::new(command.spawn().unwrap()).unwrap(),
             owns_wait: true,
         };
         let pid = process.child.id() as libc::pid_t;
@@ -425,6 +428,7 @@ mod tests {
             process.confirm_wait_ownership().unwrap_err().raw_os_error(),
             Some(libc::ECHILD)
         );
+        process.child.exit().wait();
         assert!(process.try_wait().is_err());
         assert!(!process.owns_wait);
     }

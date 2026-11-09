@@ -310,7 +310,8 @@ impl SessionManager {
     pub fn shutdown(&self) {
         // Fence in-flight launches before joining workers or draining processes.
         // stop_workers alone is also used to quiesce background fixture workers.
-        if let Ok(mut state) = self.state.lock() {
+        // Through the catalog guard, so waiters (a recovery's) hear that axod is stopping.
+        if let Ok(mut state) = self.lock_state() {
             // First, before anything slow: launchd kills an Axod that takes too long to stop.
             if !state.shutting_down {
                 record_stop(&state, &self.lock_agents());
@@ -327,8 +328,7 @@ impl SessionManager {
         // Slow child cleanup must not monopolize the catalog/PTY lock. Drain
         // runtime ownership once so repeated shutdown (including Drop) is safe.
         let shells = self
-            .state
-            .lock()
+            .lock_state()
             .map(|mut state| {
                 let mut shells = state.panes.drain();
                 shells.extend(state.peer_views.drain());
@@ -431,13 +431,19 @@ mod tests {
         let manager = &fixture.manager;
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = terminal_shell(&session);
+        let termed = fixture.directory.join("termed");
         {
             let state = manager.lock_state().unwrap();
             let running = &state.panes.running(shell_id).unwrap();
             let (_, output) = running.output.subscribe(None, None);
+            // It says when it is asked to stop, then carries on until it is killed.
+            let script = format!(
+                "exec /bin/sh -c 'trap \": > {}\" HUP TERM; printf \"%s%s\\\\n\" AXO_STOP_ READY; while :; do sleep 1 & wait; done'\n",
+                termed.display()
+            );
             process::write_all(
                 running.master.as_raw_fd(),
-                b"trap '' TERM; printf '%s%s\\n' AXO_STOP_ READY\n",
+                script.as_bytes(),
                 TERMINAL_INPUT_WRITE_TIMEOUT,
             )
             .unwrap();
@@ -449,19 +455,23 @@ mod tests {
             owner.shutdown();
             done.send(()).unwrap();
         });
-        let deadline = Instant::now() + Duration::from_millis(400);
-        loop {
-            if let Ok(state) = manager.state.try_lock()
-                && state.panes.running_is_empty()
-            {
-                break;
-            }
+        // Asked to stop, the shell waits out its grace before it is killed: the lock must be free
+        // all that time, not only once the shell has gone.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !termed.exists() {
             assert!(
                 Instant::now() < deadline,
-                "shutdown held the catalog lock while stopping a child"
+                "the shell was never asked to stop"
             );
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(1));
         }
+        assert!(
+            manager
+                .state
+                .try_lock()
+                .is_ok_and(|state| state.panes.running_is_empty()),
+            "shutdown held the catalog lock while stopping a child"
+        );
         completed.recv_timeout(Duration::from_secs(5)).unwrap();
         shutdown.join().unwrap();
         manager.shutdown(); // Idempotent: no repeat signals or joins.

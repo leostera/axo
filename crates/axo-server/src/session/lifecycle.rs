@@ -745,7 +745,8 @@ mod tests {
         }
         let took = started.elapsed();
         manager.shutdown();
-        assert!(took < Duration::from_millis(40), "reaped after {took:?}");
+        // Without the wake it would never be reaped: the reaper has no tick.
+        assert!(took < Duration::from_secs(1), "reaped after {took:?}");
     }
 
     /// The reaper sleeps until a child's waiter wakes it or the launch's time limit, with no

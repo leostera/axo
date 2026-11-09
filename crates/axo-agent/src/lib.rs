@@ -8,6 +8,7 @@
 pub mod activity;
 mod command;
 mod history;
+pub mod interrupt;
 mod lock;
 pub mod pi;
 mod process_inspection;

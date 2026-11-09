@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::interrupt::Interrupt;
 use crate::pi::BridgeSocketPath;
 use crate::pi::bridge::{self, MAX_RECORD_BYTES};
 use crate::pi::connection::{Connection, ExpectedPane, Rejection, Step};
@@ -239,6 +239,11 @@ impl CommandReceiver {
         }
     }
 
+    /// What a sender's wake makes readable, while any sender is left.
+    fn wake_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.woken.as_ref().map(std::os::fd::AsFd::as_fd)
+    }
+
     /// Sleeps until Pi writes on `stream` or a sender wakes the worker. `true` when Pi wrote.
     fn wait(&mut self, stream: &UnixStream) -> io::Result<bool> {
         let woken = self.woken.as_ref().map_or(-1, |woken| woken.as_raw_fd());
@@ -284,6 +289,15 @@ impl CommandReceiver {
     }
 }
 
+/// Waits `RECONNECT_DELAY` while Pi restarts its listener; a stop ends the pause at once.
+fn pause_before_reconnecting(check: &dyn Fn() -> io::Result<()>, commands: &CommandReceiver) {
+    let _ = Interrupt::new(check, commands.wake_fd()).wait(
+        &[],
+        Some(Instant::now() + RECONNECT_DELAY),
+        "reconnect",
+    );
+}
+
 fn not_bound() -> io::Error {
     io::Error::new(io::ErrorKind::NotConnected, "Pi's bridge is not connected")
 }
@@ -320,12 +334,16 @@ pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &mut WorkerCo
                 Ok(())
             }
         };
-        let Ok(mut stream) = bridge::connect_until(
-            config.bridge_socket.as_path(),
-            Instant::now() + BRIDGE_REQUEST_TIMEOUT,
-            &check_current,
-        ) else {
-            thread::sleep(RECONNECT_DELAY);
+        let connected = {
+            let interrupt = Interrupt::new(&check_current, config.commands.wake_fd());
+            bridge::connect_until(
+                config.bridge_socket.as_path(),
+                Instant::now() + BRIDGE_REQUEST_TIMEOUT,
+                &interrupt,
+            )
+        };
+        let Ok(mut stream) = connected else {
+            pause_before_reconnecting(&check_current, &config.commands);
             continue;
         };
         if !has_connected {
@@ -366,7 +384,7 @@ pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &mut WorkerCo
             host.disconnected();
         }
         match outcome {
-            Outcome::Closed => thread::sleep(RECONNECT_DELAY),
+            Outcome::Closed => pause_before_reconnecting(&check_current, &config.commands),
             Outcome::Stop | Outcome::Invalid => return,
         }
     }

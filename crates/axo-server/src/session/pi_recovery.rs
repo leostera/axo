@@ -13,6 +13,7 @@ use super::pi_bridge::{PiRuntimeBinding, log_socket_cleanup};
 use super::spawn::{pi_environment, spawn_shell};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
 use crate::workspace_access::WorkspaceDirectoryAccess;
+use axo_agent::interrupt::Interrupt;
 use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess};
 use axo_agent::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
 use axo_agent::{AgentCommand, WriterLock};
@@ -80,7 +81,7 @@ impl PiRecoveryLease<'_> {
 
 impl Drop for PiRecoveryLease<'_> {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.manager.state.lock() {
+        if let Ok(mut state) = self.manager.lock_state() {
             state
                 .panes
                 .release_recovery(self.shell_id, self.recovery_id);
@@ -379,6 +380,10 @@ impl SessionManager {
         };
 
         let check_current = || recovery.ensure_current();
+        // Recovery is called off by a change to the Session state: a close, a removal, or a
+        // newer recovery. Its waits sleep on this and look again only when the state changes.
+        let state_wake = self.state_changes.wake()?;
+        let interrupt = Interrupt::new(&check_current, Some(state_wake.fd()));
         let history = axo_agent::recoverable_history(
             &request.session_file,
             self.pi_directories.home_of(&request.session_file),
@@ -388,7 +393,7 @@ impl SessionManager {
             request.takeover_target(),
             takeover_policy,
             grace,
-            &|| recovery.ensure_current(),
+            &interrupt,
             &|process_id, signal| recovery.signal_current(process_id, signal),
         )?;
         if axo_agent::recoverable_history(
@@ -995,7 +1000,7 @@ mod tests {
         );
         // Concurrent forked fixture children may briefly hold CLOEXEC copies
         // until exec. Bound the wait rather than requiring instantaneous release.
-        drop(WriterLock::wait(&fixture.file, Duration::from_secs(1), &|| Ok(())).unwrap());
+        drop(WriterLock::wait(&fixture.file, Duration::from_secs(1), &Interrupt::never()).unwrap());
         manager.lock_state().unwrap().agent_command = original_command;
         let recovered = manager
             .restart_unavailable_pi(
@@ -1068,7 +1073,7 @@ mod tests {
         );
         // Both parent and child lock copies must be released by cleanup. Other
         // concurrent fixture forks can retain CLOEXEC copies briefly until exec.
-        drop(WriterLock::wait(&fixture.file, Duration::from_secs(1), &|| Ok(())).unwrap());
+        drop(WriterLock::wait(&fixture.file, Duration::from_secs(1), &Interrupt::never()).unwrap());
         fixture.assert_preserved();
     }
 
@@ -1451,7 +1456,8 @@ mod tests {
         );
         process::stop(&mut child.0.child, process::SHELL_STOP_GRACE);
         // Concurrent forked fixture children may briefly hold CLOEXEC copies until exec.
-        let recovered = WriterLock::wait(&file, Duration::from_secs(1), &|| Ok(())).unwrap();
+        let recovered =
+            WriterLock::wait(&file, Duration::from_secs(1), &Interrupt::never()).unwrap();
         assert!(unrelated.0.try_wait().unwrap().is_none());
         assert_eq!(fs::read(&file).unwrap(), b"preserved history");
         drop(recovered);

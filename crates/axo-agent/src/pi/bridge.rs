@@ -4,14 +4,14 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use crate::interrupt::Interrupt;
 use axo_pty::process;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
-pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Reads one record, blocking up to the stream's read timeout.
 pub fn read_record<T: DeserializeOwned>(reader: &mut BufReader<UnixStream>) -> io::Result<T> {
@@ -38,26 +38,19 @@ pub fn read_record<T: DeserializeOwned>(reader: &mut BufReader<UnixStream>) -> i
 pub fn read_record_until<T: DeserializeOwned>(
     reader: &mut BufReader<UnixStream>,
     deadline: Instant,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<T> {
     let mut line = Vec::new();
     loop {
-        check_current()?;
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|time| !time.is_zero())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Pi bridge recovery request timed out",
-                )
-            })?;
+        interrupt.check()?;
         // Wait with poll rather than SO_RCVTIMEO: macOS rejects that option (EINVAL) once the
         // peer has closed, even with its reply still unread. A closed peer polls readable.
-        if reader.buffer().is_empty()
-            && !wait_readable(reader.get_ref(), remaining.min(POLL_INTERVAL))?
-        {
-            continue;
+        if reader.buffer().is_empty() {
+            interrupt.wait(
+                &[(reader.get_ref().as_raw_fd(), libc::POLLIN)],
+                Some(deadline),
+                "Pi bridge recovery request timed out",
+            )?;
         }
         let buffer = match reader.fill_buf() {
             Ok([]) => {
@@ -95,37 +88,14 @@ pub fn read_record_until<T: DeserializeOwned>(
     }
 }
 
-/// Whether `stream` has data (or end of file) to read within `timeout`.
-fn wait_readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
-    let mut poll = libc::pollfd {
-        fd: stream.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
-    // SAFETY: poll receives one initialized descriptor record for an open socket.
-    match unsafe { libc::poll(&mut poll, 1, timeout) } {
-        -1 => {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                Ok(false)
-            } else {
-                Err(error)
-            }
-        }
-        0 => Ok(false),
-        _ => Ok(true),
-    }
-}
-
 pub fn connect_until(
     path: &Path,
     deadline: Instant,
-    check_current: &impl Fn() -> io::Result<()>,
+    interrupt: &Interrupt<'_>,
 ) -> io::Result<UnixStream> {
     // Nonblocking connect matters too: an unresponsive listener with a full
     // accept queue can otherwise pin recovery (or a worker join) in the kernel.
-    check_current()?;
+    interrupt.check()?;
     let bytes = path.as_os_str().as_encoded_bytes();
     // SAFETY: sockaddr_un is plain data and zeroing supplies the NUL terminator.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
@@ -169,32 +139,12 @@ pub fn connect_until(
         if error.raw_os_error() != Some(libc::EINPROGRESS) {
             return Err(error);
         }
-        loop {
-            check_current()?;
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|time| !time.is_zero())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::TimedOut, "Pi bridge connection timed out")
-                })?;
-            let mut poll = libc::pollfd {
-                fd: raw,
-                events: libc::POLLOUT,
-                revents: 0,
-            };
-            let timeout = remaining.min(POLL_INTERVAL).as_millis().max(1) as libc::c_int;
-            // SAFETY: poll receives one initialized descriptor record.
-            let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
-            if ready == -1 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            if ready == 0 {
-                continue;
-            }
+        {
+            interrupt.wait(
+                &[(raw, libc::POLLOUT)],
+                Some(deadline),
+                "Pi bridge connection timed out",
+            )?;
             let mut error = 0 as libc::c_int;
             let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
             // SAFETY: SO_ERROR writes one int to the correctly sized output.
@@ -213,10 +163,9 @@ pub fn connect_until(
             if error != 0 {
                 return Err(io::Error::from_raw_os_error(error));
             }
-            break;
         }
     }
-    check_current()?;
+    interrupt.check()?;
     // SAFETY: restore blocking mode on our connected, still-owned descriptor.
     if unsafe { libc::fcntl(raw, libc::F_SETFL, flags) } == -1 {
         return Err(io::Error::last_os_error());
@@ -234,6 +183,7 @@ pub fn write_record(stream: &mut UnixStream, value: &impl Serialize) -> io::Resu
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
     use std::os::unix::net::UnixListener;
     use std::thread;
 
@@ -247,21 +197,29 @@ mod tests {
             let timed_out = read_record_until::<serde_json::Value>(
                 &mut reader,
                 started + Duration::from_millis(200),
-                &|| Ok(()),
+                &Interrupt::never(),
             )
             .unwrap_err();
             let waited = started.elapsed();
-            let cancel_at = Instant::now() + Duration::from_millis(100);
+            let called_off = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (waker, wake) = crate::interrupt::wake_pair().unwrap();
+            let calling = std::sync::Arc::clone(&called_off);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                calling.store(true, std::sync::atomic::Ordering::SeqCst);
+                waker.wake();
+            });
+            let check = || {
+                if called_off.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+                } else {
+                    Ok(())
+                }
+            };
             let cancelled = read_record_until::<serde_json::Value>(
                 &mut reader,
                 Instant::now() + Duration::from_secs(60),
-                &|| {
-                    if Instant::now() >= cancel_at {
-                        Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
-                    } else {
-                        Ok(())
-                    }
-                },
+                &Interrupt::new(&check, Some(std::os::fd::AsFd::as_fd(&wake))),
             )
             .unwrap_err();
             done.send((timed_out.kind(), waited, cancelled.kind()))
@@ -282,10 +240,10 @@ mod tests {
         let mut reader = BufReader::new(ours);
         let deadline = Instant::now() + Duration::from_millis(500);
         let first: serde_json::Value =
-            read_record_until(&mut reader, deadline, &|| Ok(())).unwrap();
+            read_record_until(&mut reader, deadline, &Interrupt::never()).unwrap();
         // The peer stays connected and silent: the second record is only in our buffer.
         let second: serde_json::Value =
-            read_record_until(&mut reader, deadline, &|| Ok(())).unwrap();
+            read_record_until(&mut reader, deadline, &Interrupt::never()).unwrap();
         assert_eq!(
             (first["n"].as_i64(), second["n"].as_i64()),
             (Some(1), Some(2))
@@ -304,10 +262,10 @@ mod tests {
         let mut reader = BufReader::new(ours);
         let deadline = Instant::now() + Duration::from_secs(1);
         let reply: serde_json::Value =
-            read_record_until(&mut reader, deadline, &|| Ok(())).unwrap();
+            read_record_until(&mut reader, deadline, &Interrupt::never()).unwrap();
         assert_eq!(reply["type"], "commandResult");
         assert_eq!(
-            read_record_until::<serde_json::Value>(&mut reader, deadline, &|| Ok(()))
+            read_record_until::<serde_json::Value>(&mut reader, deadline, &Interrupt::never())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
@@ -328,7 +286,7 @@ mod tests {
             match connect_until(
                 &path,
                 Instant::now() + Duration::from_millis(50),
-                &|| Ok(()),
+                &Interrupt::never(),
             ) {
                 Ok(stream) => connections.push(stream),
                 Err(error) => {
@@ -353,9 +311,11 @@ mod tests {
         assert!(full, "fixture never filled its bounded accept queue");
         assert!(start.elapsed() < Duration::from_secs(2));
         assert_eq!(
-            connect_until(&path, Instant::now() + Duration::from_secs(2), &|| Err(
-                io::Error::from(io::ErrorKind::Interrupted)
-            ))
+            connect_until(
+                &path,
+                Instant::now() + Duration::from_secs(2),
+                &Interrupt::new(&|| Err(io::Error::from(io::ErrorKind::Interrupted)), None)
+            )
             .unwrap_err()
             .kind(),
             io::ErrorKind::Interrupted
@@ -378,7 +338,7 @@ mod tests {
         let error = read_record_until::<serde_json::Value>(
             &mut reader,
             start + Duration::from_millis(150),
-            &|| Ok(()),
+            &Interrupt::never(),
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
@@ -402,7 +362,8 @@ mod tests {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(150);
         loop {
-            match read_record_until::<serde_json::Value>(&mut reader, deadline, &|| Ok(())) {
+            match read_record_until::<serde_json::Value>(&mut reader, deadline, &Interrupt::never())
+            {
                 Ok(record) => assert_eq!(record["type"], "event"),
                 Err(error) => {
                     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
