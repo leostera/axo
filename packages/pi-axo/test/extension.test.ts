@@ -272,20 +272,6 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.deepEqual(await next(), { type: "commandResult", requestId: "cancel-1", result: { accepted: true } });
     assert.equal(aborted, 1);
 
-    socket.write(`${JSON.stringify({
-      type: "command",
-      requestId: "automatic-takeover-busy",
-      axoSessionId,
-      action: { kind: "shutdownIfIdle" },
-    })}\n`);
-    assert.deepEqual(await next(), {
-      type: "commandResult",
-      requestId: "automatic-takeover-busy",
-      result: { accepted: false, reason: "busy" },
-    });
-    assert.equal(aborted, 1);
-    assert.equal(shutdowns, 0);
-
     idle = true;
     // A stop finding Pi idle: the client was shown it working, so Axod is told again that it is not.
     socket.write(`${JSON.stringify({
@@ -300,21 +286,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.deepEqual(corrected?.type === "event" && [corrected.name, corrected.data], ["activity.snapshot", { working: false }]);
     assert.equal(aborted, 1);
 
-    socket.write(`${JSON.stringify({
-      type: "command",
-      requestId: "automatic-takeover-idle",
-      axoSessionId,
-      action: { kind: "shutdownIfIdle" },
-    })}\n`);
-    assert.deepEqual(await next(), {
-      type: "commandResult",
-      requestId: "automatic-takeover-idle",
-      result: { accepted: true },
-    });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(aborted, 1);
-    assert.equal(shutdowns, 1);
-
+    // A takeover: a working Pi stops its turn and exits.
     idle = false;
     socket.write(`${JSON.stringify({
       type: "command",
@@ -325,7 +297,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.deepEqual(await next(), { type: "commandResult", requestId: "takeover-1", result: { accepted: true } });
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(aborted, 2);
-    assert.equal(shutdowns, 2);
+    assert.equal(shutdowns, 1);
 
     const beforeSwitch = registered.get("session_before_switch");
     assert.ok(beforeSwitch);

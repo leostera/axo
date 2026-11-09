@@ -5,8 +5,8 @@
 //! - After `AXO_FAKE_PI_STARTUP_MS` (default 100) it binds axod's bridge socket
 //!   (`AXO_PI_BRIDGE_SOCKET`), checks `AXO_PI_BRIDGE_TOKEN`, and says who it is.
 //! - It answers commands as Pi does: `send` starts a turn (or is queued, or is `busy`), `stop`
-//!   ends the turn whose user record it names (or is `idle`), `shutdown` exits, and
-//!   `shutdownIfIdle` exits only when idle. A `commandId` runs at most once.
+//!   ends the turn whose user record it names (or is `idle`), and `shutdown` exits. A
+//!   `commandId` runs at most once.
 //! - Right after saying who it is, it publishes what it runs (RFD0033): `pi.state` (the model
 //!   "Fake One" at `medium`), `pi.commands` and `pi.models` ("Fake One", "Fake Two"). `setModel`
 //!   switches between those two, or answers `invalid`, and publishes `pi.state` again.
@@ -350,18 +350,6 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
             "shutdown" => {
                 answer(&mut stream, &record, json!({ "accepted": true }));
                 std::process::exit(0);
-            }
-            "shutdownIfIdle" => {
-                if pi.lock().unwrap().turn.is_some() {
-                    answer(
-                        &mut stream,
-                        &record,
-                        json!({ "accepted": false, "reason": "busy" }),
-                    );
-                } else {
-                    answer(&mut stream, &record, json!({ "accepted": true }));
-                    std::process::exit(0);
-                }
             }
             _ => answer(
                 &mut stream,

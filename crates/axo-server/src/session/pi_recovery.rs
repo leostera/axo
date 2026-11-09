@@ -14,7 +14,7 @@ use super::spawn::{pi_environment, spawn_shell};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
 use axo_agent::interrupt::Interrupt;
 use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess};
-use axo_agent::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
+use axo_agent::takeover::{self, TakeoverTarget, VerifiedProcessId};
 use axo_agent::{AgentCommand, WriterLock};
 use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
 use axo_protocol::{PaneRole, SessionId, SessionRecord, ShellId, new_uuid_v4};
@@ -208,11 +208,7 @@ fn recovery_refused(refused: RecoveryRefused) -> io::Error {
 impl SessionManager {
     pub(super) fn recover_pi_shells(self: &Arc<Self>, panes: Vec<(SessionId, ShellId)>) {
         for (session_id, shell_id) in panes {
-            if let Err(error) = self.restart_unavailable_pi(
-                session_id,
-                shell_id,
-                TakeoverPolicy::PreserveExistingProcess,
-            ) {
+            if let Err(error) = self.restart_unavailable_pi(session_id, shell_id) {
                 log::warn!(
                     "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
                     session_id,
@@ -262,11 +258,7 @@ impl SessionManager {
             session_id,
             shell_id.get()
         );
-        match self.restart_unavailable_pi(
-            session_id,
-            shell_id,
-            TakeoverPolicy::PreserveExistingProcess,
-        ) {
+        match self.restart_unavailable_pi(session_id, shell_id) {
             Ok(_) => Ok(true),
             // Another caller woke it first; wait for that start rather than fail.
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -304,7 +296,6 @@ impl SessionManager {
         self: &Arc<Self>,
         session_id: SessionId,
         shell_id: ShellId,
-        takeover_policy: TakeoverPolicy,
     ) -> io::Result<SessionRecord> {
         let (request, recovery, grace, has_messages) = {
             let mut state = self.lock_state()?;
@@ -390,7 +381,6 @@ impl SessionManager {
         )?;
         let lock = takeover::take_over(
             request.takeover_target(),
-            takeover_policy,
             grace,
             &interrupt,
             &|process_id, signal| recovery.signal_current(process_id, signal),
@@ -748,7 +738,7 @@ mod tests {
     use crate::session::{pi_bridge::*, test_support::*};
     use axo_agent::pi::BridgeSocketPath;
     use axo_agent::pi::bridge;
-    use axo_agent::takeover::{TakeoverGrace, TakeoverPolicy};
+    use axo_agent::takeover::TakeoverGrace;
     use axo_agent::{AgentCommand, WriterLock};
     use axo_panes::RuntimeId;
     use axo_protocol::rpc;
@@ -781,7 +771,7 @@ mod tests {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
         let lock = WriterLock::acquire(&fixture.file).unwrap();
-        let (worker, _bridge) = fixture.begin_recovery(TakeoverPolicy::PreserveExistingProcess);
+        let (worker, _bridge) = fixture.begin_recovery();
         let start = Instant::now();
         assert!(
             catalog_lock_is_free(manager),
@@ -792,17 +782,15 @@ mod tests {
         let attachment = manager.attach_shell(home.shells[0].id).unwrap();
         manager.mark_detached(home.shells[0].id, attachment.runtime_id);
         let error = manager
-            .restart_unavailable_pi(
-                fixture.session_id,
-                fixture.shell_id,
-                TakeoverPolicy::ExplicitUserRestart,
-            )
+            .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(start.elapsed() < Duration::from_secs(1));
+        // The bridge never answers, so the holder is found through the lock: this test, which
+        // no check takes for a Pi, so nothing is signalled.
         assert_eq!(
             worker.join().unwrap().unwrap_err().kind(),
-            io::ErrorKind::TimedOut
+            io::ErrorKind::InvalidData
         );
         let state = manager.lock_state().unwrap();
         assert!(
@@ -825,65 +813,60 @@ mod tests {
 
     #[test]
     fn closing_a_pi_pane_cancels_pending_takeover_without_escalating() {
-        for policy in [
-            TakeoverPolicy::PreserveExistingProcess,
-            TakeoverPolicy::ExplicitUserRestart,
-        ] {
-            let fixture = PiRecoveryFixture::new();
-            let lock = WriterLock::acquire(&fixture.file).unwrap();
-            let mut command = Command::new("/bin/sleep");
-            command.arg("60");
-            // SAFETY: isolated test child creates its own process group.
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        Err(io::Error::last_os_error())
-                    } else {
-                        Ok(())
-                    }
-                });
-            }
-            let mut old_pi = ChildProcessGuard(command.spawn().unwrap());
-            let (worker, mut bridge) = fixture.begin_recovery(policy);
-            fixture.accept_shutdown(&mut bridge, old_pi.0.id());
-            let start = Instant::now();
-            fixture
-                .lifecycle
-                .manager
-                .close_session(fixture.session_id)
-                .unwrap();
-            assert_eq!(
-                worker.join().unwrap().unwrap_err().kind(),
-                io::ErrorKind::Interrupted
-            );
-            assert!(start.elapsed() < Duration::from_secs(1));
-            assert!(
-                old_pi.0.try_wait().unwrap().is_none(),
-                "cancelled recovery signalled the old process"
-            );
-            let state = fixture.lifecycle.manager.lock_state().unwrap();
-            assert!(!state.panes.running(fixture.shell_id).is_some());
-            assert!(!state.panes.unavailable(fixture.shell_id).is_some());
-            let lifecycle: String = state
-                .database
-                .query_row(
-                    "SELECT state FROM sessions WHERE id = ?1",
-                    params![fixture.session_id.to_string()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(lifecycle, "archived");
-            drop(state);
-            drop(lock);
-            fixture.assert_preserved();
+        let fixture = PiRecoveryFixture::new();
+        let lock = WriterLock::acquire(&fixture.file).unwrap();
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60");
+        // SAFETY: isolated test child creates its own process group.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
         }
+        let mut old_pi = ChildProcessGuard(command.spawn().unwrap());
+        let (worker, mut bridge) = fixture.begin_recovery();
+        fixture.accept_shutdown(&mut bridge, old_pi.0.id());
+        let start = Instant::now();
+        fixture
+            .lifecycle
+            .manager
+            .close_session(fixture.session_id)
+            .unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(
+            old_pi.0.try_wait().unwrap().is_none(),
+            "cancelled recovery signalled the old process"
+        );
+        let state = fixture.lifecycle.manager.lock_state().unwrap();
+        assert!(!state.panes.running(fixture.shell_id).is_some());
+        assert!(!state.panes.unavailable(fixture.shell_id).is_some());
+        let lifecycle: String = state
+            .database
+            .query_row(
+                "SELECT state FROM sessions WHERE id = ?1",
+                params![fixture.session_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lifecycle, "archived");
+        drop(state);
+        drop(lock);
+        fixture.assert_preserved();
     }
 
     #[test]
     fn shutdown_fences_pending_pi_recovery_and_future_restarts() {
         let fixture = PiRecoveryFixture::new();
         let lock = WriterLock::acquire(&fixture.file).unwrap();
-        let (worker, _bridge) = fixture.begin_recovery(TakeoverPolicy::PreserveExistingProcess);
+        let (worker, _bridge) = fixture.begin_recovery();
         let start = Instant::now();
         fixture.lifecycle.manager.shutdown();
         assert_eq!(
@@ -904,11 +887,7 @@ mod tests {
             fixture
                 .lifecycle
                 .manager
-                .restart_unavailable_pi(
-                    fixture.session_id,
-                    fixture.shell_id,
-                    TakeoverPolicy::ExplicitUserRestart
-                )
+                .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::Interrupted
@@ -933,11 +912,7 @@ mod tests {
             AgentCommand::parse(broken_executable.to_str().unwrap()).unwrap();
         assert_eq!(
             manager
-                .restart_unavailable_pi(
-                    fixture.session_id,
-                    fixture.shell_id,
-                    TakeoverPolicy::PreserveExistingProcess
-                )
+                .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound
@@ -956,11 +931,7 @@ mod tests {
         drop(WriterLock::wait(&fixture.file, Duration::from_secs(1), &Interrupt::never()).unwrap());
         manager.lock_state().unwrap().agent_command = original_command;
         let recovered = manager
-            .restart_unavailable_pi(
-                fixture.session_id,
-                fixture.shell_id,
-                TakeoverPolicy::PreserveExistingProcess,
-            )
+            .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
             .unwrap();
         assert!(
             recovered
@@ -1112,11 +1083,7 @@ mod tests {
         // No message yet, so Pi has not created its transcript.
         fs::remove_file(&fixture.file).unwrap();
         let session = manager
-            .restart_unavailable_pi(
-                fixture.session_id,
-                fixture.shell_id,
-                TakeoverPolicy::PreserveExistingProcess,
-            )
+            .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
             .unwrap();
         let pi = session
             .shells
@@ -1156,11 +1123,7 @@ mod tests {
         fs::remove_file(&fixture.file).unwrap();
         assert_eq!(
             manager
-                .restart_unavailable_pi(
-                    fixture.session_id,
-                    fixture.shell_id,
-                    TakeoverPolicy::PreserveExistingProcess
-                )
+                .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound
@@ -1174,11 +1137,7 @@ mod tests {
         ).unwrap();
         assert_eq!(
             manager
-                .restart_unavailable_pi(
-                    fixture.session_id,
-                    fixture.shell_id,
-                    TakeoverPolicy::ExplicitUserRestart
-                )
+                .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
@@ -1191,7 +1150,7 @@ mod tests {
     fn pi_recovery_rejects_history_replaced_during_takeover() {
         let fixture = PiRecoveryFixture::new();
         let lock = WriterLock::acquire(&fixture.file).unwrap();
-        let (worker, mut bridge) = fixture.begin_recovery(TakeoverPolicy::PreserveExistingProcess);
+        let (worker, mut bridge) = fixture.begin_recovery();
         // The unavailable writer's identity must never turn into a different
         // history merely because the path was reused while takeover waited.
         let original = fixture.file.with_extension("saved.jsonl");
@@ -1231,11 +1190,7 @@ mod tests {
         std::os::unix::fs::symlink(&original, &fixture.file).unwrap();
         assert_eq!(
             manager
-                .restart_unavailable_pi(
-                    fixture.session_id,
-                    fixture.shell_id,
-                    TakeoverPolicy::PreserveExistingProcess
-                )
+                .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::PermissionDenied
@@ -1257,11 +1212,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             manager
-                .restart_unavailable_pi(
-                    fixture.session_id,
-                    fixture.shell_id,
-                    TakeoverPolicy::ExplicitUserRestart
-                )
+                .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::PermissionDenied
@@ -1412,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_pi_restart_preserves_busy_pi_and_explicit_restart_preserves_history() {
+    fn a_busy_pi_axod_does_not_control_is_stopped_and_started_again_keeping_its_history() {
         let directory = test_directory("axor");
         let server_directory = directory.join("server");
         let pi_session_directory = server_directory.join("pi-sessions");
@@ -1529,19 +1480,9 @@ mod tests {
         manager
             .set_layout(session_id, Layout::single(shell_id))
             .unwrap();
-        assert!(
-            manager
-                .restart_unavailable_pi(
-                    session_id,
-                    shell_id,
-                    TakeoverPolicy::PreserveExistingProcess,
-                )
-                .is_err()
-        );
-        assert!(old_pi.0.try_wait().unwrap().is_none());
-
+        // With no bridge answering, nothing proves the lock's holder is Pi: it is left alone.
         let restart_error = manager
-            .restart_unavailable_pi(session_id, shell_id, TakeoverPolicy::ExplicitUserRestart)
+            .restart_unavailable_pi(session_id, shell_id)
             .unwrap_err();
         assert_eq!(
             restart_error.kind(),
@@ -1562,8 +1503,7 @@ mod tests {
         let handshake_pane_id = pane_id.clone();
         let handshake_bridge_token = bridge_token.clone();
         let bridge_server = thread::spawn(move || {
-            for (expected_action, result_reason) in
-                [("shutdownIfIdle", "busy"), ("shutdown", "stale")]
+            // Busy in a turn, it refuses to stop: it is stopped anyway, by signal.
             {
                 let (stream, _) = listener.accept().unwrap();
                 let mut reader = BufReader::new(stream);
@@ -1591,13 +1531,13 @@ mod tests {
                 )
                 .unwrap();
                 let shutdown = bridge::read_record::<Value>(&mut reader).unwrap();
-                assert_eq!(shutdown["action"]["kind"], expected_action);
+                assert_eq!(shutdown["action"]["kind"], "shutdown");
                 bridge::write_record(
                     reader.get_mut(),
                     &json!({
                         "type": "commandResult",
                         "requestId": shutdown["requestId"],
-                        "result": { "accepted": false, "reason": result_reason }
+                        "result": { "accepted": false, "reason": "busy" }
                     }),
                 )
                 .unwrap();
@@ -1610,23 +1550,10 @@ mod tests {
         manager.lock_state().unwrap().agent_command =
             AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
 
-        let automatic_error = manager
-            .restart_unavailable_pi(
-                session_id,
-                shell_id,
-                TakeoverPolicy::PreserveExistingProcess,
-            )
-            .unwrap_err();
-        assert_eq!(
-            automatic_error.kind(),
-            io::ErrorKind::WouldBlock,
-            "{automatic_error}"
-        );
-        assert!(old_pi.0.try_wait().unwrap().is_none());
-        assert!(!manager.list_sessions().unwrap()[0].shells[0].is_available());
-
+        // As at startup, or the app restarting a Pi pane by itself: nothing asked for it, and
+        // the Pi holding the transcript is still not one axod controls.
         let restarted = manager
-            .restart_unavailable_pi(session_id, shell_id, TakeoverPolicy::ExplicitUserRestart)
+            .restart_unavailable_pi(session_id, shell_id)
             .unwrap();
         bridge_server.join().unwrap();
         assert_eq!(restarted.id, session_id);

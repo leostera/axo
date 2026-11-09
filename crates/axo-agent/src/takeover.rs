@@ -1,5 +1,6 @@
-//! Taking a transcript over from a Pi that still holds it: ask over the bridge, and on an
-//! explicit restart escalate to signals aimed only at the verified Pi process group.
+//! Taking a transcript over from a Pi that still holds it. Such a Pi is never one axod controls
+//! (axod's own Pi is a running pane, not a takeover), so it is stopped: asked over its bridge,
+//! then signalled, aimed only at the verified Pi process group, and a new Pi starts in its place.
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -16,15 +17,14 @@ use crate::pi::protocol::{Action, CommandResult, Outgoing, ProtocolVersion, Reco
 use crate::pi::{BridgeSocketPath, bridge};
 use crate::{WriterLock, process_inspection};
 
-const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
 pub const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// One budget for `lsof` and every following `ps`. They take ~0.16 s each on an idle Mac but
 /// up to 1.6 s each while many processes are starting, and an explicit restart the user asked
 /// for should not fail because the machine is busy. Cancellation still ends it early.
 const OWNER_INSPECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LOCK_OWNERS: usize = 32;
-/// How long an explicit restart waits for Pi to release its transcript before escalating: after
-/// asking it to exit, then after SIGTERM, before SIGKILL.
+/// How long a takeover waits for Pi to release its transcript before escalating: after asking it
+/// to exit (or finding its bridge gone), then after SIGTERM, before SIGKILL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TakeoverGrace {
     pub before_terminate: Duration,
@@ -61,14 +61,8 @@ impl VerifiedProcessId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TakeoverPolicy {
-    PreserveExistingProcess,
-    ExplicitUserRestart,
-}
-
-// Keep the authenticated PID even if Pi rejects or misses the graceful-shutdown response.
-// An explicit user restart may still terminate only this verified process group.
+// Keep the authenticated PID even if Pi rejects or misses the graceful-shutdown response:
+// it is still the only process group a takeover may terminate.
 pub struct ShutdownAttempt {
     pub process_id: VerifiedProcessId,
     pub graceful_shutdown: io::Result<()>,
@@ -106,12 +100,12 @@ pub struct TakeoverTarget<'a> {
     pub previous_token: Option<&'a str>,
 }
 
-/// Acquires the Session's writer lock, taking it over from the running Pi if needed.
-/// `PreserveExistingProcess` only asks an idle Pi to exit; `ExplicitUserRestart` may terminate
-/// the verified Pi process group. `signal` must re-check cancellation before signalling.
+/// Acquires the Session's writer lock, stopping the Pi that holds it if there is one: asked to
+/// shut down, then SIGTERM and SIGKILL on its verified process group as `grace` runs out. A
+/// holder that cannot be verified as this Session's Pi is never signalled. `signal` must
+/// re-check cancellation before signalling.
 pub fn take_over(
     target: TakeoverTarget<'_>,
-    takeover_policy: TakeoverPolicy,
     grace: TakeoverGrace,
     interrupt: &Interrupt<'_>,
     signal: &impl Fn(VerifiedProcessId, libc::c_int) -> io::Result<()>,
@@ -127,100 +121,83 @@ pub fn take_over(
     } = target;
     interrupt.check()?;
     match WriterLock::acquire_settled(session_file, interrupt) {
-        Ok(lock) => Ok(lock),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            log::info!(
-                "event=session.pi_takeover_requested session_id={}",
-                session_id
-            );
-            let shutdown_attempt = match previous_token {
-                Some(token) => match request_shutdown(
-                    BridgeTarget {
-                        bridge_socket: bridge_socket.as_path(),
-                        token,
-                        session_uuid,
-                        pane_id,
-                        initial_pwd,
-                        session_file,
-                    },
-                    takeover_policy,
-                    interrupt,
-                ) {
-                    Ok(attempt) => attempt,
-                    Err(error)
-                        if takeover_policy == TakeoverPolicy::ExplicitUserRestart
-                            && bridge_unavailable_for_restart(&error) =>
-                    {
-                        interrupt.check()?;
-                        shutdown_attempt_from_lock(session_id, session_file, error, interrupt)?
-                    }
-                    Err(error) if bridge_gone(&error) => {
-                        // pi-axo closes the bridge when Pi's session shuts down, before Pi
-                        // exits and lets go of the transcript: a Pi holding it with no bridge is
-                        // most likely exiting, so wait for it. One that keeps it (its bridge
-                        // never started) is still refused, once the wait is up.
-                        log::info!(
-                            "event=session.pi_takeover_waiting session_id={} reason=bridge_gone",
-                            session_id
-                        );
-                        return WriterLock::wait(session_file, TAKEOVER_TIMEOUT, interrupt);
-                    }
-                    Err(error) => return Err(error),
-                },
-                None if takeover_policy == TakeoverPolicy::ExplicitUserRestart => {
-                    interrupt.check()?;
-                    shutdown_attempt_from_lock(
-                        session_id,
-                        session_file,
-                        io::Error::new(
-                            io::ErrorKind::ConnectionRefused,
-                            "Pi bridge credential is unavailable",
-                        ),
-                        interrupt,
-                    )?
-                }
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "Pi transcript is held by a legacy writer that cannot be controlled by RPC",
-                    ));
-                }
-            };
-            let lock = match takeover_policy {
-                TakeoverPolicy::PreserveExistingProcess => {
-                    shutdown_attempt.graceful_shutdown?;
-                    WriterLock::wait_for_holder(
-                        session_file,
-                        shutdown_attempt.process_id.0 as u32,
-                        TAKEOVER_TIMEOUT,
-                        interrupt,
-                    )?
-                }
-                TakeoverPolicy::ExplicitUserRestart => {
-                    if let Err(error) = &shutdown_attempt.graceful_shutdown {
-                        log::warn!(
-                            "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
-                            session_id,
-                            error.kind()
-                        );
-                    }
-                    wait_then_terminate(
-                        session_file,
-                        shutdown_attempt.process_id,
-                        grace,
-                        interrupt,
-                        signal,
-                    )?
-                }
-            };
-            log::info!(
-                "event=session.pi_takeover_completed session_id={}",
-                session_id
-            );
-            Ok(lock)
-        }
-        Err(error) => Err(error),
+        Ok(lock) => return Ok(lock),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+        Err(error) => return Err(error),
     }
+    log::info!(
+        "event=session.pi_takeover_requested session_id={}",
+        session_id
+    );
+    let mut grace = grace;
+    let shutdown_attempt = match previous_token {
+        Some(token) => match request_shutdown(
+            BridgeTarget {
+                bridge_socket: bridge_socket.as_path(),
+                token,
+                session_uuid,
+                pane_id,
+                initial_pwd,
+                session_file,
+            },
+            interrupt,
+        ) {
+            Ok(attempt) => attempt,
+            Err(error) if bridge_gone(&error) => {
+                // pi-axo closes the bridge when Pi's session shuts down, before Pi exits and
+                // lets go of the transcript: a Pi holding it with no bridge is most likely
+                // exiting. It gets the grace a Pi told to stop gets, then is stopped.
+                log::info!(
+                    "event=session.pi_takeover_waiting session_id={} reason=bridge_gone",
+                    session_id
+                );
+                match WriterLock::wait(session_file, grace.before_terminate, interrupt) {
+                    Ok(lock) => return Ok(lock),
+                    Err(waited) if waited.kind() == io::ErrorKind::TimedOut => {}
+                    Err(waited) => return Err(waited),
+                }
+                grace.before_terminate = Duration::ZERO;
+                interrupt.check()?;
+                shutdown_attempt_from_lock(session_id, session_file, error, interrupt)?
+            }
+            Err(error) if bridge_unavailable(&error) => {
+                interrupt.check()?;
+                shutdown_attempt_from_lock(session_id, session_file, error, interrupt)?
+            }
+            Err(error) => return Err(error),
+        },
+        None => {
+            interrupt.check()?;
+            shutdown_attempt_from_lock(
+                session_id,
+                session_file,
+                io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "Pi bridge credential is unavailable",
+                ),
+                interrupt,
+            )?
+        }
+    };
+    if let Err(error) = &shutdown_attempt.graceful_shutdown {
+        log::warn!(
+            "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
+            session_id,
+            error.kind()
+        );
+    }
+    let lock = wait_then_terminate(
+        session_file,
+        shutdown_attempt.process_id,
+        grace,
+        interrupt,
+        signal,
+    )?;
+    log::info!(
+        "event=session.pi_takeover_completed session_id={}",
+        session_id
+    );
+    Ok(lock)
 }
 
 fn wait_then_terminate(
@@ -347,7 +324,6 @@ fn connect_to_bridge(
 
 fn request_shutdown(
     target: BridgeTarget<'_>,
-    takeover_policy: TakeoverPolicy,
     interrupt: &Interrupt<'_>,
 ) -> io::Result<ShutdownAttempt> {
     let session_uuid = target.session_uuid;
@@ -356,14 +332,10 @@ fn request_shutdown(
     let (mut reader, process_id) = connect_to_bridge(target, deadline, interrupt)?;
     interrupt.check()?;
     let request_id = format!("takeover-{}", new_uuid_v4()?);
-    let action = match takeover_policy {
-        TakeoverPolicy::PreserveExistingProcess => Action::ShutdownIfIdle,
-        TakeoverPolicy::ExplicitUserRestart => Action::Shutdown,
-    };
     let command = Outgoing::Command {
         request_id: &request_id,
         axo_session_id: session_uuid,
-        action,
+        action: Action::Shutdown,
     };
     let graceful_shutdown = bridge::write_record(reader.get_mut(), &command).and_then(|()| {
         loop {
@@ -461,7 +433,8 @@ fn bridge_gone(error: &io::Error) -> bool {
     )
 }
 
-fn bridge_unavailable_for_restart(error: &io::Error) -> bool {
+/// The bridge cannot answer: the holder is found and verified through the lock instead.
+fn bridge_unavailable(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::ConnectionRefused
@@ -716,7 +689,6 @@ mod tests {
         };
         take_over(
             target,
-            TakeoverPolicy::PreserveExistingProcess,
             TakeoverGrace::default(),
             &Interrupt::never(),
             &|_, _| panic!("no Pi to signal"),
@@ -751,7 +723,6 @@ mod tests {
         };
         take_over(
             target,
-            TakeoverPolicy::PreserveExistingProcess,
             TakeoverGrace::default(),
             &Interrupt::never(),
             &|_, _| panic!("an exiting Pi is not signalled"),
@@ -925,12 +896,12 @@ mod tests {
             io::ErrorKind::ConnectionReset,
             io::ErrorKind::NotFound,
         ] {
-            assert!(bridge_unavailable_for_restart(&io::Error::from(kind)));
+            assert!(bridge_unavailable(&io::Error::from(kind)));
         }
-        assert!(!bridge_unavailable_for_restart(&io::Error::from(
+        assert!(!bridge_unavailable(&io::Error::from(
             io::ErrorKind::PermissionDenied
         )));
-        assert!(!bridge_unavailable_for_restart(&io::Error::from(
+        assert!(!bridge_unavailable(&io::Error::from(
             io::ErrorKind::InvalidData
         )));
     }

@@ -4,7 +4,6 @@ use super::*;
 use axo_agent::AgentCommand;
 use axo_agent::pi::BridgeSocketPath;
 use axo_agent::pi::bridge;
-use axo_agent::takeover::TakeoverPolicy;
 use axo_panes::UnavailablePane;
 use axo_protocol::{Event, Layout, SessionId, ShellId, Viewport, new_uuid_v4};
 use axo_pty::exit::WatchedChild;
@@ -240,15 +239,12 @@ impl PiRecoveryFixture {
         }
     }
 
-    pub(super) fn begin_recovery(
-        &self,
-        policy: TakeoverPolicy,
-    ) -> (JoinHandle<io::Result<()>>, BufReader<UnixStream>) {
+    pub(super) fn begin_recovery(&self) -> (JoinHandle<io::Result<()>>, BufReader<UnixStream>) {
         let session_id = self.session_id;
         let shell_id = self.shell_id;
         self.observe_operation(move |manager| {
             manager
-                .restart_unavailable_pi(session_id, shell_id, policy)
+                .restart_unavailable_pi(session_id, shell_id)
                 .map(|_| ())
         })
     }

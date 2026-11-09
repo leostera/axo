@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use super::SessionManager;
 use super::prompts::PromptError;
-use axo_agent::takeover::TakeoverPolicy;
 use axo_ipc::TypedMethods;
 use axo_protocol::rpc::{self, method};
 use axo_protocol::{Event, Layout, RelayStatus, SessionId, ShellId, Viewport};
@@ -651,11 +650,7 @@ impl SessionManager {
                     shell_id,
                 } = request;
                 manager
-                    .restart_unavailable_pi(
-                        session_id,
-                        shell_id,
-                        TakeoverPolicy::PreserveExistingProcess,
-                    )
+                    .restart_unavailable_pi(session_id, shell_id)
                     .map_err(|error| automatic_pi_restart_rpc_error(session_id, shell_id, error))
             },
         );
@@ -670,11 +665,7 @@ impl SessionManager {
                     shell_id,
                 } = request;
                 manager
-                    .restart_unavailable_pi(
-                        session_id,
-                        shell_id,
-                        TakeoverPolicy::ExplicitUserRestart,
-                    )
+                    .restart_unavailable_pi(session_id, shell_id)
                     .map_err(|error| pi_restart_rpc_error(session_id, shell_id, error))
             },
         );

@@ -64,8 +64,6 @@ pub enum Outgoing<'a> {
 pub enum Action<'a> {
     /// Exit now, aborting any turn in progress.
     Shutdown,
-    /// Exit only if no turn is in progress; otherwise answer `busy`.
-    ShutdownIfIdle,
     /// Submit `text` as a user message. An idle Pi starts a turn with it; a working Pi queues
     /// it as `delivery` says, or answers `busy` when there is none.
     Send {
@@ -236,14 +234,14 @@ mod tests {
             serde_json::to_value(Outgoing::Command {
                 request_id: "takeover-1",
                 axo_session_id: "session",
-                action: Action::ShutdownIfIdle,
+                action: Action::Shutdown,
             })
             .unwrap(),
             json!({
                 "type": "command",
                 "requestId": "takeover-1",
                 "axoSessionId": "session",
-                "action": { "kind": "shutdownIfIdle" }
+                "action": { "kind": "shutdown" }
             })
         );
         assert_eq!(

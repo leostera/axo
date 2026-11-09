@@ -95,14 +95,6 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       return { accepted: false as const, reason: "stale" as const };
     }
 
-    if (command.action.kind === "shutdownIfIdle") {
-      if (!activeContext.isIdle()) {
-        return { accepted: false as const, reason: "busy" as const };
-      }
-      setImmediate(() => activeContext.shutdown());
-      return { accepted: true as const };
-    }
-
     if (command.action.kind === "shutdown") {
       if (!activeContext.isIdle()) activeContext.abort();
       setImmediate(() => activeContext.shutdown());

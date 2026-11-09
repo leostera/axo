@@ -37,20 +37,13 @@ test("parses a graceful shutdown command for takeover", () => {
   });
 });
 
-test("parses the idle-only shutdown command for automatic recovery", () => {
-  assert.deepEqual(parsePiControlCommand({
+test("rejects the idle-only shutdown: a Pi axod does not control is stopped, busy or not", () => {
+  assert.equal(parsePiControlCommand({
     type: "command",
     requestId: "automatic-takeover-1",
     axoSessionId: sessionId,
     action: { kind: "shutdownIfIdle" },
-  }, sessionId), {
-    ok: true,
-    command: {
-      requestId: "automatic-takeover-1",
-      axoSessionId: sessionId,
-      action: { kind: "shutdownIfIdle" },
-    },
-  });
+  }, sessionId).ok, false);
 });
 
 test("rejects commands for a different Session and unknown fields", () => {

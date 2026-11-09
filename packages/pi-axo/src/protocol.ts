@@ -32,7 +32,6 @@ export type PiControlAction =
   /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
   | { kind: "stop"; turnId?: string; seen?: string; commandIds?: string[] }
   | { kind: "shutdown" }
-  | { kind: "shutdownIfIdle" }
   /** Switches this Session's model, thinking level, or both (RFD0033). */
   | { kind: "setModel"; model?: { provider: string; id: string }; thinkingLevel?: ThinkingLevel };
 
@@ -159,9 +158,6 @@ function parseAction(value: unknown): PiControlAction | null {
   }
   if (value.kind === "shutdown" && hasOnlyKeys(value, ["kind"])) {
     return { kind: "shutdown" };
-  }
-  if (value.kind === "shutdownIfIdle" && hasOnlyKeys(value, ["kind"])) {
-    return { kind: "shutdownIfIdle" };
   }
   return null;
 }

@@ -17,7 +17,6 @@ use super::agents::AgentState;
 use super::prompts::pi_command_sender;
 use super::{SessionManager, SessionState};
 use axo_agent::pi::protocol::{CommandResult, RejectReason};
-use axo_agent::takeover::TakeoverPolicy;
 use axo_protocol::{
     PaneRole, PiCommandInfo, PiModelInfo, PiRuntime, SessionId, ShellId, ThinkingLevel,
 };
@@ -237,11 +236,7 @@ impl SessionManager {
                         shell_id
                     }
                 };
-                match manager.restart_unavailable_pi(
-                    session_id,
-                    shell_id,
-                    TakeoverPolicy::ExplicitUserRestart,
-                ) {
+                match manager.restart_unavailable_pi(session_id, shell_id) {
                     Ok(_) => log::info!("event=session.pi_restarted session_id={session_id}"),
                     // Another restart got there first; that one is the restart asked for.
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
