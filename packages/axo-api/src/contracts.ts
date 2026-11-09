@@ -10,7 +10,10 @@ export const LIMITS = {
   batchCalls: 8,
   machines: 16,
   pendingPerMachine: 128,
-  leaseMs: 30_000,
+  /** How often axod renews its lease (`HEARTBEAT_INTERVAL`, RFD0037). */
+  heartbeatMs: 60_000,
+  /** How long a route is kept without a heartbeat: two heartbeats and a deadline. */
+  leaseMs: 150_000,
   deadlineMs: 10_000,
 } as const;
 export const idSchema = z.union([

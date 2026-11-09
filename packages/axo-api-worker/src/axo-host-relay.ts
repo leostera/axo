@@ -214,9 +214,9 @@ export abstract class AxoHostRelay extends DurableObject<Env> {
     const peer = parsed.data;
     if (!(await this.authorizeRelayPeer(request, peer)))
       return new Response("Host is not authorized", { status: 403 });
+    // The newest socket wins (RFD0037): an old one still holding its lease may be dead where this
+    // object cannot see it, after the Mac woke on another network.
     const old = this.route(peer.machineId);
-    if (old && old.lease_until > now && this.socket(old.connection_id))
-      return new Response("Duplicate machine connection", { status: 409 });
     if (old) this.fence(old.connection_id);
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO route (machine_id, connection_id, generation, lease_until, ready) VALUES (?, ?, NULL, ?, 0)",

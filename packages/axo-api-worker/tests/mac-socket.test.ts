@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { callSchema, decode, replySchema, splitMessage } from "@axo/protocol";
+import { callSchema, decode, LIMITS, replySchema, splitMessage } from "@axo/protocol";
 import { Peer } from "../testing/client";
 import { harness, root, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost, type PairedHost } from "./account-support";
@@ -97,6 +97,28 @@ test("one socket cannot change its host generation while it registers", async (t
   assert.ok(replies.some((reply) => reply.id === "second" && "error" in reply));
   assert.ok("result" in (await daemon.call("axo.host.heartbeat", heartbeat(host))), "the first generation holds the lease");
   assert.equal(code(await daemon.call("axo.host.heartbeat", heartbeat(host, second))), -32602);
+});
+
+test("a Mac's newest socket replaces its route at once, however long the old lease had left", async (t) => {
+  // RFD0037 (specs/relay/host-lease.ts): a laptop that wakes on another network reconnects while
+  // its old socket, dead where the HostDO cannot see, still holds the lease. It is let in.
+  const { h, session, host } = await paired(t);
+  const old = await connectHost(h, session, host);
+  t.after(() => old.close());
+  const replacement = await connectHost(h, session, host);
+  t.after(() => replacement.close());
+  assert.ok("result" in (await replacement.call("axo.host.heartbeat", heartbeat(host))), "the newest socket holds the lease");
+  const stale = await Promise.race([
+    old.call("axo.host.heartbeat", heartbeat(host)).then((reply) => ("error" in reply ? "refused" : "renewed")),
+    old.closed.then(() => "closed"),
+  ]);
+  assert.notEqual(stale, "renewed", "the replaced socket is fenced");
+});
+
+test("the lease outlasts two of axod's heartbeats and a deadline", () => {
+  // axod's HEARTBEAT_INTERVAL (crates/axo-relay/src/relay.rs) is LIMITS.heartbeatMs.
+  assert.equal(LIMITS.heartbeatMs, 60_000);
+  assert.ok(LIMITS.leaseMs >= 2 * LIMITS.heartbeatMs + LIMITS.deadlineMs, JSON.stringify(LIMITS));
 });
 
 test("a fragmented call from a Mac is reassembled and answered", async (t) => {
