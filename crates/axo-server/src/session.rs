@@ -28,6 +28,7 @@ mod catalog;
 mod cloud_transcripts;
 mod computer;
 mod devices;
+pub(crate) mod event_stream;
 mod events;
 mod handlers;
 mod input_key;

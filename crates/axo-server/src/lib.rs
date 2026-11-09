@@ -281,6 +281,11 @@ pub fn serve_ipc(
     upgrades.add(axo_mcp::OPEN, move |upgraded| {
         axo_mcp::upgrade(upgraded, mcp_socket.clone())
     });
+    // Clients hear of events on a connection of their own, pushed as they happen (RFD0037).
+    let streaming = Arc::clone(&sessions);
+    upgrades.add(session::event_stream::STREAM, move |upgraded| {
+        session::event_stream::serve(Arc::clone(&streaming), upgraded)
+    });
     let served = axo_ipc::serve(runtime.handle(), listener, handler, upgrades, stop);
     if let Some(relay) = remote_relay.as_mut() {
         relay.shutdown();

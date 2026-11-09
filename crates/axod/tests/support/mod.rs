@@ -301,15 +301,35 @@ impl Axod {
         }
     }
 
+    /// A stream of events on a connection of its own (`axo.session.events.stream`).
     pub fn subscribe(&self, params: Value) -> Events<'_> {
-        let subscribed = self.ok("axo.session.subscribe", params);
+        let mut stream = UnixStream::connect(self.socket()).unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "axo.session.events.stream", "params": params })
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let mut answer = String::new();
+        reader.read_line(&mut answer).unwrap();
+        let answer: Value = serde_json::from_str(&answer).unwrap_or_else(|_| {
+            panic!("the stream answered {answer:?}\naxod log:\n{}", self.log())
+        });
+        let id = answer["result"]["subscriptionId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the stream refused: {answer}\naxod log:\n{}", self.log()))
+            .to_owned();
         Events {
             axod: self,
-            id: subscribed["subscriptionId"]
-                .as_str()
-                .expect("a subscription id")
-                .to_owned(),
+            id,
             seen: Vec::new(),
+            stream,
+            reader,
+            partial: String::new(),
         }
     }
 
@@ -400,16 +420,42 @@ pub struct Events<'a> {
     pub id: String,
     /// Every event received so far, in order.
     pub seen: Vec<Value>,
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
+    /// What a read that timed out had of the next line.
+    partial: String,
 }
 
 impl Events<'_> {
-    /// The next batch, waiting up to `timeout_ms`.
+    /// The next batch axod pushed, waiting up to `timeout_ms`; empty if none came.
     pub fn next(&mut self, timeout_ms: u64) -> Vec<Value> {
-        let batch = self.axod.ok(
-            "axo.session.events.next",
-            json!({ "subscriptionId": self.id, "timeoutMs": timeout_ms, "maxEvents": 256 }),
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(timeout_ms.max(1))))
+            .unwrap();
+        match self.reader.read_line(&mut self.partial) {
+            Ok(0) => panic!("axod ended the stream\naxod log:\n{}", self.axod.log()),
+            Ok(_) if self.partial.ends_with('\n') => {}
+            Ok(_) => return Vec::new(),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Vec::new();
+            }
+            Err(error) => panic!("the stream failed: {error}"),
+        }
+        let line = std::mem::take(&mut self.partial);
+        let notification: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            notification["method"], "axo.session.events",
+            "{notification}"
         );
-        let events = batch["events"].as_array().cloned().unwrap_or_default();
+        let events = notification["params"]["events"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         self.seen.extend(events.iter().cloned());
         events
     }

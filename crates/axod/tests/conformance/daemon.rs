@@ -165,6 +165,37 @@ fn one_connection_carries_many_calls_in_order() {
 }
 
 #[test]
+fn events_are_pushed_on_their_own_connection_until_it_closes() {
+    let axod = Axod::start();
+    // More streams than axod keeps subscriptions for: closing each one ends its subscription.
+    for _ in 0..70 {
+        drop(axod.subscribe(json!({ "includeTerminalOutput": false })));
+    }
+    let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
+    let session = axod.ok("axo.session.create", json!({}));
+    let id = session["id"].as_str().unwrap().to_owned();
+    events.wait_for("the new Session's event, pushed", |event| {
+        event.to_string().contains(&id).then_some(())
+    });
+    // A stream for a Session that is not open is refused.
+    let mut stream = UnixStream::connect(axod.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    writeln!(
+        stream,
+        "{}",
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "axo.session.events.stream",
+                "params": { "sessionId": "00000000-0000-4000-8000-000000000000" } })
+    )
+    .unwrap();
+    let mut answer = String::new();
+    BufReader::new(stream).read_line(&mut answer).unwrap();
+    let answer: Value = serde_json::from_str(&answer).unwrap();
+    assert!(answer.get("error").is_some(), "{answer}");
+}
+
+#[test]
 fn a_subscription_sees_sessions_change_and_ends_when_asked() {
     let axod = Axod::start();
     let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
@@ -265,7 +296,11 @@ fn a_signal_stops_axod_cleanly() {
         while axod.running() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(!axod.running(), "signal {signal} did not stop axod:\n{}", axod.log());
+        assert!(
+            !axod.running(),
+            "signal {signal} did not stop axod:\n{}",
+            axod.log()
+        );
         let log = axod.log();
         assert!(log.contains("event=daemon.server_stopped"), "{log}");
     }
