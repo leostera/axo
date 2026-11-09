@@ -1,0 +1,165 @@
+import Foundation
+import Observation
+
+/// One chat's conversation as the screen lists it: rows that are made once and kept, in the order
+/// they came.
+///
+/// The transcript is one value, and changes with every word of a reply; a screen that read it
+/// whole would lay out the whole conversation again each time. The feed holds each row as an
+/// object of its own instead. A change to the transcript changes the rows it touches, in place,
+/// and adds the new ones; a row's view observes its row alone, so a reply being written redraws
+/// that reply, and the list redraws only when a row is added.
+///
+/// Rows only ever go on the end, and keep their places: a row never moves, and none is taken out
+/// from under the reader while what it shows is still coming. The exceptions are a page of older
+/// history, which goes on the top; a message the person took back; and a transcript read again
+/// from the start (a cut, or a reload), which starts the rows again.
+@MainActor
+@Observable
+public final class ConversationFeed {
+  /// One row: a message, a message on its way, or one the agent took while busy. Its `id` is the
+  /// key its message keeps from first words to record, so it is the same object all along.
+  @MainActor
+  @Observable
+  public final class Item: Identifiable {
+    public let id: String
+    public fileprivate(set) var row: ConversationRow
+
+    init(_ row: ConversationRow) {
+      id = row.id
+      self.row = row
+    }
+  }
+
+  /// What is at the end of the conversation: it changes when a row is added at the end or the
+  /// last one grows, which is when a reader at the end follows.
+  public struct End: Equatable, Sendable {
+    public var count = 0
+    public var lastKey: String?
+    public var lastLength = 0
+  }
+
+  /// The rows, top to bottom.
+  public private(set) var items: [Item] = []
+  /// Whether the agent is working: a tool that has not answered yet is running.
+  public private(set) var working = false
+  /// Whether a tool it called has not answered yet.
+  public private(set) var callingTools = false
+  /// What the agent is asking the person, while it waits.
+  public private(set) var question: ChatQuestion?
+  public private(set) var end = End()
+  /// How the messages written while the chat is on screen come in. Rows read it; never observed.
+  @ObservationIgnored public let reveal = ConversationReveal()
+  /// Whether messages come in at all: off where motion is reduced.
+  @ObservationIgnored public var animates = true {
+    didSet { if animates != oldValue { rebuild() } }
+  }
+
+  @ObservationIgnored private var transcript = ChatTranscript()
+  @ObservationIgnored private var pending: [HostWorkbenchModel.PendingPrompt] = []
+  @ObservationIgnored private var byID: [String: Item] = [:]
+  /// Bumped each time the chat comes on screen: what it holds then is history, shown as it is.
+  @ObservationIgnored private var visit = 0
+
+  public nonisolated init() {}
+
+  /// The chat's transcript or its pending messages changed.
+  func update(transcript: ChatTranscript, pending: [HostWorkbenchModel.PendingPrompt]) {
+    self.transcript = transcript
+    self.pending = pending
+    rebuild()
+  }
+
+  /// The chat came on screen: everything it holds now just appears.
+  public func opened() {
+    visit += 1
+    rebuild()
+  }
+
+  /// All of `key`'s words are out: it shows as it is, and what waited behind it comes.
+  public func finished(_ key: String) {
+    reveal.finished(key)
+    rebuild()
+  }
+
+  private func rebuild() {
+    let shown: [ConversationReveal.Shown] =
+      animates
+      ? reveal.shown(sessionId: "\(visit)", messages: transcript.messages, live: transcript.live)
+      : transcript.messages.map { .init(message: $0, isLive: false, presentation: .plain) }
+        + transcript.live.map { .init(message: $0, isLive: true, presentation: .plain) }
+    keep(ConversationRow.rows(shown: shown, pending: pending, queued: transcript.queued))
+    let working = transcript.activity == .working
+    if self.working != working { self.working = working }
+    let callingTools = working && transcript.messages.contains { $0.tool?.status == .running }
+    if self.callingTools != callingTools { self.callingTools = callingTools }
+    if question != transcript.question { question = transcript.question }
+  }
+
+  /// Brings the rows to `wanted`, the order the conversation would have them in now, without
+  /// moving a row already held: a held row is changed where it is, a new one goes on the end (or
+  /// the top, before every held row: an older page).
+  private func keep(_ wanted: [ConversationRow]) {
+    // A recorded message the transcript no longer has: it was cut back or read again from the
+    // start. Nothing held can be trusted to be in its place; the rows start again.
+    let inTranscript = Set(transcript.messages.map(\.key)).union(transcript.live.map(\.key))
+    if items.contains(where: { item in
+      if case .message(let shown) = item.row, !shown.isLive { return !inTranscript.contains(item.id) }
+      return false
+    }) {
+      items = []
+      byID = [:]
+    }
+
+    var top: [Item] = []
+    var bottom: [Item] = []
+    var reachedHeld = false
+    var wantedIDs = Set<String>()
+    for row in wanted {
+      wantedIDs.insert(row.id)
+      if let item = byID[row.id] {
+        reachedHeld = true
+        if item.row != row { item.row = row }
+      } else {
+        let item = Item(row)
+        byID[row.id] = item
+        if reachedHeld || items.isEmpty { bottom.append(item) } else { top.append(item) }
+      }
+    }
+    let recorded = Set(transcript.messages.map(\.key))
+    let queued = Set(transcript.queued.map(\.key))
+    let kept = items.filter { item in
+      wantedIDs.contains(item.id) || stays(item, recorded: recorded, queued: queued)
+    }
+    for item in items where !kept.contains(where: { $0 === item }) { byID[item.id] = nil }
+    let next = top + kept + bottom
+    if next.map(ObjectIdentifier.init) != items.map(ObjectIdentifier.init) { items = next }
+
+    let last = items.last
+    let end = End(count: items.count, lastKey: last?.id, lastLength: last.map(Self.length) ?? 0)
+    if self.end != end { self.end = end }
+  }
+
+  /// Whether a row the conversation does not list now stays anyway: what it shows is still coming.
+  private func stays(_ item: Item, recorded: Set<String>, queued: Set<String>) -> Bool {
+    switch item.row {
+    case .message(let shown):
+      // A reply whose words were cleared before its record came: it stays as it was until the
+      // record takes its place. One with no stamp to know its record by goes when it is cleared.
+      return shown.message.replyKey != nil
+    case .pending, .queued:
+      // Taken by the log, its message held back behind a reply still being let out: it stays
+      // until that message takes its place. Taken back by the person, or run as a command, it goes.
+      return recorded.contains(item.id) || queued.contains(item.id)
+    }
+  }
+
+  /// How much a row shows, for following it as it grows.
+  private static func length(_ item: Item) -> Int {
+    switch item.row {
+    case .message(let shown): shown.message.text.count + (shown.message.tool?.output.count ?? 0)
+    case .pending(let prompt): prompt.text.count
+    case .queued(let prompt): prompt.text.count
+    }
+  }
+}

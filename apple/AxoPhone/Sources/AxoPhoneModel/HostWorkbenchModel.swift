@@ -22,10 +22,16 @@ extension AccountConnection: ChatFeed {}
 public final class Chat {
   /// What the agent has said, from stored history plus what has happened since; nil until
   /// anything is known.
-  public fileprivate(set) var transcript: ChatTranscript?
+  public fileprivate(set) var transcript: ChatTranscript? {
+    didSet { feed.update(transcript: transcript ?? ChatTranscript(), pending: pending) }
+  }
   public fileprivate(set) var history: HostWorkbenchModel.HistoryState?
   /// Messages the phone sent that the agent has not recorded yet, oldest first.
-  public fileprivate(set) var pending: [HostWorkbenchModel.PendingPrompt] = []
+  public fileprivate(set) var pending: [HostWorkbenchModel.PendingPrompt] = [] {
+    didSet { feed.update(transcript: transcript ?? ChatTranscript(), pending: pending) }
+  }
+  /// The conversation's rows, kept as the transcript changes: what the screen lists.
+  @ObservationIgnored public let feed = ConversationFeed()
   /// The person asked to stop the reply, and Pi has not stopped yet.
   public fileprivate(set) var isStopping = false
   /// Where a restart of the chat's Pi asked for here is (RFD0033); nil when none is.

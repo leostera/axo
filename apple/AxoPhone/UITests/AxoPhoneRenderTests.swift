@@ -103,9 +103,12 @@ final class AxoPhoneRenderTests: XCTestCase {
     print("RENDERS stream 20 updates:", streamed.sorted { $0.key < $1.key })
     // The growing reply redraws once an update; the messages above it do not. Its words are let
     // out about thirty times a second, which redraws its text alone.
-    XCTAssertLessThanOrEqual(streamed["Message", default: 0], 30)
+    XCTAssertLessThanOrEqual(streamed["Message", default: 0], 25)
     XCTAssertLessThanOrEqual(streamed["Markdown", default: 0], 90)
     XCTAssertLessThanOrEqual(streamed["Conversation", default: 0], 6, "only as Pi starts and stops")
+    // The list of rows redraws only as a row is added (the reply's first words, its record), not
+    // with every word: the reply's row reads its words itself.
+    XCTAssertLessThanOrEqual(streamed["Transcript", default: 0], 3, "the list redraws only when a row is added")
   }
 
   @MainActor

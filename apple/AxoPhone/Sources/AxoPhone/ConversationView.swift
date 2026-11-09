@@ -38,19 +38,19 @@ struct ConversationView: View {
   /// The screen's bottom inset: the home indicator's (at most a few dozen points), or the
   /// keyboard's while it is up (always far taller).
   @State private var bottomInset: CGFloat = 0
-  /// How what is written while the chat is on screen comes in. Held, never observed: rows ask it.
-  @State private var reveal = ConversationReveal()
-  /// Bumped when a reply's words are all out, so what waited behind it shows.
-  @State private var revealsFinished = 0
+  /// The rows of a chat that does not exist yet: none.
+  @State private var noFeed = ConversationFeed()
+  /// What the rows do, kept apart so that a row compares equal to itself when the list redraws.
+  @State private var actions = ConversationRowActions()
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.displayScale) private var displayScale
   private var keyboardIsUp: Bool { bottomInset > 100 }
 
   /// This chat's own state: what it reads is what redraws it, so other chats' events do not.
   private var chat: Chat? { session.flatMap { workbench?.chat($0.sessionId) } }
-  private var transcript: ChatTranscript { chat?.transcript ?? ChatTranscript() }
-  private var pending: [HostWorkbenchModel.PendingPrompt] { chat?.pending ?? [] }
-  private var historyState: HostWorkbenchModel.HistoryState? { chat?.history }
+  /// The conversation's rows, kept as the transcript changes (see `ConversationFeed`). The list
+  /// reads only them: a reply being written redraws its own row, and the list only gains rows.
+  private var feed: ConversationFeed { chat?.feed ?? noFeed }
 
   var body: some View {
     let _ = RenderCount.note("Conversation")
@@ -59,6 +59,13 @@ struct ConversationView: View {
       .conversationBar(edge: .top) { header }
       .conversationBar(edge: .bottom) { bottomBar }
       .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
+      // On screen, what the chat holds is history: it just appears.
+      .onChange(of: session?.sessionId, initial: true) {
+        actions.chat(session?.sessionId, workbench: workbench, phone: phone)
+        feed.animates = !reduceMotion
+        feed.opened()
+      }
+      .onChange(of: reduceMotion) { feed.animates = !reduceMotion }
       #if DEBUG && targetEnvironment(simulator)
         .overlay(alignment: .topTrailing) {
           if PreviewFixture.live == "flood" {
@@ -74,53 +81,17 @@ struct ConversationView: View {
       let _ = RenderCount.note("Transcript")
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 30) {
-          olderHistory
-          if transcript.messages.isEmpty { emptyState }
-          // The records, the person's messages on their way and the reply as far as it has got,
-          // each in the place it keeps (see `ConversationRow`).
-          ForEach(ConversationRow.rows(shown: shownMessages, pending: pending, queued: transcript.queued)) { row in
-            switch row {
-            case .message(let shown):
-              ChatMessageView(
-                message: shown.message, piIsWorking: shown.isLive || transcript.activity == .working, isLive: shown.isLive,
-                entrance: entrance(of: shown))
-            case .pending(let prompt):
-              PendingPromptView(
-                prompt: prompt,
-                editAgain: {
-                  if let selection = phone.selection { phone.setDraft(prompt.text, for: selection) }
-                  if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) }
-                },
-                dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
-            case .queued(let prompt):
-              QueuedPromptView(prompt: prompt)
-            }
+          // What reads the chat's history state, which changes with every record, reads it itself.
+          OlderHistoryRow(chat: chat, load: loadOlder)
+          if feed.items.isEmpty { ConversationEmptyState(chat: chat, isNew: session == nil, canSend: canSend, pull: pull) }
+          // The rows, each made once and kept where it came (see `ConversationFeed`); each redraws
+          // when its own row changes.
+          ForEach(feed.items) { item in
+            ConversationItemView(item: item, feed: feed, actions: actions)
           }
           if let id = session?.sessionId {
-            ForEach(phone.questions(in: id)) { question in
-              if question.elicitation.input != nil {
-                InputCard(question: question, canAnswer: workbench?.status == .online, failure: phone.answerFailure) { action, values in
-                  Task { await phone.answer(question.id, action, values: values) }
-                }
-              } else {
-                ElicitationCard(question: question, canAnswer: workbench?.status == .online, failure: phone.answerFailure) { action in
-                  Task { await phone.answer(question.id, action) }
-                }
-              }
-            }
-          }
-          if let question = transcript.question, let id = session?.sessionId {
-            QuestionCard(question: question, canAnswer: canSend) { answer in
-              Task { await workbench?.answer(answer, in: id) }
-            }
-          }
-          if transcript.activity == .working, let id = session?.sessionId {
-            AgentActivityView(
-              callingTools: transcript.messages.contains { $0.tool?.status == .running },
-              waiting: transcript.question != nil,
-              stopping: chat?.isStopping == true,
-              canStop: workbench?.status == .online,
-              stop: { Task { await workbench?.stopReply(in: id) } })
+            ElicitationCards(phone: phone, session: id, canAnswer: workbench?.status == .online)
+            ConversationFooter(feed: feed, chat: chat, workbench: workbench, session: id, canSend: canSend)
           }
           Color.clear.frame(height: 1).id(Self.end)
         }
@@ -136,6 +107,19 @@ struct ConversationView: View {
       // lines a row's edge up with the content's edge, and with padding inside, every row slid
       // 20 points under the left edge of the screen.
       .contentMargins(.horizontal, 20, for: .scrollContent)
+      // Following what is new; watched apart, so the reply growing does not redraw the list. On
+      // the scroll view, not in the lazy stack, which lets go of what is scrolled away.
+      .background {
+        EndWatcher(
+          feed: feed, chat: chat,
+          changed: {
+            let decided = follow.contentChangedAtEnd()
+            trace("content \(decided)")
+            move(decided)
+          },
+          // Sending something takes the reader to it.
+          sent: { move(follow.sent()) })
+      }
       .scrollDismissesKeyboard(.interactively)
       .softScrollEdges()
       .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -143,7 +127,7 @@ struct ConversationView: View {
       // itself keeps its size under the bars). A follower keeps the end in view, rather than the
       // last messages going under them.
       .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.bottom } action: { old, new in
-        if new > old, !transcript.messages.isEmpty { move(follow.bottomInsetGrew()) }
+        if new > old, !feed.items.isEmpty { move(follow.bottomInsetGrew()) }
       }
       // Where the end is, measured: rows the lazy stack only estimated change the content's height
       // after a move, and a move to the end marker lands a bar's height past it. Left there, the
@@ -159,16 +143,6 @@ struct ConversationView: View {
         scrolled.ends = ends
         keepWithinEnd()
       }
-      .onChange(of: endOfConversation) { _, end in
-        guard end != EndOfConversation() else { return }
-        let decided = follow.contentChangedAtEnd()
-        trace("content \(decided)")
-        move(decided)
-      }
-      .onChange(of: pending.count) { previous, count in
-        // Sending something takes the reader to it.
-        if count > previous { move(follow.sent()) }
-      }
       .onChange(of: scrollToLatestRequest) { move(follow.jumpRequested()) }
       // Pull-to-refresh, by hand: `.refreshable` would show the system's spinner, and here Axo
       // plays it. How far the content is past its top, and when the finger lifts.
@@ -179,7 +153,7 @@ struct ConversationView: View {
           height: geometry.containerSize.height)
       } action: { _, overscroll in
         // A new chat's Axo takes a long pull, to near the bottom; a chat's, a short one.
-        pull.state.armTravel = transcript.messages.isEmpty ? PullToRefresh.longPull : PullToRefresh.shortPull
+        pull.state.armTravel = feed.items.isEmpty ? PullToRefresh.longPull : PullToRefresh.shortPull
         pull.state.pulled(to: overscroll.points, height: overscroll.height, touching: pull.touching)
       }
       .onScrollPhaseChange { old, new, context in
@@ -195,25 +169,8 @@ struct ConversationView: View {
         keepWithinEnd()
       }
       .overlay(alignment: .top) {
-        if !transcript.messages.isEmpty { SpinningPullMascotView(pull: pull) }
+        if !feed.items.isEmpty { SpinningPullMascotView(pull: pull) }
       }
-    }
-  }
-
-  private var shownMessages: [ConversationReveal.Shown] {
-    let _ = revealsFinished
-    guard !reduceMotion else {
-      return transcript.messages.map { .init(message: $0, isLive: false, presentation: .plain) }
-        + transcript.live.map { .init(message: $0, isLive: true, presentation: .plain) }
-    }
-    return reveal.shown(sessionId: session.map { "\($0.sessionId)" }, messages: transcript.messages, live: transcript.live)
-  }
-
-  private func entrance(of shown: ConversationReveal.Shown) -> ChatMessageView.Entrance? {
-    guard shown.presentation != .plain else { return nil }
-    return ChatMessageView.Entrance(reveal: reveal, presentation: shown.presentation) {
-      reveal.finished(shown.message.key)
-      revealsFinished += 1
     }
   }
 
@@ -284,24 +241,6 @@ struct ConversationView: View {
     var height: Double
   }
 
-  /// What is at the end of the conversation; when it changes, there is something new to follow.
-  private struct EndOfConversation: Equatable {
-    var lastMessage: String?
-    var liveLength = 0
-    var runningOutputLength = 0
-    var asking = false
-    var working = false
-  }
-
-  private var endOfConversation: EndOfConversation {
-    EndOfConversation(
-      lastMessage: transcript.messages.last?.id,
-      liveLength: transcript.live.reduce(0) { $0 + $1.text.count },
-      runningOutputLength: transcript.messages.last(where: { $0.tool?.status == .running })?.tool?.output.count ?? 0,
-      asking: transcript.question != nil,
-      working: transcript.activity == .working)
-  }
-
   private static func scrolling(_ phase: ScrollPhase) -> ScrollFollow.Scrolling {
     switch phase {
     case .idle: .idle
@@ -341,9 +280,9 @@ struct ConversationView: View {
   private func toEnd(animated: Bool = false) {
     let to: (inout ScrollPosition) -> Void
     if let ends = scrolled.ends {
-      // A point in the content, from its top: the offset less the top inset.
-      // On a whole pixel, so it rests in the same place every time.
-      let end = ((ends.end + ends.topInset) * displayScale).rounded() / displayScale
+      // A point in the content, from its top: the offset less the top inset. On a whole pixel, so
+      // it rests in the same place every time.
+      let end = (ends.end * displayScale).rounded() / displayScale + ends.topInset
       to = { $0.scrollTo(y: end) }
     } else {
       to = { $0.scrollTo(id: Self.end, anchor: Self.endAnchor) }
@@ -361,10 +300,11 @@ struct ConversationView: View {
   /// screen is moving, which would fight them.
   private func keepWithinEnd() {
     guard scrolled.phase == .idle, let ends = scrolled.ends else { return }
-    // Within half a pixel is there.
-    let slack = 0.5 / displayScale
-    let past = ends.offset > ends.end + slack
-    let short = follow.isFollowing && ends.offset < ends.end - slack
+    // At the end means on it, to the pixel: resting between pixels, the rows are drawn a
+    // fraction of a point off, differently each time.
+    let end = (ends.end * displayScale).rounded() / displayScale
+    let past = ends.offset > end + 0.01
+    let short = follow.isFollowing && ends.offset < end - 0.01
     guard past || short else { return }
     // A few tries for one end (SwiftUI may move it again as it settles), but never forever.
     if scrolled.corrected?.end != ends.end { scrolled.corrected = (ends.end, 0) }
@@ -374,43 +314,9 @@ struct ConversationView: View {
     toEnd()
   }
 
-  /// At the top of the conversation: older messages are read as this scrolls into view.
-  @ViewBuilder private var olderHistory: some View {
-    switch historyState {
-    case .loaded(_, true):
-      Button("Load earlier messages") { loadOlder() }
-        .font(.caption).frame(maxWidth: .infinity)
-        .onAppear(perform: loadOlder)
-    case .loadingOlder:
-      LoadingMascotView(label: "Loading earlier messages").frame(height: 44).frame(maxWidth: .infinity)
-    default:
-      EmptyView()
-    }
-  }
-
   private func loadOlder() {
     guard let id = session?.sessionId else { return }
     Task { await workbench?.loadOlderHistory(of: id) }
-  }
-
-  @ViewBuilder private var emptyState: some View {
-    switch historyState {
-    case nil, .loading:
-      if session == nil {
-        ChatEmptyState(message: canSend ? "Send a message to start a chat." : "Your Mac is offline.", pull: pull)
-      } else {
-        LoadingMascotView(label: "Loading the conversation")
-          .frame(height: 120).frame(maxWidth: .infinity).padding(.vertical, 70)
-      }
-    case .failed(let message):
-      ChatEmptyState(message: message, pull: pull)
-    case .loaded(let events, _), .loadingOlder(let events):
-      ChatEmptyState(
-        message: events == 0
-          ? "Nothing here yet."
-          : "\(events) stored events, none of them messages yet.",
-        pull: pull)
-    }
   }
 
   /// The menu button, and the Mac's state when it is not simply online. No title: inside the
