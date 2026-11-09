@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::catalog::{
     open_shell_ids, remove_session_shells, running_shell_record, session_metadata,
@@ -30,17 +30,12 @@ use axo_store::{
 use axo_store::{insert_terminal_shell, open_session_workspace_id};
 use axo_store::{open_session_ids_in_workspace, set_manual_session_name, write_session_layout};
 
-/// How often the reaper looks for exited children when nothing tells it a child exited: only
-/// outside axod's runtime, in unit tests. In axod, SIGCHLD wakes it (`Reaper::on_child_exit`).
-const REAPER_INTERVAL: Duration = Duration::from_millis(100);
-
-/// Wakes the reaper: a child exited, or axod is stopping. Until something wires SIGCHLD to it
-/// (`SessionManager::reap_on_child_exit`), it also wakes every `REAPER_INTERVAL`.
+/// Wakes the reaper: a child exited (its waiter says so, RFD0037), or axod is stopping. It never
+/// looks on its own.
 #[derive(Default)]
 pub(super) struct Reaper {
     woken: std::sync::Mutex<bool>,
     changed: std::sync::Condvar,
-    signalled: std::sync::atomic::AtomicBool,
 }
 
 impl Reaper {
@@ -50,15 +45,7 @@ impl Reaper {
     }
 
     /// Waits until woken, or until `deadline` (the launch's time limit) if there is one.
-    fn wait(&self, deadline: Option<Instant>) {
-        let signalled = self.signalled.load(Ordering::Relaxed);
-        let now = Instant::now();
-        let until = match (deadline, signalled) {
-            (deadline, true) => deadline,
-            (deadline, false) => Some(deadline.map_or(now + REAPER_INTERVAL, |deadline| {
-                deadline.min(now + REAPER_INTERVAL)
-            })),
-        };
+    fn wait(&self, until: Option<Instant>) {
         let mut woken = self.woken.lock().unwrap_or_else(|p| p.into_inner());
         while !*woken {
             let now = Instant::now();
@@ -456,27 +443,6 @@ impl SessionManager {
         }
     }
 
-    /// From now on the reaper sleeps until a child exits, instead of looking every
-    /// `REAPER_INTERVAL`: SIGCHLD, received as a stream on `runtime`, wakes it. A signal for
-    /// several children wakes it once; it looks at every child each time.
-    pub fn reap_on_child_exit(&self, runtime: &tokio::runtime::Handle) -> io::Result<()> {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut exited = {
-            let _inside = runtime.enter();
-            signal(SignalKind::child())?
-        };
-        let reaper = Arc::clone(&self.reaper);
-        reaper.signalled.store(true, Ordering::Relaxed);
-        runtime.spawn(async move {
-            while exited.recv().await.is_some() {
-                reaper.wake();
-            }
-        });
-        // A child that exited before the stream existed is found on this first look.
-        self.reaper.wake();
-        Ok(())
-    }
-
     pub(super) fn set_layout(&self, session_id: SessionId, layout: Layout) -> io::Result<()> {
         let shell_ids = layout.shell_ids().clone();
         let state = self.lock_state()?;
@@ -746,12 +712,47 @@ mod tests {
     use axo_agent::pi::bridge;
     use axo_panes::Pane;
 
-    /// Once SIGCHLD is wired, the reaper sleeps until it is woken or the launch's time limit,
-    /// with no tick; before, it also looks every `REAPER_INTERVAL`.
+    /// A pane whose program exits is reaped the moment it does: its waiter wakes the reaper,
+    /// which looked every 100ms in tests and on SIGCHLD in axod (RFD0037).
+    #[test]
+    fn a_pane_whose_program_exits_is_reaped_at_once() {
+        let directory = test_directory("axo-reap");
+        std::fs::create_dir_all(&directory).unwrap();
+        let manager = open_with_silent_shell(&directory);
+        let running = |manager: &SessionManager| -> Vec<(ShellId, u32)> {
+            let state = manager.lock_state().unwrap();
+            state
+                .panes
+                .iter()
+                .filter_map(|(shell_id, pane)| match pane {
+                    Pane::Running(running) => Some((shell_id, running.child.id())),
+                    Pane::Unavailable(_) => None,
+                })
+                .collect()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while running(&manager).is_empty() {
+            assert!(Instant::now() < deadline, "no pane started");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let (shell_id, pid) = running(&manager)[0];
+        let started = Instant::now();
+        // SAFETY: the pid is the pane's unreaped child.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        while running(&manager).iter().any(|(id, _)| *id == shell_id) {
+            assert!(Instant::now() < deadline, "the pane was never reaped");
+            thread::sleep(Duration::from_millis(1));
+        }
+        let took = started.elapsed();
+        manager.shutdown();
+        assert!(took < Duration::from_millis(40), "reaped after {took:?}");
+    }
+
+    /// The reaper sleeps until a child's waiter wakes it or the launch's time limit, with no
+    /// tick (RFD0037).
     #[test]
     fn the_reaper_sleeps_until_woken_or_the_launch_deadline() {
         let reaper = Arc::new(Reaper::default());
-        reaper.signalled.store(true, Ordering::Relaxed);
         let started = Instant::now();
         reaper.wait(Some(started + Duration::from_millis(150)));
         assert!(
@@ -776,14 +777,6 @@ mod tests {
         let started = Instant::now();
         reaper.wait(None);
         assert!(started.elapsed() < Duration::from_millis(100));
-
-        let unsignalled = Reaper::default();
-        let started = Instant::now();
-        unsignalled.wait(None);
-        assert!(
-            started.elapsed() < REAPER_INTERVAL * 10,
-            "no tick without SIGCHLD"
-        );
     }
 
     use axo_agent::WriterLock;

@@ -260,21 +260,13 @@ impl SessionManager {
         process_id: u32,
         timeout: Duration,
     ) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let exited = self.lock_state().map_or(true, |state| {
-                state
-                    .panes
-                    .running(shell_id)
-                    .is_none_or(|shell| shell.child.id() != process_id)
-            });
-            if exited {
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        self.wait_for_state(Instant::now() + timeout, |state| {
+            state
+                .panes
+                .running(shell_id)
+                .is_none_or(|shell| shell.child.id() != process_id)
+                .then_some(())
+        })
+        .map_or(true, |exited| exited.is_some())
     }
 }

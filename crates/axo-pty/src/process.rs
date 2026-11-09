@@ -12,7 +12,9 @@ use std::ffi::CStr;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
+
+use crate::exit::WatchedChild;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -61,7 +63,7 @@ impl WindowSize {
 /// A running child on its own PTY.
 #[derive(Debug)]
 pub struct PtyProcess {
-    pub child: Child,
+    pub child: WatchedChild,
     /// Shared with attached clients for input, resizing and termios queries; only the output
     /// pump reads it.
     pub master: OwnedFd,
@@ -166,7 +168,7 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
             Ok(())
         });
     }
-    let mut child = command.spawn()?;
+    let mut child = WatchedChild::new(command.spawn()?)?;
     drop(slave);
     match TerminalOutput::start(&master) {
         Ok(output) => Ok(PtyProcess {
@@ -184,9 +186,9 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
 }
 
 /// A freshly opened PTY pair and the slave's device path.
-struct OpenedPty {
-    master: OwnedFd,
-    slave: OwnedFd,
+pub(crate) struct OpenedPty {
+    pub(crate) master: OwnedFd,
+    pub(crate) slave: OwnedFd,
     device: String,
 }
 
@@ -196,7 +198,7 @@ struct OpenedPty {
 /// device number, and under many concurrent PTY launches the lookup intermittently failed
 /// (`ERANGE` from `ttyname_r`, a negative errno from `openpty`), failing the shell or Pi launch.
 /// The master reports its slave's name directly (`TIOCPTYGNAME`), so nothing is looked up.
-fn open_pty(size: WindowSize) -> io::Result<OpenedPty> {
+pub(crate) fn open_pty(size: WindowSize) -> io::Result<OpenedPty> {
     let master = open_master()?;
     set_cloexec(master.as_raw_fd())?;
     for (request, step) in [
@@ -320,7 +322,7 @@ fn with_step(step: &str, error: io::Error) -> io::Error {
 
 /// Applies `size` to the PTY and tells the child. The kernel signals the foreground group; the
 /// direct SIGWINCH also reaches a shell that moved itself to another group.
-pub fn resize(master: &OwnedFd, child: &Child, size: WindowSize) -> io::Result<()> {
+pub fn resize(master: &OwnedFd, child: &WatchedChild, size: WindowSize) -> io::Result<()> {
     let size = size.to_winsize();
     // SAFETY: size is initialized and the master descriptor is open.
     if unsafe {
@@ -357,7 +359,11 @@ pub fn window_size(master: &OwnedFd) -> io::Result<WindowSize> {
 
 /// Resizes only when the size differs, so an unchanged layout never interrupts the program
 /// with a SIGWINCH. Returns whether it resized.
-pub fn resize_if_changed(master: &OwnedFd, child: &Child, size: WindowSize) -> io::Result<bool> {
+pub fn resize_if_changed(
+    master: &OwnedFd,
+    child: &WatchedChild,
+    size: WindowSize,
+) -> io::Result<bool> {
     if window_size(master)? == size {
         return Ok(false);
     }
@@ -378,7 +384,7 @@ pub fn set_cloexec(descriptor: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-pub fn stop(child: &mut Child, grace: Duration) {
+pub fn stop(child: &mut WatchedChild, grace: Duration) {
     stop_all(vec![Stopping { child, grace }]);
 }
 
@@ -390,24 +396,29 @@ pub const KILL_WAIT: Duration = Duration::from_secs(2);
 
 /// A child to stop, and how long it may take to exit before it is killed.
 pub struct Stopping<'a> {
-    pub child: &'a mut Child,
+    pub child: &'a mut WatchedChild,
     pub grace: Duration,
 }
 
 /// Stops every child at once: all are signalled together and waited on together, so stopping
 /// N children takes the longest grace among them, not the sum. Each is killed when its own
-/// grace runs out.
+/// grace runs out. Each exit is heard the moment it happens, from the child's waiter.
 ///
 /// SIGHUP is what a closing terminal sends: interactive shells ignore SIGTERM but exit on SIGHUP
 /// and forward it to their jobs. SIGTERM covers non-shell agents. Survivors get SIGKILL.
 pub fn stop_all(children: Vec<Stopping<'_>>) {
     let started = Instant::now();
+    let (exited, exits) = std::sync::mpsc::channel::<()>();
     let mut pending: Vec<Pending<'_>> = Vec::with_capacity(children.len());
     for Stopping { child, grace } in children {
         match child.try_wait() {
             Ok(Some(_)) => {}
             Ok(None) => {
                 log::info!("event=session.shell_stop_started pid={}", child.id());
+                let exited = exited.clone();
+                child.exit().on_exit(move || {
+                    let _ = exited.send(());
+                });
                 signal(child, libc::SIGHUP);
                 signal(child, libc::SIGTERM);
                 pending.push(Pending {
@@ -426,15 +437,16 @@ pub fn stop_all(children: Vec<Stopping<'_>>) {
     while !pending.is_empty() {
         let now = Instant::now();
         pending.retain_mut(|stopping| stopping.advance(now));
-        if !pending.is_empty() {
-            thread::sleep(Duration::from_millis(10));
+        // Until the next child exits, or the nearest grace runs out.
+        if let Some(next) = pending.iter().map(|stopping| stopping.deadline).min() {
+            let _ = exits.recv_timeout(next.saturating_duration_since(Instant::now()));
         }
     }
 }
 
 /// One child on its way out: terminated until `deadline`, then killed until a new deadline.
 struct Pending<'a> {
-    child: &'a mut Child,
+    child: &'a mut WatchedChild,
     deadline: Instant,
     killed: bool,
 }
@@ -478,7 +490,7 @@ impl Pending<'_> {
 
 /// Signals the child's process group (its foreground jobs) and the child itself (a shell that
 /// moved to another group for job control).
-pub fn signal(child: &Child, signal: libc::c_int) {
+pub fn signal(child: &WatchedChild, signal: libc::c_int) {
     let process_id = child.id() as libc::pid_t;
     // SAFETY: the pid comes from a child this manager spawned and has not yet reaped.
     unsafe {
@@ -543,10 +555,12 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("axo-fds-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let report = directory.join("report");
+        // Above the descriptors sh uses itself (it keeps a redirected stdout on 10), so the
+        // report says what the child inherited, not what sh opened.
         let open_without_cloexec = || {
-            // SAFETY: dup of stdin's descriptor; the duplicate is not close-on-exec.
-            let fd = unsafe { libc::dup(libc::STDIN_FILENO) };
-            assert!(fd > 2);
+            // SAFETY: dup of stdin's descriptor; F_DUPFD's duplicate is not close-on-exec.
+            let fd = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_DUPFD, 100) };
+            assert!(fd >= 100);
             fd
         };
         let stray = open_without_cloexec();
@@ -664,10 +678,10 @@ mod tests {
     }
 
     /// A child in its own process group (like a PTY shell) running `script` under `sh`.
-    fn spawn_group_leader(script: &str) -> Child {
+    fn spawn_group_leader(script: &str) -> WatchedChild {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]).process_group(0);
-        let child = command.spawn().unwrap();
+        let child = WatchedChild::new(command.spawn().unwrap()).unwrap();
         // Give sh time to install its traps before it is signalled.
         thread::sleep(Duration::from_millis(100));
         child
@@ -688,8 +702,25 @@ mod tests {
     }
 
     #[test]
+    fn a_child_that_exits_on_its_signal_is_stopped_without_waiting_for_a_tick() {
+        // The loop used to look again every 10ms; the waiter now says at once.
+        let mut took: Vec<Duration> = (0..10)
+            .map(|_| {
+                let mut child = spawn_group_leader("while :; do sleep 1; done");
+                let started = Instant::now();
+                stop(&mut child, SHELL_STOP_GRACE);
+                assert!(child.try_wait().unwrap().is_some());
+                started.elapsed()
+            })
+            .collect();
+        took.sort();
+        // Each look came 10ms after the last, so no stop took less; under load some still may.
+        assert!(took[0] < Duration::from_millis(8), "{took:?}");
+    }
+
+    #[test]
     fn stopping_many_stubborn_shells_costs_one_grace_period() {
-        let mut children: Vec<Child> = (0..6)
+        let mut children: Vec<WatchedChild> = (0..6)
             .map(|_| spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done"))
             .collect();
         let started = Instant::now();

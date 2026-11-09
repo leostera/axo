@@ -717,23 +717,9 @@ mod tests {
 
     #[test]
     fn the_pump_drains_a_pty_with_no_attachment_and_ends_on_hangup() {
-        let mut master: RawFd = -1;
-        let mut slave: RawFd = -1;
-        // SAFETY: openpty initializes both descriptors on success.
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(opened, 0);
-        // SAFETY: openpty returned owned descriptors.
-        let master = unsafe { OwnedFd::from_raw_fd(master) };
-        // SAFETY: openpty returned owned descriptors.
-        let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+        // As axod opens one: libc's openpty fails now and then under concurrent launches.
+        let crate::process::OpenedPty { master, slave, .. } =
+            crate::process::open_pty(crate::process::WindowSize::DEFAULT).unwrap();
         let output = TerminalOutput::start(&master).unwrap();
         let sink = Arc::new(CountingSink(AtomicU64::new(0)));
         output.bind("test".to_owned(), sink.clone());

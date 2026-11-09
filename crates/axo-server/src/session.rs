@@ -1,10 +1,10 @@
+use axo_pty::exit::WatchedChild;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -54,9 +54,9 @@ mod workspaces;
 
 use self::events::{EventBus, LocalSubscription};
 pub(crate) use self::handlers::RelayHostAdapter;
-pub(crate) use self::remote::Remote;
 use self::lifecycle::IdlePis;
 use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
+pub(crate) use self::remote::Remote;
 use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};
 use self::transcripts::PiDirectories;
 use self::workspaces::restore_workspace_accesses;
@@ -70,7 +70,7 @@ struct RunningShell {
     role: PaneRole,
     pane_id: Option<String>,
     initial_pwd: PathBuf,
-    child: Child,
+    child: WatchedChild,
     wait_error_reported: bool,
     master: OwnedFd,
     slave_device: String,
@@ -141,6 +141,8 @@ struct SessionState {
     peer_views: peer_views::PeerViews,
     /// Archived Sessions being reopened: their transcripts are not deleted (RFD0027).
     reopening: HashSet<SessionId>,
+    /// Woken by each process's exit, as it enters the catalog (`bind_output`).
+    reaper: Arc<lifecycle::Reaper>,
 }
 
 pub struct SessionManager {
@@ -155,6 +157,8 @@ pub struct SessionManager {
     stop_workers: Arc<AtomicBool>,
     /// Wakes the reaper when a child exits or axod stops.
     reaper: Arc<lifecycle::Reaper>,
+    /// Raised by each write to `state`; see `catalog::StateChanges`.
+    state_changes: catalog::StateChanges,
     /// Wakes prompts waiting for a Pi to bind; see `prompts`.
     pi_wake: Arc<agents::PiWake>,
     /// Dropped when axod stops, which wakes the attachment acceptor.
@@ -224,6 +228,7 @@ impl SessionManager {
         let home_workspace_id = axo_store::ensure_home_workspace(&mut database, &initial_pwd)?;
         let workspace_access = restore_workspace_accesses(&database)?;
         let subscribers = EventBus::default();
+        let reaper = Arc::new(lifecycle::Reaper::default());
         let manager = Arc::new(Self {
             state: Mutex::new(SessionState {
                 database,
@@ -235,6 +240,7 @@ impl SessionManager {
                 viewport,
                 peer_views: Default::default(),
                 reopening: HashSet::new(),
+                reaper: Arc::clone(&reaper),
             }),
             agents: Default::default(),
             attach_socket_path,
@@ -242,7 +248,8 @@ impl SessionManager {
             host_id,
             host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),
-            reaper: Default::default(),
+            reaper,
+            state_changes: Default::default(),
             pi_wake: Default::default(),
             stop_acceptor: Default::default(),
             workers: Mutex::new(Vec::new()),

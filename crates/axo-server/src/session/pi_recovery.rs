@@ -279,27 +279,24 @@ impl SessionManager {
 
     fn wait_until_pi_running(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<()> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        loop {
-            {
-                let state = self.lock_state()?;
-                if state.panes.running(shell_id).is_some() {
-                    return Ok(());
-                }
-                let recovering = state
-                    .panes
-                    .unavailable(shell_id)
-                    .is_some_and(|pane| pane.session_id == session_id && pane.is_recovering());
-                if !recovering {
-                    return Err(io::Error::other("Pi did not start"));
-                }
+        // Running, or no longer starting: either ends the wait.
+        let started = self.wait_for_state(deadline, |state| {
+            if state.panes.running(shell_id).is_some() {
+                return Some(true);
             }
-            if std::time::Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Pi is still starting",
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            let recovering = state
+                .panes
+                .unavailable(shell_id)
+                .is_some_and(|pane| pane.session_id == session_id && pane.is_recovering());
+            (!recovering).then_some(false)
+        })?;
+        match started {
+            Some(true) => Ok(()),
+            Some(false) => Err(io::Error::other("Pi did not start")),
+            None => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Pi is still starting",
+            )),
         }
     }
 

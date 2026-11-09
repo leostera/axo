@@ -134,8 +134,10 @@ impl SessionState {
     }
 
     /// Every way a process enters the catalog goes through here: binding its output stream to
-    /// its pane identity starts `terminal.output` events.
+    /// its pane identity starts `terminal.output` events, and its exit wakes the reaper.
     pub(super) fn bind_output(&self, shell_id: ShellId, running: &RunningShell) {
+        let reaper = Arc::clone(&self.reaper);
+        running.child.exit().on_exit(move || reaper.wake());
         let session_id = running.session_id;
         running.output.bind(
             format!("session_id={} shell_id={}", session_id, shell_id.get()),
@@ -158,6 +160,47 @@ pub(super) struct CatalogGuard<'a> {
     guard: std::sync::MutexGuard<'a, SessionState>,
     caller: &'static std::panic::Location<'static>,
     acquired: Instant,
+    /// Told when a guard that was written through is released.
+    changes: &'a StateChanges,
+    written: bool,
+}
+
+/// Says when the Session state changed, for threads waiting for something in it (a Pi to exit,
+/// or to start) instead of looking again on a timer (RFD0037). Each release of the state's
+/// lock after a write raises the version. A waiter reads the version, then checks the state,
+/// then waits for a newer version: a change between the two is never missed.
+#[derive(Default)]
+pub(super) struct StateChanges {
+    version: std::sync::Mutex<u64>,
+    changed: std::sync::Condvar,
+}
+
+impl StateChanges {
+    fn changed(&self) {
+        *self.version.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+        self.changed.notify_all();
+    }
+
+    pub(super) fn version(&self) -> u64 {
+        *self.version.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Waits for a version after `seen`, or `deadline`; false at the deadline.
+    pub(super) fn wait_after(&self, seen: u64, deadline: Instant) -> bool {
+        let mut version = self.version.lock().unwrap_or_else(|p| p.into_inner());
+        while *version == seen {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            version = self
+                .changed
+                .wait_timeout(version, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+        true
+    }
 }
 
 impl std::ops::Deref for CatalogGuard<'_> {
@@ -170,12 +213,16 @@ impl std::ops::Deref for CatalogGuard<'_> {
 
 impl std::ops::DerefMut for CatalogGuard<'_> {
     fn deref_mut(&mut self) -> &mut SessionState {
+        self.written = true;
         &mut self.guard
     }
 }
 
 impl Drop for CatalogGuard<'_> {
     fn drop(&mut self) {
+        if self.written {
+            self.changes.changed();
+        }
         let held = self.acquired.elapsed();
         if held >= CATALOG_LOCK_REPORT_THRESHOLD {
             log::warn!(
@@ -381,7 +428,30 @@ impl SessionManager {
             guard,
             caller,
             acquired,
+            changes: &self.state_changes,
+            written: false,
         })
+    }
+
+    /// Waits until `found` finds something in the Session state, or `deadline`: it looks once,
+    /// then again after each change. `None` at the deadline.
+    pub(super) fn wait_for_state<T>(
+        &self,
+        deadline: Instant,
+        mut found: impl FnMut(&SessionState) -> Option<T>,
+    ) -> io::Result<Option<T>> {
+        loop {
+            let seen = self.state_changes.version();
+            let state = self.lock_state()?;
+            let looked = found(&state);
+            drop(state);
+            if let Some(found) = looked {
+                return Ok(Some(found));
+            }
+            if !self.state_changes.wait_after(seen, deadline) {
+                return Ok(None);
+            }
+        }
     }
 }
 
@@ -394,6 +464,44 @@ mod tests {
     use axo_protocol::new_uuid_v4;
 
     use rusqlite::params;
+
+    #[test]
+    fn a_wait_for_the_state_looks_again_only_when_the_state_changes() {
+        let fixture = LifecycleFixture::new();
+        let manager = Arc::clone(&fixture.manager);
+        let looked = std::sync::atomic::AtomicUsize::new(0);
+        let writer = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                // Reading changes nothing; writing does.
+                drop(manager.lock_state().unwrap());
+                std::thread::sleep(Duration::from_millis(100));
+                manager.lock_state().unwrap().reopening.clear();
+            })
+        };
+        let started = Instant::now();
+        let found = manager
+            .wait_for_state(started + Duration::from_secs(5), |_| {
+                let count = looked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                (count > 1).then_some(count)
+            })
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            found,
+            Some(2),
+            "it looked once, then once more after the write"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(400));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // Nothing found by the deadline.
+        let deadline = Instant::now() + Duration::from_millis(100);
+        assert_eq!(
+            manager.wait_for_state(deadline, |_| None::<()>).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn session_metadata_reads_emoji_workspace_name_and_ignores_a_corrupt_layout() {

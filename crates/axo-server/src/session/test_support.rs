@@ -7,6 +7,7 @@ use axo_agent::pi::bridge;
 use axo_agent::takeover::TakeoverPolicy;
 use axo_panes::UnavailablePane;
 use axo_protocol::{Event, Layout, SessionId, ShellId, Viewport, new_uuid_v4};
+use axo_pty::exit::WatchedChild;
 use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber};
 use axo_store::Connection;
@@ -25,14 +26,8 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-pub(super) fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::Result<bool> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        match child.try_wait()? {
-            Some(_) => return Ok(true),
-            None => thread::sleep(Duration::from_millis(25)),
-        }
-    }
+pub(super) fn wait_for_shell_exit(child: &mut WatchedChild, timeout: Duration) -> io::Result<bool> {
+    child.exit().wait_until(Instant::now() + timeout);
     Ok(child.try_wait()?.is_some())
 }
 

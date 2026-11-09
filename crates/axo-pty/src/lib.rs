@@ -3,6 +3,7 @@
 
 pub mod attach;
 pub mod command;
+pub mod exit;
 pub mod output;
 pub mod process;
 
