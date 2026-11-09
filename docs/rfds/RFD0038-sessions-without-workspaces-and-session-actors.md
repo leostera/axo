@@ -22,9 +22,9 @@ Workspaces go, from axod and every client. A Session has a folder, its own, chos
 
 ## Guide-level explanation
 
-You start a Session in a folder: the palette's "New Session in…" lists the folders of your recent Sessions and offers to pick another; "New Session" starts one beside the selected Session, or in your home directory. Cloning a GitHub repository starts a Session in the clone. Closing a Session closes it; nothing opens in its place. With none open, the sidebar says so and offers a new one.
+You start a Session in a folder: "New Session in Folder…" (⌘N, and the sidebar's +) searches the folders under your home directory and offers to pick any other; the palette also lists "New Session in <folder>" for the folders of your open Sessions. "New Session" (⌘T) starts one beside the selected Session, or in your home directory. Cloning a GitHub repository starts a Session in the clone, or shows the one already open there. Closing a Session closes it, without asking; nothing opens in its place. axod opens none by itself: with none open, the sidebar says so and offers a new one.
 
-On the phone and the web, a new chat starts beside the chat you are in, or in the Mac's home directory. Chats show their folder's name where they showed their Workspace's.
+On the phone and the web, a new chat starts in the Mac's home directory; the remote API can also start one beside another (`like`). Chats show their folder's name where they showed their Workspace's, and the phone's grouped menu groups them by it.
 
 Later, Pi will be able to move its Session to another folder (`/axo-set-cwd` in pi-axo); the folder is the Session's, so that is one more method, not a model change.
 
@@ -32,14 +32,14 @@ Later, Pi will be able to move its Session to another folder (`/axo-set-cwd` in 
 
 ### Part 1: Sessions without Workspaces
 
-- **A Session's folder** is `sessions.initial_pwd`, which every Session already has (a Workspace Session's is its Workspace's directory). `SessionRecord.folder` carries it to the Mac. The remote snapshot and the sync metadata carry `folderName`, its last component, or null in the home directory: remote clients never see a path from them.
-- **Creating:** `axo.session.create { folder? }` makes a Session with Pi and a terminal in `folder` (absolute, an existing directory), or the home directory. `axo.remote.session.create { target, like? }` makes one in the folder of the Session `like`, or the home directory: the phone and the web never send a path.
+- **A Session's folder** is `sessions.initial_pwd`, which every Session already has (a Workspace Session's is its Workspace's directory). `SessionRecord.folder` carries it to the Mac. The remote snapshot and the sync metadata carry `folderName`, its last component: remote clients never see a path from them.
+- **Creating:** `axo.session.create { folder? | like? }` makes a Session with Pi and a terminal in `folder` (absolute, an existing directory), in the folder of the open Session `like`, or in the home directory; both at once, a relative or missing folder, or a `like` that is not open are invalid params. A Session whose Pi cannot start is not made. `axo.remote.session.create { target, like? }` takes only `like`: the phone and the web never send a path. axod's MCP tool `session_create` takes `like`, where `"self"` is the agent's own Session.
 - **Removed outright** (the app and axod ship together; the Worker first):
   - local: `axo.workspace.list`, `.create`, `.rename`, `.archive`, `.session.create`, and the `workspaceChanged` event;
   - remote: `axo.remote.workspace.list` and `axo.remote.workspace.session.create`;
   - `WorkspaceRecord`, `RemoteWorkspace`, `workspaceId` and `workspaceName` in records, snapshots and sync metadata;
   - the home Workspace, `ensure_open_workspace_sessions` and its retry timer, the replacement Session, and security-scoped bookmarks (the app is not sandboxed; a bookmark the app makes cannot give axod anything).
-- **Stored data stays where it is.** axo.db keeps its `workspaces` table and `sessions.workspace_id`, unread and unwritten; no migration. The cloud's stored metadata may still name `workspaceId` and `workspaceName`; the Worker drops unknown keys when it reads its own rows, and keeps rejecting them from a Mac. `workspaceState` (a Session's git state, RFD0022) keeps its name: it is stored in the cloud and was always the Session's.
+- **Stored data stays where it is.** axo.db keeps its `workspaces` table and `sessions.workspace_id`, unread and unwritten; no migration. The cloud's stored metadata named `workspaceId` and `workspaceName`; a HostDO schema step rewrites each stored row without them, naming its folder from `workspaceState.path` where the Mac had read it, and the Worker keeps rejecting them from a Mac. `workspaceState` (a Session's git state, RFD0022) keeps its name: it is stored in the cloud and was always the Session's.
 - **Transcript paths.** A new Session's transcript is `<sessions>/<hostId>/<sessionId>.jsonl`, not under a Workspace directory; an existing one stays where `pi_session_file` says. Another Mac's copies are `<sessions>/<peerHostId>/<sessionId>.jsonl`, fetched again on first follow.
 - **Importing a Pi transcript** (pi-axo) makes a Session in the importing Session's folder.
 
