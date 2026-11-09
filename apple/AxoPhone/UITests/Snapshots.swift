@@ -8,15 +8,16 @@ import XCTest
 /// (bazel-testlogs/…/test.outputs/snapshots), where `bazel run //apple/AxoPhone:record_snapshots`
 /// takes them from to become the new baselines.
 ///
-/// The comparison ignores per-channel differences up to 18 and allows at most 0.3% changed pixels,
-/// for rendering noise; it still fails on a change of size, geometry or colour.
+/// The comparison ignores per-channel differences up to 18 and content a pixel higher or lower, and
+/// allows at most 0.3% changed pixels, for rendering noise; it still fails on a change of size,
+/// geometry or colour.
 enum Snapshots {
   static let allowedChangedFraction = 0.003
   static let channelTolerance = 18
 
   @MainActor
   static func check(_ app: XCUIApplication, named name: String, in test: XCTestCase) {
-    let png = app.screenshot().pngRepresentation
+    let png = settled(app)
     let current = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
     current.name = "\(name).png"
     current.lifetime = .keepAlways
@@ -46,6 +47,21 @@ enum Snapshots {
     }
   }
 
+  /// A screenshot once the screen has stopped moving: two in a row that agree, but for the text
+  /// cursor blinking. A keyboard coming up, or the conversation settling at its end, takes a
+  /// moment, and one taken during it lands a fraction of a point either way.
+  @MainActor
+  static func settled(_ app: XCUIApplication) -> Data {
+    var last = app.screenshot().pngRepresentation
+    for _ in 0..<12 {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+      let now = app.screenshot().pngRepresentation
+      if let changed = try? changedFraction(baseline: last, current: now), changed < 0.0005 { return now }
+      last = now
+    }
+    return last
+  }
+
   /// Into TEST_UNDECLARED_OUTPUTS_DIR/snapshots: the runner is a Mac process, so it can.
   static func save(_ png: Data, named name: String) {
     guard let outputs = ProcessInfo.processInfo.environment["TEST_UNDECLARED_OUTPUTS_DIR"] else { return }
@@ -60,12 +76,18 @@ enum Snapshots {
     guard reference.width == now.width, reference.height == now.height else {
       throw SnapshotError("the size changed: baseline \(reference.width)x\(reference.height), now \(now.width)x\(now.height)")
     }
+    // A pixel is changed when it matches neither the baseline's pixel in its place nor the ones just
+    // above and below it: content resting a pixel higher or lower, as a scroll view or the
+    // keyboard settles, is noise; anything that moves further, or changes, is not.
+    let row = reference.width * 4
+    func differs(_ offset: Int, from other: Int) -> Bool {
+      (0..<3).contains { channel in abs(Int(reference.rgba[other + channel]) - Int(now.rgba[offset + channel])) > channelTolerance }
+    }
     var changed = 0
-    for offset in stride(from: 0, to: reference.rgba.count, by: 4) {
-      let differs = (0..<3).contains { channel in
-        abs(Int(reference.rgba[offset + channel]) - Int(now.rgba[offset + channel])) > channelTolerance
-      }
-      if differs { changed += 1 }
+    for offset in stride(from: 0, to: reference.rgba.count, by: 4) where differs(offset, from: offset) {
+      let above = offset - row >= 0 && !differs(offset, from: offset - row)
+      let below = offset + row < reference.rgba.count && !differs(offset, from: offset + row)
+      if !above && !below { changed += 1 }
     }
     return Double(changed) / Double(reference.width * reference.height)
   }
