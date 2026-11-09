@@ -1024,37 +1024,10 @@ mod tests {
         let (manager, log) = manager_recording_input(&directory);
         let session = new_session(&manager);
         let shell_id = pi_shell(&session);
-
-        // No Pi in the Session: nothing to prompt.
-        manager
-            .lock_state()
-            .unwrap()
-            .panes
-            .running_mut(shell_id)
-            .unwrap()
-            .role = PaneRole::Terminal;
         let command_id = |text: &str| {
             axo_relay::CommandId::try_from(format!("00000000-0000-4000-8000-{:012x}", text.len()))
                 .unwrap()
         };
-        let refused = manager
-            .prompt_pi(
-                session.id,
-                "hello",
-                &command_id("hello"),
-                &[],
-                rpc::PromptDelivery::FollowUp,
-            )
-            .unwrap_err();
-        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
-
-        manager
-            .lock_state()
-            .unwrap()
-            .panes
-            .running_mut(shell_id)
-            .unwrap()
-            .role = PaneRole::Pi;
         for bad in ["", "   \n", &"x".repeat(MAX_PI_PROMPT_BYTES + 1)] {
             let error = manager
                 .prompt_pi(
@@ -1163,6 +1136,26 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "x\n");
+
+        // No Pi in the Session: nothing to prompt. Last, as the pane stops being Pi's: a bridge
+        // worker that looks while it is not ends for good.
+        manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running_mut(shell_id)
+            .unwrap()
+            .role = PaneRole::Terminal;
+        let refused = manager
+            .prompt_pi(
+                session.id,
+                "hello",
+                &command_id("hello"),
+                &[],
+                rpc::PromptDelivery::FollowUp,
+            )
+            .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
         let _ = std::fs::remove_dir_all(&directory);
     }
 
