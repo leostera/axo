@@ -1,14 +1,5 @@
 import { z } from "zod";
-import { uuid, destinationSchema } from "./identity.ts";
-import { terminalSchema } from "./runtime-contracts.ts";
-import { hostMethods, hostResults } from "./host-contracts.ts";
-import { stateRemoteMethods, stateLocalMethods, stateResults } from "./state-contracts.ts";
 export { uuid, destinationSchema } from "./identity.ts";
-export * from "./runtime-contracts.ts";
-export * from "./pi-history.ts";
-export * from "./pane-records.ts";
-export * from "./host-contracts.ts";
-export * from "./state-contracts.ts";
 import {
   createJSONRPCErrorResponse,
   createJSONRPCSuccessResponse,
@@ -130,58 +121,3 @@ function scalarString(value: string): boolean {
 export const negotiateSchema = z
   .object({ protocolVersion: z.literal(2) })
   .strict();
-// Private, boot-fenced local discovery. Routing metadata, not authentication.
-export const localEndpointSchema = z
-  .object({
-    version: z.literal(1),
-    protocolVersion: z.literal(1),
-    endpoint: z
-      .string()
-      .regex(/^ws:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/v1\/rpc$/)
-      .refine((value) => Number(value.split(":")[2]?.split("/")[0]) <= 65535),
-    machineId: uuid,
-    hostGeneration: uuid,
-  })
-  .strict();
-export type LocalEndpoint = z.infer<typeof localEndpointSchema>;
-
-export const listSchema = z
-  .object({
-    target: destinationSchema,
-    after: uuid.optional(),
-    limit: z.number().int().min(1).max(50).default(50),
-  })
-  .strict();
-export const startSchema = z
-  .object({
-    target: destinationSchema
-      .extend({ sessionId: uuid, paneId: uuid })
-      .strict(),
-    commandId: uuid,
-    profileId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-  })
-  .strict();
-export const remoteMethods = {
-  ...stateRemoteMethods,
-  "axo.runtime.list": listSchema,
-  "axo.runtime.startApproved": startSchema,
-} as const;
-export type RemoteMethod = keyof typeof remoteMethods;
-export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
-// Host maintenance and native folder approval remain local.
-export const localMethods = { ...remoteMethods, ...hostMethods, ...stateLocalMethods } as const;
-export type LocalMethod = keyof typeof localMethods;
-export const results = {
-  ...stateResults,
-  ...hostResults,
-  "axo.runtime.list": z
-    .object({
-      hostGeneration: uuid,
-      terminals: z.array(terminalSchema).max(50),
-      next: uuid.nullable(),
-    })
-    .strict(),
-  "axo.runtime.startApproved": z
-    .object({ hostGeneration: uuid, terminal: terminalSchema })
-    .strict(),
-} as const;
