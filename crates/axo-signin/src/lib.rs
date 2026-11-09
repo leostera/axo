@@ -10,6 +10,8 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 /// The longest a sign-in may wait for the person.
@@ -19,7 +21,6 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// How long one connection may take to send its request; a browser's idle preconnect must not
 /// hold up the real redirect.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
-const POLL: Duration = Duration::from_millis(50);
 /// Apps answered in one sign-in; past this many, more are dropped.
 const MAX_APPS: usize = 64;
 
@@ -89,25 +90,35 @@ pub fn sign_in(request: &SignIn, open_browser: impl FnOnce(&str) -> io::Result<(
     let deadline = Instant::now() + request.timeout.min(MAX_TIMEOUT);
     // Each connection is answered on a thread of its own, so a browser's idle preconnect never
     // holds up the real redirect behind it.
+    // A serving thread that found the callback sends it, then wakes this one, which sleeps on
+    // the listeners and that wake together until the deadline (RFD0037).
     let (found, callbacks) = std::sync::mpsc::channel::<Callback>();
+    let (wake, woken) = UnixStream::pair().map_err(SignInError::Io)?;
+    woken.set_nonblocking(true).map_err(SignInError::Io)?;
     let mut serving = 0usize;
-    while Instant::now() < deadline {
+    loop {
         if let Ok(callback) = callbacks.try_recv() {
             return Ok(callback);
         }
-        let mut accepted = false;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(SignInError::TimedOut);
+        }
+        wait_readable(&listeners, &woken, left).map_err(SignInError::Io)?;
+        let _ = (&woken).read(&mut [0_u8; 64]);
         for listener in &listeners {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    accepted = true;
                     if serving >= MAX_APPS {
                         continue; // dropped: a browser makes a handful, not hundreds
                     }
                     serving += 1;
                     let (request, redirect_uri, found) = (request.clone(), redirect_uri.clone(), found.clone());
+                    let wake = wake.try_clone().map_err(SignInError::Io)?;
                     std::thread::spawn(move || {
                         if let Some(callback) = serve(stream, &request, &redirect_uri) {
                             let _ = found.send(callback);
+                            let _ = (&wake).write(&[1]);
                         }
                     });
                 }
@@ -118,11 +129,26 @@ pub fn sign_in(request: &SignIn, open_browser: impl FnOnce(&str) -> io::Result<(
                 Err(error) => return Err(SignInError::Io(error)),
             }
         }
-        if !accepted {
-            std::thread::sleep(POLL);
+    }
+}
+
+/// Sleeps until a listener has a connection, `woken` is written, or `left` passes.
+fn wait_readable(listeners: &[TcpListener], woken: &UnixStream, left: Duration) -> io::Result<()> {
+    let mut descriptors: Vec<libc::pollfd> = listeners
+        .iter()
+        .map(|listener| listener.as_raw_fd())
+        .chain([woken.as_raw_fd()])
+        .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
+        .collect();
+    let timeout = left.as_micros().div_ceil(1000).min(libc::c_int::MAX as u128) as libc::c_int;
+    // SAFETY: poll reads and writes `descriptors`, all initialized, for the call only.
+    if unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as libc::nfds_t, timeout) } == -1 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
         }
     }
-    Err(SignInError::TimedOut)
+    Ok(())
 }
 
 /// Binds the first port of `ports` free on IPv4 loopback, and on IPv6 loopback too when the Mac

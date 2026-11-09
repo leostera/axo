@@ -6,6 +6,7 @@ rust_library(
     name = "axo_signin",
     srcs = glob(["src/*.rs"]),
     edition = "2024",
+    deps = ["@crates//:libc"],
 )
 
 rust_test(
