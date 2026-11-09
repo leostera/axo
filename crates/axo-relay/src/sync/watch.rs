@@ -49,7 +49,8 @@ impl TranscriptWatch {
         set_close_on_exec(&queue)?;
         Ok(Self {
             // Readable only: a kqueue supports EVFILT_READ, and EVFILT_WRITE is EINVAL.
-            queue: AsyncFd::with_interest(queue, Interest::READABLE)?,
+            // SAFETY: the OwnedFd is the kqueue, open for as long as the AsyncFd owns it.
+            queue: unsafe { AsyncFd::register_with_interest(queue, Interest::READABLE) }?,
             watched: Mutex::new(HashMap::new()),
         })
     }
