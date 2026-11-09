@@ -100,14 +100,15 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 ### Step 6: descriptors on `AsyncFd`
 
 - PTY output pumps: `AsyncFd` on the master, one task per pane, on axo-pty's own two-thread runtime, so they work the same in axod and in tests. The master stays blocking (attached clients share its file description), so a pump reads once per readiness and again while `poll` says there is more.
-- The terminal attach listener and each attachment: `tokio::net::UnixListener` and `UnixStream`.
+- The terminal attach listener: one `poll(2)` on the listener and a stop socket, with no timeout. Each attached client keeps its two threads, one streaming output and one waiting for the client to hang up: both are blocked, not polling, and only the panes on screen are attached.
 - Each Pi's bridge: one `poll(2)` on the socket and its `Interrupt`, not 100ms slices.
 - Sign-in's callback listener: one `poll(2)` on its listeners and a wake its serving threads write, not a non-blocking accept every 50ms.
 - The inference side-car's start: one kqueue on its run directory, its log and its exit; its health is asked only when one of them changes.
 
 ### What stays a thread
 
-- One `waitpid` waiter per child.
+- One `waitpid` waiter per child (the largest group: one per open shell).
+- Two per attached terminal, and one per Pi's bridge.
 - libghostty-vt, one per terminal (RFD0034), reached through a channel.
 - `spawn_blocking` for SQLite, Cua and accessibility calls, `SecCode` checks and `fork`/`exec`.
 - `axod attach` and `axod mcp` are separate processes, the terminal's and Pi's side; their copy loops are not axod's core.
