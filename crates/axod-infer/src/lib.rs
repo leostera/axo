@@ -16,7 +16,11 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+use axo_pty::exit::WatchedChild;
+use notify::Watcher;
 
 use serde_json::Value;
 
@@ -209,6 +213,7 @@ impl Infer {
             .write(true)
             .open(self.run.join("infer.lock"))
             .map_err(|e| InferError::Failed(e.to_string()))?;
+        // Held while it starts, so its exit is heard; never reaped here, as it outlives us.
         let started = if try_lock(&lock) {
             Some(self.start(lock)?)
         } else {
@@ -217,8 +222,8 @@ impl Infer {
         // Started here or by another process: wait for it either way. It says nothing when it
         // is ready, but everything that leads there shows: its socket appears in the run
         // directory, its log grows as the model loads, or it exits. So it is asked only then.
-        let watch =
-            StartWatch::new(&self.run, started).map_err(|e| InferError::Failed(e.to_string()))?;
+        let watch = StartWatch::new(&self.run, started.as_ref())
+            .map_err(|e| InferError::Failed(e.to_string()))?;
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
             if self.healthy() {
@@ -260,8 +265,7 @@ impl Infer {
 
     /// Spawns the side-car in its own session, handing it the locked file so the lock lasts as
     /// long as it does.
-    /// Starts the side-car; returns its pid.
-    fn start(&self, lock: File) -> Result<u32, InferError> {
+    fn start(&self, lock: File) -> Result<WatchedChild, InferError> {
         let socket = self.socket();
         let _ = std::fs::remove_file(&socket);
         let log = File::create(self.run.join("infer.log"))
@@ -290,81 +294,40 @@ impl Infer {
         log::info!("event=infer.started pid={}", child.id());
         // The child holds the lock now; closing ours does not release it.
         drop(lock);
-        Ok(child.id())
+        WatchedChild::new(child).map_err(|e| InferError::Failed(e.to_string()))
     }
 }
 
-/// What a starting side-car does that is worth looking again for: one kqueue on the run
-/// directory (its socket appearing), its log (growing), and its exit when this process started
-/// it (RFD0037).
+/// What a starting side-car does that is worth looking again for (RFD0037): a change in the run
+/// directory (its socket appearing, its log growing as the model loads), through `notify`, and
+/// its exit when this process started it.
 struct StartWatch {
-    queue: std::os::fd::OwnedFd,
-    _watched: Vec<File>,
+    happened: mpsc::Receiver<()>,
+    _watcher: notify::RecommendedWatcher,
 }
 
 impl StartWatch {
-    fn new(run: &Path, pid: Option<u32>) -> io::Result<Self> {
-        use std::os::fd::FromRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
-        // SAFETY: kqueue returns a new descriptor, owned at once.
-        let raw = unsafe { libc::kqueue() };
-        if raw == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `raw` was just created and is owned only here.
-        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-        let mut watched = Vec::new();
-        let mut changes = Vec::new();
-        for path in [run.to_path_buf(), run.join("infer.log")] {
-            // The log may not exist yet when another process is starting the side-car; the
-            // directory still says when it does.
-            let Ok(file) = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_EVTONLY | libc::O_CLOEXEC)
-                .open(&path)
-            else {
-                continue;
-            };
-            changes.push(libc::kevent {
-                ident: file.as_raw_fd() as libc::uintptr_t,
-                filter: libc::EVFILT_VNODE,
-                flags: libc::EV_ADD | libc::EV_CLEAR,
-                fflags: libc::NOTE_WRITE | libc::NOTE_EXTEND,
-                data: 0,
-                udata: std::ptr::null_mut(),
-            });
-            watched.push(file);
-        }
-        if let Some(pid) = pid {
-            changes.push(libc::kevent {
-                ident: pid as libc::uintptr_t,
-                filter: libc::EVFILT_PROC,
-                flags: libc::EV_ADD | libc::EV_ONESHOT,
-                fflags: libc::NOTE_EXIT,
-                data: 0,
-                udata: std::ptr::null_mut(),
-            });
-        }
-        for change in &changes {
-            // SAFETY: one initialized change and no event list; returns at once.
-            let result = unsafe {
-                libc::kevent(
-                    queue.as_raw_fd(),
-                    change,
-                    1,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null(),
-                )
-            };
-            // A side-car that already exited is seen by `died_without_lock`.
-            if result == -1 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                return Err(io::Error::last_os_error());
+    fn new(run: &Path, started: Option<&WatchedChild>) -> io::Result<Self> {
+        let (happen, happened) = mpsc::channel();
+        let telling = happen.clone();
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if !matches!(event, Ok(ref event) if matches!(event.kind, notify::EventKind::Access(_)))
+            {
+                let _ = telling.send(());
             }
+        })
+        .map_err(io::Error::other)?;
+        watcher
+            .watch(run, notify::RecursiveMode::NonRecursive)
+            .map_err(io::Error::other)?;
+        if let Some(child) = started {
+            child.exit().on_exit(move || {
+                let _ = happen.send(());
+            });
         }
         Ok(Self {
-            queue,
-            _watched: watched,
+            happened,
+            _watcher: watcher,
         })
     }
 
@@ -374,22 +337,9 @@ impl StartWatch {
         if left.is_zero() {
             return false;
         }
-        let timeout = libc::timespec {
-            tv_sec: left.as_secs() as libc::time_t,
-            tv_nsec: left.subsec_nanos() as libc::c_long,
-        };
-        // SAFETY: an empty kevent to fill; `events` outlives the call.
-        let mut events: [libc::kevent; 4] = unsafe { std::mem::zeroed() };
-        unsafe {
-            libc::kevent(
-                self.queue.as_raw_fd(),
-                std::ptr::null(),
-                0,
-                events.as_mut_ptr(),
-                events.len() as libc::c_int,
-                &timeout,
-            );
-        }
+        let _ = self.happened.recv_timeout(left);
+        // Several events may have come at once; one look covers them all.
+        while self.happened.try_recv().is_ok() {}
         true
     }
 }
@@ -531,6 +481,12 @@ mod tests {
         let run = run_directory();
         std::fs::write(run.join("infer.log"), "").unwrap();
         let watch = StartWatch::new(&run, None).unwrap();
+        // FSEvents also reports what happened just before the watch: the log's creation.
+        while watch
+            .happened
+            .recv_timeout(Duration::from_millis(200))
+            .is_ok()
+        {}
         // Nothing happens: it sleeps until the deadline.
         let started = Instant::now();
         assert!(!watch.wait_until(Instant::now()));
@@ -558,12 +514,18 @@ mod tests {
             writer.join().unwrap();
         }
         // The side-car this process started exits: it wakes at once.
-        let child = Command::new("/bin/sleep").arg("0.05").spawn().unwrap();
-        let mut child = child;
-        let watch = StartWatch::new(&run, Some(child.id())).unwrap();
+        let mut child =
+            WatchedChild::new(Command::new("/bin/sleep").arg("0.3").spawn().unwrap()).unwrap();
+        let watch = StartWatch::new(&run, Some(&child)).unwrap();
+        while watch
+            .happened
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok()
+        {}
         let started = Instant::now();
         assert!(watch.wait_until(started + Duration::from_secs(30)));
         assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(child.exit().has_exited());
         child.wait().unwrap();
         std::fs::remove_dir_all(run).unwrap();
     }

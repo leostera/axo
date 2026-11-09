@@ -8,7 +8,9 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     deps = [
+        "//crates/axo-pty:axo_pty",
         "@crates//:libc",
+        "@crates//:notify",
         "@crates//:log",
         "@crates//:serde_json",
     ],
