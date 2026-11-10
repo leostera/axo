@@ -14,7 +14,6 @@ rust_library(
         "@crates//:jsonrpc-core",
         "@crates//:log",
         "@crates//:serde_json",
-        "@crates//:tokio",
     ],
 )
 

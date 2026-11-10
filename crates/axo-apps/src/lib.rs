@@ -72,11 +72,9 @@ async fn forward(
     };
     let started = std::time::Instant::now();
     // A caller that gives up (an agent that left) stops the wait; the cloud's call runs on.
-    let cancellation = axo_ipc::cancel::current();
-    let outcome = tokio::select! {
-        result = channel.request(name, Value::Object(params), Priority::Control, timeout) => result,
-        _ = cancellation.cancelled() => Err(RelayCallError::Abandoned),
-    };
+    let outcome = channel
+        .request(name, Value::Object(params), Priority::Control, timeout)
+        .await;
     log::info!(
         "event=apps.forwarded method={name} outcome={} duration_ms={}",
         match &outcome {

@@ -57,7 +57,7 @@ pub enum RelayCallError {
     /// The message is larger than the relay carries, or too much is queued. Nothing was sent.
     TooLarge,
     /// The caller gave up waiting (RFD0034). It may have run; nothing waits for it here. The
-    /// channel never answers this: a caller racing its request against its own cancellation does.
+    /// channel answers this when the request's cancellation fires.
     Abandoned,
 }
 
@@ -182,6 +182,10 @@ impl RelayChannel {
         priority: Priority,
         timeout: Duration,
     ) -> Outcome {
+        let cancellation = axo_ipc::cancel::current();
+        if cancellation.is_cancelled() {
+            return Err(RelayCallError::Abandoned);
+        }
         let id = RequestId::new(self.next_request.fetch_add(1, Ordering::Relaxed));
         let text =
             json!({ "jsonrpc": "2.0", "id": id.as_str(), "method": method, "params": params })
@@ -206,11 +210,14 @@ impl RelayChannel {
             }
         }
         let _waiting = Waiting { channel: self, id };
-        match tokio::time::timeout(timeout, answer).await {
-            Ok(Ok(outcome)) => outcome,
-            // Its socket closed and nothing will answer.
-            Ok(Err(_)) => Err(RelayCallError::Disconnected),
-            Err(_) => Err(RelayCallError::TimedOut),
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(RelayCallError::Abandoned),
+            answer = tokio::time::timeout(timeout, answer) => match answer {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(_)) => Err(RelayCallError::Disconnected),
+                Err(_) => Err(RelayCallError::TimedOut),
+            },
         }
     }
 
@@ -553,6 +560,32 @@ mod tests {
             !channel.resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": {} })),
             "nobody waits for it any more"
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_forgets_the_request_and_an_already_cancelled_call_sends_nothing() {
+        let channel = RelayChannel::new();
+        let AttachedSocket {
+            outgoing: mut rx, ..
+        } = channel.attach();
+        let cancellation = axo_ipc::cancel::Cancellation::default();
+        let calling = Arc::clone(&channel);
+        let caller = tokio::spawn(axo_ipc::cancel::scope(cancellation.clone(), async move {
+            calling
+                .request("m", json!({}), Priority::Control, Duration::from_secs(30))
+                .await
+        }));
+        let sent: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        cancellation.cancel();
+        assert_eq!(caller.await.unwrap(), Err(RelayCallError::Abandoned));
+        assert!(!channel.resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": {} })));
+        let outcome = axo_ipc::cancel::scope(
+            cancellation,
+            channel.request("m", json!({}), Priority::Control, Duration::from_secs(30)),
+        )
+        .await;
+        assert_eq!(outcome, Err(RelayCallError::Abandoned));
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
