@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axo_computer_use::{ComputerHost, ComputerUse};
@@ -24,8 +24,6 @@ use crate::store::Store;
 use crate::transcripts::PiDirectories;
 use crate::workspace_state::WorkspaceStates;
 
-/// Where the input key is kept, by the host credential store.
-const INPUT_KEY_ID: &str = "a5c1e7d0-5e4b-4c1f-9d3a-1f0b2c3d4e5f";
 /// How long a focus a Pi's `/resume` asked for is handed to a client that lists Sessions.
 const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 
@@ -67,8 +65,8 @@ pub(crate) struct Core {
     pub(crate) computer: Arc<ComputerUse>,
     /// The account's assets while the relay is connected (RFD0030).
     pub(crate) assets: Arc<axo_assets::AssetSlot>,
-    input_key: OnceLock<axo_seal::InputKey>,
-    input_key_store: OnceLock<Arc<dyn axo_relay::credential::HostCredentialStore>>,
+    /// This Mac's input key (RFD0029).
+    pub(crate) input_keys: crate::input_key::InputKeys,
     /// The focus a Pi's `/resume` asked for, for clients that list rather than stream.
     pending_focus: Mutex<Option<(SessionId, Instant)>>,
     /// Set once axod has started its Pis (see `registry::Launch`).
@@ -123,8 +121,7 @@ impl Core {
             questions: Arc::default(),
             computer: Arc::default(),
             assets: Arc::default(),
-            input_key: OnceLock::new(),
-            input_key_store: OnceLock::new(),
+            input_keys: Default::default(),
             pending_focus: Mutex::default(),
             ready: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -137,42 +134,6 @@ impl Core {
 
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.load(Ordering::Acquire)
-    }
-
-    /// Where this Mac's input key is kept; it is read, or made, on the first input request, so
-    /// axod touches the Keychain only then.
-    pub(crate) fn keep_input_key_in(
-        &self,
-        store: Arc<dyn axo_relay::credential::HostCredentialStore>,
-    ) {
-        let _ = self.input_key_store.set(store);
-    }
-
-    /// This Mac's input key (RFD0029), made and kept on first use.
-    pub(crate) fn input_key(&self) -> Option<&axo_seal::InputKey> {
-        if let Some(key) = self.input_key.get() {
-            return Some(key);
-        }
-        let store = self.input_key_store.get()?;
-        let key = match store
-            .load(INPUT_KEY_ID)
-            .ok()
-            .and_then(|bytes| axo_seal::InputKey::from_secret_bytes(&bytes))
-        {
-            Some(key) => key,
-            None => {
-                let key = axo_seal::InputKey::generate();
-                if let Err(error) = store.store(INPUT_KEY_ID, &key.to_secret_bytes()) {
-                    // A key that is not kept would change on restart; clients would refuse it.
-                    log::warn!("event=input.key_unsaved error={error}");
-                    return None;
-                }
-                log::info!("event=input.key_created");
-                key
-            }
-        };
-        let _ = self.input_key.set(key);
-        self.input_key.get()
     }
 
     /// Clients focus `session_id`: live subscribers at once, and a client that lists Sessions
@@ -214,7 +175,7 @@ impl QuestionsHost for Core {
     }
 
     fn input_key(&self) -> Option<&axo_seal::InputKey> {
-        Core::input_key(self)
+        self.input_keys.loaded()
     }
 }
 
@@ -232,8 +193,8 @@ impl ComputerHost for Core {
         ))
     }
 
-    fn input_key(&self) -> Option<&axo_seal::InputKey> {
-        Core::input_key(self)
+    fn input_key(&self) -> axo_computer_use::HostFuture<'_, Option<&axo_seal::InputKey>> {
+        Box::pin(self.input_keys.get())
     }
 
     fn agent_socket(&self) -> Option<PathBuf> {

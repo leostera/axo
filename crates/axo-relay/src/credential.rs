@@ -23,7 +23,7 @@ impl HostCredentialStore for MacOSKeychain {
 
     fn load(&self, credential_id: &str) -> io::Result<Vec<u8>> {
         security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, credential_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "host credential is unavailable"))
+            .map_err(|error| keychain_load_error(error.code()))
     }
 
     fn delete(&self, credential_id: &str) -> io::Result<()> {
@@ -32,11 +32,29 @@ impl HostCredentialStore for MacOSKeychain {
             credential_id,
         ) {
             Ok(()) => Ok(()),
-            Err(error) if error.code() == -25300 => Ok(()),
+            Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
             Err(_) => Err(io::Error::other(
                 "could not remove host credential from Keychain",
             )),
         }
+    }
+}
+
+/// `errSecItemNotFound`: the Keychain has no such item.
+const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25300;
+
+/// What a failed Keychain read means: the item is not there (`NotFound`), or the Keychain did not
+/// give it (locked, refused, busy). Callers may make a new secret only for the first.
+fn keychain_load_error(code: i32) -> io::Error {
+    if code == KEYCHAIN_ITEM_NOT_FOUND {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "host credential is not in Keychain",
+        )
+    } else {
+        io::Error::other(format!(
+            "Keychain did not give the host credential ({code})"
+        ))
     }
 }
 
@@ -123,7 +141,9 @@ impl HostCredentialStore for FileCredentialStore {
 
 #[cfg(test)]
 mod file_store_tests {
-    use super::{FileCredentialStore, HostCredentialStore};
+    use super::{
+        FileCredentialStore, HostCredentialStore, KEYCHAIN_ITEM_NOT_FOUND, keychain_load_error,
+    };
     use std::os::unix::fs::PermissionsExt;
 
     const ID: &str = "8a6e1308-a849-4902-a572-6b0b74ee69a8";
@@ -159,6 +179,19 @@ mod file_store_tests {
             std::io::ErrorKind::NotFound
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_missing_keychain_item_reads_as_not_found() {
+        assert_eq!(
+            keychain_load_error(KEYCHAIN_ITEM_NOT_FOUND).kind(),
+            std::io::ErrorKind::NotFound
+        );
+        // errSecInteractionNotAllowed: a locked Keychain has the item, but will not give it.
+        assert_eq!(
+            keychain_load_error(-25308).kind(),
+            std::io::ErrorKind::Other
+        );
     }
 
     #[test]

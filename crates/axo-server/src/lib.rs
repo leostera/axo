@@ -19,6 +19,7 @@ mod devices;
 mod event_stream;
 mod events;
 mod handlers;
+mod input_key;
 mod ops;
 mod peers;
 pub mod permissions;
@@ -248,7 +249,7 @@ pub fn serve_ipc(
     };
     let host = Arc::new(relay_host::RelayHostAdapter::new(Arc::clone(&core)));
     let credentials = remote_access.credential_storage.open(server_directory);
-    core.keep_input_key_in(Arc::clone(&credentials));
+    core.input_keys.keep_in(Arc::clone(&credentials));
     // What the peers socket follows, shared with the remote panes' handlers (RFD0024).
     let peer_live = axo_relay::peers::PeerLive::new();
     peers::Peers::attach(

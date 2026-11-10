@@ -235,8 +235,8 @@ pub trait ComputerHost: Send + Sync {
         input: Option<InputRequest>,
         timeout: Duration,
     ) -> HostFuture<'a, Result<Answer, RpcError>>;
-    /// This Mac's input key, which forms are sealed to.
-    fn input_key(&self) -> Option<&axo_seal::InputKey>;
+    /// This Mac's input key, which forms are sealed to; read or made on first use.
+    fn input_key(&self) -> HostFuture<'_, Option<&axo_seal::InputKey>>;
     /// axod's socket, where the gate's state lives (`axo_computer::gate`).
     fn agent_socket(&self) -> Option<std::path::PathBuf>;
 }
@@ -398,7 +398,7 @@ impl ComputerUse {
         if args.fields.is_empty() || args.fields.len() > MAX_INPUT_FIELDS {
             return refused(format!("ask for 1 to {MAX_INPUT_FIELDS} fields"));
         }
-        let Some(key) = host.input_key().map(axo_seal::InputKey::public_key) else {
+        let Some(key) = host.input_key().await.map(axo_seal::InputKey::public_key) else {
             return refused("this Mac could not make or read its input key");
         };
         let (pid, window_id) = (args.pid, args.window_id);
@@ -823,8 +823,8 @@ mod tests {
             Box::pin(std::future::ready(answer))
         }
 
-        fn input_key(&self) -> Option<&axo_seal::InputKey> {
-            self.key.as_ref()
+        fn input_key(&self) -> HostFuture<'_, Option<&axo_seal::InputKey>> {
+            Box::pin(std::future::ready(self.key.as_ref()))
         }
 
         fn agent_socket(&self) -> Option<std::path::PathBuf> {
