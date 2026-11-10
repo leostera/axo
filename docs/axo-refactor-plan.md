@@ -25,8 +25,8 @@ thinking-with-types, legacy (clean cutovers) and observability.
 - **Apps are clients of the account's hosts.** The Mac app, the iOS app and the web Workbench
   each connect to every host they show: the Mac app reaches "This Mac" directly over the socket
   and any other host through the Cloudflare API behind Access, as iOS reaches all of them. The
-  user's credentials (Cloudflare Access) live only in apps. *Open:* RFD0013 makes Axo's own
-  sign-in the identity instead of Access; see `docs/rfd0013-status-and-gap-plan.md`.
+  user's credentials (Cloudflare Access) live only in apps. *Superseded:* RFD0013 implemented Axo's own
+  sign-in instead of Access; see [RFD0013](rfds/RFD0013-cloudflare-oauth-and-host-pairing.md).
 - **The cloud is the directory and the relay**: accounts, paired hosts, authentication and
   forwarding. Durable remote Sessions are another host in that directory.
 - **Search follows the data.** What a client already holds (Sessions, Workspaces, panes,
