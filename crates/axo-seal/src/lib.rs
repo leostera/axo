@@ -1,14 +1,13 @@
 //! The person's answers reach this Mac signed by their devices, and what they type for an input
-//! request reaches it sealed (RFD0029).
-//!
-//! What the person types for an input request reaches this Mac sealed (RFD0029, the side channel
-//! for input): the phone or the browser encrypts it to this Mac's input key with HPKE (RFC 9180,
-//! base mode), so the relay, the agent and the transcript only ever carry ciphertext.
+//! request reaches it sealed (RFD0029, the side channel for input): the phone or the browser
+//! encrypts it to this Mac's input key with HPKE (RFC 9180, base mode), so the relay, the agent
+//! and the transcript only ever carry ciphertext.
 //!
 //! The suite is DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM: the one CryptoKit,
 //! WebCrypto (through `@hpke/core`) and this crate all have. Public keys travel as base64 of the
 //! uncompressed SEC1 point (65 bytes); `enc` likewise.
 
+use axo_protocol::elicitation::{ElicitationAnswer, Sealed};
 use hpke::aead::AesGcm256;
 use hpke::kdf::HkdfSha256;
 use hpke::kem::DhP256HkdfSha256;
@@ -25,7 +24,9 @@ type EncappedKey = <Kem as hpke::Kem>::EncappedKey;
 pub const INFO: &[u8] = b"axo-ask-input/v1";
 
 /// What a sealed answer is bound to: its request, and the address the person was shown. A
-/// ciphertext for another request or another address does not open.
+/// ciphertext for another request or another address does not open. Every client builds the same
+/// bytes, so the format is fixed: no address and an empty one are alike, which is harmless as a
+/// browser's origin is never empty, and a request ID (a UUID) has no newline.
 pub fn aad(request_id: &str, origin: Option<&str>) -> Vec<u8> {
     format!("{request_id}\n{}", origin.unwrap_or("")).into_bytes()
 }
@@ -69,15 +70,10 @@ impl InputKey {
     }
 
     /// Opens what a client sealed to this key for `aad`.
-    pub fn open(
-        &self,
-        enc: &str,
-        ciphertext: &str,
-        aad: &[u8],
-    ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-        let enc = axo_protocol::base64::decode(enc).map_err(|_| OpenError::Malformed)?;
+    pub fn open(&self, sealed: &Sealed, aad: &[u8]) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+        let enc = axo_protocol::base64::decode(&sealed.enc).map_err(|_| OpenError::Malformed)?;
         let ciphertext =
-            axo_protocol::base64::decode(ciphertext).map_err(|_| OpenError::Malformed)?;
+            axo_protocol::base64::decode(&sealed.ciphertext).map_err(|_| OpenError::Malformed)?;
         let enc = EncappedKey::from_bytes(&enc).map_err(|_| OpenError::Malformed)?;
         hpke::single_shot_open::<AesGcm256, HkdfSha256, Kem>(
             &OpModeR::Base,
@@ -92,9 +88,9 @@ impl InputKey {
     }
 }
 
-/// Seals `plaintext` to `public_key` (base64 SEC1) as a client does: `(enc, ciphertext)` in
-/// base64. axod itself never seals; this is the reference the clients' tests are held to.
-pub fn seal(public_key: &str, plaintext: &[u8], aad: &[u8]) -> Option<(String, String)> {
+/// Seals `plaintext` to `public_key` (base64 SEC1) as a client does. axod itself never seals;
+/// this is the reference the clients' tests are held to.
+pub fn seal(public_key: &str, plaintext: &[u8], aad: &[u8]) -> Option<Sealed> {
     let public = PublicKey::from_bytes(&axo_protocol::base64::decode(public_key).ok()?).ok()?;
     let (enc, ciphertext) = hpke::single_shot_seal::<AesGcm256, HkdfSha256, Kem, _>(
         &hpke::OpModeS::Base,
@@ -105,19 +101,24 @@ pub fn seal(public_key: &str, plaintext: &[u8], aad: &[u8]) -> Option<(String, S
         &mut rand_core::OsRng.unwrap_err(),
     )
     .ok()?;
-    Some((
-        axo_protocol::base64::encode(&enc.to_bytes()),
-        axo_protocol::base64::encode(&ciphertext),
-    ))
+    Some(Sealed {
+        enc: axo_protocol::base64::encode(&enc.to_bytes()),
+        ciphertext: axo_protocol::base64::encode(&ciphertext),
+    })
 }
 
 /// What a device signs for one answer: the request, the action, and the sealed values if any,
 /// so a signature is good for that answer alone. Shared with `@axo/app`'s `answerMessage` and
 /// `AxoProtocol`'s `DeviceSigner`.
-pub fn answer_message(request_id: &str, action: &str, sealed: Option<(&str, &str)>) -> Vec<u8> {
+pub fn answer_message(
+    request_id: &str,
+    answer: ElicitationAnswer,
+    sealed: Option<&Sealed>,
+) -> Vec<u8> {
     use sha2::{Digest, Sha256};
+    let action = answer.as_str();
     let sealed = sealed
-        .map(|(enc, ciphertext)| {
+        .map(|Sealed { enc, ciphertext }| {
             Sha256::digest(format!("{enc}\n{ciphertext}").as_bytes())
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -150,19 +151,16 @@ pub fn verify_answer(key: &str, signature: &str, message: &[u8]) -> bool {
 }
 
 /// A key's fingerprint as the person compares it across devices: the first 8 bytes of the
-/// SHA-256 of its bytes, as four groups of hex (`@axo/app`'s `keyFingerprint`).
-pub fn fingerprint(key: &str) -> String {
+/// SHA-256 of its bytes, as four groups of hex (`@axo/app`'s `keyFingerprint`). `None` when the
+/// key is not base64.
+pub fn fingerprint(key: &str) -> Option<String> {
     use sha2::{Digest, Sha256};
-    let bytes = axo_protocol::base64::decode(key).unwrap_or_default();
-    let hex: String = Sha256::digest(&bytes)[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
+    let bytes = axo_protocol::base64::decode(key).ok()?;
+    let groups: Vec<String> = Sha256::digest(&bytes)[..8]
+        .chunks(2)
+        .map(|pair| format!("{:02x}{:02x}", pair[0], pair[1]))
         .collect();
-    hex.as_bytes()
-        .chunks(4)
-        .map(|group| std::str::from_utf8(group).unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join(" ")
+    Some(groups.join(" "))
 }
 
 #[cfg(test)]
@@ -173,24 +171,25 @@ mod tests {
     fn a_sealed_answer_opens_only_for_its_request_and_address() {
         let key = InputKey::generate();
         let bound = aad("req-1", Some("https://github.com"));
-        let (enc, ciphertext) = seal(&key.public_key(), b"hunter2", &bound).unwrap();
-        assert_eq!(&**key.open(&enc, &ciphertext, &bound).unwrap(), b"hunter2");
+        let sealed = seal(&key.public_key(), b"hunter2", &bound).unwrap();
+        assert_eq!(&**key.open(&sealed, &bound).unwrap(), b"hunter2");
         assert_eq!(
-            key.open(&enc, &ciphertext, &aad("req-2", Some("https://github.com"))),
+            key.open(&sealed, &aad("req-2", Some("https://github.com"))),
             Err(OpenError::Refused)
         );
         assert_eq!(
-            key.open(&enc, &ciphertext, &aad("req-1", Some("https://github.co"))),
+            key.open(&sealed, &aad("req-1", Some("https://github.co"))),
             Err(OpenError::Refused)
         );
         assert_eq!(
-            InputKey::generate().open(&enc, &ciphertext, &bound),
+            InputKey::generate().open(&sealed, &bound),
             Err(OpenError::Refused)
         );
-        assert_eq!(
-            key.open("!!", &ciphertext, &bound),
-            Err(OpenError::Malformed)
-        );
+        let malformed = Sealed {
+            enc: "!!".into(),
+            ..sealed
+        };
+        assert_eq!(key.open(&malformed, &bound), Err(OpenError::Malformed));
     }
 
     /// What the browser and CryptoKit sealed opens here: the three implementations agree.
@@ -209,12 +208,12 @@ mod tests {
         assert_eq!(from, ["webcrypto", "cryptokit"]);
         for case in cases {
             let bound = aad(case["requestId"].as_str().unwrap(), case["origin"].as_str());
+            let sealed = Sealed {
+                enc: case["enc"].as_str().unwrap().into(),
+                ciphertext: case["ciphertext"].as_str().unwrap().into(),
+            };
             let opened = key
-                .open(
-                    case["enc"].as_str().unwrap(),
-                    case["ciphertext"].as_str().unwrap(),
-                    &bound,
-                )
+                .open(&sealed, &bound)
                 .unwrap_or_else(|error| panic!("{}: {error:?}", case["from"]));
             assert_eq!(
                 std::str::from_utf8(&opened).unwrap(),
@@ -236,34 +235,33 @@ mod tests {
         assert_eq!(from, ["webcrypto", "cryptokit"]);
         for case in signed {
             let text = |name: &str| case[name].as_str().unwrap();
-            let sealed = case["sealed"].as_object().map(|sealed| {
-                (
-                    sealed["enc"].as_str().unwrap(),
-                    sealed["ciphertext"].as_str().unwrap(),
-                )
+            let sealed = case["sealed"].as_object().map(|sealed| Sealed {
+                enc: sealed["enc"].as_str().unwrap().into(),
+                ciphertext: sealed["ciphertext"].as_str().unwrap().into(),
             });
-            let message = answer_message(text("requestId"), text("action"), sealed);
+            let answer: ElicitationAnswer = serde_json::from_value(case["action"].clone()).unwrap();
+            let message = answer_message(text("requestId"), answer, sealed.as_ref());
             assert!(
                 verify_answer(text("key"), text("signature"), &message),
                 "{}",
                 text("from")
             );
-            let other = answer_message(
-                text("requestId"),
-                if text("action") == "accept" {
-                    "decline"
-                } else {
-                    "accept"
-                },
-                sealed,
-            );
+            let other = match answer {
+                ElicitationAnswer::Accept => ElicitationAnswer::Decline,
+                ElicitationAnswer::Decline => ElicitationAnswer::Accept,
+            };
+            let other = answer_message(text("requestId"), other, sealed.as_ref());
             assert!(!verify_answer(text("key"), text("signature"), &other));
             assert!(!verify_answer(
                 text("key"),
                 text("signature"),
-                &answer_message("another", text("action"), sealed)
+                &answer_message("another", answer, sealed.as_ref())
             ));
-            assert_eq!(fingerprint(text("key")), text("fingerprint"));
+            assert_eq!(
+                fingerprint(text("key")).as_deref(),
+                Some(text("fingerprint"))
+            );
+            assert_eq!(fingerprint("not base64"), None);
         }
     }
 

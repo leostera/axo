@@ -129,6 +129,16 @@ pub enum ElicitationAnswer {
     Decline,
 }
 
+impl ElicitationAnswer {
+    /// Its wire name, which a device signs (`axo_seal::answer_message`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ElicitationAnswer::Accept => "accept",
+            ElicitationAnswer::Decline => "decline",
+        }
+    }
+}
+
 impl From<ElicitationAnswer> for ElicitationAction {
     fn from(answer: ElicitationAnswer) -> Self {
         match answer {
@@ -246,5 +256,8 @@ mod tests {
             })
         );
         assert!(serde_json::from_value::<ElicitationAnswer>(json!("cancel")).is_err());
+        for answer in [ElicitationAnswer::Accept, ElicitationAnswer::Decline] {
+            assert_eq!(serde_json::to_value(answer).unwrap(), answer.as_str());
+        }
     }
 }

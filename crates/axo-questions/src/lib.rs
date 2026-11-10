@@ -356,11 +356,7 @@ fn input_values(
                 .input_key()
                 .ok_or_else(|| bad("this Mac has no input key"))?;
             let opened = key
-                .open(
-                    &sealed.enc,
-                    &sealed.ciphertext,
-                    &axo_seal::aad(id, input.origin.as_deref()),
-                )
+                .open(&sealed, &axo_seal::aad(id, input.origin.as_deref()))
                 .map_err(|_| {
                     bad("the values did not open: sealed to another Mac, request or address")
                 })?;
@@ -621,7 +617,7 @@ mod tests {
     /// that request and address, one per field; a bad answer leaves the question waiting.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_form_s_values_open_only_for_its_request_and_address() {
-        use axo_protocol::elicitation::{InputField, InputFieldKind, Sealed};
+        use axo_protocol::elicitation::{InputField, InputFieldKind};
         let shared = asking();
         let (questions, host) = (&shared.0, &shared.1);
         let key = host.input_key().unwrap().public_key();
@@ -653,13 +649,14 @@ mod tests {
         });
         let id = first_pending(questions).await;
         let sealed = |request: &str, origin: &str, plaintext: &str| {
-            let (enc, ciphertext) = axo_seal::seal(
-                &key,
-                plaintext.as_bytes(),
-                &axo_seal::aad(request, Some(origin)),
+            Reply::Sealed(
+                axo_seal::seal(
+                    &key,
+                    plaintext.as_bytes(),
+                    &axo_seal::aad(request, Some(origin)),
+                )
+                .unwrap(),
             )
-            .unwrap();
-            Reply::Sealed(Sealed { enc, ciphertext })
         };
         let good = r#"{"values":{"f0":"hunter2"}}"#;
         let code = |result: Result<(), MethodError>| result.unwrap_err().code;

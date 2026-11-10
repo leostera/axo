@@ -21,15 +21,7 @@ pub(crate) fn check_answer(
             "Answers must be signed by your device: update Axo there.",
         ));
     };
-    let action = match answer {
-        ElicitationAnswer::Accept => "accept",
-        ElicitationAnswer::Decline => "decline",
-    };
-    let signed = axo_seal::answer_message(
-        id,
-        action,
-        sealed.map(|sealed| (sealed.enc.as_str(), sealed.ciphertext.as_str())),
-    );
+    let signed = axo_seal::answer_message(id, answer, sealed);
     if axo_seal::verify_answer(&proof.key, &proof.signature, &signed) {
         return Ok(());
     }
@@ -44,11 +36,11 @@ pub(crate) fn check_answer(
 mod tests {
     use super::*;
 
-    fn sign(secret: &p256::ecdsa::SigningKey, id: &str, action: &str) -> DeviceProof {
+    fn sign(secret: &p256::ecdsa::SigningKey, id: &str, answer: ElicitationAnswer) -> DeviceProof {
         use p256::ecdsa::signature::RandomizedSigner as _;
         let signature: p256::ecdsa::Signature = secret.sign_with_rng(
             &mut p256::elliptic_curve::rand_core::OsRng,
-            &axo_seal::answer_message(id, action, None),
+            &axo_seal::answer_message(id, answer, None),
         );
         DeviceProof {
             key: axo_protocol::base64::encode(
@@ -62,7 +54,7 @@ mod tests {
     #[test]
     fn an_answer_counts_only_with_its_own_signature() {
         let phone = p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
-        let no = sign(&phone, "r1", "decline");
+        let no = sign(&phone, "r1", ElicitationAnswer::Decline);
         assert!(check_answer("r1", ElicitationAnswer::Decline, None, Some(&no)).is_ok());
         // Replayed onto another question, or turned into a Yes: refused.
         assert_eq!(
