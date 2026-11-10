@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axo_computer_use::{ComputerHost, ComputerUse};
-use axo_protocol::elicitation::{Asker, ElicitationOutcome, InputRequest};
+use axo_protocol::elicitation::{Asker, InputRequest};
 use axo_protocol::{Event, SessionId, Viewport};
-use axo_questions::{Questions, QuestionsHost, Values};
+use axo_questions::{Answer, Questions, QuestionsHost};
 use jsonrpc_core::Error as RpcError;
 use tokio::sync::{Notify, watch};
 
@@ -190,16 +190,17 @@ impl Core {
     }
 
     /// Asks for a form and waits; an accepted form comes with its values.
-    pub(crate) fn ask_with(
+    pub(crate) async fn ask_with(
         &self,
         session_id: SessionId,
         message: &str,
         asked_by: Asker,
         input: Option<InputRequest>,
         timeout: Duration,
-    ) -> Result<(ElicitationOutcome, Option<Values>), RpcError> {
+    ) -> Result<Answer, RpcError> {
         self.questions
             .ask_with(self, session_id, message, asked_by, input, timeout)
+            .await
     }
 }
 
@@ -218,15 +219,17 @@ impl QuestionsHost for Core {
 }
 
 impl ComputerHost for Core {
-    fn ask_with(
-        &self,
+    fn ask_with<'a>(
+        &'a self,
         session_id: SessionId,
-        message: &str,
+        message: &'a str,
         asked_by: Asker,
         input: Option<InputRequest>,
         timeout: Duration,
-    ) -> Result<(ElicitationOutcome, Option<Values>), RpcError> {
-        Core::ask_with(self, session_id, message, asked_by, input, timeout)
+    ) -> axo_computer_use::HostFuture<'a, Result<Answer, RpcError>> {
+        Box::pin(Core::ask_with(
+            self, session_id, message, asked_by, input, timeout,
+        ))
     }
 
     fn input_key(&self) -> Option<&axo_seal::InputKey> {

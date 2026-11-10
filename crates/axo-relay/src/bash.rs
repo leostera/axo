@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
+use axo_protocol::rpc::MethodError;
+use axo_protocol::rpc::error_code::{INVALID_PARAMS, REFUSED};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,30 +53,45 @@ pub struct BashResult {
     pub duration_ms: u64,
 }
 
+/// The command could not be started at all.
+const COMMAND_NOT_STARTED: i64 = -32010;
+
 /// Checks a request: `Err` is a JSON-RPC error for the reply.
-pub fn parse(params: &Value, account_id: &str) -> Result<BashParams, (i64, String)> {
-    let params: BashParams = serde_json::from_value(params.clone())
-        .map_err(|error| (-32602, format!("Invalid params: {error}")))?;
+pub fn parse(params: &Value, account_id: &str) -> Result<BashParams, MethodError> {
+    let params: BashParams =
+        serde_json::from_value(params.clone()).map_err(MethodError::invalid_params)?;
     if params.account_id != account_id {
-        return Err((-32003, "this Mac belongs to another account".into()));
+        return Err(MethodError::new(
+            REFUSED,
+            "this Mac belongs to another account",
+        ));
     }
     if params.command.is_empty() || params.command.len() > MAX_COMMAND_BYTES {
-        return Err((-32602, "command must be 1 to 65536 bytes".into()));
+        return Err(MethodError::new(
+            INVALID_PARAMS,
+            "command must be 1 to 65536 bytes",
+        ));
     }
     if params.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute()) {
-        return Err((-32602, "cwd must be an absolute path".into()));
+        return Err(MethodError::new(
+            INVALID_PARAMS,
+            "cwd must be an absolute path",
+        ));
     }
     if params
         .timeout_ms
         .is_some_and(|ms| ms == 0 || ms > MAX_TIMEOUT.as_millis() as u64)
     {
-        return Err((-32602, "timeoutMs must be 1 to 600000".into()));
+        return Err(MethodError::new(
+            INVALID_PARAMS,
+            "timeoutMs must be 1 to 600000",
+        ));
     }
     Ok(params)
 }
 
 /// Runs the command to its end or its timeout. `Err` only when it could not start.
-pub async fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
+pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
     let started = Instant::now();
     let timeout = params
         .timeout_ms
@@ -98,9 +115,12 @@ pub async fn run(params: &BashParams) -> Result<BashResult, (i64, String)> {
     } else if let Some(home) = std::env::var_os("HOME") {
         command.current_dir(home);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| (-32010, format!("could not start the command: {error}")))?;
+    let mut child = command.spawn().map_err(|error| {
+        MethodError::new(
+            COMMAND_NOT_STARTED,
+            format!("could not start the command: {error}"),
+        )
+    })?;
     // The child leads its own group (process_group(0)), so its pid is the group's id.
     let group = child.id();
     let stdout = tokio::spawn(capture(child.stdout.take().expect("piped")));
@@ -286,12 +306,12 @@ mod tests {
     #[test]
     fn a_command_for_another_account_or_with_bad_params_is_refused() {
         let base = json!({ "accountId": "acct", "callId": "c1", "command": "true" });
-        assert_eq!(parse(&base, "other").unwrap_err().0, -32003);
+        assert_eq!(parse(&base, "other").unwrap_err().code, -32003);
         let mut relative = base.clone();
         relative["cwd"] = json!("tmp");
-        assert_eq!(parse(&relative, "acct").unwrap_err().0, -32602);
+        assert_eq!(parse(&relative, "acct").unwrap_err().code, -32602);
         let mut long = base.clone();
         long["timeoutMs"] = json!(600_001);
-        assert_eq!(parse(&long, "acct").unwrap_err().0, -32602);
+        assert_eq!(parse(&long, "acct").unwrap_err().code, -32602);
     }
 }

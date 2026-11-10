@@ -58,11 +58,19 @@ async fn in_cloud(fixture: &Fixture, session_id: SessionId) -> bool {
 }
 
 async fn evict(core: &Arc<Core>, id: SessionId, position: u64, chain: &str, length: u64) -> bool {
-    let (core, chain) = (Arc::clone(core), chain.to_owned());
-    tokio::task::spawn_blocking(move || evict_transcript(&core, id, position, &chain, length))
-        .await
-        .unwrap()
-        .unwrap()
+    use axo_relay::{Eviction, SyncCursor};
+    evict_transcript(
+        core,
+        id,
+        SyncCursor {
+            position,
+            chain: chain.to_owned(),
+        },
+        length,
+    )
+    .await
+    .unwrap()
+        == Eviction::Deleted
 }
 
 async fn reopen(fixture: &Fixture, id: SessionId) -> io::Result<()> {

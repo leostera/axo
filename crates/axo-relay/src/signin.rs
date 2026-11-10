@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use axo_protocol::rpc::MethodError;
+use axo_protocol::rpc::error_code::{INVALID_PARAMS, REFUSED, TIMED_OUT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -38,14 +40,20 @@ pub struct SignInResult {
     pub error_description: Option<String>,
 }
 
+/// The sign-in could not be taken: no port was free, or the redirect was not one it could read.
+const SIGN_IN_FAILED: i64 = -32009;
+
 /// Checks a request: `Err` is a JSON-RPC error for the reply.
-pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, (i64, String)> {
-    let params: SignInParams = serde_json::from_value(params.clone())
-        .map_err(|error| (-32602, format!("Invalid params: {error}")))?;
+pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, MethodError> {
+    let params: SignInParams =
+        serde_json::from_value(params.clone()).map_err(MethodError::invalid_params)?;
     if params.account_id != account_id {
-        return Err((-32003, "this Mac belongs to another account".into()));
+        return Err(MethodError::new(
+            REFUSED,
+            "this Mac belongs to another account",
+        ));
     }
-    let invalid = |message: &str| Err((-32602, message.to_owned()));
+    let invalid = |message: &str| Err(MethodError::new(INVALID_PARAMS, message));
     if !params.authorize_url.starts_with("https://")
         || params.authorize_url.len() > 8192
         || params.authorize_url.contains(char::is_whitespace)
@@ -91,7 +99,7 @@ pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, (i64, Str
 pub fn run(
     params: &SignInParams,
     open_browser: impl FnOnce(&str) -> std::io::Result<()>,
-) -> Result<SignInResult, (i64, String)> {
+) -> Result<SignInResult, MethodError> {
     let request = axo_signin::SignIn {
         authorize_url: params.authorize_url.clone(),
         ports: params.ports.clone(),
@@ -106,10 +114,11 @@ pub fn run(
             error: callback.error,
             error_description: callback.error_description,
         }),
-        Err(axo_signin::SignInError::TimedOut) => {
-            Err((-32008, "the sign-in was not finished in time".into()))
-        }
-        Err(error) => Err((-32009, error.to_string())),
+        Err(axo_signin::SignInError::TimedOut) => Err(MethodError::new(
+            TIMED_OUT,
+            "the sign-in was not finished in time",
+        )),
+        Err(error) => Err(MethodError::new(SIGN_IN_FAILED, error.to_string())),
     }
 }
 
@@ -142,8 +151,9 @@ mod tests {
 
     #[test]
     fn anything_else_is_refused() {
-        let refused =
-            |overrides: Value, account: &str| parse(&params(overrides), account).unwrap_err().1;
+        let refused = |overrides: Value, account: &str| {
+            parse(&params(overrides), account).unwrap_err().message
+        };
         assert!(refused(json!({}), "other").contains("another account"));
         assert!(
             refused(

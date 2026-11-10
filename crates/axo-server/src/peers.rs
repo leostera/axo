@@ -335,11 +335,11 @@ impl Peers {
     }
 
     /// The copy and live state a remote pane shows, once something has changed since what it
-    /// has (or at once the first time, or after `timeout`). Blocks; run it on the blocking pool.
-    pub(crate) fn watch(
+    /// has (or at once the first time, or after `timeout`).
+    pub(crate) async fn watch(
         &self,
-        core: &Core,
-        request: &rpc::WatchPeerSession,
+        core: &Arc<Core>,
+        request: rpc::WatchPeerSession,
     ) -> io::Result<PeerSessionView> {
         let access = self.access()?;
         let timeout = Duration::from_millis(
@@ -351,8 +351,22 @@ impl Peers {
         let version = if request.version == 0 {
             access.live.version()
         } else {
-            access.live.wait_for_change(request.version, timeout)
+            access.live.wait_for_change(request.version, timeout).await
         };
+        let core = Arc::clone(core);
+        tokio::task::spawn_blocking(move || core.peers.read_view(&core, &request, version))
+            .await
+            .map_err(io::Error::other)?
+    }
+
+    /// Reads the copy and listing from disk, off the runtime.
+    fn read_view(
+        &self,
+        core: &Core,
+        request: &rpc::WatchPeerSession,
+        version: u64,
+    ) -> io::Result<PeerSessionView> {
+        let access = self.access()?;
         let index = access.read_index();
         let session_id = request.session_id.to_string();
         let listed = known_sessions(&index).find(|listed| {
@@ -419,9 +433,11 @@ impl Peers {
         })
     }
 
-    /// Sends a remote pane's command to the Mac its Session runs on. Blocks; run it on the
-    /// blocking pool.
-    pub(crate) fn command(&self, request: rpc::PeerCommand) -> Result<Value, PeerCommandError> {
+    /// Sends a remote pane's command to the Mac its Session runs on.
+    pub(crate) async fn command(
+        &self,
+        request: rpc::PeerCommand,
+    ) -> Result<Value, PeerCommandError> {
         if !PEER_COMMANDS.contains(&request.method.as_str()) {
             return Err(PeerCommandError {
                 code: -32602,
@@ -429,12 +445,15 @@ impl Peers {
             });
         }
         let access = self.access().map_err(|_| PeerCommandError::offline())?;
-        access.live.command(
-            &request.host_id,
-            &request.method,
-            Value::Object(request.params),
-            COMMAND_TIMEOUT,
-        )
+        access
+            .live
+            .command(
+                &request.host_id,
+                &request.method,
+                Value::Object(request.params),
+                COMMAND_TIMEOUT,
+            )
+            .await
     }
 }
 

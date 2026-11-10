@@ -21,13 +21,6 @@ pub(super) struct NegotiateParams {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct HostIdentity<'a> {
-    pub(super) host_id: &'a str,
-    pub(super) host_generation: &'a str,
-}
-
-#[derive(Serialize)]
 pub(super) struct Capability {
     id: &'static str,
     version: u32,

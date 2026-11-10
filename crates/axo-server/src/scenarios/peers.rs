@@ -64,10 +64,10 @@ async fn watch(
     version: u64,
 ) -> PeerSessionView {
     let core = Arc::clone(&fixture.core);
-    tokio::task::spawn_blocking(move || {
-        core.peers.watch(
+    core.peers
+        .watch(
             &core,
-            &rpc::WatchPeerSession {
+            rpc::WatchPeerSession {
                 host_id: STUDIO.to_owned(),
                 session_id: SESSION.parse().unwrap(),
                 epoch,
@@ -77,10 +77,8 @@ async fn watch(
                 window: None,
             },
         )
-    })
-    .await
-    .unwrap()
-    .unwrap()
+        .await
+        .unwrap()
 }
 
 fn cursors(view: &PeerSessionView) -> Vec<u64> {
@@ -215,16 +213,15 @@ async fn commands_go_out_only_while_following_and_only_prompts_stops_and_keys() 
     };
     let send = |request: rpc::PeerCommand| {
         let core = Arc::clone(&fixture.core);
-        tokio::task::spawn_blocking(move || core.peers.command(request))
+        async move { core.peers.command(request).await }
     };
     assert_eq!(
-        send(command("axo.remote.session.prompt")).await.unwrap(),
+        send(command("axo.remote.session.prompt")).await,
         Err(PeerCommandError::offline())
     );
     assert_eq!(
         send(command("axo.remote.session.close"))
             .await
-            .unwrap()
             .unwrap_err()
             .code,
         -32602

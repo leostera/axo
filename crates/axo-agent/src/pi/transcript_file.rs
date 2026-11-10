@@ -11,8 +11,8 @@ use super::pi3::{self, Transcript};
 pub struct TranscriptFile {
     path: Option<PathBuf>,
     transcript: Option<Transcript>,
-    /// Where each record's line starts in the file and how long it is (index = position - 1).
-    lines: Vec<(u64, usize)>,
+    /// Each record's line in the file (index = position - 1).
+    lines: Vec<LineSpan>,
     /// Bytes of the file hashed: whole lines only.
     hashed: u64,
     /// The last record's content digest, to notice a file rewritten in place.
@@ -49,7 +49,7 @@ impl TranscriptFile {
     /// The length in bytes of the line of record `position` (from 1), without its newline.
     pub fn line_length(&self, position: u64) -> Option<usize> {
         let index = usize::try_from(position.checked_sub(1)?).ok()?;
-        self.lines.get(index).map(|&(_, length)| length)
+        self.lines.get(index).map(|span| span.length)
     }
 
     /// Treats the next record as one that cannot be uploaded, as if it were not a record: nothing
@@ -107,7 +107,10 @@ impl TranscriptFile {
                         self.log_invalid_line(&path);
                         continue;
                     }
-                    self.lines.push((offset, line.len()));
+                    self.lines.push(LineSpan {
+                        offset,
+                        length: line.len(),
+                    });
                     self.last_digest = Some(pi3::digest("content", text));
                 }
             }
@@ -128,7 +131,13 @@ impl TranscriptFile {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
-        Ok((!self.invalid && self.transcript.is_some() && length == self.hashed).then_some(length))
+        Ok(self.is_whole(length).then_some(length))
+    }
+
+    /// Whether a file of `length` bytes is every record already hashed, nothing partial and
+    /// nothing refused.
+    pub fn is_whole(&self, length: u64) -> bool {
+        !self.invalid && self.transcript.is_some() && length == self.hashed
     }
 
     fn log_invalid_line(&mut self, path: &Path) {
@@ -141,11 +150,11 @@ impl TranscriptFile {
     }
 
     fn last_line_unchanged(&self, file: &mut File) -> io::Result<bool> {
-        let (Some(&(offset, length)), Some(digest)) = (self.lines.last(), &self.last_digest) else {
+        let (Some(span), Some(digest)) = (self.lines.last(), &self.last_digest) else {
             return Ok(true);
         };
-        file.seek(SeekFrom::Start(offset))?;
-        let mut line = vec![0; length];
+        file.seek(SeekFrom::Start(span.offset))?;
+        let mut line = vec![0; span.length];
         if file.read_exact(&mut line).is_err() {
             return Ok(false);
         }
@@ -154,13 +163,53 @@ impl TranscriptFile {
 
     /// The raw lines of positions `from..=to`, read from the file.
     pub fn read(&self, from: u64, to: u64) -> io::Result<Vec<String>> {
-        let path = self.path.as_ref().ok_or(io::ErrorKind::NotFound)?;
-        let mut file = File::open(path)?;
-        (from..=to)
-            .map(|position| {
-                let (offset, length) = self.lines[(position - 1) as usize];
-                file.seek(SeekFrom::Start(offset))?;
-                let mut line = vec![0; length];
+        self.line_range(from, to)?.read()
+    }
+
+    /// Where the lines of positions `from..=to` are, to read them elsewhere: on another thread,
+    /// while this file keeps hashing.
+    pub fn line_range(&self, from: u64, to: u64) -> io::Result<LineRange> {
+        let start = from
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let end = usize::try_from(to).map_err(|_| io::ErrorKind::InvalidInput)?;
+        if from > to {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let path = self.path.clone().ok_or(io::ErrorKind::NotFound)?;
+        let spans = self
+            .lines
+            .get(start..end)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .to_vec();
+        Ok(LineRange { path, spans })
+    }
+}
+
+/// Where one record's line is in its file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineSpan {
+    pub offset: u64,
+    pub length: usize,
+}
+
+/// Some records' lines in a transcript file, in order.
+#[derive(Clone, Debug)]
+pub struct LineRange {
+    path: PathBuf,
+    spans: Vec<LineSpan>,
+}
+
+impl LineRange {
+    /// Reads the lines. Blocks: run it off the runtime.
+    pub fn read(self) -> io::Result<Vec<String>> {
+        let mut file = File::open(&self.path)?;
+        self.spans
+            .iter()
+            .map(|span| {
+                file.seek(SeekFrom::Start(span.offset))?;
+                let mut line = vec![0; span.length];
                 file.read_exact(&mut line)?;
                 String::from_utf8(line).map_err(|_| io::ErrorKind::InvalidData.into())
             })
@@ -194,6 +243,17 @@ mod tests {
         let path = crate::test_directory().join("transcript.jsonl");
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn line_ranges_reject_zero_reversed_and_unhashed_positions() {
+        let file = TranscriptFile::new(Some(PathBuf::from("unused")));
+        for (from, to) in [(0, 0), (0, 1), (2, 1), (1, 1), (1, u64::MAX)] {
+            assert_eq!(
+                file.line_range(from, to).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
     }
 
     #[test]

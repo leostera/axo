@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::{oneshot, watch};
 
 use serde_json::Value;
 
@@ -40,20 +41,20 @@ impl PeerCommandError {
 pub(super) struct RestoreRequest {
     pub(super) place: Place,
     pub(super) count: u64,
-    pub(super) reply: mpsc::Sender<io::Result<PathBuf>>,
+    pub(super) reply: oneshot::Sender<io::Result<PathBuf>>,
 }
 
 /// A restore under way on the socket.
 pub(super) struct Restoring {
     pub(super) count: u64,
-    pub(super) reply: mpsc::Sender<io::Result<PathBuf>>,
+    pub(super) reply: oneshot::Sender<io::Result<PathBuf>>,
 }
 
 pub(super) struct PeerCommand {
     pub(super) host_id: String,
     pub(super) method: String,
     pub(super) params: Value,
-    pub(super) reply: mpsc::Sender<Result<Value, PeerCommandError>>,
+    pub(super) reply: oneshot::Sender<Result<Value, PeerCommandError>>,
 }
 
 #[derive(Default)]
@@ -75,13 +76,23 @@ type Observer = Box<dyn Fn() + Send + Sync>;
 
 /// What the peers socket knows that axod's remote panes follow, and the way their commands go
 /// out. Shared between the peers worker, which fills it, and axod's handlers, which read it.
-#[derive(Default)]
 pub struct PeerLive {
     state: Mutex<LiveState>,
-    changed: Condvar,
+    changed: watch::Sender<u64>,
     /// Wakes the peers socket's loop: a pane, a command or a restore wants something.
     woken: tokio::sync::Notify,
     listing_observer: Mutex<Option<Observer>>,
+}
+
+impl Default for PeerLive {
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            changed: watch::channel(0).0,
+            woken: tokio::sync::Notify::new(),
+            listing_observer: Mutex::default(),
+        }
+    }
 }
 
 impl PeerLive {
@@ -105,17 +116,10 @@ impl PeerLive {
     }
 
     /// Waits until something changes after `since`, or `timeout` passes; returns the version.
-    pub fn wait_for_change(&self, since: u64, timeout: Duration) -> u64 {
-        let Ok(state) = self.state.lock() else {
-            return since;
-        };
-        match self
-            .changed
-            .wait_timeout_while(state, timeout, |state| state.version <= since)
-        {
-            Ok((state, _)) => state.version,
-            Err(_) => since,
-        }
+    pub async fn wait_for_change(&self, since: u64, timeout: Duration) -> u64 {
+        let mut changed = self.changed.subscribe();
+        let _ = tokio::time::timeout(timeout, changed.wait_for(|version| *version > since)).await;
+        self.version()
     }
 
     /// A remote pane shows this Session: keep its copy, archived or not.
@@ -135,8 +139,13 @@ impl PeerLive {
     /// Fetches this Mac's own transcript at `place` back from the cloud, all `count` records
     /// of it, into the restore folder (RFD0027). Returns where it is there; the caller checks
     /// it and moves it into place.
-    pub fn restore(&self, place: Place, count: u64, timeout: Duration) -> io::Result<PathBuf> {
-        let (reply, answer) = mpsc::channel();
+    pub async fn restore(
+        &self,
+        place: Place,
+        count: u64,
+        timeout: Duration,
+    ) -> io::Result<PathBuf> {
+        let (reply, answer) = oneshot::channel();
         self.update(|state| {
             state.restores.push(RestoreRequest {
                 place,
@@ -144,9 +153,9 @@ impl PeerLive {
                 reply,
             })
         });
-        match answer.recv_timeout(timeout) {
-            Ok(outcome) => outcome,
-            Err(_) => Err(io::Error::new(
+        match tokio::time::timeout(timeout, answer).await {
+            Ok(Ok(outcome)) => outcome,
+            _ => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "the transcript could not be fetched from the cloud",
             )),
@@ -180,14 +189,14 @@ impl PeerLive {
     /// Sends `method` to the Mac `host_id` names, as a client would, and waits for its answer.
     /// With no socket nothing is sent (`offline`); a reply that does not come in time, or a socket
     /// that ends first, leaves the outcome unknown.
-    pub fn command(
+    pub async fn command(
         &self,
         host_id: &str,
         method: &str,
         params: Value,
         timeout: Duration,
     ) -> Result<Value, PeerCommandError> {
-        let (reply, answer) = mpsc::channel();
+        let (reply, answer) = oneshot::channel();
         {
             let mut state = self.state.lock().map_err(|_| PeerCommandError::offline())?;
             if !state.connected {
@@ -201,9 +210,9 @@ impl PeerLive {
             });
         }
         self.woken.notify_one();
-        match answer.recv_timeout(timeout) {
-            Ok(outcome) => outcome,
-            Err(_) => Err(PeerCommandError::unknown()),
+        match tokio::time::timeout(timeout, answer).await {
+            Ok(Ok(outcome)) => outcome,
+            _ => Err(PeerCommandError::unknown()),
         }
     }
 
@@ -211,8 +220,8 @@ impl PeerLive {
         if let Ok(mut state) = self.state.lock() {
             change(&mut state);
             state.version += 1;
+            self.changed.send_replace(state.version);
         }
-        self.changed.notify_all();
         self.woken.notify_one();
     }
 
@@ -267,7 +276,7 @@ impl PeerLive {
     /// is forgotten, since nothing keeps it current now.
     pub(super) fn disconnected(
         &self,
-        in_flight: Vec<mpsc::Sender<Result<Value, PeerCommandError>>>,
+        in_flight: Vec<oneshot::Sender<Result<Value, PeerCommandError>>>,
     ) {
         let mut unsent = Vec::new();
         self.update(|state| {
@@ -294,54 +303,60 @@ impl PeerLive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
 
     use serde_json::json;
 
     use crate::peers::test_support::{HOST, SESSION};
 
-    #[test]
-    fn a_command_with_no_socket_is_not_sent_and_one_cut_off_is_unknown() {
+    #[tokio::test]
+    async fn a_command_with_no_socket_is_not_sent_and_one_cut_off_is_unknown() {
         let live = PeerLive::new();
-        let offline = live.command(
-            HOST,
-            "axo.remote.session.prompt",
-            json!({}),
-            Duration::from_secs(1),
-        );
+        let offline = live
+            .command(
+                HOST,
+                "axo.remote.session.prompt",
+                json!({}),
+                Duration::from_secs(1),
+            )
+            .await;
         assert_eq!(offline, Err(PeerCommandError::offline()));
 
         live.connected();
         let follower = Arc::clone(&live);
-        let sent = thread::spawn(move || {
-            follower.command(
-                HOST,
-                "axo.remote.session.prompt",
-                json!({ "text": "yes" }),
-                Duration::from_secs(5),
-            )
+        let sent = tokio::spawn(async move {
+            follower
+                .command(
+                    HOST,
+                    "axo.remote.session.prompt",
+                    json!({ "text": "yes" }),
+                    Duration::from_secs(5),
+                )
+                .await
         });
         let command = loop {
             if let Some(command) = live.take_commands().pop() {
                 break command;
             }
-            thread::sleep(Duration::from_millis(5));
+            tokio::task::yield_now().await;
         };
         assert_eq!(command.params["text"], "yes");
         // The socket ends after sending it: it may have reached the Mac.
         live.disconnected(vec![command.reply]);
-        assert_eq!(sent.join().unwrap(), Err(PeerCommandError::unknown()));
+        assert_eq!(sent.await.unwrap(), Err(PeerCommandError::unknown()));
         assert!(!live.is_connected());
     }
 
-    #[test]
-    fn progress_is_kept_per_slot_and_a_change_wakes_a_waiting_pane() {
+    #[tokio::test]
+    async fn progress_is_kept_per_slot_and_a_change_wakes_a_waiting_pane() {
         let live = PeerLive::new();
         let before = live.version();
         let waiter = Arc::clone(&live);
-        let woke = thread::spawn(move || waiter.wait_for_change(before, Duration::from_secs(5)));
+        let woke =
+            tokio::spawn(
+                async move { waiter.wait_for_change(before, Duration::from_secs(5)).await },
+            );
         live.set_progress(SESSION, "message", json!({ "text": "Wor" }));
-        assert!(woke.join().unwrap() > before);
+        assert!(woke.await.unwrap() > before);
         live.set_progress(SESSION, "call-1", json!({ "toolCallId": "call-1" }));
         live.set_progress(SESSION, "message", Value::Null);
         assert_eq!(
@@ -354,6 +369,54 @@ mod tests {
         );
         assert_eq!(live.progress(SESSION).len(), 1);
         assert_eq!(live.progress(SESSION)[0].0, "question");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn many_waiting_panes_share_one_thread_and_all_see_the_change() {
+        let live = PeerLive::new();
+        let before = live.version();
+        let mut panes = tokio::task::JoinSet::new();
+        for _ in 0..128 {
+            let live = Arc::clone(&live);
+            panes.spawn(async move { live.wait_for_change(before, Duration::from_secs(5)).await });
+        }
+        tokio::task::yield_now().await;
+        live.set_progress(SESSION, "message", json!({ "text": "hello" }));
+        while let Some(version) = panes.join_next().await {
+            assert!(version.unwrap() > before);
+        }
+        // A change before subscribing must not be missed, either.
+        assert!(live.wait_for_change(before, Duration::ZERO).await > before);
+    }
+
+    #[tokio::test]
+    async fn a_command_never_sent_is_offline_and_a_late_reply_has_no_waiter() {
+        let live = PeerLive::new();
+        live.connected();
+        let caller = Arc::clone(&live);
+        let pending = tokio::spawn(async move {
+            caller
+                .command(
+                    HOST,
+                    "axo.remote.session.stop",
+                    json!({}),
+                    Duration::from_secs(5),
+                )
+                .await
+        });
+        live.woken().await;
+        live.disconnected(Vec::new());
+        assert_eq!(pending.await.unwrap(), Err(PeerCommandError::offline()));
+
+        live.connected();
+        assert_eq!(
+            live.command(HOST, "axo.remote.session.stop", json!({}), Duration::ZERO)
+                .await,
+            Err(PeerCommandError::unknown())
+        );
+        let command = live.take_commands().pop().unwrap();
+        assert!(command.reply.is_closed());
+        assert!(command.reply.send(Ok(json!({}))).is_err());
     }
 
     #[test]

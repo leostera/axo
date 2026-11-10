@@ -20,6 +20,7 @@ rust_library(
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:sha2",
+        "@crates//:tokio",
     ],
 )
 

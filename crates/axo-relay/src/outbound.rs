@@ -1,8 +1,9 @@
-//! How threads other than the relay loop talk to the cloud over the host's one relay socket
+//! How tasks other than the relay loop talk to the cloud over the host's one relay socket
 //! (RFD0016, Transport).
 //!
-//! Any thread may send a request, which waits for its reply, or a notification, each with a
-//! priority class. The relay loop owns the socket: it drains what threads queued, sends frames
+//! Any task may send a request, which waits for its reply without holding a thread, or a
+//! notification, each with a priority class. The relay loop owns the socket: it drains what tasks
+//! queued, sends frames
 //! by priority (replies and control, then durable upload, then ephemeral progress), interleaving
 //! fragments across classes and keeping messages in order within one, and routes replies back.
 //! Everything belongs to one socket: when it closes, requests waiting on it fail with an outcome
@@ -10,12 +11,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, SyncSender};
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
+
+use axo_protocol::rpc::MethodError;
 use serde_json::{Value, json};
 
 use crate::fragments;
@@ -54,7 +56,8 @@ pub enum RelayCallError {
     Rejected { code: i64, message: String },
     /// The message is larger than the relay carries, or too much is queued. Nothing was sent.
     TooLarge,
-    /// The caller gave up waiting (RFD0034). It may have run; nothing waits for it here.
+    /// The caller gave up waiting (RFD0034). It may have run; nothing waits for it here. The
+    /// channel never answers this: a caller racing its request against its own cancellation does.
     Abandoned,
 }
 
@@ -76,33 +79,71 @@ impl std::fmt::Display for RelayCallError {
 
 impl std::error::Error for RelayCallError {}
 
-/// One message a thread asked the relay loop to send.
+/// One message a task asked the relay loop to send.
 pub(crate) struct Outgoing {
     pub(crate) text: String,
     pub(crate) priority: Priority,
 }
 
-type Waiter = SyncSender<Result<Value, RelayCallError>>;
+/// Which relay socket something belongs to: each socket the relay opens has its own, so a reply
+/// or a request never outlives the socket it was meant for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SocketEpoch(u64);
 
-/// Stops a request's wait from another thread: its caller answers `Abandoned` at once.
-pub struct Abandon(Waiter);
-
-impl Abandon {
-    pub fn abandon(&self) {
-        let _ = self.0.try_send(Err(RelayCallError::Abandoned));
+impl std::fmt::Display for SocketEpoch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
     }
 }
 
-struct Live {
-    epoch: u64,
-    tx: UnboundedSender<Outgoing>,
+/// The id of a request this Mac sent the cloud, which the cloud's reply carries back.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RequestId(String);
+
+impl RequestId {
+    fn new(number: u64) -> Self {
+        Self(format!("axod-c-{number}"))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// The handle threads use to reach the cloud. Cheap to share.
+impl std::borrow::Borrow<str> for RequestId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What the cloud answered a request.
+type Outcome = Result<Value, RelayCallError>;
+
+/// A request sent on a socket and waiting for its reply.
+struct PendingRequest {
+    socket: SocketEpoch,
+    waiter: oneshot::Sender<Outcome>,
+}
+
+/// The socket tasks queue onto now.
+struct LiveSocket {
+    epoch: SocketEpoch,
+    outgoing: UnboundedSender<Outgoing>,
+}
+
+/// A socket the relay loop just opened, as the loop holds it: what tasks queue for it, and how
+/// replies to the cloud's requests on it go out.
+pub(crate) struct AttachedSocket {
+    pub(crate) epoch: SocketEpoch,
+    pub(crate) outgoing: UnboundedReceiver<Outgoing>,
+    pub(crate) replies: ReplySender,
+}
+
+/// The handle tasks use to reach the cloud. Cheap to share.
 pub struct RelayChannel {
-    live: Mutex<Option<Live>>,
-    pending: Mutex<HashMap<String, (u64, Waiter)>>,
-    next_id: AtomicU64,
+    live: Mutex<Option<LiveSocket>>,
+    pending: Mutex<HashMap<RequestId, PendingRequest>>,
+    next_request: AtomicU64,
     next_epoch: AtomicU64,
 }
 
@@ -111,7 +152,7 @@ impl Default for RelayChannel {
         Self {
             live: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
+            next_request: AtomicU64::new(1),
             next_epoch: AtomicU64::new(1),
         }
     }
@@ -127,68 +168,49 @@ impl RelayChannel {
         self.epoch().is_some()
     }
 
-    /// Which socket is open now, if any: each socket the relay opens has its own epoch.
-    pub fn epoch(&self) -> Option<u64> {
-        self.live
-            .lock()
-            .ok()
-            .and_then(|live| live.as_ref().map(|live| live.epoch))
+    /// Which socket is open now, if any.
+    pub fn epoch(&self) -> Option<SocketEpoch> {
+        lock(&self.live).as_ref().map(|live| live.epoch)
     }
 
-    /// Sends a request and waits up to `timeout` for its reply.
-    pub fn request(
+    /// Sends a request and waits up to `timeout` for its reply. A caller that stops waiting
+    /// (drops this future) is forgotten at once: its late reply is dropped.
+    pub async fn request(
         &self,
         method: &str,
         params: Value,
         priority: Priority,
         timeout: Duration,
-    ) -> Result<Value, RelayCallError> {
-        self.request_abandonable(method, params, priority, timeout, |_| {})
-    }
-
-    /// [`Self::request`], handing `abandon` a way to stop the wait before it starts.
-    pub fn request_abandonable(
-        &self,
-        method: &str,
-        params: Value,
-        priority: Priority,
-        timeout: Duration,
-        abandon: impl FnOnce(Abandon),
-    ) -> Result<Value, RelayCallError> {
-        let id = format!("axod-c-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+    ) -> Outcome {
+        let id = RequestId::new(self.next_request.fetch_add(1, Ordering::Relaxed));
         let text =
-            json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string();
-        // Room for the answer and an abandon racing it.
-        let (waiter, answer) = mpsc::sync_channel(2);
-        abandon(Abandon(waiter.clone()));
+            json!({ "jsonrpc": "2.0", "id": id.as_str(), "method": method, "params": params })
+                .to_string();
+        if text.len() > fragments::MESSAGE_BYTES {
+            return Err(RelayCallError::TooLarge);
+        }
+        let (waiter, answer) = oneshot::channel();
         {
-            let live = self.live.lock().map_err(|_| RelayCallError::NotConnected)?;
-            let Some(live) = live.as_ref() else {
-                return Err(RelayCallError::NotConnected);
-            };
-            if text.len() > fragments::MESSAGE_BYTES {
-                return Err(RelayCallError::TooLarge);
-            }
-            self.pending
-                .lock()
-                .map_err(|_| RelayCallError::NotConnected)?
-                .insert(id.clone(), (live.epoch, waiter));
-            if live.tx.send(Outgoing { text, priority }).is_err() {
+            let live = lock(&self.live);
+            let live = live.as_ref().ok_or(RelayCallError::NotConnected)?;
+            lock(&self.pending).insert(
+                id.clone(),
+                PendingRequest {
+                    socket: live.epoch,
+                    waiter,
+                },
+            );
+            if live.outgoing.send(Outgoing { text, priority }).is_err() {
                 self.forget(&id);
                 return Err(RelayCallError::NotConnected);
             }
         }
-        match answer.recv_timeout(timeout) {
-            Ok(Err(RelayCallError::Abandoned)) => {
-                self.forget(&id);
-                Err(RelayCallError::Abandoned)
-            }
-            Ok(outcome) => outcome,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.forget(&id);
-                Err(RelayCallError::TimedOut)
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(RelayCallError::Disconnected),
+        let _waiting = Waiting { channel: self, id };
+        match tokio::time::timeout(timeout, answer).await {
+            Ok(Ok(outcome)) => outcome,
+            // Its socket closed and nothing will answer.
+            Ok(Err(_)) => Err(RelayCallError::Disconnected),
+            Err(_) => Err(RelayCallError::TimedOut),
         }
     }
 
@@ -203,57 +225,60 @@ impl RelayChannel {
         if text.len() > fragments::MESSAGE_BYTES {
             return Err(RelayCallError::TooLarge);
         }
-        let live = self.live.lock().map_err(|_| RelayCallError::NotConnected)?;
+        let live = lock(&self.live);
         let live = live.as_ref().ok_or(RelayCallError::NotConnected)?;
-        live.tx
+        live.outgoing
             .send(Outgoing { text, priority })
             .map_err(|_| RelayCallError::NotConnected)
     }
 
-    fn forget(&self, id: &str) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(id);
-        }
+    fn forget(&self, id: &RequestId) {
+        lock(&self.pending).remove(id);
     }
 
-    /// The relay loop opened a socket: from now on threads queue onto it.
-    pub(crate) fn attach(&self) -> (u64, UnboundedReceiver<Outgoing>, ReplySender) {
-        let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = unbounded_channel();
-        let replies = ReplySender { tx: tx.clone() };
-        if let Ok(mut live) = self.live.lock() {
-            *live = Some(Live { epoch, tx });
+    /// The relay loop opened a socket: from now on tasks queue onto it.
+    pub(crate) fn attach(&self) -> AttachedSocket {
+        let epoch = SocketEpoch(self.next_epoch.fetch_add(1, Ordering::Relaxed));
+        let (outgoing, queued) = unbounded_channel();
+        let replies = ReplySender {
+            tx: outgoing.clone(),
+        };
+        *lock(&self.live) = Some(LiveSocket { epoch, outgoing });
+        AttachedSocket {
+            epoch,
+            outgoing: queued,
+            replies,
         }
-        (epoch, rx, replies)
     }
 
     /// The socket of `epoch` closed: requests sent on it fail, and nothing more queues onto it.
-    pub(crate) fn detach(&self, epoch: u64) {
-        if let Ok(mut live) = self.live.lock()
-            && live.as_ref().is_some_and(|live| live.epoch == epoch)
+    pub(crate) fn detach(&self, epoch: SocketEpoch) {
         {
-            *live = None;
+            let mut live = lock(&self.live);
+            if live.as_ref().is_some_and(|live| live.epoch == epoch) {
+                *live = None;
+            }
         }
-        if let Ok(mut pending) = self.pending.lock() {
-            let lost: Vec<String> = pending
+        let lost: Vec<PendingRequest> = {
+            let mut pending = lock(&self.pending);
+            let ids: Vec<RequestId> = pending
                 .iter()
-                .filter(|(_, (e, _))| *e == epoch)
+                .filter(|(_, request)| request.socket == epoch)
                 .map(|(id, _)| id.clone())
                 .collect();
-            for id in lost {
-                if let Some((_, waiter)) = pending.remove(&id) {
-                    let _ = waiter.try_send(Err(RelayCallError::Disconnected));
-                }
-            }
+            ids.iter().filter_map(|id| pending.remove(id)).collect()
+        };
+        for request in lost {
+            let _ = request.waiter.send(Err(RelayCallError::Disconnected));
         }
     }
 
-    /// Hands a reply from the cloud to the thread waiting for it. False if nobody is.
+    /// Hands a reply from the cloud to the task waiting for it. False if nobody is.
     pub(crate) fn resolve(&self, message: &Value) -> bool {
         let Some(id) = message.get("id").and_then(Value::as_str) else {
             return false;
         };
-        let Some((_, waiter)) = self.pending.lock().ok().and_then(|mut p| p.remove(id)) else {
+        let Some(request) = lock(&self.pending).remove(id) else {
             return false;
         };
         let outcome = if let Some(error) = message.get("error") {
@@ -269,9 +294,30 @@ impl RelayChannel {
         } else {
             Ok(message.get("result").cloned().unwrap_or(Value::Null))
         };
-        let _ = waiter.try_send(outcome);
+        let _ = request.waiter.send(outcome);
         true
     }
+}
+
+/// A request being waited for: forgotten when its wait ends, however it ends, so a reply that
+/// comes after is dropped rather than kept for nobody.
+struct Waiting<'a> {
+    channel: &'a RelayChannel,
+    id: RequestId,
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.channel.forget(&self.id);
+    }
+}
+
+/// Every lock here guards a map or a slot that stays whole between statements, so a panic
+/// elsewhere leaves it usable.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Sends replies to requests that came on one socket. When that socket closes, replies go
@@ -282,12 +328,10 @@ pub struct ReplySender {
 }
 
 impl ReplySender {
-    pub fn reply(&self, id: &Value, outcome: Result<Value, (i64, String)>) {
+    pub fn reply(&self, id: &Value, outcome: Result<Value, MethodError>) {
         let text = match outcome {
             Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            Err((code, message)) => {
-                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-            }
+            Err(error) => json!({ "jsonrpc": "2.0", "id": id, "error": error }),
         }
         .to_string();
         self.send(text);
@@ -373,7 +417,6 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
 
     fn big(priority: Priority, fill: char) -> Outgoing {
         Outgoing {
@@ -453,74 +496,90 @@ mod tests {
         assert_eq!(switch, 1);
     }
 
-    #[test]
-    fn requests_wait_for_their_reply_and_fail_when_the_socket_closes() {
+    #[tokio::test]
+    async fn requests_wait_for_their_reply_and_fail_when_the_socket_closes() {
         let channel = RelayChannel::new();
         assert_eq!(
-            channel.request("m", json!({}), Priority::Control, Duration::from_secs(1)),
+            channel
+                .request("m", json!({}), Priority::Control, Duration::from_secs(1))
+                .await,
             Err(RelayCallError::NotConnected)
         );
 
-        let (epoch, mut rx, _replies) = channel.attach();
-        let caller = {
-            let channel = Arc::clone(&channel);
-            thread::spawn(move || {
-                channel.request("m", json!({}), Priority::Control, Duration::from_secs(5))
+        let AttachedSocket {
+            epoch,
+            outgoing: mut rx,
+            ..
+        } = channel.attach();
+        let request = |channel: &Arc<RelayChannel>| {
+            let channel = Arc::clone(channel);
+            tokio::spawn(async move {
+                channel
+                    .request("m", json!({}), Priority::Control, Duration::from_secs(5))
+                    .await
             })
         };
-        let sent: Value = serde_json::from_str(&rx.blocking_recv().unwrap().text).unwrap();
+        let caller = request(&channel);
+        let sent: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
         assert!(
             channel
                 .resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": { "ok": true } }))
         );
-        assert_eq!(caller.join().unwrap(), Ok(json!({ "ok": true })));
+        assert_eq!(caller.await.unwrap(), Ok(json!({ "ok": true })));
 
-        let caller = {
-            let channel = Arc::clone(&channel);
-            thread::spawn(move || {
-                channel.request("m", json!({}), Priority::Control, Duration::from_secs(5))
-            })
-        };
-        rx.blocking_recv().unwrap();
+        let caller = request(&channel);
+        rx.recv().await.unwrap();
         channel.detach(epoch);
-        assert_eq!(caller.join().unwrap(), Err(RelayCallError::Disconnected));
+        assert_eq!(caller.await.unwrap(), Err(RelayCallError::Disconnected));
         assert!(!channel.connected());
     }
 
-    #[test]
-    fn an_abandoned_request_stops_waiting_and_its_late_reply_is_dropped() {
+    #[tokio::test]
+    async fn a_request_whose_caller_gives_up_stops_waiting_at_once_and_its_reply_is_dropped() {
         let channel = RelayChannel::new();
-        let (_epoch, mut rx, _replies) = channel.attach();
-        let (handed, abandon) = mpsc::channel();
-        let caller = {
-            let channel = Arc::clone(&channel);
-            thread::spawn(move || {
-                channel.request_abandonable(
-                    "m",
-                    json!({}),
-                    Priority::Control,
-                    Duration::from_secs(30),
-                    |abandon| handed.send(abandon).unwrap(),
-                )
-            })
-        };
-        let sent: Value = serde_json::from_str(&rx.blocking_recv().unwrap().text).unwrap();
-        abandon.recv().unwrap().abandon();
-        assert_eq!(caller.join().unwrap(), Err(RelayCallError::Abandoned));
+        let AttachedSocket {
+            outgoing: mut rx, ..
+        } = channel.attach();
+        let gave_up = std::time::Instant::now();
+        let waited = tokio::time::timeout(
+            Duration::from_millis(50),
+            channel.request("m", json!({}), Priority::Control, Duration::from_secs(30)),
+        )
+        .await;
+        assert!(waited.is_err());
+        assert!(gave_up.elapsed() < Duration::from_secs(1));
+        let sent: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
         assert!(
             !channel.resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": {} })),
             "nobody waits for it any more"
         );
     }
 
+    #[tokio::test]
+    async fn a_request_with_no_reply_times_out_and_is_forgotten() {
+        let channel = RelayChannel::new();
+        let AttachedSocket {
+            outgoing: mut rx, ..
+        } = channel.attach();
+        assert_eq!(
+            channel
+                .request("m", json!({}), Priority::Control, Duration::from_millis(20))
+                .await,
+            Err(RelayCallError::TimedOut)
+        );
+        let sent: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert!(!channel.resolve(&json!({ "jsonrpc": "2.0", "id": sent["id"], "result": {} })));
+    }
+
     #[test]
     fn a_reply_for_a_closed_socket_is_never_sent_on_the_next() {
         let channel = RelayChannel::new();
-        let (old, old_rx, old_replies) = channel.attach();
-        drop(old_rx);
-        channel.detach(old);
-        let (_new, mut new_rx, _) = channel.attach();
+        let old = channel.attach();
+        let old_replies = old.replies.clone();
+        channel.detach(old.epoch);
+        drop(old);
+        let mut new = channel.attach();
         old_replies.reply(&json!("call-1"), Ok(json!({})));
-        assert!(new_rx.try_recv().is_err());
+        assert!(new.outgoing.try_recv().is_err());
     }
 }

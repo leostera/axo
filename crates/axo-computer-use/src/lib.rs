@@ -15,6 +15,8 @@
 //!    the submit button if asked, and remembers a salted hash of each value, so every later read
 //!    of any window shows `•••• (filled by you)` instead.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,6 +29,7 @@ use axo_protocol::elicitation::{
     MAX_MESSAGE_CHARS, TIMEOUT_MS,
 };
 use axo_protocol::rpc::method::{COMPUTER_INPUT, COMPUTER_REDACTIONS};
+use axo_protocol::rpc::{MethodError, error_code};
 use axo_relay::computer::ComputerParams;
 use jsonrpc_core::IoHandler;
 use serde::Deserialize;
@@ -34,8 +37,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use axo_ipc::Extension;
-use axo_protocol::elicitation::ElicitationOutcome;
-use axo_questions::Values;
+use axo_questions::{Answer, Values};
 use jsonrpc_core::Error as RpcError;
 
 /// Where this Mac's input key is kept, beside the host credential, under a fixed id.
@@ -182,8 +184,9 @@ struct Reading {
 }
 
 /// A window with a form: read once, then filled only if it is unchanged. [`Form`] is the real
-/// one; tests stand in for it.
-trait Window {
+/// one; tests stand in for it. Its calls block on the app's accessibility: run them off the
+/// runtime.
+trait Window: Send {
     fn reading(&self) -> Reading;
     fn check_unchanged(&self, fields: &[usize], submit: Option<usize>) -> Result<(), FormError>;
     fn fill(&self, field: usize, value: &str) -> Result<(), FormError>;
@@ -218,27 +221,154 @@ struct Asking<'a> {
     timeout: Duration,
 }
 
+/// A future computer use waits on: it holds no thread.
+pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// What computer use needs of the rest of axod.
 pub trait ComputerHost: Send + Sync {
     /// Asks the person in `session_id` and waits, for a form when `input` is given.
-    fn ask_with(
-        &self,
+    fn ask_with<'a>(
+        &'a self,
         session_id: SessionId,
-        message: &str,
+        message: &'a str,
         asked_by: Asker,
         input: Option<InputRequest>,
         timeout: Duration,
-    ) -> Result<(ElicitationOutcome, Option<Values>), RpcError>;
+    ) -> HostFuture<'a, Result<Answer, RpcError>>;
     /// This Mac's input key, which forms are sealed to.
     fn input_key(&self) -> Option<&axo_seal::InputKey>;
     /// axod's socket, where the gate's state lives (`axo_computer::gate`).
     fn agent_socket(&self) -> Option<std::path::PathBuf>;
 }
 
+/// A field of the window's form picked for one the agent asked for.
+#[derive(Clone, Copy)]
+struct PickedField {
+    /// Its place among the form's fields.
+    index: usize,
+    kind: FieldKind,
+}
+
+/// What to ask the person for and fill in: the fields picked in a window's form, what each is
+/// called there, and the button to press once filled.
+struct FillPlan {
+    form: Reading,
+    picked: Vec<PickedField>,
+    labels: Vec<String>,
+    submit: Option<usize>,
+    /// The app and its page or window, as the question and the receipt name them.
+    place: String,
+}
+
+impl FillPlan {
+    /// Picks the fields asked for in what the window shows; the refusal to answer with when it
+    /// cannot satisfy them.
+    fn pick(form: Reading, args: &InputArgs) -> Result<Self, Value> {
+        let mut picked: Vec<PickedField> = Vec::new();
+        for wanted in &args.fields {
+            let Some(kind) = FieldKind::parse(&wanted.kind) else {
+                return Err(refused(format!(
+                    "{} is not a field kind: use username, email, password, code or text",
+                    wanted.kind
+                )));
+            };
+            match pick_field(&form.fields, wanted.label.as_deref(), kind) {
+                Ok(index) if picked.iter().any(|field| field.index == index) => {
+                    return Err(refused(format!(
+                        "two fields asked for \"{}\"",
+                        form.fields[index].label
+                    )));
+                }
+                Ok(index) => picked.push(PickedField { index, kind }),
+                Err(error) => return Err(refused(error.0)),
+            }
+        }
+        let submit = match &args.submit {
+            None => None,
+            Some(label) => {
+                let wanted = label.trim().to_lowercase();
+                let found = form
+                    .buttons
+                    .iter()
+                    .position(|button| button.trim().to_lowercase() == wanted);
+                match found {
+                    Some(index) => Some(index),
+                    None => {
+                        return Err(refused(format!(
+                            "no button \"{label}\"; the window's buttons are {}",
+                            form.buttons
+                                .iter()
+                                .map(|b| format!("\"{b}\""))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )));
+                    }
+                }
+            }
+        };
+        let labels: Vec<String> = picked
+            .iter()
+            .map(|field| match form.fields[field.index].label.trim() {
+                "" => title_case(field.kind.as_str()),
+                label => label.to_owned(),
+            })
+            .collect();
+        let place = match &form.origin {
+            Some(origin) => format!("{} — {origin}", form.app),
+            None => format!("{} — {}", form.app, form.window_title),
+        };
+        Ok(Self {
+            form,
+            picked,
+            labels,
+            submit,
+            place,
+        })
+    }
+
+    /// The question, as the person reads it.
+    fn message(&self, asking: &Asking) -> String {
+        let mut message = format!("Fill {} in {}", listed(&self.labels), self.place);
+        if let Some(index) = self.submit {
+            message.push_str(&format!(
+                ", then press \u{201c}{}\u{201d}",
+                self.form.buttons[index]
+            ));
+        }
+        message.push('.');
+        if let Some(from) = asking.from {
+            message.push_str(&format!("\nAsked from {from}'s Session."));
+        }
+        message.chars().take(MAX_MESSAGE_CHARS).collect()
+    }
+
+    /// The form the person fills in, sealed to `key`.
+    fn input(&self, key: String) -> InputRequest {
+        InputRequest {
+            app: self.form.app.clone(),
+            window: self.form.window_title.clone(),
+            origin: self.form.origin.clone(),
+            fields: self
+                .picked
+                .iter()
+                .zip(&self.labels)
+                .enumerate()
+                .map(|(position, (field, label))| InputField {
+                    id: format!("f{position}"),
+                    label: label.clone(),
+                    kind: protocol_kind(field.kind),
+                })
+                .collect(),
+            submit: self.submit.map(|index| self.form.buttons[index].clone()),
+            key,
+        }
+    }
+}
+
 /// What computer use keeps: the values the person filled in, hidden from every later read.
 #[derive(Default)]
 pub struct ComputerUse {
-    redactions: Redactions,
+    redactions: Arc<Redactions>,
 }
 
 impl ComputerUse {
@@ -249,7 +379,7 @@ impl ComputerUse {
 
     /// `request_input`, for an agent's Session here or another Mac's script (`from` names its
     /// Mac). Answers like a computer tool: a receipt, or an error saying why nothing was filled.
-    pub fn request_input(
+    pub async fn request_input(
         &self,
         host: &dyn ComputerHost,
         session_id: SessionId,
@@ -268,11 +398,12 @@ impl ComputerUse {
         if args.fields.is_empty() || args.fields.len() > MAX_INPUT_FIELDS {
             return refused(format!("ask for 1 to {MAX_INPUT_FIELDS} fields"));
         }
-        let Some(key) = host.input_key() else {
+        let Some(key) = host.input_key().map(axo_seal::InputKey::public_key) else {
             return refused("this Mac could not make or read its input key");
         };
-        let window = match Form::read(args.pid, args.window_id) {
-            Ok(form) => form,
+        let (pid, window_id) = (args.pid, args.window_id);
+        let window = match off_runtime(move || Form::read(pid, window_id)).await {
+            Ok(form) => Arc::new(Mutex::new(form)),
             Err(error) => return refused(error.0),
         };
         let asking = Asking {
@@ -280,109 +411,34 @@ impl ComputerUse {
             from,
             timeout,
         };
-        self.ask_and_fill(host, &asking, &args, key, &window)
+        self.ask_and_fill(host, &asking, &args, key, window).await
     }
 
     /// Picks the fields asked for in `window`, asks the person for them and fills them in.
-    fn ask_and_fill(
+    async fn ask_and_fill(
         &self,
         host: &dyn ComputerHost,
-        asking: &Asking,
+        asking: &Asking<'_>,
         args: &InputArgs,
-        key: &axo_seal::InputKey,
-        window: &dyn Window,
+        key: String,
+        window: Arc<Mutex<dyn Window>>,
     ) -> Value {
-        let form = window.reading();
-        let mut picked = Vec::new();
-        for wanted in &args.fields {
-            let Some(kind) = FieldKind::parse(&wanted.kind) else {
-                return refused(format!(
-                    "{} is not a field kind: use username, email, password, code or text",
-                    wanted.kind
-                ));
-            };
-            match pick_field(&form.fields, wanted.label.as_deref(), kind) {
-                Ok(index) if picked.iter().any(|&(other, _)| other == index) => {
-                    return refused(format!(
-                        "two fields asked for \"{}\"",
-                        form.fields[index].label
-                    ));
-                }
-                Ok(index) => picked.push((index, kind)),
-                Err(error) => return refused(error.0),
-            }
-        }
-        let submit = match &args.submit {
-            None => None,
-            Some(label) => {
-                let wanted = label.trim().to_lowercase();
-                match form
-                    .buttons
-                    .iter()
-                    .position(|button| button.trim().to_lowercase() == wanted)
-                {
-                    Some(index) => Some(index),
-                    None => {
-                        return refused(format!(
-                            "no button \"{label}\"; the window's buttons are {}",
-                            form.buttons
-                                .iter()
-                                .map(|b| format!("\"{b}\""))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    }
-                }
-            }
+        let plan = match FillPlan::pick(window.lock().unwrap().reading(), args) {
+            Ok(plan) => plan,
+            Err(refusal) => return refusal,
         };
-        let labels: Vec<String> = picked
-            .iter()
-            .map(|&(index, kind)| match form.fields[index].label.trim() {
-                "" => title_case(kind.as_str()),
-                label => label.to_owned(),
-            })
-            .collect();
-        let place = match &form.origin {
-            Some(origin) => format!("{} — {origin}", form.app),
-            None => format!("{} — {}", form.app, form.window_title),
-        };
-        let mut message = format!("Fill {} in {place}", listed(&labels));
-        if let Some(index) = submit {
-            message.push_str(&format!(
-                ", then press \u{201c}{}\u{201d}",
-                form.buttons[index]
-            ));
-        }
-        message.push('.');
-        if let Some(from) = asking.from {
-            message.push_str(&format!("\nAsked from {from}'s Session."));
-        }
-        let message: String = message.chars().take(MAX_MESSAGE_CHARS).collect();
-        let input = InputRequest {
-            app: form.app.clone(),
-            window: form.window_title.clone(),
-            origin: form.origin.clone(),
-            fields: picked
-                .iter()
-                .zip(&labels)
-                .enumerate()
-                .map(|(position, (&(_, kind), label))| InputField {
-                    id: format!("f{position}"),
-                    label: label.clone(),
-                    kind: protocol_kind(kind),
-                })
-                .collect(),
-            submit: submit.map(|index| form.buttons[index].clone()),
-            key: key.public_key(),
-        };
+        let message = plan.message(asking);
         let timeout = asking.timeout.min(Duration::from_millis(TIMEOUT_MS));
-        let (outcome, values) = match host.ask_with(
-            asking.session_id,
-            &message,
-            Asker::ComputerUse,
-            Some(input),
-            timeout,
-        ) {
+        let asked = host
+            .ask_with(
+                asking.session_id,
+                &message,
+                Asker::ComputerUse,
+                Some(plan.input(key)),
+                timeout,
+            )
+            .await;
+        let answer = match asked {
             Ok(answer) => answer,
             Err(error) => {
                 return refused(format!(
@@ -391,16 +447,18 @@ impl ComputerUse {
                 ));
             }
         };
-        let values = match (outcome.action, values) {
+        let values = match (answer.outcome.action, answer.values) {
             (ElicitationAction::Accept, Some(values)) => values,
             (ElicitationAction::Decline, _) => return refused("Not done: the person declined."),
             _ => return refused("Not done: nobody answered in time."),
         };
-        let receipt = self.fill(window, &form, &picked, &labels, submit, &values, &place);
+        let redactions = Arc::clone(&self.redactions);
+        let fields = plan.picked.len();
+        let submitted = plan.submit.is_some();
+        let receipt =
+            off_runtime(move || fill(&redactions, &*window.lock().unwrap(), &plan, &values)).await;
         log::info!(
-            "event=input.filled fields={} submitted={} outcome={}",
-            picked.len(),
-            submit.is_some(),
+            "event=input.filled fields={fields} submitted={submitted} outcome={}",
             if receipt["isError"] == json!(true) {
                 "error"
             } else {
@@ -409,67 +467,75 @@ impl ComputerUse {
         );
         receipt
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn fill(
-        &self,
-        window: &dyn Window,
-        form: &Reading,
-        picked: &[(usize, FieldKind)],
-        labels: &[String],
-        submit: Option<usize>,
-        values: &Values,
-        place: &str,
-    ) -> Value {
-        let indices: Vec<usize> = picked.iter().map(|&(index, _)| index).collect();
-        if let Err(error) = window.check_unchanged(&indices, submit) {
-            return refused(format!(
-                "Not filled: {error}. Read the window again and ask again."
-            ));
+/// Fills the person's values into the window if it is unchanged, presses the button asked for,
+/// and answers with a receipt that never shows them.
+fn fill(redactions: &Redactions, window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
+    let FillPlan {
+        form,
+        picked,
+        labels,
+        submit,
+        place,
+    } = plan;
+    let indices: Vec<usize> = picked.iter().map(|field| field.index).collect();
+    if let Err(error) = window.check_unchanged(&indices, *submit) {
+        return refused(format!(
+            "Not filled: {error}. Read the window again and ask again."
+        ));
+    }
+    // Hidden before they are filled, so no read can catch one in between.
+    for value in values.values() {
+        redactions.remember(value);
+    }
+    for (position, field) in picked.iter().enumerate() {
+        let Some(value) = values.get(&format!("f{position}")) else {
+            return refused("Not filled: a value is missing.");
+        };
+        if let Err(error) = window.fill(field.index, value) {
+            return refused(format!("Not filled: {error}."));
         }
-        // Hidden before they are filled, so no read can catch one in between.
-        for value in values.values() {
-            self.redactions.remember(value);
-        }
-        for (position, &(index, _)) in picked.iter().enumerate() {
-            let Some(value) = values.get(&format!("f{position}")) else {
-                return refused("Not filled: a value is missing.");
-            };
-            if let Err(error) = window.fill(index, value) {
-                return refused(format!("Not filled: {error}."));
+    }
+    let pressed = match submit {
+        Some(index) => match window.press(*index) {
+            Ok(()) => Some(form.buttons[*index].clone()),
+            Err(error) => {
+                return tool_result(
+                    format!(
+                        "Filled {} in {place}, but {error}. The values are not shown to you.",
+                        listed(labels)
+                    ),
+                    json!({ "filled": labels, "submitted": false }),
+                    true,
+                );
             }
-        }
-        let pressed = match submit {
-            Some(index) => match window.press(index) {
-                Ok(()) => Some(form.buttons[index].clone()),
-                Err(error) => {
-                    return tool_result(
-                        format!(
-                            "Filled {} in {place}, but {error}. The values are not shown to you.",
-                            listed(labels)
-                        ),
-                        json!({ "filled": labels, "submitted": false }),
-                        true,
-                    );
-                }
-            },
-            None => None,
-        };
-        let text = match &pressed {
-            Some(button) => format!(
-                "Filled {} in {place} and pressed \u{201c}{button}\u{201d}. The values are not shown to you; reads show them as \u{2022}\u{2022}\u{2022}\u{2022} (filled by you).",
-                listed(labels)
-            ),
-            None => format!(
-                "Filled {} in {place}. The values are not shown to you; reads show them as \u{2022}\u{2022}\u{2022}\u{2022} (filled by you).",
-                listed(labels)
-            ),
-        };
-        tool_result(
-            text,
-            json!({ "filled": labels, "app": form.app, "origin": form.origin, "submitted": pressed.is_some() }),
-            false,
-        )
+        },
+        None => None,
+    };
+    let text = match &pressed {
+        Some(button) => format!(
+            "Filled {} in {place} and pressed \u{201c}{button}\u{201d}. The values are not shown to you; reads show them as \u{2022}\u{2022}\u{2022}\u{2022} (filled by you).",
+            listed(labels)
+        ),
+        None => format!(
+            "Filled {} in {place}. The values are not shown to you; reads show them as \u{2022}\u{2022}\u{2022}\u{2022} (filled by you).",
+            listed(labels)
+        ),
+    };
+    tool_result(
+        text,
+        json!({ "filled": labels, "app": form.app, "origin": form.origin, "submitted": pressed.is_some() }),
+        false,
+    )
+}
+
+/// Runs the accessibility or Cua work of a call on the blocking pool. A panic there is this
+/// call's.
+async fn off_runtime<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
     }
 }
 
@@ -513,18 +579,23 @@ impl Extension for ComputerExtension {
 
     fn register(&self, handler: &mut IoHandler) {
         let (asking, host) = (Arc::clone(&self.computer), Arc::clone(&self.host));
-        handler.add_typed_only(
+        handler.add_typed_only_async(
             AXOD_ONLY,
             COMPUTER_INPUT,
             "expected {sessionId, args}",
             move |request: ComputerInput| {
-                Ok(asking.request_input(
-                    host.as_ref(),
-                    request.session_id,
-                    None,
-                    request.args,
-                    Duration::from_millis(TIMEOUT_MS),
-                ))
+                let (asking, host) = (Arc::clone(&asking), Arc::clone(&host));
+                async move {
+                    Ok(asking
+                        .request_input(
+                            host.as_ref(),
+                            request.session_id,
+                            None,
+                            request.args,
+                            Duration::from_millis(TIMEOUT_MS),
+                        )
+                        .await)
+                }
             },
         );
         let hiding = Arc::clone(&self.computer);
@@ -550,42 +621,60 @@ const SHORTEST_QUESTION: Duration = Duration::from_secs(15);
 /// tool runs only on the person's Accept or the gate passing it.
 impl ComputerUse {
     /// One computer-use tool for another Mac's script. `Err` fails the script's call.
-    pub fn remote(
+    pub async fn remote(
         &self,
         host: &dyn ComputerHost,
         request: &ComputerParams,
-    ) -> Result<Value, (i64, String)> {
+    ) -> Result<Value, MethodError> {
         if !axo_computer::AVAILABLE {
-            return Err((-32601, "this Mac has no computer use".into()));
+            return Err(MethodError::new(
+                error_code::METHOD_NOT_FOUND,
+                "this Mac has no computer use",
+            ));
         }
         if request.tool == axo_computer::REQUEST_INPUT {
             let timeout = Duration::from_millis(request.timeout_ms).saturating_sub(ANSWER_MARGIN);
             if timeout < SHORTEST_QUESTION {
-                return Err((
+                return Err(MethodError::new(
                     NOT_ALLOWED,
-                    "Not done: no time left to ask the person.".into(),
+                    "Not done: no time left to ask the person.",
                 ));
             }
-            return Ok(self.request_input(
-                host,
-                request.session_id,
-                Some(&request.from),
+            return Ok(self
+                .request_input(
+                    host,
+                    request.session_id,
+                    Some(&request.from),
+                    request.args.clone(),
+                    timeout,
+                )
+                .await);
+        }
+        let socket = host.agent_socket().ok_or_else(|| {
+            MethodError::new(error_code::INTERNAL_ERROR, "axod has no socket yet")
+        })?;
+        let gate = Arc::new(axo_computer::gate::for_socket(&socket));
+        let verdict = {
+            let (gate, tool, args, confirm) = (
+                Arc::clone(&gate),
+                request.tool.clone(),
                 request.args.clone(),
-                timeout,
-            ));
+                request.confirm,
+            );
+            off_runtime(move || gate.check(&tool, &args, confirm)).await
+        };
+        if let axo_computer::gate::Verdict::Ask(question) = verdict {
+            ask_for_computer(host, request, &question).await?;
         }
-        let socket = host
-            .agent_socket()
-            .ok_or_else(|| (-32603, "axod has no socket yet".to_owned()))?;
-        let gate = axo_computer::gate::for_socket(&socket);
-        if let axo_computer::gate::Verdict::Ask(question) =
-            gate.check(&request.tool, &request.args, request.confirm)
-        {
-            ask_for_computer(host, request, &question)?;
-        }
-        let mut result = axo_computer::call(&request.tool, request.args.clone());
-        gate.remember(&request.tool, &result);
-        self.redact(&mut result);
+        let (tool, args) = (request.tool.clone(), request.args.clone());
+        let redactions = Arc::clone(&self.redactions);
+        let result = off_runtime(move || {
+            let mut result = axo_computer::call(&tool, args);
+            gate.remember(&tool, &result);
+            redactions.apply(&mut result);
+            result
+        })
+        .await;
         log::info!(
             "event=computer.remote_called tool={} outcome={}",
             request.tool,
@@ -598,7 +687,8 @@ impl ComputerUse {
         Ok(result)
     }
 
-    /// Whether this Mac can do computer use now, from Cua's own probe.
+    /// Whether this Mac can do computer use now, from Cua's own probe. Blocks on the window
+    /// server and TCC.
     pub fn status() -> Value {
         let (accessibility, screen_recording) = axo_computer::permissions();
         json!({
@@ -611,23 +701,23 @@ impl ComputerUse {
 }
 
 /// Asks the person in the calling Session; `Ok` only on Accept.
-fn ask_for_computer(
+async fn ask_for_computer(
     host: &dyn ComputerHost,
     request: &ComputerParams,
     question: &str,
-) -> Result<(), (i64, String)> {
+) -> Result<(), MethodError> {
     let available = Duration::from_millis(request.timeout_ms).saturating_sub(ANSWER_MARGIN);
     let timeout = available.min(Duration::from_millis(TIMEOUT_MS));
     if timeout < SHORTEST_QUESTION {
-        return Err((
+        return Err(MethodError::new(
             NOT_ALLOWED,
-            "Not done: no time left to ask the person.".into(),
+            "Not done: no time left to ask the person.",
         ));
     }
     let from = format!("\nAsked from {}'s Session.", request.from);
     let room = MAX_MESSAGE_CHARS.saturating_sub(from.chars().count());
     let message: String = question.chars().take(room).collect::<String>() + &from;
-    let outcome = host
+    let answer = host
         .ask_with(
             request.session_id,
             &message,
@@ -635,9 +725,9 @@ fn ask_for_computer(
             None,
             timeout,
         )
-        .map(|(outcome, _)| outcome)
+        .await
         .map_err(|error| {
-            (
+            MethodError::new(
                 NOT_ALLOWED,
                 format!(
                     "Not done: the person could not be asked ({}).",
@@ -645,12 +735,16 @@ fn ask_for_computer(
                 ),
             )
         })?;
-    match outcome.action {
+    match answer.outcome.action {
         ElicitationAction::Accept => Ok(()),
-        ElicitationAction::Decline => Err((NOT_ALLOWED, "Not done: the person declined.".into())),
-        ElicitationAction::Cancel => {
-            Err((NOT_ALLOWED, "Not done: nobody answered in time.".into()))
-        }
+        ElicitationAction::Decline => Err(MethodError::new(
+            NOT_ALLOWED,
+            "Not done: the person declined.",
+        )),
+        ElicitationAction::Cancel => Err(MethodError::new(
+            NOT_ALLOWED,
+            "Not done: nobody answered in time.",
+        )),
     }
 }
 
@@ -708,30 +802,31 @@ mod tests {
     }
 
     impl ComputerHost for Host {
-        fn ask_with(
-            &self,
+        fn ask_with<'a>(
+            &'a self,
             _session_id: SessionId,
-            message: &str,
+            message: &'a str,
             asked_by: Asker,
             input: Option<InputRequest>,
             timeout: Duration,
-        ) -> Result<(ElicitationOutcome, Option<Values>), RpcError> {
+        ) -> HostFuture<'a, Result<Answer, RpcError>> {
             assert_eq!(asked_by, Asker::ComputerUse);
             self.asked
                 .lock()
                 .unwrap()
                 .push((message.to_owned(), timeout, input.is_some()));
             self.forms.lock().unwrap().extend(input);
-            match self.answer {
-                Ok(action) => Ok((
-                    ElicitationOutcome {
+            let answer = match self.answer {
+                Ok(action) => Ok(Answer {
+                    outcome: axo_protocol::elicitation::ElicitationOutcome {
                         id: "e-1".into(),
                         action,
                     },
-                    self.values.clone(),
-                )),
+                    values: self.values.clone(),
+                }),
                 Err(message) => Err(RpcError::invalid_params(message)),
-            }
+            };
+            Box::pin(std::future::ready(answer))
         }
 
         fn input_key(&self) -> Option<&axo_seal::InputKey> {
@@ -763,8 +858,17 @@ mod tests {
         result["content"][0]["text"].as_str().unwrap().to_owned()
     }
 
-    fn ask(host: &Host, question: &str, timeout_ms: u64) -> Result<(), (i64, String)> {
-        ask_for_computer(host, &call("click", timeout_ms), question)
+    /// Runs one call to its end, as axod's runtime would.
+    fn block<F: Future>(call: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(call)
+    }
+
+    fn ask(host: &Host, question: &str, timeout_ms: u64) -> Result<(), MethodError> {
+        block(ask_for_computer(host, &call("click", timeout_ms), question))
     }
 
     #[test]
@@ -794,7 +898,7 @@ mod tests {
         ] {
             assert_eq!(
                 ask(&Host::answering(answer), "Click?", minute),
-                Err((NOT_ALLOWED, said.into()))
+                Err(MethodError::new(NOT_ALLOWED, said))
             );
         }
     }
@@ -830,17 +934,19 @@ mod tests {
         let short = (ANSWER_MARGIN + SHORTEST_QUESTION).as_millis() as u64 - 1;
         assert_eq!(
             ask(&host, "Click?", short),
-            Err((
+            Err(MethodError::new(
                 NOT_ALLOWED,
-                "Not done: no time left to ask the person.".into()
+                "Not done: no time left to ask the person."
             ))
         );
         if axo_computer::AVAILABLE {
             assert_eq!(
-                ComputerUse::default().remote(&host, &call(axo_computer::REQUEST_INPUT, short)),
-                Err((
+                block(
+                    ComputerUse::default().remote(&host, &call(axo_computer::REQUEST_INPUT, short))
+                ),
+                Err(MethodError::new(
                     NOT_ALLOWED,
-                    "Not done: no time left to ask the person.".into()
+                    "Not done: no time left to ask the person."
                 ))
             );
         }
@@ -850,13 +956,22 @@ mod tests {
     #[test]
     fn a_mac_without_computer_use_says_so_and_a_missing_socket_fails_the_call() {
         let host = Host::answering(Ok(ElicitationAction::Accept));
-        let outcome = ComputerUse::default().remote(&host, &call("click", 60_000));
+        let outcome = block(ComputerUse::default().remote(&host, &call("click", 60_000)));
         if axo_computer::AVAILABLE {
-            assert_eq!(outcome, Err((-32603, "axod has no socket yet".into())));
+            assert_eq!(
+                outcome,
+                Err(MethodError::new(
+                    error_code::INTERNAL_ERROR,
+                    "axod has no socket yet"
+                ))
+            );
         } else {
             assert_eq!(
                 outcome,
-                Err((-32601, "this Mac has no computer use".into()))
+                Err(MethodError::new(
+                    error_code::METHOD_NOT_FOUND,
+                    "this Mac has no computer use"
+                ))
             );
         }
         assert!(host.asked().is_empty());
@@ -867,7 +982,13 @@ mod tests {
         let computer = ComputerUse::default();
         let host = Host::answering(Ok(ElicitationAction::Accept));
         let request = |host: &Host, args: Value| {
-            refusal(&computer.request_input(host, SESSION, None, args, Duration::from_secs(60)))
+            refusal(&block(computer.request_input(
+                host,
+                SESSION,
+                None,
+                args,
+                Duration::from_secs(60),
+            )))
         };
         assert!(request(&host, json!({ "pid": 1 })).starts_with("request_input takes {"));
         let field = json!({ "kind": "password" });
@@ -916,15 +1037,15 @@ mod tests {
     }
 
     /// A window that reads as given, fails where told, and records what was done to it.
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct FakeWindow {
         fields: Vec<(&'static str, bool)>,
         buttons: Vec<&'static str>,
         changed: bool,
         fill_fails: bool,
         press_fails: bool,
-        filled: Mutex<Vec<(usize, String)>>,
-        pressed: Mutex<Vec<usize>>,
+        filled: Arc<Mutex<Vec<(usize, String)>>>,
+        pressed: Arc<Mutex<Vec<usize>>>,
     }
 
     impl FakeWindow {
@@ -999,7 +1120,9 @@ mod tests {
             from: Some("Leo's MacBook"),
             timeout: Duration::from_secs(60),
         };
-        computer.ask_and_fill(host, &asking, &args, host.key.as_ref().unwrap(), window)
+        let key = host.key.as_ref().unwrap().public_key();
+        let window: Arc<Mutex<dyn Window>> = Arc::new(Mutex::new(window.clone()));
+        block(computer.ask_and_fill(host, &asking, &args, key, window))
     }
 
     const SIGN_IN: &str = "Sign in";
@@ -1222,13 +1345,13 @@ mod tests {
             from: None,
             timeout: Duration::from_millis(TIMEOUT_MS * 10),
         };
-        ComputerUse::default().ask_and_fill(
+        block(ComputerUse::default().ask_and_fill(
             &host,
             &asking,
             &args,
-            host.key.as_ref().unwrap(),
-            &FakeWindow::sign_in(),
-        );
+            host.key.as_ref().unwrap().public_key(),
+            Arc::new(Mutex::new(FakeWindow::sign_in())),
+        ));
         let (message, timeout, _) = host.asked().remove(0);
         assert_eq!(timeout, Duration::from_millis(TIMEOUT_MS));
         assert!(!message.contains("Asked from"), "{message}");

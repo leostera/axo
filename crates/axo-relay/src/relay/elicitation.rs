@@ -1,10 +1,13 @@
 //! Elicitations on the relay (RFD0029): the method names, and taking a person's answer from the
 //! cloud to the host.
 
+use axo_protocol::rpc::MethodError;
+use axo_protocol::rpc::error_code::{INVALID_PARAMS, STALE_HOST};
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::session::RelaySessionContext;
+use crate::host::RemoteAnswer;
 
 /// Elicitations on the relay (RFD0029): axod tells the cloud what it asks and how each ended, and
 /// the cloud brings a person's answer, which it takes only from a signed-in person's client.
@@ -34,18 +37,18 @@ struct RemoteTarget {
 pub(super) fn resolve_elicitation(
     params: &Value,
     context: &RelaySessionContext,
-) -> Result<(), (i64, String)> {
+) -> Result<(), MethodError> {
     let request = serde_json::from_value::<ResolveElicitation>(params.clone())
-        .map_err(|_| (-32602, "Invalid params".to_owned()))?;
-    if request.target.host_id != context.host_id
-        || request.target.host_generation != context.host_generation
+        .map_err(|_| MethodError::new(INVALID_PARAMS, "Invalid params"))?;
+    if request.target.host_id != context.identity.host_id
+        || request.target.host_generation != context.identity.host_generation
     {
-        return Err((-32002, "Stale host".into()));
+        return Err(MethodError::new(STALE_HOST, "Stale host"));
     }
-    context.sessions.resolve_elicitation(
-        &request.elicitation_id,
-        request.action,
-        request.sealed,
-        request.device,
-    )
+    context.sessions.resolve_elicitation(RemoteAnswer {
+        elicitation_id: request.elicitation_id,
+        answer: request.action,
+        sealed: request.sealed,
+        device: request.device,
+    })
 }

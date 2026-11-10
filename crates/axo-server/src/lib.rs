@@ -24,14 +24,14 @@ mod peers;
 pub mod permissions;
 mod relay_host;
 mod remote;
+#[cfg(test)]
+mod scenarios;
 mod session;
 mod sessions;
 mod settings;
 mod stop_notice;
 mod store;
 mod terminal_input;
-#[cfg(test)]
-mod scenarios;
 #[cfg(test)]
 mod test_support;
 mod transcripts;
@@ -244,12 +244,7 @@ pub fn serve_ipc(
     let sessions_directory = sessions_directory_for(server_directory);
     let (core, previous_stop) = {
         let _inside = runtime.enter();
-        open_core(
-            server_directory,
-            &sessions_directory,
-            &socket_path.0,
-            runtime.handle().clone(),
-        )?
+        open_core(server_directory, &sessions_directory, &socket_path.0)?
     };
     let host = Arc::new(relay_host::RelayHostAdapter::new(Arc::clone(&core)));
     let credentials = remote_access.credential_storage.open(server_directory);
@@ -270,6 +265,7 @@ pub fn serve_ipc(
     let mut remote_relay = match axo_relay::RelayWorker::start(
         axo_relay::RelayDependencies {
             host: host.clone(),
+            sync: host.clone(),
             endpoint: remote_access.endpoint.clone(),
             links: host.clone(),
             credentials: Arc::clone(&credentials),
@@ -345,7 +341,6 @@ fn open_core(
     server_directory: &Path,
     sessions_directory: &Path,
     agent_socket: &Path,
-    runtime: tokio::runtime::Handle,
 ) -> Result<(Arc<core::Core>, Option<stop_notice::DaemonStop>), Box<dyn std::error::Error>> {
     fs::create_dir_all(server_directory)?;
     let server_directory = fs::canonicalize(server_directory)?;
@@ -363,7 +358,7 @@ fn open_core(
     let home = current_user_home_directory()?;
     let home = home.canonicalize().unwrap_or(home);
     let core = Arc::new(core::Core::new(core::CoreParts {
-        store: store::Store::new(database, runtime),
+        store: store::Store::new(database),
         host_id,
         host_generation: axo_protocol::new_uuid_v4()?,
         home,
@@ -524,32 +519,36 @@ impl Extension for Relay {
 
 fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
     let context = relay.clone();
-    handler.add_typed(
+    handler.add_typed_async(
         method::RELAY_LINK,
         "expected {code}",
         move |request: rpc::LinkHost| {
-            let context = context
-                .as_ref()
-                .ok_or_else(|| internal_error("host relay is unavailable"))?;
-            let host_label = axo_relay::link_host(
-                &context.endpoint,
-                &request.code,
-                context.host.as_ref(),
-                context.host.as_ref(),
-                context.credentials.as_ref(),
-            )
-            .map_err(|error| {
-                log::warn!("event=relay.link_failed reason={error}");
-                internal_error("could not link this Mac")
-            })?;
-            context
-                .control
-                .request_connect()
-                .map_err(|_| internal_error("could not start the host relay"))?;
-            Ok(rpc::HostLinked {
-                linked: true,
-                host_label,
-            })
+            let context = context.clone();
+            async move {
+                let context = context
+                    .as_ref()
+                    .ok_or_else(|| internal_error("host relay is unavailable"))?;
+                let host_label = axo_relay::link_host(
+                    &context.endpoint,
+                    &request.code,
+                    axo_relay::RelayHost::identity(context.host.as_ref()),
+                    context.host.as_ref(),
+                    context.credentials.clone(),
+                )
+                .await
+                .map_err(|error| {
+                    log::warn!("event=relay.link_failed reason={error}");
+                    internal_error("could not link this Mac")
+                })?;
+                context
+                    .control
+                    .request_connect()
+                    .map_err(|_| internal_error("could not start the host relay"))?;
+                Ok(rpc::HostLinked {
+                    linked: true,
+                    host_label,
+                })
+            }
         },
     );
 
@@ -567,14 +566,17 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
     );
 
     let context = relay.clone();
-    handler.add_typed(
+    handler.add_typed_async(
         method::SESSION_SHARE,
         "expected {snapshot}",
         move |request: rpc::ShareSession| {
-            let context = context
-                .as_ref()
-                .ok_or_else(|| internal_error("this Mac cannot reach its Axo account"))?;
-            share_session(context, request.snapshot)
+            let context = context.clone();
+            async move {
+                let context = context
+                    .as_ref()
+                    .ok_or_else(|| internal_error("this Mac cannot reach its Axo account"))?;
+                share_session(context, request.snapshot).await
+            }
         },
     );
 
@@ -604,14 +606,14 @@ const SHARE_PUBLISH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Forwards a redacted conversation over the relay link, so the cloud publishes it under this
 /// Mac's account. No Cloudflare credentials are needed on the Mac.
-fn share_session(
+async fn share_session(
     context: &RelayContext,
     snapshot: serde_json::Value,
 ) -> Result<rpc::SessionShared, RpcError> {
     use axo_relay::{RelayCallError, RelayHost};
     let params = serde_json::json!({
-        "hostId": context.host.host_id(),
-        "hostGeneration": context.host.host_generation(),
+        "hostId": context.host.identity().host_id,
+        "hostGeneration": context.host.identity().host_generation,
         "snapshot": snapshot,
     });
     let reply = context
@@ -622,6 +624,7 @@ fn share_session(
             axo_relay::Priority::Control,
             SHARE_PUBLISH_TIMEOUT,
         )
+        .await
         .map_err(|error| {
             log::warn!("event=share.publish_failed reason={error:?}");
             internal_error(match error {

@@ -147,15 +147,9 @@ async fn run(dependencies: PeersDependencies, stop: axo_ipc::Stop) {
     }
 }
 
-/// The account this Mac is paired with, if it is. The link is read off the runtime: it may
-/// wait on the Keychain.
+/// The account this Mac is paired with, if it is.
 async fn paired_account(dependencies: &PeersDependencies) -> Option<crate::link::AccountLink> {
-    let links = Arc::clone(&dependencies.links);
-    let loaded = tokio::task::spawn_blocking(move || links.load_link())
-        .await
-        .map_err(io::Error::other)
-        .and_then(|loaded| loaded);
-    match loaded {
+    match dependencies.links.load_link().await {
         Ok(link) => link.account().cloned(),
         Err(error) => {
             log::warn!("event=peers.link_unavailable reason={error}");

@@ -14,3 +14,12 @@ pub use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 pub use local::{Local, LocalError};
 pub use server::{Only, TypedMethods, Upgraded, Upgrades, serve};
 pub use stop::Stop;
+
+/// A method's error as jsonrpc-core writes it.
+pub fn rpc_error(error: axo_protocol::rpc::MethodError) -> RpcError {
+    RpcError {
+        code: ErrorCode::from(error.code),
+        message: error.message,
+        data: None,
+    }
+}

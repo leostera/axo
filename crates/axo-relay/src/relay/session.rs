@@ -23,9 +23,9 @@ use super::forward;
 use super::jobs::{start_bash, start_computer, start_prompt, start_sign_in};
 use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
-use super::wire::{HostIdentity, JSONRPC, OutgoingRequest};
+use super::wire::{JSONRPC, OutgoingRequest};
 use crate::fragments::Reassembler;
-use crate::host::RelayHost;
+use crate::host::{HostIdentity, RelayHost};
 use crate::outbound::{FRAMES_PER_TURN, Outbox, Outgoing, Priority, RelayChannel, ReplySender};
 use crate::sync::SyncWaker;
 
@@ -75,13 +75,7 @@ pub(super) async fn rpc_call(
                     _ => Err(io::Error::other("relay RPC request was rejected")),
                 };
             }
-            let sessions = Arc::clone(sessions);
-            let reply = tokio::task::spawn_blocking(move || {
-                forward::answer(&message, |request| sessions.answer_remote(request))
-            })
-            .await
-            .map_err(io::Error::other)?;
-            if let Some(reply) = reply {
+            if let Some(reply) = forward::answer(&message, sessions.as_ref()).await {
                 send_json(sink, &reply).await?;
             }
         }
@@ -99,13 +93,12 @@ pub(super) async fn rpc_call(
 /// What one connected socket's loop, its answers and its jobs share.
 pub(super) struct RelaySessionContext {
     pub(super) sessions: Arc<dyn RelayHost>,
-    pub(super) host_id: String,
-    pub(super) host_generation: String,
+    pub(super) identity: HostIdentity,
     pub(super) subscription_id: String,
     pub(super) stop: Stop,
     pub(super) control: Arc<RelayControl>,
     pub(super) channel: Arc<RelayChannel>,
-    /// Replies to the cloud's requests on this socket, from threads that answer them later.
+    /// Replies to the cloud's requests on this socket, from tasks that answer them later.
     pub(super) replies: ReplySender,
     /// Tells the uploader a Session changed, so its new lines go up at once.
     pub(super) waker: SyncWaker,
@@ -132,10 +125,10 @@ pub(super) enum HostRequest {
 
 /// Serves one connected socket until it closes, axod stops, or a reconnect is asked for.
 ///
-/// The loop waits on everything at once: the cloud's messages, local events, what threads queued
+/// The loop waits on everything at once: the cloud's messages, local events, what tasks queued
 /// to send (`outgoing`), the heartbeat, stopping and the control's wake-up. Requests the host
-/// answers at once go to `requests`, answered in order on the blocking pool; slower ones (bash,
-/// computer use, prompts, sign-ins) start their jobs. Neither holds up the socket.
+/// answers at once go to `requests`, answered in order by a task beside the loop; slower ones
+/// (bash, computer use, prompts, sign-ins) start tasks of their own. Neither holds up the socket.
 pub(super) async fn relay_session(
     sink: &mut RelaySink,
     stream: &mut RelayStream,
@@ -172,7 +165,7 @@ pub(super) async fn relay_session(
                     queue(&mut outbox, queued);
                 }
             }
-            // What threads queued goes out by priority, a few frames a turn, so a reply can
+            // What tasks queued goes out by priority, a few frames a turn, so a reply can
             // overtake an upload between its fragments.
             () = std::future::ready(()), if !outbox.is_empty() => {
                 for _ in 0..FRAMES_PER_TURN {
@@ -195,10 +188,7 @@ pub(super) async fn relay_session(
                         jsonrpc: JSONRPC,
                         id: &format!("axod-{}", *request_number),
                         method: "axo.host.heartbeat",
-                        params: HostIdentity {
-                            host_id: &context.host_id,
-                            host_generation: &context.host_generation,
-                        },
+                        params: &context.identity,
                     },
                 )
                 .await?;
@@ -224,7 +214,7 @@ fn take_message(
 ) -> io::Result<()> {
     let value: Value = serde_json::from_str(raw)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-    // A reply to a request another thread sent.
+    // A reply to a request another task sent.
     if value.get("method").is_none() && context.channel.resolve(&value) {
         return Ok(());
     }
@@ -251,7 +241,7 @@ fn take_message(
             return Ok(());
         }
         // A prompt is answered once Pi has it in its log, after its attachments are fetched
-        // (RFD0030) and Pi has started (RFD0033): on a thread of its own.
+        // (RFD0030) and Pi has started (RFD0033): on a task of its own.
         Some("axo.remote.session.prompt") => {
             if id.is_some() {
                 start_prompt(value.clone(), context);
@@ -278,23 +268,23 @@ fn take_message(
     Ok(())
 }
 
-/// Answers the host's requests in the order they came, each on the blocking pool, until the
-/// socket's loop ends.
+/// Answers the host's requests in the order they came until the socket's loop ends.
 pub(super) async fn answer_requests(
     mut requests: UnboundedReceiver<HostRequest>,
     context: Arc<RelaySessionContext>,
 ) {
     while let Some(request) = requests.recv().await {
-        let context = Arc::clone(&context);
-        let _ = tokio::task::spawn_blocking(move || answer(request, &context)).await;
+        answer(request, &context).await;
     }
 }
 
-fn answer(request: HostRequest, context: &RelaySessionContext) {
+async fn answer(request: HostRequest, context: &RelaySessionContext) {
     match request {
         HostRequest::ComputerStatus { id, params } => {
-            let outcome = crate::computer::parse_status(&params, &context.account_id)
-                .map(|()| context.sessions.computer_status());
+            let outcome = match crate::computer::parse_status(&params, &context.account_id) {
+                Ok(()) => Ok(context.sessions.computer_status().await),
+                Err(error) => Err(error),
+            };
             context.replies.reply(&id, outcome);
         }
         HostRequest::ResolveElicitation { id, params } => {
@@ -303,9 +293,7 @@ fn answer(request: HostRequest, context: &RelaySessionContext) {
             context.replies.reply(&id, outcome);
         }
         HostRequest::Call(message) => {
-            if let Some(reply) =
-                forward::answer(&message, |request| context.sessions.answer_remote(request))
-            {
+            if let Some(reply) = forward::answer(&message, context.sessions.as_ref()).await {
                 match serde_json::to_string(&reply) {
                     Ok(text) => context.replies.send(text),
                     Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),

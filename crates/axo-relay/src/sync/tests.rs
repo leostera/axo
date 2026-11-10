@@ -7,12 +7,15 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axo_protocol::{Event, SessionId};
+use axo_protocol::SessionId;
 use serde_json::{Value, json};
 
-use super::{SessionMetadata, StoredSyncState, SyncSession, SyncWaker, SyncWorker};
-use crate::host::RelayHost;
-use crate::outbound::RelayChannel;
+use super::{
+    Eviction, SessionMetadata, StoredSyncState, SyncCursor, SyncSession, SyncStore, SyncWaker,
+    SyncWorker,
+};
+use crate::host::{HostFuture, HostIdentity};
+use crate::outbound::{AttachedSocket, RelayChannel};
 
 const SESSION: &str = "8f8f8f8f-0000-4000-8000-000000000001";
 const HEADER: &str = r#"{"type":"session","version":3,"id":"s"}"#;
@@ -25,17 +28,10 @@ struct Host {
     round: AtomicU64,
 }
 
-impl RelayHost for Host {
-    fn host_id(&self) -> &str {
-        "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe"
-    }
-    fn host_generation(&self) -> &str {
-        "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230"
-    }
-    fn publish_relay_status(&self, _: &axo_protocol::RelayStatus) {}
-    fn sync_catalog(&self) -> io::Result<Vec<SyncSession>> {
+impl SyncStore for Host {
+    fn catalog(&self) -> HostFuture<'_, io::Result<Vec<SyncSession>>> {
         self.catalog_reads.fetch_add(1, Ordering::SeqCst);
-        Ok(vec![SyncSession {
+        Box::pin(std::future::ready(Ok(vec![SyncSession {
             session_id: SESSION.parse().unwrap(),
             pi_session_file: Some(self.transcript.clone()),
             metadata: SessionMetadata {
@@ -51,39 +47,30 @@ impl RelayHost for Host {
             },
             status: None,
             transcript_in_cloud: false,
-        }])
+        }])))
     }
-    fn sync_states(&self) -> io::Result<Vec<StoredSyncState>> {
-        Ok(Vec::new())
+    fn states(&self) -> HostFuture<'_, io::Result<Vec<StoredSyncState>>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
     }
-    fn store_sync_cursor(&self, _: SessionId, _: u64, _: &str) -> io::Result<()> {
-        Ok(())
+    fn store_cursor(&self, _: SessionId, _: SyncCursor) -> HostFuture<'_, io::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn store_sync_metadata(&self, _: SessionId, _: &str, _: u64) -> io::Result<()> {
-        Ok(())
+    fn store_metadata(&self, _: SessionId, _: String, _: u64) -> HostFuture<'_, io::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn evict_transcript(&self, _: SessionId, _: u64, _: &str, _: u64) -> io::Result<bool> {
-        Ok(false)
+    fn evict_transcript(
+        &self,
+        _: SessionId,
+        _: SyncCursor,
+        _: u64,
+    ) -> HostFuture<'_, io::Result<Eviction>> {
+        Box::pin(std::future::ready(Ok(Eviction::Kept)))
     }
-    fn next_sync_round(&self) -> io::Result<u64> {
-        Ok(self.round.fetch_add(1, Ordering::SeqCst) + 1)
-    }
-    fn subscribe_remote_events(&self) -> io::Result<String> {
-        unreachable!("the uploader does not subscribe")
-    }
-    fn next_remote_events<'a>(
-        &'a self,
-        _: &'a str,
-        _: Duration,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<Vec<Event>>> + Send + 'a>>
-    {
-        unreachable!("the uploader does not subscribe")
-    }
-    fn unsubscribe_remote_events(&self, _: &str) -> io::Result<()> {
-        unreachable!("the uploader does not subscribe")
-    }
-    fn answer_remote(&self, _: Value) -> Option<Value> {
-        unreachable!("the uploader answers nothing")
+    fn next_round(&self) -> HostFuture<'_, io::Result<u64>> {
+        Box::pin(std::future::ready(Ok(self
+            .round
+            .fetch_add(1, Ordering::SeqCst)
+            + 1)))
     }
 }
 
@@ -118,7 +105,7 @@ impl World {
         });
         let channel = RelayChannel::new();
         let received = Arc::new(Mutex::new(Received::default()));
-        let (_epoch, mut outgoing, _replies) = channel.attach();
+        let AttachedSocket { mut outgoing, .. } = channel.attach();
         {
             let channel = Arc::clone(&channel);
             let received = Arc::clone(&received);
@@ -133,9 +120,14 @@ impl World {
         }
         let waker = SyncWaker::default();
         let stop = axo_ipc::Stop::default();
-        let host_handle: Arc<dyn RelayHost> = host.clone();
+        let store: Arc<dyn SyncStore> = host.clone();
+        let identity = HostIdentity {
+            host_id: "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe".into(),
+            host_generation: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230".into(),
+        };
         let worker = SyncWorker::start(
-            host_handle,
+            store,
+            identity,
             channel,
             waker.clone(),
             runtime.handle().clone(),

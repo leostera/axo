@@ -15,8 +15,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -110,7 +110,7 @@ enum Pending {
     /// A remote pane's command, on its way to the Mac it names.
     Command {
         host_id: String,
-        reply: mpsc::Sender<Result<Value, PeerCommandError>>,
+        reply: oneshot::Sender<Result<Value, PeerCommandError>>,
     },
 }
 
@@ -1043,11 +1043,11 @@ mod tests {
 
     struct Unlinked;
     impl HostLinkStore for Unlinked {
-        fn load_link(&self) -> io::Result<HostLink> {
-            Ok(HostLink::default())
+        fn load_link(&self) -> crate::host::HostFuture<'_, io::Result<HostLink>> {
+            Box::pin(std::future::ready(Ok(HostLink::default())))
         }
-        fn save_link(&self, _: &HostLink) -> io::Result<()> {
-            Ok(())
+        fn save_link(&self, _: HostLink) -> crate::host::HostFuture<'_, io::Result<()>> {
+            Box::pin(std::future::ready(Ok(())))
         }
     }
     struct NoCredentials;
@@ -1113,7 +1113,7 @@ mod tests {
         );
         follower.host_hello(STUDIO, &studio_hello()).unwrap();
         follower.open_more().unwrap();
-        let (reply, answer) = mpsc::channel();
+        let (reply, mut answer) = oneshot::channel();
         follower
             .forward(PeerCommand {
                 host_id: STUDIO.to_owned(),

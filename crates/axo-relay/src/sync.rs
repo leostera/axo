@@ -13,7 +13,7 @@
 //! manifest row has no upload, which leaves the cloud's copy as it is, until reopening it
 //! restores the file.
 //!
-//! This runs as a task on axod's runtime, its turns on the blocking pool, and reaches the cloud
+//! This runs as a task on axod's runtime, reading transcripts on the blocking pool, and reaches the cloud
 //! through `RelayChannel`. It waits for a cause, never for a tick (RFD0037,
 //! `specs/sessions/upload-wakes.ts`): a Session event or a new socket (`SyncWaker`), the kernel
 //! reporting a write to an open transcript (`TranscriptWatch`), its own commit when there is more
@@ -32,11 +32,60 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use axo_protocol::SessionId;
 use uploader::{Next, Uploader};
 use watch::TranscriptWatch;
 
-use crate::host::RelayHost;
+use crate::host::{HostFuture, HostIdentity};
 use crate::outbound::RelayChannel;
+
+/// Where the cloud's copy of a transcript ends: the records it acknowledged, and the chain
+/// through them, which says they are the records this Mac has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncCursor {
+    pub position: u64,
+    pub chain: String,
+}
+
+/// What happened to a transcript the cloud holds whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Eviction {
+    /// Recorded as in the cloud, then deleted here (RFD0027).
+    Deleted,
+    /// Kept: the Session reopened, is reopening, or changed since.
+    Kept,
+}
+
+/// What the uploader reads and keeps in axod's database. Implemented by axod.
+pub trait SyncStore: Send + Sync {
+    /// Every Session, open and archived, with its Pi transcript (RFD0018, Upload).
+    fn catalog(&self) -> HostFuture<'_, io::Result<Vec<SyncSession>>>;
+    /// What `axo.db` keeps of each Session's upload.
+    fn states(&self) -> HostFuture<'_, io::Result<Vec<StoredSyncState>>>;
+    /// Where the cloud's copy of a Session ends now.
+    fn store_cursor(
+        &self,
+        session_id: SessionId,
+        cursor: SyncCursor,
+    ) -> HostFuture<'_, io::Result<()>>;
+    /// The metadata last sent for a Session, and its version.
+    fn store_metadata(
+        &self,
+        session_id: SessionId,
+        metadata_json: String,
+        version: u64,
+    ) -> HostFuture<'_, io::Result<()>>;
+    /// Deletes an archived Session's transcript, which the cloud acknowledged whole at
+    /// `acknowledged` while the file was `length` bytes (RFD0027). Records it in `axo.db` first.
+    fn evict_transcript(
+        &self,
+        session_id: SessionId,
+        acknowledged: SyncCursor,
+        length: u64,
+    ) -> HostFuture<'_, io::Result<Eviction>>;
+    /// Raises and returns the handshake round, which outlives sockets and restarts.
+    fn next_round(&self) -> HostFuture<'_, io::Result<u64>>;
+}
 
 /// Wakes the uploader: a Session changed, or the socket reconnected, so the catalog is read
 /// again. A wake while the uploader works is kept, so its next wait ends at once.
@@ -65,8 +114,8 @@ impl SyncWaker {
     }
 }
 
-/// The uploader: a task on axod's runtime whose turns run on the blocking pool, since a turn
-/// reads transcripts and waits for the cloud's acknowledgements in order.
+/// The uploader: a task on axod's runtime. Its turns wait for the cloud's acknowledgements in
+/// order; reading transcripts goes to the blocking pool.
 pub struct SyncWorker {
     runtime: tokio::runtime::Handle,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -77,7 +126,8 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
 impl SyncWorker {
     pub fn start(
-        host: Arc<dyn RelayHost>,
+        store: Arc<dyn SyncStore>,
+        identity: HostIdentity,
         channel: Arc<RelayChannel>,
         waker: SyncWaker,
         runtime: tokio::runtime::Handle,
@@ -88,19 +138,11 @@ impl SyncWorker {
             Arc::new(TranscriptWatch::new()?)
         };
         let task = runtime.spawn(async move {
-            let mut uploader = Uploader::new(host, channel, Arc::clone(&watch));
+            let mut uploader = Uploader::new(store, identity, channel, Arc::clone(&watch));
             // The first turn reads the catalog.
             let mut catalog_changed = true;
             while !stop.is_stopped() {
-                let turn = tokio::task::spawn_blocking(move || {
-                    let next = uploader.turn(catalog_changed);
-                    (uploader, next)
-                });
-                let next;
-                (uploader, next) = match turn.await {
-                    Ok(done) => done,
-                    Err(error) => std::panic::resume_unwind(error.into_panic()),
-                };
+                let next = uploader.turn(catalog_changed).await;
                 let deadline = match next {
                     Next::Now => {
                         catalog_changed = waker.take_catalog_changed();

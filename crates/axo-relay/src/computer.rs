@@ -8,6 +8,8 @@
 
 use axo_protocol::SessionId;
 use axo_protocol::asset::{AssetName, AssetType};
+use axo_protocol::rpc::MethodError;
+use axo_protocol::rpc::error_code::{INVALID_PARAMS, REFUSED};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -47,24 +49,30 @@ struct StatusParams {
 }
 
 /// Checks a request: `Err` is a JSON-RPC error for the reply.
-pub fn parse(params: &Value, account_id: &str) -> Result<ComputerParams, (i64, String)> {
-    let params: ComputerParams = serde_json::from_value(params.clone())
-        .map_err(|error| (-32602, format!("Invalid params: {error}")))?;
+pub fn parse(params: &Value, account_id: &str) -> Result<ComputerParams, MethodError> {
+    let params: ComputerParams =
+        serde_json::from_value(params.clone()).map_err(MethodError::invalid_params)?;
     if params.account_id != account_id {
-        return Err((-32003, "this Mac belongs to another account".into()));
+        return Err(MethodError::new(
+            REFUSED,
+            "this Mac belongs to another account",
+        ));
     }
     if !params.args.is_object() && !params.args.is_null() {
-        return Err((-32602, "args must be an object".into()));
+        return Err(MethodError::new(INVALID_PARAMS, "args must be an object"));
     }
     Ok(params)
 }
 
 /// Checks a status request.
-pub fn parse_status(params: &Value, account_id: &str) -> Result<(), (i64, String)> {
-    let params: StatusParams = serde_json::from_value(params.clone())
-        .map_err(|error| (-32602, format!("Invalid params: {error}")))?;
+pub fn parse_status(params: &Value, account_id: &str) -> Result<(), MethodError> {
+    let params: StatusParams =
+        serde_json::from_value(params.clone()).map_err(MethodError::invalid_params)?;
     if params.account_id != account_id {
-        return Err((-32003, "this Mac belongs to another account".into()));
+        return Err(MethodError::new(
+            REFUSED,
+            "this Mac belongs to another account",
+        ));
     }
     Ok(())
 }
@@ -155,13 +163,13 @@ mod tests {
         });
         let parsed = parse(&request, "a").unwrap();
         assert!(parsed.confirm);
-        assert_eq!(parse(&request, "b").unwrap_err().0, -32003);
+        assert_eq!(parse(&request, "b").unwrap_err().code, -32003);
         let mut bad = request.clone();
         bad["args"] = json!([1]);
-        assert_eq!(parse(&bad, "a").unwrap_err().0, -32602);
+        assert_eq!(parse(&bad, "a").unwrap_err().code, -32602);
         let mut extra = request;
         extra["approved"] = json!(true);
-        assert_eq!(parse(&extra, "a").unwrap_err().0, -32602);
+        assert_eq!(parse(&extra, "a").unwrap_err().code, -32602);
     }
 
     #[test]

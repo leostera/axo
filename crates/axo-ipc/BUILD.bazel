@@ -7,6 +7,7 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     edition = "2024",
     deps = [
+        "//crates/axo-protocol:axo_protocol",
         "@crates//:jsonrpc-core",
         "@crates//:log",
     ] + select({

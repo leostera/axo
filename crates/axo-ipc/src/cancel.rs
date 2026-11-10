@@ -20,6 +20,8 @@ pub struct Cancellation(Arc<Inner>);
 #[derive(Default)]
 struct Inner {
     cancelled: AtomicBool,
+    /// Wakes [`Cancellation::cancelled`].
+    fired: tokio::sync::Notify,
     /// What to run when it fires; taken (and so run once) by `cancel`.
     callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
@@ -31,9 +33,25 @@ impl Cancellation {
         if self.0.cancelled.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.0.fired.notify_waiters();
         let callbacks = std::mem::take(&mut *self.callbacks());
         for callback in callbacks {
             callback();
+        }
+    }
+
+    /// Resolves once this fires: at once if it already has. A cancellation that never fires
+    /// never resolves.
+    pub async fn cancelled(&self) {
+        loop {
+            let fired = self.0.fired.notified();
+            tokio::pin!(fired);
+            // Registered before the flag is read, so a `cancel` in between still wakes it.
+            fired.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            fired.await;
         }
     }
 
@@ -123,6 +141,27 @@ mod tests {
             "a late callback runs at once"
         );
         assert!(cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn waiting_for_it_ends_when_it_fires_or_at_once_after() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cancellation = Cancellation::default();
+            let waiting = cancellation.clone();
+            let waiter = tokio::spawn(async move { waiting.cancelled().await });
+            tokio::task::yield_now().await;
+            assert!(!waiter.is_finished());
+            cancellation.cancel();
+            tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+                .await
+                .expect("woken when it fired")
+                .unwrap();
+            cancellation.cancelled().await;
+        });
     }
 
     #[test]

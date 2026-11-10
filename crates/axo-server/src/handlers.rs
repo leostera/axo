@@ -314,10 +314,9 @@ impl Extension for Sessions {
             method::PEER_SESSION_WATCH,
             "expected {hostId, sessionId, epoch?, cursor?, version?, timeoutMs?, window?}",
             |core, request: rpc::WatchPeerSession| async move {
-                // A long wait on the peers' version: on the blocking pool.
-                tokio::task::spawn_blocking(move || core.peers.watch(&core, &request))
+                core.peers
+                    .watch(&core, request)
                     .await
-                    .map_err(|error| internal_rpc_error(io::Error::other(error)))?
                     .map_err(|error| match error.kind() {
                         io::ErrorKind::NotFound => invalid_params(&error.to_string()),
                         _ => internal_rpc_error(error),
@@ -330,14 +329,11 @@ impl Extension for Sessions {
             method::PEER_COMMAND,
             "expected {hostId, method, params}",
             |core, request: rpc::PeerCommand| async move {
-                tokio::task::spawn_blocking(move || core.peers.command(request))
-                    .await
-                    .map_err(|error| internal_rpc_error(io::Error::other(error)))?
-                    .map_err(|error| RpcError {
-                        code: ErrorCode::from(error.code),
-                        message: error.message,
-                        data: None,
-                    })
+                core.peers.command(request).await.map_err(|error| RpcError {
+                    code: ErrorCode::from(error.code),
+                    message: error.message,
+                    data: None,
+                })
             },
         );
         add(

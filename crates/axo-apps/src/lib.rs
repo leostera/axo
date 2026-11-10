@@ -41,18 +41,19 @@ impl Extension for Apps {
     fn register(&self, methods: &mut IoHandler) {
         for &(name, timeout) in forwarded::METHODS {
             let channel = self.channel.clone();
-            methods.add_typed(
+            methods.add_typed_async(
                 name,
                 "expected an object with sessionId (a Session ID)",
                 move |params: Map<String, Value>| {
-                    forward(channel.as_deref(), name, params, timeout)
+                    let channel = channel.clone();
+                    async move { forward(channel.as_deref(), name, params, timeout).await }
                 },
             );
         }
     }
 }
 
-fn forward(
+async fn forward(
     channel: Option<&RelayChannel>,
     name: &'static str,
     params: Map<String, Value>,
@@ -72,13 +73,10 @@ fn forward(
     let started = std::time::Instant::now();
     // A caller that gives up (an agent that left) stops the wait; the cloud's call runs on.
     let cancellation = axo_ipc::cancel::current();
-    let outcome = channel.request_abandonable(
-        name,
-        Value::Object(params),
-        Priority::Control,
-        timeout,
-        |abandon| cancellation.on_cancel(move || abandon.abandon()),
-    );
+    let outcome = tokio::select! {
+        result = channel.request(name, Value::Object(params), Priority::Control, timeout) => result,
+        _ = cancellation.cancelled() => Err(RelayCallError::Abandoned),
+    };
     log::info!(
         "event=apps.forwarded method={name} outcome={} duration_ms={}",
         match &outcome {

@@ -1,11 +1,13 @@
 //! What the relay needs from the daemon that hosts it.
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::time::Duration;
 
-use axo_protocol::{Event, RelayStatus, SessionId};
-
-use crate::sync::{StoredSyncState, SyncSession};
+use axo_protocol::elicitation::{DeviceProof, Elicitation, ElicitationAnswer, Sealed};
+use axo_protocol::rpc::MethodError;
+use axo_protocol::{Event, RelayStatus};
 
 /// A client's id for one command (RFD0024): a hyphenated hexadecimal UUID, kept lowercase. The
 /// Pi that owns the Session takes a prompt with a given id at most once.
@@ -143,89 +145,76 @@ impl TryFrom<String> for ModelName {
     }
 }
 
-/// The daemon's sessions, as seen by the cloud relay. Implemented by Axod's session manager.
+/// A future a host hands the relay: it waits without holding a thread.
+pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Who this Mac is to the account: its stable id, and this run's generation, which changes every
+/// time axod starts so the cloud can drop what an earlier run left.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostIdentity {
+    pub host_id: String,
+    pub host_generation: String,
+}
+
+/// A person's answer to one of this Mac's questions, as the cloud brings it (RFD0029): an input
+/// request's values sealed to this Mac, and the answering device's signature over it all.
+#[derive(Clone, Debug)]
+pub struct RemoteAnswer {
+    pub elicitation_id: String,
+    pub answer: ElicitationAnswer,
+    pub sealed: Option<Sealed>,
+    pub device: Option<DeviceProof>,
+}
+
+/// The daemon's sessions, as seen by the cloud relay. Implemented by axod.
 ///
-/// Identifiers arrive already parsed (positive); implementations still check that they name
-/// open sessions and panes, because remote callers are untrusted.
+/// Identifiers arrive already parsed; implementations still check that they name open sessions
+/// and panes, because remote callers are untrusted. What waits returns a [`HostFuture`].
 pub trait RelayHost: Send + Sync {
-    /// Stable identity of this host.
-    fn host_id(&self) -> &str;
-    /// Changes every daemon start; lets the cloud discard stale state.
-    fn host_generation(&self) -> &str;
+    fn identity(&self) -> &HostIdentity;
     fn publish_relay_status(&self, status: &RelayStatus);
 
-    /// Every Session, open and archived, with its Pi transcript (RFD0018, Upload).
-    fn sync_catalog(&self) -> io::Result<Vec<SyncSession>>;
-    /// What `axo.db` keeps of each Session's upload.
-    fn sync_states(&self) -> io::Result<Vec<StoredSyncState>>;
-    /// The last position and chain the cloud acknowledged for a Session.
-    fn store_sync_cursor(
-        &self,
-        session_id: SessionId,
-        position: u64,
-        chain: &str,
-    ) -> io::Result<()>;
-    /// The metadata last sent for a Session, and its version.
-    fn store_sync_metadata(
-        &self,
-        session_id: SessionId,
-        metadata_json: &str,
-        version: u64,
-    ) -> io::Result<()>;
-    /// Deletes an archived Session's transcript, which the cloud acknowledged whole at
-    /// `position` and `chain` while the file was `length` bytes (RFD0027). Records it in `axo.db`
-    /// first; returns false, deleting nothing, if the Session no longer qualifies.
-    fn evict_transcript(
-        &self,
-        session_id: SessionId,
-        position: u64,
-        chain: &str,
-        length: u64,
-    ) -> io::Result<bool>;
-    /// Raises and returns the handshake round, which outlives sockets and restarts.
-    fn next_sync_round(&self) -> io::Result<u64>;
     /// Subscribes to local events (including terminal output); returns the subscription ID.
     fn subscribe_remote_events(&self) -> io::Result<String>;
-    /// The next local events, waiting up to `timeout` without holding a thread; none if it ran
-    /// out. Dropping the wait loses nothing.
+    /// The next local events, waiting up to `timeout`; none if it ran out. Dropping the wait
+    /// loses nothing.
     fn next_remote_events<'a>(
         &'a self,
         subscription_id: &'a str,
         timeout: Duration,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<Vec<Event>>> + Send + 'a>>;
+    ) -> HostFuture<'a, io::Result<Vec<Event>>>;
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()>;
 
     /// What agents here are asking the person now (RFD0029), sent again on every connection.
-    fn pending_elicitations(&self) -> Vec<axo_protocol::elicitation::Elicitation> {
+    fn pending_elicitations(&self) -> Vec<Elicitation> {
         Vec::new()
     }
-    /// A person's answer from the cloud, with an input request's values sealed to this Mac.
-    /// `Err((code, message))` when it no longer waits, or its values are no good.
-    fn resolve_elicitation(
-        &self,
-        _id: &str,
-        _answer: axo_protocol::elicitation::ElicitationAnswer,
-        _sealed: Option<axo_protocol::elicitation::Sealed>,
-        _device: Option<axo_protocol::elicitation::DeviceProof>,
-    ) -> Result<(), (i64, String)> {
-        Err((
+    /// Takes a person's answer from the cloud; refused when it no longer waits, or its values
+    /// or signature are no good.
+    fn resolve_elicitation(&self, _answer: RemoteAnswer) -> Result<(), MethodError> {
+        Err(MethodError::new(
             axo_protocol::elicitation::NOT_PENDING,
-            "Already answered, or no longer asked".into(),
+            "Already answered, or no longer asked",
         ))
     }
 
     /// One computer-use tool from another Mac's script (RFD0028): the gate, the person's answer
     /// in the calling Session if it must ask, then the tool's MCP answer with its images inline.
-    /// `Err` is a JSON-RPC error: refused, declined, or not answered.
+    /// `Err` is refused, declined, or not answered.
     fn remote_computer(
         &self,
-        _request: &crate::computer::ComputerParams,
-    ) -> Result<serde_json::Value, (i64, String)> {
-        Err((-32601, "Method not found".into()))
+        _request: crate::computer::ComputerParams,
+    ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
+        Box::pin(std::future::ready(Err(MethodError::method_not_found())))
     }
     /// Whether this Mac can do computer use now: `{ available, accessibility, screenRecording, locked }`.
-    fn computer_status(&self) -> serde_json::Value {
-        serde_json::json!({ "available": false, "accessibility": false, "screenRecording": false })
+    fn computer_status(&self) -> HostFuture<'_, serde_json::Value> {
+        Box::pin(std::future::ready(serde_json::json!({
+            "available": false,
+            "accessibility": false,
+            "screenRecording": false,
+        })))
     }
     /// Where the account's assets are reached from while the relay is connected, so local
     /// callers (`axod mcp`) can fetch them; `None` once it disconnects.
@@ -234,7 +223,10 @@ pub trait RelayHost: Send + Sync {
     /// Answers one of the account's calls (`axo.remote.*`), a whole JSON-RPC request, as the
     /// account would be answered: the response to send back, or `None` for a notification.
     /// The relay only carries it; what the methods do is the host's.
-    fn answer_remote(&self, request: serde_json::Value) -> Option<serde_json::Value>;
+    fn answer_remote(
+        &self,
+        request: serde_json::Value,
+    ) -> HostFuture<'_, Option<serde_json::Value>>;
 }
 
 #[cfg(test)]

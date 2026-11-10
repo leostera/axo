@@ -8,6 +8,62 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ConfigKey, LayoutNode, SessionId, SessionRecord, ShellId};
 
+/// The error a method answers with: a JSON-RPC error code and what the caller is told. The
+/// details of why stay on this Mac; the message is for the caller.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MethodError {
+    pub code: i64,
+    pub message: String,
+}
+
+impl MethodError {
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// The parameters are not what the method takes.
+    pub fn invalid_params(detail: impl std::fmt::Display) -> Self {
+        Self::new(
+            error_code::INVALID_PARAMS,
+            format!("Invalid params: {detail}"),
+        )
+    }
+
+    /// Nothing answers that method here.
+    pub fn method_not_found() -> Self {
+        Self::new(error_code::METHOD_NOT_FOUND, "Method not found")
+    }
+}
+
+impl std::fmt::Display for MethodError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} ({})", self.message, self.code)
+    }
+}
+
+impl std::error::Error for MethodError {}
+
+/// Error codes every method shares: JSON-RPC's own, and the ones the account and its Macs use
+/// for each other (the API Worker's `host-do.ts` speaks the same).
+pub mod error_code {
+    pub const METHOD_NOT_FOUND: i64 = -32601;
+    pub const INVALID_PARAMS: i64 = -32602;
+    pub const INTERNAL_ERROR: i64 = -32603;
+    /// Meant for another run of this Mac, or a lease that moved on.
+    pub const STALE_HOST: i64 = -32002;
+    /// Not allowed, or not done; the caller is told no more.
+    pub const REFUSED: i64 = -32003;
+    /// What it names is not here.
+    pub const NOT_FOUND: i64 = -32004;
+    /// Too much is running already; try again later.
+    pub const BUSY: i64 = -32006;
+    /// It did not finish in time.
+    pub const TIMED_OUT: i64 = -32008;
+}
+
 /// Method names, in the order `axo.protocol.negotiate` advertises them.
 pub mod method {
     pub const PROTOCOL_NEGOTIATE: &str = "axo.protocol.negotiate";

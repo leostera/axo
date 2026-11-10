@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,9 @@ use serde_json::{Value, json};
 use super::metadata::{SessionMetadata, StoredSyncState};
 use super::unix_seconds;
 use super::watch::TranscriptWatch;
-use crate::host::RelayHost;
-use crate::outbound::{Priority, RelayCallError, RelayChannel};
+use super::{Eviction, SyncCursor, SyncStore};
+use crate::host::HostIdentity;
+use crate::outbound::{Priority, RelayCallError, RelayChannel, SocketEpoch};
 
 /// Records and bytes of lines in one append batch.
 const BATCH_RECORDS: usize = 64;
@@ -69,20 +71,50 @@ struct SessionSync {
 
 impl SessionSync {
     /// Reads the file for lines appended or rewritten since the last check.
-    fn refresh(&mut self) -> io::Result<bool> {
+    async fn refresh(&mut self) -> io::Result<bool> {
         self.read = true;
-        self.file.refresh()
+        off_runtime(&mut self.file, TranscriptFile::refresh).await
+    }
+
+    /// The file's length, if every byte of it is a record already hashed.
+    async fn whole_length(&self) -> io::Result<Option<u64>> {
+        let Some(path) = self.file.path().map(Path::to_path_buf) else {
+            return Ok(None);
+        };
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => Ok(Some(metadata.len()).filter(|length| self.file.is_whole(*length))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }
 
+/// Hashes a transcript on the blocking pool: the file is lent there and given back.
+async fn off_runtime<T: Send + 'static>(
+    file: &mut TranscriptFile,
+    work: impl FnOnce(&mut TranscriptFile) -> T + Send + 'static,
+) -> T {
+    let mut lent = std::mem::replace(file, TranscriptFile::new(None));
+    let worked = tokio::task::spawn_blocking(move || {
+        let outcome = work(&mut lent);
+        (lent, outcome)
+    })
+    .await;
+    let (lent, outcome) =
+        worked.unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()));
+    *file = lent;
+    outcome
+}
+
 pub(super) struct Uploader {
-    host: Arc<dyn RelayHost>,
+    store: Arc<dyn SyncStore>,
+    identity: HostIdentity,
     channel: Arc<RelayChannel>,
     /// The kernel's events on open Sessions' transcripts, registered before they are read.
     watch: Arc<TranscriptWatch>,
     sessions: HashMap<SessionId, SessionSync>,
     /// The socket the last handshake ran on; another socket needs a new one.
-    synced_on: Option<u64>,
+    synced_on: Option<SocketEpoch>,
     handshake_due: bool,
     retry_at: Option<Instant>,
     round: u64,
@@ -95,12 +127,14 @@ pub(super) struct Uploader {
 
 impl Uploader {
     pub(super) fn new(
-        host: Arc<dyn RelayHost>,
+        store: Arc<dyn SyncStore>,
+        identity: HostIdentity,
         channel: Arc<RelayChannel>,
         watch: Arc<TranscriptWatch>,
     ) -> Self {
         Self {
-            host,
+            store,
+            identity,
             channel,
             watch,
             sessions: HashMap::new(),
@@ -115,7 +149,7 @@ impl Uploader {
 
     /// One step of work, woken by something; `catalog_changed` when a Session event or a new
     /// socket said the catalog may have changed. Returns what to do next.
-    pub(super) fn turn(&mut self, catalog_changed: bool) -> Next {
+    pub(super) async fn turn(&mut self, catalog_changed: bool) -> Next {
         self.catalog_due |= catalog_changed;
         // A new socket wakes the uploader.
         let Some(socket) = self.channel.epoch() else {
@@ -125,7 +159,7 @@ impl Uploader {
         if self.synced_on != Some(socket) {
             self.handshake_due = true;
         }
-        if let Err(error) = self.refresh() {
+        if let Err(error) = self.refresh().await {
             log::warn!("event=sync.catalog_unavailable reason={error}");
             return Next::At(Instant::now() + RETRY_DELAY);
         }
@@ -133,7 +167,7 @@ impl Uploader {
             if let Some(at) = self.retry_at.filter(|at| Instant::now() < *at) {
                 return Next::At(at);
             }
-            match self.handshake() {
+            match self.handshake().await {
                 Ok(()) => {
                     self.synced_on = Some(socket);
                     self.handshake_due = false;
@@ -147,10 +181,10 @@ impl Uploader {
                 }
             }
         }
-        self.send_metadata_and_status();
-        match self.upload_next() {
+        self.send_metadata_and_status().await;
+        match self.upload_next().await {
             Ok(true) => Next::Now,
-            Ok(false) => match self.evict_next() {
+            Ok(false) => match self.evict_next().await {
                 Ok(true) => Next::Now,
                 Ok(false) => Next::Idle,
                 Err(error) => {
@@ -170,18 +204,19 @@ impl Uploader {
 
     /// Reads the catalog if it may have changed, registers the open Sessions' transcripts with
     /// the kernel, then reads them: the watches first, so a write after the read is seen.
-    pub(super) fn refresh(&mut self) -> io::Result<()> {
+    pub(super) async fn refresh(&mut self) -> io::Result<()> {
         if self.catalog_due {
             if self.stored.is_none() {
                 self.stored = Some(
-                    self.host
-                        .sync_states()?
+                    self.store
+                        .states()
+                        .await?
                         .into_iter()
                         .map(|state| (state.session_id.clone(), state))
                         .collect(),
                 );
             }
-            for session in self.host.sync_catalog()? {
+            for session in self.store.catalog().await? {
                 let mut metadata = session.metadata.clone().bounded();
                 if !self.sessions.contains_key(&session.session_id) {
                     let state = self
@@ -226,11 +261,13 @@ impl Uploader {
                     entry.metadata = metadata;
                     entry.metadata_version += 1;
                     entry.eviction_refused = false;
-                    self.host.store_sync_metadata(
-                        session.session_id,
-                        &serde_json::to_string(&entry.metadata).map_err(io::Error::other)?,
-                        entry.metadata_version,
-                    )?;
+                    self.store
+                        .store_metadata(
+                            session.session_id,
+                            serde_json::to_string(&entry.metadata).map_err(io::Error::other)?,
+                            entry.metadata_version,
+                        )
+                        .await?;
                 }
                 entry.status = session.status;
             }
@@ -244,7 +281,7 @@ impl Uploader {
         );
         for session in self.sessions.values_mut() {
             if (!session.metadata.archived || !session.read)
-                && session.refresh()?
+                && session.refresh().await?
                 && session
                     .cloud
                     .is_some_and(|cloud| cloud.count > session.file.count())
@@ -256,8 +293,8 @@ impl Uploader {
         Ok(())
     }
 
-    fn handshake(&mut self) -> io::Result<()> {
-        self.round = self.host.next_sync_round()?;
+    async fn handshake(&mut self) -> io::Result<()> {
+        self.round = self.store.next_round().await?;
         let round = self.round;
         let mut ids: Vec<SessionId> = self.sessions.keys().copied().collect();
         ids.sort();
@@ -279,16 +316,18 @@ impl Uploader {
                 })
             })
             .collect();
-        let reply: SyncReply = self.call(
-            "axo.host.sync",
-            json!({
-                "hostId": self.host.host_id(),
-                "hostGeneration": self.host.host_generation(),
-                "round": round,
-                "sessions": manifest,
-            }),
-            Priority::Control,
-        )?;
+        let reply: SyncReply = self
+            .call(
+                "axo.host.sync",
+                json!({
+                    "hostId": self.identity.host_id,
+                    "hostGeneration": self.identity.host_generation,
+                    "round": round,
+                    "sessions": manifest,
+                }),
+                Priority::Control,
+            )
+            .await?;
         if reply.round != round || !reply.applied {
             return Err(io::Error::other("the cloud applied a newer handshake"));
         }
@@ -312,7 +351,7 @@ impl Uploader {
             } = state
             else {
                 unknown += 1;
-                self.adopt(session_id, Cloud { epoch: 1, count: 0 })?;
+                self.adopt(session_id, Cloud { epoch: 1, count: 0 }).await?;
                 continue;
             };
             let prefix = local.is_none_or(|local| {
@@ -327,12 +366,12 @@ impl Uploader {
                 Cloud { epoch, count }
             } else {
                 diverged += 1;
-                match self.realign(session_id, count)? {
+                match self.realign(session_id, count).await? {
                     Some(cloud) => cloud,
                     None => continue,
                 }
             };
-            self.adopt(session_id, cloud)?;
+            self.adopt(session_id, cloud).await?;
         }
         log::info!(
             "event=sync.handshake sessions={} unknown={unknown} behind={behind} diverged={diverged}",
@@ -343,15 +382,18 @@ impl Uploader {
 
     /// Takes what the cloud holds of a Session as its upload's starting point, and stores the
     /// cursor where this Mac's copy agrees with it.
-    fn adopt(&mut self, session_id: SessionId, cloud: Cloud) -> io::Result<()> {
+    async fn adopt(&mut self, session_id: SessionId, cloud: Cloud) -> io::Result<()> {
         let chain = self.sessions[&session_id]
             .file
             .transcript()
             .and_then(|transcript| transcript.chain_at(cloud.count))
             .map(str::to_owned);
         if let Some(chain) = chain {
-            self.host
-                .store_sync_cursor(session_id, cloud.count, &chain)?;
+            let cursor = SyncCursor {
+                position: cloud.count,
+                chain,
+            };
+            self.store.store_cursor(session_id, cursor).await?;
         }
         if let Some(session) = self.sessions.get_mut(&session_id) {
             session.cloud = Some(cloud);
@@ -360,7 +402,11 @@ impl Uploader {
     }
 
     /// Finds the longest prefix both copies share and cuts the cloud back to it (the host wins).
-    fn realign(&mut self, session_id: SessionId, cloud_count: u64) -> io::Result<Option<Cloud>> {
+    async fn realign(
+        &mut self,
+        session_id: SessionId,
+        cloud_count: u64,
+    ) -> io::Result<Option<Cloud>> {
         let local = self.sessions[&session_id]
             .file
             .transcript()
@@ -378,11 +424,13 @@ impl Uploader {
                 .take_while(|position| *position < high)
                 .collect();
             positions.push(high);
-            let reply: ChainAtReply = self.call(
-                "axo.host.session.chainAt",
-                json!({ "sessionId": session_id, "round": self.round, "positions": positions }),
-                Priority::Control,
-            )?;
+            let reply: ChainAtReply = self
+                .call(
+                    "axo.host.session.chainAt",
+                    json!({ "sessionId": session_id, "round": self.round, "positions": positions }),
+                    Priority::Control,
+                )
+                .await?;
             if reply.round != self.round {
                 return Err(io::Error::other("a newer handshake replaced this one"));
             }
@@ -415,13 +463,19 @@ impl Uploader {
         };
         // Never claim records the cloud is about to delete.
         if let Some(chain) = local.chain_at(keep) {
-            self.host.store_sync_cursor(session_id, keep, chain)?;
+            let cursor = SyncCursor {
+                position: keep,
+                chain: chain.to_owned(),
+            };
+            self.store.store_cursor(session_id, cursor).await?;
         }
-        let reply: TruncateReply = self.call(
-            "axo.host.session.truncate",
-            json!({ "sessionId": session_id, "round": self.round, "keep": keep, "expectedChain": expected }),
-            Priority::Control,
-        )?;
+        let reply: TruncateReply = self
+            .call(
+                "axo.host.session.truncate",
+                json!({ "sessionId": session_id, "round": self.round, "keep": keep, "expectedChain": expected }),
+                Priority::Control,
+            )
+            .await?;
         log::info!(
             "event=sync.diverged session_id={session_id} keep={keep} header_differs={header_differs} outcome={}",
             reply.outcome.name()
@@ -438,7 +492,7 @@ impl Uploader {
     }
 
     /// Uploads one batch of the Session that most needs it. Returns whether there was one.
-    fn upload_next(&mut self) -> io::Result<bool> {
+    async fn upload_next(&mut self) -> io::Result<bool> {
         let Some(session_id) = self.next_session() else {
             return Ok(false);
         };
@@ -465,7 +519,10 @@ impl Uploader {
             bytes += next;
             to += 1;
         }
-        let lines = session.file.read(from, to)?;
+        let range = session.file.line_range(from, to)?;
+        let lines = tokio::task::spawn_blocking(move || range.read())
+            .await
+            .map_err(io::Error::other)??;
         let records: Vec<Value> = lines
             .iter()
             .zip(&transcript.records()[(from - 1) as usize..to as usize])
@@ -475,21 +532,23 @@ impl Uploader {
         if from == 1 {
             params["header"] = json!(transcript.header());
         }
-        let result: AppendReply =
-            match self.call("axo.host.session.append", params, Priority::Durable) {
-                Ok(result) => result,
-                Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                    // Too large for the relay: treated like a line the cloud cannot take.
-                    log::warn!(
-                        "event=sync.append session_id={session_id} from={from} outcome=too_large"
-                    );
-                    if let Some(session) = self.sessions.get_mut(&session_id) {
-                        session.file.mark_invalid();
-                    }
-                    return Ok(true);
+        let result: AppendReply = match self
+            .call("axo.host.session.append", params, Priority::Durable)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                // Too large for the relay: treated like a line the cloud cannot take.
+                log::warn!(
+                    "event=sync.append session_id={session_id} from={from} outcome=too_large"
+                );
+                if let Some(session) = self.sessions.get_mut(&session_id) {
+                    session.file.mark_invalid();
                 }
-                Err(error) => return Err(error),
-            };
+                return Ok(true);
+            }
+            Err(error) => return Err(error),
+        };
         log::debug!(
             "event=sync.append session_id={session_id} from={from} records={} outcome={}",
             to - from + 1,
@@ -499,8 +558,11 @@ impl Uploader {
         match result.outcome {
             AppendOutcome::Committed { epoch } => {
                 if let Some(chain) = committed_chain {
-                    self.host
-                        .store_sync_cursor(session_id, result.count, &chain)?;
+                    let cursor = SyncCursor {
+                        position: result.count,
+                        chain,
+                    };
+                    self.store.store_cursor(session_id, cursor).await?;
                 }
                 if let Some(session) = self.sessions.get_mut(&session_id) {
                     session.cloud = Some(Cloud {
@@ -525,7 +587,7 @@ impl Uploader {
     /// Deletes one archived Session's transcript the cloud holds whole (RFD0027). Its file is
     /// read again first: a line written since then waits for its upload. Returns whether it
     /// did anything, so the next candidate gets its turn at once; none left is false.
-    fn evict_next(&mut self) -> io::Result<bool> {
+    async fn evict_next(&mut self) -> io::Result<bool> {
         let candidate = self.sessions.iter().find_map(|(id, session)| {
             let count = session.file.count();
             (session.metadata.archived
@@ -538,13 +600,13 @@ impl Uploader {
             return Ok(false);
         };
         let session = self.sessions.get_mut(&session_id).expect("found above");
-        if session.refresh()? {
+        if session.refresh().await? {
             // Changed since: uploaded first.
             return Ok(true);
         }
         let count = session.file.count();
         let (Some(length), Some(chain)) = (
-            session.file.whole_length()?,
+            session.whole_length().await?,
             session
                 .file
                 .transcript()
@@ -559,19 +621,28 @@ impl Uploader {
             session.eviction_refused = true;
             return Ok(true);
         }
-        let evicted = self
-            .host
-            .evict_transcript(session_id, count, &chain, length)?;
+        let acknowledged = SyncCursor {
+            position: count,
+            chain,
+        };
+        let eviction = self
+            .store
+            .evict_transcript(session_id, acknowledged, length)
+            .await?;
         log::info!(
             "event=sync.evict session_id={session_id} records={count} bytes={length} outcome={}",
-            if evicted { "deleted" } else { "kept" }
+            match eviction {
+                Eviction::Deleted => "deleted",
+                Eviction::Kept => "kept",
+            }
         );
         if let Some(session) = self.sessions.get_mut(&session_id) {
-            if evicted {
-                session.file = TranscriptFile::new(None);
-                session.read = false;
-            } else {
-                session.eviction_refused = true;
+            match eviction {
+                Eviction::Deleted => {
+                    session.file = TranscriptFile::new(None);
+                    session.read = false;
+                }
+                Eviction::Kept => session.eviction_refused = true,
             }
         }
         Ok(true)
@@ -597,7 +668,7 @@ impl Uploader {
     }
 
     /// Metadata changes since the cloud last heard, and status changes of open Sessions.
-    fn send_metadata_and_status(&mut self) {
+    async fn send_metadata_and_status(&mut self) {
         for (id, session) in &mut self.sessions {
             if session.metadata_sent < session.metadata_version {
                 let reply: io::Result<Value> = call(
@@ -605,7 +676,8 @@ impl Uploader {
                     "axo.host.session.meta",
                     json!({ "sessionId": id, "metadataVersion": session.metadata_version, "metadata": session.metadata }),
                     Priority::Control,
-                );
+                )
+                .await;
                 match reply {
                     Ok(_) => {
                         session.metadata_sent = session.metadata_version;
@@ -635,19 +707,19 @@ impl Uploader {
         }
     }
 
-    fn call<T: for<'de> Deserialize<'de>>(
+    async fn call<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
         priority: Priority,
     ) -> io::Result<T> {
-        let result = call(&self.channel, method, params, priority)?;
+        let result = call(&self.channel, method, params, priority).await?;
         serde_json::from_value(result)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 }
 
-fn call(
+async fn call(
     channel: &RelayChannel,
     method: &str,
     params: Value,
@@ -655,6 +727,7 @@ fn call(
 ) -> io::Result<Value> {
     channel
         .request(method, params, priority, REQUEST_TIMEOUT)
+        .await
         .map_err(|error| match error {
             RelayCallError::TooLarge => io::Error::new(io::ErrorKind::InvalidInput, error),
             error => io::Error::other(error),

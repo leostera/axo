@@ -73,9 +73,9 @@ pub(crate) async fn scope<F: Future>(peer: Peer, request: F) -> F::Output {
     TASK_PEER.scope(peer, request).await
 }
 
-/// Runs `method` as the account's request through the relay.
-pub fn as_relay<R>(method: impl FnOnce() -> R) -> R {
-    on_this_thread(Peer::Relay, method)
+/// Runs `request` as the account's request through the relay.
+pub async fn as_relay<F: Future>(request: F) -> F::Output {
+    scope(Peer::Relay, request).await
 }
 
 /// Runs `method` with `peer` as [`current`], for a handler on the blocking pool.
@@ -265,14 +265,15 @@ mod tests {
         assert_eq!(token(current()), None);
     }
 
-    #[test]
-    fn the_relay_is_its_own_caller_and_never_a_signed_program() {
-        as_relay(|| {
+    #[tokio::test]
+    async fn the_relay_is_its_own_caller_and_never_a_signed_program() {
+        as_relay(async {
             let peer = current();
             assert!(peer.is_caller(Caller::Relay));
             assert!(!peer.is(Signer::ThisBinary) && !peer.is(Signer::AxoApp));
             assert!(!peer.is_caller(Caller::Signed(Signer::ThisBinary)));
-        });
+        })
+        .await;
         assert!(!current().is_caller(Caller::Relay), "only inside as_relay");
     }
 

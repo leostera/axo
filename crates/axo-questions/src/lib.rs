@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::Mutex;
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axo_ipc::Extension;
@@ -26,11 +25,12 @@ use axo_protocol::elicitation::{
     NOT_A_PERSON, NOT_A_TOOL, NOT_PENDING, Pending as Listed, Reply, RequestElicitation,
     ResolveElicitation, Resolved, TIMEOUT_MS,
 };
-use axo_protocol::rpc::method;
+use axo_protocol::rpc::{MethodError, method};
 use axo_protocol::{Event, SessionId, new_uuid_v4};
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
 /// What the questions need of the rest of axod.
@@ -55,17 +55,25 @@ struct Settled {
     values: Option<Values>,
 }
 
-/// What wakes a question's waiter: how it was settled, or its asker giving up.
-enum Wake {
-    Settled(Settled),
-    /// The request that asked was cancelled (RFD0034): its connection closed.
-    Cancelled,
+impl Settled {
+    fn cancelled() -> Self {
+        Self {
+            action: ElicitationAction::Cancel,
+            values: None,
+        }
+    }
+}
+
+/// The person's answer to a question: how it ended, and an accepted form's values.
+pub struct Answer {
+    pub outcome: ElicitationOutcome,
+    pub values: Option<Values>,
 }
 
 struct Pending {
     elicitation: Elicitation,
-    /// Holds two: an answer can race the asker giving up, and neither is lost.
-    answer: SyncSender<Wake>,
+    /// Wakes the asker with how it was settled; whoever settles it first sends it.
+    answer: oneshot::Sender<Settled>,
 }
 
 /// The elicitations waiting for an answer, by id.
@@ -81,24 +89,21 @@ impl Elicitations {
             .map_err(|_| io::Error::other("elicitation lock was poisoned"))
     }
 
-    /// Opens one; its waiter's receiver, and a sender to wake it when its asker gives up.
-    fn open(
-        &self,
-        elicitation: Elicitation,
-    ) -> io::Result<Option<(mpsc::Receiver<Wake>, SyncSender<Wake>)>> {
+    /// Opens one, and what its asker waits on; `None` when too many wait already.
+    fn open(&self, elicitation: Elicitation) -> io::Result<Option<oneshot::Receiver<Settled>>> {
         let mut pending = self.lock()?;
         if pending.len() >= MAX_PENDING {
             return Ok(None);
         }
-        let (answer, receiver) = mpsc::sync_channel(2);
+        let (answer, settled) = oneshot::channel();
         pending.insert(
             elicitation.id.clone(),
             Pending {
                 elicitation,
-                answer: answer.clone(),
+                answer,
             },
         );
-        Ok(Some((receiver, answer)))
+        Ok(Some(settled))
     }
 
     /// Ends one with `action` if it still waits; whoever gets it first wins.
@@ -116,7 +121,7 @@ impl Elicitations {
         let Some(pending) = self.lock()?.remove(id) else {
             return Ok(None);
         };
-        let _ = pending.answer.try_send(Wake::Settled(settled));
+        let _ = pending.answer.send(settled);
         Ok(Some(pending.elicitation))
     }
 
@@ -140,6 +145,18 @@ impl Elicitations {
     }
 }
 
+impl Answer {
+    fn to(id: String, settled: Settled) -> Self {
+        Self {
+            outcome: ElicitationOutcome {
+                id,
+                action: settled.action,
+            },
+            values: settled.values,
+        }
+    }
+}
+
 /// The questions waiting on this Mac.
 #[derive(Default)]
 pub struct Questions {
@@ -149,7 +166,7 @@ pub struct Questions {
 impl Questions {
     /// Asks the person and waits for their answer, at most `timeout`. Ends as `Cancel` when nobody
     /// answers in time.
-    pub fn request(
+    pub async fn request(
         &self,
         host: &dyn QuestionsHost,
         request: RequestElicitation,
@@ -165,11 +182,12 @@ impl Questions {
             request.asked_by,
             timeout,
         )
+        .await
     }
 
     /// Asks in `session_id`, which may run on another Mac: the gate asks in the Session of the
     /// script that called it (RFD0028). Clients place the card by Session id, and answer this Mac.
-    pub fn ask(
+    pub async fn ask(
         &self,
         host: &dyn QuestionsHost,
         session_id: SessionId,
@@ -178,11 +196,12 @@ impl Questions {
         timeout: Duration,
     ) -> Result<ElicitationOutcome, RpcError> {
         self.ask_with(host, session_id, message, asked_by, None, timeout)
-            .map(|(outcome, _)| outcome)
+            .await
+            .map(|answer| answer.outcome)
     }
 
     /// Asks, for a form when `input` is given, and waits; an accepted form comes with its values.
-    pub fn ask_with(
+    pub async fn ask_with(
         &self,
         host: &dyn QuestionsHost,
         session_id: SessionId,
@@ -190,7 +209,7 @@ impl Questions {
         asked_by: Asker,
         input: Option<InputRequest>,
         timeout: Duration,
-    ) -> Result<(ElicitationOutcome, Option<Values>), RpcError> {
+    ) -> Result<Answer, RpcError> {
         let message = message.trim();
         if message.is_empty() || message.chars().count() > MAX_MESSAGE_CHARS {
             return Err(invalid(format!(
@@ -222,16 +241,9 @@ impl Questions {
         let cancellation = axo_ipc::cancel::current();
         if cancellation.is_cancelled() {
             log::info!("event=elicitation.withdrawn id={id} reason=asker_gone before=asked");
-            return Ok((
-                ElicitationOutcome {
-                    id,
-                    action: ElicitationAction::Cancel,
-                },
-                None,
-            ));
+            return Ok(Answer::to(id, Settled::cancelled()));
         }
-        let Some((answer, waker)) = self.pending.open(elicitation.clone()).map_err(internal)?
-        else {
+        let Some(mut answer) = self.pending.open(elicitation.clone()).map_err(internal)? else {
             return Err(RpcError {
                 code: ErrorCode::ServerError(TOO_MANY),
                 message: format!(
@@ -252,57 +264,35 @@ impl Questions {
                 Asker::ComputerUse => "computer_use",
             }
         );
+        let _withdraw_on_drop = PendingQuestion {
+            pending: &self.pending,
+            host,
+            id: id.clone(),
+        };
         host.publish(Event::ElicitationRequested { elicitation });
-        // When the asker gives up (its connection closes), the question is withdrawn.
-        cancellation.on_cancel(move || {
-            let _ = waker.try_send(Wake::Cancelled);
-        });
-        let cancelled = || Settled {
-            action: ElicitationAction::Cancel,
-            values: None,
-        };
-        enum Ended {
-            Settled(Settled),
-            /// Nobody answered in time, or the asker gave up: why, for the log.
-            Withdrawn(&'static str),
-        }
-        let ended = match answer.recv_timeout(timeout) {
-            Ok(Wake::Settled(settled)) => Ended::Settled(settled),
-            Ok(Wake::Cancelled) => Ended::Withdrawn("asker_gone"),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                Ended::Withdrawn("expired")
-            }
-        };
-        let settled = match ended {
-            Ended::Settled(settled) => settled,
-            Ended::Withdrawn(reason) => {
-                match self
-                    .pending
-                    .settle(&id, ElicitationAction::Cancel)
-                    .map_err(internal)?
-                {
-                    Some(elicitation) => {
-                        log::info!("event=elicitation.withdrawn id={id} reason={reason}");
-                        publish_resolved(host, &elicitation, ElicitationAction::Cancel);
-                        cancelled()
-                    }
-                    // An answer won the race: it is already in the channel.
-                    None => std::iter::from_fn(|| answer.try_recv().ok())
-                        .find_map(|wake| match wake {
-                            Wake::Settled(settled) => Some(settled),
-                            Wake::Cancelled => None,
-                        })
-                        .unwrap_or_else(cancelled),
-                }
-            }
-        };
-        Ok((
-            ElicitationOutcome {
-                id,
-                action: settled.action,
+        // Nobody answered in time, or the asker gave up (its connection closed): withdrawn.
+        let withdrawn = tokio::select! {
+            settled = &mut answer => match settled {
+                Ok(settled) => return Ok(Answer::to(id, settled)),
+                Err(_) => "expired",
             },
-            settled.values,
-        ))
+            () = tokio::time::sleep(timeout) => "expired",
+            () = cancellation.cancelled() => "asker_gone",
+        };
+        let settled = match self
+            .pending
+            .settle(&id, ElicitationAction::Cancel)
+            .map_err(internal)?
+        {
+            Some(elicitation) => {
+                log::info!("event=elicitation.withdrawn id={id} reason={withdrawn}");
+                publish_resolved(host, &elicitation, ElicitationAction::Cancel);
+                Settled::cancelled()
+            }
+            // An answer won the race: it is already sent.
+            None => answer.try_recv().unwrap_or_else(|_| Settled::cancelled()),
+        };
+        Ok(Answer::to(id, settled))
     }
 
     /// A person's answer, from the relay or Axo.app. `NOT_PENDING` when it no longer waits
@@ -314,13 +304,8 @@ impl Questions {
         id: &str,
         answer: ElicitationAnswer,
         reply: Reply,
-    ) -> Result<(), (i64, String)> {
-        let not_pending = || {
-            (
-                NOT_PENDING,
-                "already answered, or no longer asked".to_owned(),
-            )
-        };
+    ) -> Result<(), MethodError> {
+        let not_pending = || MethodError::new(NOT_PENDING, "already answered, or no longer asked");
         let asked = self.pending.get(id).ok_or_else(not_pending)?;
         let action = ElicitationAction::from(answer);
         let values = match (&asked.input, action, reply) {
@@ -328,7 +313,10 @@ impl Questions {
                 Some(input_values(host, id, input, reply)?)
             }
             (None, _, Reply::Sealed(_) | Reply::Values(_)) => {
-                return Err((BAD_INPUT, "a yes-or-no answer carries no values".into()));
+                return Err(MethodError::new(
+                    BAD_INPUT,
+                    "a yes-or-no answer carries no values",
+                ));
             }
             // A Decline needs nothing, and what came with it is dropped unread.
             _ => None,
@@ -355,8 +343,8 @@ fn input_values(
     id: &str,
     input: &InputRequest,
     reply: Reply,
-) -> Result<Values, (i64, String)> {
-    let bad = |why: &str| (BAD_INPUT, why.to_owned());
+) -> Result<Values, MethodError> {
+    let bad = |why: &str| MethodError::new(BAD_INPUT, why);
     let values: Values = match reply {
         Reply::Bare => return Err(bad("an answer to a form carries its values")),
         Reply::Values(values) => values
@@ -407,6 +395,30 @@ fn input_values(
     }
 }
 
+/// A question belongs to its waiting future. Dropping that future (for example when an MCP
+/// agent exits) withdraws it even if it never gets polled to observe cancellation. Settlement
+/// removes it first, so an answered or expired question is never published twice.
+struct PendingQuestion<'a> {
+    pending: &'a Elicitations,
+    host: &'a dyn QuestionsHost,
+    id: String,
+}
+
+impl Drop for PendingQuestion<'_> {
+    fn drop(&mut self) {
+        match self.pending.settle(&self.id, ElicitationAction::Cancel) {
+            Ok(Some(elicitation)) => {
+                publish_resolved(self.host, &elicitation, ElicitationAction::Cancel);
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!(
+                "event=elicitation.withdraw_failed id={} reason={error}",
+                self.id
+            ),
+        }
+    }
+}
+
 fn publish_resolved(
     host: &dyn QuestionsHost,
     elicitation: &Elicitation,
@@ -447,20 +459,25 @@ impl Extension for QuestionsExtension {
 
     fn register(&self, handler: &mut IoHandler) {
         let (questions, host) = (Arc::clone(&self.questions), Arc::clone(&self.host));
-        handler.add_typed(
+        handler.add_typed_async(
             method::ELICITATION_REQUEST,
             "expected {sessionId, message, askedBy?}",
             move |request: RequestElicitation| {
-                // Anyone may ask as the agent; only axod's own tools ask as a tool.
-                if request.asked_by != Asker::Agent {
-                    Only {
-                        caller: Caller::Signed(Signer::ThisBinary),
-                        code: NOT_A_TOOL,
-                        message: "only Axo's own tools ask as a tool; ask as the agent",
+                let (questions, host) = (Arc::clone(&questions), Arc::clone(&host));
+                async move {
+                    // Anyone may ask as the agent; only axod's own tools ask as a tool.
+                    if request.asked_by != Asker::Agent {
+                        Only {
+                            caller: Caller::Signed(Signer::ThisBinary),
+                            code: NOT_A_TOOL,
+                            message: "only Axo's own tools ask as a tool; ask as the agent",
+                        }
+                        .admit(method::ELICITATION_REQUEST)?;
                     }
-                    .admit(method::ELICITATION_REQUEST)?;
+                    questions
+                        .request(host.as_ref(), request, Duration::from_millis(TIMEOUT_MS))
+                        .await
                 }
-                questions.request(host.as_ref(), request, Duration::from_millis(TIMEOUT_MS))
             },
         );
         let listing = Arc::clone(&self.questions);
@@ -492,17 +509,9 @@ impl Extension for QuestionsExtension {
                         reply,
                     )
                     .map(|()| Resolved { resolved: true })
-                    .map_err(|(code, message)| server_error(code, &message))
+                    .map_err(axo_ipc::rpc_error)
             },
         );
-    }
-}
-
-fn server_error(code: i64, message: &str) -> RpcError {
-    RpcError {
-        code: ErrorCode::ServerError(code),
-        message: message.to_owned(),
-        data: None,
     }
 }
 
@@ -558,12 +567,12 @@ mod tests {
         Arc::new((Questions::default(), Host::default()))
     }
 
-    fn first_pending(questions: &Questions) -> String {
+    async fn first_pending(questions: &Questions) -> String {
         loop {
             if let Some(pending) = questions.pending().first() {
                 break pending.id.clone();
             }
-            std::thread::sleep(Duration::from_millis(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -583,7 +592,7 @@ mod tests {
     #[test]
     fn the_first_answer_wins_and_later_ones_find_nothing() {
         let elicitations = Elicitations::default();
-        let (answer, _waker) = elicitations.open(elicitation("a")).unwrap().unwrap();
+        let mut answer = elicitations.open(elicitation("a")).unwrap().unwrap();
         assert_eq!(elicitations.pending().len(), 1);
         assert!(
             elicitations
@@ -597,18 +606,17 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let Ok(Wake::Settled(settled)) = answer.try_recv() else {
+        let Ok(settled) = answer.try_recv() else {
             panic!("the first answer wakes the asker");
         };
         assert_eq!(settled.action, ElicitationAction::Decline);
-        assert!(answer.try_recv().is_err());
         assert!(elicitations.pending().is_empty());
     }
 
     /// An accepted form's values reach the asker only when they open with this Mac's key, for
     /// that request and address, one per field; a bad answer leaves the question waiting.
-    #[test]
-    fn a_form_s_values_open_only_for_its_request_and_address() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_form_s_values_open_only_for_its_request_and_address() {
         use axo_protocol::elicitation::{InputField, InputFieldKind, Sealed};
         let shared = asking();
         let (questions, host) = (&shared.0, &shared.1);
@@ -626,17 +634,20 @@ mod tests {
             key: key.clone(),
         };
         let asking = Arc::clone(&shared);
-        let asked = std::thread::spawn(move || {
-            asking.0.ask_with(
-                &asking.1,
-                SessionId::from_u128(9),
-                "Fill Password in Safari.",
-                Asker::ComputerUse,
-                Some(input),
-                Duration::from_secs(10),
-            )
+        let asked = tokio::spawn(async move {
+            asking
+                .0
+                .ask_with(
+                    &asking.1,
+                    SessionId::from_u128(9),
+                    "Fill Password in Safari.",
+                    Asker::ComputerUse,
+                    Some(input),
+                    Duration::from_secs(10),
+                )
+                .await
         });
-        let id = first_pending(questions);
+        let id = first_pending(questions).await;
         let sealed = |request: &str, origin: &str, plaintext: &str| {
             let (enc, ciphertext) = axo_seal::seal(
                 &key,
@@ -647,7 +658,7 @@ mod tests {
             Reply::Sealed(Sealed { enc, ciphertext })
         };
         let good = r#"{"values":{"f0":"hunter2"}}"#;
-        let code = |result: Result<(), (i64, String)>| result.unwrap_err().0;
+        let code = |result: Result<(), MethodError>| result.unwrap_err().code;
         assert_eq!(
             code(questions.resolve(host, &id, ElicitationAnswer::Accept, Reply::Bare)),
             BAD_INPUT
@@ -687,9 +698,9 @@ mod tests {
                 sealed(&id, "https://github.com", good),
             )
             .unwrap();
-        let (outcome, values) = asked.join().unwrap().unwrap();
-        assert_eq!(outcome.action, ElicitationAction::Accept);
-        assert_eq!(values.unwrap()["f0"].as_str(), "hunter2");
+        let answer = asked.await.unwrap().unwrap();
+        assert_eq!(answer.outcome.action, ElicitationAction::Accept);
+        assert_eq!(answer.values.unwrap()["f0"].as_str(), "hunter2");
         let events = host.events.lock().unwrap();
         assert!(
             matches!(
@@ -708,36 +719,145 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_yes_or_no_carries_no_values() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_yes_or_no_carries_no_values() {
         let shared = asking();
         let (questions, host) = (&shared.0, &shared.1);
         let asking = Arc::clone(&shared);
-        let asked = std::thread::spawn(move || {
-            asking.0.ask(
-                &asking.1,
-                SessionId::from_u128(9),
-                "Go?",
-                Asker::Agent,
-                Duration::from_secs(10),
-            )
+        let asked = tokio::spawn(async move {
+            asking
+                .0
+                .ask(
+                    &asking.1,
+                    SessionId::from_u128(9),
+                    "Go?",
+                    Asker::Agent,
+                    Duration::from_secs(10),
+                )
+                .await
         });
-        let id = first_pending(questions);
+        let id = first_pending(questions).await;
         let values = Reply::Values([("f0".to_owned(), "x".to_owned())].into());
         assert_eq!(
             questions
                 .resolve(host, &id, ElicitationAnswer::Accept, values)
                 .unwrap_err()
-                .0,
+                .code,
             BAD_INPUT
         );
         questions
             .resolve(host, &id, ElicitationAnswer::Decline, Reply::Bare)
             .unwrap();
         assert_eq!(
-            asked.join().unwrap().unwrap().action,
+            asked.await.unwrap().unwrap().action,
             ElicitationAction::Decline
         );
+    }
+
+    /// Waiting for the person holds no thread: many questions at once add none.
+    #[tokio::test(flavor = "current_thread")]
+    async fn waiting_questions_hold_no_thread() {
+        let shared = asking();
+        let mut asked = Vec::new();
+        for _ in 0..MAX_PENDING {
+            let asking = Arc::clone(&shared);
+            asked.push(tokio::spawn(async move {
+                asking
+                    .0
+                    .ask(
+                        &asking.1,
+                        SessionId::from_u128(9),
+                        "Go?",
+                        Asker::Agent,
+                        Duration::from_secs(30),
+                    )
+                    .await
+            }));
+        }
+        // One thread runs this test and every question: they all wait on it at once.
+        while shared.0.pending().len() < MAX_PENDING {
+            tokio::task::yield_now().await;
+        }
+        for elicitation in shared.0.pending() {
+            shared
+                .0
+                .resolve(
+                    &shared.1,
+                    &elicitation.id,
+                    ElicitationAnswer::Decline,
+                    Reply::Bare,
+                )
+                .unwrap();
+        }
+        for question in asked {
+            assert_eq!(
+                question.await.unwrap().unwrap().action,
+                ElicitationAction::Decline
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_the_waiting_future_withdraws_the_question() {
+        let shared = asking();
+        let asking = Arc::clone(&shared);
+        let asked = tokio::spawn(async move {
+            asking
+                .0
+                .ask(
+                    &asking.1,
+                    SessionId::from_u128(9),
+                    "Go?",
+                    Asker::Agent,
+                    Duration::from_secs(30),
+                )
+                .await
+        });
+        let id = first_pending(&shared.0).await;
+        asked.abort();
+        assert!(asked.await.unwrap_err().is_cancelled());
+        assert!(shared.0.pending().is_empty());
+        let events = shared.1.events.lock().unwrap();
+        let resolved = events.iter().filter(|event| matches!(event,
+            Event::ElicitationResolved { id: resolved_id, action: ElicitationAction::Cancel, .. } if resolved_id == &id
+        )).count();
+        assert_eq!(resolved, 1);
+    }
+
+    /// An asker that gives up withdraws its question at once, and every client is told.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_asker_that_gives_up_withdraws_its_question_at_once() {
+        let shared = asking();
+        let cancellation = axo_ipc::cancel::Cancellation::default();
+        let asking = Arc::clone(&shared);
+        let asked = tokio::spawn(axo_ipc::cancel::scope(cancellation.clone(), async move {
+            asking
+                .0
+                .ask(
+                    &asking.1,
+                    SessionId::from_u128(9),
+                    "Go?",
+                    Asker::Agent,
+                    Duration::from_secs(30),
+                )
+                .await
+        }));
+        first_pending(&shared.0).await;
+        cancellation.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(1), asked)
+            .await
+            .expect("withdrawn at once")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.action, ElicitationAction::Cancel);
+        assert!(shared.0.pending().is_empty());
+        assert!(matches!(
+            shared.1.events.lock().unwrap().last(),
+            Some(Event::ElicitationResolved {
+                action: ElicitationAction::Cancel,
+                ..
+            })
+        ));
     }
 
     #[test]

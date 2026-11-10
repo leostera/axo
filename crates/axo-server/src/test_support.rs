@@ -163,7 +163,6 @@ async fn open(directory: &Path) -> Arc<Core> {
         directory,
         &directory.join("sessions"),
         &directory.join("axod.sock"),
-        tokio::runtime::Handle::current(),
     )
     .unwrap();
     crate::sessions::restore(&core, previous).await.unwrap();

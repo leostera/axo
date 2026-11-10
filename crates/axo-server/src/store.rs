@@ -9,16 +9,13 @@ use axo_store::Connection;
 #[derive(Clone)]
 pub(crate) struct Store {
     connection: tokio_rusqlite::Connection,
-    runtime: tokio::runtime::Handle,
 }
 
 impl Store {
-    /// Takes over a connection already opened and migrated. `runtime` is where synchronous
-    /// callers' calls are carried.
-    pub(crate) fn new(connection: Connection, runtime: tokio::runtime::Handle) -> Self {
+    /// Takes over a connection already opened and migrated.
+    pub(crate) fn new(connection: Connection) -> Self {
         Self {
             connection: tokio_rusqlite::Connection::from(connection),
-            runtime,
         }
     }
 
@@ -35,15 +32,5 @@ impl Store {
                 tokio_rusqlite::Error::Error(error) => error,
                 other => io::Error::other(other.to_string()),
             })
-    }
-
-    /// [`Self::call`] for a caller outside the runtime's tasks: the relay's synchronous calls,
-    /// which run on its blocking pool. Never call it from a task.
-    pub(crate) fn call_blocking<R, F>(&self, call: F) -> io::Result<R>
-    where
-        F: FnOnce(&mut Connection) -> io::Result<R> + Send + 'static,
-        R: Send + 'static,
-    {
-        self.runtime.block_on(self.call(call))
     }
 }

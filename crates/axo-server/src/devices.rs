@@ -6,6 +6,7 @@
 //! Cloudflare Access guards).
 
 use axo_protocol::elicitation::{BAD_SIGNATURE, DeviceProof, ElicitationAnswer, Sealed};
+use axo_protocol::rpc::MethodError;
 
 /// A remote answer counts only with its device's signature over that answer.
 pub(crate) fn check_answer(
@@ -13,11 +14,11 @@ pub(crate) fn check_answer(
     answer: ElicitationAnswer,
     sealed: Option<&Sealed>,
     device: Option<&DeviceProof>,
-) -> Result<(), (i64, String)> {
+) -> Result<(), MethodError> {
     let Some(proof) = device else {
-        return Err((
+        return Err(MethodError::new(
             BAD_SIGNATURE,
-            "Answers must be signed by your device: update Axo there.".into(),
+            "Answers must be signed by your device: update Axo there.",
         ));
     };
     let action = match answer {
@@ -33,9 +34,9 @@ pub(crate) fn check_answer(
         return Ok(());
     }
     log::warn!("event=devices.answer_refused reason=signature");
-    Err((
+    Err(MethodError::new(
         BAD_SIGNATURE,
-        "The answer's signature is not for this answer.".into(),
+        "The answer's signature is not for this answer.",
     ))
 }
 
@@ -67,7 +68,7 @@ mod tests {
         assert_eq!(
             check_answer("r2", ElicitationAnswer::Decline, None, Some(&no))
                 .unwrap_err()
-                .0,
+                .code,
             BAD_SIGNATURE
         );
         assert!(check_answer("r1", ElicitationAnswer::Accept, None, Some(&no)).is_err());

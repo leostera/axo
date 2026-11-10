@@ -4,12 +4,13 @@
 //! the [`HostCredentialStore`]. A host connects to the relay if and only if it is linked.
 
 use std::io;
+use std::sync::Arc;
 
 use axo_protocol::HostKind;
 
 use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
-use crate::host::RelayHost;
+use crate::host::{HostFuture, HostIdentity};
 use crate::pairing::{self, is_uuid};
 
 /// The account this host belongs to, and the credential it connects with.
@@ -102,8 +103,8 @@ impl HostLink {
 
 /// Where axod persists the link. Implemented over axod's database.
 pub trait HostLinkStore: Send + Sync {
-    fn load_link(&self) -> io::Result<HostLink>;
-    fn save_link(&self, link: &HostLink) -> io::Result<()>;
+    fn load_link(&self) -> HostFuture<'_, io::Result<HostLink>>;
+    fn save_link(&self, link: HostLink) -> HostFuture<'_, io::Result<()>>;
 }
 
 /// Redeems a pairing code and links this host to the account that created it. Returns the
@@ -112,56 +113,96 @@ pub trait HostLinkStore: Send + Sync {
 /// The credential is created and the pending redemption saved before anything is sent, so a
 /// crash mid-redemption retries with the same identity. An existing link keeps working until
 /// the new one is confirmed, and its credential is deleted only after.
-pub fn link_host(
+pub async fn link_host(
     endpoint: &RelayEndpoint,
     code: &str,
-    host: &dyn RelayHost,
+    identity: &HostIdentity,
     links: &dyn HostLinkStore,
-    credentials: &dyn HostCredentialStore,
+    credentials: Arc<dyn HostCredentialStore>,
 ) -> io::Result<String> {
     pairing::validate_code(code)?;
-    let mut link = links.load_link()?;
+    let mut link = links.load_link().await?;
     let pending = match link.pending.clone() {
         Some(pending) => pending,
         None => {
+            let keychain = Arc::clone(&credentials);
             let pending = PendingRedemption {
-                credential_id: pairing::prepare_credential(credentials)?,
-                host_generation: host.host_generation().to_owned(),
+                credential_id: crate::blocking(move || pairing::prepare_credential(&*keychain))
+                    .await?,
+                host_generation: identity.host_generation.clone(),
             };
             link.pending = Some(pending.clone());
-            if let Err(error) = links.save_link(&link) {
-                let _ = credentials.delete(&pending.credential_id);
+            if let Err(error) = links.save_link(link.clone()).await {
+                forget_credential(&credentials, pending.credential_id).await;
                 return Err(error);
             }
             pending
         }
     };
 
-    let label = host_label();
-    let linked = pairing::redeem(
-        pairing::RedemptionRequest {
-            endpoint,
-            code,
-            host_id: host.host_id(),
-            host_generation: &pending.host_generation,
-            credential_id: &pending.credential_id,
-            label: &label,
-            host_kind: HostKind::MacOS,
-        },
-        credentials,
-    )?;
+    let redemption = Redemption {
+        endpoint: endpoint.clone(),
+        code: code.to_owned(),
+        host_id: identity.host_id.clone(),
+        pending: pending.clone(),
+    };
+    let keychain = Arc::clone(&credentials);
+    let redeemed = crate::blocking(move || redemption.redeem(&*keychain)).await?;
 
     let previous = link.account.replace(AccountLink {
-        account_id: linked.account_id,
+        account_id: redeemed.account_id,
         credential_id: pending.credential_id,
     });
     link.pending = None;
-    links.save_link(&link)?;
+    links.save_link(link).await?;
     // A redemption always uses a fresh credential, so the previous one is now unused.
     if let Some(previous) = previous {
-        let _ = credentials.delete(&previous.credential_id);
+        forget_credential(&credentials, previous.credential_id).await;
     }
-    Ok(label)
+    Ok(redeemed.label)
+}
+
+/// One pairing code's redemption, with what it needs to run off the runtime: the Keychain and
+/// the redeeming request block.
+struct Redemption {
+    endpoint: RelayEndpoint,
+    code: String,
+    host_id: String,
+    pending: PendingRedemption,
+}
+
+/// A redeemed code: the account this Mac now belongs to, and the label it registered with.
+struct Redeemed {
+    account_id: String,
+    label: String,
+}
+
+impl Redemption {
+    fn redeem(self, credentials: &dyn HostCredentialStore) -> io::Result<Redeemed> {
+        let label = host_label();
+        let linked = pairing::redeem(
+            pairing::RedemptionRequest {
+                endpoint: &self.endpoint,
+                code: &self.code,
+                host_id: &self.host_id,
+                host_generation: &self.pending.host_generation,
+                credential_id: &self.pending.credential_id,
+                label: &label,
+                host_kind: HostKind::MacOS,
+            },
+            credentials,
+        )?;
+        Ok(Redeemed {
+            account_id: linked.account_id,
+            label,
+        })
+    }
+}
+
+/// Deletes a credential nothing uses; one that cannot be deleted is left behind, unused.
+async fn forget_credential(credentials: &Arc<dyn HostCredentialStore>, credential_id: String) {
+    let keychain = Arc::clone(credentials);
+    let _ = crate::blocking(move || keychain.delete(&credential_id)).await;
 }
 
 /// How this host names itself to the account: its Computer Name, or else its hostname. A person
@@ -209,6 +250,7 @@ fn network_host_name() -> String {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::{HostLink, HostLinkStore};
+    use crate::host::{HostFuture, HostIdentity};
     use std::io;
     use std::sync::Mutex;
 
@@ -216,84 +258,22 @@ pub(crate) mod testing {
     pub struct MemoryLinkStore(pub Mutex<HostLink>);
 
     impl HostLinkStore for MemoryLinkStore {
-        fn load_link(&self) -> io::Result<HostLink> {
-            Ok(self.0.lock().unwrap().clone())
+        fn load_link(&self) -> HostFuture<'_, io::Result<HostLink>> {
+            Box::pin(std::future::ready(Ok(self.0.lock().unwrap().clone())))
         }
 
-        fn save_link(&self, link: &HostLink) -> io::Result<()> {
-            *self.0.lock().unwrap() = link.clone();
-            Ok(())
+        fn save_link(&self, link: HostLink) -> HostFuture<'_, io::Result<()>> {
+            *self.0.lock().unwrap() = link;
+            Box::pin(std::future::ready(Ok(())))
         }
     }
 
     pub const HOST_GENERATION: &str = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
 
-    /// Just enough of a host for code that reads only its identity; any other call is a bug.
-    pub struct IdentityOnlyHost;
-
-    impl crate::RelayHost for IdentityOnlyHost {
-        fn host_id(&self) -> &str {
-            "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe"
-        }
-        fn host_generation(&self) -> &str {
-            HOST_GENERATION
-        }
-        fn publish_relay_status(&self, _: &axo_protocol::RelayStatus) {}
-        fn sync_catalog(&self) -> std::io::Result<Vec<crate::sync::SyncSession>> {
-            unreachable!()
-        }
-        fn sync_states(&self) -> std::io::Result<Vec<crate::sync::StoredSyncState>> {
-            unreachable!()
-        }
-        fn store_sync_cursor(
-            &self,
-            _: axo_protocol::SessionId,
-            _: u64,
-            _: &str,
-        ) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn store_sync_metadata(
-            &self,
-            _: axo_protocol::SessionId,
-            _: &str,
-            _: u64,
-        ) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn evict_transcript(
-            &self,
-            _: axo_protocol::SessionId,
-            _: u64,
-            _: &str,
-            _: u64,
-        ) -> std::io::Result<bool> {
-            unreachable!()
-        }
-        fn next_sync_round(&self) -> std::io::Result<u64> {
-            unreachable!()
-        }
-        fn subscribe_remote_events(&self) -> std::io::Result<String> {
-            unreachable!()
-        }
-        fn next_remote_events<'a>(
-            &'a self,
-            _: &'a str,
-            _: std::time::Duration,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = std::io::Result<Vec<axo_protocol::Event>>>
-                    + Send
-                    + 'a,
-            >,
-        > {
-            unreachable!()
-        }
-        fn unsubscribe_remote_events(&self, _: &str) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn answer_remote(&self, _: serde_json::Value) -> Option<serde_json::Value> {
-            unreachable!()
+    pub fn identity() -> HostIdentity {
+        HostIdentity {
+            host_id: "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe".into(),
+            host_generation: HOST_GENERATION.into(),
         }
     }
 }
@@ -348,36 +328,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_failed_redemption_keeps_the_existing_link_and_retries_with_the_same_identity() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_redemption_keeps_the_existing_link_and_retries_with_the_same_identity() {
         let unreachable_relay = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             drop(listener);
             crate::RelayEndpoint::parse(&format!("http://127.0.0.1:{port}")).unwrap()
         };
-        let credentials = crate::credential::testing::MemoryCredentialStore::default();
-        crate::credential::HostCredentialStore::store(&credentials, CREDENTIAL, &[1; 32]).unwrap();
+        let credentials =
+            std::sync::Arc::new(crate::credential::testing::MemoryCredentialStore::default());
+        crate::credential::HostCredentialStore::store(&*credentials, CREDENTIAL, &[1; 32]).unwrap();
         let links = MemoryLinkStore(std::sync::Mutex::new(linked(ACCOUNT, CREDENTIAL)));
+        let identity = super::testing::identity();
 
-        let link = |code: &str| {
+        let link = |code: &'static str| {
             super::link_host(
                 &unreachable_relay,
                 code,
-                &super::testing::IdentityOnlyHost,
+                &identity,
                 &links,
-                &credentials,
+                credentials.clone(),
             )
         };
-        assert!(link("not-a-code").is_err());
+        assert!(link("not-a-code").await.is_err());
         assert_eq!(
-            links.load_link().unwrap(),
+            links.load_link().await.unwrap(),
             linked(ACCOUNT, CREDENTIAL),
             "invalid codes change nothing"
         );
 
-        assert!(link("ABCD-1234").is_err());
-        let after_first = links.load_link().unwrap();
+        assert!(link("ABCD-1234").await.is_err());
+        let after_first = links.load_link().await.unwrap();
         assert_eq!(
             after_first.account(),
             linked(ACCOUNT, CREDENTIAL).account(),
@@ -389,16 +371,16 @@ mod tests {
             .clone();
         assert_eq!(pending.host_generation(), GENERATION);
         assert!(
-            crate::credential::HostCredentialStore::load(&credentials, pending.credential_id())
+            crate::credential::HostCredentialStore::load(&*credentials, pending.credential_id())
                 .is_ok()
         );
 
-        assert!(link("ABCD-1234").is_err());
+        assert!(link("ABCD-1234").await.is_err());
         assert_eq!(
-            links.load_link().unwrap().pending(),
+            links.load_link().await.unwrap().pending(),
             Some(&pending),
             "a retry reuses the same credential"
         );
-        assert!(crate::credential::HostCredentialStore::load(&credentials, CREDENTIAL).is_ok());
+        assert!(crate::credential::HostCredentialStore::load(&*credentials, CREDENTIAL).is_ok());
     }
 }

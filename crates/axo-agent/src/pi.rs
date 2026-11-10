@@ -12,4 +12,4 @@ mod transcript_file;
 
 pub use launch::{PiLaunch, PiProcess, RemoteViewLaunch, STOP_GRACE, spawn, spawn_remote_view};
 pub use socket::{BridgeSocketPath, MAX_SOCKET_PATH_BYTES, SocketCleanup};
-pub use transcript_file::{TranscriptFile, transcript_chain};
+pub use transcript_file::{LineRange, LineSpan, TranscriptFile, transcript_chain};

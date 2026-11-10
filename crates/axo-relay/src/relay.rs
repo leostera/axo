@@ -51,7 +51,7 @@ use crate::host::RelayHost;
 use crate::link::{AccountLink, HostLinkStore, host_label};
 use crate::outbound::{Priority, RelayChannel};
 use crate::peers::{PeersDependencies, PeersWorker};
-use crate::sync::{SyncWaker, SyncWorker};
+use crate::sync::{SyncStore, SyncWaker, SyncWorker};
 
 /// How often axod renews its lease on the HostDO: `LIMITS.heartbeatMs` (RFD0037).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
@@ -75,6 +75,8 @@ pub struct RelayWorker {
 /// What the relay worker needs from axod.
 pub struct RelayDependencies {
     pub host: Arc<dyn RelayHost>,
+    /// What the uploader reads and keeps (RFD0018).
+    pub sync: Arc<dyn SyncStore>,
     pub endpoint: RelayEndpoint,
     pub links: Arc<dyn HostLinkStore>,
     pub credentials: Arc<dyn HostCredentialStore>,
@@ -109,7 +111,8 @@ impl RelayWorker {
         let channel = RelayChannel::new();
         let waker = SyncWaker::default();
         let sync = SyncWorker::start(
-            Arc::clone(&dependencies.host),
+            Arc::clone(&dependencies.sync),
+            dependencies.host.identity().clone(),
             Arc::clone(&channel),
             waker.clone(),
             runtime.clone(),
@@ -118,7 +121,7 @@ impl RelayWorker {
         let peers = match dependencies.peers.clone() {
             Some(paths) => Some(PeersWorker::start(
                 PeersDependencies {
-                    host_id: dependencies.host.host_id().to_owned(),
+                    host_id: dependencies.host.identity().host_id.clone(),
                     endpoint: dependencies.endpoint.clone(),
                     links: Arc::clone(&dependencies.links),
                     credentials: Arc::clone(&dependencies.credentials),
@@ -181,14 +184,6 @@ impl Drop for RelayWorker {
     }
 }
 
-/// Runs `work` on the blocking pool: the Keychain, the host's locks and its database.
-async fn blocking<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
-    match tokio::task::spawn_blocking(work).await {
-        Ok(result) => result,
-        Err(error) => std::panic::resume_unwind(error.into_panic()),
-    }
-}
-
 async fn run_reconnect_loop(
     dependencies: Arc<RelayDependencies>,
     stop: Stop,
@@ -198,8 +193,7 @@ async fn run_reconnect_loop(
 ) {
     let mut retry_delay = Duration::from_secs(1);
     while !stop.is_stopped() {
-        let links = Arc::clone(&dependencies.links);
-        let link = match blocking(move || links.load_link()).await {
+        let link = match dependencies.links.load_link().await {
             Ok(link) => link,
             Err(error) => {
                 control.mark_disconnected(&error);
@@ -272,17 +266,16 @@ async fn run_connection(
     waker: &SyncWaker,
 ) -> io::Result<()> {
     let sessions = &dependencies.host;
-    let host_id = sessions.host_id().to_owned();
-    let host_generation = sessions.host_generation().to_owned();
+    let identity = sessions.identity().clone();
     let request = {
         let (endpoint, account, host_id, credentials) = (
             dependencies.endpoint.clone(),
             account.clone(),
-            host_id.clone(),
+            identity.host_id.clone(),
             Arc::clone(&dependencies.credentials),
         );
         // The credential comes from the Keychain, which may take its time.
-        blocking(move || {
+        crate::blocking(move || {
             relay_websocket_request(&endpoint, &account, &host_id, credentials.as_ref())
         })
         .await?
@@ -312,21 +305,15 @@ async fn run_connection(
         sessions,
     )
     .await?;
-    let subscription_id = {
-        let sessions = Arc::clone(sessions);
-        blocking(move || sessions.subscribe_remote_events()).await?
-    };
-    let unsubscribe = |subscription_id: String| {
-        let sessions = Arc::clone(sessions);
-        blocking(move || {
-            let _ = sessions.unsubscribe_remote_events(&subscription_id);
-        })
+    let subscription_id = sessions.subscribe_remote_events()?;
+    let unsubscribe = |subscription_id: &str| {
+        let _ = sessions.unsubscribe_remote_events(subscription_id);
     };
     let label = host_label();
     let registration = HostRegistration {
         protocol_version: axo_protocol::rpc::PROTOCOL_VERSION,
-        host_id: &host_id,
-        host_generation: &host_generation,
+        host_id: &identity.host_id,
+        host_generation: &identity.host_generation,
         label: &label,
         host_kind: HostKind::MacOS,
         capabilities: HOST_CAPABILITIES,
@@ -343,21 +330,17 @@ async fn run_connection(
     )
     .await
     {
-        unsubscribe(subscription_id).await;
+        unsubscribe(&subscription_id);
         return Err(error);
     }
     control.mark_connected();
 
-    // Threads queue onto this socket only while it lives (RFD0016, Transport).
-    let (epoch, outgoing, replies) = channel.attach();
+    // Tasks queue onto this socket only while it lives (RFD0016, Transport).
+    let socket = channel.attach();
     // A new socket needs a new handshake: the uploader starts it now.
     waker.wake();
     // What agents are asking the person goes up again on every socket (RFD0029).
-    let pending = {
-        let sessions = Arc::clone(sessions);
-        blocking(move || sessions.pending_elicitations()).await
-    };
-    for elicitation in pending {
+    for elicitation in sessions.pending_elicitations() {
         let _ = channel.notify(
             ELICITATION_REQUESTED,
             serde_json::to_value(&elicitation).expect("an elicitation serializes"),
@@ -371,7 +354,7 @@ async fn run_connection(
             .map(|directory| crate::assets::AssetSource {
                 endpoint: dependencies.endpoint.clone(),
                 account: account.clone(),
-                host_id: host_id.clone(),
+                host_id: identity.host_id.clone(),
                 credentials: Arc::clone(&dependencies.credentials),
                 directory: directory.clone(),
             });
@@ -379,15 +362,14 @@ async fn run_connection(
     sessions.set_asset_source(assets.clone());
     let context = Arc::new(RelaySessionContext {
         sessions: Arc::clone(sessions),
-        host_id,
-        host_generation,
+        identity,
         subscription_id: subscription_id.clone(),
         stop: stop.clone(),
         control: Arc::clone(control),
         channel: Arc::clone(channel),
-        replies,
+        replies: socket.replies,
         waker: waker.clone(),
-        socket_id: format!("axod-{}-{epoch}", std::process::id()),
+        socket_id: format!("axod-{}-{}", std::process::id(), socket.epoch),
         account_id: account.account_id().to_owned(),
         assets,
     });
@@ -400,14 +382,14 @@ async fn run_connection(
         &mut reassembler,
         &mut request_number,
         &context,
-        outgoing,
+        socket.outgoing,
         requests,
     )
     .await;
     let _ = answering.await;
-    channel.detach(epoch);
+    channel.detach(socket.epoch);
     sessions.set_asset_source(None);
-    unsubscribe(subscription_id).await;
+    unsubscribe(&subscription_id);
     result
 }
 

@@ -16,11 +16,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axo_ipc::peer::Caller;
 use axo_ipc::{Extension, Only, TypedMethods};
-use axo_protocol::rpc::{self, PromptDelivery};
+use axo_protocol::rpc::error_code::{
+    BUSY, INVALID_PARAMS, NOT_FOUND, REFUSED, STALE_HOST, TIMED_OUT,
+};
+use axo_protocol::rpc::{self, MethodError, PromptDelivery};
 use axo_protocol::{Layout, LayoutNode, RemoteSessionSnapshot, SessionId, SessionRecord, ShellId};
 use axo_pty::WindowSize;
 use axo_relay::{ClientDelivery, CommandId, ModelChoice, PiKey, StopTarget, TurnId};
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+use jsonrpc_core::IoHandler;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -55,7 +58,6 @@ impl Remote {
 }
 
 /// A call's failure as the account sees it: a code and a fixed message.
-type Refusal = (i64, &'static str);
 
 /// Registers `name` to parse its parameters as `P`, check they are for this Mac, and run `call`.
 fn add<P, R, F, Fut>(handler: &mut IoHandler, core: &Arc<Core>, name: &'static str, call: F)
@@ -63,7 +65,7 @@ where
     P: for<'de> Deserialize<'de> + Targeted + Send + 'static,
     R: Serialize + 'static,
     F: Fn(Arc<Core>, P) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Refusal>> + Send + 'static,
+    Fut: Future<Output = Result<R, MethodError>> + Send + 'static,
 {
     let core = Arc::clone(core);
     let call = Arc::new(call);
@@ -71,35 +73,40 @@ where
         let core = Arc::clone(&core);
         let call = Arc::clone(&call);
         async move {
-            let request: P = serde_json::from_value(params).map_err(|_| refusal(INVALID))?;
+            let request: P =
+                serde_json::from_value(params).map_err(|_| axo_ipc::rpc_error(invalid()))?;
             let target = request.target();
             if target.host_id != core.host_id || target.host_generation != core.host_generation {
-                return Err(refusal((-32002, "Stale host")));
+                return Err(axo_ipc::rpc_error(MethodError::new(
+                    STALE_HOST,
+                    "Stale host",
+                )));
             }
-            call(core, request).await.map_err(refusal)
+            call(core, request).await.map_err(axo_ipc::rpc_error)
         }
     });
 }
 
-const INVALID: Refusal = (-32602, "Invalid params");
+/// Pi has no credentials for the model's provider.
+const NOT_SIGNED_IN: i64 = -32007;
 
-fn refusal((code, message): Refusal) -> RpcError {
-    RpcError {
-        code: ErrorCode::from(code),
-        message: message.to_owned(),
-        data: None,
-    }
+fn invalid() -> MethodError {
+    MethodError::new(INVALID_PARAMS, "Invalid params")
 }
 
 /// How the account is told an operation failed; the details stay on this Mac.
-fn failed(error: io::Error) -> Refusal {
+fn failed(error: io::Error) -> MethodError {
     match error.kind() {
-        io::ErrorKind::InvalidInput => INVALID,
-        io::ErrorKind::NotFound => (-32004, "Resource not found"),
-        io::ErrorKind::AddrInUse | io::ErrorKind::WouldBlock => (-32006, "Resource busy"),
-        io::ErrorKind::PermissionDenied => (-32007, "Not signed in to that model's provider"),
-        io::ErrorKind::TimedOut => (-32008, "Pi is still starting; try again"),
-        _ => (-32003, "Operation failed"),
+        io::ErrorKind::InvalidInput => invalid(),
+        io::ErrorKind::NotFound => MethodError::new(NOT_FOUND, "Resource not found"),
+        io::ErrorKind::AddrInUse | io::ErrorKind::WouldBlock => {
+            MethodError::new(BUSY, "Resource busy")
+        }
+        io::ErrorKind::PermissionDenied => {
+            MethodError::new(NOT_SIGNED_IN, "Not signed in to that model's provider")
+        }
+        io::ErrorKind::TimedOut => MethodError::new(TIMED_OUT, "Pi is still starting; try again"),
+        _ => MethodError::new(REFUSED, "Operation failed"),
     }
 }
 
@@ -195,7 +202,7 @@ impl Extension for Remote {
             core,
             "axo.remote.session.layout.set",
             |core, request: LayoutSetParams| async move {
-                let layout = Layout::try_from(request.layout).map_err(|_| INVALID)?;
+                let layout = Layout::try_from(request.layout).map_err(|_| invalid())?;
                 ops::set_layout(&core, request.session_id, layout)
                     .await
                     .map_err(failed)?;
@@ -270,7 +277,7 @@ impl Extension for Remote {
             "axo.remote.session.model.set",
             |core, request: ModelSetParams| async move {
                 if request.model.is_none() && request.thinking_level.is_none() {
-                    return Err(INVALID);
+                    return Err(invalid());
                 }
                 ops::set_model(
                     &core,
@@ -305,7 +312,7 @@ impl Extension for Remote {
             "axo.remote.session.stop",
             |core, request: StopParams| async move {
                 let stop = StopTarget::new(request.turn_id, request.seen, request.command_ids)
-                    .map_err(|_| INVALID)?;
+                    .map_err(|_| invalid())?;
                 let stopped = ops::stop_turn(&core, request.session_id, stop)
                     .await
                     .map_err(failed)?;
@@ -333,7 +340,7 @@ impl Extension for Remote {
             core,
             "axo.remote.terminal.resize",
             |core, request: TerminalResizeParams| async move {
-                let size = WindowSize::new(request.rows, request.columns).ok_or(INVALID)?;
+                let size = WindowSize::new(request.rows, request.columns).ok_or_else(invalid)?;
                 // A client sizing the pane is showing the Session: its Pi starts, at that size.
                 ops::wake(&core, request.session_id, Some(request.shell_id))
                     .await
@@ -357,19 +364,25 @@ async fn prompt(
     core: &Arc<Core>,
     prompts: &AtomicUsize,
     request: PromptParams,
-) -> Result<(), Refusal> {
+) -> Result<(), MethodError> {
     if request.text.len() > MAX_PROMPT_BYTES
         || (request.text.is_empty() && request.attachments.is_empty())
     {
-        return Err(INVALID);
+        return Err(invalid());
     }
     let source = core.assets.get();
     if source.is_none() && !request.attachments.is_empty() {
-        return Err((-32003, "this Mac can't fetch attachments"));
+        return Err(MethodError::new(
+            REFUSED,
+            "this Mac can't fetch attachments",
+        ));
     }
     if prompts.fetch_add(1, Ordering::SeqCst) >= MAX_PROMPTS {
         prompts.fetch_sub(1, Ordering::SeqCst);
-        return Err((-32006, "too many prompts are on their way on this Mac"));
+        return Err(MethodError::new(
+            BUSY,
+            "too many prompts are on their way on this Mac",
+        ));
     }
     let delivered = deliver(core, source, request).await;
     prompts.fetch_sub(1, Ordering::SeqCst);
@@ -380,15 +393,15 @@ async fn deliver(
     core: &Arc<Core>,
     source: Option<axo_relay::assets::AssetSource>,
     request: PromptParams,
-) -> Result<(), Refusal> {
+) -> Result<(), MethodError> {
     let fetched = match source {
         Some(source) if !request.attachments.is_empty() => {
             let attachments = request.attachments.clone();
             tokio::task::spawn_blocking(move || axo_relay::assets::fetch_all(&source, &attachments))
                 .await
-                .map_err(|_| (-32003, "Operation failed"))?
+                .map_err(|_| MethodError::new(REFUSED, "Operation failed"))?
                 .map_err(|error| {
-                    (
+                    MethodError::new(
                         -32010,
                         match error {
                             axo_relay::assets::FetchError::NotFound => {
@@ -413,7 +426,7 @@ async fn deliver(
         None => axo_protocol::new_uuid_v4()
             .ok()
             .and_then(|id| CommandId::try_from(id).ok())
-            .ok_or((-32003, "Operation failed"))?,
+            .ok_or_else(|| MethodError::new(REFUSED, "Operation failed"))?,
     };
     let delivery = match request.delivery {
         ClientDelivery::FollowUp => PromptDelivery::FollowUp,
@@ -562,16 +575,14 @@ mod tests {
         handler
     }
 
-    fn call(handler: &IoHandler, method: &str, params: Value) -> Value {
+    async fn call(handler: &IoHandler, method: &str, params: Value) -> Value {
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        let answer = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(handler.handle_request(&request.to_string()))
-        });
+        let answer = handler.handle_request(&request.to_string()).await;
         serde_json::from_str(&answer.unwrap()).unwrap()
     }
 
-    fn as_account(handler: &IoHandler, method: &str, params: Value) -> Value {
-        axo_ipc::peer::as_relay(|| call(handler, method, params))
+    async fn as_account(handler: &IoHandler, method: &str, params: Value) -> Value {
+        axo_ipc::peer::as_relay(call(handler, method, params)).await
     }
 
     fn target(fixture: &Fixture) -> Value {
@@ -587,12 +598,12 @@ mod tests {
                 // Empty params fail parsing, so nothing runs; "method not found" would mean the
                 // call is not wired.
                 Parity::Call(name) => assert_eq!(
-                    as_account(&handler, name, json!({}))["error"]["code"],
+                    as_account(&handler, name, json!({})).await["error"]["code"],
                     -32602,
                     "{name} is promised but not answered"
                 ),
                 Parity::Planned(name) => assert_eq!(
-                    as_account(&handler, name, json!({}))["error"]["code"],
+                    as_account(&handler, name, json!({})).await["error"]["code"],
                     -32601,
                     "{name} is answered: move it to Remote::Call"
                 ),
@@ -608,19 +619,20 @@ mod tests {
         let params = json!({ "target": target(&fixture) });
 
         // A local program sees no such method, even with a valid call.
-        let local = call(&handler, "axo.remote.session.create", params.clone());
+        let local = call(&handler, "axo.remote.session.create", params.clone()).await;
         assert_eq!(
             local["error"],
             json!({ "code": -32601, "message": "Method not found" })
         );
 
-        let created = as_account(&handler, "axo.remote.session.create", params);
+        let created = as_account(&handler, "axo.remote.session.create", params).await;
         let session = &created["result"]["session"];
         let beside = as_account(
             &handler,
             "axo.remote.session.create",
             json!({ "target": target(&fixture), "like": session["sessionId"] }),
-        );
+        )
+        .await;
         assert_eq!(
             beside["result"]["session"]["folderName"], session["folderName"],
             "{beside}"
@@ -639,7 +651,7 @@ mod tests {
             &handler,
             "axo.remote.session.create",
             json!({ "target": { "hostId": fixture.core.host_id, "hostGeneration": "an-earlier-one" } }),
-        );
+        ).await;
         assert_eq!(
             stale["error"],
             json!({ "code": -32002, "message": "Stale host" })
@@ -655,7 +667,8 @@ mod tests {
             &handler,
             "axo.remote.session.rename",
             json!({ "target": target(&fixture), "sessionId": unknown, "name": "x" }),
-        );
+        )
+        .await;
         assert_eq!(
             renamed["error"],
             json!({ "code": -32004, "message": "Resource not found" })
@@ -664,13 +677,15 @@ mod tests {
             &handler,
             "axo.remote.session.prompt",
             json!({ "target": target(&fixture), "sessionId": unknown, "text": "" }),
-        );
+        )
+        .await;
         assert_eq!(empty["error"]["code"], -32602);
         let model = as_account(
             &handler,
             "axo.remote.session.model.set",
             json!({ "target": target(&fixture), "sessionId": unknown }),
-        );
+        )
+        .await;
         assert_eq!(
             model["error"]["code"], -32602,
             "neither a model nor a level"
