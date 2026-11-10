@@ -1,10 +1,10 @@
 # RFD0021 - Axo: One build, `bazel build //...`
 
 - Feature Name: `axo-bazel-only-build`
-- Status: Implementing (see As built)
+- Status: Implemented (see As built); not built: the Mac visual UI runner's cleanup, and the Feynman specs as a Bazel test
 - Author: leostera
 - Start Date: 2026-11-01
-- Updated: 2026-11-01
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 
 ## Summary
@@ -363,9 +363,13 @@ What the implementation on `feat/bazel-only-build` settled, where it differs fro
 - **Remote access explainer.** `docs/explainers/remote-access` typechecks, tests and builds in Bazel. A `write_source_files` test keeps its committed `index.html` equal to the build. `bazel run //docs/explainers/remote-access:update_index_html` rewrites it.
 - **Retries.** A workspace-writing action that fails leaves a note in `<output_base>/axo_retry/`. `@axo_config` watches the note and adds it to `install_state.txt`, so the next build reruns the action instead of keeping the failure. Success removes the note.
 - **`.bazelrc.local` is gone**, along with its `try-import`. The nested Bazels read `.bazelrc`, so a stale machine-local file broke them (a JVM truststore that no longer existed). The corporate CA belongs in `~/.bazelrc`, which every Bazel reads.
-- **Not done yet:**
+- **The report** is `bazel-bin/report.txt` (`//:report`), not `axo-build-report.txt`.
+- **The config schema** is checked in `bazel/config/extension.bzl` itself (unknown keys, missing keys, wrong types, positive build numbers, a `major.minor` version); there is no `schemas/config.schema.json`. `config.json` no longer has `bundle_ids.launch_agent`, and its version is `major.minor` (`0.49` on 2026-11-10); the example above is as proposed.
+- **Package checks** are one test, `//apple/AxoMac:package_test` (`bazel/apple/package_test.sh`), not a suite named `package_tests`.
+- **Not done yet** (checked 2026-11-10):
   - `run_visual_ui_test.sh` still edits the generated scheme with Python, runs `npm` and inherits the environment. It cannot be rewritten and tested while Axo is open.
   - The Feynman specs (`pnpm exec feynman check`) are not a Bazel test.
+  - A comment in `sites/axo.leostera.dev/cloudflare.config.ts` still names the deleted `scripts/publish-mac.sh`; `//:publish` is what uploads.
 
 ## Future possibilities
 

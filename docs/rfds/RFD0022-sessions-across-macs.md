@@ -1,13 +1,32 @@
 # RFD0022 - Axo: Sessions across Macs
 
 - Feature Name: `axo-sessions-across-macs`
-- Status: Draft
+- Status: Partially implemented: rollout steps 1 and 2 as written, step 3 as RFD0024 amended it; not built: step 4, Continue and the handoff (see Current state)
 - Author: leostera
 - Start Date: 2026-11-01
-- Updated: 2026-11-01 (the peers socket, as built)
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md), [RFD0018](RFD0018-session-sync-and-client-delivery.md)
-- Amended By: [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md), [RFD0032](RFD0032-push-delivery.md)
+- Amended By: [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md), [RFD0028](RFD0028-computer-use.md), [RFD0032](RFD0032-push-delivery.md), [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md)
+
+## Current state
+
+Checked against `main` on 2026-11-10.
+
+Built:
+
+- **Workspace state** (step 1). The owning axod reads each Session's git state after the agent settles and sends it as `workspaceState` in its metadata (`crates/axo-server/src/workspace_state.rs`, `workspaceStateSchema` in `packages/axo-api/src/session-sync.ts`).
+- **The peers socket and the mirror** (step 2). `/api/v1/accounts/:account/hosts/:host/peers` is the host's account socket, an `AxoClientDO` named for `host-<hostId>`, authorized with the host credential. Since [RFD0032](RFD0032-push-delivery.md), axod follows each other Mac on that Mac's HostDO (`.../peers/:target/client`). Copies are `~/.axo/sessions/<hostId>/<sessionId>.jsonl` with `<sessionId>.state.json`, each Mac's folder has `host.json`, and `~/.axo/server/peers.json` is the index (`crates/axo-relay/src/peers/`, `crates/axo-server/src/transcripts.rs`).
+- **Naming a Mac.** `axo.client.host.rename` keeps the account's name beside the reported label.
+- **Other Macs' Sessions in the Mac app** (step 3), as [RFD0024](RFD0024-remote-sessions-in-pi.md) changed it: a remote Session opens as Pi in a terminal pane, through `axo.peer.*`, and the sidebar's Mac menu chooses which Macs it lists. There is no native chat view, and `axo.session.catalog` gained no `host` or `mirror` fields.
+
+What changed after this RFD:
+
+- **Paths** have no Workspace segment ([RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md)); Sessions made while there were Workspaces stay where the catalog says. The Workspace choice in Continue would become a folder choice.
+- **Archived Sessions are not mirrored** ([RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md)). A pane on one fetches it while it is open.
+- **Macs are an argument** ([RFD0028](RFD0028-computer-use.md)): `codemode.bash.run({ host, command })`, not `codemode.<mac>.bash`.
+
+Not built: **Continue and the handoff** (step 4). There is no `axo.remote.session.continue`, `axo.remote.session.handoff`, `continuedFrom` or `continuedOn`, and no Continue button on any client. Nothing records it as rejected; [RFD0024](RFD0024-remote-sessions-in-pi.md) still plans "Continue here" on its remote pane.
 
 ## Summary
 

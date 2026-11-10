@@ -1,12 +1,28 @@
 # RFD0015 - Axo: Sessions as Axo protocol clients
 
 - Feature Name: `axo-sessions-as-protocol-clients`
-- Status: Implemented
+- Status: Implemented, as amended (see Current state); not built: the Mac sidebar's "started by Session N"
 - Author: leostera
 - Start Date: 2026-10-27
-- Updated: 2026-10-27
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
-- Amended By: [RFD0022](RFD0022-sessions-across-macs.md)
+- Amended By: [RFD0016](RFD0016-connections-and-tools.md) (apps tools), [RFD0017](RFD0017-session-uuids.md) (Session IDs), [RFD0022](RFD0022-sessions-across-macs.md), [RFD0028](RFD0028-computer-use.md) (computer tools), [RFD0029](RFD0029-ask-the-person.md) (elicitations), [RFD0034](RFD0034-axod-as-an-axp-server.md) (the server runs in axod), [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) (no Workspaces)
+
+## Current state
+
+Checked against `main` on 2026-11-10. Every Session's Pi reaches axod through `axod mcp` from codemode, as proposed: pi-axo registers the `axo` server with `codemode` exposure when `AXOD`, `AXO_SOCKET` and `AXO_SESSION_ID` are set (`packages/pi-axo/src/mcp.ts`), tools accept `"self"`, and `session_prompt` always names its Session as the sender, whose prompt arrives headed `[From Axo Session <uuid> "<name>"]`.
+
+What changed after this RFD:
+
+- **The server runs in axod** ([RFD0034](RFD0034-axod-as-an-axp-server.md)). `axod mcp` sends `axo.mcp.open { sessionId }` on axod's socket and then only copies bytes; the MCP server is `crates/axo-mcp` inside axod, calling methods in process, up to 16 tool calls at once. "One connection per call" and `crates/axo-server/src/mcp.rs` below are historical.
+- **Session IDs are UUIDs** ([RFD0017](RFD0017-session-uuids.md)), so the server no longer translates `AXO_SESSION_ID` to an integer. Examples such as `Session 7` below are historical.
+- **No Workspaces** ([RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md)). `workspace_list` and `workspace_session_create` are gone; `session_create { folder? | like? }` starts a Session in a folder, in another Session's folder (`"self"` allowed), or in the home directory.
+- **No chain depth limit** (`7a0023f`). The cap of 8 and `depth` in `axo.session.prompt`'s result were removed on purpose; only the rate limits stay: 30 prompts a minute per sending Session, 10 of them to itself (`crates/axo-server/src/session/prompts.rs`). A person typing no longer resets anything. The Provenance section's depth rules, the `-32002 chain too deep` error and the result's `depth` are historical.
+- **More tools**, all answered by axod: `apps_list`, `apps_search`, `apps_run`, `apps_add`, `apps_remove`, `apps_log` ([RFD0016](RFD0016-connections-and-tools.md)), `elicitation_request` ([RFD0029](RFD0029-ask-the-person.md)), and `computer_tools` and `computer` ([RFD0028](RFD0028-computer-use.md)), beside `whoami`, `session_catalog`, `session_create`, `session_rename`, `session_prompt`, `shell_create`, `shell_close`, `terminal_write` and `terminal_screen` (`crates/axo-mcp/src/lib.rs`).
+- **`axo.terminal.screen` stays local.** The parity table now says so ("clients show the conversation, not terminals", `crates/axo-protocol/src/parity.rs`); it is no longer planned remotely.
+- **Paths.** Pi's launch code is `crates/axo-agent/src/pi/launch.rs` (was `crates/axo-pi`), and transcripts live under `~/.axo/sessions/<hostId>/` ([RFD0022](RFD0022-sessions-across-macs.md)).
+
+Not built: the Mac sidebar's attribution ("started by Session N"), rollout step 5. The transcript header is still the only attribution.
 
 ## Summary
 

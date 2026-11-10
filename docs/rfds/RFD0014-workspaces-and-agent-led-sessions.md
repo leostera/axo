@@ -1,11 +1,30 @@
 # RFD0014 - Axo: workspaces and agent-led sessions
 
 - Feature Name: `axo-workspaces-and-agent-led-sessions`
-- Status: Superseded by [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) (Workspaces)
+- Status: Superseded by [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) (Workspaces); the exact Pi binding, the writer lock and the bridge are built (see Current state)
 - Author: leostera
 - Start Date: 2026-10-17
-- Updated: 2026-10-17
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
+
+## Current state
+
+Checked against `main` on 2026-11-10. This RFD is historical. [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) removed Workspaces, and the rest of it was built and then reshaped by later RFDs.
+
+Gone:
+
+- **Workspaces** and everything that spans Sessions: `axo.workspace.*`, the Home Workspace, "keep one Session open" and the replacement Session. A Session has its own folder, the home directory by default (RFD0038).
+- **Terminal-only home Sessions.** Every Session has a Pi pane and a terminal pane. axod opens no Session by itself.
+- **Pi events as the cloud's record.** The cloud stores each Session's transcript, Pi's own session-file lines, uploaded by axod ([RFD0018](RFD0018-session-sync-and-client-delivery.md)), not a projection of pi-axo's events.
+- `packages/axo-api/src/state-contracts.ts`, cited below, no longer exists.
+
+Still true, as built:
+
+- **Exact Pi binding.** axod persists each Session's transcript path and bridge socket before launch and starts Pi with `--session <path>` and `--extension` (`crates/axo-agent/src/pi/launch.rs`). It never uses `--continue`.
+- **One writer.** Every Pi holds an exclusive `flock` on `<transcript>.jsonl.lock` for as long as it lives (`crates/axo-agent/src/lock.rs`), and dies with axod ([RFD0041](RFD0041-axod-session-tasks.md)). This answers the question about proving the previous writer gone.
+- **The bridge.** pi-axo listens on a per-Session Unix socket and axod connects to it (`packages/pi-axo/src/bridge-server.ts`). `/resume` is turned into `session.resume.requested` for axod, and `/fork` is cancelled (`packages/pi-axo/src/extension.ts`).
+- **`/quit`.** A Pi that exits leaves its Session open with Pi unavailable. It does not close the Session (`pi_exited`, `crates/axo-server/src/session/pi.rs`).
+- **Commands.** `agent.command` and `shell.command` are settings, applied to newly started panes.
 
 ## Summary
 

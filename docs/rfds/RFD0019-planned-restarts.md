@@ -1,12 +1,24 @@
 # RFD0019 - Axo: planned restarts
 
 - Feature Name: `axo-planned-restarts`
-- Status: Draft
+- Status: Draft; not built (only the spec, `specs/relay/planned-restart.ts`, exists)
 - Author: leostera
 - Start Date: 2026-10-31
-- Updated: 2026-10-31
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amended By: [RFD0031](RFD0031-durable-objects-wake-on-demand.md)
+- Related: [RFD0023](RFD0023-one-axo-kept-alive.md)
+
+## Current state
+
+Checked against `main` on 2026-11-10. None of this is built: there is no `axo.daemon.prepareRestart`, no `axo.host.leaving`, no `restarting` presence and no 1012 close. A restart of axod still reads to clients as the Mac going offline. The Feynman spec is the only part on `main`.
+
+If this is picked up, the design needs these changes first:
+
+- **Error codes.** `-32011` and `-32012` now belong to elicitations ([RFD0029](RFD0029-ask-the-person.md): `notPending` and `notAPerson`, `packages/axo-api/src/elicitation.ts`), and `-32013` to `-32015` and `-32020` to `-32024` are taken too. The two new outcomes need other codes.
+- **No leases.** [RFD0031](RFD0031-durable-objects-wake-on-demand.md) removed lease renewal, so "the next lease renewal returns current presence" no longer recovers a lost presence notice; and since [RFD0032](RFD0032-push-delivery.md) clients follow a Mac on its HostDO's own socket, which is where presence would be sent.
+- **Where Axo.app restarts axod.** [RFD0023](RFD0023-one-axo-kept-alive.md)'s replacement of one Axo by another is where `prepareRestart` would be called, beside `DaemonController` (`apple/AxoDaemonManager`).
+- **Pi dies with axod** ([RFD0041](RFD0041-axod-session-tasks.md)), so a planned restart still interrupts every running turn, as the Non-goals say.
 
 ## Summary
 

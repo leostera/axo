@@ -1,11 +1,37 @@
 # RFD0013 - Axo: Cloudflare sign-in and one-time host pairing
 
 - Feature Name: `axo-cloudflare-sign-in-and-host-pairing`
-- Status: Proposal
+- Status: Implemented, as amended (see Current state); not built: separate HMAC keys per purpose and their rotation, an explicit Keychain access policy
 - Author: leostera
 - Start Date: 2026-10-16
-- Updated: 2026-10-16
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
+- Amended By: [RFD0018](RFD0018-session-sync-and-client-delivery.md) (where a Mac's socket and Sessions live), [RFD0032](RFD0032-push-delivery.md)
+
+## Current state
+
+Checked against `main` on 2026-11-10. Sign-in, accounts, pairing and per-host credentials are built as proposed:
+
+- One origin, `axo.leostera.dev`: the landing page at `/`, the app at `/app`, the Worker first for `/api/*` (`sites/axo.leostera.dev/cloudflare.config.ts`, `workersDev: false`). Product code is in `packages/axo-api-worker` and `packages/axo-web-app`; the site is configuration and shims.
+- Cloudflare OAuth with PKCE (S256) at the Worker, scope `user-details.read`, the fixed callback, and `state` sealed and bound to a flow cookie (`src/auth/login.ts`, `src/auth/oauth-cloudflare.ts`). `(issuer, sub)` maps to a random account ID in `AxoIdentityIndex`; each account is an `AxoAccountManager`, still deployed under the export name `AxoAccountDirectory`.
+- Sessions are `axo1.<account>.<secret>` tokens stored only as an HMAC: the `__Host-axo_session` cookie (`Secure; HttpOnly; SameSite=Lax`) on the web, 30 days; at most 20 per account (`src/auth/session.ts`, `src/auth/account-manager.ts`).
+- Pairing codes are Crockford Base32 `XXXX-YYYY`, ten minutes, single use, stored as an HMAC in a sharded `AxoPairingIndex`, consumed atomically with the host's registration, and an identical retry succeeds again. Limits (`src/auth/pairing.ts`, `account-manager.ts`): 20 issued a minute and 120 redemptions a minute in all, 8 redemptions a minute per source, and per account at most 3 pending codes and 5 issued an hour.
+- axod makes a 256-bit credential and saves it in the Keychain (service `dev.leostera.axo.host-credential`) before redeeming, and persists the pending credential ID and generation (`crates/axo-relay/src/pairing.rs`, `link.rs`, `credential.rs`). Isolated tests use a `0600` file store instead (`--host-credentials files`).
+- The Mac takes the code in Settings → Remote Access, and `axo://pair/<code>` opens it there (`RemoteAccessSettingsView`, `PairingLinkRouter`). Revoking a host closes its socket and keeps its metadata.
+- Tests: `packages/axo-api-worker/tests/auth.test.ts`, `account-manager.test.ts`, and `axod-relay.test.ts`, which pairs a real isolated axod.
+
+What changed after this RFD:
+
+- **No CSRF token.** A cookie may change state only with the exact app `Origin` (`requireAccount`, `src/auth/account-access.ts`). A bearer token is not ambient, so it needs no `Origin`.
+- **Native clients sign in too.** The phone starts sign-in with a PKCE challenge, gets a one-time login code (60 seconds, burnt by a wrong secret) on `axo://auth/callback`, and trades it at `POST /api/auth/token` for a session token sent as `Authorization: Bearer`, valid 90 days. This RFD had no design for a client other than the browser.
+- **A Mac's socket and Sessions left the account manager** ([RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0032](RFD0032-push-delivery.md)). `/api/v1/accounts/:account/hosts/:host/daemon` ends in that Mac's `AxoHostDO`, transcripts are in `AxoSessionDO`s, and a client's account socket is its `AxoClientDO`. The account manager keeps the account, profile, sessions, login codes, pairings, paired hosts and apps ([RFD0016](RFD0016-connections-and-tools.md)), and drops its old relay tables on start. The `host_sessions`, `route`, `groups` and `pending` records under Data model, and `GET /api/v1/account/hosts/:host/sessions`, are historical.
+- **The private fleet is gone** (`1d95d4c`): no `/v1/*` routes, synthetic principals or `private-fleet` directory. The `AxoHostDirectory` and `AxoHostRelay` exports are deleted; neither ever held an object. The "Before acceptance" question about adopting their data no longer applies, and the Current source boundary section is historical.
+- **"The full currently supported protocol" is a list.** A client reaches a Mac through the `axo.remote.*` methods in `hostRemoteMethods` (`src/host-do.ts`), decided per method in `crates/axo-protocol/src/parity.rs`, and through the sync protocol (RFD0018). axod's local methods (settings, linking, and so on) are not reachable remotely.
+
+Not built:
+
+- **Separate keys.** One Worker secret, `SESSION_SECRET`, keys every HMAC and seal, separated by purpose (`pairing-code`, `pairing-source`, `host-credential`, `login-code`, and HKDF purposes for sealed values). There are no key IDs and no rotation.
+- **A Keychain access policy.** axod's item is a default generic password.
 
 ## Summary
 
@@ -19,13 +45,13 @@ Users need a simple first-run path: sign in on the Axo website, authorize one ho
 
 This changes the security model and storage ownership across the app, API, protocol, and daemon. It needs a reviewable contract before implementation.
 
-### Current source boundary
+### Source boundary on 2026-10-16 (historical)
 
 The first implementation step has moved product code out of site directories:
 
-- [`packages/axo-api-worker/src/access.ts`](../../packages/axo-api-worker/src/access.ts) still makes synthetic edge principals; the API does not yet verify an Axo account or device credential.
+- `packages/axo-api-worker/src/access.ts` (removed in `1d95d4c`) still makes synthetic edge principals; the API does not yet verify an Axo account or device credential.
 - Legacy `/v1/*` routes still use synthetic edge principals and the unassigned `private-fleet` directory. Account-scoped `/api/v1/*` routes use `AxoAccountManager`; they must never fall back to legacy ownership or principals.
-- [`packages/axo-api-worker/src/axo-host-directory.ts`](../../packages/axo-api-worker/src/axo-host-directory.ts) remains only for legacy/unassigned host data; new account hosts and snapshots are stored in their owning account manager.
+- `packages/axo-api-worker/src/axo-host-directory.ts` (removed in `1d95d4c`) remains only for legacy/unassigned host data; new account hosts and snapshots are stored in their owning account manager.
 - The app and Worker implementations, their tests, and runtime dependencies now live in `packages/axo-web-app` and `packages/axo-api-worker`. The `sites/*` directories contain thin entrypoint shims and deployment configuration.
 - The current production Access policies have not been changed or inspected as part of this implementation.
 
@@ -296,7 +322,7 @@ The Worker remains behind Access with synthetic route roles and the daemon canno
 
 The product choices raised in review are incorporated: any Cloudflare identity may create an Axo account; each account's user data is stored in its own account Durable Object; `axo.leostera.dev` is the public landing/app/API origin; v1 grants full Axo functionality within the authenticated account/host boundary; host linking uses a typed-or-pasted `XXXX-YYYY` code; and site projects are thin deployment shims over packages.
 
-- How should existing global `private-fleet` hosts/snapshots be preserved and optionally adopted without assigning them to whichever account signs in first?
+- How should existing global `private-fleet` hosts/snapshots be preserved and optionally adopted without assigning them to whichever account signs in first? (Moot: the private fleet was removed with nothing to adopt; see Current state.)
 
 ### During implementation
 

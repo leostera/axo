@@ -1,15 +1,27 @@
 # RFD0016 - Axo: connections and tools
 
 - Feature Name: `axo-connections-and-tools`
-- Status: Draft
+- Status: Implemented, as apps (see Current state); the sections marked _(open)_ were never written
 - Author: leostera
 - Start Date: 2026-10-29
-- Updated: 2026-10-31
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
-
-> Drafting in progress. Sections marked _(open)_ are not yet decided.
+- Amended By: [RFD0028](RFD0028-computer-use.md) (Macs as an argument)
 
 > **Renamed (2026-11-07, 0.23):** connections are now **apps** everywhere: tools `apps_*`, methods `axo.apps.*`, routes `/api/v1/account/apps`, code in `src/apps`, specs in `specs/apps`. This document keeps the old word. The OAuth paths `/api/v1/connections/oauth/*` and the `third_party_connections` table keep theirs, because provider settings and stored data hold them.
+
+## Current state
+
+Checked against `main` on 2026-11-10. The Goals and the Reference-level explanation describe what runs, under the new names:
+
+- **Tools and methods.** `connections_list`, `_add`, `_remove`, `_search`, `_execute` and `_log` are `apps_list`, `apps_add`, `apps_remove`, `apps_search`, `apps_run` and `apps_log` (`crates/axo-mcp/src/lib.rs`). On the relay they are `axo.apps.list`, `.add`, `.remove`, `.search`, `.run` and `.log`; the Worker sends a Mac `axo.apps.bash`, `axo.apps.signIn` and `axo.apps.computer` ([RFD0028](RFD0028-computer-use.md)).
+- **Where it runs.** Every app call, grant and the call log are in the account's `AxoAccountManager` (`packages/axo-api-worker/src/apps/account.ts`). Where this RFD and the code comments in `packages/axo-apps` say "the gateway", they mean that object: [RFD0020](RFD0020-account-gateway.md)'s separate gateway is not on `main`.
+- **Apps.** The 22 apps in the table are those in `packages/axo-apps/src/catalog.ts`, with the tools listed, except that UniFi also has `list_clients` and `get_traffic`.
+- **Limits** are `APPS_LIMITS` in `packages/axo-api/src/apps.ts`, the values in the Limits table. Fragments are as described: 64 KiB frames, messages up to 16 MiB, 4 partial messages per socket, 60 seconds (`crates/axo-relay/src/fragments.rs`).
+- **Specs** moved with the rename: `specs/apps/apps.ts` (was `specs/connections/connections.ts`), `specs/apps/connection-sign-in.ts` and `specs/apps/tool-lists.ts`.
+- **The Mac's socket** ends at `axo.leostera.dev/api/v1/accounts/:account/hosts/:host/daemon`. There is no `api.axo.leostera.dev`.
+
+Motivation, Rationale and alternatives, Prior art, Unresolved questions and Future possibilities were left _(open)_ while this was a draft, and stay unwritten. What the Non-goals name as future possibilities (host MCP servers, an MCP endpoint for clients outside Axo, approvals) is not built.
 
 ## Summary
 
@@ -98,7 +110,7 @@ Every app signs in with everything its own service allows, and only it. Besides 
 | `apps.kraken` | an API key and private key, pasted or created by signing in on a Mac; each private call signed (HMAC-SHA512) | `get_balance`, `get_trade_balance`, `list_open_orders`, `list_closed_orders`, `list_trades`, `list_ledger`, `get_ticker`, `add_order`, `cancel_order`, `call` |
 | `apps.github` | `repo`, `read:org`, `notifications` (an OAuth app with expiring user tokens) | `get_me`, `list_repos`, `search`, `list_issues`, `get_issue`, `create_issue`, `comment`, `get_pull`, `get_file`, `list_notifications` |
 | `apps.discord` | a bot token (`Bot <token>`) | `list_guilds`, `list_channels`, `read_messages`, `send_message` |
-| `apps.unifi` | a Site Manager API key (`X-API-KEY`) | `list_hosts`, `list_sites`, `list_devices`, `get_isp_metrics` |
+| `apps.unifi` | a Site Manager API key (`X-API-KEY`) | `list_hosts`, `list_sites`, `list_devices`, `get_isp_metrics`, `list_clients`, `get_traffic` |
 | `apps.spotify` | playback state and control, playlists (read, modify public and private, collaborative), library (read, modify), recently played, top items | `get_me`, `get_playback`, `now_playing`, `list_devices`, `play`, `pause`, `next`, `previous`, `seek`, `set_volume`, `set_shuffle`, `set_repeat`, `transfer_playback`, `get_queue`, `add_to_queue`, `search`, `list_playlists`, `get_playlist`, `create_playlist`, `add_to_playlist`, `list_saved_tracks`, `list_saved_albums`, `save_to_library`, `remove_from_library`, `recently_played`, `top_items` |
 | `apps.withings` | `user.info`, `user.metrics`, `user.activity` | `get_measures`, `get_activity`, `list_workouts`, `get_sleep_summary`, `get_sleep`, `list_ecgs`, `list_devices` |
 | `apps.chatgpt` | Codex's sign-in (`openid profile email offline_access`) | `respond`, `list_models`, `usage` |
@@ -186,15 +198,15 @@ Exceeding a limit fails the call with an error that names the limit. Values are 
 
 ### Model
 
-[`specs/connections/connections.ts`](../../specs/connections/connections.ts) models a Session running scripts over third-party and host connections: the relay, the account's Durable Object, the script Worker and a third-party MCP server, with relay drops, lost messages and restarts. Each Mac's socket ends in its own Durable Object, `HostDO`: `axod` connects to `api.axo.leostera.dev`, and the Worker routes the socket to `HostDO` by host ID (RFD0018). Connections state lives only in the account's `AxoAccountManager`, one Durable Object RPC away: the socket owner forwards a Mac's `axo.connections.*` calls to it (`connectionsCall`) and sends `bash` down the Mac's socket for it (`callHost`, which waits for the Mac's reply, never retries, and fails as may-have-run when the socket closes, the Mac is revoked or its deadline passes), and holds nothing but sockets, what it forwarded and the `callHost` calls waiting on a socket. The model keeps the two apart. It also models `axod` running each command on a thread of its own, tied to the relay socket it came on (a command's output never goes back on a later socket), the script's wall time and call limit, and unpairing a Mac mid-command. Its properties are the invariants below plus: a waiting Session always gets an answer; a third-party call reaches the service at most once; a command runs at most once; a Mac is an online connection only while paired; no script exceeds its call limit; an unpaired Mac runs no command dispatched after it was unpaired; the socket owner holds no connections state.
+[`specs/apps/apps.ts`](../../specs/apps/apps.ts) models a Session running scripts over third-party and host connections: the relay, the account's Durable Object, the script Worker and a third-party MCP server, with relay drops, lost messages and restarts. Each Mac's socket ends in its own Durable Object, `HostDO`: `axod` connects to `axo.leostera.dev`, and the Worker routes the socket to `HostDO` by host ID (RFD0018). Connections state lives only in the account's `AxoAccountManager`, one Durable Object RPC away: the socket owner forwards a Mac's `axo.connections.*` calls to it (`connectionsCall`) and sends `bash` down the Mac's socket for it (`callHost`, which waits for the Mac's reply, never retries, and fails as may-have-run when the socket closes, the Mac is revoked or its deadline passes), and holds nothing but sockets, what it forwarded and the `callHost` calls waiting on a socket. The model keeps the two apart. It also models `axod` running each command on a thread of its own, tied to the relay socket it came on (a command's output never goes back on a later socket), the script's wall time and call limit, and unpairing a Mac mid-command. Its properties are the invariants below plus: a waiting Session always gets an answer; a third-party call reaches the service at most once; a command runs at most once; a Mac is an online connection only while paired; no script exceeds its call limit; an unpaired Mac runs no command dispatched after it was unpaired; the socket owner holds no connections state.
 
 [`specs/relay/relay-fragments.ts`](../../specs/relay/relay-fragments.ts) models the fragment transport: the parser only sees whole messages from one socket, each at most once, and never one its sender gave up on; at most one message per priority class is partly sent, so an honest sender is never refused; the receiver's partials stay bounded and always drain; and everything queued is in the end sent, given up on, or dropped with its socket.
 
-[`specs/connections/connection-sign-in.ts`](../../specs/connections/connection-sign-in.ts) models adding a third-party connection: client registration or a client typed on the Connections page, the sealed-state and flow-cookie callback, code redemption and refresh with revocation. Its properties: a grant only lands in the account of the person who approved it, even when a consent page is passed to someone else; no browser or agent holds a refresh token or client secret; secrets are stored sealed; a ready connection holds a grant; a code is redeemed at most once.
+[`specs/apps/connection-sign-in.ts`](../../specs/apps/connection-sign-in.ts) models adding a third-party connection: client registration or a client typed on the Connections page, the sealed-state and flow-cookie callback, code redemption and refresh with revocation. Its properties: a grant only lands in the account of the person who approved it, even when a consent page is passed to someone else; no browser or agent holds a refresh token or client secret; secrets are stored sealed; a ready connection holds a grant; a code is redeemed at most once.
 
-[`specs/connections/tool-lists.ts`](../../specs/connections/tool-lists.ts) models tool-list sync: searches never wait on a server, a list not marked stale matches the server unless a change went unannounced, and a refresh in flight always ends.
+[`specs/apps/tool-lists.ts`](../../specs/apps/tool-lists.ts) models tool-list sync: searches never wait on a server, a list not marked stale matches the server unless a change went unannounced, and a refresh in flight always ends.
 
-The specs point at their code (sources, locked in `feynman.lock`): the host-connection path of `specs/connections/connections.ts`, and the sign-in and tool-list specs. Third-party calls in `specs/connections/connections.ts` and the Linear stand-ins are model only. Run them with `pnpm exec feynman check`.
+The specs point at their code (sources, locked in `feynman.lock`): the host-connection path of `specs/apps/apps.ts`, and the sign-in and tool-list specs. Third-party calls in `specs/apps/apps.ts` and the Linear stand-ins are model only. Run them with `pnpm exec feynman check`.
 
 ### Invariants
 

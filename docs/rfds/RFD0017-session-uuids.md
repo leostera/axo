@@ -4,8 +4,16 @@
 - Status: Implemented
 - Author: leostera
 - Start Date: 2026-10-29
-- Updated: 2026-10-30
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
+
+## Current state
+
+Checked against `main` on 2026-11-10. Built as proposed: a Session ID is a canonical lowercase UUID on every surface, and shell IDs stay integers. Since then:
+
+- **Protocol versions.** A Mac still negotiates protocol 2 on its host socket (`PROTOCOL_VERSION`, `crates/axo-protocol/src/rpc.rs`), and the Worker refuses any other with `-32010` and the message above (`packages/axo-api-worker/src/axo-host-relay.ts`). Clients' sync sockets speak 3 ([RFD0032](RFD0032-push-delivery.md)) and still accept 2 until [RFD0036](RFD0036-retiring-protocol-2.md) retires it.
+- **Cloud catalogs.** `host_sessions_v2` is gone too: a Mac's Session index is in its `AxoHostDO` (`session_index`, [RFD0018](RFD0018-session-sync-and-client-delivery.md)), and the account manager drops the old `host_sessions_v1` and `_v2` tables on start. A Session's Durable Object is named `<account>:<host>:<session>` by `sessionDOName` in `packages/axo-api-worker/src/session-store.ts` (was `session-history.ts`).
+- **Workspaces** are gone ([RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md)); mentions of Workspace IDs below are historical.
 
 ## Summary
 

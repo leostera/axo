@@ -1,12 +1,27 @@
 # RFD0018 - Axo: Session sync and client delivery
 
 - Feature Name: `axo-session-sync-and-client-delivery`
-- Status: Draft
+- Status: Implemented, as amended (see Current state)
 - Author: leostera
 - Start Date: 2026-10-30
-- Updated: 2026-10-30
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
-- Amended By: [RFD0022](RFD0022-sessions-across-macs.md), [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md), [RFD0031](RFD0031-durable-objects-wake-on-demand.md), [RFD0032](RFD0032-push-delivery.md)
+- Amended By: [RFD0022](RFD0022-sessions-across-macs.md), [RFD0024](RFD0024-remote-sessions-in-pi.md), [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md), [RFD0031](RFD0031-durable-objects-wake-on-demand.md), [RFD0032](RFD0032-push-delivery.md), [RFD0035](RFD0035-session-records-in-atxf.md)
+
+## Current state
+
+Checked against `main` on 2026-11-10. Upload is built as written: the `axo.host.sync` handshake with rounds and metadata versions, `axo.host.session.append`, `.chainAt`, `.truncate`, `.meta`, `.status` and `.progress` (`packages/axo-api/src/session-sync.ts`, `crates/axo-relay/src/sync/`), `pi/3` hashes and chains, per-Session cursors in `axo.db` (`relay_sync`), 64 records or 1 MiB a batch and a 10-second request timeout (`uploader.rs`). The cloud keeps one `AxoSessionDO` per Session and an `AxoHostDO` per Mac; `deliveryCredits`, `axo.transport.ack` and closing on "Delivery capacity" are gone.
+
+What changed after this RFD:
+
+- **No leases** ([RFD0031](RFD0031-durable-objects-wake-on-demand.md)). The HostDO's `subscribers` lease table is dropped, and a ClientDO has no alarm. The lease table, the 30-second renewal and "sent again at the next lease renewal" below are historical.
+- **Records are pushed from the HostDO** ([RFD0032](RFD0032-push-delivery.md), protocol 3). A client opens Sessions on a socket to each Mac's HostDO, which sends the records it commits from the append it holds; the ClientDO keeps the account socket and follows no HostDO in protocol 3. The ClientDO-to-SessionDO delivery path below is protocol 2, kept for clients that fall back until [RFD0036](RFD0036-retiring-protocol-2.md) removes it.
+- **ATXF beside `pi/3`** ([RFD0035](RFD0035-session-records-in-atxf.md)). The SessionDO also stores each record's ATXF translation. The wire is still `pi/3`.
+- **Archived Sessions may leave the Mac** ([RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md)) once the cloud holds them. The cloud still never deletes because a host did.
+- **Appends go one at a time.** The uploader awaits each append before building the next, instead of keeping up to 4 per Session and 16 in all. The first append of a Session also carries its header line.
+- **No Workspaces** ([RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md)): `workspace.list` is no longer a command. The Mac's socket is at `axo.leostera.dev/api/...`; there is no `api.axo.leostera.dev`.
+
+The Before acceptance questions were settled by building it: protocol 2 landed with [RFD0017](RFD0017-session-uuids.md), and pairing uploads every Session, archived ones included.
 
 ## Summary
 
