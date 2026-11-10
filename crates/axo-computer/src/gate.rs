@@ -133,6 +133,13 @@ pub fn for_socket(socket: &Path) -> &'static Gate {
     })
 }
 
+/// What it guards is lookups, never half-written, so a panic elsewhere does not stop the gate.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// What decides a flagged action; Clef on this Mac in production.
 pub trait Judge: Send + Sync {
     /// The probability that `action` in `window` is destructive or hard to undo.
@@ -190,12 +197,9 @@ impl Gate {
                     .as_str()
                     .unwrap_or("untitled window")
             );
-            self.windows
-                .lock()
-                .unwrap()
-                .insert(format!("{pid}:{window}"), name);
+            lock(&self.windows).insert(format!("{pid}:{window}"), name);
         }
-        let mut elements = self.elements.lock().unwrap();
+        let mut elements = lock(&self.elements);
         // Tokens die when a newer read supersedes them; keep memory bounded.
         if elements.len() > 20_000 {
             elements.clear();
@@ -290,9 +294,7 @@ impl Gate {
         let target = args["element_token"]
             .as_str()
             .map(|token| {
-                self.elements
-                    .lock()
-                    .unwrap()
+                lock(&self.elements)
                     .get(token)
                     .cloned()
                     .unwrap_or_else(|| format!("element {token}"))
@@ -340,7 +342,7 @@ impl Gate {
             (Some(pid), Some(window)) => Some(format!("{pid}:{window}")),
             _ => None,
         };
-        key.and_then(|key| self.windows.lock().unwrap().get(&key).cloned())
+        key.and_then(|key| lock(&self.windows).get(&key).cloned())
             .or_else(|| args["app"].as_str().map(str::to_string))
             .unwrap_or_else(|| "an app on this Mac".into())
     }
