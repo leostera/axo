@@ -10,7 +10,7 @@ npm_link_all_packages(name = "node_modules")
 # @axo/apps: each app's sign-in, API hosts and tools (RFD0016), imported as TypeScript source.
 npm_package(
     name = "pkg",
-    srcs = ["package.json"] + glob(["src/**/*.ts"]),
+    srcs = ["bundling.d.mts", "bundling.mjs", "package.json"] + glob(["src/**/*.ts"]),
 )
 
 _DEPS = [
@@ -19,6 +19,7 @@ _DEPS = [
     ":node_modules/@octokit/core",
     ":node_modules/@octokit/plugin-paginate-rest",
     ":node_modules/@octokit/plugin-rest-endpoint-methods",
+    ":node_modules/baileys",
     ":node_modules/discord-api-types",
     ":node_modules/big-integer",
     ":node_modules/oauth4webapi",
@@ -36,7 +37,8 @@ ts_project(
 
 node_test(
     name = "test",
-    data = glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx"],
+    # package.json says the sources are ES modules; Baileys' crypto can only be imported as one.
+    data = ["package.json"] + glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx"],
     tests = glob(["tests/*.test.ts"]),
     tsx = True,
 )

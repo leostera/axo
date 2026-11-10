@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type AccountApp, type ToolDefinition } from "@axo/protocol";
+import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppLink, type AppLinkRequest, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type AccountApp, type ToolDefinition } from "@axo/protocol";
 import {
   allowedUrl,
   APP_DEFINITIONS,
@@ -28,6 +28,10 @@ import {
   type AppTool,
   type Authorized,
   type DeviceApp,
+  type LinkedApp,
+  type LinkedDevice,
+  type LinkState,
+  LINK_LIFETIME_MS,
   type MacApp,
   type MacShell,
   type OAuthApp,
@@ -134,7 +138,12 @@ export type AppsDeps = {
   signInOnMac?: (mac: string, request: { authorizeUrl: string; ports: readonly number[]; path: string; state: string; timeoutMs: number }) => Promise<MacSignInCallback>;
   /** Stands in for a phone app's own sign-in and sessions (its PhoneSignIn), in tests. */
   phone?: Partial<Record<AppName, PhoneSignIn>>;
+  /** One linked device of a linked app's (WhatsApp's), by the ID the account gave it: its own Durable Object. */
+  linked?: (app: AppName, device: string) => LinkedDevice;
 };
+
+/** A linked app's account credential: which of its devices (Durable Objects) is that account. */
+type LinkedCredential = { kind: "linked"; device: string };
 
 /** A phone app's account credential: the service's session, as its client library saves it. */
 type PhoneCredential = { kind: "phone"; session: string };
@@ -171,6 +180,9 @@ export class BuiltinApps {
     deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_phone_flows (
       id TEXT PRIMARY KEY, app TEXT NOT NULL, step TEXT NOT NULL, state_sealed TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
       created_at REAL NOT NULL)`);
+    // Linked devices being linked: the device's ID, until the phone approves it or the code runs out.
+    deps.sql.exec(`CREATE TABLE IF NOT EXISTS app_link_flows (
+      device TEXT PRIMARY KEY, app TEXT NOT NULL, created_at REAL NOT NULL)`);
     deps.sql.exec("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY, done_at REAL NOT NULL)");
     this.migrateSingleGrants();
     this.migrateOnce("telegram-bots-removed", () => {
@@ -351,6 +363,11 @@ export class BuiltinApps {
     const definition = APP_DEFINITIONS[app];
     if (definition.signIn === "token") {
       if (row.grant_sealed) this.revokeToken(definition, row.grant_sealed);
+      return true;
+    }
+    // A linked device is unlinked, so it leaves the phone's Linked devices too.
+    if (definition.signIn === "linked") {
+      if (row.grant_sealed) this.unlinkDevice(definition, row.grant_sealed);
       return true;
     }
     // A phone account is a device of the person's: it is logged out, so it leaves their devices list.
@@ -621,6 +638,7 @@ export class BuiltinApps {
     }
     if (definition.signIn === "token") return this.callWithToken(definition, tool, account, rest);
     if (definition.signIn === "phone") return this.callWithPhone(definition, tool, account, rest);
+    if (definition.signIn === "linked") return this.callLinked(definition, tool, account, rest);
     for (let attempt = 0; ; attempt++) {
       const grant = await this.grant(app, account, attempt > 0);
       if (!grant || !grantFits(definition, grant))
@@ -822,6 +840,108 @@ export class BuiltinApps {
     return result;
   }
 
+  /**
+   * One step of linking Axo as a new device of the person's account (WhatsApp's): start (with a
+   * QR code, or a pairing code for their number), then ask where it stands until the phone
+   * approved it. Each link is a new device, its own Durable Object; once linked it becomes the
+   * account named by its number, replacing a device that number had.
+   */
+  async link(app: AppName, request: AppLinkRequest): Promise<AppLink> {
+    const definition = APP_DEFINITIONS[app];
+    if (definition.signIn !== "linked" || !this.deps.linked) throw new AppAccountRefused(`${definition.title} does not link as a device`);
+    this.endStaleLinks();
+    if (request.step === "qr" || request.step === "code") {
+      const device = crypto.randomUUID();
+      this.deps.sql.exec("INSERT INTO app_link_flows (device, app, created_at) VALUES (?, ?, ?)", device, app, this.now());
+      let state: LinkState;
+      try {
+        state = await withTimeout(this.deps.linked(app, device).startLink(request.step === "qr" ? { method: "qr" } : { method: "code", phone: request.phone }), REQUEST_TIMEOUT_MS);
+      } catch (error) {
+        console.warn("apps: linking a device failed", error instanceof Error ? error.message : String(error));
+        state = { state: "failed", error: `${definition.providerTitle} could not be reached. Try again.` };
+      }
+      return this.linkAnswer(definition, device, state);
+    }
+    const flow = this.deps.sql.exec<{ device: string }>("SELECT device FROM app_link_flows WHERE device = ? AND app = ?", request.flow, app).toArray()[0];
+    if (!flow) return { state: "failed", error: "This link has ended. Start again." };
+    if (request.step === "cancel") {
+      this.deps.sql.exec("DELETE FROM app_link_flows WHERE device = ?", flow.device);
+      this.deps.waitUntil(this.deps.linked(app, flow.device).unlink().catch(() => undefined));
+      return { state: "failed", error: "Cancelled." };
+    }
+    let state: LinkState;
+    try {
+      state = await withTimeout(this.deps.linked(app, flow.device).linkState(), REQUEST_TIMEOUT_MS);
+    } catch {
+      // A poll that got no answer is asked again; the link goes on.
+      return { state: "connecting", flow: flow.device };
+    }
+    return this.linkAnswer(definition, flow.device, state);
+  }
+
+  /** What a link's state means for the account: done stores the device as the number's account. */
+  private async linkAnswer(definition: LinkedApp, device: string, state: LinkState): Promise<AppLink> {
+    if (state.state === "connecting" || state.state === "qr" || state.state === "code") return { ...state, flow: device };
+    this.deps.sql.exec("DELETE FROM app_link_flows WHERE device = ?", device);
+    if (state.state === "failed") return { state: "failed", error: state.error.slice(0, 300) };
+    const account = state.account.toLowerCase();
+    const known = this.rows(definition.name).some((r) => r.account === account);
+    if (!known && this.rows(definition.name).length >= APP_ACCOUNTS_MAX) {
+      this.deps.waitUntil(this.deps.linked!(definition.name, device).unlink().catch(() => undefined));
+      return { state: "failed", error: `${definition.title} holds at most ${APP_ACCOUNTS_MAX} accounts; remove one first.` };
+    }
+    const replaced = known ? this.row(definition.name, account)?.grant_sealed ?? null : null;
+    this.deps.sql.exec(`INSERT INTO app_accounts (app, account, grant_sealed, grant_generation, last_error, created_at) VALUES (?, ?, ?, 1, NULL, ?)
+      ON CONFLICT (app, account) DO UPDATE SET grant_sealed = excluded.grant_sealed, grant_generation = app_accounts.grant_generation + 1, last_error = NULL`,
+    definition.name, account, await this.seal({ kind: "linked", device }), this.now());
+    if (replaced) this.unlinkDevice(definition, replaced);
+    return { state: "done", account };
+  }
+
+  /** Links that ran out are over: their devices are told to forget what they made. */
+  private endStaleLinks(): void {
+    const stale = this.deps.sql.exec<{ device: string; app: string }>("SELECT device, app FROM app_link_flows WHERE created_at < ?", this.now() - LINK_LIFETIME_MS - 60_000).toArray();
+    for (const flow of stale) {
+      this.deps.sql.exec("DELETE FROM app_link_flows WHERE device = ?", flow.device);
+      this.deps.waitUntil(this.deps.linked!(flow.app as AppName, flow.device).unlink().catch(() => undefined));
+    }
+  }
+
+  /**
+   * A linked app's call: its device runs the tool against what it cached. A device WhatsApp
+   * unlinked (from the phone) leaves the account needing to be linked again.
+   */
+  private async callLinked(definition: LinkedApp, tool: AppTool<any, any>, account: string, input: Record<string, unknown>): Promise<unknown> {
+    const row = this.row(definition.name, account);
+    const credential = row?.grant_sealed ? await this.unsealLinked(row.grant_sealed) : null;
+    if (!row || !credential || !this.deps.linked) throw new Error(`${account} needs linking again at ${appPage(definition.name)}`);
+    let outcome;
+    try {
+      outcome = await withTimeout(this.deps.linked(definition.name, credential.device).run(tool.name, input), REQUEST_TIMEOUT_MS);
+    } catch {
+      throw new ProviderError(0, `Axo's ${definition.providerTitle} device did not answer`);
+    }
+    if ("unlinked" in outcome) {
+      this.dropGrant(definition.name, account, row.grant_generation, `${definition.providerTitle} unlinked this device`);
+      throw new Error(`${account}: ${definition.providerTitle} unlinked Axo's device; link it again at ${appPage(definition.name)}`);
+    }
+    if ("error" in outcome) throw new ProviderError(400, outcome.error.slice(0, 300));
+    return outcome.result;
+  }
+
+  /** Unlinks a linked account's device at the service and forgets it, in the background. */
+  private unlinkDevice(definition: LinkedApp, sealed: string): void {
+    this.deps.waitUntil((async () => {
+      const credential = await this.unsealLinked(sealed);
+      if (credential && this.deps.linked) await this.deps.linked(definition.name, credential.device).unlink();
+    })().catch(() => undefined));
+  }
+
+  private async unsealLinked(sealed: string): Promise<LinkedCredential | null> {
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as LinkedCredential | { kind?: undefined } | null;
+    return value?.kind === "linked" ? value : null;
+  }
+
   /** Logs a phone account's session out at the service, in the background. */
   private logOutPhone(definition: PhoneApp, sealed: string): void {
     this.deps.waitUntil((async () => {
@@ -988,6 +1108,7 @@ export class BuiltinApps {
 
   /** A Mac app needs a way to reach the Macs; every other app is listed. */
   private isListed(definition: AppDefinition): boolean {
+    if (definition.signIn === "linked") return Boolean(this.deps.linked);
     return definition.signIn !== "mac" || Boolean(this.deps.runOnMac && this.deps.macs);
   }
 
@@ -1039,14 +1160,14 @@ export class BuiltinApps {
     ).toArray()[0];
   }
 
-  private seal(credential: Grant | TokenCredential | PhoneCredential): Promise<string> {
+  private seal(credential: Grant | TokenCredential | PhoneCredential | LinkedCredential): Promise<string> {
     return seal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, credential);
   }
 
   /** An OAuth grant; a token is never one. */
   private async unsealGrant(sealed: string): Promise<Grant | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | PhoneCredential | null;
-    return value && value.kind !== "token" && value.kind !== "phone" ? value : null;
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | PhoneCredential | LinkedCredential | null;
+    return value && value.kind !== "token" && value.kind !== "phone" && value.kind !== "linked" ? value : null;
   }
 
   private async unsealPhone(sealed: string): Promise<PhoneCredential | null> {
@@ -1160,6 +1281,7 @@ function notSetUp(definition: OAuthApp): string {
 function signInOf(definition: Exclude<AppDefinition, OAuthApp | PhoneApp>): AppSignIn {
   if (definition.signIn === "device") return { kind: "device" };
   if (definition.signIn === "mac") return { kind: "mac", setup: definition.setup, helpUrl: definition.reference };
+  if (definition.signIn === "linked") return { kind: "linked", helpUrl: definition.helpUrl };
   const { helpUrl, named, fields, mac } = definition.token;
   return {
     kind: "token", helpUrl, named, fields: fields.map((f) => ({ ...f })),

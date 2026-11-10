@@ -57,7 +57,8 @@ _RELAY_TESTS = [
 # Every file the tests read, copied to the output tree by an untagged target (see node_test).
 js_library(
     name = "test_files",
-    srcs = glob(["src/**/*.ts", "tests/**", "testing/**"]),
+    # package.json says the sources are ES modules; Baileys' crypto (through @axo/apps) can only be imported as one.
+    srcs = ["package.json"] + glob(["src/**/*.ts", "tests/**", "testing/**"]),
 )
 
 # The Worker in Miniflare, with fake identity providers, apps and hosts.

@@ -268,7 +268,47 @@ export type PhoneApp = AppBase & {
   tools: readonly AppTool<any, any>[];
 };
 
-export type AppDefinition = OAuthApp | TokenApp | DeviceApp | MacApp | PhoneApp;
+/** How linking starts: a QR code the person scans, or a pairing code for their number that they type into their phone. */
+export type LinkStart = { method: "qr" } | { method: "code"; phone: string };
+
+/** Where linking stands, as the device answers it. */
+export type LinkState =
+  | { state: "connecting" }
+  | { state: "qr"; qr: string }
+  | { state: "code"; code: string }
+  | { state: "done"; account: string }
+  | { state: "failed"; error: string };
+
+/** What a linked device answers a tool call with: the result, or that the service unlinked it (only linking again helps). */
+export type LinkedOutcome = { result: unknown } | { unlinked: true } | { error: string };
+
+/**
+ * One linked device of the person's (WhatsApp's), kept by the gateway in a Durable Object of its
+ * own, connected to the service and caching what it is sent. Its tools run there, against that cache.
+ */
+export type LinkedDevice = {
+  startLink(start: LinkStart): Promise<LinkState>;
+  linkState(): Promise<LinkState>;
+  /** Logs the device out at the service and forgets everything it kept. Best effort. */
+  unlink(): Promise<void>;
+  run(tool: string, input: Record<string, unknown>): Promise<LinkedOutcome>;
+};
+
+/**
+ * An app Axo joins as a linked device of the person's account (WhatsApp), the way a desktop app
+ * does: the person scans a QR code with their phone, or types a pairing code into it. There is no
+ * client to register; the account's name is its phone number.
+ */
+export type LinkedApp = AppBase & {
+  signIn: "linked";
+  provider: string;
+  reference: string;
+  /** Where the service explains linked devices, shown with the linking form. */
+  helpUrl: string;
+  tools: readonly AppTool<any, any>[];
+};
+
+export type AppDefinition = OAuthApp | TokenApp | DeviceApp | MacApp | PhoneApp | LinkedApp;
 
 /** The provider refused the call: it did not run. */
 export class ProviderError extends Error {

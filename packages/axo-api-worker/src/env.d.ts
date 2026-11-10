@@ -29,6 +29,7 @@ declare namespace Cloudflare {
       | "AxoIdentityIndex"
       | "AxoPairingIndex"
       | "AxoPairingRateLimit"
-      | "AxoSessionDO";
+      | "AxoSessionDO"
+      | "AxoWhatsAppDO";
   }
 }

@@ -9,6 +9,7 @@ export * from "./app";
 export * from "./errors";
 export { APP_DEFINITIONS, macCommand, toolsOf } from "./catalog";
 export { requestTool } from "./request";
+export { chatJid, LINK_LIFETIME_MS, WATCH_INTERVAL_MS, WhatsAppDevice, whatsapp, type DeviceDeps as WhatsAppDeviceDeps } from "./apps/whatsapp";
 export { basic, bearer, header } from "./token";
 export * from "./oauth/provider";
 export { OAUTH_PROVIDER_CONFIGS } from "./oauth/providers";

@@ -23,6 +23,9 @@ import {
   isAppsMethod,
   type BashResult,
   type AppMacSignIn,
+  type AppLink,
+  type AppLinkRequest,
+  type AppName,
   type AppPhoneSignIn,
   type AppPhoneSignInRequest,
   type AccountApp,
@@ -38,7 +41,7 @@ import { ThirdPartyApps } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
 import { AppAccountRefused, BuiltinApps, appPage, type DeviceSignIn, type MacSignInCallback } from "./builtin";
-import { ProviderError, ProviderOutcomeUnknown } from "@axo/apps";
+import { ProviderError, ProviderOutcomeUnknown, type LinkedDevice } from "@axo/apps";
 import type { GoogleClient } from "./builtin/google";
 
 /**
@@ -74,6 +77,8 @@ export type AppsDeps = {
   google: GoogleClient | null;
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
+  /** A linked app's device (WhatsApp's), its own Durable Object, by the ID the account gave it. */
+  linked?: (app: AppName, device: string) => LinkedDevice;
 };
 
 /** Extra time a `bash` call waits beyond the command's own timeout, for the round trip. */
@@ -131,6 +136,7 @@ export class AccountApps {
       macs: () => this.named().map((entry) => entry.name),
       runOnMac: (mac, command, timeoutMs) => this.runOnMac(mac, command, timeoutMs),
       signInOnMac: (mac, request) => this.signInOnMac(mac, request),
+      linked: deps.linked,
     });
   }
 
@@ -589,6 +595,18 @@ export class AccountApps {
     if (!app) return { state: "failed", error: `${name} is not an app` };
     try {
       return await this.apps.phoneSignIn(app, request);
+    } catch (error) {
+      if (error instanceof AppAccountRefused) return { state: "failed", error: error.message.slice(0, 300) };
+      throw error;
+    }
+  }
+
+  /** One step of linking a linked app's device (WhatsApp): start, then where it stands. */
+  async appLink(name: string, request: AppLinkRequest): Promise<AppLink> {
+    const app = BuiltinApps.appOf(name);
+    if (!app) return { state: "failed", error: `${name} is not an app` };
+    try {
+      return await this.apps.link(app, request);
     } catch (error) {
       if (error instanceof AppAccountRefused) return { state: "failed", error: error.message.slice(0, 300) };
       throw error;

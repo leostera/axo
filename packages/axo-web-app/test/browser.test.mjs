@@ -127,6 +127,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let macPolls = 0;
   const clientRequests = [];
   const phoneSteps = [];
+  const linkSteps = [];
   /** A ChatGPT device sign-in: polls so far, and whether the person has entered the code. */
   const device = { polls: 0, entered: false };
   // The account's apps (RFD0016), as the Worker lists them.
@@ -170,6 +171,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       permissions: ["See your body measures", "See your sleep, night by night"],
       signIn: { kind: "oauth", client: { provider: "withings", ready: false, consoleUrl: "https://developer.withings.com/dashboard/", redirectUri: "https://axo.leostera.dev/api/v1/connections/oauth/callback" } },
       state: "needsSignIn", accounts: [], tools: ["get_measures", "request"], lastError: null },
+    { kind: "app", name: "apps.whatsapp", title: "WhatsApp", provider: "WhatsApp", category: "communication", description: "Read and search your WhatsApp chats, as a linked device of your account.",
+      permissions: ["Read your chats", "Never sends messages or marks them as read"], signIn: { kind: "linked", helpUrl: "https://faq.whatsapp.com/378279804439436" },
+      state: "needsSignIn", accounts: [], tools: ["get_me", "list_chats", "read_messages", "search"], lastError: null },
     { kind: "app", name: "apps.discord", title: "Discord", provider: "Discord", category: "communication", description: "A Discord bot of yours.", permissions: [],
       signIn: { kind: "token", helpUrl: "https://discord.com/developers/applications", named: false, fields: [{ name: "token", label: "Bot token", help: "In the portal.", secret: true }] },
       state: "needsSignIn", accounts: [], tools: ["send_message", "request"], lastError: null },
@@ -265,6 +269,22 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         if (step.step === "code") return json(response, { state: "password", flow: step.flow, hint: "pet" }, origin);
         apps.find((c) => c.name === "apps.telegram").accounts.push({ account: "@ada", state: "ready", lastError: null });
         json(response, { state: "done", account: "@ada" }, origin);
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/apps/apps.whatsapp/link") {
+      // WhatsApp's linking: a QR code the phone approves at the first poll; a pairing code, cancelled.
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const step = JSON.parse(body);
+        linkSteps.push(step);
+        if (step.step === "qr") return json(response, { state: "qr", flow: "whatsapp-flow-0001", qr: "2@fake-ref,fake-keys" }, origin);
+        if (step.step === "code") return json(response, { state: "code", flow: "whatsapp-flow-0002", code: "ABCD-EFGH" }, origin);
+        if (step.step === "cancel") return json(response, { state: "failed", error: "Cancelled." }, origin);
+        if (step.flow === "whatsapp-flow-0002") return json(response, { state: "code", flow: step.flow, code: "ABCD-EFGH" }, origin);
+        apps.find((c) => c.name === "apps.whatsapp").accounts.push({ account: "+447700900123", state: "ready", lastError: null });
+        json(response, { state: "done", account: "+447700900123" }, origin);
       });
       return;
     }
@@ -983,13 +1003,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByRole("link", { name: /Gmail/ }).getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Spotify", "Withings", "Discord", "UniFi",
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "Telegram", "Kraken", "GitHub", "Spotify", "Withings", "WhatsApp", "Discord", "UniFi",
       "GitHub MCP", "Cloudflare", "Cloudflare Docs", "Cloudflare Observability", "Cloudflare Browser", "Cloudflare Containers", "Cloudflare Radar", "Hugging Face", "Ahrefs", "Strava", "Stripe", "PayPal",
       "linear", "notion", "Docs: work", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 28, "every app and known server has its maker's logo, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 29, "every app and known server has its maker's logo, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
     assert.deepEqual(await cards(), ["Gmail", "1Password", "Spotify", "linear", "Docs: work"], "only what is connected");
@@ -1166,6 +1186,25 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       { step: "code", flow: "telegram-flow-0001", code: "12345" },
       { step: "password", flow: "telegram-flow-0001", password: "hunter2" },
     ]);
+
+    // WhatsApp links as a device: a QR code to scan, which the phone approves; or a pairing code for a number.
+    await page.goto(`${appUrl}/app/settings/apps/whatsapp`, { waitUntil: "networkidle" });
+    const whatsapp = page.getByRole("region", { name: "WhatsApp" });
+    await whatsapp.getByRole("button", { name: "Link account" }).click();
+    await whatsapp.getByRole("button", { name: "Link with a phone number instead" }).click();
+    await whatsapp.getByLabel("Phone number").fill("+44 7700 900123");
+    await whatsapp.getByRole("button", { name: "Get a code" }).click();
+    await expect(whatsapp.getByLabel("Pairing code").getByText("ABCD-EFGH"));
+    await shot("apps-whatsapp-code");
+    await whatsapp.getByRole("button", { name: "Cancel" }).click();
+    await whatsapp.getByRole("button", { name: "Link account" }).click();
+    await whatsapp.getByRole("button", { name: "Show a QR code" }).click();
+    await page.waitForFunction(() => document.querySelector("img.link-qr")?.naturalWidth > 0);
+    await shot("apps-whatsapp-qr");
+    await expect(whatsapp.getByText("Linked +447700900123."));
+    assert.deepEqual(await whatsapp.locator(".connection-row strong").allTextContents(), ["+447700900123"]);
+    assert.deepEqual(linkSteps.map((step) => step.step), ["code", "cancel", "qr", "poll"]);
+    assert.deepEqual(linkSteps[0], { step: "code", phone: "+44 7700 900123" });
 
     // An OAuth app of another provider, set up: its own logo and maker, and Add account as Google's.
     await page.goto(`${appUrl}/app/settings/apps/spotify`, { waitUntil: "networkidle" });

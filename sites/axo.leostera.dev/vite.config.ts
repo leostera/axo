@@ -1,5 +1,6 @@
 import react from "@vitejs/plugin-react";
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { whatsappVite } from "@axo/apps/bundling";
 import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 
@@ -15,7 +16,8 @@ function webBuild(): string {
 }
 
 export default defineConfig({
-  plugins: [react(), cloudflare()],
+  // WhatsApp's Baileys, bundled for Workers (packages/axo-apps/bundling.mjs).
+  plugins: [whatsappVite(), react(), cloudflare()],
   define: { __AXO_WEB_BUILD__: JSON.stringify(webBuild()) },
   build: {
     target: "es2022",

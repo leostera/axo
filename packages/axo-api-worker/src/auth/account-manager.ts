@@ -6,7 +6,8 @@ import { hostDOName } from "../host-do";
 import { AccountApps, type CallOutcome, type AppsCall } from "../apps/account";
 import type { DeviceSignIn } from "../apps/builtin";
 import { googleClient } from "../apps/builtin/google";
-import type { AppMacSignIn, AppPhoneSignIn, AppPhoneSignInRequest, CallRecord, AccountApp } from "@axo/protocol";
+import type { AppLink, AppLinkRequest, AppMacSignIn, AppPhoneSignIn, AppPhoneSignInRequest, CallRecord, AccountApp } from "@axo/protocol";
+import type { LinkedDevice } from "@axo/apps";
 import type { ChainCheck } from "../apps/call-log";
 
 import type { AccountProfile } from "./account-access";
@@ -414,6 +415,10 @@ export class AxoAccountManager extends DurableObject<Env> {
     return this.requireApps().appPhoneSignIn(name, request);
   }
 
+  async appLink(name: string, request: AppLinkRequest): Promise<AppLink> {
+    return this.requireApps().appLink(name, request);
+  }
+
   async appSignInLink(name: string): Promise<string> {
     return this.requireApps().signInLink(name);
   }
@@ -460,6 +465,8 @@ export class AxoAccountManager extends DurableObject<Env> {
       google: googleClient(this.env as Env & { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }),
       fetcher: (input, init) => fetch(input, init),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
+      // Each linked WhatsApp device is a Durable Object of its own, named by the account and the device.
+      linked: (_app, device) => this.ctx.exports.AxoWhatsAppDO.getByName(`${accountId}:${device}`) as unknown as LinkedDevice,
     });
   }
 

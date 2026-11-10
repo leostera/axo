@@ -139,7 +139,7 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | Slack | OAuth (user token) → Web API; the official MCP server is for approved apps only | `slack.com/api` | workspace and user | search, history, post, users |
 | Stripe (suggested MCP server) | MCP (`mcp.stripe.com`, OAuth) | n/a | n/a | n/a |
 | Telegram (built: `apps.telegram`, your own account) | Phone sign-in with your own API ID (my.telegram.org) → MTProto through GramJS, in the cloud | `149.154.167.x` (TCP) | @username or number | chats, read, search, send |
-| WhatsApp | Browser (WhatsApp Web) or Mac. The Cloud API is for business numbers only | n/a | n/a | n/a |
+| WhatsApp (built: `apps.whatsapp`, your own account, read-only) | Linked device (QR code or pairing code) → WhatsApp's multi-device protocol through Baileys, in a Durable Object per device. Unofficial: WhatsApp may restrict accounts that use it. The Cloud API is for business numbers only | `web.whatsapp.com/ws/chat` (WebSocket) | number | chats, read, search |
 | Kraken (built: `apps.kraken`) | Token, signed (API key + HMAC-SHA512), pasted or created by signing in on a Mac (kraken-cli's public client, 90-day Fast API key) | `api.kraken.com` | person | balances, trades, orders |
 | Spotify (built: `apps.spotify`) | OAuth (PKCE, client in HTTP basic, rotating refresh tokens; development mode allows only allow-listed users). Follows the February 2026 API changes: `/me/library`, `/playlists/{id}/items`, search at most 10 per type | `api.spotify.com/v1` | Spotify ID (development-mode apps get no email) | playback, devices, queue, search, playlists, library, history, top items |
 | Strava | OAuth | `www.strava.com/api/v3` | athlete name | activities, stats |

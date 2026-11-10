@@ -424,6 +424,26 @@
                         "properties": {
                           "kind": {
                             "type": "string",
+                            "const": "linked"
+                          },
+                          "helpUrl": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "format": "uri",
+                            "pattern": "^https://"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "helpUrl"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
                             "const": "token"
                           },
                           "helpUrl": {
@@ -1074,6 +1094,26 @@
                         "consoleUrl",
                         "clientHelp",
                         "clientReady"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "linked"
+                        },
+                        "helpUrl": {
+                          "type": "string",
+                          "maxLength": 2048,
+                          "format": "uri",
+                          "pattern": "^https://"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "helpUrl"
                       ],
                       "additionalProperties": false
                     },

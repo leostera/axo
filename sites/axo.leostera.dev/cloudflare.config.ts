@@ -56,6 +56,8 @@ export default defineConfig(({ isPreview }) => ({
       AxoClientDO: exports.durableObject({ storage: "sqlite" }),
       // One per account: the assets index and quota (RFD0030).
       AxoAssetsDO: exports.durableObject({ storage: "sqlite" }),
+      // One per linked WhatsApp device of an account's (RFD0016, Linked devices).
+      AxoWhatsAppDO: exports.durableObject({ storage: "sqlite" }),
       // Workers Cache in front of the asset reads; the default entrypoint stays uncached.
       AxoAssetCache: exports.worker({ cache: { enabled: true } }),
     },

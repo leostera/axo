@@ -109,7 +109,7 @@ export const COMPUTER_NAMESPACE = "computer";
 export const BASH_NAMESPACE = "bash";
 /** Names no app may take. */
 export const RESERVED_NAMES: readonly string[] = [APPS_NAMESPACE, HOSTS_NAMESPACE, COMPUTER_NAMESPACE, BASH_NAMESPACE];
-export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise", "telegram", "kraken", "github", "discord", "unifi", "spotify", "withings"] as const;
+export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise", "telegram", "kraken", "github", "discord", "unifi", "spotify", "withings", "whatsapp"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
@@ -163,6 +163,8 @@ export type AppClientRequest = z.infer<typeof appClientRequestSchema>;
  * CLI), which are its accounts; `setup` says what to set up on a Mac first. `phone`: the person
  * signs in with their phone number and the code the service sends, as a new device of theirs
  * (Telegram), with an API client they register at `consoleUrl` first (`clientReady` once set up).
+ * `linked`: Axo becomes a linked device of the person's account (WhatsApp), by a QR code they scan
+ * with their phone or a pairing code they type into it; `sends` says whether its tools can send.
  */
 /** A token app's sign-in on a Mac: the button, and what the person chooses the credential may do. */
 export const appMacSignInOfferSchema = z.object({
@@ -174,6 +176,7 @@ export const appSignInSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("device") }).strict(),
   z.object({ kind: z.literal("mac"), setup: z.string().max(1024), helpUrl: z.url({ protocol: /^https$/ }).max(2048) }).strict(),
   z.object({ kind: z.literal("phone"), consoleUrl: z.url({ protocol: /^https$/ }).max(2048), clientHelp: z.string().max(1024), clientReady: z.boolean() }).strict(),
+  z.object({ kind: z.literal("linked"), helpUrl: z.url({ protocol: /^https$/ }).max(2048) }).strict(),
   z.object({
     kind: z.literal("token"),
     /** The service's page where the person creates the token. */
@@ -237,6 +240,30 @@ export const appPhoneSignInSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
 ]);
 export type AppPhoneSignIn = z.infer<typeof appPhoneSignInSchema>;
+/**
+ * A step of linking Axo as a device of the person's account (WhatsApp): start with a QR code
+ * (`qr`), or with a pairing code for the number given (`code`); then ask, every few seconds,
+ * where it stands (`poll`), or give up (`cancel`).
+ */
+export const appLinkRequestSchema = z.discriminatedUnion("step", [
+  z.object({ step: z.literal("qr") }).strict(),
+  z.object({ step: z.literal("code"), phone: z.string().trim().regex(/^\+?[\d ()-]{6,24}$/, "enter the number with its country code") }).strict(),
+  z.object({ step: z.literal("poll"), flow: z.string().min(16).max(64) }).strict(),
+  z.object({ step: z.literal("cancel"), flow: z.string().min(16).max(64) }).strict(),
+]);
+export type AppLinkRequest = z.infer<typeof appLinkRequestSchema>;
+/**
+ * Where linking stands: connecting to the service, a QR code to scan (it changes every so often),
+ * a pairing code to type into the phone, linked and syncing (done), or failed and over.
+ */
+export const appLinkSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("connecting"), flow: z.string().min(16).max(64) }).strict(),
+  z.object({ state: z.literal("qr"), flow: z.string().min(16).max(64), qr: z.string().min(1).max(1024) }).strict(),
+  z.object({ state: z.literal("code"), flow: z.string().min(16).max(64), code: z.string().min(4).max(16) }).strict(),
+  z.object({ state: z.literal("done"), account: z.string().min(3).max(320) }).strict(),
+  z.object({ state: z.literal("failed"), error: z.string().max(512) }).strict(),
+]);
+export type AppLink = z.infer<typeof appLinkSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
 export const serviceSchema = z.union([appNameSchema, appServiceSchema]);
 

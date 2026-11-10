@@ -36,6 +36,10 @@ packageExtensions:
   "@cloudflare/kumo":
     peerDependencies:
       "@types/react": "*"
+  # Baileys imports protobufjs' `long` without declaring it; Bazel's node_modules has only what is declared.
+  baileys:
+    dependencies:
+      long: "^5.2.0"
 
 minimumReleaseAgeExclude:
   - "@leostera/atxf@0.3.0"

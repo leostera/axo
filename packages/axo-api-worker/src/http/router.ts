@@ -151,6 +151,7 @@ app.post("/api/v1/account/apps/:name/device/poll", appsRoute("devicePoll"));
 app.post("/api/v1/account/apps/:name/mac-sign-in", appsRoute("macSignIn"));
 app.post("/api/v1/account/apps/:name/mac-sign-in/poll", appsRoute("macSignInPoll"));
 app.post("/api/v1/account/apps/:name/phone-sign-in", appsRoute("phoneSignIn"));
+app.post("/api/v1/account/apps/:name/link", appsRoute("link"));
 // Assets (RFD0030): a person's, and a Mac's with its host credential.
 const assetsRoute = (route: AssetRoute) => (context: Context<Api>) =>
   serveAccountAssets(

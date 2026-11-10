@@ -26,7 +26,7 @@ test("every app in the protocol has a definition named after it, and every tool 
 test("an HTTP app's credential only goes to its own hosts, over https", () => {
   for (const app of APPS) {
     const definition = APP_DEFINITIONS[app];
-    if (definition.signIn === "mac" || definition.signIn === "phone") continue;
+    if (definition.signIn === "mac" || definition.signIn === "phone" || definition.signIn === "linked") continue;
     assert.ok(allowedUrl(definition, new URL(definition.apiOrigin)), `${app}'s API origin is one of its hosts`);
     assert.equal(allowedUrl(definition, new URL("https://evil.example/")), false);
     assert.equal(allowedUrl(definition, new URL(definition.apiOrigin.replace("https:", "http:"))), false);

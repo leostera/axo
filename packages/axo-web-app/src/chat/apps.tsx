@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { appDeviceSignInSchema, appMacSignInSchema, appPhoneSignInSchema, appsResults, type AppDeviceSignIn, type AppPhoneSignIn, type CallRecord, type AccountApp } from "@axo/protocol";
+import { appDeviceSignInSchema, appLinkSchema, appMacSignInSchema, appPhoneSignInSchema, appsResults, type AppDeviceSignIn, type AppLink, type AppPhoneSignIn, type CallRecord, type AccountApp } from "@axo/protocol";
+import QRCode from "qrcode";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
@@ -25,6 +26,7 @@ import tasksLogo from "./logos/tasks.svg";
 import telegramLogo from "./logos/telegram.svg";
 import unifiLogo from "./logos/unifi.svg";
 import wiseLogo from "./logos/wise.svg";
+import whatsappLogo from "./logos/whatsapp.svg";
 import withingsLogo from "./logos/withings.svg";
 
 /**
@@ -316,7 +318,7 @@ function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared &
   const phone = app.signIn.kind === "phone" ? app.signIn : undefined;
   const settingUp = (client !== undefined && (!client.ready || changingClient)) || (phone !== undefined && (!phone.clientReady || changingClient));
   const add = (account = "") => {
-    if (app.signIn.kind === "token" || app.signIn.kind === "phone") {
+    if (app.signIn.kind === "token" || app.signIn.kind === "phone" || app.signIn.kind === "linked") {
       setAdding({ account });
       return;
     }
@@ -339,6 +341,7 @@ function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared &
       : `Axo forgets its token. To stop it working, delete it at ${app.provider || "the service"} too.`
     : app.signIn.kind === "device" ? `Axo signs out of ${app.provider || "the provider"}.`
     : app.signIn.kind === "phone" ? `Axo logs its device out of ${app.provider || "the service"}.`
+    : app.signIn.kind === "linked" ? `Axo unlinks its device from your ${app.provider || app.title}.`
     : `Axo's access is revoked at ${app.provider || "the provider"}.`;
   const signOut = (account: string) => {
     if (!window.confirm(`Remove ${account} from ${app.title}? Your Sessions can no longer use it. ${revoked}`)) return;
@@ -377,10 +380,10 @@ function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared &
               <Icon name={app.signIn.kind === "mac" ? "laptop" : "person"} size={18} />
               <span className="connection-copy">
                 <strong>{account.account}</strong>
-                {account.state === "needsSignIn" ? <small>{app.signIn.kind === "token" ? account.lastError ?? "Needs a new token" : "Needs sign-in"}</small> : null}
+                {account.state === "needsSignIn" ? <small>{app.signIn.kind === "token" ? account.lastError ?? "Needs a new token" : app.signIn.kind === "linked" ? account.lastError ?? "Needs linking again" : "Needs sign-in"}</small> : null}
               </span>
               {account.state === "needsSignIn"
-                ? <button className="bordered-button" disabled={busy || device !== null} onClick={() => add(account.account)}>{app.signIn.kind === "token" ? "Add token" : "Sign in"}</button>
+                ? <button className="bordered-button" disabled={busy || device !== null} onClick={() => add(account.account)}>{app.signIn.kind === "token" ? "Add token" : app.signIn.kind === "linked" ? "Link again" : "Sign in"}</button>
                 : <span className="mac-dot online" aria-label="Connected" title="Connected" />}
               {app.signIn.kind === "mac" ? null : (
                 <button className="plain-icon-button" disabled={busy} onClick={() => signOut(account.account)} aria-label={`Remove ${account.account}`}>
@@ -390,7 +393,7 @@ function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared &
             </div>
           ))}
           {app.signIn.kind === "mac" && !app.accounts.length ? <p className="grouped-row muted">Pair a Mac to use {app.title}.</p> : null}
-          {adding === null && device === null && app.signIn.kind !== "mac" && !settingUp ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>Add account</button> : null}
+          {adding === null && device === null && app.signIn.kind !== "mac" && !settingUp ? <button className="grouped-row add-row" disabled={busy} onClick={() => add()}>{app.signIn.kind === "linked" ? "Link account" : "Add account"}</button> : null}
         </div>
         {client?.ready && !changingClient
           ? <p className="sheet-note">Signs in with your own {app.provider || app.title} OAuth app. <button className="link" type="button" onClick={() => setChangingClient(true)}>Change client</button></p>
@@ -412,6 +415,11 @@ function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared &
           ? <TokenForm app={app} signIn={app.signIn} macs={macs} account={adding.account} busy={busy} act={act} appsUrl={appsUrl}
             onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Added ${account}.` }); void act(async () => undefined); }}
             onFailed={(error) => setNotice({ kind: "error", text: error })} onCancel={() => setAdding(null)} />
+          : null}
+        {adding !== null && app.signIn.kind === "linked"
+          ? <LinkForm app={app} helpUrl={app.signIn.helpUrl} busy={busy} act={act} appsUrl={appsUrl}
+            onDone={(account) => { setAdding(null); setNotice({ kind: "ok", text: `Linked ${account}. Axo is syncing your chats; older ones take a few minutes.` }); void act(async () => undefined); }}
+            onFailed={(error) => { setAdding(null); setNotice({ kind: "error", text: error }); }} onCancel={() => setAdding(null)} />
           : null}
         {adding !== null && app.signIn.kind === "phone"
           ? <PhoneSignInForm app={app} busy={busy} act={act} appsUrl={appsUrl}
@@ -550,6 +558,104 @@ function ClientForm({ app, client, busy, act, appsUrl, onDone, onCancel }: {
         Axo keeps them encrypted with your account and never shows the secret again.
         {app.provider === "Google" ? " One client serves every Google app." : ""}
         {onCancel ? <> Accounts signed in with the old one may need to sign in again. <button className="link" type="button" onClick={onCancel}>Cancel</button></> : null}
+      </p>
+    </>
+  );
+}
+
+/**
+ * Links Axo as a device of the person's account (WhatsApp), the way its desktop app is linked: a
+ * QR code to scan with the phone, or a pairing code to type into it, for linking from the phone
+ * itself. The page asks Axo every two seconds where it stands; the QR code changes as WhatsApp
+ * renews it.
+ */
+function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel }: {
+  app: App; helpUrl: string; busy: boolean; appsUrl: string;
+  act: Shared["act"]; onDone: (account: string) => void; onFailed: (error: string) => void; onCancel: () => void;
+}) {
+  const [shown, setShown] = useState<Extract<AppLink, { state: "connecting" | "qr" | "code" }> | null>(null);
+  const [usingCode, setUsingCode] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [image, setImage] = useState<string | null>(null);
+  const provider = app.provider || app.title;
+  const url = `${appsUrl}/${encodeURIComponent(app.name)}/link`;
+  const finished = useRef({ onDone, onFailed });
+  finished.current = { onDone, onFailed };
+  const answered = (answer: AppLink) => {
+    if (answer.state === "done") return finished.current.onDone(answer.account);
+    if (answer.state === "failed") return finished.current.onFailed(answer.error);
+    setShown(answer);
+  };
+  const start = (body: Record<string, string>) => act(async () => answered(appLinkSchema.parse(await request(url, "POST", body))));
+  const flow = shown?.flow ?? null;
+  useEffect(() => {
+    if (!flow) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const answer = appLinkSchema.parse(await request(url, "POST", { step: "poll", flow }));
+        if (!live) return;
+        answered(answer);
+        if (answer.state === "done" || answer.state === "failed") return;
+      } catch {
+        // A poll that failed is asked again; the link goes on.
+      }
+      if (live) timer = setTimeout(() => void poll(), 2000);
+    };
+    timer = setTimeout(() => void poll(), 2000);
+    return () => { live = false; clearTimeout(timer); };
+  }, [flow, url]);
+  const qr = shown?.state === "qr" ? shown.qr : null;
+  useEffect(() => {
+    if (!qr) return setImage(null);
+    let live = true;
+    void QRCode.toDataURL(qr, { margin: 1, width: 264, errorCorrectionLevel: "L" }).then((data) => { if (live) setImage(data); }, () => undefined);
+    return () => { live = false; };
+  }, [qr]);
+  const cancel = () => {
+    if (flow) void request(url, "POST", { step: "cancel", flow }).catch(() => undefined);
+    onCancel();
+  };
+  const steps = `On your phone, open ${provider} › Settings › Linked devices › Link a device`;
+  return (
+    <>
+      <h2 className="settings-section">Link {provider}</h2>
+      {!shown ? (
+        usingCode ? (
+          <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void start({ step: "code", phone: phone.trim() }); }}>
+            <p className="grouped-row muted">Your {provider} number, with its country code. You type the code Axo shows into {provider} on that phone.</p>
+            <input className="grouped-row" required aria-label="Phone number" placeholder="+44 7700 900123" type="tel" autoComplete="tel"
+              value={phone} onChange={(event) => setPhone(event.target.value)} autoFocus />
+            <button className="grouped-row" disabled={busy} type="submit">Get a code</button>
+          </form>
+        ) : (
+          <div className="grouped">
+            <p className="grouped-row muted">Axo becomes a linked device of yours, like {provider} on a computer. It reads your chats; it never sends messages or marks them read.</p>
+            <button className="grouped-row" disabled={busy} onClick={() => void start({ step: "qr" })}>Show a QR code</button>
+            <button className="grouped-row" disabled={busy} onClick={() => setUsingCode(true)}>Link with a phone number instead</button>
+          </div>
+        )
+      ) : (
+        <div className="grouped device-code">
+          {shown.state === "connecting" ? <p className="grouped-row muted">Connecting to {provider}…</p> : null}
+          {shown.state === "qr" ? <>
+            <p className="grouped-row muted">{steps}, and point the camera at this code. It changes every so often; this page finishes by itself once your phone has linked.</p>
+            <div className="grouped-row link-qr-row">
+              {image ? <img className="link-qr" src={image} alt={`${provider} linking QR code`} width={264} height={264} /> : null}
+            </div>
+          </> : null}
+          {shown.state === "code" ? <>
+            <p className="grouped-row muted">{steps} › Link with phone number instead, and enter this code. This page finishes by itself once your phone has linked.</p>
+            <div className="grouped-row device-code-row">
+              <span className="connection-copy"><strong>Pairing code</strong></span>
+              <code aria-label="Pairing code">{shown.code}</code>
+            </div>
+          </> : null}
+        </div>
+      )}
+      <p className="sheet-note">
+        Axo links through an unofficial {provider} client, and {provider} may restrict accounts it sees using one. <a href={helpUrl} target="_blank" rel="noreferrer">About linked devices</a>. <button className="link" type="button" onClick={cancel}>Cancel</button>
       </p>
     </>
   );
@@ -1029,6 +1135,7 @@ const APP_LOGOS: Record<string, string> = {
   "apps.unifi": unifiLogo,
   "apps.spotify": spotifyLogo,
   "apps.withings": withingsLogo,
+  "apps.whatsapp": whatsappLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
 const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise", "apps.kraken", "apps.unifi"]);

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@axo/api-worker": "workspace:*",
+    "@axo/apps": "workspace:*",
     "@axo/protocol": "workspace:*",
     "@axo/web-app": "workspace:*",
     "react": "^19.3.1",

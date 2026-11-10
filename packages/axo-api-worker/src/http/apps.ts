@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { appMacSignInRequestSchema, appPhoneSignInRequestSchema, appServiceSchema, appTokenRequestSchema, appNameSchema, appTitleSchema, serviceSchema, type CallRecord, type AccountApp } from "@axo/protocol";
+import { appLinkRequestSchema, appMacSignInRequestSchema, appPhoneSignInRequestSchema, appServiceSchema, appTokenRequestSchema, appNameSchema, appTitleSchema, serviceSchema, type CallRecord, type AccountApp } from "@axo/protocol";
 import type { ChainCheck } from "../apps/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
@@ -30,6 +30,7 @@ type AppsStub = {
   startAppMacSignIn(name: string, mac: string, preset: string, account: string | null): Promise<Record<string, unknown> | { error: string }>;
   pollAppMacSignIn(name: string, flow: string): Promise<Record<string, unknown>>;
   appPhoneSignIn(name: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
+  appLink(name: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
   appSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
@@ -37,7 +38,7 @@ type AppsStub = {
   appsLogIntegrity(): Promise<ChainCheck>;
 };
 
-export type AppsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll" | "phoneSignIn";
+export type AppsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity" | "token" | "device" | "devicePoll" | "macSignIn" | "macSignInPoll" | "phoneSignIn" | "link";
 
 const addBody = z.object({ name: appTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
@@ -64,7 +65,7 @@ export async function serveApps(
   const stub = account(ctx, caller.accountId);
   // Signing in, removing and setting a client also take an app, `apps.<app>` (its provider's client).
   const names = route === "signIn" || route === "remove" || route === "client" ? serviceSchema
-    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" || route === "phoneSignIn" ? appServiceSchema : appNameSchema;
+    : route === "token" || route === "device" || route === "devicePoll" || route === "macSignIn" || route === "macSignInPoll" || route === "phoneSignIn" || route === "link" ? appServiceSchema : appNameSchema;
   const name = rawName === undefined ? null : names.safeParse(rawName);
   if (name && !name.success) return json({ error: "Invalid app name" }, 400);
   try {
@@ -133,6 +134,12 @@ export async function serveApps(
         const body = appPhoneSignInRequestSchema.safeParse(await request.json().catch(() => null));
         if (!body.success) return json({ error: body.error.issues[0]?.message ?? "Expected a sign-in step" }, 400);
         return json(plain(await stub.appPhoneSignIn(name!.data!, body.data)));
+      }
+      case "link": {
+        // WhatsApp's linking: { step: "qr" } or { step: "code", phone }, then { step: "poll" | "cancel", flow }.
+        const body = appLinkRequestSchema.safeParse(await request.json().catch(() => null));
+        if (!body.success) return json({ error: body.error.issues[0]?.message ?? "Expected a linking step" }, 400);
+        return json(plain(await stub.appLink(name!.data!, body.data)));
       }
     }
   } catch (error) {

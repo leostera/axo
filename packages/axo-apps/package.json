@@ -5,7 +5,11 @@
   "type": "module",
   "description": "Axo's apps: each app's sign-in, API hosts and tools, and the OAuth providers they sign in with (RFD0016)",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bundling": {
+      "types": "./bundling.d.mts",
+      "default": "./bundling.mjs"
+    }
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -17,6 +21,7 @@
     "@octokit/core": "^7.0.8",
     "@octokit/plugin-paginate-rest": "^16.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^18.0.0",
+    "baileys": "7.0.0-rc14",
     "big-integer": "^1.6.52",
     "discord-api-types": "^0.38.57",
     "oauth4webapi": "^3.8.8",

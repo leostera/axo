@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { whatsappEsbuild } from "@axo/apps/bundling";
 export { Peer } from "../testing/client";
 
 export const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -195,6 +196,8 @@ export async function harness(configuration: { bindings?: Record<string, string>
     external: ["cloudflare:workers", "node:*", ...builtinModules],
     // CommonJS packages require them; production's build turns those into imports, esbuild needs a `require`.
     banner: { js: 'import { createRequire as __axoRequire } from "node:module"; const require = __axoRequire("/");' },
+    // WhatsApp's Baileys, as the site's build bundles it: its WebAssembly beside the bundle.
+    plugins: [whatsappEsbuild({ wasmDir: directory })],
   });
   const provider = new Provider();
   const options = convertV4MiniflareOptions({
@@ -207,8 +210,11 @@ export async function harness(configuration: { bindings?: Record<string, string>
     },
     // The Worker's outbound requests go to the identity provider, or to what a test adds.
     outboundService: async (request: Request) => (await configuration.outbound?.(request)) ?? provider.handle(request),
-    modules: true,
-    script: await readFile(bundle, "utf8"),
+    modulesRoot: directory,
+    modules: [
+      { type: "ESModule", path: bundle },
+      { type: "CompiledWasm", path: join(directory, "whatsapp-bridge.wasm") },
+    ],
     compatibilityDate: "2026-10-09",
     compatibilityFlags: ["nodejs_compat", "enable_ctx_exports"],
     exports: {
@@ -220,6 +226,7 @@ export async function harness(configuration: { bindings?: Record<string, string>
       AxoHostDO: { type: "durable-object", storage: "sqlite" },
       AxoClientDO: { type: "durable-object", storage: "sqlite" },
       AxoAssetsDO: { type: "durable-object", storage: "sqlite" },
+      AxoWhatsAppDO: { type: "durable-object", storage: "sqlite" },
     },
     durableObjects: {
       TEST_IDENTITIES: { className: "AxoIdentityIndex", useSQLite: true },
@@ -230,6 +237,7 @@ export async function harness(configuration: { bindings?: Record<string, string>
       TEST_HOST_DO: { className: "AxoHostDO", useSQLite: true },
       TEST_CLIENT_DO: { className: "AxoClientDO", useSQLite: true },
       TEST_ASSETS: { className: "AxoAssetsDO", useSQLite: true },
+      TEST_WHATSAPP: { className: "AxoWhatsAppDO", useSQLite: true },
     },
     r2Buckets: ["PUBLIC_SESSIONS", "AXO_ASSETS"],
     workerLoaders: { LOADER: {} },

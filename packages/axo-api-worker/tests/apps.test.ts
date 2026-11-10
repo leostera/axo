@@ -207,7 +207,7 @@ test("apps is a reserved name, and an account without a Google client lists Goog
   assert.ok(gmail?.kind === "app" && gmail.signIn.kind === "oauth");
   assert.equal(gmail.signIn.client?.ready, false);
   const tools = result((await daemon.call("axo.apps.search", { sessionId: crypto.randomUUID(), code: `async () => [...new Set(codemode.tools().map((t) => t.service))]` })) as Reply).result;
-  assert.deepEqual(tools.filter((s: string) => s.startsWith("apps.")), ["apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.kraken", "apps.discord", "apps.unifi"],
+  assert.deepEqual(tools.filter((s: string) => s.startsWith("apps.")), ["apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.kraken", "apps.discord", "apps.unifi", "apps.whatsapp"],
     "an app waiting for its client has no tools; one that needs none does");
 });
 
@@ -286,7 +286,7 @@ test("every Workspace app is listed, signs in with full access to its own servic
   const listed = result(await call("axo.apps.list")).apps.filter((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
     ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.slides", 0],
-    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.github", 0], ["apps.discord", 0], ["apps.unifi", 0], ["apps.spotify", 0], ["apps.withings", 0],
+    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0], ["apps.github", 0], ["apps.discord", 0], ["apps.unifi", 0], ["apps.spotify", 0], ["apps.withings", 0], ["apps.whatsapp", 0],
   ]);
   const scopes: Record<string, string> = {};
   for (const app of ["apps.gmail", "apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.slides", "apps.contacts", "apps.tasks", "apps.meet", "apps.cloud"]) {
@@ -630,4 +630,30 @@ test("a token app's account is added, and ChatGPT signed in with a code, through
   assert.equal(poll.status, 200);
   assert.equal(((await poll.json()) as { state: string }).state, "pending");
   assert.equal((await post("apps.chatgpt/device/poll", { flow: "nope" })).status, 400);
+});
+
+test("WhatsApp links through the app's page route, from a device of its own that connects to WhatsApp", async (t) => {
+  // No WhatsApp here: the device's connection is refused, so the link ends, as it would offline.
+  const reached: Array<{ url: string; origin: string | null; upgrade: string | null }> = [];
+  const h = await harness({
+    outbound: (request) => {
+      if (new URL(request.url).hostname !== "web.whatsapp.com") return undefined;
+      reached.push({ url: request.url, origin: request.headers.get("Origin"), upgrade: request.headers.get("Upgrade") });
+      return new Response("no", { status: 403 });
+    },
+  });
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const post = (path: string, body?: unknown) => fetch(new URL(`api/v1/account/apps/${path}`, h.url), {
+    method: "POST", headers: { ...session.headers, Origin: "https://axo.leostera.dev", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const bad = await post("apps.whatsapp/link", { step: "code", phone: "not a number" });
+  assert.equal(bad.status, 400, await bad.clone().text());
+  const started = await post("apps.whatsapp/link", { step: "qr" });
+  assert.equal(started.status, 200, await started.clone().text());
+  assert.deepEqual(await started.json(), { state: "failed", error: "WhatsApp closed the connection. Start again." });
+  assert.deepEqual(reached[0], { url: "https://web.whatsapp.com/ws/chat", origin: "https://web.whatsapp.com", upgrade: "websocket" },
+    "Baileys, with its WebAssembly, ran in the device and dialled WhatsApp as its desktop app does");
+  const listed = await (await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers })).json() as { apps: Array<{ name: string; accounts: unknown[] }> };
+  assert.deepEqual(listed.apps.find((a) => a.name === "apps.whatsapp")?.accounts, []);
 });

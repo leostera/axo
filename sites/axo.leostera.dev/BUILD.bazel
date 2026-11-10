@@ -17,6 +17,7 @@ _CONFIG = [
 
 _NODE_MODULES = [
     ":node_modules/@axo/api-worker",
+    ":node_modules/@axo/apps",
     ":node_modules/@axo/protocol",
     ":node_modules/@axo/web-app",
     ":node_modules/@cloudflare/vite-plugin",

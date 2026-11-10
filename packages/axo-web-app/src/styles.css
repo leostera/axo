@@ -944,3 +944,7 @@ a.link:hover { text-decoration: underline; }
 .redirect-row { justify-content: space-between; gap: 12px; padding-block: 8px; }
 .redirect-row code { overflow-wrap: anywhere; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; user-select: all; }
 .app-tile.logo.full img { width: 100%; height: 100%; }
+/* Linking WhatsApp: the QR code to scan, on white so phones read it in dark mode too. */
+.link-qr-row { justify-content: center; padding-block: 16px; }
+.link-qr { width: 264px; height: 264px; background: #fff; border-radius: 8px; image-rendering: pixelated; }
+.device-code > .muted { padding-block: 10px; }
