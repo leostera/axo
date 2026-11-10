@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.47 (Mac app build 318, axod 70)
+
+### Fixed
+
+- The Mac no longer drops offline for the phone and the web after a while. A terminal that looked like it had output, with none there, could hold up part of axod until it printed again, the connection to the cloud included, while Axo on the Mac still said it was connected.
+
 ## 0.46 (Mac app build 317, axod 69)
 
 ### Changed
