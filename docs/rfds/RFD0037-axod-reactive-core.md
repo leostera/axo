@@ -1,16 +1,26 @@
 # RFD0037 - Axo: axod's reactive core
 
 - Feature Name: `axod-reactive-core`
-- Status: Accepted
+- Status: Implemented (steps 1 to 4 and 6; step 5 and the thread list superseded by [RFD0041](RFD0041-axod-session-tasks.md) and [RFD0042](RFD0042-async-relay-and-extensions.md))
 - Author: leostera
 - Start Date: 2026-11-09
-- Updated: 2026-11-09
+- Updated: 2026-11-10
 - Document Type: Proposal
 - Amends: [RFD0034](RFD0034-axod-as-an-axp-server.md) (step 7), [RFD0018](RFD0018-session-sync-and-client-delivery.md) (Upload)
 
 ## Summary
 
 Everything inside axod waits for a cause, on one tokio runtime. A cause is a message on a channel, bytes on a descriptor, a file change, a child's exit, a signal, or a deadline that is itself the point (a timeout, a backoff, a heartbeat). Nothing checks on a timer whether something changed, and no thread exists except the blocking calls tokio has no async form of (SQLite, libghostty-vt, accessibility). The host's heartbeat moves from every 10 seconds to every minute.
+
+## Current state (2026-11-10, 0.49)
+
+- **Built as written:** the uploader waits for causes, with FSEvents through `notify` (`crates/axo-relay/src/sync/watch.rs`; `specs/sessions/upload-wakes.ts`). Each child has an exit watch on tokio's SIGCHLD stream (`crates/axo-pty/src/exit.rs`, `WatchedChild`). The host heartbeats every 60 s (`HEARTBEAT_INTERVAL` in `crates/axo-relay/src/relay.rs`) against a 150 s lease (`LIMITS.leaseMs` in `packages/axo-api/src/contracts.ts`), and a newer socket from the same Mac replaces the old route (`packages/axo-api-worker/tests/mac-socket.test.ts`). The Mac app is pushed events on `axo.session.events.stream` (`crates/axo-server/src/event_stream.rs`, `AxodEventStream.swift`), and `axo.session.subscribe`, `axo.session.events.next` and `axo.session.unsubscribe` answer method-not-found (`crates/axod/tests/conformance/daemon.rs`). PTY output pumps are `AsyncFd` tasks. The side-car's start is watched through `notify` and its child's exit (`crates/axod-infer`).
+- **Superseded by RFD0041:** step 5 (`StateChanges`, `wait_for_state`, `Interrupt`), process inspection and `pi_recovery` in step 2, the transcript lock's `EVFILT_PROC` wake, and the bridge, attachment and reaper threads in step 6. Session tasks and the lifeline removed what those waits were for.
+- **Superseded by RFD0042:** the relay's request bridges that step 5 kept as blocked threads, and sign-in's `poll(2)` listener. Both are futures now.
+- **Still a timer that is not the point:** waiting for a transcript's writer lock retries every 5 ms until its deadline (`crates/axo-agent/src/lock.rs`). `flock` cannot be awaited, and since RFD0041 removed the `EVFILT_PROC` wake, nothing reports a release. The wait happens only at a Pi's launch.
+- **Not recorded:** the before-and-after numbers that Measuring it proposes.
+
+The step sections below are the design as accepted, with notes where the code later changed.
 
 ## Motivation
 
@@ -44,7 +54,7 @@ A timer is allowed only when the deadline is what's being waited for. "Check aga
 
 ### Child processes: a task each, woken by SIGCHLD
 
-Each child axod spawns (a shell's program, Pi, an inspection tool, the inference side-car) gets a task on axo-pty's runtime that listens to tokio's SIGCHLD stream and, on each wake, asks `waitid(WEXITED | WNOHANG | WNOWAIT)` whether its own child has exited. It listens before it first looks, so no exit falls between. The child stays unreaped: its owner reaps through `try_wait` only once the task has seen the exit, so a pid, and the process group it leads, cannot be reused while anything could still signal it (process inspection kills a leader's whole group after the leader exits). That is why this is not `tokio::process`, which reaps as soon as it hears. Every exit wakes every task, one non-blocking syscall each: about a hundred, a few times a minute. The reaper stops sweeping: it is told which child exited.
+Each child axod spawns (a shell's program, Pi, the inference side-car; inspection tools until RFD0041 removed them) gets a task on the caller's runtime (axod's, since RFD0041; axo-pty's own two-thread runtime only outside one) that listens to tokio's SIGCHLD stream and, on each wake, asks `waitid(WEXITED | WNOHANG | WNOWAIT)` whether its own child has exited. It listens before it first looks, so no exit falls between. The child stays unreaped: its owner reaps through `try_wait` only once the task has seen the exit, so a pid, and the process group it leads, cannot be reused while anything could still signal it (process inspection kills a leader's whole group after the leader exits). That is why this is not `tokio::process`, which reaps as soon as it hears. Every exit wakes every task, one non-blocking syscall each: about a hundred, a few times a minute. The reaper stops sweeping: it is told which child exited.
 
 As first built (0.38 to 0.43) this was one thread per child blocked in `waitid`: 113 of axod's 132 threads on a working Mac.
 
@@ -72,6 +82,8 @@ Checked with `feynman check sessions/upload-wakes --depth 40`: every property ho
 
 ### Step 2: processes are waited for, not polled
 
+*The per-child waiter and git queries are built as described (git runs under `tokio::process` in `crates/axo-server/src/workspace_state.rs`). The other bullets describe code that RFD0041 deleted. Kept as history.*
+
 - The per-child waiter above, for shells and Pis. The reaper's 100ms tick (tests only today) goes.
 - Inspection tools and git queries wait on their child's waiter (`WatchedChild`) until their deadline.
 - `pi_controls` waiting for a Pi to exit awaits the shell's exit instead of polling the Session state every 50ms.
@@ -91,6 +103,8 @@ Checked with `feynman check sessions/upload-wakes --depth 40`: every property ho
 
 ### Step 5: waits on the Session state are events
 
+*Superseded by [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) and [RFD0041](RFD0041-axod-session-tasks.md). The Session state is no longer one mutex, and `StateChanges`, `wait_for_state` and `Interrupt` are gone. The relay's blocked request threads became futures in RFD0042. SQLite runs on one `tokio-rusqlite` thread. Kept as history.*
+
 The Session state stays one `std` mutex. Every change to it writes SQLite in the same critical section, so moving it into actors would only move the lock, across 140 call sites, for nothing a person would notice. What this step removes is the waiting: nothing that waits on the state looks again on a timer.
 
 - `StateChanges` counts each release of the state's lock after a write. `wait_for_state` reads the count, checks the state, then sleeps until the count moves: Pi's start and a Pi's controls use it.
@@ -101,6 +115,8 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 
 ### Step 6: descriptors on `AsyncFd`
 
+*As amended. PTY pumps are built as described, and run on axod's runtime. Since RFD0041, terminal attachments are tasks (`crates/axo-server/src/attachments.rs`; short handshake writes use the blocking pool), and each Pi's bridge is an async `UnixStream` read inside its Session's task (`crates/axo-agent/src/pi/link.rs`). Since RFD0042, sign-in's callback listener is a `tokio::net::TcpListener` whose connection tasks live in a `JoinSet`. The side-car bullet is built.*
+
 - PTY output pumps: `AsyncFd` on the master, one task per pane, on axo-pty's own two-thread runtime, so they work the same in axod and in tests. The master stays blocking (attached clients share its file description), so a pump reads once per readiness and again while `poll` says there is more.
 - The terminal attach listener: one `poll(2)` on the listener and a stop socket, with no timeout. Each attached client keeps its two threads, one streaming output and one waiting for the client to hang up: both are blocked, not polling, and only the panes on screen are attached.
 - Each Pi's bridge: one `poll(2)` on the socket and its `Interrupt`, not 100ms slices.
@@ -108,6 +124,8 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 - The inference side-car's start: `notify` on its run directory (the socket appearing, the log growing) and its exit; its health is asked only when one of them changes.
 
 ### What stays a thread
+
+*Historical: the list as of 0.44. Current threads, per RFD0041 and RFD0042: axod's main thread and runtime workers, SQLite's one `tokio-rusqlite` thread, the FSEvents threads of `notify` watchers, and blocking-pool threads for synchronous OS and library work (Keychain, accessibility and TCC, process and filesystem setup, transcript hashing and reads), which expire when idle. libghostty-vt has no thread: each PTY's pump feeds its headless terminal inline (`crates/axo-pty/src/output.rs`). Attachments and Pi bridges have no threads.*
 
 - One FSEvents run-loop thread per `notify` watcher: the uploader's, and the side-car's while it starts.
 - Two per attached terminal, and one per Pi's bridge.
@@ -137,4 +155,4 @@ The Session state stays one `std` mutex. Every change to it writes SQLite in the
 
 ## Unresolved questions
 
-- Whether the Mac app's other loops (`AutomaticPiRestarter`, the phone's `ConversationPull`) poll something axod could push. They are looked at with step 4.
+- ~~Whether the Mac app's other loops (`AutomaticPiRestarter`, the phone's `ConversationPull`) poll something axod could push.~~ Answered by reading them (2026-11-10). Neither polls axod's state. `AutomaticPiRestarter` (`apple/AxoMac/Sources/AxoMac/Sessions/AutomaticPiRestarter.swift`) is a retry with exponential backoff, capped at 30 s, for a Pi pane that stays unavailable: a deadline that is the point. `ConversationPull` is the phone's pull-to-refresh gesture state, not a loop.

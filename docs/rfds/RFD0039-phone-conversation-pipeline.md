@@ -1,10 +1,10 @@
 # RFD0039 - Axo: The Phone's Conversation Pipeline
 
 - Feature Name: `axo-phone-conversation-pipeline`
-- Status: Accepted
+- Status: Implemented (slices 1 and 2: `72bfc14`, `f8443ae`; see As built)
 - Author: leostera
 - Start Date: 2026-11-09
-- Updated: 2026-11-09
+- Updated: 2026-11-10
 - Document Type: Proposal
 
 ## Summary
@@ -176,3 +176,11 @@ These are slices, each tested, committed and installed on the phone:
 
 1. The reveal clock in the feed, and its regression test. This alone fixes the stall (72bfc14).
 2. `ConversationList` with all of it, in one change: the rows, top and bottom, following and the end pin, the reader's row kept in place, older pages read on scrolling up, and pull-to-refresh. It replaces `ScrollingToEnd`, `Scrolled`, `keepWithinEnd` and the lazy stack. Splitting it did not pay: the old and new lists could not share the scroll position, so a half-way slice would have had two owners, which is what this RFD removes.
+
+## As built
+
+Both rollout slices shipped. `ConversationFeed` owns the reveal clock (`apple/AxoPhone/Sources/AxoPhoneModel/ConversationFeed.swift`). `ConversationList` is a `UICollectionView` with a diffable data source and `UIHostingConfiguration` cells, whose layout pass alone sets the offset (`apple/AxoPhone/Sources/AxoPhone/ConversationList.swift`). Later changes amend it:
+
+- **Tool rows** (`b813ab1`). Tools used one after another join into one block. The 30-point space between rows is now each row's own bottom padding (`ConversationItemView.gap`), so a block's rows can join. The layout has no inter-row spacing.
+- **A row the reader opens stays put** (`f5523e9`). Whether a row is open is the feed's (`Item.open`), not the cell's. When the reader opens or folds a row, the list keeps that row where it is on screen, even while following. It follows the end again only if the end is still in view. This is a third rule beside "following" and "the reader's row stays", and a deliberate exception to I4 for the frames in which a reader-opened row resizes.
+- **Not built:** the long-chat test from Tests (a real 1,500-record log as a fixture that shows its last row in the first screenshot, with no older page read, and a reader's row held within a pixel as an older page loads). The device check on Leo's phone is not recorded here.

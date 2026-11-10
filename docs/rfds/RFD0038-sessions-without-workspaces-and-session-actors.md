@@ -1,10 +1,10 @@
 # RFD0038 - Axo: Sessions without Workspaces, and a task per Session
 
 - Feature Name: `session-actors`
-- Status: Accepted
+- Status: Part 1 implemented. Part 2 superseded by [RFD0041](RFD0041-axod-session-tasks.md)
 - Author: leostera
 - Start Date: 2026-11-09
-- Updated: 2026-11-09
+- Updated: 2026-11-10
 - Document Type: Proposal
 - Supersedes: [RFD0014](RFD0014-workspaces-and-agent-led-sessions.md) (Workspaces)
 - Amends: [RFD0022](RFD0022-sessions-across-macs.md) (transcript paths), [RFD0034](RFD0034-axod-as-an-axp-server.md) (split by owner), [RFD0037](RFD0037-axod-reactive-core.md) (step 5)
@@ -12,6 +12,8 @@
 ## Summary
 
 Workspaces go, from axod and every client. A Session has a folder, its own, chosen when it is made and the home directory by default; nothing groups Sessions or keeps one open. Then the Session manager, today one object behind one lock, becomes a task per Session that owns everything about it, a registry that finds and starts them, and one task that writes SQLite.
+
+**Status (2026-11-10).** Part 1 shipped: Workspaces are gone from axod, the Worker and every client. Part 2's goal shipped too, but by [RFD0041](RFD0041-axod-session-tasks.md), in one change rather than the operation-by-operation migration below, and with every Pi as axod's child rather than taken over. Part 2 is kept for its reasoning. RFD0041 is the contract.
 
 ## Motivation
 
@@ -33,7 +35,7 @@ Later, Pi will be able to move its Session to another folder (`/axo-set-cwd` in 
 ### Part 1: Sessions without Workspaces
 
 - **A Session's folder** is `sessions.initial_pwd`, which every Session already has (a Workspace Session's is its Workspace's directory). `SessionRecord.folder` carries it to the Mac. The remote snapshot and the sync metadata carry `folderName`, its last component: remote clients never see a path from them.
-- **Creating:** `axo.session.create { folder? | like? }` makes a Session with Pi and a terminal in `folder` (absolute, an existing directory), in the folder of the open Session `like`, or in the home directory; both at once, a relative or missing folder, or a `like` that is not open are invalid params. A Session whose Pi cannot start is not made. `axo.remote.session.create { target, like? }` takes only `like`: the phone and the web never send a path. axod's MCP tool `session_create` takes `like`, where `"self"` is the agent's own Session.
+- **Creating:** `axo.session.create { folder? | like? }` makes a Session with Pi and a terminal in `folder` (absolute, an existing directory), in the folder of the open Session `like`, or in the home directory; both at once, a relative or missing folder, or a `like` that is not open are invalid params. A Session whose Pi cannot start is not made. `axo.remote.session.create { target, like? }` takes only `like`: the phone and the web never send a path. axod's MCP tool `session_create` takes `folder` or `like`, as the local method does, where `"self"` is the agent's own Session (`crates/axo-mcp/src/lib.rs`).
 - **Removed outright** (the app and axod ship together; the Worker first):
   - local: `axo.workspace.list`, `.create`, `.rename`, `.archive`, `.session.create`, and the `workspaceChanged` event;
   - remote: `axo.remote.workspace.list` and `axo.remote.workspace.session.create`;
@@ -45,10 +47,12 @@ Later, Pi will be able to move its Session to another folder (`/axo-set-cwd` in 
 
 ### Part 2: a task per Session
 
+*Superseded by [RFD0041](RFD0041-axod-session-tasks.md), which built the registry, the Session tasks and the store writer (`tokio-rusqlite`) in one change, and rejected this part's step-by-step order. `specs/sessions/session-task.ts` was never written. Kept as history.*
+
 Started once part 1 has shipped. It gets its own Feynman spec, `specs/sessions/session-task.ts`, before any code moves: create, close, a pane's exit, restore, a Pi's restart and takeover, and shutdown, with races and crashes.
 
 - **One task per Session** owns its panes, its layout, its Pi (the bridge on `AsyncFd`, takeover as a state machine, queued prompts, activity) and its rows. Everything that happens to a Session is a message in its mailbox, handled one at a time: a close, a pane's exit and a restart cannot interleave, and whichever comes second sees what the first did. A child's exit is a message to its Session, so the reaper goes; a close or shutdown is the next message, so `Interrupt` and `wait_for_state` go.
-- **A Pi axod does not control is stopped.** A Pi still holding a Session's transcript when that Session's task starts its own (after an axod restart, or a Pi pane restarted by hand or by the app) is asked to shut down, then SIGTERM and SIGKILL go to its verified process group, and a new Pi starts on the same transcript. Busy or idle makes no difference: the Pi is Axo's to run, and one with no PTY axod owns has no one watching it. A holder that cannot be verified as the Session's Pi is never signalled. Built ahead of part 2: there was an idle-only takeover (`shutdownIfIdle`) for restarts nobody asked for, which left a busy survivor running; it is gone.
+- **A Pi axod does not control is stopped.** A Pi still holding a Session's transcript when that Session's task starts its own (after an axod restart, or a Pi pane restarted by hand or by the app) is asked to shut down, then SIGTERM and SIGKILL go to its verified process group, and a new Pi starts on the same transcript. Busy or idle makes no difference: the Pi is Axo's to run, and one with no PTY axod owns has no one watching it. A holder that cannot be verified as the Session's Pi is never signalled. Built ahead of part 2 (`5a7e2a6`, 0.45): there was an idle-only takeover (`shutdownIfIdle`) for restarts nobody asked for, which left a busy survivor running; it is gone. Since RFD0041 (0.46) there is no takeover at all: every Pi holds axod's lifeline and exits with it, and a survivor still holding the transcript's lock, whose stored pid and start time match, is killed when axod next starts that Session's Pi.
 - **A registry task** keeps the index of open Sessions and each one's summary (updated by its task), settings and the viewport; it lists, creates, restores at startup, and restarts a Session's task if it panics.
 - **A writer task** owns the SQLite connection; everyone writes through it, matching SQLite's one writer. Reads that need no ordering use their own read-only connections.
 - **Shared, not owned:** the event bus, as it is. Peer views move out of the Session state to their own owner beside the relay.
@@ -70,4 +74,4 @@ Started once part 1 has shipped. It gets its own Feynman spec, `specs/sessions/s
 
 ## Unresolved questions
 
-- Whether a Session's task should also own its libghostty-vt terminal state, or keep reaching it through a channel.
+- ~~Whether a Session's task should also own its libghostty-vt terminal state, or keep reaching it through a channel.~~ Settled by RFD0041 as built: neither. Each PTY's output pump in `axo-pty` owns its headless terminal and feeds it inline (`crates/axo-pty/src/output.rs`). The Session task holds the pane, and attachments subscribe to the pump.

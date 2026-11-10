@@ -1,10 +1,10 @@
 # RFD0040 - Axo: The Web's Conversation Pipeline
 
 - Feature Name: `axo-web-conversation-pipeline`
-- Status: Accepted
+- Status: Implemented (`8f8e45c`; see As built)
 - Author: leostera
 - Start Date: 2026-11-09
-- Updated: 2026-11-09
+- Updated: 2026-11-10
 - Document Type: Proposal
 - Amends: RFD0039 (the same pipeline, for the web app)
 
@@ -109,3 +109,10 @@ The conversation itself still renders on every event (54 times for one streamed 
 - **Virtualise the list** (render only the rows near the screen). The chat already opens with 50 rows and grows by pages, and browsers lay out a few thousand nodes cheaply. Virtualising brings back estimated heights, the phone's original bug, so it is not worth doing until a measurement says otherwise.
 - **`content-visibility: auto` on rows.** It is cheaper than virtualising, but it also introduces estimated heights off screen, under the anchoring. Not now, for the same reason.
 - **Memoise harder without a model** (stable props, `useMemo` on the rows). It cuts some renders, but leaves the reveal in the view, and the hidden-tab stall with it.
+
+## As built
+
+Shipped in `8f8e45c`: `src/chat/feed.ts`, the memoised rows, the `ResizeObserver` scroll owner in `src/chat/conversation.tsx`, `workbench.setVisible` from `visibilitychange`, and the budgets in `test/conversation.test.mjs` against `bench/conversation-baseline.json` and `bench/conversation.json`. Later changes amend it:
+
+- **Tool rows** (`43a47be`). Tools used one after another render as one block of rows, and each opens to its input and output. The browser tests share one fake cloud (`test/fake-cloud.mjs`).
+- **A row the reader opens stays put** (`f5523e9`). The `ResizeObserver` keeps a row the reader just opened or folded where it was, even while following. It follows the end again only if the end is still in view. Before this, following held the end still and pushed the opened row up under the reader's pointer.

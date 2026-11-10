@@ -4,13 +4,22 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-11-09
-- Updated: 2026-11-09
+- Updated: 2026-11-10
 - Document Type: Proposal
 - Amends: [RFD0032](RFD0032-push-delivery.md), [RFD0031](RFD0031-durable-objects-wake-on-demand.md)
 
 ## Summary
 
 Every client speaks protocol 3 (RFD0032), and each still falls back to protocol 2 when protocol 3 is refused. This RFD removes protocol 2 in two releases. The first stops the clients falling back. The second removes what only protocol 2 used: the ClientDO's following, notices and record pump, and the HostDO's followers, watchers and notice batches. Removal waits for evidence that nothing speaks protocol 2, gathered as described below.
+
+## Current state (2026-11-10)
+
+Still a draft. Only the evidence instrument is built. Neither release has started, and both wait on the evidence gate below:
+
+- **Built:** the Worker logs `client_hello` with the protocol and the kind of client for each account hello (`packages/axo-api-worker/src/client-do.ts`, `8e55647`). `notice_batch` is still logged.
+- **Release A, not started.** axod still falls back (`Protocol::Relayed`, `RELAYED_AFTER_REFUSAL` and `peers.protocol_fallback` in `crates/axo-relay/src/peers.rs`). So do `@axo/app` (`ProtocolRefused` in `packages/axo-app/src/index.ts`) and the Swift `AccountConnection` (`withFallback`).
+- **Release B, not started.** `AxoClientDO` still serves protocol 2, and `AxoHostDO` still keeps followers and flushes notice batches (`flushNotices`, `forgetFollower` in `packages/axo-api-worker/src/host-do.ts`).
+- **Evidence:** no 7-day window has been recorded in this document yet.
 
 ## Motivation
 

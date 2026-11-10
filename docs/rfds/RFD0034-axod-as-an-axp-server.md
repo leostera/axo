@@ -1,10 +1,10 @@
 # RFD0034 - Axo: axod as an AXP Server with Extensions
 
 - Feature Name: `axo-axod-as-an-axp-server`
-- Status: Accepted (provisionally, 2026-11-07, to unblock the work; revisit on review)
+- Status: Partially implemented (accepted provisionally 2026-11-07; see Current state). Steps 7 and 8 superseded by [RFD0037](RFD0037-axod-reactive-core.md), [RFD0041](RFD0041-axod-session-tasks.md) and [RFD0042](RFD0042-async-relay-and-extensions.md)
 - Author: leostera
 - Start Date: 2026-11-07
-- Updated: 2026-11-07 (steps 1 and 3 built; per-method callers on the local socket)
+- Updated: 2026-11-10
 - Document Type: Proposal
 - Amends: [RFD0016](RFD0016-connections-and-tools.md), [RFD0029](RFD0029-ask-the-person.md)
 
@@ -12,7 +12,32 @@
 
 axod becomes a small AXP server (`axo-server`) plus extensions that know nothing about it. The server owns connections, trust, routing, events and cancellation. Every feature lives in an extension crate that registers methods behind one async API: Sessions, agent, terminal, connections, questions, computer use and assets. A request is the same request whether it arrives on the local socket, through the relay, or from `axod mcp`. So the relay's second dispatch table goes away, and every handler is told who is calling and when the caller has gone. The move happens one crate at a time. Before each step lands, a black-box conformance suite must stay green and coverage must not drop.
 
+## Current state (2026-11-10, 0.49)
+
+This section is the current contract. The Motivation and the step-by-step notes below are kept as the history of how axod got here. Where a step's notes describe a shape that later changed, they are marked as historical.
+
+**Built:**
+
+- **The MCP server in axod** (step 1, `crates/axo-mcp`). `axod mcp` opens `axo.mcp.open`, the connection is upgraded (`axo_ipc::Upgrades`, `axo_mcp::upgrade`), and tools call axod's methods in process through `axo_ipc::Local`. `axod mcp` itself is a byte copier on two threads (`serve_stdio`).
+- **Per-method callers** (step 2, local half). `axo_ipc::peer::Caller` is `Signed(Signer)` or `Relay`. `TypedMethods::add_typed_only(Only { caller, .. })` refuses any other caller before parsing parameters. Since RFD0042, every typed handler is async, and `add_blocking_method` and the thread-local peer and cancellation hand-offs are gone.
+- **Cancellation** (step 3). `axo_ipc::cancel` cancels a connection's unanswered requests when it closes. `axod mcp` cancels on `notifications/cancelled` or end of input. Questions, forwarded app calls and prompts waiting for Pi stop when cancelled. `specs/cancellation/questions.ts` models the questions part.
+- **Extension registration** (step 4, partly). `axo_ipc::extension::Extension` has a name and `register(&mut IoHandler)`, with one owner per method. axod is assembled from `Daemon`, `Relay`, `Remote` and `Sessions` (in `axo-server`), and `Apps`, `Assets`, `QuestionsExtension` and `ComputerExtension`.
+- **Extensions out** (step 5, partly). `crates/axo-apps`, `crates/axo-assets`, `crates/axo-questions` and `crates/axo-computer-use`.
+- **The relay as a transport** (step 6). `crates/axo-relay/src/relay/forward.rs` forwards any `axo.remote.*` request whole to `RelayHost::answer_remote` and refuses everything else. The account's calls are ordinary async methods of the `Remote` extension in `crates/axo-server/src/remote.rs`, which admit only `Caller::Relay` and answer with the redacted remote views.
+- **One runtime, no blocking bridges** (step 7, done another way). RFD0037, RFD0041 and RFD0042 replaced step 7's plan. axod runs on one tokio runtime. Sessions are tasks, SQLite is one `tokio-rusqlite` thread, `RelayHost`, `HostLinkStore` and `SyncStore` return boxed futures, and the blocking pool runs only synchronous OS and library work.
+- **The Session manager split** (step 8, done another way). RFD0041 replaced `SessionManager`, `SessionState` and `AgentState` with a registry, one task per Session, a catalog `watch`, a `broadcast` event bus and stand-alone services. The split is by Session, not by owner as step 8 proposed.
+
+**Accepted here and not built.** None of these is rejected, and nothing scheduled depends on them:
+
+- `axo-server` becoming the transport and router core, with features in separate crates. Sessions, agent, terminal, connections and sync are still modules of `crates/axo-server`, and the relay transport is still `crates/axo-relay`. The step 8 notes defer the move until a second user needs one of them.
+- The richer extension API: `Request<'_>` with `caller()`, `cancelled()`, `deadline()` and typed services, `Extension::start` for background tasks, `long_wait`, and concurrency limits declared on methods. Handlers still read the caller and cancellation from task-locals (`axo_ipc::peer::current`, `axo_ipc::cancel::current`). Relay job limits are still per-kind `JobLimit` semaphores in `crates/axo-relay/src/relay/jobs.rs`.
+- `Caller::Device(DeviceId)` and `Caller::Agent(SessionId)`. The account is one `Caller::Relay`. Device proofs are checked only on remote answers to questions (`crates/axo-server/src/devices.rs`). An agent is known by the Session its `axo.mcp.open` named.
+- The `axp` Rust crate (`axp/rust/` does not exist) and deleting `axo-protocol`. Both wait on the wire moving to AXP, which no RFD has scheduled.
+- A fake hub in the conformance harness.
+
 ## Motivation
+
+*Historical: axod as of 2026-11-07, before steps 1 to 8.*
 
 axod works, but it has grown into shapes that make the next three steps hard: tokio throughout, ATXF everywhere, and push delivery.
 
@@ -150,6 +175,8 @@ Handlers that wait (questions, `events.next`, forwarded connections, Pi prompts 
 
 ### What stays blocking
 
+*Historical: the plan as of 2026-11-07. The current boundaries are in [RFD0041](RFD0041-axod-session-tasks.md) and [RFD0042](RFD0042-async-relay-and-extensions.md). libghostty-vt has no thread of its own: each PTY's output pump feeds its headless terminal inline (`crates/axo-pty/src/output.rs`). SQLite has one `tokio-rusqlite` thread. Cua, accessibility and Keychain calls run on the blocking pool.*
+
 Each of these sits behind exactly one boundary, and nothing else may block the executor:
 
 - libghostty-vt: one thread per terminal, reached through a channel;
@@ -158,6 +185,8 @@ Each of these sits behind exactly one boundary, and nothing else may block the e
 - PTYs: `AsyncFd` on the master; `fork`/`exec` on `spawn_blocking`.
 
 ### The Session manager, reimagined
+
+*Superseded by [RFD0041](RFD0041-axod-session-tasks.md): axod split by Session (a task per Session and a registry), not by owner. Kept for the reasoning.*
 
 Today `SessionState` is one struct under one lock. It is split by owner:
 
@@ -180,8 +209,9 @@ Each step is one or a few commits on main. Each lands only with `bazel test //cr
    - **Terminal, agent and sessions move with step 8 (2026-11-07).** Unlike the four above, each owns part of `SessionState`: the shells, the Pi bridges, the catalog, all under the manager's one lock. Moving them first would mean a host trait that hands out that lock, which is today's coupling with a crate boundary drawn through it. They move when the state is split by owner, each taking its part.
 6. **The relay as a transport**: delete `dispatch.rs` and the `RelayHost` methods it used.
    - **Found while preparing it (2026-11-07):** a remote call is not its local twin with a `target`. The account sees a *redacted* view: `RemoteSessionSnapshot` has Workspace names but no paths, and the layout pruned to terminal panes. That is a security property, pinned by `conformance_relay` ("the account sees names, not paths"). So mapping `axo.remote.*` onto the ordinary methods needs the methods to answer per caller: `Caller::Device` gets the redacted view, `Caller::Local` the full one. That is the view layer of the `sessions` extension, so step 6 moves after step 8 (splitting the Session manager), where those views get an owner. Until then `dispatch.rs` stays, held still by `conformance_relay`, which covers every remote call the parity table promises.
-   - **Built (2026-11-08).** The relay is a transport: `axo-relay/src/relay/forward.rs` hands each of the account's requests to the host whole, and refuses anything not named `axo.remote.*` (so no local method is reachable from the cloud) and runs no notification. `RelayHost` has one `answer_remote` instead of nineteen `remote_*` methods. The calls are ordinary methods of axod, in `axo-server/src/session/remote.rs` (the `remote` extension), registered beside the local ones and answering only `Caller::Relay`; a local program calling one is told the method does not exist. `axo_ipc::peer` has callers: `Caller::Signed(Signer)` for a local program with that signature, `Caller::Relay` for the account, which runs as `Peer::Relay` (`peer::as_relay`), something no socket client can be; `Only` takes a `Caller`. The redacted views, the stale-host check, the error codes and messages, and a prompt's attachments and limit moved with the calls; the wire is unchanged, held by `conformance_relay` and the Worker's relay tests. Prompts still run on a task of their own, since one waits for Pi. The account's calls keep their own names and shapes until the wire moves to AXP, after the records do.
+   - **Built (2026-11-08).** The relay is a transport: `axo-relay/src/relay/forward.rs` hands each of the account's requests to the host whole, and refuses anything not named `axo.remote.*` (so no local method is reachable from the cloud) and runs no notification. `RelayHost` has one `answer_remote` instead of nineteen `remote_*` methods. The calls are ordinary methods of axod, in `axo-server/src/session/remote.rs` (the `remote` extension, now `crates/axo-server/src/remote.rs`), registered beside the local ones and answering only `Caller::Relay`; a local program calling one is told the method does not exist. `axo_ipc::peer` has callers: `Caller::Signed(Signer)` for a local program with that signature, `Caller::Relay` for the account, which runs as `Peer::Relay` (`peer::as_relay`), something no socket client can be; `Only` takes a `Caller`. The redacted views, the stale-host check, the error codes and messages, and a prompt's attachments and limit moved with the calls; the wire is unchanged, held by `conformance_relay` and the Worker's relay tests. Prompts still ran on a task of their own then, since one waits for Pi; since RFD0042, `answer_remote` is awaited directly on the relay's task. The account's calls keep their own names and shapes until the wire moves to AXP, after the records do.
 7. **tokio throughout**: the relay socket, the uploader, followers, PTY pumps, the database thread.
+   - *Historical. The notes below record steps as they landed between 2026-11-07 and 2026-11-08. RFD0037 (causes, not ticks), RFD0041 (Session tasks, `tokio-rusqlite`, no reaper, no bridge or attachment threads) and RFD0042 (no `block_on` or `call_blocking`, async `RelayHost`) finished and replaced them. "What remains threads" below no longer holds.*
    - **The relay socket (built, 2026-11-07).** It was a loop that read with a 20ms timeout, so it woke 50 times a second when idle and delayed every message by up to 20ms. Now it uses `tokio-tungstenite` on a current-thread runtime on the relay thread, and one `select!` waits on the socket, the outgoing queue (a tokio channel that threads still send to without blocking), the heartbeat, the expiry of half-received messages, and `RelayControl`'s `Notify` for stop and reconnect. Requests that the host answers at once (dispatch, a person's answer, computer status) go in arrival order to one thread, and local events go to another, so neither holds up the socket. The handshake now times out after 30s instead of waiting forever. `conformance_relay` checks that calls aren't delayed by a poll (the median of 40 is under 5ms; it was about 21ms). Peers still use the blocking socket until the followers move.
    - **The rest of the relay, and the MCP server (built, 2026-11-08).** axod has one multi-thread runtime (`axo_server::axod_runtime`, four workers). Stopping is `axo_ipc::Stop` (a flag, a `Notify` and a `Condvar` for threads) and signals arrive as tokio signal streams, so the 20ms watchers in the accept loop and the signal check are gone. The relay connection, the followers of other Macs and the uploader are tasks; what blocks inside them (the Keychain, the link file, a sync turn, processing a peer's frame) runs on the blocking pool. A `bash` job is a `tokio::process` task: its exit and output are awaited, not polled every 10ms on three threads. The MCP server is async: an upgrade is an async function given the connection's halves, `Local::call` is a future, and each tool call is a task with its own `Cancellation` in a task-local, given up by `notifications/cancelled` or by the input ending. The computer-use gate and Cua calls run on the blocking pool. `axod mcp`, a separate process, still copies bytes on two threads.
    - **Nothing in axod wakes on a timer while idle (2026-11-08).** The threads that stay block on what they wait for, with no timeout:
@@ -192,18 +222,19 @@ Each step is one or a few commits on main. Each lands only with `bazel test //cr
      - each Pi's bridge worker polls Pi's socket and a wake socket that every command writes to; it read with a 200ms timeout, so every command waited about 200ms before reaching Pi (`conformance_latency` now measures a few milliseconds).
    - **What remains threads:** the PTY pumps and attachment watchers (blocking reads, one per shell or pane), the Pi bridge workers (one per Pi), the database thread, and one-shot helpers (shell cleanup, Pi restarts, flushing queued prompts). None of them polls. They become tasks with step 8, when the terminal and agent extensions own their PTYs and Pis. `axod attach`'s resize forwarder wakes on SIGWINCH through a pipe (it checked a flag every 25ms).
 8. **The Session manager split** behind `Sessions`.
+   - *Historical. RFD0041 deleted `SessionManager`, `SessionState`, `AgentState` and the lock order below. `TerminalInput` survives, as each running pane's input writer (`crates/axo-server/src/terminal_input.rs`).*
    - **Closed (2026-11-08), by the data.** Since build 53, the Session state's lock is held long only by the startup restore (2–2.7s once per start, spawning every shell, before axod's socket exists, so nobody waits on it) and by the reaper (rarely 100–200ms). SQLite never shows up, so the database does not get a thread of its own: it stays with the catalog, which owns it, and its 102 call sites stay as they are. With the agents' state under its own lock and terminal input written outside the Session lock, what remains of the split is moving terminals, agents and sessions into crates. That waits for a second user of one of them: today each would need a host trait handing back the Session lock, which is the coupling with a crate boundary drawn through it. Step 6 did not need it: the views per caller are the `remote` extension's.
    - **The agents' state has its own lock (2026-11-08).** What axod knows of its Pis beyond their panes (activity, controls, dormant Pis, the launch, queued prompts, provenance) is `AgentState` in `session/agents.rs`, under `SessionManager.agents`, no longer inside `SessionState`. The order is fixed: the Session state's lock first, then the agents'; never the Session state while holding the agents'. `lock_agents()` marks the thread, `lock_state()` asserts in debug builds that it isn't marked, and a thread takes the agents' lock once, so a wrong order fails tests instead of deadlocking. A site that decides on panes and agents together (a Pi's binding is current, then its activity changes; a Pi exits, then its prompts are dropped) holds both; readiness, `axo.daemon.health` and reading a Pi's controls hold only the agents'. Functions over the state that need the agents take them as a parameter (`session_metadata`, `close_session`, `still_starting`). Next: the terminals' state (peer views, the viewport, attachments), then the database on its own thread, then each part into its crate.
    - **A pane's input is written outside the Session lock (2026-11-08).** Writing to a PTY whose program isn't reading blocks, with no limit: the master is a blocking descriptor shared with every attached client (`axod attach` writes to it too, so it can't be made non-blocking), and `poll` on a macOS PTY says writable when a 64-byte write still blocks. Input was written under the Session state's lock, so one large paste into a busy program stopped all of axod. Each running pane now has a `TerminalInput` (`session/terminal_input.rs`): its own copy of the master, the person's input sequence, and a turn, so one write per pane at a time. The lock is held only to find the pane. A pane that takes no input holds up only its own writers, which give up after `TERMINAL_INPUT_WRITE_TIMEOUT` (5s) with `TimedOut`; closing the pane ends the stuck write.
 
-Steps 1 to 3 are small and can start at once. Step 4 is the one that needs review. Steps 7, 8 (as far as the data asked) and 6 are built; terminal, agent and sessions move into crates when something besides axod needs one.
+Steps 1 to 3 and 6 are built. Steps 4 and 5 are partly built. Steps 7 and 8 were finished another way by RFD0037, RFD0041 and RFD0042. Terminal, agent and sessions move into crates when something besides axod needs one (Current state).
 
 ### Testing
 
 - **Conformance suite** (`crates/axod/tests/conformance`, harness in `tests/support`). It drives the real binary over its socket and through `axod mcp`, with a fake Pi (`testdata/fake_pi.rs`) that speaks the bridge. It is hermetic: its own `HOME`, file credentials, and a relay URL where nothing listens. Areas: daemon, sessions, account, elicitations, mcp.
 - **Inventory** (`conformance_inventory`): every advertised method is called by a black-box test, and every tool `axod mcp` lists is called in `mcp.rs`. A method may only be listed as uncovered, and that list may only shrink.
 - **The Worker's relay tests** cover the linked paths end to end through the real Worker.
-- **Coverage** (2026-11-07, unit plus black-box plus Worker end to end):
+- **Coverage** (a snapshot from 2026-11-07, before RFD0041 rebuilt `axo-server`; not re-measured since; unit plus black-box plus Worker end to end):
 
   | Crate | Lines |
   |---|---|
@@ -235,7 +266,7 @@ Steps 1 to 3 are small and can start at once. Step 4 is the one that needs revie
 - **Split files, not crates.** `axo-store` and `axo-relay` were split into modules this way already. That helps reading but not build times or boundaries: a module can still take the catalog lock.
 - **One crate per AXP extension, exactly.** This is tidy, but `sessions` and `agent` share panes and Pi recovery too closely to be split along the spec's lines first. The layout above follows the code's own seams and can be split further later.
 - **A rewrite from scratch** against AXP. It would throw away behaviour the conformance suite now pins down, such as restarts, crash recovery and dormant Pis, for a rewrite that would have to find all of it again.
-- **Keep `RelayHost` and make it async.** It would stay a second API, only async.
+- **Keep `RelayHost` and make it async.** It would stay a second API, only async. (RFD0042 later made `RelayHost` async, but only after step 6 had shrunk it to a transport adapter with one `answer_remote`, so it is not the second API this rejected.)
 
 ## Unresolved questions
 

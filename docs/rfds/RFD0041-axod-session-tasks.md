@@ -1,7 +1,7 @@
 # RFD0041 - Axo: axod as tasks, and every process its child
 
 - Feature Name: `axod-session-tasks`
-- Status: Accepted
+- Status: Implemented (0.46, `57c2c50`; the side-car in 0.48, `5795a4c`)
 - Author: leostera
 - Start Date: 2026-11-10
 - Updated: 2026-11-10
@@ -52,7 +52,7 @@ Services: questions, computer use, input key, assets, devices, git state
 - **Registry** (`sessions.rs`): owns which Sessions are open and their tasks' mailboxes, the viewport, the launch's readiness, reopening and the focus a resume asks for. It creates, closes, reopens and imports Sessions, and restores them at boot.
 - **Session task** (`session/`): one per open Session. It owns its panes' processes, its Pi (launching, its bridge connection as a stream inside the task, activity, controls, queued prompts, dormancy), and writes its own rows. Commands arrive on its mailbox; child exits and bridge records arrive on the same mailbox. It never waits on anything slow inline: a Pi's answer to a prompt is awaited by the caller, which the task hands the bridge's sender to.
 - **Catalog** (`catalog.rs`): a `watch` channel holding every open Session's `SessionRecord`, written by Session tasks as their records change. `axo.session.list`, the relay's sync, the questions extension's "is this Session open" and the attach socket's shell lookup read it without asking any task.
-- **Store** (`store.rs`): `tokio-rusqlite`'s connection, the only SQLite handle. Async callers await it; the relay's synchronous calls, which run on the blocking pool, block on it.
+- **Store** (`store.rs`): `tokio-rusqlite`'s connection, the only SQLite handle. Every caller awaits it. (As first built, the relay's synchronous calls blocked on it from the blocking pool; [RFD0042](RFD0042-async-relay-and-extensions.md) made those calls async and removed the bridge.)
 - **Events** (`events.rs`): one `broadcast` channel of `Arc<Event>`. A subscription is a receiver with its scope and Session filter; falling more than the channel's capacity behind gives `subscription.lagged` and the client relists, as before. Terminal output is published only while someone streams it.
 - **Services** (`core.rs`): stand-alone values beside the Sessions, given to the extensions that use them. `Core` is what every part shares; it holds no Session state.
 
@@ -66,11 +66,13 @@ Services: questions, computer use, input key, assets, devices, git state
 
 ### What goes
 
-`takeover.rs`, `process_inspection.rs`, `interrupt.rs`, the bridge's shutdown-if-idle handshake, `lock.rs`'s `ProcessExit` kqueue, `SessionManager`, `StateChanges`, `wait_for_state`, `PiWake`, the reaper, the bridge worker threads, the attachment threads and acceptor, `add_blocking_method` for axod's own methods, the per-subscriber `EventQueue`s, and axo-pty's own runtime when it runs inside axod.
+`takeover.rs`, `process_inspection.rs`, `interrupt.rs`, the bridge's shutdown-if-idle handshake, `lock.rs`'s `ProcessExit` kqueue, `SessionManager`, `StateChanges`, `wait_for_state`, `PiWake`, the reaper, the bridge worker threads, the attachment threads and acceptor, `add_blocking_method` for axod's own methods, the per-subscriber `EventQueue`s, and axo-pty's own runtime when it runs inside axod. (RFD0042 later removed `add_blocking_method` altogether.)
+
+Without the `ProcessExit` wake, waiting for a transcript's writer lock is a 5 ms retry bounded by its deadline (`crates/axo-agent/src/lock.rs`). It happens only when a Pi launches: for up to 250 ms while a child forked before a release still holds the lock (`FORK_EXEC_WINDOW`), and for up to 2 s after a previous Pi is killed (`KILLED_RELEASE`).
 
 ### Order of work
 
-One change: the old core is deleted, not migrated. The integration suites (`//crates/axod:rpc_tests`, the conformance targets, the Swift interop tests and the relay's end-to-end tests) are the contract it must keep. `axod mcp` as a thin proxy and the removal of `axod terminal-attach` follow as their own releases.
+One change: the old core is deleted, not migrated. The integration suites (`//crates/axod:rpc_tests`, the conformance targets, the Swift interop tests and the relay's end-to-end tests) are the contract it must keep. `axod terminal-attach` was removed in its own release (0.48, `fedde36`). `axod mcp` was already a thin proxy (below). The unit tests the change dropped were ported back separately (`6265d2f`, RFD0042).
 
 The inference side-car (`axod-infer`, llama.cpp's server) is axod's child too. It cannot read a lifeline itself, so it runs under a small shell that does and kills it when the lifeline ends (`Lifeline::guarded`); the model download runs the same way. A side-car an earlier axod left running is found through its socket's peer (`LOCAL_PEERPID` on `infer.sock`, in axod's private run directory), killed and replaced on the next question. `axod mcp` was already a thin proxy (RFD0034): the computer-use gate that starts the side-car runs in axod.
 

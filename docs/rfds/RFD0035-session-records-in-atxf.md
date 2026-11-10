@@ -4,7 +4,7 @@
 - Status: Implemented
 - Author: leostera
 - Start Date: 2026-11-08
-- Updated: 2026-11-08
+- Updated: 2026-11-10
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0025](RFD0025-agent-xchange-protocol.md)
 
@@ -37,7 +37,9 @@ ATXF's converters read whole files, and a Session can be 250 MB (the largest on 
 
 All 1931 of this Mac's Pi sessions that don't carry a transcript stream to exactly the records `toAtxf` reads. A line carrying a transcript, which only `fromAtxf` writes, is refused.
 
-Until `@leostera/atxf` 0.2.1 is published, axo applies the commit as a pnpm patch to 0.2.0 (`patches/@leostera__atxf@0.2.0.patch`). The same commit makes the schema validator compile on first use: compiling generates code, which Workers refuse, and importing the package must work in a Worker.
+axo depends on `@leostera/atxf` 0.3.0, which ships the stream and a schema validator that compiles on first use: compiling generates code, which Workers refuse, and importing the package must work in a Worker. (At first axo applied the commit as a pnpm patch to 0.2.0; `af45f01` dropped the patch for 0.3.0.)
+
+The converter recorded in `atxf_converter` is still `@leostera/atxf@0.2.0+7898efe pi.stream` (`ATXF_CONVERTER` in `packages/axo-api-worker/src/session-atxf.ts`), although the Worker now runs 0.3.0. See Unresolved questions.
 
 ### Storage
 
@@ -86,7 +88,6 @@ The wire, `pi/3` hashes and chains, the upload handshake, truncation, and every 
 
 - An object holding a large Session reads all of it back once each time it wakes to translate. That's 2.5 s of CPU for the largest Session here. Every append to a cold object leaves it behind, so this is once per wake that appends: one alarm, a billed request, and the read-back. The append itself never waits for it. RFD0032's push delivery touches SessionDOs only to append, so they go cold more often. The ops-cost review (2026-11-08) put the worst case at about 32k GB-s and 1.3B rows read a month, against 400k and 25B included.
 - Storage grows by about the size of each record's content again. The bytes of the line are not stored twice.
-- A patched dependency until ATXF 0.2.1 is published.
 
 ## Alternatives
 
@@ -96,6 +97,8 @@ The wire, `pi/3` hashes and chains, the upload handshake, truncation, and every 
 - **A separate table of ATXF records.** The translation is one per row and goes with the row on a cut. Columns on the row keep that true without a second delete.
 
 ## Unresolved questions
+
+- Whether `ATXF_CONVERTER` should name 0.3.0. Records translated since `af45f01` are labelled with the 0.2.0 commit that the 0.3.0 stream came from. If 0.3.0 writes the same records, the label is only stale. If it does not, Sessions translated before and after the upgrade carry different translations under one converter name, which defeats the column's purpose (ATXF §17.4). Changing it means deciding whether existing Sessions are re-translated.
 
 - When a reader needs ATXF, Sessions no one has touched since this shipped must be translated first: a sweep over every SessionDO, or translation on first read.
 - Whether to stop storing `line` once AXP carries ATXF, keeping it only as `native`.
