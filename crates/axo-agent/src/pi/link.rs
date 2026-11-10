@@ -344,8 +344,12 @@ async fn follow(
                     Ok(0) | Err(_) => break Outcome::Closed,
                     Ok(length) => length,
                 };
-                buffer.extend_from_slice(&chunk[..length]);
-                if let Some(outcome) = drain_records(&mut buffer, connection, &mut pending, report, context) {
+                let fresh = &chunk[..length];
+                // Only a newline ends a record: a chunk without one completes nothing, so a large
+                // record is not searched again for every chunk of it.
+                let completes = fresh.contains(&b'\n');
+                buffer.extend_from_slice(fresh);
+                if completes && let Some(outcome) = drain_records(&mut buffer, connection, &mut pending, report, context) {
                     break outcome;
                 }
                 if buffer.len() > MAX_RECORD_BYTES {
@@ -397,68 +401,85 @@ fn drain_records(
     report: &mut (impl FnMut(LinkEvent) -> bool + Send),
     context: &str,
 ) -> Option<Outcome> {
-    while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
-        let line: Vec<u8> = buffer.drain(..=newline).collect();
+    let mut start = 0;
+    let outcome = loop {
+        let Some(length) = buffer[start..].iter().position(|byte| *byte == b'\n') else {
+            break None;
+        };
+        let line = start..start + length;
+        start = line.end + 1;
         if line.len() > MAX_RECORD_BYTES {
+            break Some(Outcome::Invalid);
+        }
+        if let Some(outcome) = apply_record(&buffer[line], connection, pending, report, context) {
+            break Some(outcome);
+        }
+    };
+    buffer.drain(..start);
+    outcome
+}
+
+/// Applies one record; `Some` when the connection must end.
+fn apply_record(
+    line: &[u8],
+    connection: &mut Connection<'_>,
+    pending: &mut HashMap<String, oneshot::Sender<io::Result<CommandResult>>>,
+    report: &mut (impl FnMut(LinkEvent) -> bool + Send),
+    context: &str,
+) -> Option<Outcome> {
+    let Ok(record) = parse_record(line) else {
+        log::warn!("event=pi.bridge_protocol_rejected {context} reason=malformed_record");
+        return Some(Outcome::Invalid);
+    };
+    let step = match connection.receive(record) {
+        Ok(step) => step,
+        Err(rejection) => {
+            log_rejection(&rejection, context);
             return Some(Outcome::Invalid);
         }
-        let Ok(record) = parse_record(&line[..line.len() - 1]) else {
-            log::warn!("event=pi.bridge_protocol_rejected {context} reason=malformed_record");
-            return Some(Outcome::Invalid);
-        };
-        let step = match connection.receive(record) {
-            Ok(step) => step,
-            Err(rejection) => {
-                log_rejection(&rejection, context);
-                return Some(Outcome::Invalid);
-            }
-        };
-        let accepted = match step {
-            Step::Authenticated => {
-                log::info!("event=pi.bridge_authenticated {context}");
-                true
-            }
-            Step::Bound { pi_session_id } => {
-                log::info!("event=pi.session_binding_verified {context}");
-                report(LinkEvent::Bound { pi_session_id })
-            }
-            Step::ResumeRequested {
-                target_session_file,
-            } => report(LinkEvent::ResumeRequested {
-                target_session_file,
-            }),
-            Step::Event {
-                pi_session_id,
-                stream_id,
-                sequence,
-                name,
-                data,
-            } => report(LinkEvent::Event {
-                pi_session_id,
-                stream_id,
-                sequence,
-                name,
-                data,
-            }),
-            Step::Oversized { name, bytes } => {
-                log::warn!(
-                    "event=pi.event_skipped {context} name={name} bytes={bytes} reason=too_large"
-                );
-                true
-            }
-            Step::CommandResult { request_id, result } => {
-                // An answer nobody waits for (it timed out) is dropped.
-                if let Some(reply) = pending.remove(&request_id) {
-                    let _ = reply.send(Ok(result));
-                }
-                true
-            }
-        };
-        if !accepted {
-            return Some(Outcome::Invalid);
+    };
+    let accepted = match step {
+        Step::Authenticated => {
+            log::info!("event=pi.bridge_authenticated {context}");
+            true
         }
-    }
-    None
+        Step::Bound { pi_session_id } => {
+            log::info!("event=pi.session_binding_verified {context}");
+            report(LinkEvent::Bound { pi_session_id })
+        }
+        Step::ResumeRequested {
+            target_session_file,
+        } => report(LinkEvent::ResumeRequested {
+            target_session_file,
+        }),
+        Step::Event {
+            pi_session_id,
+            stream_id,
+            sequence,
+            name,
+            data,
+        } => report(LinkEvent::Event {
+            pi_session_id,
+            stream_id,
+            sequence,
+            name,
+            data,
+        }),
+        Step::Oversized { name, bytes } => {
+            log::warn!(
+                "event=pi.event_skipped {context} name={name} bytes={bytes} reason=too_large"
+            );
+            true
+        }
+        Step::CommandResult { request_id, result } => {
+            // An answer nobody waits for (it timed out) is dropped.
+            if let Some(reply) = pending.remove(&request_id) {
+                let _ = reply.send(Ok(result));
+            }
+            true
+        }
+    };
+    (!accepted).then_some(Outcome::Invalid)
 }
 
 fn log_rejection(rejection: &Rejection, context: &str) {
@@ -597,6 +618,57 @@ mod tests {
             heard.recv().await.unwrap(),
             LinkEvent::Bound { .. }
         ));
+        link.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn records_split_across_writes_or_sharing_one_arrive_whole_and_in_order() {
+        let directory = crate::test_directory();
+        let (_commands, requests) = command_channel();
+        let (events, mut heard) = mpsc::unbounded_channel();
+        let listener = UnixListener::bind(directory.join("b.sock")).unwrap();
+        let link = tokio::spawn(run(
+            config(&directory),
+            requests,
+            Arc::new(Notify::new()),
+            move |event| events.send(event).is_ok(),
+        ));
+        let (_lines, mut writer) = accept_as_pi(&listener, &directory).await;
+        assert!(matches!(
+            heard.recv().await.unwrap(),
+            LinkEvent::Bound { .. }
+        ));
+        let event = |sequence: u64, text: &str| {
+            let mut line = json!({ "type": "event", "streamId": STREAM, "sequence": sequence, "name": "message", "data": { "text": text } }).to_string();
+            line.push('\n');
+            line
+        };
+        // A large record, a byte at a time for its first stretch and then in small pieces.
+        let long = crate::pi::connection::MAX_EVENT_DATA_BYTES - 100;
+        let large = event(1, &"x".repeat(long));
+        let (head, tail) = large.as_bytes().split_at(64);
+        for byte in head {
+            writer.write_all(std::slice::from_ref(byte)).await.unwrap();
+        }
+        for piece in tail.chunks(1000) {
+            writer.write_all(piece).await.unwrap();
+        }
+        // Then two records and the start of a third in one write, and the rest of it.
+        let third = event(4, "c");
+        let (third_head, third_tail) = third.as_bytes().split_at(10);
+        let mut joined = event(2, "a").into_bytes();
+        joined.extend(event(3, "b").into_bytes());
+        joined.extend(third_head);
+        writer.write_all(&joined).await.unwrap();
+        writer.write_all(third_tail).await.unwrap();
+        for (expected, length) in [(1, long), (2, 1), (3, 1), (4, 1)] {
+            let LinkEvent::Event { sequence, data, .. } = heard.recv().await.unwrap() else {
+                panic!("an event");
+            };
+            assert_eq!(sequence, expected);
+            assert_eq!(data["text"].as_str().unwrap().len(), length);
+        }
         link.abort();
         std::fs::remove_dir_all(directory).unwrap();
     }
