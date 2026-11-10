@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.46 (Mac app build 317, axod 69)
+
+### Changed
+
+- Every Pi ends with axod, even when axod crashes, and starts again on its conversation when axod does. A Pi that somehow outlived an earlier axod is stopped and replaced when axod starts.
+- axod is rebuilt around one task per Session (RFD0041). It runs on about a dozen threads however many Sessions are open, and nothing in it waits on a lock another Session holds.
+
+### Fixed
+
+- A Pi or shell that was paused (SIGSTOP) is no longer taken for one that exited, which left its pane unavailable and the process running after axod stopped.
+
 ## 0.45 (Mac app build 316, axod 68)
 
 ### Fixed
