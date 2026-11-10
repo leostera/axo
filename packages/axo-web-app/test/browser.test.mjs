@@ -1191,14 +1191,15 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.goto(`${appUrl}/app/settings/apps/whatsapp`, { waitUntil: "networkidle" });
     const whatsapp = page.getByRole("region", { name: "WhatsApp" });
     await whatsapp.getByRole("button", { name: "Link account" }).click();
-    await whatsapp.getByRole("button", { name: "Link with a phone number instead" }).click();
+    await whatsapp.getByRole("button", { name: /Use a pairing code/ }).click();
     await whatsapp.getByLabel("Phone number").fill("+44 7700 900123");
     await whatsapp.getByRole("button", { name: "Get a code" }).click();
     await expect(whatsapp.getByLabel("Pairing code").getByText("ABCD-EFGH"));
     await shot("apps-whatsapp-code");
     await whatsapp.getByRole("button", { name: "Cancel" }).click();
     await whatsapp.getByRole("button", { name: "Link account" }).click();
-    await whatsapp.getByRole("button", { name: "Show a QR code" }).click();
+    await shot("apps-whatsapp-choose");
+    await whatsapp.getByRole("button", { name: /Scan a QR code/ }).click();
     await page.waitForFunction(() => document.querySelector("img.link-qr")?.naturalWidth > 0);
     await shot("apps-whatsapp-qr");
     await expect(whatsapp.getByText("Linked +447700900123."));

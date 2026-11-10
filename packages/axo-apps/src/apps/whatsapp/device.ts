@@ -19,7 +19,7 @@ import { WhatsAppStore, type Sql } from "./store";
 
 /**
  * One linked WhatsApp device, as its Durable Object runs it (RFD0016, Linked devices): Baileys'
- * socket to WhatsApp, speaking the protocol WhatsApp's own desktop app does, so no phone or Mac
+ * socket to WhatsApp, speaking the protocol WhatsApp Web does, so no phone or Mac
  * of the person's has to stay on. Linking makes new keys and shows a QR code or a pairing code;
  * once the phone approves, the device stays linked until the person removes it (here, or on
  * their phone), and reconnects whenever its object starts again. Everything WhatsApp sends it
@@ -167,8 +167,8 @@ export class WhatsAppDevice {
     const socket = (this.deps.makeSocket ?? makeWASocket)({
       auth: { creds, keys: makeCacheableSignalKeyStore(this.keyStore(), quiet) },
       logger: quiet,
-      // As WhatsApp's desktop app, which history sync gives the most to.
-      browser: Browsers.macOS("Desktop"),
+      // As WhatsApp Web in Chrome. As its desktop app ("Desktop"), WhatsApp drops the connection when it registers.
+      browser: Browsers.macOS("Chrome"),
       syncFullHistory: true,
       // Online, the phone would stop showing the person notifications.
       markOnlineOnConnect: false,

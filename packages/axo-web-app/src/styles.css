@@ -948,3 +948,5 @@ a.link:hover { text-decoration: underline; }
 .link-qr-row { justify-content: center; padding-block: 16px; }
 .link-qr { width: 264px; height: 264px; background: #fff; border-radius: 8px; image-rendering: pixelated; }
 .device-code > .muted { padding-block: 10px; }
+.link-choice { padding-block: 10px; cursor: pointer; }
+.link-choice > svg { flex: none; margin-left: auto; color: var(--tertiary); }

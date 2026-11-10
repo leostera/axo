@@ -630,10 +630,15 @@ function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel
             <button className="grouped-row" disabled={busy} type="submit">Get a code</button>
           </form>
         ) : (
-          <div className="grouped">
-            <p className="grouped-row muted">Axo becomes a linked device of yours, like {provider} on a computer. It reads your chats; it never sends messages or marks them read.</p>
-            <button className="grouped-row" disabled={busy} onClick={() => void start({ step: "qr" })}>Show a QR code</button>
-            <button className="grouped-row" disabled={busy} onClick={() => setUsingCode(true)}>Link with a phone number instead</button>
+          <div className="grouped link-choices">
+            <button className="grouped-row link-choice" disabled={busy} onClick={() => void start({ step: "qr" })}>
+              <span className="connection-copy"><strong>Scan a QR code</strong><small>With {provider} on your phone, from this screen</small></span>
+              <Icon name="chevronRight" size={16} />
+            </button>
+            <button className="grouped-row link-choice" disabled={busy} onClick={() => setUsingCode(true)}>
+              <span className="connection-copy"><strong>Use a pairing code</strong><small>When this is the phone {provider} is on</small></span>
+              <Icon name="chevronRight" size={16} />
+            </button>
           </div>
         )
       ) : (
@@ -655,7 +660,8 @@ function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel
         </div>
       )}
       <p className="sheet-note">
-        Axo links through an unofficial {provider} client, and {provider} may restrict accounts it sees using one. <a href={helpUrl} target="_blank" rel="noreferrer">About linked devices</a>. <button className="link" type="button" onClick={cancel}>Cancel</button>
+        {shown ? null : <>Axo becomes a linked device of yours, like {provider} Web. It reads your chats, and never sends messages or marks them read. </>}
+        Axo links through an unofficial {provider} client, and {provider} may restrict accounts it sees using one. <a className="link" href={helpUrl} target="_blank" rel="noreferrer">About linked devices</a> · <button className="link" type="button" onClick={cancel}>Cancel</button>
       </p>
     </>
   );

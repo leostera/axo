@@ -10,12 +10,25 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const WS_SHIM = fileURLToPath(new URL("./src/apps/whatsapp/workers/ws.ts", import.meta.url));
 const UNAVAILABLE = fileURLToPath(new URL("./src/apps/whatsapp/workers/unavailable.ts", import.meta.url));
 const OPTIONAL = new Set(["sharp", "jimp", "link-preview-js", "audio-decode"]);
+
+/**
+ * The bridge, beside Baileys in its node_modules: where `vite dev`'s pre-bundled Baileys imports
+ * it from, which the site (in Bazel's node_modules, holding only what it declares) cannot find.
+ */
+function bridgePath() {
+  let directory = dirname(fileURLToPath(import.meta.resolve("baileys")));
+  while (!directory.endsWith(`${"/"}baileys`) && dirname(directory) !== directory) directory = dirname(directory);
+  const path = join(directory, "..", "whatsapp-rust-bridge", "dist", "index.js");
+  if (!existsSync(path)) throw new Error(`whatsapp-rust-bridge is not beside Baileys (${path}); update packages/axo-apps/bundling.mjs`);
+  return path;
+}
 
 const inBaileys = (importer) => /[\\/]baileys[\\/]/.test(importer ?? "");
 const isBridge = (id) => /[\\/]whatsapp-rust-bridge[\\/]dist[\\/]index\.js(\?|$)/.test(id);
@@ -62,6 +75,7 @@ export function whatsappVite() {
       };
     },
     resolveId(source, importer) {
+      if (source === "whatsapp-rust-bridge") return bridgePath();
       return replaced(source, importer);
     },
     async load(id) {

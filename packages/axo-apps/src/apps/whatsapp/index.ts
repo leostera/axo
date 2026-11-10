@@ -6,7 +6,7 @@ import type { ShownMessage } from "./store";
 /**
  * WhatsApp as an app: `codemode.apps.whatsapp.<tool>({ account, ... })`, where the account is the
  * person's number, such as "+447700900123". Axo is a linked device of theirs, as WhatsApp's
- * desktop app is, through Baileys (RFD0016, Linked devices). Its tools read what that device was
+ * Web is, through Baileys (RFD0016, Linked devices). Its tools read what that device was
  * sent: the history WhatsApp synced when it was linked, and every message since. They only read;
  * nothing is sent, and nothing is marked as read.
  *
