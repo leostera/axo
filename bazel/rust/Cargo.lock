@@ -1017,6 +1017,7 @@ dependencies = [
  "sha2",
  "shlex",
  "tokio",
+ "tokio-native-tls",
  "tokio-rusqlite",
  "tokio-tungstenite 0.30.0",
  "tungstenite 0.30.0",

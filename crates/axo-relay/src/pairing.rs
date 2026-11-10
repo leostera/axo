@@ -2,9 +2,11 @@ use crate::credential::HostCredentialStore;
 use httparse::{EMPTY_HEADER, Response};
 use native_tls::TlsConnector;
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::{self, Read};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 use url::Url;
 
 use crate::endpoint::RelayEndpoint;
@@ -103,9 +105,9 @@ pub fn prepare_credential(credentials: &dyn HostCredentialStore) -> io::Result<S
 }
 
 /// Redeems a one-time code using the Keychain credential reserved for this attempt.
-pub fn redeem(
+pub async fn redeem(
     request: RedemptionRequest<'_>,
-    credentials: &dyn HostCredentialStore,
+    credentials: Arc<dyn HostCredentialStore>,
 ) -> io::Result<PairingResult> {
     let code = PairingCode::parse(request.code)?;
     if !is_uuid(request.host_id) || !is_uuid(request.host_generation) {
@@ -130,7 +132,8 @@ pub fn redeem(
             "host credential identifier is invalid",
         ));
     }
-    let mut secret = credentials.load(request.credential_id)?;
+    let credential_id = request.credential_id.to_owned();
+    let mut secret = crate::blocking(move || credentials.load(&credential_id)).await?;
     if secret.len() != CREDENTIAL_BYTES {
         secret.fill(0);
         return Err(io::Error::new(
@@ -150,13 +153,13 @@ pub fn redeem(
     };
     secret.fill(0);
 
-    (|| {
+    {
         let body = serde_json::to_vec(&payload)
             .map_err(|_| io::Error::other("could not encode pairing request"))?;
         let endpoint = request.endpoint.redemption_url();
-        let response = match post_json(&endpoint, &body) {
+        let response = match post_json(&endpoint, &body).await {
             Ok(response) => response,
-            Err(first_error) => match post_json(&endpoint, &body) {
+            Err(first_error) => match post_json(&endpoint, &body).await {
                 Ok(response) => response,
                 Err(_) => return Err(first_error),
             },
@@ -188,37 +191,37 @@ pub fn redeem(
         Ok(PairingResult {
             account_id: response.account_id,
         })
-    })()
+    }
 }
 
-fn post_json(endpoint: &Url, body: &[u8]) -> io::Result<HttpResponse> {
+async fn post_json(endpoint: &Url, body: &[u8]) -> io::Result<HttpResponse> {
     let host = endpoint.host_str().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "pairing endpoint has no host")
     })?;
     let port = endpoint.port_or_known_default().unwrap_or(443);
-    let address = (host, port).to_socket_addrs()?.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::AddrNotAvailable,
-            "pairing endpoint has no address",
-        )
-    })?;
-    let stream = TcpStream::connect_timeout(&address, HTTP_TIMEOUT)?;
-    stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
-    stream.set_write_timeout(Some(HTTP_TIMEOUT))?;
-    if endpoint.scheme() == "http" {
-        return exchange_json(stream, endpoint, host, port, body);
-    }
-    let stream = TlsConnector::new()
-        .map_err(|_| io::Error::other("could not initialize TLS for host pairing"))?
-        .connect(host, stream)
-        .map_err(|_| {
-            io::Error::other("could not establish a secure connection for host pairing")
-        })?;
-    exchange_json(stream, endpoint, host, port, body)
+    let exchange = async {
+        let stream = TcpStream::connect((host, port)).await?;
+        if endpoint.scheme() == "http" {
+            return exchange_json(stream, endpoint, host, port, body).await;
+        }
+        let tls = crate::blocking(|| TlsConnector::new())
+            .await
+            .map_err(|_| io::Error::other("could not initialize TLS for host pairing"))?;
+        let stream = tokio_native_tls::TlsConnector::from(tls)
+            .connect(host, stream)
+            .await
+            .map_err(|_| {
+                io::Error::other("could not establish a secure connection for host pairing")
+            })?;
+        exchange_json(stream, endpoint, host, port, body).await
+    };
+    tokio::time::timeout(HTTP_TIMEOUT, exchange)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "host pairing took too long"))?
 }
 
-fn exchange_json(
-    mut stream: impl Read + Write,
+async fn exchange_json(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
     endpoint: &Url,
     host: &str,
     port: u16,
@@ -237,20 +240,20 @@ fn exchange_json(
     } else {
         format!("{host}:{port}")
     };
-    write!(
-        stream,
+    let headers = format!(
         "POST {request_target} HTTP/1.1\r\nHost: {host_header}\r\nContent-Type: application/json\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
         body.len()
-    )?;
-    stream.write_all(body)?;
-    stream.flush()?;
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.flush().await?;
 
     // Stop as soon as a framed response is complete: a server that keeps the connection open
     // despite `Connection: close` must not turn every redemption into a read timeout.
     let mut raw_response = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
-        let read = stream.read(&mut buffer)?;
+        let read = stream.read(&mut buffer).await?;
         if read == 0 {
             break;
         }
@@ -475,6 +478,33 @@ mod tests {
         assert!(!framed_response_is_complete(
             b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":1}"
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_slow_pairing_response_yields_and_a_framed_response_needs_no_eof() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client, mut server) = tokio::io::duplex(4096);
+        let endpoint = url::Url::parse("http://localhost/redeem").unwrap();
+        let response = tokio::spawn(async move {
+            super::exchange_json(client, &endpoint, "localhost", 80, b"{}").await
+        });
+        let mut request = [0; 4096];
+        assert!(server.read(&mut request).await.unwrap() > 0);
+        server
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(!response.is_finished(), "the response is not complete yet");
+        server.write_all(b"}").await.unwrap();
+        // Keep the server open: framing, not EOF, must finish the request.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(1), response)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.body, b"{}");
+        assert_eq!(reply.status, 200);
     }
 
     #[test]

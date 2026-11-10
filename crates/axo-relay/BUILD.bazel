@@ -13,6 +13,7 @@ rust_library(
         "//crates/axo-signin:axo_signin",
         "@crates//:httparse",
         "@crates//:native-tls",
+        "@crates//:tokio-native-tls",
         "@crates//:notify",
         "@crates//:futures-util",
         "@crates//:tokio",

@@ -146,8 +146,7 @@ pub async fn link_host(
         host_id: identity.host_id.clone(),
         pending: pending.clone(),
     };
-    let keychain = Arc::clone(&credentials);
-    let redeemed = crate::blocking(move || redemption.redeem(&*keychain)).await?;
+    let redeemed = redemption.redeem(Arc::clone(&credentials)).await?;
 
     let previous = link.account.replace(AccountLink {
         account_id: redeemed.account_id,
@@ -162,8 +161,7 @@ pub async fn link_host(
     Ok(redeemed.label)
 }
 
-/// One pairing code's redemption, with what it needs to run off the runtime: the Keychain and
-/// the redeeming request block.
+/// One pairing code's redemption, including the pending identity saved before the request.
 struct Redemption {
     endpoint: RelayEndpoint,
     code: String,
@@ -178,8 +176,8 @@ struct Redeemed {
 }
 
 impl Redemption {
-    fn redeem(self, credentials: &dyn HostCredentialStore) -> io::Result<Redeemed> {
-        let label = host_label();
+    async fn redeem(self, credentials: Arc<dyn HostCredentialStore>) -> io::Result<Redeemed> {
+        let label = crate::blocking(host_label).await;
         let linked = pairing::redeem(
             pairing::RedemptionRequest {
                 endpoint: &self.endpoint,
@@ -191,7 +189,8 @@ impl Redemption {
                 host_kind: HostKind::MacOS,
             },
             credentials,
-        )?;
+        )
+        .await?;
         Ok(Redeemed {
             account_id: linked.account_id,
             label,
