@@ -459,7 +459,7 @@ impl Extension for QuestionsExtension {
 
     fn register(&self, handler: &mut IoHandler) {
         let (questions, host) = (Arc::clone(&self.questions), Arc::clone(&self.host));
-        handler.add_typed_async(
+        handler.add_typed(
             method::ELICITATION_REQUEST,
             "expected {sessionId, message, askedBy?}",
             move |request: RequestElicitation| {
@@ -485,9 +485,9 @@ impl Extension for QuestionsExtension {
             method::ELICITATION_LIST,
             "expected no parameters",
             move |_: Value| {
-                Ok(Listed {
+                std::future::ready(Ok(Listed {
                     elicitations: listing.pending(),
-                })
+                }))
             },
         );
         let (answering, host) = (Arc::clone(&self.questions), Arc::clone(&self.host));
@@ -500,16 +500,20 @@ impl Extension for QuestionsExtension {
             method::ELICITATION_RESOLVE,
             "expected {elicitationId, action}",
             move |request: ResolveElicitation| {
-                let reply = request.values.map_or(Reply::Bare, Reply::Values);
-                answering
-                    .resolve(
-                        host.as_ref(),
-                        &request.elicitation_id,
-                        request.action,
-                        reply,
-                    )
-                    .map(|()| Resolved { resolved: true })
-                    .map_err(axo_ipc::rpc_error)
+                let answering = Arc::clone(&answering);
+                let host = Arc::clone(&host);
+                async move {
+                    let reply = request.values.map_or(Reply::Bare, Reply::Values);
+                    answering
+                        .resolve(
+                            host.as_ref(),
+                            &request.elicitation_id,
+                            request.action,
+                            reply,
+                        )
+                        .map(|()| Resolved { resolved: true })
+                        .map_err(axo_ipc::rpc_error)
+                }
             },
         );
     }

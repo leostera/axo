@@ -8,7 +8,6 @@
 //!
 //! Outside a request, [`current`] is a cancellation that never fires.
 
-use std::cell::RefCell;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -85,29 +84,14 @@ tokio::task_local! {
     static TASK_CANCELLATION: Cancellation;
 }
 
-thread_local! {
-    static THREAD_CANCELLATION: RefCell<Option<Cancellation>> = const { RefCell::new(None) };
-}
-
 /// The cancellation of the request being handled; one that never fires outside a request.
 pub fn current() -> Cancellation {
-    THREAD_CANCELLATION
-        .with(|cell| cell.borrow().clone())
-        .or_else(|| TASK_CANCELLATION.try_with(Clone::clone).ok())
-        .unwrap_or_default()
+    TASK_CANCELLATION.try_with(Clone::clone).unwrap_or_default()
 }
 
 /// Runs `request` with `cancellation` as [`current`], for an async handler.
 pub async fn scope<F: Future>(cancellation: Cancellation, request: F) -> F::Output {
     TASK_CANCELLATION.scope(cancellation, request).await
-}
-
-/// Runs `method` with `cancellation` as [`current`], for a handler on the blocking pool.
-pub fn on_this_thread<R>(cancellation: Cancellation, method: impl FnOnce() -> R) -> R {
-    let previous = THREAD_CANCELLATION.with(|cell| cell.replace(Some(cancellation)));
-    let result = method();
-    THREAD_CANCELLATION.with(|cell| *cell.borrow_mut() = previous);
-    result
 }
 
 #[cfg(test)]
@@ -166,14 +150,6 @@ mod tests {
 
     #[test]
     fn outside_a_request_nothing_is_cancelled() {
-        assert!(!current().is_cancelled());
-    }
-
-    #[test]
-    fn the_current_cancellation_is_the_requests_on_the_blocking_pool_and_only_there() {
-        let cancellation = Cancellation::default();
-        cancellation.cancel();
-        assert!(on_this_thread(cancellation, || current().is_cancelled()));
         assert!(!current().is_cancelled());
     }
 

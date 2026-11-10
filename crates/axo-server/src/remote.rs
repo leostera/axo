@@ -69,7 +69,7 @@ where
 {
     let core = Arc::clone(core);
     let call = Arc::new(call);
-    handler.add_typed_only_async(RELAY_ONLY, name, "Invalid params", move |params: Value| {
+    handler.add_typed_only(RELAY_ONLY, name, "Invalid params", move |params: Value| {
         let core = Arc::clone(&core);
         let call = Arc::clone(&call);
         async move {

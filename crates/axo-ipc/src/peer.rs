@@ -15,8 +15,6 @@
 //! exits and whose pid is reused cannot pass for it. The kernel validates the peer's code
 //! signature as it runs, so a modified binary fails. Off macOS nothing passes.
 
-use std::cell::Cell;
-
 /// Who sent the request being handled.
 #[derive(Clone, Copy, Debug)]
 pub enum Peer {
@@ -56,16 +54,9 @@ tokio::task_local! {
     static TASK_PEER: Peer;
 }
 
-thread_local! {
-    static THREAD_PEER: Cell<Option<Peer>> = const { Cell::new(None) };
-}
-
 /// The peer of the request being handled: nobody outside a connection.
 pub fn current() -> Peer {
-    THREAD_PEER
-        .with(Cell::get)
-        .or_else(|| TASK_PEER.try_with(|peer| *peer).ok())
-        .unwrap_or_default()
+    TASK_PEER.try_with(|peer| *peer).unwrap_or_default()
 }
 
 /// Runs `request` with `peer` as [`current`], for an async handler.
@@ -76,14 +67,6 @@ pub(crate) async fn scope<F: Future>(peer: Peer, request: F) -> F::Output {
 /// Runs `request` as the account's request through the relay.
 pub async fn as_relay<F: Future>(request: F) -> F::Output {
     scope(Peer::Relay, request).await
-}
-
-/// Runs `method` with `peer` as [`current`], for a handler on the blocking pool.
-pub(crate) fn on_this_thread<R>(peer: Peer, method: impl FnOnce() -> R) -> R {
-    let previous = THREAD_PEER.with(|cell| cell.replace(Some(peer)));
-    let result = method();
-    THREAD_PEER.with(|cell| cell.set(previous));
-    result
 }
 
 impl Peer {
@@ -251,8 +234,8 @@ mod tests {
         assert!(!current().is(Signer::AxoApp));
     }
 
-    #[test]
-    fn the_peer_is_seen_on_the_blocking_pool_and_only_there() {
+    #[tokio::test]
+    async fn the_peer_is_seen_in_its_request_and_only_there() {
         let token = |peer: Peer| match peer {
             Peer::Socket { token } => token,
             Peer::Relay => panic!("not a socket peer"),
@@ -260,7 +243,7 @@ mod tests {
         let peer = Peer::Socket {
             token: Some([7; 32]),
         };
-        let seen = on_this_thread(peer, || token(current()));
+        let seen = scope(peer, async { token(current()) }).await;
         assert_eq!(seen, Some([7; 32]));
         assert_eq!(token(current()), None);
     }

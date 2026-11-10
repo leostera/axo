@@ -579,7 +579,7 @@ impl Extension for ComputerExtension {
 
     fn register(&self, handler: &mut IoHandler) {
         let (asking, host) = (Arc::clone(&self.computer), Arc::clone(&self.host));
-        handler.add_typed_only_async(
+        handler.add_typed_only(
             AXOD_ONLY,
             COMPUTER_INPUT,
             "expected {sessionId, args}",
@@ -603,7 +603,7 @@ impl Extension for ComputerExtension {
             AXOD_ONLY,
             COMPUTER_REDACTIONS,
             "expected no parameters",
-            move |_: Value| Ok(hiding.redactions.export()),
+            move |_: Value| std::future::ready(Ok(hiding.redactions.export())),
         );
     }
 }

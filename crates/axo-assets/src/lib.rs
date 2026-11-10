@@ -54,7 +54,7 @@ impl Extension for Assets {
 
     fn register(&self, methods: &mut IoHandler) {
         let slot = Arc::clone(&self.slot);
-        methods.add_typed_only_async(
+        methods.add_typed_only(
             Only {
                 caller: Caller::Signed(Signer::ThisBinary),
                 code: -32003,

@@ -1,9 +1,8 @@
 //! Axo's local JSON-RPC transport: newline-delimited requests and responses over a Unix socket.
 //!
 //! Invariant: the executor never blocks. Each connection is its own task, each request its own
-//! task, and synchronous handlers (SQLite, process control, the catalog mutex) run on tokio's
-//! blocking pool via `add_blocking_method`. Waiting requests, and connections taken over by an
-//! upgrade such as an events stream, are plain futures, so thousands of them cost no threads and never delay unrelated requests.
+//! task. Handlers are futures; any truly blocking work must be explicitly isolated by its
+//! owner. Waiting requests and upgraded streams cost no threads and never delay unrelated requests.
 
 use std::collections::HashMap;
 use std::io;
@@ -34,36 +33,16 @@ const SLOW_REQUEST: Duration = Duration::from_millis(100);
 /// before the handler runs (absent parameters count as `{}`); a parse failure is answered with
 /// `InvalidParams` and `expected`, describing the accepted shape.
 pub trait TypedMethods {
-    /// A synchronous handler, run on the blocking pool.
-    fn add_typed<P, R, F>(&mut self, name: &str, expected: &'static str, method: F)
-    where
-        P: DeserializeOwned + 'static,
-        R: Serialize + 'static,
-        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static;
-
-    /// [`Self::add_typed`] for one kind of caller: anyone else is refused with `only`'s error
-    /// before the parameters are read, and the handler never runs.
-    fn add_typed_only<P, R, F>(
-        &mut self,
-        only: Only,
-        name: &str,
-        expected: &'static str,
-        method: F,
-    ) where
-        P: DeserializeOwned + 'static,
-        R: Serialize + 'static,
-        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static;
-
     /// An asynchronous handler, run on the executor: it must never block.
-    fn add_typed_async<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
+    fn add_typed<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
     where
         P: DeserializeOwned + 'static,
         R: Serialize + 'static,
         F: Fn(P) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<R, RpcError>> + Send + 'static;
 
-    /// [`Self::add_typed_async`] for one kind of caller, as [`Self::add_typed_only`].
-    fn add_typed_only_async<P, R, F, Fut>(
+    /// [`Self::add_typed`] for one kind of caller; refuses others before parsing parameters.
+    fn add_typed_only<P, R, F, Fut>(
         &mut self,
         only: Only,
         name: &str,
@@ -77,33 +56,7 @@ pub trait TypedMethods {
 }
 
 impl TypedMethods for IoHandler {
-    fn add_typed<P, R, F>(&mut self, name: &str, expected: &'static str, method: F)
-    where
-        P: DeserializeOwned + 'static,
-        R: Serialize + 'static,
-        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static,
-    {
-        self.add_blocking_method(name, move |params: Params| {
-            let params = parse_params::<P>(params, expected)?;
-            method(params).and_then(encode_result)
-        });
-    }
-
-    fn add_typed_only<P, R, F>(&mut self, only: Only, name: &str, expected: &'static str, method: F)
-    where
-        P: DeserializeOwned + 'static,
-        R: Serialize + 'static,
-        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static,
-    {
-        let method_name = name.to_owned();
-        self.add_blocking_method(name, move |params: Params| {
-            only.admit(&method_name)?;
-            let params = parse_params::<P>(params, expected)?;
-            method(params).and_then(encode_result)
-        });
-    }
-
-    fn add_typed_async<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
+    fn add_typed<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
     where
         P: DeserializeOwned + 'static,
         R: Serialize + 'static,
@@ -120,7 +73,7 @@ impl TypedMethods for IoHandler {
         });
     }
 
-    fn add_typed_only_async<P, R, F, Fut>(
+    fn add_typed_only<P, R, F, Fut>(
         &mut self,
         only: Only,
         name: &str,
@@ -195,51 +148,6 @@ fn encode_result<R: Serialize>(result: R) -> Result<Value, RpcError> {
         message: "could not encode the result".to_owned(),
         data: None,
     })
-}
-
-/// Registers synchronous handlers so they run off the executor.
-trait BlockingMethods {
-    fn add_blocking_method<F>(&mut self, name: &str, method: F)
-    where
-        F: Fn(Params) -> jsonrpc_core::Result<Value> + Send + Sync + 'static;
-}
-
-impl BlockingMethods for IoHandler {
-    fn add_blocking_method<F>(&mut self, name: &str, method: F)
-    where
-        F: Fn(Params) -> jsonrpc_core::Result<Value> + Send + Sync + 'static,
-    {
-        let method = Arc::new(method);
-        self.add_method(name, move |params: Params| {
-            let method = Arc::clone(&method);
-            async move {
-                // Outside a runtime (unit tests using `handle_request_sync`) run inline.
-                match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => {
-                        let peer = crate::peer::current();
-                        let cancellation = crate::cancel::current();
-                        runtime
-                            .spawn_blocking(move || {
-                                crate::cancel::on_this_thread(cancellation, || {
-                                    crate::peer::on_this_thread(peer, || method(params))
-                                })
-                            })
-                            .await
-                            .unwrap_or_else(|_| Err(handler_failed()))
-                    }
-                    Err(_) => method(params),
-                }
-            }
-        });
-    }
-}
-
-fn handler_failed() -> RpcError {
-    RpcError {
-        code: ErrorCode::InternalError,
-        message: "request handler failed".to_owned(),
-        data: None,
-    }
 }
 
 /// A connection taken over by its first request: an [`Upgrades`] method, such as the MCP server
@@ -527,18 +435,21 @@ mod tests {
         let (seen, cancelled) = std::sync::mpsc::channel();
         let mut handler = IoHandler::new();
         handler.add_typed("wait", "expected {}", move |_: Value| {
-            let (woken, wake) = std::sync::mpsc::channel();
-            crate::cancel::current().on_cancel(move || {
-                let _ = woken.send(());
-            });
-            let outcome = match wake.recv_timeout(Duration::from_secs(10)) {
-                Ok(()) => "cancelled",
-                Err(_) => "timed out",
-            };
-            let _ = seen.send(outcome);
-            Ok(outcome)
+            let seen = seen.clone();
+            async move {
+                let cancellation = crate::cancel::current();
+                let outcome =
+                    match tokio::time::timeout(Duration::from_secs(10), cancellation.cancelled())
+                        .await
+                    {
+                        Ok(()) => "cancelled",
+                        Err(_) => "timed out",
+                    };
+                let _ = seen.send(outcome);
+                Ok(outcome)
+            }
         });
-        handler.add_typed("quick", "expected {}", |_: Value| {
+        handler.add_typed("quick", "expected {}", |_: Value| async {
             Ok(crate::cancel::current().is_cancelled())
         });
         let stop = crate::Stop::default();
@@ -668,7 +579,7 @@ mod tests {
             "expected {answer}",
             move |_: serde_json::Map<String, Value>| {
                 running.store(true, Ordering::Relaxed);
-                Ok(true)
+                std::future::ready(Ok(true))
             },
         );
         // Outside a connection nobody is Axo.app; malformed parameters are not reached.

@@ -1211,7 +1211,6 @@ fn pipe(
 mod tests {
     use super::*;
     use axo_ipc::{IoHandler, TypedMethods};
-    use std::sync::{Condvar, Mutex};
 
     /// A server for `SID` that reaches `axod`'s methods in process, as nobody in particular,
     /// with a runtime to run it on.
@@ -1279,21 +1278,16 @@ mod tests {
 
         // A stand-in axod: holds every question until three are waiting at once (or 5 seconds
         // pass), then answers them all, saying how many it saw together.
-        let waiting = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let waiting = Arc::new(tokio::sync::Barrier::new(3));
         let mut axod = IoHandler::new();
         axod.add_typed(method::ELICITATION_REQUEST, "", move |_: Value| {
-            let (count, changed) = &*waiting;
-            let mut seen = count.lock().unwrap();
-            *seen += 1;
-            changed.notify_all();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while *seen < 3 && Instant::now() < deadline {
-                seen = changed
-                    .wait_timeout(seen, Duration::from_millis(50))
-                    .unwrap()
-                    .0;
+            let waiting = Arc::clone(&waiting);
+            async move {
+                tokio::time::timeout(Duration::from_secs(5), waiting.wait())
+                    .await
+                    .unwrap();
+                Ok(json!({ "together": 3 }))
             }
-            Ok(json!({ "together": *seen }))
         });
         let server = serving(axod);
         let ask = |id: u64| {
@@ -1338,19 +1332,17 @@ mod tests {
 
         // A stand-in axod that answers only when its request is cancelled, and says so.
         let (told, cancellations) = std::sync::mpsc::channel();
-        let told = Mutex::new(told);
         let mut axod = IoHandler::new();
         axod.add_typed(method::ELICITATION_REQUEST, "", move |_: Value| {
-            let (woken, wake) = std::sync::mpsc::channel();
-            axo_ipc::cancel::current().on_cancel(move || {
-                let _ = woken.send(());
+            let told = told.clone();
+            let cancellation = axo_ipc::cancel::current();
+            cancellation.on_cancel(move || {
+                let _ = told.send(true);
             });
-            let _ = wake.recv_timeout(Duration::from_secs(10));
-            let _ = told
-                .lock()
-                .unwrap()
-                .send(axo_ipc::cancel::current().is_cancelled());
-            Ok(json!({}))
+            async move {
+                cancellation.cancelled().await;
+                Ok(json!({}))
+            }
         });
         let server = serving(axod);
         let (mut to_server, server_input) = UnixStream::pair().unwrap();
@@ -1428,7 +1420,7 @@ mod tests {
     #[test]
     fn only_an_open_session_is_served() {
         let mut axod = IoHandler::new();
-        axod.add_typed(method::SESSION_CATALOG, "", |_: Value| {
+        axod.add_typed(method::SESSION_CATALOG, "", |_: Value| async {
             Ok(json!({ "sessions": [{ "id": SID }] }))
         });
         let probe = serving(axod);

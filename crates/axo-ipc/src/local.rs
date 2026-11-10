@@ -8,10 +8,7 @@
 //! handler sees its request cancelled, and the caller stops waiting at once, whether or not the
 //! handler has noticed.
 
-use std::future::Future;
-use std::pin::pin;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
 
 use jsonrpc_core::IoHandler;
@@ -63,10 +60,6 @@ impl Local {
         }
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
         let request = request.to_string();
-        let (fired, cancelled) = tokio::sync::oneshot::channel::<()>();
-        cancellation.on_cancel(move || {
-            let _ = fired.send(());
-        });
         let handler = Arc::clone(&self.handler);
         let handled = crate::cancel::scope(
             cancellation.clone(),
@@ -76,18 +69,21 @@ impl Local {
             ),
         );
         let within = tokio::time::timeout(timeout, handled);
-        let answer = first(within, cancelled).await;
+        let answer = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(LocalError::Cancelled),
+            answer = within => answer,
+        };
         let response = match answer {
-            First::Left(Ok(Some(response))) => response,
+            Ok(Some(response)) => response,
             // A request with an id always has a response; none would be a handler bug.
-            First::Left(Ok(None)) => {
+            Ok(None) => {
                 return Err(LocalError::Refused {
                     code: -32603,
                     message: "the method sent no answer".into(),
                 });
             }
-            First::Left(Err(_)) => return Err(LocalError::TimedOut),
-            First::Right(_) => return Err(LocalError::Cancelled),
+            Err(_) => return Err(LocalError::TimedOut),
         };
         let mut response: Value =
             serde_json::from_str(&response).map_err(|_| LocalError::Refused {
@@ -104,32 +100,11 @@ impl Local {
     }
 }
 
-enum First<A, B> {
-    Left(A),
-    Right(B),
-}
-
-/// Whichever of `left` and `right` finishes first; the other is dropped.
-async fn first<A: Future, B: Future>(left: A, right: B) -> First<A::Output, B::Output> {
-    let (mut left, mut right) = (pin!(left), pin!(right));
-    std::future::poll_fn(|context| {
-        if let Poll::Ready(output) = left.as_mut().poll(context) {
-            return Poll::Ready(First::Left(output));
-        }
-        if let Poll::Ready(output) = right.as_mut().poll(context) {
-            return Poll::Ready(First::Right(output));
-        }
-        Poll::Pending
-    })
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::peer::{Caller, Signer};
     use crate::{Only, TypedMethods};
-    use std::sync::mpsc;
     use std::time::Instant;
 
     fn runtime() -> tokio::runtime::Runtime {
@@ -142,15 +117,13 @@ mod tests {
 
     fn handler() -> IoHandler {
         let mut handler = IoHandler::new();
-        handler.add_typed("echo", "expected {said}", |params: Value| Ok(params));
-        handler.add_typed("wait", "expected no parameters", |_: Value| {
-            // Waits for its request's cancellation, as a question to the person does.
-            let (woken, wake) = mpsc::channel();
-            crate::cancel::current().on_cancel(move || {
-                let _ = woken.send(());
-            });
-            let _ = wake.recv_timeout(Duration::from_secs(5));
-            Ok(json!({ "cancelled": crate::cancel::current().is_cancelled() }))
+        handler.add_typed("echo", "expected {said}", |params: Value| async move {
+            Ok(params)
+        });
+        handler.add_typed("wait", "expected no parameters", |_: Value| async {
+            let cancellation = crate::cancel::current();
+            let _ = tokio::time::timeout(Duration::from_secs(5), cancellation.cancelled()).await;
+            Ok(json!({ "cancelled": cancellation.is_cancelled() }))
         });
         handler.add_typed_only(
             Only {
@@ -160,7 +133,7 @@ mod tests {
             },
             "only",
             "expected no parameters",
-            |_: Value| Ok(json!("ran")),
+            |_: Value| async { Ok(json!("ran")) },
         );
         handler
     }

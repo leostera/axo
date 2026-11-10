@@ -519,7 +519,7 @@ impl Extension for Relay {
 
 fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
     let context = relay.clone();
-    handler.add_typed_async(
+    handler.add_typed(
         method::RELAY_LINK,
         "expected {code}",
         move |request: rpc::LinkHost| {
@@ -556,17 +556,19 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
     handler.add_typed(
         method::RELAY_STATUS,
         "expected no parameters",
-        move |_: rpc::NoParams| match &context {
-            Some(context) => context
-                .control
-                .snapshot()
-                .map_err(|_| internal_error("could not read remote connection status")),
-            None => Ok(axo_relay::unavailable_status()),
+        move |_: rpc::NoParams| {
+            std::future::ready(match &context {
+                Some(context) => context
+                    .control
+                    .snapshot()
+                    .map_err(|_| internal_error("could not read remote connection status")),
+                None => Ok(axo_relay::unavailable_status()),
+            })
         },
     );
 
     let context = relay.clone();
-    handler.add_typed_async(
+    handler.add_typed(
         method::SESSION_SHARE,
         "expected {snapshot}",
         move |request: rpc::ShareSession| {
@@ -584,17 +586,20 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
         method::RELAY_CONNECT,
         "expected no parameters",
         move |_: rpc::NoParams| {
-            let requested = match &relay {
-                Some(context) => {
-                    context
-                        .control
-                        .request_connect()
-                        .map_err(|_| internal_error("could not request remote connection"))?;
-                    true
-                }
-                None => false,
-            };
-            Ok(rpc::ConnectRequested { requested })
+            let relay = relay.clone();
+            async move {
+                let requested = match &relay {
+                    Some(context) => {
+                        context
+                            .control
+                            .request_connect()
+                            .map_err(|_| internal_error("could not request remote connection"))?;
+                        true
+                    }
+                    None => false,
+                };
+                Ok(rpc::ConnectRequested { requested })
+            }
         },
     );
 }
@@ -647,7 +652,7 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
     handler.add_typed(
         method::PROTOCOL_NEGOTIATE,
         "expected {protocolVersion}",
-        |request: rpc::NegotiateProtocol| {
+        |request: rpc::NegotiateProtocol| async move {
             if request.protocol_version != rpc::PROTOCOL_VERSION {
                 return Err(invalid_params("unsupported protocol version"));
             }
@@ -671,13 +676,18 @@ fn add_health_method(
         method::DAEMON_HEALTH,
         "expected no parameters",
         move |_: rpc::NoParams| {
-            Ok(rpc::DaemonHealth {
-                version: daemon_version.to_owned(),
-                build_number: build_number(),
-                status: rpc::DaemonStatus::Running,
-                ready: ready(),
-                developer_tools: permissions::developer_tools(),
-            })
+            let ready = ready();
+            async move {
+                Ok(rpc::DaemonHealth {
+                    version: daemon_version.to_owned(),
+                    build_number: build_number(),
+                    status: rpc::DaemonStatus::Running,
+                    ready,
+                    developer_tools: tokio::task::spawn_blocking(permissions::developer_tools)
+                        .await
+                        .map_err(|_| internal_error("permission probe failed"))?,
+                })
+            }
         },
     );
 }
@@ -806,12 +816,13 @@ mod tests {
         std::env::temp_dir().join(format!("axo-server-test-{}-{unique}", std::process::id()))
     }
 
-    #[test]
-    fn health_method_reports_this_build() {
+    #[tokio::test]
+    async fn health_method_reports_this_build() {
         let mut handler = IoHandler::new();
         add_health_method(&mut handler, env!("CARGO_PKG_VERSION"), || false);
         let response = handler
-            .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.health"}"#)
+            .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.health"}"#)
+            .await
             .expect("health is a request with a response");
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 

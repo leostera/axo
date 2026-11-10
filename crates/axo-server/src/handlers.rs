@@ -120,7 +120,7 @@ fn add<P, R, F, Fut>(
     Fut: std::future::Future<Output = Result<R, RpcError>> + Send + 'static,
 {
     let core = Arc::clone(core);
-    handler.add_typed_async(name, expected, move |request: P| {
+    handler.add_typed(name, expected, move |request: P| {
         method(Arc::clone(&core), request)
     });
 }

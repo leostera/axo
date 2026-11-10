@@ -41,7 +41,7 @@ impl Extension for Apps {
     fn register(&self, methods: &mut IoHandler) {
         for &(name, timeout) in forwarded::METHODS {
             let channel = self.channel.clone();
-            methods.add_typed_async(
+            methods.add_typed(
                 name,
                 "expected an object with sessionId (a Session ID)",
                 move |params: Map<String, Value>| {
