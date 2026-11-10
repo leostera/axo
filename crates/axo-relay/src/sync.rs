@@ -25,7 +25,7 @@ mod tests;
 mod uploader;
 mod watch;
 
-pub use metadata::{SessionMetadata, StoredSyncState, SyncSession, WorkspaceState};
+pub use metadata::{SessionMetadata, StoredMetadata, SyncSession, WorkspaceState};
 
 use std::io;
 use std::sync::Arc;
@@ -60,8 +60,8 @@ pub enum Eviction {
 pub trait SyncStore: Send + Sync {
     /// Every Session, open and archived, with its Pi transcript (RFD0018, Upload).
     fn catalog(&self) -> HostFuture<'_, io::Result<Vec<SyncSession>>>;
-    /// What `axo.db` keeps of each Session's upload.
-    fn states(&self) -> HostFuture<'_, io::Result<Vec<StoredSyncState>>>;
+    /// The metadata `axo.db` last sent for each Session.
+    fn stored_metadata(&self) -> HostFuture<'_, io::Result<Vec<StoredMetadata>>>;
     /// Where the cloud's copy of a Session ends now.
     fn store_cursor(
         &self,

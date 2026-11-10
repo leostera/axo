@@ -11,7 +11,7 @@ use axo_protocol::SessionId;
 use serde_json::{Value, json};
 
 use super::{
-    Eviction, SessionMetadata, StoredSyncState, SyncCursor, SyncSession, SyncStore, SyncWaker,
+    Eviction, SessionMetadata, StoredMetadata, SyncCursor, SyncSession, SyncStore, SyncWaker,
     SyncWorker,
 };
 use crate::host::{HostFuture, HostIdentity};
@@ -49,7 +49,7 @@ impl SyncStore for Host {
             transcript_in_cloud: false,
         }])))
     }
-    fn states(&self) -> HostFuture<'_, io::Result<Vec<StoredSyncState>>> {
+    fn stored_metadata(&self) -> HostFuture<'_, io::Result<Vec<StoredMetadata>>> {
         Box::pin(std::future::ready(Ok(Vec::new())))
     }
     fn store_cursor(&self, _: SessionId, _: SyncCursor) -> HostFuture<'_, io::Result<()>> {

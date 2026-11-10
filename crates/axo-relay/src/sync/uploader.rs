@@ -12,7 +12,7 @@ use axo_protocol::{SessionId, SessionStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::metadata::{SessionMetadata, StoredSyncState};
+use super::metadata::{SessionMetadata, StoredMetadata};
 use super::unix_seconds;
 use super::watch::TranscriptWatch;
 use super::{Eviction, SyncCursor, SyncStore};
@@ -122,7 +122,7 @@ pub(super) struct Uploader {
     /// that failed.
     catalog_due: bool,
     /// What `axo.db` held at start: cursors and metadata versions.
-    stored: Option<HashMap<String, StoredSyncState>>,
+    stored: Option<HashMap<SessionId, StoredMetadata>>,
 }
 
 impl Uploader {
@@ -209,25 +209,22 @@ impl Uploader {
             if self.stored.is_none() {
                 self.stored = Some(
                     self.store
-                        .states()
+                        .stored_metadata()
                         .await?
                         .into_iter()
-                        .map(|state| (state.session_id.clone(), state))
+                        .map(|stored| (stored.session_id, stored))
                         .collect(),
                 );
             }
             for session in self.store.catalog().await? {
                 let mut metadata = session.metadata.clone().bounded();
                 if !self.sessions.contains_key(&session.session_id) {
-                    let state = self
+                    let stored = self
                         .stored
                         .as_ref()
-                        .and_then(|stored| stored.get(&session.session_id.to_string()))
-                        .cloned()
-                        .unwrap_or_default();
-                    let known: Option<SessionMetadata> = state
-                        .metadata_json
-                        .as_deref()
+                        .and_then(|stored| stored.get(&session.session_id));
+                    let known: Option<SessionMetadata> = stored
+                        .and_then(|stored| stored.json.as_deref())
                         .and_then(|json| serde_json::from_str(json).ok());
                     self.sessions.insert(
                         session.session_id,
@@ -235,7 +232,7 @@ impl Uploader {
                             file: TranscriptFile::new(session.pi_session_file.clone()),
                             read: false,
                             metadata: known.unwrap_or_else(|| metadata.clone()),
-                            metadata_version: state.metadata_version,
+                            metadata_version: stored.map_or(0, |stored| stored.version),
                             metadata_sent: 0,
                             status: None,
                             status_sent: None,

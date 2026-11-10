@@ -3,13 +3,16 @@
 
 use std::io;
 
+use axo_protocol::SessionId;
 use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::rows::stored_session_id;
 
 /// What the cloud acknowledged of one Session's transcript, and the metadata last sent to it with
 /// its version (RFD0018, Upload). The cloud's answer to a handshake always wins over these.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredSyncState {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub position: u64,
     pub chain: Option<String>,
     pub metadata_json: Option<String>,
@@ -28,11 +31,11 @@ pub fn load_sync_states(database: &Connection) -> io::Result<Vec<StoredSyncState
     statement
         .query_map([], |row| {
             Ok(StoredSyncState {
-                session_id: row.get(0)?,
-                position: row.get::<_, i64>(1)?.max(0) as u64,
+                session_id: stored_session_id(row.get(0)?)?,
+                position: stored_count(row.get(1)?)?,
                 chain: row.get(2)?,
                 metadata_json: row.get(3)?,
-                metadata_version: row.get::<_, i64>(4)?.max(0) as u64,
+                metadata_version: stored_count(row.get(4)?)?,
                 in_cloud: row.get(5)?,
             })
         })
@@ -43,7 +46,7 @@ pub fn load_sync_states(database: &Connection) -> io::Result<Vec<StoredSyncState
 
 pub fn store_sync_cursor(
     database: &Connection,
-    session_id: &str,
+    session_id: SessionId,
     position: u64,
     chain: &str,
 ) -> io::Result<()> {
@@ -51,7 +54,7 @@ pub fn store_sync_cursor(
         .execute(
             "INSERT INTO relay_sync (session_id, position, chain) VALUES (?1, ?2, ?3) \
              ON CONFLICT(session_id) DO UPDATE SET position = excluded.position, chain = excluded.chain",
-            params![session_id, position as i64, chain],
+            params![session_id.to_string(), count_to_store(position)?, chain],
         )
         .map(drop)
         .map_err(io::Error::other)
@@ -59,7 +62,7 @@ pub fn store_sync_cursor(
 
 pub fn store_sync_metadata(
     database: &Connection,
-    session_id: &str,
+    session_id: SessionId,
     metadata_json: &str,
     version: u64,
 ) -> io::Result<()> {
@@ -68,7 +71,7 @@ pub fn store_sync_metadata(
             "INSERT INTO relay_sync (session_id, metadata_json, metadata_version) VALUES (?1, ?2, ?3) \
              ON CONFLICT(session_id) DO UPDATE SET metadata_json = excluded.metadata_json, \
              metadata_version = excluded.metadata_version",
-            params![session_id, metadata_json, version as i64],
+            params![session_id.to_string(), metadata_json, count_to_store(version)?],
         )
         .map(drop)
         .map_err(io::Error::other)
@@ -79,7 +82,7 @@ pub fn store_sync_metadata(
 /// qualifies; returns whether it did.
 pub fn mark_transcript_in_cloud(
     database: &Connection,
-    session_id: &str,
+    session_id: SessionId,
     position: u64,
     chain: &str,
 ) -> io::Result<bool> {
@@ -88,7 +91,7 @@ pub fn mark_transcript_in_cloud(
             "UPDATE relay_sync SET in_cloud = 1 WHERE session_id = ?1 AND position = ?2 \
              AND chain = ?3 AND position > 0 \
              AND EXISTS (SELECT 1 FROM sessions WHERE id = ?1 AND state = 'archived')",
-            params![session_id, position as i64, chain],
+            params![session_id.to_string(), count_to_store(position)?, chain],
         )
         .map(|changed| changed == 1)
         .map_err(io::Error::other)
@@ -97,7 +100,7 @@ pub fn mark_transcript_in_cloud(
 /// A Session's transcript as the catalog knows it (RFD0027).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredTranscript {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub pi_session_file: Option<String>,
     pub archived: bool,
     pub in_cloud: bool,
@@ -106,12 +109,22 @@ pub struct StoredTranscript {
     pub chain: Option<String>,
 }
 
-/// The Session whose transcript is `pi_session_file`, or the Session `session_id`.
+/// Which Session's transcript to look up.
+#[derive(Clone, Copy, Debug)]
+pub enum TranscriptOf<'a> {
+    Session(SessionId),
+    /// The Session whose Pi file this is.
+    File(&'a str),
+}
+
 pub fn load_transcript(
     database: &Connection,
-    session_id: Option<&str>,
-    pi_session_file: Option<&str>,
+    of: TranscriptOf<'_>,
 ) -> io::Result<Option<StoredTranscript>> {
+    let (session_id, pi_session_file) = match of {
+        TranscriptOf::Session(id) => (Some(id.to_string()), None),
+        TranscriptOf::File(file) => (None, Some(file)),
+    };
     database
         .query_row(
             "SELECT s.id, s.pi_session_file, s.state = 'archived', \
@@ -121,11 +134,11 @@ pub fn load_transcript(
             params![session_id, pi_session_file],
             |row| {
                 Ok(StoredTranscript {
-                    session_id: row.get(0)?,
+                    session_id: stored_session_id(row.get(0)?)?,
                     pi_session_file: row.get(1)?,
                     archived: row.get(2)?,
                     in_cloud: row.get(3)?,
-                    position: row.get::<_, i64>(4)?.max(0) as u64,
+                    position: stored_count(row.get(4)?)?,
                     chain: row.get(5)?,
                 })
             },
@@ -135,14 +148,26 @@ pub fn load_transcript(
 }
 
 /// The transcript is back on disk, as the cloud holds it.
-pub fn clear_transcript_in_cloud(database: &Connection, session_id: &str) -> io::Result<()> {
+pub fn clear_transcript_in_cloud(database: &Connection, session_id: SessionId) -> io::Result<()> {
     database
         .execute(
             "UPDATE relay_sync SET in_cloud = 0 WHERE session_id = ?1",
-            params![session_id],
+            params![session_id.to_string()],
         )
         .map(drop)
         .map_err(io::Error::other)
+}
+
+/// A record count or version as stored: never negative unless the database is corrupt, and
+/// reading one that is fails instead of reading as zero.
+fn stored_count(value: i64) -> rusqlite::Result<u64> {
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
+}
+
+/// A count to store: SQLite integers are signed.
+fn count_to_store(value: u64) -> io::Result<i64> {
+    i64::try_from(value)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "count is too large"))
 }
 
 /// Raises the handshake round and returns it: every handshake has a higher one than the last,
@@ -168,11 +193,11 @@ mod tests {
     #[test]
     fn only_an_archived_session_at_its_acknowledged_cursor_is_marked_in_the_cloud() {
         let database = database();
-        let id = "8f8f8f8f-0000-4000-8000-000000000001";
+        let id = SessionId::parse("8f8f8f8f-0000-4000-8000-000000000001").unwrap();
         database
             .execute(
                 "INSERT INTO sessions (id, initial_pwd, state, created_at) VALUES (?1, '/tmp', 'open', 1)",
-                params![id],
+                params![id.to_string()],
             )
             .unwrap();
         store_sync_cursor(&database, id, 3, "chain-3").unwrap();
@@ -183,7 +208,7 @@ mod tests {
         database
             .execute(
                 "UPDATE sessions SET state = 'archived' WHERE id = ?1",
-                params![id],
+                params![id.to_string()],
             )
             .unwrap();
         assert!(
@@ -198,5 +223,28 @@ mod tests {
         assert!(load_sync_states(&database).unwrap()[0].in_cloud);
         clear_transcript_in_cloud(&database, id).unwrap();
         assert!(!load_sync_states(&database).unwrap()[0].in_cloud);
+        let transcript = load_transcript(&database, TranscriptOf::Session(id))
+            .unwrap()
+            .unwrap();
+        assert_eq!((transcript.session_id, transcript.position), (id, 3));
+    }
+
+    #[test]
+    fn a_corrupt_cursor_fails_to_read_instead_of_reading_as_zero() {
+        let database = database();
+        database
+            .execute(
+                "INSERT INTO relay_sync (session_id, position, chain) VALUES ('8f8f8f8f-0000-4000-8000-000000000001', -1, 'c')",
+                [],
+            )
+            .unwrap();
+        assert!(load_sync_states(&database).is_err());
+        database
+            .execute(
+                "UPDATE relay_sync SET position = 1, session_id = 'not-a-uuid'",
+                [],
+            )
+            .unwrap();
+        assert!(load_sync_states(&database).is_err());
     }
 }

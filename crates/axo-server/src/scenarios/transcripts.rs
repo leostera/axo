@@ -10,7 +10,7 @@ use axo_protocol::SessionId;
 
 use crate::core::Core;
 use crate::relay_host::{
-    evict_transcript, lock_file, reopened_with_transcript, restore_transcript,
+    TranscriptRequest, evict_transcript, lock_file, reopened_with_transcript, restore_transcript,
 };
 use crate::test_support::Fixture;
 
@@ -37,7 +37,7 @@ async fn archived(fixture: &Fixture) -> (SessionId, PathBuf, String) {
                     rusqlite::params![session_id.to_string(), stored_file.to_string_lossy()],
                 )
                 .map_err(io::Error::other)?;
-            axo_store::store_sync_cursor(database, &session_id.to_string(), 2, &stored_chain)
+            axo_store::store_sync_cursor(database, session_id, 2, &stored_chain)
         })
         .await
         .unwrap();
@@ -49,7 +49,7 @@ async fn in_cloud(fixture: &Fixture, session_id: SessionId) -> bool {
         .core
         .store
         .call(move |database| {
-            axo_store::load_transcript(database, Some(&session_id.to_string()), None)
+            axo_store::load_transcript(database, axo_store::TranscriptOf::Session(session_id))
         })
         .await
         .unwrap()
@@ -132,7 +132,7 @@ async fn a_session_reopens_only_with_the_transcript_the_cloud_acknowledged_back_
 
     // A crash between recording and deleting leaves the file: nothing needs fetching.
     fs::write(&file, LINES).unwrap();
-    restore_transcript(&fixture.core, Some(id), None)
+    restore_transcript(&fixture.core, TranscriptRequest::Session(id))
         .await
         .unwrap();
     reopen(&fixture, id).await.unwrap();
@@ -147,7 +147,7 @@ async fn a_transcript_that_cannot_be_fetched_fails_the_reopen_and_changes_nothin
     assert!(evict(&fixture.core, id, 2, &chain, length).await);
     // This Mac does not follow the account here: there is nothing to fetch it through.
     assert!(
-        restore_transcript(&fixture.core, Some(id), None)
+        restore_transcript(&fixture.core, TranscriptRequest::Session(id))
             .await
             .is_err()
     );

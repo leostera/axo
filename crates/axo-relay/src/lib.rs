@@ -27,7 +27,7 @@ pub use relay::{
     RelayControl, RelayDependencies, RelayWorker, current_timestamp, unavailable_status,
 };
 pub use sync::{
-    Eviction, SessionMetadata, StoredSyncState, SyncCursor, SyncSession, SyncStore, WorkspaceState,
+    Eviction, SessionMetadata, StoredMetadata, SyncCursor, SyncSession, SyncStore, WorkspaceState,
 };
 
 /// Runs `work` on the blocking pool: the Keychain, and what still speaks blocking HTTPS. A panic

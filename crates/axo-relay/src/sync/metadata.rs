@@ -134,16 +134,14 @@ pub struct SyncSession {
     pub transcript_in_cloud: bool,
 }
 
-/// What `axo.db` keeps per Session: the last position and chain the cloud acknowledged, and the
-/// metadata last sent with its version.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct StoredSyncState {
-    pub session_id: String,
-    pub position: u64,
-    pub chain: Option<String>,
-    pub metadata_json: Option<String>,
-    pub metadata_version: u64,
-    pub in_cloud: bool,
+/// The metadata `axo.db` last sent to the cloud for a Session, with its version. Where the
+/// cloud's copy ends is not kept for the uploader: the cloud's answer to a handshake says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredMetadata {
+    pub session_id: SessionId,
+    /// As sent; `None` before any was.
+    pub json: Option<String>,
+    pub version: u64,
 }
 
 #[cfg(test)]

@@ -478,7 +478,11 @@ async fn resume_now(
     let session_file = PathBuf::from(requested);
     if !session_file.exists() {
         // An archived Session's transcript may be in the cloud only (RFD0027).
-        crate::relay_host::restore_transcript(core, None, Some(requested.to_owned())).await?;
+        crate::relay_host::restore_transcript(
+            core,
+            crate::relay_host::TranscriptRequest::File(requested.to_owned()),
+        )
+        .await?;
     }
     let canonical_directory = fs::canonicalize(core.pi_directories.home_of(&session_file))?;
     let canonical_file = fs::canonicalize(&session_file)?;
@@ -630,7 +634,11 @@ async fn reopen_archived(core: &Arc<Core>, owner: &PiHistoryOwner) -> io::Result
     }
     let _reopening = Reopening::begin(core, session_id)?;
     // Its transcript may be in the cloud only (RFD0027): fetched back first.
-    crate::relay_host::restore_transcript(core, Some(session_id), None).await?;
+    crate::relay_host::restore_transcript(
+        core,
+        crate::relay_host::TranscriptRequest::Session(session_id),
+    )
+    .await?;
     if core.is_stopping() {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,

@@ -213,7 +213,7 @@ impl axo_relay::SyncStore for RelayHostAdapter {
         Box::pin(sync_catalog(&self.core))
     }
 
-    fn states(&self) -> HostFuture<'_, io::Result<Vec<axo_relay::StoredSyncState>>> {
+    fn stored_metadata(&self) -> HostFuture<'_, io::Result<Vec<axo_relay::StoredMetadata>>> {
         Box::pin(async move {
             let states = self
                 .core
@@ -222,13 +222,10 @@ impl axo_relay::SyncStore for RelayHostAdapter {
                 .await?;
             Ok(states
                 .into_iter()
-                .map(|state| axo_relay::StoredSyncState {
+                .map(|state| axo_relay::StoredMetadata {
                     session_id: state.session_id,
-                    position: state.position,
-                    chain: state.chain,
-                    metadata_json: state.metadata_json,
-                    metadata_version: state.metadata_version,
-                    in_cloud: state.in_cloud,
+                    json: state.metadata_json,
+                    version: state.metadata_version,
                 })
                 .collect())
         })
@@ -240,12 +237,7 @@ impl axo_relay::SyncStore for RelayHostAdapter {
         cursor: SyncCursor,
     ) -> HostFuture<'_, io::Result<()>> {
         Box::pin(self.core.store.call(move |database| {
-            axo_store::store_sync_cursor(
-                database,
-                &session_id.to_string(),
-                cursor.position,
-                &cursor.chain,
-            )
+            axo_store::store_sync_cursor(database, session_id, cursor.position, &cursor.chain)
         }))
     }
 
@@ -256,12 +248,7 @@ impl axo_relay::SyncStore for RelayHostAdapter {
         version: u64,
     ) -> HostFuture<'_, io::Result<()>> {
         Box::pin(self.core.store.call(move |database| {
-            axo_store::store_sync_metadata(
-                database,
-                &session_id.to_string(),
-                &metadata_json,
-                version,
-            )
+            axo_store::store_sync_metadata(database, session_id, &metadata_json, version)
         }))
     }
 
@@ -295,7 +282,7 @@ async fn sync_catalog(core: &Core) -> io::Result<Vec<axo_relay::SyncSession>> {
         .store
         .call(|database| axo_store::read_archived_sessions(database))
         .await?;
-    let in_cloud: HashSet<String> = core
+    let in_cloud: HashSet<SessionId> = core
         .store
         .call(|database| axo_store::load_sync_states(database))
         .await?
@@ -329,7 +316,7 @@ async fn sync_catalog(core: &Core) -> io::Result<Vec<axo_relay::SyncSession>> {
                 pi: session.pi.clone(),
             },
             status: Some(session.status),
-            transcript_in_cloud: in_cloud.contains(&session.id.to_string()),
+            transcript_in_cloud: in_cloud.contains(&session.id),
             pi_session_file: session.pi_session_file,
         }
     });
@@ -347,7 +334,7 @@ async fn sync_catalog(core: &Core) -> io::Result<Vec<axo_relay::SyncSession>> {
             pi: None,
         },
         status: None,
-        transcript_in_cloud: in_cloud.contains(&session.id.to_string()),
+        transcript_in_cloud: in_cloud.contains(&session.id),
         pi_session_file: session.pi_session_file,
     });
     Ok(open.chain(archived).collect())
@@ -371,8 +358,8 @@ pub(crate) async fn evict_transcript(
     let eviction = core
         .store
         .call(move |database| {
-            let id = session_id.to_string();
-            let Some(transcript) = axo_store::load_transcript(database, Some(&id), None)? else {
+            let of = axo_store::TranscriptOf::Session(session_id);
+            let Some(transcript) = axo_store::load_transcript(database, of)? else {
                 return Ok(Eviction::Kept);
             };
             let Some(file) = transcript.pi_session_file.map(PathBuf::from) else {
@@ -385,7 +372,7 @@ pub(crate) async fn evict_transcript(
             // again.
             if !axo_store::mark_transcript_in_cloud(
                 database,
-                &id,
+                session_id,
                 acknowledged.position,
                 &acknowledged.chain,
             )? {
@@ -404,20 +391,28 @@ pub(crate) async fn evict_transcript(
     Ok(eviction)
 }
 
+/// Which Session's transcript to restore, owned to cross to the store's thread.
+pub(crate) enum TranscriptRequest {
+    Session(SessionId),
+    File(String),
+}
+
+impl TranscriptRequest {
+    fn borrowed(&self) -> axo_store::TranscriptOf<'_> {
+        match self {
+            Self::Session(id) => axo_store::TranscriptOf::Session(*id),
+            Self::File(file) => axo_store::TranscriptOf::File(file),
+        }
+    }
+}
+
 /// Puts an archived Session's transcript back from the cloud if it is there, checked against
 /// what the cloud acknowledged when it was deleted. `in_cloud` stays set until the reopen clears
 /// it (`reopened_with_transcript`).
-pub(crate) async fn restore_transcript(
-    core: &Arc<Core>,
-    session_id: Option<SessionId>,
-    pi_session_file: Option<String>,
-) -> io::Result<()> {
-    let id = session_id.map(|id| id.to_string());
+pub(crate) async fn restore_transcript(core: &Arc<Core>, of: TranscriptRequest) -> io::Result<()> {
     let transcript = core
         .store
-        .call(move |database| {
-            axo_store::load_transcript(database, id.as_deref(), pi_session_file.as_deref())
-        })
+        .call(move |database| axo_store::load_transcript(database, of.borrowed()))
         .await?;
     let Some(transcript) = transcript.filter(|transcript| transcript.in_cloud) else {
         return Ok(());
@@ -449,7 +444,7 @@ async fn restore_from_cloud(
     if already_restored {
         return Ok(());
     }
-    let place = Place::of(&core.host_id, &transcript.session_id)
+    let place = Place::of(&core.host_id, &transcript.session_id.to_string())
         .ok_or_else(|| unavailable("its place is not valid"))?;
     let access = core
         .peers
@@ -495,8 +490,8 @@ pub(crate) fn reopened_with_transcript(
     database: &axo_store::Connection,
     session_id: SessionId,
 ) -> io::Result<()> {
-    let id = session_id.to_string();
-    let Some(transcript) = axo_store::load_transcript(database, Some(&id), None)? else {
+    let of = axo_store::TranscriptOf::Session(session_id);
+    let Some(transcript) = axo_store::load_transcript(database, of)? else {
         return Ok(());
     };
     if !transcript.in_cloud {
@@ -509,7 +504,7 @@ pub(crate) fn reopened_with_transcript(
     if on_disk != transcript.chain.map(|chain| (transcript.position, chain)) {
         return Err(unavailable("it is not back on this Mac"));
     }
-    axo_store::clear_transcript_in_cloud(database, &id)
+    axo_store::clear_transcript_in_cloud(database, session_id)
 }
 
 fn unavailable(reason: &str) -> io::Error {
