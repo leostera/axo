@@ -666,7 +666,14 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(10));
             writer.join().unwrap();
         }
-        // The side-car this process started exits: it wakes at once.
+        // The side-car this process started exits: it wakes at once. Its exit is watched on
+        // the caller's runtime, as in axod.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _inside = runtime.enter();
         let mut child =
             WatchedChild::new(Command::new("/bin/sleep").arg("0.3").spawn().unwrap()).unwrap();
         let watch = StartWatch::new(&run, Some(&child)).unwrap();

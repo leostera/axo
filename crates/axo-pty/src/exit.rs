@@ -1,6 +1,6 @@
 //! A child and the task that hears it exit (RFD0037, "Child processes").
 //!
-//! Each child's watch is a task on axo-pty's runtime, woken by tokio's SIGCHLD stream. On each
+//! Each child's watch is a task on the caller's runtime, woken by tokio's SIGCHLD stream. On each
 //! wake it asks `waitid(WEXITED | WNOHANG | WNOWAIT)` whether its own child has exited, which
 //! leaves the child unreaped. Reaping stays with the owner, through `try_wait`, which reaps only
 //! once the watch has seen the exit. So a pid is never reaped, and so never reused, while the
@@ -11,7 +11,7 @@ use std::io;
 use std::process::{Child, ExitStatus};
 use std::sync::{Arc, Mutex};
 
-/// What happens when a child exits: callbacks run on axo-pty's runtime, so they must not block.
+/// What happens when a child exits: callbacks run on the caller's runtime, so they must not block.
 type OnExit = Box<dyn FnOnce() + Send>;
 
 /// Whether a child has exited, known as soon as the kernel knows.
@@ -126,7 +126,7 @@ impl WatchedChild {
     }
 }
 
-/// Watches `pid` from axo-pty's runtime and marks `exit` once it has exited.
+/// Watches `pid` on the caller's runtime and marks `exit` once it has exited.
 fn watch(pid: libc::id_t, exit: Arc<Exit>) -> io::Result<()> {
     let runtime = crate::runtime::handle()?;
     let _inside = runtime.enter();
@@ -259,7 +259,7 @@ mod tests {
             child.exit(),
             Instant::now() + Duration::from_secs(5)
         ));
-        // Callbacks run just after the exit is known, on axo-pty's runtime.
+        // Callbacks run just after the exit is known, on the caller's runtime.
         let deadline = Instant::now() + Duration::from_secs(5);
         while !told.load(Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "the callback never ran");
