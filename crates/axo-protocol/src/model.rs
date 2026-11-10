@@ -211,18 +211,12 @@ pub struct PiModelInfo {
     pub thinking_levels: Vec<ThinkingLevel>,
 }
 
-impl ShellRecord {
-    pub fn is_available(&self) -> bool {
-        self.availability == Availability::Available
-    }
-}
-
 impl SessionRecord {
     pub fn has_agent(&self) -> bool {
         self.shells.iter().any(|shell| shell.role == PaneRole::Pi)
     }
 
-    pub fn terminal_shell_ids(&self) -> impl Iterator<Item = ShellId> + '_ {
+    fn terminal_shell_ids(&self) -> impl Iterator<Item = ShellId> + '_ {
         self.shells
             .iter()
             .filter(|shell| shell.role == PaneRole::Terminal)

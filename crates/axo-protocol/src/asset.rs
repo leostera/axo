@@ -143,14 +143,6 @@ impl AssetType {
     pub fn as_str(&self) -> &'static str {
         self.0
     }
-
-    /// Images a model may take as image blocks.
-    pub fn is_model_image(&self) -> bool {
-        matches!(
-            self.0,
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        )
-    }
 }
 
 impl Serialize for AssetType {
@@ -264,7 +256,6 @@ mod tests {
             attachment.asset.hex(),
             "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
         );
-        assert!(attachment.mime_type.is_model_image());
         assert_eq!(serde_json::to_value(&attachment).unwrap(), value);
     }
 
