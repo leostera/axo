@@ -40,13 +40,13 @@ use axo_ipc::Extension;
 use axo_questions::{Answer, Values};
 use jsonrpc_core::Error as RpcError;
 
-/// Where this Mac's input key is kept, beside the host credential, under a fixed id.
 /// Values remembered for redaction at most; the oldest go first.
 const MAX_REDACTIONS: usize = 256;
 /// Shorter values are too common to hide wherever they appear.
 const SHORTEST_REDACTED: usize = 4;
 
-/// Salted hashes of the values the person filled in.
+/// Salted hashes of the values the person filled in. Its lock is recovered after a panic: the
+/// list of hashes is never left half-written, and redaction must not stop.
 struct Redactions {
     salt: [u8; 16],
     hashes: Mutex<Vec<[u8; 32]>>,
@@ -55,12 +55,11 @@ struct Redactions {
 impl Default for Redactions {
     fn default() -> Self {
         let mut salt = [0; 16];
-        let random = axo_protocol::new_uuid_v4()
-            .unwrap_or_default()
-            .replace('-', "");
-        for (index, byte) in salt.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(random.get(index * 2..index * 2 + 2).unwrap_or("00"), 16)
-                .unwrap_or(0);
+        let random = std::fs::File::open("/dev/urandom")
+            .and_then(|mut random| std::io::Read::read_exact(&mut random, &mut salt));
+        if let Err(error) = random {
+            // The values are still hidden; only their exported hashes are easier to guess.
+            log::error!("event=computer.redaction_salt_unavailable error={error}");
         }
         Self {
             salt,
@@ -75,21 +74,18 @@ impl Redactions {
             return;
         }
         let hash = hash(&self.salt, value);
-        if let Ok(mut hashes) = self.hashes.lock() {
-            if !hashes.contains(&hash) {
-                if hashes.len() >= MAX_REDACTIONS {
-                    hashes.remove(0);
-                }
-                hashes.push(hash);
+        let mut hashes = self.lock();
+        if !hashes.contains(&hash) {
+            if hashes.len() >= MAX_REDACTIONS {
+                hashes.remove(0);
             }
+            hashes.push(hash);
         }
     }
 
     /// Hides every remembered value in a computer tool's result.
     fn apply(&self, result: &mut Value) {
-        let Ok(hashes) = self.hashes.lock() else {
-            return;
-        };
+        let hashes = self.lock();
         if !hashes.is_empty() {
             axo_computer::redact(result, &|candidate| {
                 hashes.contains(&hash(&self.salt, candidate))
@@ -98,15 +94,19 @@ impl Redactions {
     }
 
     fn export(&self) -> Value {
-        let hashes = self
-            .hashes
-            .lock()
-            .map(|hashes| hashes.clone())
-            .unwrap_or_default();
+        let hashes = self.lock().clone();
         json!({
             "salt": hex(&self.salt),
             "hashes": hashes.iter().map(|hash| hex(hash)).collect::<Vec<_>>(),
         })
+    }
+}
+
+impl Redactions {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<[u8; 32]>> {
+        self.hashes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -745,6 +745,27 @@ async fn ask_for_computer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_while_remembering_does_not_stop_redaction() {
+        let redactions = Arc::new(Redactions::default());
+        redactions.remember("hunter2-secret");
+        let poisoning = Arc::clone(&redactions);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoning.hashes.lock().unwrap();
+            panic!("poisons the lock");
+        })
+        .join();
+        assert!(redactions.hashes.is_poisoned());
+        redactions.remember("another-secret");
+        let mut result = json!({ "text": "typed hunter2-secret and another-secret" });
+        redactions.apply(&mut result);
+        let text = result.to_string();
+        assert!(
+            !text.contains("hunter2-secret") && !text.contains("another-secret"),
+            "{text}"
+        );
+    }
     use zeroize::Zeroizing;
 
     #[test]
