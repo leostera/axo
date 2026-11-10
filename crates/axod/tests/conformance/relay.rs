@@ -669,3 +669,56 @@ fn the_account_drives_a_sessions_panes_keys_and_layout() {
         .unwrap_err();
     assert_eq!(unknown_key["code"], INVALID_PARAMS, "{unknown_key}");
 }
+
+/// The actual lease interval, with a real daemon and socket: a cloud call stays pending across
+/// a heartbeat, then completes on the same connection. No test-only shorter heartbeat masks it.
+#[test]
+fn a_slow_relayed_handler_does_not_delay_heartbeats() {
+    let hub = FakeHub::start();
+    let (axod, _) = linked(&hub, Pi::Fake);
+    let gate = axod.directory.join("release-command");
+    let started = axod.directory.join("command-started");
+    assert!(
+        std::process::Command::new("/usr/bin/mkfifo")
+            .arg(&gate)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let call = hub.begin_call("axo.apps.bash", json!({
+        "accountId": ACCOUNT_ID,
+        "callId": "00000000-0000-4000-8000-000000000042",
+        "command": format!("touch '{}'; read -r answer < '{}'; printf '%s' \"$answer\"", started.display(), gate.display()),
+        "timeoutMs": 120000,
+    }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !started.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the relayed handler never started: {}",
+            axod.log()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    hub.wait_for_with_timeout(
+        "a heartbeat while the command waits",
+        Duration::from_secs(75),
+        |message| message["method"] == "axo.host.heartbeat",
+    );
+    assert!(
+        hub.received_reply(&call).is_none(),
+        "the handler must still be waiting"
+    );
+    std::fs::write(&gate, b"finished\n").unwrap();
+    let reply = hub.wait_for("the slow handler's answer after its heartbeat", |message| {
+        message["id"] == call && message.get("method").is_none()
+    });
+    assert!(reply.get("error").is_none(), "{reply}");
+    assert_eq!(reply["result"]["stdout"], "finished");
+    assert_eq!(reply["result"]["timedOut"], false);
+    assert_eq!(
+        hub.received("axo.host.register").len(),
+        1,
+        "a heartbeat must not require reconnecting"
+    );
+}

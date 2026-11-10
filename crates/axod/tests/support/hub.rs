@@ -118,9 +118,7 @@ impl FakeHub {
     /// Calls axod as the account would, and waits for its answer: `Ok(result)` or
     /// `Err(error)`.
     pub fn call(&self, method: &str, params: Value) -> Result<Value, Value> {
-        self.wait_until_connected();
-        let id = format!("hub-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
+        let id = self.begin_call(method, params);
         let reply = self.wait_for(&format!("the answer to {method}"), |message| {
             message["id"] == json!(id) && message.get("method").is_none()
         });
@@ -128,6 +126,14 @@ impl FakeHub {
             Some(error) => Err(error.clone()),
             None => Ok(reply["result"].clone()),
         }
+    }
+
+    /// Starts a call without waiting, so a test can observe unrelated socket traffic meanwhile.
+    pub fn begin_call(&self, method: &str, params: Value) -> String {
+        self.wait_until_connected();
+        let id = format!("hub-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
+        id
     }
 
     pub fn ok(&self, method: &str, params: Value) -> Value {
@@ -143,7 +149,16 @@ impl FakeHub {
 
     /// The first message from axod, since it connected, that `matches`.
     pub fn wait_for(&self, what: &str, matches: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + WAIT;
+        self.wait_for_with_timeout(what, WAIT, matches)
+    }
+
+    pub fn wait_for_with_timeout(
+        &self,
+        what: &str,
+        timeout: Duration,
+        matches: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + timeout;
         let mut state = self.lock();
         loop {
             if let Some(found) = state.received.iter().find(|message| matches(message)) {
@@ -170,6 +185,14 @@ impl FakeHub {
         self.wait_for(&format!("a {method} request"), |message| {
             message["method"] == json!(method) && message.get("id").is_some()
         })
+    }
+
+    pub fn received_reply(&self, id: &str) -> Option<Value> {
+        self.lock()
+            .received
+            .iter()
+            .find(|message| message["id"] == id && message.get("method").is_none())
+            .cloned()
     }
 
     /// Every message axod sent for `method`, so far.
