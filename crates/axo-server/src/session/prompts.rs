@@ -10,12 +10,12 @@ use std::fmt;
 use std::io;
 use std::time::{Duration, Instant};
 
-use axo_agent::pi::link::{LinkCommands, TurnStop};
+use axo_agent::pi::link::LinkCommands;
 use axo_agent::pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
 use axo_protocol::SessionId;
 use axo_protocol::asset::FetchedAttachment;
+use axo_protocol::commands::{CommandId, StopTarget};
 use axo_protocol::rpc::{PromptDelivery, PromptText};
-use axo_relay::{CommandId, StopTarget};
 
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
 pub(crate) const MAX_QUEUED_PI_PROMPTS: usize = 8;
@@ -149,7 +149,7 @@ pub(crate) async fn send(link: &LinkCommands, prompt: &Prompt) -> Result<(), Pro
         .send_message(
             &prompt.text,
             delivery,
-            prompt.command_id.as_ref().map(CommandId::as_str),
+            prompt.command_id.as_ref(),
             &prompt.attachments,
             PROMPT_ANSWER_TIMEOUT,
         )
@@ -166,16 +166,7 @@ pub(crate) async fn send(link: &LinkCommands, prompt: &Prompt) -> Result<(), Pro
 
 /// Whether the run `stop` names was running and is stopping.
 pub(crate) async fn stop(link: &LinkCommands, stop: &StopTarget) -> Result<bool, PromptError> {
-    let stop = TurnStop {
-        turn_id: stop.turn_id.as_ref().map(|id| id.as_str().to_owned()),
-        seen: stop.seen.as_ref().map(|id| id.as_str().to_owned()),
-        command_ids: stop
-            .command_ids
-            .iter()
-            .map(|id| id.as_str().to_owned())
-            .collect(),
-    };
-    match link.stop_turn(stop, PROMPT_ANSWER_TIMEOUT).await {
+    match link.stop_turn(stop.clone(), PROMPT_ANSWER_TIMEOUT).await {
         Ok(CommandResult::Accepted) => Ok(true),
         Ok(CommandResult::Rejected(RejectReason::Idle)) => Ok(false),
         Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(

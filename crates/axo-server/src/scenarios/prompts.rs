@@ -16,8 +16,9 @@ fn prompt_text(text: &str) -> PromptText {
     PromptText::parse(text.to_owned()).unwrap()
 }
 
-fn command_id(n: u64) -> axo_relay::CommandId {
-    axo_relay::CommandId::try_from(format!("00000000-0000-4000-8000-{n:012x}")).unwrap()
+fn command_id(n: u64) -> axo_protocol::commands::CommandId {
+    axo_protocol::commands::CommandId::try_from(format!("00000000-0000-4000-8000-{n:012x}"))
+        .unwrap()
 }
 
 /// A person's prompt to a Pi that is still starting waits for it, but stops as soon as its request

@@ -16,13 +16,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axo_ipc::peer::Caller;
 use axo_ipc::{Extension, Only, TypedMethods};
+use axo_protocol::commands::{CommandId, EntryId, StopTarget};
 use axo_protocol::rpc::error_code::{
     BUSY, INVALID_PARAMS, NOT_FOUND, REFUSED, STALE_HOST, TIMED_OUT,
 };
 use axo_protocol::rpc::{self, MethodError, PromptDelivery};
 use axo_protocol::{Layout, LayoutNode, RemoteSessionSnapshot, SessionId, SessionRecord, ShellId};
 use axo_pty::WindowSize;
-use axo_relay::{ClientDelivery, CommandId, ModelChoice, PiKey, StopTarget, TurnId};
+use axo_relay::{ClientDelivery, ModelChoice, PiKey};
 use jsonrpc_core::IoHandler;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -552,8 +553,8 @@ params! {
     }
     StopParams {
         session_id: SessionId,
-        turn_id: Option<TurnId> = default,
-        seen: Option<TurnId> = default,
+        turn_id: Option<EntryId> = default,
+        seen: Option<EntryId> = default,
         command_ids: Vec<CommandId> = default,
     }
 }

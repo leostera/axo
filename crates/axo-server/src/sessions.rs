@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use axo_agent::pi::BridgeSocketPath;
 use axo_protocol::asset::FetchedAttachment;
+use axo_protocol::commands::CommandId;
 use axo_protocol::rpc::{self, PromptAccepted, PromptDelivery, PromptSession, PromptText};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, Viewport, new_uuid_v4};
-use axo_relay::CommandId;
 use axo_store::{PiHistoryOwner, StoredLifecycle, StoredSession};
 use tokio::sync::oneshot;
 

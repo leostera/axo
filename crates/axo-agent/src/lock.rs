@@ -18,7 +18,7 @@ pub struct WriterLock(OwnedFd);
 /// that child execs. Generous: exec waits on the loader, which is slow on a loaded machine.
 pub const FORK_EXEC_WINDOW: Duration = Duration::from_millis(250);
 /// How often a held lock is tried again while waiting for it. Nothing says when a lock is
-/// released, and a wait only happens at a launch, bounded by its deadline.
+/// released, and a wait only happens at a launch, on the blocking pool, bounded by its deadline.
 const RETRY: Duration = Duration::from_millis(5);
 
 fn lock_path(session_file: &Path) -> PathBuf {
@@ -44,18 +44,7 @@ impl WriterLock {
                 "Pi writer lock is not a regular file",
             ));
         }
-        // SAFETY: lock is a valid file descriptor and flock only changes its advisory lock.
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == -1 {
-            let error = io::Error::last_os_error();
-            return Err(if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Pi transcript is already owned by a writer",
-                )
-            } else {
-                error
-            });
-        }
+        flock_exclusive(&lock)?;
         Ok(Self(OwnedFd::from(lock)))
     }
 
@@ -102,6 +91,7 @@ impl WriterLock {
     }
 }
 
+/// Takes `lock`'s exclusive `flock` without waiting: `WouldBlock` while another holds it.
 fn flock_exclusive(lock: &File) -> io::Result<()> {
     // SAFETY: lock is a valid file descriptor and flock only changes its advisory lock.
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {

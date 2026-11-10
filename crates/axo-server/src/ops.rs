@@ -5,13 +5,14 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axo_protocol::commands::StopTarget;
 use axo_protocol::rpc::{self, TerminalBytes, TerminalText};
 use axo_protocol::{
     Layout, PiCommandInfo, PiModelInfo, SessionId, SessionRecord, ShellId, ShellRecord,
     ThinkingLevel,
 };
 use axo_pty::WindowSize;
-use axo_relay::{PiKey, StopTarget};
+use axo_relay::PiKey;
 use tokio::sync::oneshot;
 
 use crate::core::Core;

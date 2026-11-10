@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axo_protocol::commands::{CommandId, StopTarget};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -66,27 +67,16 @@ pub enum LinkEvent {
     },
 }
 
-/// What a client saw of the run it asks to stop (see [`Action::Stop`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TurnStop {
-    /// A user record of the run, by entry id.
-    pub turn_id: Option<String>,
-    /// The newest entry the client held.
-    pub seen: Option<String>,
-    /// The client's own prompts, sent or queued.
-    pub command_ids: Vec<String>,
-}
-
 /// An [`Action`] that owns its strings, to cross to the link.
 #[derive(Debug)]
 enum OwnedAction {
     Send {
         text: String,
         delivery: Option<QueuedDelivery>,
-        command_id: Option<String>,
+        command_id: Option<CommandId>,
         attachments: Vec<axo_protocol::asset::FetchedAttachment>,
     },
-    Stop(TurnStop),
+    Stop(StopTarget),
     Shutdown,
     SetModel {
         model: Option<(String, String)>,
@@ -105,14 +95,10 @@ impl OwnedAction {
             } => Action::Send {
                 text,
                 delivery: *delivery,
-                command_id: command_id.as_deref(),
+                command_id: command_id.as_ref(),
                 attachments,
             },
-            Self::Stop(stop) => Action::Stop {
-                turn_id: stop.turn_id.as_deref(),
-                seen: stop.seen.as_deref(),
-                command_ids: &stop.command_ids,
-            },
+            Self::Stop(stop) => Action::Stop(stop),
             Self::Shutdown => Action::Shutdown,
             Self::SetModel {
                 model,
@@ -152,7 +138,7 @@ impl LinkCommands {
         &self,
         text: &str,
         delivery: Option<QueuedDelivery>,
-        command_id: Option<&str>,
+        command_id: Option<&CommandId>,
         attachments: &[axo_protocol::asset::FetchedAttachment],
         timeout: Duration,
     ) -> io::Result<CommandResult> {
@@ -160,7 +146,7 @@ impl LinkCommands {
             OwnedAction::Send {
                 text: text.to_owned(),
                 delivery,
-                command_id: command_id.map(str::to_owned),
+                command_id: command_id.cloned(),
                 attachments: attachments.to_vec(),
             },
             timeout,
@@ -169,7 +155,11 @@ impl LinkCommands {
     }
 
     /// Stops the running run if anything in `stop` belongs to it; see [`Action::Stop`].
-    pub async fn stop_turn(&self, stop: TurnStop, timeout: Duration) -> io::Result<CommandResult> {
+    pub async fn stop_turn(
+        &self,
+        stop: StopTarget,
+        timeout: Duration,
+    ) -> io::Result<CommandResult> {
         self.command(OwnedAction::Stop(stop), timeout).await
     }
 

@@ -7,6 +7,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use axo_protocol::commands::{CommandId, StopTarget};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -73,23 +74,16 @@ pub enum Action<'a> {
         /// A client's prompt (RFD0024): Pi takes it at most once, writes a receipt before it, and
         /// holds it while working, whatever `delivery` says.
         #[serde(skip_serializing_if = "Option::is_none")]
-        command_id: Option<&'a str>,
+        command_id: Option<&'a CommandId>,
         /// Files axod fetched and checked for this prompt (RFD0030); with any, `text` may be
         /// empty.
         #[serde(skip_serializing_if = "<[_]>::is_empty")]
         attachments: &'a [axo_protocol::asset::FetchedAttachment],
     },
-    /// Stops the running run if anything the client saw of it belongs to it: a user record
-    /// (`turn_id`), the newest entry the client held (`seen`), or the receipt of one of its own
-    /// prompts (`command_ids`). Otherwise answers `idle`; an idle Pi also says again that it is.
-    Stop {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        turn_id: Option<&'a str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        seen: Option<&'a str>,
-        #[serde(skip_serializing_if = "<[_]>::is_empty")]
-        command_ids: &'a [String],
-    },
+    /// Stops the running run if anything the client saw of it belongs to it: a user record, the
+    /// newest entry the client held, or the receipt of one of its own prompts. Otherwise answers
+    /// `idle`; an idle Pi also says again that it is.
+    Stop(&'a StopTarget),
     /// Switches this Session's model, thinking level, or both (RFD0033). Pi answers `invalid`
     /// for a model it does not have and `unavailable` for one it has no credentials for.
     SetModel {
@@ -222,6 +216,9 @@ mod tests {
 
     #[test]
     fn outgoing_records_match_the_extension() {
+        use axo_protocol::commands::EntryId;
+        let command =
+            CommandId::try_from("6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b".to_owned()).unwrap();
         assert_eq!(
             serde_json::to_value(Outgoing::Authenticate {
                 protocol_version: ProtocolVersion,
@@ -272,7 +269,7 @@ mod tests {
             serde_json::to_value(Action::Send {
                 text: "yes",
                 delivery: Some(QueuedDelivery::Steer),
-                command_id: Some("6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"),
+                command_id: Some(&command),
                 attachments: &[],
             })
             .unwrap(),
@@ -297,22 +294,15 @@ mod tests {
             .unwrap(),
             json!({ "kind": "setModel", "thinkingLevel": "low" })
         );
+        let entry = |id: &str| EntryId::try_from(id.to_owned()).unwrap();
+        let by_turn = StopTarget::new(Some(entry("a1b2c3d4")), None, Vec::new()).unwrap();
         assert_eq!(
-            serde_json::to_value(Action::Stop {
-                turn_id: Some("a1b2c3d4"),
-                seen: None,
-                command_ids: &[],
-            })
-            .unwrap(),
+            serde_json::to_value(Action::Stop(&by_turn)).unwrap(),
             json!({ "kind": "stop", "turnId": "a1b2c3d4" })
         );
+        let by_seen = StopTarget::new(None, Some(entry("e9")), vec![command.clone()]).unwrap();
         assert_eq!(
-            serde_json::to_value(Action::Stop {
-                turn_id: None,
-                seen: Some("e9"),
-                command_ids: &["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b".to_owned()],
-            })
-            .unwrap(),
+            serde_json::to_value(Action::Stop(&by_seen)).unwrap(),
             json!({ "kind": "stop", "seen": "e9", "commandIds": ["6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"] })
         );
     }
