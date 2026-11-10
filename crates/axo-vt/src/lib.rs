@@ -36,17 +36,26 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A terminal grid size in cells. Both dimensions are at least one.
+/// A terminal grid size in cells. Both dimensions are at least one; only [`GridSize::new`]
+/// makes one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GridSize {
-    pub columns: u16,
-    pub rows: u16,
+    columns: u16,
+    rows: u16,
 }
 
 impl GridSize {
     /// `None` for a zero dimension, which libghostty-vt rejects.
     pub fn new(columns: u16, rows: u16) -> Option<Self> {
         (columns > 0 && rows > 0).then_some(Self { columns, rows })
+    }
+
+    pub fn columns(self) -> u16 {
+        self.columns
+    }
+
+    pub fn rows(self) -> u16 {
+        self.rows
     }
 }
 
@@ -139,18 +148,7 @@ impl Terminal {
             },
             selection: ptr::null(),
         };
-        let mut formatter = ptr::null_mut();
-        // SAFETY: the terminal outlives the formatter, which is freed below.
-        check("formatter_terminal_new", unsafe {
-            ffi::ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.raw, options)
-        })?;
-        let screen = take_allocated("formatter_format_alloc", |out, len| unsafe {
-            // SAFETY: the formatter is live and the out pointers are valid.
-            ffi::ghostty_formatter_format_alloc(formatter, ptr::null(), out, len)
-        });
-        // SAFETY: created above and not used after this.
-        unsafe { ffi::ghostty_formatter_free(formatter) };
-        let mut snapshot = screen?;
+        let mut snapshot = self.format(options)?;
         let continuation = take_allocated("terminal_continuation_alloc", |out, len| unsafe {
             // SAFETY: the terminal is live and the out pointers are valid.
             ffi::ghostty_terminal_continuation_alloc(self.raw, ptr::null(), out, len)
@@ -188,18 +186,23 @@ impl Terminal {
             },
             selection: ptr::null(),
         };
+        Ok(String::from_utf8_lossy(&self.format(options)?).into_owned())
+    }
+
+    /// The terminal as `options` say, through a formatter made and freed for this call.
+    fn format(&mut self, options: ffi::FormatterTerminalOptions) -> Result<Vec<u8>, Error> {
         let mut formatter = ptr::null_mut();
         // SAFETY: the terminal outlives the formatter, which is freed below.
         check("formatter_terminal_new", unsafe {
             ffi::ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.raw, options)
         })?;
-        let text = take_allocated("formatter_format_alloc", |out, len| unsafe {
+        let formatted = take_allocated("formatter_format_alloc", |out, len| unsafe {
             // SAFETY: the formatter is live and the out pointers are valid.
             ffi::ghostty_formatter_format_alloc(formatter, ptr::null(), out, len)
         });
         // SAFETY: created above and not used after this.
         unsafe { ffi::ghostty_formatter_free(formatter) };
-        Ok(String::from_utf8_lossy(&text?).into_owned())
+        formatted
     }
 
     fn set_size_option(&mut self, option: c_int, value: usize) -> Result<(), Error> {
