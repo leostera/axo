@@ -329,36 +329,23 @@ impl TerminalOutput {
                 // A byte from `stop`, or its end dropped.
                 _ = tokio::io::AsyncReadExt::read(&mut stopping, &mut stop_byte) => break "stopped",
             };
-            // The master stays blocking (clients share its file description), so it is read
-            // only when it has something: once now, then again while poll says there is more.
-            // SAFETY: buffer is writable for its length and fd is owned by this pump.
-            let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-            if count > 0 {
-                let output = &buffer[..count as usize];
-                total = total.saturating_add(output.len() as u64);
-                // Output after a resize is drawn for the new grid, so the screen must have it
-                // first. One ioctl per chunk; clients resize through their own descriptor.
-                self.record_at(process::window_size(reader.get_ref()).ok(), output);
-                if let Some(binding) = self.binding.get() {
-                    binding.sink.publish_terminal_output(sequence, output);
-                    sequence = sequence.saturating_add(1);
-                }
-                if !has_more(fd) {
+            let count = match read_ready(fd, &mut buffer) {
+                Read::Bytes(count) => count,
+                Read::Nothing => {
                     ready.clear_ready();
+                    continue;
                 }
-                continue;
-            }
-            if count == 0 {
-                break "eof";
-            }
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                io::ErrorKind::Interrupted => continue,
-                // Another holder may have set O_NONBLOCK on the shared file description.
-                io::ErrorKind::WouldBlock => ready.clear_ready(),
-                // macOS reports a hung-up PTY master as EIO once every slave is closed.
-                _ if error.raw_os_error() == Some(libc::EIO) => break "eof",
-                _ => break "read_failed",
+                Read::Ended => break "eof",
+                Read::Failed => break "read_failed",
+            };
+            let output = &buffer[..count];
+            total = total.saturating_add(output.len() as u64);
+            // Output after a resize is drawn for the new grid, so the screen must have it first.
+            // One ioctl per chunk; clients resize through their own descriptor.
+            self.record_at(process::window_size(reader.get_ref()).ok(), output);
+            if let Some(binding) = self.binding.get() {
+                binding.sink.publish_terminal_output(sequence, output);
+                sequence = sequence.saturating_add(1);
             }
         };
         self.end();
@@ -375,6 +362,46 @@ impl TerminalOutput {
 }
 
 /// Whether `fd` can be read again without blocking: more output, end of file or an error.
+/// What one look at the master found.
+#[derive(Debug)]
+enum Read {
+    Bytes(usize),
+    /// Nothing to read now: readiness was stale or spurious, or someone else read it.
+    Nothing,
+    Ended,
+    Failed,
+}
+
+/// Reads what the master has now, without ever waiting for more. The master stays blocking
+/// (clients share its file description), so it is read only when poll says, at this moment,
+/// that there is something or that it hung up: a blocking read on a runtime worker would hold
+/// up every task queued behind it (the relay's, for one) until the shell printed again.
+fn read_ready(fd: RawFd, buffer: &mut [u8]) -> Read {
+    loop {
+        if !has_more(fd) {
+            return Read::Nothing;
+        }
+        // SAFETY: buffer is writable for its length and fd stays open for this call.
+        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if count > 0 {
+            return Read::Bytes(count as usize);
+        }
+        if count == 0 {
+            return Read::Ended;
+        }
+        let error = io::Error::last_os_error();
+        match error.kind() {
+            io::ErrorKind::Interrupted => {}
+            // Another holder may have set O_NONBLOCK on the shared file description.
+            io::ErrorKind::WouldBlock => return Read::Nothing,
+            // macOS reports a hung-up PTY master as EIO once every slave is closed.
+            _ if error.raw_os_error() == Some(libc::EIO) => return Read::Ended,
+            _ => return Read::Failed,
+        }
+    }
+}
+
+/// Whether the master has something to read, or has hung up, right now.
 fn has_more(fd: RawFd) -> bool {
     let mut descriptor = libc::pollfd {
         fd,
@@ -539,6 +566,33 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
+
+    #[test]
+    fn the_pump_never_blocks_reading_a_master_with_nothing_to_read() {
+        // Readiness can be stale or spurious, and the master is blocking: a read with nothing
+        // there would hold a runtime worker, and everything queued behind it, until output came.
+        let opened = crate::process::open_pty(crate::process::WindowSize::DEFAULT).unwrap();
+        let fd = opened.master.as_raw_fd();
+        let mut buffer = [0_u8; 64];
+        let started = Instant::now();
+        assert!(matches!(read_ready(fd, &mut buffer), Read::Nothing));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // SAFETY: writes a few bytes to the slave this test owns.
+        let written = unsafe { libc::write(opened.slave.as_raw_fd(), b"hi".as_ptr().cast(), 2) };
+        assert_eq!(written, 2);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match read_ready(fd, &mut buffer) {
+                Read::Bytes(count) => {
+                    assert_eq!(&buffer[..count], b"hi");
+                    break;
+                }
+                Read::Nothing => assert!(Instant::now() < deadline, "the output never came"),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(matches!(read_ready(fd, &mut buffer), Read::Nothing));
+    }
 
     /// What a client terminal of `size` shows after parsing `stream`.
     fn parsed(size: WindowSize, stream: &[u8]) -> String {
