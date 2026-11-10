@@ -39,7 +39,12 @@ All 1931 of this Mac's Pi sessions that don't carry a transcript stream to exact
 
 axo depends on `@leostera/atxf` 0.3.0, which ships the stream and a schema validator that compiles on first use: compiling generates code, which Workers refuse, and importing the package must work in a Worker. (At first axo applied the commit as a pnpm patch to 0.2.0; `af45f01` dropped the patch for 0.3.0.)
 
-The converter recorded in `atxf_converter` is still `@leostera/atxf@0.2.0+7898efe pi.stream` (`ATXF_CONVERTER` in `packages/axo-api-worker/src/session-atxf.ts`), although the Worker now runs 0.3.0. See Unresolved questions.
+The converter recorded in `atxf_converter` is still `@leostera/atxf@0.2.0+7898efe pi.stream` (`ATXF_CONVERTER` in `packages/axo-api-worker/src/session-atxf.ts`), although the Worker now runs 0.3.0. The label was not kept on purpose: `af45f01` did not touch it. It still names the converter that runs, though:
+
+- In the ATXF repository, `atxf-v0.3.0` (`804a29e`) is the commit right after `7898efe`. It changes only the package version, the lockfile and a new CHANGELOG.
+- In the published packages, every source and compiled JavaScript file of 0.3.0 is byte-identical to 0.2.0 with axo's last patch applied. Only source maps, the README, `package.json`, the CHANGELOG and an unused `schema/v0.2` differ.
+
+So every Session translated before and after the upgrade was translated by the same code. Its records need no re-translation.
 
 ### Storage
 
@@ -98,7 +103,7 @@ The wire, `pi/3` hashes and chains, the upload handshake, truncation, and every 
 
 ## Unresolved questions
 
-- Whether `ATXF_CONVERTER` should name 0.3.0. Records translated since `af45f01` are labelled with the 0.2.0 commit that the 0.3.0 stream came from. If 0.3.0 writes the same records, the label is only stale. If it does not, Sessions translated before and after the upgrade carry different translations under one converter name, which defeats the column's purpose (ATXF §17.4). Changing it means deciding whether existing Sessions are re-translated.
+- How `ATXF_CONVERTER` should be named from now on. The current label is accurate for the code that runs (Reading Pi as Pi writes it). A label that names 0.3.0 would be just as accurate. But a changed label would mark existing Sessions as translated by another converter, unless readers are taught that both names mean one converter. The rule to keep: change the label, and plan re-translation, only when a new `@leostera/atxf` changes what the Pi stream writes.
 
 - When a reader needs ATXF, Sessions no one has touched since this shipped must be translated first: a sweep over every SessionDO, or translation on first read.
 - Whether to stop storing `line` once AXP carries ATXF, keeping it only as `native`.
