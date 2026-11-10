@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 use crate::exit::WatchedChild;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::output::TerminalOutput;
 
@@ -178,8 +178,11 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
             output,
         }),
         Err(error) => {
-            // It never started serving; no reason to wait long.
-            stop(&mut child, SHELL_STOP_GRACE);
+            // It never started serving. Its exit is watched on the caller's runtime, which
+            // `WatchedChild::new` just found, so it is stopped and reaped there.
+            if let Ok(runtime) = crate::runtime::handle() {
+                runtime.spawn(async move { stop_async(&mut child, SHELL_STOP_GRACE).await });
+            }
             Err(error)
         }
     }
@@ -384,12 +387,12 @@ pub fn set_cloexec(descriptor: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-pub fn stop(child: &mut WatchedChild, grace: Duration) {
-    stop_all(vec![Stopping { child, grace }]);
-}
-
-/// [`stop`] without a thread (RFD0041): SIGHUP and SIGTERM, then SIGKILL once `grace` is up, each
-/// exit heard from the child's watch. Reaps the child.
+/// Stops a child (RFD0041): SIGHUP and SIGTERM, then SIGKILL once `grace` is up, each exit heard
+/// from the child's watch. Reaps the child. Stopping many at once takes the longest grace among
+/// them, not the sum, when each has its own task.
+///
+/// SIGHUP is what a closing terminal sends: interactive shells ignore SIGTERM but exit on SIGHUP
+/// and forward it to their jobs. SIGTERM covers non-shell agents. Survivors get SIGKILL.
 pub async fn stop_async(child: &mut WatchedChild, grace: Duration) {
     match child.try_wait() {
         Ok(Some(_)) => return,
@@ -432,100 +435,6 @@ pub const SHELL_STOP_GRACE: Duration = Duration::from_millis(500);
 
 /// How long to wait for the kernel to reap after SIGKILL before reporting a stuck process.
 pub const KILL_WAIT: Duration = Duration::from_secs(2);
-
-/// A child to stop, and how long it may take to exit before it is killed.
-pub struct Stopping<'a> {
-    pub child: &'a mut WatchedChild,
-    pub grace: Duration,
-}
-
-/// Stops every child at once: all are signalled together and waited on together, so stopping
-/// N children takes the longest grace among them, not the sum. Each is killed when its own
-/// grace runs out. Each exit is heard the moment it happens, from the child's waiter.
-///
-/// SIGHUP is what a closing terminal sends: interactive shells ignore SIGTERM but exit on SIGHUP
-/// and forward it to their jobs. SIGTERM covers non-shell agents. Survivors get SIGKILL.
-pub fn stop_all(children: Vec<Stopping<'_>>) {
-    let started = Instant::now();
-    let (exited, exits) = std::sync::mpsc::channel::<()>();
-    let mut pending: Vec<Pending<'_>> = Vec::with_capacity(children.len());
-    for Stopping { child, grace } in children {
-        match child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                log::info!("event=session.shell_stop_started pid={}", child.id());
-                let exited = exited.clone();
-                child.exit().on_exit(move || {
-                    let _ = exited.send(());
-                });
-                signal(child, libc::SIGHUP);
-                signal(child, libc::SIGTERM);
-                pending.push(Pending {
-                    child,
-                    deadline: started + grace,
-                    killed: false,
-                });
-            }
-            Err(error) => log::error!(
-                "event=session.shell_stop_unconfirmed pid={} phase=before_signal error_kind={:?}",
-                child.id(),
-                error.kind()
-            ),
-        }
-    }
-    while !pending.is_empty() {
-        let now = Instant::now();
-        pending.retain_mut(|stopping| stopping.advance(now));
-        // Until the next child exits, or the nearest grace runs out.
-        if let Some(next) = pending.iter().map(|stopping| stopping.deadline).min() {
-            let _ = exits.recv_timeout(next.saturating_duration_since(Instant::now()));
-        }
-    }
-}
-
-/// One child on its way out: terminated until `deadline`, then killed until a new deadline.
-struct Pending<'a> {
-    child: &'a mut WatchedChild,
-    deadline: Instant,
-    killed: bool,
-}
-
-impl Pending<'_> {
-    /// Returns whether the child still needs waiting on.
-    fn advance(&mut self, now: Instant) -> bool {
-        let phase = if self.killed {
-            "kill_wait"
-        } else {
-            "term_wait"
-        };
-        match self.child.try_wait() {
-            Ok(Some(_)) => {
-                log::info!("event=session.shell_stopped pid={}", self.child.id());
-                return false;
-            }
-            Ok(None) => {}
-            Err(error) => {
-                log::error!(
-                    "event=session.shell_stop_unconfirmed pid={} phase={phase} error_kind={:?}",
-                    self.child.id(),
-                    error.kind()
-                );
-                return false;
-            }
-        }
-        if now < self.deadline {
-            return true;
-        }
-        if self.killed {
-            log::error!("event=session.shell_stop_timed_out pid={}", self.child.id());
-            return false;
-        }
-        signal(self.child, libc::SIGKILL);
-        self.killed = true;
-        self.deadline = now + KILL_WAIT;
-        true
-    }
-}
 
 /// Signals the child's process group (its foreground jobs) and the child itself (a shell that
 /// moved to another group for job control).
@@ -586,6 +495,39 @@ fn wait_writable(fd: RawFd, timeout: Duration) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    fn block<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    fn stop(child: &mut WatchedChild, grace: Duration) {
+        block(stop_async(child, grace));
+    }
+
+    /// Stops every child at once, each in its own task, as axod stops a Session's panes.
+    fn stop_together(children: Vec<(WatchedChild, Duration)>) -> Vec<WatchedChild> {
+        block(async {
+            let stopping: Vec<_> = children
+                .into_iter()
+                .map(|(mut child, grace)| {
+                    crate::runtime::shared().unwrap().spawn(async move {
+                        stop_async(&mut child, grace).await;
+                        child
+                    })
+                })
+                .collect();
+            let mut stopped = Vec::new();
+            for task in stopping {
+                stopped.push(task.await.unwrap());
+            }
+            stopped
+        })
+    }
 
     /// A descriptor that is not close-on-exec, as a socket another thread is still opening is on
     /// macOS, does not reach the shell; one it is asked to inherit does.
@@ -764,19 +706,14 @@ mod tests {
 
     #[test]
     fn stopping_many_stubborn_shells_costs_one_grace_period() {
-        let mut children: Vec<WatchedChild> = (0..6)
-            .map(|_| spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done"))
+        let children: Vec<(WatchedChild, Duration)> = (0..6)
+            .map(|_| {
+                let child = spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done");
+                (child, SHELL_STOP_GRACE)
+            })
             .collect();
         let started = Instant::now();
-        stop_all(
-            children
-                .iter_mut()
-                .map(|child| Stopping {
-                    child,
-                    grace: SHELL_STOP_GRACE,
-                })
-                .collect(),
-        );
+        let mut children = stop_together(children);
         let elapsed = started.elapsed();
         for child in &mut children {
             assert!(child.try_wait().unwrap().is_some());
@@ -794,12 +731,12 @@ mod tests {
         // Well above the slow child's 0.5 s cleanup, so a loaded machine (parallel test
         // shards) cannot push it past the bound below.
         let long = Duration::from_millis(2_000);
-        let mut stubborn = spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done");
+        let stubborn = spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done");
         // Exits on SIGTERM only after cleaning up for a while, like Pi saving its state. It
         // reports when its trap is installed, so the signal cannot beat it under load.
         let ready = std::env::temp_dir().join(format!("axo-stop-ready-{}", std::process::id()));
         let _ = std::fs::remove_file(&ready);
-        let mut slow = spawn_group_leader(&format!(
+        let slow = spawn_group_leader(&format!(
             "trap 'sleep 0.5; exit 0' HUP TERM; : > '{}'; while :; do sleep 0.05; done",
             ready.display()
         ));
@@ -813,16 +750,9 @@ mod tests {
         }
         let _ = std::fs::remove_file(&ready);
         let started = Instant::now();
-        stop_all(vec![
-            Stopping {
-                child: &mut stubborn,
-                grace: short,
-            },
-            Stopping {
-                child: &mut slow,
-                grace: long,
-            },
-        ]);
+        let [mut stubborn, mut slow] = stop_together(vec![(stubborn, short), (slow, long)])
+            .try_into()
+            .unwrap();
         let elapsed = started.elapsed();
         assert!(elapsed < long, "took {elapsed:?}");
         assert!(stubborn.try_wait().unwrap().is_some());

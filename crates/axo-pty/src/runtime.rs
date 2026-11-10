@@ -28,8 +28,9 @@ pub(crate) fn shared() -> io::Result<&'static tokio::runtime::Runtime> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("axo-pty-test")
-        // IO for the pumps' descriptors, and the signal driver for SIGCHLD.
+        // IO for the pumps' descriptors and the signal driver for SIGCHLD; time for stops.
         .enable_io()
+        .enable_time()
         .build()?;
     Ok(SHARED.get_or_init(|| runtime))
 }
