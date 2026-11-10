@@ -675,7 +675,7 @@ mod tests {
         assert!(block(watch.wait_until(started + Duration::from_secs(30))));
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(child.exit().has_exited());
-        child.wait().unwrap();
+        block(child.wait()).unwrap();
         std::fs::remove_dir_all(run).unwrap();
     }
 

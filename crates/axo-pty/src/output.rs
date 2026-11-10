@@ -22,8 +22,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
@@ -415,8 +414,7 @@ fn has_more(fd: RawFd) -> bool {
 /// One attachment's view of a shell's output.
 pub struct OutputSubscriber {
     queue: Mutex<SubscriberQueue>,
-    ready: Condvar,
-    /// Wakes `next_async`, as `ready` wakes `next`.
+    /// Wakes waiting subscribers.
     changed: tokio::sync::Notify,
     overflow_shutdown: Option<OwnedFd>,
 }
@@ -459,7 +457,6 @@ impl OutputSubscriber {
                     SubscriberStatus::Live
                 },
             }),
-            ready: Condvar::new(),
             changed: tokio::sync::Notify::new(),
             overflow_shutdown,
         }
@@ -486,14 +483,12 @@ impl OutputSubscriber {
                 // SAFETY: shutdown only changes the state of this live socket.
                 unsafe { libc::shutdown(socket.as_raw_fd(), libc::SHUT_RDWR) };
             }
-            self.ready.notify_all();
             self.changed.notify_waiters();
             return false;
         }
         queue.bytes += chunk.len();
         queue.chunks.push_back(Arc::clone(chunk));
         drop(queue);
-        self.ready.notify_all();
         self.changed.notify_waiters();
         true
     }
@@ -504,7 +499,6 @@ impl OutputSubscriber {
             queue.status = SubscriberStatus::Ended;
         }
         drop(queue);
-        self.ready.notify_all();
         self.changed.notify_waiters();
     }
 
@@ -515,35 +509,25 @@ impl OutputSubscriber {
         queue.chunks.clear();
         queue.bytes = 0;
         drop(queue);
-        self.ready.notify_all();
         self.changed.notify_waiters();
     }
 
-    /// Takes every queued chunk, waiting without a thread for the first one, however long.
+    /// Waits without holding a thread for queued output or the subscriber's end.
     pub async fn next_async(&self) -> NextOutput {
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            match self.next(Duration::ZERO) {
+            match self.take_queued() {
                 NextOutput::Idle => changed.await,
                 next => return next,
             }
         }
     }
 
-    /// Takes every queued chunk, waiting up to `timeout` for the first one.
-    pub fn next(&self, timeout: Duration) -> NextOutput {
+    /// Takes queued output without waiting; the async waiter registers before checking this.
+    fn take_queued(&self) -> NextOutput {
         let mut queue = self.lock();
-        if queue.chunks.is_empty() && queue.status == SubscriberStatus::Live {
-            queue = self
-                .ready
-                .wait_timeout_while(queue, timeout, |queue| {
-                    queue.chunks.is_empty() && queue.status == SubscriberStatus::Live
-                })
-                .map(|(queue, _)| queue)
-                .unwrap_or_else(|poisoned| poisoned.into_inner().0);
-        }
         match queue.status {
             SubscriberStatus::Overflowed => return NextOutput::Overflowed,
             SubscriberStatus::Detached => return NextOutput::Detached,
@@ -562,9 +546,29 @@ impl OutputSubscriber {
 }
 
 #[cfg(test)]
+pub(crate) fn next_output(
+    subscriber: &OutputSubscriber,
+    timeout: std::time::Duration,
+) -> NextOutput {
+    if timeout.is_zero() {
+        return subscriber.take_queued();
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            tokio::time::timeout(timeout, subscriber.next_async())
+                .await
+                .unwrap_or(NextOutput::Idle)
+        })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
+    use std::time::Duration;
     use std::time::Instant;
 
     #[test]
@@ -609,7 +613,7 @@ mod tests {
     }
 
     fn live(subscriber: &OutputSubscriber) -> Vec<u8> {
-        let NextOutput::Chunks(chunks) = subscriber.next(Duration::from_millis(10)) else {
+        let NextOutput::Chunks(chunks) = next_output(&subscriber, Duration::from_millis(10)) else {
             panic!("expected live output");
         };
         chunks.concat()
@@ -631,7 +635,7 @@ mod tests {
         let live = live(&subscriber);
         assert_eq!(live, b"1mafter", "live output is the raw PTY stream");
         assert!(matches!(
-            subscriber.next(Duration::from_millis(1)),
+            next_output(&subscriber, Duration::from_millis(1)),
             NextOutput::Idle
         ));
         // The replay ends inside the same escape sequence, so the live bytes complete it.
@@ -713,7 +717,8 @@ mod tests {
         output.record(b"one");
         output.record(b"two");
         for subscriber in &subscribers {
-            let NextOutput::Chunks(chunks) = subscriber.next(Duration::from_millis(10)) else {
+            let NextOutput::Chunks(chunks) = next_output(&subscriber, Duration::from_millis(10))
+            else {
                 panic!("expected output");
             };
             assert_eq!(chunks.concat(), b"onetwo");
@@ -729,11 +734,11 @@ mod tests {
         let started = Instant::now();
         for _ in 0..(MAX_SUBSCRIBER_BACKLOG_BYTES / chunk.len() + 1) {
             output.record(&chunk);
-            let _ = active.next(Duration::ZERO);
+            let _ = next_output(&active, Duration::ZERO);
         }
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(matches!(
-            stalled.next(Duration::ZERO),
+            next_output(&stalled, Duration::ZERO),
             NextOutput::Overflowed
         ));
         assert_eq!(output.subscriber_count(), 1);
@@ -745,13 +750,19 @@ mod tests {
         let (_, subscriber) = output.subscribe(None, None);
         output.record(b"last words");
         output.end();
-        let NextOutput::Chunks(chunks) = subscriber.next(Duration::ZERO) else {
+        let NextOutput::Chunks(chunks) = next_output(&subscriber, Duration::ZERO) else {
             panic!("expected queued output");
         };
         assert_eq!(chunks.concat(), b"last words");
-        assert!(matches!(subscriber.next(Duration::ZERO), NextOutput::Ended));
+        assert!(matches!(
+            next_output(&subscriber, Duration::ZERO),
+            NextOutput::Ended
+        ));
         let (_, late) = output.subscribe(None, None);
-        assert!(matches!(late.next(Duration::ZERO), NextOutput::Ended));
+        assert!(matches!(
+            next_output(&late, Duration::ZERO),
+            NextOutput::Ended
+        ));
     }
 
     struct CountingSink(AtomicU64);
@@ -780,7 +791,7 @@ mod tests {
         let stopped = Instant::now();
         output.stop();
         assert!(matches!(
-            subscriber.next(Duration::from_secs(5)),
+            next_output(&subscriber, Duration::from_secs(5)),
             NextOutput::Ended
         ));
         assert!(
@@ -843,7 +854,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             assert!(Instant::now() < deadline, "pump did not end");
-            match subscriber.next(Duration::from_millis(100)) {
+            match next_output(&subscriber, Duration::from_millis(100)) {
                 NextOutput::Chunks(chunks) => {
                     received += chunks.iter().map(|c| c.len()).sum::<usize>()
                 }

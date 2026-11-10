@@ -706,7 +706,12 @@ mod tests {
                             "{}",
                             process.device
                         );
-                        process.child.wait().unwrap();
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap()
+                            .block_on(process.child.wait())
+                            .unwrap();
                     }
                 })
             })
@@ -852,7 +857,7 @@ mod tests {
         while !String::from_utf8_lossy(&seen).contains(&process.device) && Instant::now() < deadline
         {
             if let crate::output::NextOutput::Chunks(chunks) =
-                subscriber.next(Duration::from_millis(100))
+                crate::output::next_output(&subscriber, Duration::from_millis(100))
             {
                 chunks
                     .iter()

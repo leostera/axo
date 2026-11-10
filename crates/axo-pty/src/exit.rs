@@ -9,8 +9,7 @@
 
 use std::io;
 use std::process::{Child, ExitStatus};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
 
 /// What happens when a child exits: callbacks run on axo-pty's runtime, so they must not block.
 type OnExit = Box<dyn FnOnce() + Send>;
@@ -19,7 +18,6 @@ type OnExit = Box<dyn FnOnce() + Send>;
 #[derive(Default)]
 pub struct Exit {
     state: Mutex<ExitState>,
-    changed: Condvar,
 }
 
 #[derive(Default)]
@@ -31,31 +29,6 @@ struct ExitState {
 impl Exit {
     pub fn has_exited(&self) -> bool {
         self.lock().exited
-    }
-
-    /// Waits until the child exits.
-    pub fn wait(&self) {
-        let mut state = self.lock();
-        while !state.exited {
-            state = self.changed.wait(state).unwrap_or_else(|p| p.into_inner());
-        }
-    }
-
-    /// Waits until the child exits or `deadline` passes; returns whether it exited.
-    pub fn wait_until(&self, deadline: Instant) -> bool {
-        let mut state = self.lock();
-        while !state.exited {
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            state = self
-                .changed
-                .wait_timeout(state, deadline - now)
-                .unwrap_or_else(|p| p.into_inner())
-                .0;
-        }
-        true
     }
 
     /// Waits, without a thread, until the child exits.
@@ -85,7 +58,6 @@ impl Exit {
             state.exited = true;
             std::mem::take(&mut state.on_exit)
         };
-        self.changed.notify_all();
         for callback in callbacks {
             callback();
         }
@@ -144,8 +116,8 @@ impl WatchedChild {
     }
 
     /// Waits for the child to exit and reaps it.
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.exit.wait();
+    pub async fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.exit.exited().await;
         self.child.wait()
     }
 
@@ -206,6 +178,18 @@ fn has_exited(pid: libc::id_t) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+    fn exited_before(exit: &Exit, deadline: Instant) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), exit.exited())
+                    .await
+                    .is_ok()
+            })
+    }
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -225,7 +209,10 @@ mod tests {
     fn an_exit_is_known_the_moment_it_happens_and_the_child_is_left_to_reap() {
         let mut child = spawn("exit 7");
         let started = Instant::now();
-        assert!(child.exit().wait_until(started + Duration::from_secs(5)));
+        assert!(exited_before(
+            child.exit(),
+            started + Duration::from_secs(5)
+        ));
         assert_eq!(child.try_wait().unwrap().unwrap().code(), Some(7));
     }
 
@@ -237,22 +224,20 @@ mod tests {
         assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
         std::thread::sleep(Duration::from_millis(200));
         assert!(!has_exited(pid as libc::id_t));
-        assert!(
-            !child
-                .exit()
-                .wait_until(Instant::now() + Duration::from_millis(200))
-        );
+        assert!(!exited_before(
+            child.exit(),
+            Instant::now() + Duration::from_millis(200)
+        ));
         assert!(child.try_wait().unwrap().is_none());
         // SAFETY: as above.
         assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
         std::thread::sleep(Duration::from_millis(100));
         assert!(!has_exited(pid as libc::id_t));
         child.kill().unwrap();
-        assert!(
-            child
-                .exit()
-                .wait_until(Instant::now() + Duration::from_secs(5))
-        );
+        assert!(exited_before(
+            child.exit(),
+            Instant::now() + Duration::from_secs(5)
+        ));
         assert!(child.try_wait().unwrap().is_some());
     }
 
@@ -264,18 +249,16 @@ mod tests {
         child
             .exit()
             .on_exit(move || telling.store(true, Ordering::SeqCst));
-        assert!(
-            !child
-                .exit()
-                .wait_until(Instant::now() + Duration::from_millis(50))
-        );
+        assert!(!exited_before(
+            child.exit(),
+            Instant::now() + Duration::from_millis(50)
+        ));
         assert!(child.try_wait().unwrap().is_none());
         child.kill().unwrap();
-        assert!(
-            child
-                .exit()
-                .wait_until(Instant::now() + Duration::from_secs(5))
-        );
+        assert!(exited_before(
+            child.exit(),
+            Instant::now() + Duration::from_secs(5)
+        ));
         // Callbacks run just after the exit is known, on axo-pty's runtime.
         let deadline = Instant::now() + Duration::from_secs(5);
         while !told.load(Ordering::SeqCst) {
@@ -307,9 +290,7 @@ mod tests {
         }
         for child in &mut children {
             assert!(
-                child
-                    .exit()
-                    .wait_until(Instant::now() + Duration::from_secs(10)),
+                exited_before(child.exit(), Instant::now() + Duration::from_secs(10)),
                 "every exit is heard, however many share one signal"
             );
             assert!(child.try_wait().unwrap().is_some());
@@ -321,15 +302,21 @@ mod tests {
     fn another_childs_exit_is_not_this_ones() {
         let mut running = spawn("sleep 30");
         let mut exiting = spawn("exit 0");
-        assert!(
-            exiting
-                .exit()
-                .wait_until(Instant::now() + Duration::from_secs(5))
-        );
+        assert!(exited_before(
+            exiting.exit(),
+            Instant::now() + Duration::from_secs(5)
+        ));
         assert!(exiting.try_wait().unwrap().is_some());
         assert!(!running.exit().has_exited());
         assert!(running.try_wait().unwrap().is_none());
         running.kill().unwrap();
-        assert!(running.wait().is_ok());
+        assert!(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(running.wait())
+                .is_ok()
+        );
     }
 }
