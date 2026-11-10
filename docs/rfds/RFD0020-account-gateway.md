@@ -1,11 +1,19 @@
 # RFD0020 - Axo: The account gateway
 
 - Feature Name: `axo-account-gateway`
-- Status: Draft
+- Status: Draft; not implemented on `main` (see Current state)
 - Author: leostera
 - Start Date: 2026-10-31
-- Updated: 2026-10-31
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
+
+## Current state
+
+Checked against `main` on 2026-11-10. There is no gateway on `main`. Every app's grants, tokens and client secrets, the scripts, every outside call and the call log with its hash chain are still in the account's `AxoAccountManager` (`packages/axo-api-worker/src/apps/account.ts`), as [RFD0016](RFD0016-connections-and-tools.md) describes. `specs/relay/account-gateway.ts` is on `main` and says it points at no code.
+
+An implementation exists only on the branch `feat/apps-gmail`, which was never merged: `58c7010` named the class `AxoAppGateway` and marked this RFD accepted, `bb4a93f` built the gateway and the one-time move, and `bf724bf` marked it implemented. The branch is 3 commits ahead of where it left `main` on 2026-11-01, and `main` has moved 520 commits since. None of the three commits is on `main`, so this RFD is not recorded as accepted here.
+
+Since the branch, 21 commits on `main` changed the apps code in the account manager: connections became apps (`src/connections` is now `src/apps`, methods `axo.apps.*`), Telegram moved to the person's own account through GramJS, and computer use from anywhere ([RFD0028](RFD0028-computer-use.md)) added `computer.run`. The branch's code and the names and paths below (`src/connections/*`, `axo.connections.*`, `/api/v1/account/connections/*`) are from before that. Carrying this RFD out now would start from the current `src/apps`.
 
 ## Summary
 
