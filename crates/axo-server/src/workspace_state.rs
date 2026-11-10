@@ -14,6 +14,8 @@ use std::time::Duration;
 use axo_protocol::SessionId;
 use axo_relay::WorkspaceState;
 
+use crate::core::lock;
+
 /// The longest one git command may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -33,15 +35,13 @@ struct Inner {
 impl WorkspaceStates {
     /// The last state read for the Session, if any since axod started.
     pub(crate) fn get(&self, session_id: SessionId) -> Option<WorkspaceState> {
-        self.inner.lock().ok()?.known.get(&session_id).cloned()
+        lock(&self.inner).known.get(&session_id).cloned()
     }
 
     /// Reads the Session's folder again, in the background.
     pub(crate) fn refresh(&self, session_id: SessionId, path: PathBuf) {
         {
-            let Ok(mut inner) = self.inner.lock() else {
-                return;
-            };
+            let mut inner = lock(&self.inner);
             if !inner.reading.insert(session_id) {
                 inner.again.insert(session_id);
                 return;
@@ -51,7 +51,7 @@ impl WorkspaceStates {
         tokio::spawn(async move {
             loop {
                 let state = read(&path, unix_now()).await;
-                let Ok(mut guard) = inner.lock() else { return };
+                let mut guard = lock(&inner);
                 guard.known.insert(session_id, state);
                 if !guard.again.remove(&session_id) {
                     guard.reading.remove(&session_id);
