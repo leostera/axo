@@ -533,6 +533,9 @@ fn try_lock(file: &File) -> bool {
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
+/// The most a side-car reply may hold: answers are a few probabilities.
+const MAX_REPLY_BYTES: usize = 1 << 20;
+
 struct Reply {
     status: u16,
     body: Vec<u8>,
@@ -556,7 +559,16 @@ async fn http(
         stream.write_all(head.as_bytes()).await?;
         stream.write_all(body).await?;
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).await?;
+        (&mut stream)
+            .take(MAX_REPLY_BYTES as u64 + 1)
+            .read_to_end(&mut raw)
+            .await?;
+        if raw.len() > MAX_REPLY_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "local inference replied with too much",
+            ));
+        }
         parse_reply(&raw)
     };
     tokio::time::timeout(timeout, exchange)
