@@ -96,9 +96,9 @@ pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, MethodErr
 }
 
 /// Runs the sign-in to its callback or its timeout.
-pub fn run(
+pub async fn run<F: std::future::Future<Output = std::io::Result<()>>>(
     params: &SignInParams,
-    open_browser: impl FnOnce(&str) -> std::io::Result<()>,
+    open_browser: impl FnOnce(String) -> F,
 ) -> Result<SignInResult, MethodError> {
     let request = axo_signin::SignIn {
         authorize_url: params.authorize_url.clone(),
@@ -107,7 +107,7 @@ pub fn run(
         state: params.state.clone(),
         timeout: Duration::from_millis(params.timeout_ms),
     };
-    match axo_signin::sign_in(&request, open_browser) {
+    match axo_signin::sign_in(&request, open_browser).await {
         Ok(callback) => Ok(SignInResult {
             redirect_uri: callback.redirect_uri,
             code: callback.code,

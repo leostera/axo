@@ -134,11 +134,9 @@ pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionCon
         log::info!("event=apps.sign_in_started call={}", params.call_id);
         let call_id = params.call_id.clone();
         // The loopback listener is a blocking one for now.
-        let outcome = crate::blocking(move || {
-            crate::signin::run(&params, axo_signin::open_in_browser)
-                .map(|result| serde_json::to_value(result).expect("a sign-in result serializes"))
-        })
-        .await;
+        let outcome = crate::signin::run(&params, axo_signin::open_in_browser)
+            .await
+            .map(|result| serde_json::to_value(result).expect("a sign-in result serializes"));
         drop(place);
         log::info!(
             "event=apps.sign_in_finished call={call_id} outcome={}",
