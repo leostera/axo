@@ -12,6 +12,7 @@ export {
   AxoPairingIndex,
   AxoPairingRateLimit,
   AxoSessionDO,
+  AxoWhatsAppDO,
 } from "@axo/api-worker";
 
 type WorkerEnvironment = Env & {
