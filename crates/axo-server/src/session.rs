@@ -723,6 +723,28 @@ impl Session {
     pub(crate) fn folder(&self) -> PathBuf {
         self.row.folder.clone()
     }
+
+    /// A pane's PTY size, as (rows, columns).
+    #[cfg(test)]
+    pub(crate) fn pty_size(&self, shell_id: ShellId) -> io::Result<(u16, u16)> {
+        let size = process::window_size(&self.running(shell_id)?.master)?;
+        Ok((size.rows(), size.columns()))
+    }
+
+    /// The PTY master's close-on-exec flag and device, for checking a pane's PTY.
+    #[cfg(test)]
+    pub(crate) fn pty(&self, shell_id: ShellId) -> io::Result<(bool, String)> {
+        let running = self.running(shell_id)?;
+        // SAFETY: reads the flags of a descriptor the pane owns.
+        let flags = unsafe { libc::fcntl(running.master.as_raw_fd(), libc::F_GETFD) };
+        Ok((flags & libc::FD_CLOEXEC != 0, running.device.clone()))
+    }
+
+    /// How many clients are attached to a pane.
+    #[cfg(test)]
+    pub(crate) fn attachments(&self, shell_id: ShellId) -> io::Result<usize> {
+        Ok(self.running(shell_id)?.attachments)
+    }
 }
 
 #[cfg(target_vendor = "apple")]

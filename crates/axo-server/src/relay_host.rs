@@ -310,7 +310,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
 /// Deletes an archived Session's transcript the cloud acknowledged whole, at `position` and
 /// `chain`, while the file was `length` bytes. Returns false, deleting nothing, if the Session
 /// reopened, is reopening, changed, or is not at that cursor any more.
-fn evict_transcript(
+pub(crate) fn evict_transcript(
     core: &Core,
     session_id: SessionId,
     position: u64,
@@ -447,7 +447,7 @@ fn unavailable(reason: &str) -> io::Error {
     )
 }
 
-fn lock_file(file: &Path) -> PathBuf {
+pub(crate) fn lock_file(file: &Path) -> PathBuf {
     let mut name = file.as_os_str().to_owned();
     name.push(".lock");
     PathBuf::from(name)

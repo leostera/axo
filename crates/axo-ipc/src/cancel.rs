@@ -80,7 +80,7 @@ pub fn current() -> Cancellation {
 }
 
 /// Runs `request` with `cancellation` as [`current`], for an async handler.
-pub(crate) async fn scope<F: Future>(cancellation: Cancellation, request: F) -> F::Output {
+pub async fn scope<F: Future>(cancellation: Cancellation, request: F) -> F::Output {
     TASK_CANCELLATION.scope(cancellation, request).await
 }
 

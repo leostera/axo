@@ -57,8 +57,11 @@ rust_library(
 rust_test(
     name = "axo_server_tests",
     srcs = glob(["src/**/*.rs"]),
-    data = [":pi_extension_fixture"],
-    env = {"AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)"},
+    data = [":pi_extension_fixture", "//crates/axod:fake_pi"],
+    env = {
+        "AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)",
+        "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
+    },
     edition = "2024",
     # AXO_BUILD_NUMBER: axod's build number from config.json (RFD0021).
     rustc_env_files = ["@axo_config//:axod.env"],

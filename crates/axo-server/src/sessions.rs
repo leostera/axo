@@ -343,7 +343,11 @@ async fn wait_for_start(started: oneshot::Receiver<Result<(), String>>) -> io::R
     }
 }
 
-fn copy_pi_transcript(source: &Path, destination: &Path, workspace: &Path) -> io::Result<()> {
+pub(crate) fn copy_pi_transcript(
+    source: &Path,
+    destination: &Path,
+    workspace: &Path,
+) -> io::Result<()> {
     if !source.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -900,106 +904,5 @@ pub(crate) fn take_previous_stop(
             log::warn!("event=daemon.stop_record_invalid reason={error}");
             Ok(None)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::{Duration, Instant};
-
-    use axo_protocol::PaneRole;
-
-    use crate::test_support::Fixture;
-
-    fn pi_pid(record: &axo_protocol::SessionRecord) -> i32 {
-        let pi = record
-            .shells
-            .iter()
-            .find(|shell| shell.role == PaneRole::Pi);
-        pi.map_or(0, |shell| shell.process_id as i32)
-    }
-
-    fn alive(pid: i32) -> bool {
-        // SAFETY: signal 0 only asks whether the process exists.
-        pid > 0 && unsafe { libc::kill(pid, 0) } == 0
-    }
-
-    async fn until(what: &str, mut done: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !done() {
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_new_session_is_listed_with_its_pi_and_stored_identity() {
-        let fixture = Fixture::new().await;
-        let record = fixture.new_session().await;
-        assert_eq!(record.shells.len(), 2);
-        assert!(fixture.core.catalog.contains(record.id));
-        let pid = pi_pid(&record);
-        assert!(alive(pid), "{record:?}");
-        let id = record.id;
-        let stored = fixture
-            .core
-            .store
-            .call(move |database| axo_store::load_pi_process(database, id))
-            .await
-            .unwrap()
-            .expect("Pi's identity is stored when it starts");
-        assert!(stored.starts_with(&format!("{pid}:")), "{stored}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn closing_a_session_stops_its_processes_and_forgets_it() {
-        let fixture = Fixture::new().await;
-        let record = fixture.new_session().await;
-        let pids: Vec<i32> = record.shells.iter().map(|s| s.process_id as i32).collect();
-        super::close(&fixture.core, record.id).await.unwrap();
-        assert!(!fixture.core.catalog.contains(record.id));
-        assert!(!fixture.core.registry.contains(record.id));
-        until("its processes to stop", || {
-            pids.iter().all(|pid| !alive(*pid))
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_pi_that_exits_leaves_its_pane_unavailable_and_its_identity_cleared() {
-        let fixture = Fixture::new().await;
-        let record = fixture.new_session().await;
-        let pid = pi_pid(&record);
-        // SAFETY: kills the stand-in Pi this test's core started.
-        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
-        let catalog = &fixture.core.catalog;
-        until("the Pi pane to be unavailable", || {
-            catalog
-                .record(record.id)
-                .is_some_and(|record| pi_pid(&record) == 0)
-        })
-        .await;
-        let id = record.id;
-        let stored = fixture
-            .core
-            .store
-            .call(move |database| axo_store::load_pi_process(database, id))
-            .await
-            .unwrap();
-        assert_eq!(stored, None);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_stopped_pi_is_not_an_exited_one() {
-        let fixture = Fixture::new().await;
-        let record = fixture.new_session().await;
-        let pid = pi_pid(&record);
-        // SAFETY: signals the stand-in Pi this test's core started.
-        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let listed = fixture.core.catalog.record(record.id).unwrap();
-        assert_eq!(pi_pid(&listed), pid, "a stopped Pi still runs");
-        // SAFETY: as above.
-        assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
     }
 }

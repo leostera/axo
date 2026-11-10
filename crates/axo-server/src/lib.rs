@@ -31,6 +31,8 @@ mod stop_notice;
 mod store;
 mod terminal_input;
 #[cfg(test)]
+mod scenarios;
+#[cfg(test)]
 mod test_support;
 mod transcripts;
 mod workspace_state;

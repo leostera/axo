@@ -12,7 +12,8 @@
 //!   switches between those two, or answers `invalid`, and publishes `pi.state` again.
 //! - A turn records the user's message and a reply in its session file (`AXO_PI_SESSION_FILE`)
 //!   before saying so over the bridge, and streams the reply as it grows. It lasts
-//!   `AXO_FAKE_PI_TURN_MS` (default 0).
+//!   `AXO_FAKE_PI_TURN_MS` (default 0). It ends with `agent.end`, then `agent.settled` once
+//!   nothing it queued is left.
 //! - Everything it is typed (its PTY, raw) and sent is appended to `AXO_FAKE_PI_LOG`, if set, as
 //!   `TYPED:`, `SENT:`, `DELIVERY:`, `STOPPED:`, `ATTACHED:`, `MODEL:` and `STARTED:` lines, so
 //!   tests can read what reached Pi.
@@ -197,6 +198,10 @@ fn run_turn(pi: &Arc<Mutex<Pi>>, session: &str, stream: &str, prompt: String) {
         pi.publish(stream, "message.end", json!({ "message": text(&reply) }));
         pi.publish(stream, "agent.end", json!({}));
         pi.turn = None;
+        if pi.queued.is_empty() {
+            // Nothing follows: Pi has settled, as it says once no queued message is left.
+            pi.publish(stream, "agent.settled", json!({}));
+        }
         (!pi.queued.is_empty()).then(|| pi.queued.remove(0))
     };
     if let Some(prompt) = next {
@@ -320,6 +325,7 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                     state.turn = None;
                     state.queued.clear();
                     state.publish(&events, "agent.end", json!({}));
+                    state.publish(&events, "agent.settled", json!({}));
                     drop(state);
                     log(&format!("STOPPED:{turn}\n"));
                     answer(&mut stream, &record, json!({ "accepted": true }));

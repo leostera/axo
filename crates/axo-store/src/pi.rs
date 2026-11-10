@@ -246,6 +246,30 @@ mod tests {
     use crate::test_support::{database, insert_session};
 
     #[test]
+    fn a_pi_bridge_token_is_kept_per_session_and_replaced_whole() {
+        let database = database();
+        let (session, other) = (SessionId::from_u128(1), SessionId::from_u128(2));
+        assert_eq!(load_pi_bridge_token(&database, session).unwrap(), None);
+        let (first, second) = (
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+        );
+        store_pi_bridge_token(&database, session, first).unwrap();
+        store_pi_bridge_token(&database, session, second).unwrap();
+        assert_eq!(
+            load_pi_bridge_token(&database, session).unwrap().as_deref(),
+            Some(second)
+        );
+        assert_eq!(load_pi_bridge_token(&database, other).unwrap(), None);
+        store_pi_bridge_token(&database, other, "not a token").unwrap();
+        assert_eq!(
+            load_pi_bridge_token(&database, other).unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "a damaged credential is refused, not used"
+        );
+    }
+
+    #[test]
     fn moved_transcripts_are_found_at_their_new_place() {
         let database = database();
         let paths = [
