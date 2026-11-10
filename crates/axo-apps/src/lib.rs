@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// Error codes shared with `@axo/protocol`'s `APPS_ERRORS`.
 pub const OUTCOME_UNKNOWN: i64 = -32004;
 pub const LIMIT_EXCEEDED: i64 = -32020;
-pub const NOT_CONNECTED: i64 = -32024;
+pub use axo_protocol::rpc::error_code::NOT_CONNECTED;
 
 /// The forwarded methods, through the relay's channel to the account. Without a relay worker,
 /// each fails as not connected.

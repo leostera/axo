@@ -5,7 +5,7 @@ use std::io;
 use std::sync::Arc;
 
 use axo_ipc::{Extension, TypedMethods};
-use axo_protocol::rpc::{self, method};
+use axo_protocol::rpc::{self, error_code, method};
 use axo_protocol::{Layout, SessionId, ShellId, Viewport};
 use axo_pty::WindowSize;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
@@ -52,7 +52,7 @@ fn invalid_input_or_internal(error: io::Error, message: Option<&str>) -> RpcErro
 fn prompt_rpc_error(error: PromptError) -> RpcError {
     let code = match error {
         PromptError::Invalid(_) => ErrorCode::InvalidParams,
-        PromptError::RateLimited => ErrorCode::ServerError(-32003),
+        PromptError::RateLimited => ErrorCode::ServerError(error_code::REFUSED),
         PromptError::NoPi
         | PromptError::Busy
         | PromptError::QueueFull

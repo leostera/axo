@@ -62,6 +62,8 @@ pub mod error_code {
     pub const BUSY: i64 = -32006;
     /// It did not finish in time.
     pub const TIMED_OUT: i64 = -32008;
+    /// This Mac is not connected to its account, so what needs the account cannot be done.
+    pub const NOT_CONNECTED: i64 = -32024;
 }
 
 /// Method names, in the order `axo.protocol.negotiate` advertises them.

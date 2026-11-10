@@ -556,7 +556,7 @@ struct ComputerInput {
 
 const AXOD_ONLY: Only = Only {
     caller: Caller::Signed(Signer::ThisBinary),
-    code: -32003,
+    code: axo_protocol::rpc::error_code::REFUSED,
     message: "only axod's own tools ask for input",
 };
 

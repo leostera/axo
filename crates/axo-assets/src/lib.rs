@@ -10,13 +10,12 @@ use std::sync::{Arc, Mutex};
 use axo_ipc::peer::{Caller, Signer};
 use axo_ipc::{ErrorCode, Extension, Only, RpcError, TypedMethods};
 use axo_protocol::asset::{Attachments, FetchedAttachment};
+use axo_protocol::rpc::error_code::{NOT_CONNECTED, REFUSED};
 use axo_protocol::rpc::method::ASSETS_FETCH;
 use axo_relay::assets::{AssetSource, FetchError};
 use jsonrpc_core::IoHandler;
 use serde::{Deserialize, Serialize};
 
-/// Not connected to the account, so no asset can be fetched.
-pub const NOT_CONNECTED: i64 = -32003;
 /// An asset could not be fetched, or was not what its name says.
 pub const FETCH_FAILED: i64 = -32010;
 
@@ -25,14 +24,20 @@ pub const FETCH_FAILED: i64 = -32010;
 pub struct AssetSlot(Mutex<Option<AssetSource>>);
 
 impl AssetSlot {
+    /// Fills or empties the slot. A panic elsewhere while holding it does not keep a stale
+    /// source in place: the next set still takes.
     pub fn set(&self, source: Option<AssetSource>) {
-        if let Ok(mut slot) = self.0.lock() {
-            *slot = source;
-        }
+        *self.lock() = source;
     }
 
     pub fn get(&self) -> Option<AssetSource> {
-        self.0.lock().ok().and_then(|slot| slot.clone())
+        self.lock().clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<AssetSource>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -57,7 +62,7 @@ impl Extension for Assets {
         methods.add_typed_only(
             Only {
                 caller: Caller::Signed(Signer::ThisBinary),
-                code: -32003,
+                code: REFUSED,
                 message: "only axod's own tools fetch assets here",
             },
             ASSETS_FETCH,
