@@ -2,6 +2,13 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.48 (Mac app build 319, axod 71)
+
+### Changed
+
+- The local model that checks computer use runs as part of axod and stops with it. One left running by an earlier axod is replaced the next time it is needed, so it no longer lingers in the background for days.
+- `axod terminal-attach` is gone; the app's terminals never used it.
+
 ## 0.47 (Mac app build 318, axod 70)
 
 ### Fixed
