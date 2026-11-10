@@ -69,13 +69,15 @@ impl Lifeline {
 }
 
 /// `sh -c GUARD sh <lifeline fd> <program> <args>...`: runs the program, and kills it when the
-/// lifeline reads end of file or the shell is asked to stop.
+/// lifeline reads end of file or the shell is asked to stop. A child may ignore SIGTERM; neither
+/// loss of its owner nor stopping the guard is permission to survive. A trap also reaps the
+/// child: a signal interrupts the outer `wait` before that wait necessarily saw the exit.
 const GUARD: &str = r#"lifeline=$1
 shift
 "$@" &
 child=$!
-trap 'kill "$child" 2>/dev/null' HUP INT TERM
-{ read -r _ <&"$lifeline"; kill "$child" 2>/dev/null; } &
+trap 'kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null' HUP INT TERM
+{ read -r _ <&"$lifeline"; kill -KILL "$child" 2>/dev/null; } &
 watcher=$!
 wait "$child"
 status=$?
@@ -131,7 +133,10 @@ mod tests {
         let mut guard = lifeline
             .guarded(Path::new("/bin/sh"))
             .arg("-c")
-            .arg(format!("echo $$ > {}; exec sleep 30", pid_file.display()))
+            .arg(format!(
+                "trap '' TERM; echo $$ > {}; exec sleep 30",
+                pid_file.display()
+            ))
             .spawn()
             .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
