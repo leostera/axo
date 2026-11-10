@@ -17,8 +17,6 @@ use crate::settings::ParsedConfigValue;
 
 /// `axo.session.reopen` found no closed Session it could reopen.
 const SESSION_NOT_REOPENED: i64 = -32005;
-const DEFAULT_SCREEN_LINES: u32 = 200;
-const MAX_SCREEN_LINES: u32 = 10_000;
 
 /// Sessions, panes, Pi, settings and other Macs' Sessions.
 pub(crate) struct Sessions(pub(crate) Arc<Core>);
@@ -221,7 +219,7 @@ impl Extension for Sessions {
                     request.session_id,
                     request.shell_id,
                     request.sequence,
-                    &request.data,
+                    request.data,
                 )
                 .await
                 .map(|()| rpc::InputAccepted {
@@ -340,7 +338,7 @@ impl Extension for Sessions {
             handler,
             core,
             method::SESSION_PROMPT,
-            "expected {sessionId, text, delivery?: steer|followUp|turn, fromSessionId?}",
+            "expected {sessionId, text, delivery?: steer|followUp|turn|interrupt, fromSessionId?}",
             |core, request: rpc::PromptSession| async move {
                 crate::sessions::prompt(&core, request, None, Vec::new())
                     .await
@@ -368,11 +366,8 @@ impl Extension for Sessions {
             method::TERMINAL_SCREEN,
             "expected {sessionId, shellId, lines?: 1 to 10000}",
             |core, request: rpc::ReadTerminalScreen| async move {
-                let lines = request.lines.unwrap_or(DEFAULT_SCREEN_LINES);
-                if !(1..=MAX_SCREEN_LINES).contains(&lines) {
-                    return Err(invalid_params("lines must be 1 to 10000"));
-                }
-                ops::screen(&core, request.session_id, request.shell_id, lines as usize)
+                let lines = request.lines.get() as usize;
+                ops::screen(&core, request.session_id, request.shell_id, lines)
                     .await
                     .map_err(|error| match error.kind() {
                         io::ErrorKind::NotFound => invalid_params("shell is not open"),

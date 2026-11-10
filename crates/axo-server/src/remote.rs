@@ -40,7 +40,6 @@ const RELAY_ONLY: Only = Only {
 /// Prompts on their way to Pi on this Mac at once; more are refused until one ends.
 const MAX_PROMPTS: usize = 16;
 /// The longest prompt text the account may send.
-const MAX_PROMPT_BYTES: usize = 16_000;
 
 /// The account's methods.
 pub(crate) struct Remote {
@@ -129,10 +128,9 @@ impl Extension for Remote {
             |core, request: CreateSessionParams| async move {
                 let session = crate::sessions::create(
                     &core,
-                    rpc::CreateSession {
-                        folder: None,
-                        like: request.like,
-                    },
+                    request
+                        .like
+                        .map_or(rpc::CreateSession::AtHome, rpc::CreateSession::Like),
                 )
                 .await
                 .map_err(failed)?;
@@ -225,7 +223,7 @@ impl Extension for Remote {
                         request.session_id,
                         request.shell_id,
                         request.sequence,
-                        &request.data,
+                        request.data,
                     )
                     .await
                     .map_err(failed)?;
@@ -365,9 +363,8 @@ async fn prompt(
     prompts: &AtomicUsize,
     request: PromptParams,
 ) -> Result<(), MethodError> {
-    if request.text.len() > MAX_PROMPT_BYTES
-        || (request.text.is_empty() && request.attachments.is_empty())
-    {
+    // Refused before any attachment is fetched or a slot is taken.
+    if request.text.is_blank() && request.attachments.is_empty() {
         return Err(invalid());
     }
     let source = core.assets.get();
@@ -537,12 +534,12 @@ params! {
     RenameSessionParams { session_id: SessionId, name: String }
     ShellTargetParams { session_id: SessionId, shell_id: ShellId }
     LayoutSetParams { session_id: SessionId, layout: LayoutNode }
-    TerminalInputParams { session_id: SessionId, shell_id: ShellId, sequence: u64, data: String }
+    TerminalInputParams { session_id: SessionId, shell_id: ShellId, sequence: u64, data: rpc::TerminalBytes }
     TerminalResizeParams { session_id: SessionId, shell_id: ShellId, rows: u32, columns: u32 }
     KeyParams { session_id: SessionId, key: PiKey }
     PromptParams {
         session_id: SessionId,
-        text: String,
+        text: rpc::PromptText,
         command_id: Option<CommandId> = default,
         attachments: axo_protocol::asset::Attachments = default,
         // When a working Pi takes it (RFD0033); a follow-up when absent.

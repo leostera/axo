@@ -199,6 +199,179 @@ pub mod forwarded {
     }
 }
 
+/// Bytes of text in one prompt.
+pub const MAX_PROMPT_BYTES: usize = 16_000;
+/// Bytes typed into a pane in one request.
+pub const MAX_TERMINAL_INPUT_BYTES: usize = 49_152;
+/// Lines of screen and scrollback one read returns, by default and at most.
+pub const DEFAULT_SCREEN_LINES: u32 = 200;
+pub const MAX_SCREEN_LINES: u32 = 10_000;
+
+/// A parameter outside what its method takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidParam(pub &'static str);
+
+impl std::fmt::Display for InvalidParam {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for InvalidParam {}
+
+/// A prompt's words: at most [`MAX_PROMPT_BYTES`]. They may be blank on the wire: a prompt of
+/// attachments alone needs none, and whoever takes the prompt decides whether it says anything.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PromptText(String);
+
+impl PromptText {
+    pub fn parse(text: String) -> Result<Self, InvalidParam> {
+        if text.len() > MAX_PROMPT_BYTES {
+            return Err(InvalidParam("a prompt has at most 16000 bytes of text"));
+        }
+        Ok(Self(text))
+    }
+
+    /// Whether it says nothing but whitespace.
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl TryFrom<String> for PromptText {
+    type Error = InvalidParam;
+
+    fn try_from(text: String) -> Result<Self, InvalidParam> {
+        Self::parse(text)
+    }
+}
+
+impl From<PromptText> for String {
+    fn from(text: PromptText) -> String {
+        text.0
+    }
+}
+
+/// Text typed into a pane: 1 to [`MAX_TERMINAL_INPUT_BYTES`] bytes of UTF-8.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TerminalText(String);
+
+impl TerminalText {
+    pub fn parse(text: String) -> Result<Self, InvalidParam> {
+        if text.is_empty() || text.len() > MAX_TERMINAL_INPUT_BYTES {
+            return Err(InvalidParam("terminal text has 1 to 49152 bytes"));
+        }
+        Ok(Self(text))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl TryFrom<String> for TerminalText {
+    type Error = InvalidParam;
+
+    fn try_from(text: String) -> Result<Self, InvalidParam> {
+        Self::parse(text)
+    }
+}
+
+impl From<TerminalText> for String {
+    fn from(text: TerminalText) -> String {
+        text.0
+    }
+}
+
+/// Bytes typed into a pane, as base64 on the wire: 1 to [`MAX_TERMINAL_INPUT_BYTES`], in the
+/// one canonical encoding (see [`crate::base64::decode`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalBytes(Vec<u8>);
+
+impl TerminalBytes {
+    /// The bound on the encoding, checked before decoding: exactly the bound on the bytes.
+    const MAX_BASE64_BYTES: usize = MAX_TERMINAL_INPUT_BYTES / 3 * 4;
+
+    pub fn from_base64(encoded: &str) -> Result<Self, InvalidParam> {
+        if encoded.len() > Self::MAX_BASE64_BYTES {
+            return Err(InvalidParam("terminal input has 1 to 49152 bytes"));
+        }
+        crate::base64::decode(encoded)
+            .map(Self)
+            .map_err(|_| InvalidParam("terminal input is padded, canonical base64"))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Never: a parsed input has at least one byte.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for TerminalBytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&crate::base64::encode(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for TerminalBytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let encoded = std::borrow::Cow::<str>::deserialize(deserializer)?;
+        Self::from_base64(&encoded).map_err(serde::de::Error::custom)
+    }
+}
+
+/// How many lines of screen and scrollback to read: 1 to [`MAX_SCREEN_LINES`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct ScreenLines(u32);
+
+impl ScreenLines {
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for ScreenLines {
+    fn default() -> Self {
+        Self(DEFAULT_SCREEN_LINES)
+    }
+}
+
+impl TryFrom<u32> for ScreenLines {
+    type Error = InvalidParam;
+
+    fn try_from(lines: u32) -> Result<Self, InvalidParam> {
+        if !(1..=MAX_SCREEN_LINES).contains(&lines) {
+            return Err(InvalidParam("lines must be 1 to 10000"));
+        }
+        Ok(Self(lines))
+    }
+}
+
+impl From<ScreenLines> for u32 {
+    fn from(lines: ScreenLines) -> u32 {
+        lines.0
+    }
+}
+
 /// The only protocol version.
 pub const PROTOCOL_VERSION: u32 = 2;
 /// Upper bound for a request that waits for something new (`WatchPeerSession::timeout_ms`).
@@ -247,17 +420,59 @@ pub struct RenameSession {
     pub name: String,
 }
 
-/// Where `axo.session.create` makes its Session (RFD0038): at most one of the two, and the
-/// home directory with neither.
-#[derive(Debug, Default, Deserialize, Serialize)]
+/// Where `axo.session.create` makes its Session (RFD0038). On the wire `{folder}`, `{like}` or
+/// `{}`; both at once, or a relative folder, is refused while parsing.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "CreateSessionWire", into = "CreateSessionWire")]
+pub enum CreateSession {
+    /// The home directory.
+    #[default]
+    AtHome,
+    /// This absolute path; that it is an existing directory is checked when the Session is made.
+    InFolder(PathBuf),
+    /// The folder of this open Session.
+    Like(SessionId),
+}
+
+#[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateSession {
-    /// An absolute path to an existing directory.
+struct CreateSessionWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder: Option<PathBuf>,
-    /// An open Session whose folder the new one starts in.
+    folder: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub like: Option<SessionId>,
+    like: Option<SessionId>,
+}
+
+impl TryFrom<CreateSessionWire> for CreateSession {
+    type Error = InvalidParam;
+
+    fn try_from(wire: CreateSessionWire) -> Result<Self, InvalidParam> {
+        match (wire.folder, wire.like) {
+            (None, None) => Ok(Self::AtHome),
+            (Some(folder), None) if folder.is_absolute() => Ok(Self::InFolder(folder)),
+            (Some(_), None) => Err(InvalidParam("a Session's folder must be an absolute path")),
+            (None, Some(like)) => Ok(Self::Like(like)),
+            (Some(_), Some(_)) => Err(InvalidParam(
+                "a new Session takes a folder or another Session's, not both",
+            )),
+        }
+    }
+}
+
+impl From<CreateSession> for CreateSessionWire {
+    fn from(create: CreateSession) -> Self {
+        match create {
+            CreateSession::AtHome => Self::default(),
+            CreateSession::InFolder(folder) => Self {
+                folder: Some(folder),
+                like: None,
+            },
+            CreateSession::Like(like) => Self {
+                folder: None,
+                like: Some(like),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -295,8 +510,7 @@ pub struct TerminalInput {
     pub shell_id: ShellId,
     /// Per shell, from zero, consecutive; a repeated sequence is acknowledged and ignored.
     pub sequence: u64,
-    /// Base64, 1 to 49,152 bytes decoded.
-    pub data: String,
+    pub data: TerminalBytes,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -315,8 +529,7 @@ pub struct TerminalResize {
 pub struct WriteTerminal {
     pub session_id: SessionId,
     pub shell_id: ShellId,
-    /// 1 to 49,152 bytes of UTF-8.
-    pub text: String,
+    pub text: TerminalText,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -324,9 +537,9 @@ pub struct WriteTerminal {
 pub struct ReadTerminalScreen {
     pub session_id: SessionId,
     pub shell_id: ShellId,
-    /// The last this many lines of screen and scrollback; 1 to 10,000, default 200.
+    /// The last this many lines of screen and scrollback.
     #[serde(default)]
-    pub lines: Option<u32>,
+    pub lines: ScreenLines,
 }
 
 /// How a Session's Pi takes a prompt that arrives while it is working. An idle Pi starts a
@@ -350,8 +563,7 @@ pub enum PromptDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptSession {
     pub session_id: SessionId,
-    /// 1 to 16,000 bytes.
-    pub text: String,
+    pub text: PromptText,
     #[serde(default)]
     pub delivery: PromptDelivery,
     /// The Session whose agent sends this; absent when a person does.
@@ -446,7 +658,6 @@ pub struct Subscribed {
     pub subscription_id: String,
 }
 
-/// Every Session on this Mac: open ones as `axo.session.list` reports them, and archived ones.
 /// Another Mac of the account, as this Mac follows it (RFD0024).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -546,6 +757,7 @@ pub struct PeerCommand {
     pub params: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Every Session on this Mac: open ones as `axo.session.list` reports them, and archived ones.
 /// Unlike `axo.session.list`, this has no side effects.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -638,12 +850,6 @@ pub struct ShellClosed {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayDisabled {
-    pub disabled: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct HostLinked {
     pub linked: bool,
     pub host_label: String,
@@ -688,6 +894,66 @@ mod tests {
             .is_err()
         );
         assert!(serde_json::from_value::<NoParams>(json!({})).is_ok());
+    }
+
+    #[test]
+    fn a_new_session_names_a_folder_another_session_or_neither() {
+        let parse = |value| serde_json::from_value::<CreateSession>(value);
+        assert_eq!(parse(json!({})).unwrap(), CreateSession::AtHome);
+        assert_eq!(
+            parse(json!({ "folder": "/tmp" })).unwrap(),
+            CreateSession::InFolder("/tmp".into())
+        );
+        assert_eq!(
+            parse(json!({ "like": SID })).unwrap(),
+            CreateSession::Like(SID.parse().unwrap())
+        );
+        let both = parse(json!({ "folder": "/tmp", "like": SID })).unwrap_err();
+        assert!(both.to_string().contains("not both"), "{both}");
+        let relative = parse(json!({ "folder": "tmp" })).unwrap_err();
+        assert!(relative.to_string().contains("absolute"), "{relative}");
+        for create in [
+            CreateSession::AtHome,
+            CreateSession::InFolder("/tmp".into()),
+            CreateSession::Like(SID.parse().unwrap()),
+        ] {
+            let wire = serde_json::to_value(&create).unwrap();
+            assert_eq!(parse(wire).unwrap(), create);
+        }
+    }
+
+    #[test]
+    fn bounded_texts_are_refused_outside_their_bounds_while_parsing() {
+        assert!(PromptText::parse("x".repeat(MAX_PROMPT_BYTES)).is_ok());
+        assert!(PromptText::parse("x".repeat(MAX_PROMPT_BYTES + 1)).is_err());
+        assert!(PromptText::parse(" \n".into()).unwrap().is_blank());
+        assert!(TerminalText::parse(String::new()).is_err());
+        assert!(TerminalText::parse("x".repeat(MAX_TERMINAL_INPUT_BYTES)).is_ok());
+        assert!(TerminalText::parse("x".repeat(MAX_TERMINAL_INPUT_BYTES + 1)).is_err());
+        let most = crate::base64::encode(&vec![7; MAX_TERMINAL_INPUT_BYTES]);
+        assert_eq!(
+            TerminalBytes::from_base64(&most).unwrap().len(),
+            MAX_TERMINAL_INPUT_BYTES
+        );
+        let over = crate::base64::encode(&vec![7; MAX_TERMINAL_INPUT_BYTES + 1]);
+        assert!(TerminalBytes::from_base64(&over).is_err());
+        assert!(TerminalBytes::from_base64("").is_err());
+        let input: TerminalInput = serde_json::from_value(
+            json!({ "sessionId": SID, "shellId": 2, "sequence": 0, "data": "aGk=" }),
+        )
+        .unwrap();
+        assert_eq!(input.data.as_bytes(), b"hi");
+        assert_eq!(serde_json::to_value(&input).unwrap()["data"], "aGk=");
+        let screen = |value| serde_json::from_value::<ReadTerminalScreen>(value);
+        assert_eq!(
+            screen(json!({ "sessionId": SID, "shellId": 2 }))
+                .unwrap()
+                .lines
+                .get(),
+            DEFAULT_SCREEN_LINES
+        );
+        assert!(screen(json!({ "sessionId": SID, "shellId": 2, "lines": 0 })).is_err());
+        assert!(screen(json!({ "sessionId": SID, "shellId": 2, "lines": 10_001 })).is_err());
     }
 
     #[test]

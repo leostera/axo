@@ -1,22 +1,8 @@
-//! Base64 (RFC 4648, standard alphabet, padded) for terminal bytes on the wire, without a
-//! dependency: terminal output events carry it, terminal input arrives in it.
+//! Base64 (RFC 4648, standard alphabet, padded) for bytes on the wire, without a dependency:
+//! terminal output events carry it, terminal input arrives in it, and screenshots and sealed
+//! values travel in it.
 
 use std::io;
-
-/// The longest encoded terminal input Axod accepts in one request (48 KiB of bytes).
-pub const MAX_TERMINAL_INPUT_BASE64_BYTES: usize = 65_536;
-
-/// Decodes one terminal input request: non-empty, at most `MAX_TERMINAL_INPUT_BASE64_BYTES`,
-/// padded, and canonical (padding bits zero), so every input has exactly one encoding.
-pub fn decode_terminal_input(input: &str) -> io::Result<Vec<u8>> {
-    if input.len() > MAX_TERMINAL_INPUT_BASE64_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "terminal input is not bounded, padded base64",
-        ));
-    }
-    decode(input)
-}
 
 /// Decodes non-empty, padded, canonical base64 (padding bits zero), so every value has exactly
 /// one encoding.
@@ -25,7 +11,7 @@ pub fn decode(input: &str) -> io::Result<Vec<u8>> {
     if input.is_empty() || !trailing_bytes.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "terminal input is not bounded, padded base64",
+            "base64 is non-empty and padded to a multiple of four",
         ));
     }
     let mut decoded = Vec::with_capacity(input.len() / 4 * 3);
@@ -129,7 +115,7 @@ mod tests {
         assert_eq!(encode(b""), "");
         for (plain, encoded) in RFC_4648_VECTORS {
             assert_eq!(encode(plain.as_bytes()), encoded);
-            assert_eq!(decode_terminal_input(encoded).unwrap(), plain.as_bytes());
+            assert_eq!(decode(encoded).unwrap(), plain.as_bytes());
         }
     }
 
@@ -138,11 +124,7 @@ mod tests {
         let all: Vec<u8> = (0..=255).collect();
         for length in 1..=all.len() {
             let bytes = &all[..length];
-            assert_eq!(
-                decode_terminal_input(&encode(bytes)).unwrap(),
-                bytes,
-                "length {length}"
-            );
+            assert_eq!(decode(&encode(bytes)).unwrap(), bytes, "length {length}");
         }
     }
 
@@ -151,7 +133,7 @@ mod tests {
         for input in [
             "", "Zg", "Zm9", "Zm9v!", "Zm9-", "Zm9_", "Zg==Zg==", "Zm=v", "Z===", "====",
         ] {
-            let error = decode_terminal_input(input).unwrap_err();
+            let error = decode(input).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{input:?}");
         }
     }
@@ -162,24 +144,10 @@ mod tests {
         // ignored; only the canonical spelling is accepted.
         for input in ["Zh==", "Zm9="] {
             assert_eq!(
-                decode_terminal_input(input).unwrap_err().kind(),
+                decode(input).unwrap_err().kind(),
                 io::ErrorKind::InvalidInput,
                 "{input:?}"
             );
         }
-    }
-
-    #[test]
-    fn terminal_input_is_bounded_at_exactly_the_limit() {
-        let at_limit = "A".repeat(MAX_TERMINAL_INPUT_BASE64_BYTES);
-        assert_eq!(
-            decode_terminal_input(&at_limit).unwrap().len(),
-            MAX_TERMINAL_INPUT_BASE64_BYTES / 4 * 3
-        );
-        let over = "A".repeat(MAX_TERMINAL_INPUT_BASE64_BYTES + 4);
-        assert_eq!(
-            decode_terminal_input(&over).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
     }
 }

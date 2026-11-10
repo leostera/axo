@@ -4,13 +4,17 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use axo_ipc::cancel::{self, Cancellation};
-use axo_protocol::rpc::{PromptDelivery, PromptSession};
+use axo_protocol::rpc::{PromptDelivery, PromptSession, PromptText, TerminalBytes};
 use axo_protocol::{PaneRole, SessionId};
 
 use crate::ops::{self, TERMINAL_INPUT_WRITE_TIMEOUT};
 use crate::session::prompts::PromptError;
 use crate::sessions;
 use crate::test_support::{Fixture, Pi, pane};
+
+fn prompt_text(text: &str) -> PromptText {
+    PromptText::parse(text.to_owned()).unwrap()
+}
 
 fn command_id(n: u64) -> axo_relay::CommandId {
     axo_relay::CommandId::try_from(format!("00000000-0000-4000-8000-{n:012x}")).unwrap()
@@ -34,7 +38,7 @@ async fn a_prompt_waiting_for_pi_to_start_stops_when_its_request_is_cancelled() 
         sessions::prompt_from_client(
             &fixture.core,
             record.id,
-            "hello".into(),
+            prompt_text("hello"),
             command_id(1),
             Vec::new(),
             PromptDelivery::FollowUp,
@@ -59,7 +63,7 @@ async fn an_agents_prompt_names_its_sender_and_prompting_itself_is_limited() {
     fixture.wait_for_pi(record.id).await;
     let to_self = |text: &str| PromptSession {
         session_id: record.id,
-        text: text.to_owned(),
+        text: prompt_text(text),
         delivery: PromptDelivery::FollowUp,
         from_session_id: Some(record.id),
     };
@@ -89,7 +93,7 @@ async fn a_prompt_names_open_sessions_only() {
     let unknown = SessionId::from_u128(987_654);
     let from_unknown = PromptSession {
         session_id: record.id,
-        text: "hi".into(),
+        text: prompt_text("hi"),
         delivery: PromptDelivery::FollowUp,
         from_session_id: Some(unknown),
     };
@@ -99,7 +103,7 @@ async fn a_prompt_names_open_sessions_only() {
     ));
     let to_unknown = PromptSession {
         session_id: unknown,
-        text: "hi".into(),
+        text: prompt_text("hi"),
         delivery: PromptDelivery::FollowUp,
         from_session_id: None,
     };
@@ -141,11 +145,13 @@ async fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
     let record = fixture.new_session().await;
     let terminal = pane(&record, PaneRole::Terminal);
     // A paste larger than a PTY holds for a program that doesn't read it.
-    let paste =
-        axo_protocol::base64::encode(&[b"x".repeat(99), b"\n".to_vec()].concat().repeat(480));
+    let paste = TerminalBytes::from_base64(&axo_protocol::base64::encode(
+        &[b"x".repeat(99), b"\n".to_vec()].concat().repeat(480),
+    ))
+    .unwrap();
     let stuck = {
         let core = std::sync::Arc::clone(&fixture.core);
-        tokio::spawn(async move { ops::write_input(&core, record.id, terminal, 0, &paste).await })
+        tokio::spawn(async move { ops::write_input(&core, record.id, terminal, 0, paste).await })
     };
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
@@ -164,7 +170,7 @@ async fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
         record.id,
         terminal,
         1,
-        &axo_protocol::base64::encode(b"y"),
+        TerminalBytes::from_base64(&axo_protocol::base64::encode(b"y")).unwrap(),
     )
     .await
     .unwrap_err();

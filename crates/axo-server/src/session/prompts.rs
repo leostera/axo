@@ -14,10 +14,9 @@ use axo_agent::pi::link::{LinkCommands, TurnStop};
 use axo_agent::pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
 use axo_protocol::SessionId;
 use axo_protocol::asset::FetchedAttachment;
-use axo_protocol::rpc::PromptDelivery;
+use axo_protocol::rpc::{PromptDelivery, PromptText};
 use axo_relay::{CommandId, StopTarget};
 
-pub(crate) const MAX_PI_PROMPT_BYTES: usize = 16_000;
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
 pub(crate) const MAX_QUEUED_PI_PROMPTS: usize = 8;
 /// Prompts one Session's agent may send per [`RATE_WINDOW`], to anyone and to itself.
@@ -121,15 +120,14 @@ impl From<PromptError> for io::Error {
     }
 }
 
-/// A prompt of attachments alone may have no text (RFD0030).
+/// A prompt says something: words, or attachments alone (RFD0030). Its length is bounded by
+/// [`PromptText`] where it was parsed.
 pub(crate) fn check_prompt(
-    text: &str,
+    text: &PromptText,
     attachments: &[FetchedAttachment],
 ) -> Result<(), PromptError> {
-    if (text.trim().is_empty() && attachments.is_empty()) || text.len() > MAX_PI_PROMPT_BYTES {
-        return Err(PromptError::Invalid(
-            "a prompt must contain 1 to 16000 bytes of text",
-        ));
+    if text.is_blank() && attachments.is_empty() {
+        return Err(PromptError::Invalid("a prompt says something"));
     }
     Ok(())
 }
@@ -239,9 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_has_text_or_attachments_and_is_bounded() {
-        assert!(check_prompt("hello", &[]).is_ok());
-        assert!(check_prompt("  ", &[]).is_err());
-        assert!(check_prompt(&"x".repeat(MAX_PI_PROMPT_BYTES + 1), &[]).is_err());
+    fn a_prompt_has_text_or_attachments() {
+        let text = |text: &str| PromptText::parse(text.to_owned()).unwrap();
+        assert!(check_prompt(&text("hello"), &[]).is_ok());
+        assert!(check_prompt(&text(" \n"), &[]).is_err());
     }
 }

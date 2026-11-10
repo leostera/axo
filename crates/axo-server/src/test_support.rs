@@ -111,10 +111,7 @@ impl Fixture {
     pub(crate) async fn new_session(&self) -> SessionRecord {
         crate::sessions::create(
             &self.core,
-            axo_protocol::rpc::CreateSession {
-                folder: Some(self.directory.clone()),
-                like: None,
-            },
+            axo_protocol::rpc::CreateSession::InFolder(self.directory.clone()),
         )
         .await
         .unwrap()

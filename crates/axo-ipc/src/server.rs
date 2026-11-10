@@ -31,7 +31,7 @@ const SLOW_REQUEST: Duration = Duration::from_millis(100);
 
 /// Registers handlers that take typed parameters and return typed results. Parameters are parsed
 /// before the handler runs (absent parameters count as `{}`); a parse failure is answered with
-/// `InvalidParams` and `expected`, describing the accepted shape.
+/// `InvalidParams`, `expected` describing the accepted shape, and what was wrong with these.
 pub trait TypedMethods {
     /// An asynchronous handler, run on the executor: it must never block.
     fn add_typed<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
@@ -135,9 +135,11 @@ fn parse_params<P: DeserializeOwned>(
         Params::Map(map) => serde_json::from_value(Value::Object(map)),
         Params::Array(array) => serde_json::from_value(Value::Array(array)),
     };
-    parsed.map_err(|_| RpcError {
+    // The parameters' own types say what was wrong (a bound, a malformed ID), so the caller is
+    // told that too; it only repeats what the caller sent.
+    parsed.map_err(|error| RpcError {
         code: ErrorCode::InvalidParams,
-        message: expected.to_owned(),
+        message: format!("{expected}: {error}"),
         data: None,
     })
 }
@@ -496,6 +498,29 @@ mod tests {
             }
         });
         upgrades
+    }
+
+    #[test]
+    fn refused_parameters_say_the_expected_shape_and_what_was_wrong() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Bounded {
+            #[allow(dead_code)]
+            count: u8,
+        }
+        let mut map = serde_json::Map::new();
+        map.insert("count".into(), serde_json::json!(300));
+        let refused = parse_params::<Bounded>(Params::Map(map), "expected {count}").unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
+        assert!(
+            refused
+                .message
+                .starts_with("expected {count}: invalid value: integer `300`"),
+            "{}",
+            refused.message
+        );
+        let missing = parse_params::<Bounded>(Params::None, "expected {count}").unwrap_err();
+        assert_eq!(missing.message, "expected {count}: missing field `count`");
     }
 
     #[test]

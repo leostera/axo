@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use axo_agent::pi::BridgeSocketPath;
 use axo_protocol::asset::FetchedAttachment;
-use axo_protocol::rpc::{self, PromptAccepted, PromptDelivery, PromptSession};
+use axo_protocol::rpc::{self, PromptAccepted, PromptDelivery, PromptSession, PromptText};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, Viewport, new_uuid_v4};
 use axo_relay::CommandId;
 use axo_store::{PiHistoryOwner, StoredLifecycle, StoredSession};
@@ -134,7 +134,13 @@ pub(crate) async fn restore(core: &Arc<Core>, previous: Option<DaemonStop>) -> i
     tokio::spawn(launch_ready(Arc::clone(core)));
     // Sessions a stop interrupted mid-turn are told, once their Pi takes prompts.
     if let Some(stop) = previous {
-        let notice = stop.notice(&stop_notice::this_daemon(Vec::new()));
+        let notice = match PromptText::parse(stop.notice(&stop_notice::this_daemon(Vec::new()))) {
+            Ok(notice) => notice,
+            Err(error) => {
+                log::warn!("event=session.stop_notice_skipped reason={error}");
+                return Ok(());
+            }
+        };
         for session_id in stop.interrupted {
             let core = Arc::clone(core);
             let notice = notice.clone();
@@ -205,27 +211,15 @@ async fn launch_ready(core: Arc<Core>) {
 /// Where a new Session starts: `folder`, the folder of the open Session `like`, or the home
 /// directory. Canonical, so Sessions in one folder share one path.
 fn new_session_folder(core: &Core, request: &rpc::CreateSession) -> io::Result<PathBuf> {
-    let folder = match (&request.folder, request.like) {
-        (Some(_), Some(_)) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a new Session takes a folder or another Session's, not both",
-            ));
-        }
-        (Some(folder), None) if !folder.is_absolute() => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a Session's folder must be an absolute path",
-            ));
-        }
-        (Some(folder), None) => folder.clone(),
-        (None, Some(like)) => {
+    let folder = match request {
+        rpc::CreateSession::InFolder(folder) => folder.clone(),
+        rpc::CreateSession::Like(like) => {
             core.catalog
-                .record(like)
+                .record(*like)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "that Session is not open"))?
                 .folder
         }
-        (None, None) => core.home.clone(),
+        rpc::CreateSession::AtHome => core.home.clone(),
     };
     let folder = folder.canonicalize()?;
     if !folder.is_dir() {
@@ -727,9 +721,9 @@ pub(crate) async fn prompt(
             lock(&core.provenance)
                 .admit(from, from == target, Instant::now())
                 .map_err(refused)?;
-            format!("[From Axo Session {from} {name:?}]\n\n{text}")
+            format!("[From Axo Session {from} {name:?}]\n\n{}", text.as_str())
         }
-        None => text,
+        None => text.into_string(),
     };
     let prompt = Prompt {
         text,
@@ -776,7 +770,7 @@ pub(crate) async fn prompt(
 pub(crate) async fn prompt_from_client(
     core: &Core,
     session_id: SessionId,
-    text: String,
+    text: PromptText,
     command_id: CommandId,
     attachments: Vec<FetchedAttachment>,
     delivery: PromptDelivery,

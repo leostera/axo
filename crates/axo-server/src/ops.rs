@@ -5,7 +5,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axo_protocol::rpc;
+use axo_protocol::rpc::{self, TerminalBytes, TerminalText};
 use axo_protocol::{
     Layout, PiCommandInfo, PiModelInfo, SessionId, SessionRecord, ShellId, ShellRecord,
     ThinkingLevel,
@@ -21,7 +21,6 @@ use crate::sessions::{self, handle};
 use crate::terminal_input::TerminalInput;
 
 pub(crate) const TERMINAL_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_TERMINAL_INPUT_BYTES: usize = 49_152;
 /// How long a restart of an unavailable Pi waits for it to start.
 const RESTART_WAIT: Duration = Duration::from_secs(30);
 
@@ -78,18 +77,11 @@ pub(crate) async fn write_input(
     id: SessionId,
     shell_id: ShellId,
     sequence: u64,
-    encoded: &str,
+    bytes: TerminalBytes,
 ) -> io::Result<()> {
-    let bytes = axo_protocol::base64::decode_terminal_input(encoded)?;
-    if bytes.is_empty() || bytes.len() > MAX_TERMINAL_INPUT_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "terminal input must contain 1 to 49152 bytes",
-        ));
-    }
     let terminal = input(core, id, shell_id).await?;
     write_to(terminal, move |terminal| {
-        terminal.write_sequenced(sequence, &bytes, TERMINAL_INPUT_WRITE_TIMEOUT)
+        terminal.write_sequenced(sequence, bytes.as_bytes(), TERMINAL_INPUT_WRITE_TIMEOUT)
     })
     .await
 }
@@ -100,21 +92,15 @@ pub(crate) async fn write_text(
     core: &Core,
     id: SessionId,
     shell_id: ShellId,
-    text: String,
+    text: TerminalText,
 ) -> io::Result<()> {
-    if text.is_empty() || text.len() > MAX_TERMINAL_INPUT_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "terminal text must contain 1 to 49152 bytes",
-        ));
-    }
     let terminal = handle(core, id)?
         .with(move |session| session.input(shell_id))
         .await??;
     log::info!(
         "event=terminal.write session_id={id} shell_id={} bytes={}",
         shell_id.get(),
-        text.len()
+        text.as_bytes().len()
     );
     write_to(terminal, move |terminal| {
         terminal.write(text.as_bytes(), TERMINAL_INPUT_WRITE_TIMEOUT)

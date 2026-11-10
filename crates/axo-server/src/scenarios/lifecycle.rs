@@ -61,15 +61,9 @@ async fn a_new_session_starts_in_a_folder_beside_another_or_at_home_and_nothing_
         "nothing is opened for you"
     );
 
-    let first = sessions::create(
-        core,
-        CreateSession {
-            folder: Some(project.clone()),
-            like: None,
-        },
-    )
-    .await
-    .unwrap();
+    let first = sessions::create(core, CreateSession::InFolder(project.clone()))
+        .await
+        .unwrap();
     assert_eq!(first.folder, project);
     assert!(
         first
@@ -82,15 +76,9 @@ async fn a_new_session_starts_in_a_folder_beside_another_or_at_home_and_nothing_
         Some(core.pi_directories.transcripts.as_path()),
         "a transcript is under its Mac's folder, by the Session's id"
     );
-    let beside = sessions::create(
-        core,
-        CreateSession {
-            folder: None,
-            like: Some(first.id),
-        },
-    )
-    .await
-    .unwrap();
+    let beside = sessions::create(core, CreateSession::Like(first.id))
+        .await
+        .unwrap();
     assert_eq!(beside.folder, project);
     assert_eq!(beside.name, "Session 2", "numbered within its folder");
     let home = sessions::create(core, CreateSession::default())
@@ -98,20 +86,9 @@ async fn a_new_session_starts_in_a_folder_beside_another_or_at_home_and_nothing_
         .unwrap();
     assert_eq!(home.folder, core.home);
 
-    for refused in [
-        CreateSession {
-            folder: Some("relative".into()),
-            like: None,
-        },
-        CreateSession {
-            folder: Some(fixture.directory.join("missing")),
-            like: None,
-        },
-        CreateSession {
-            folder: Some(project.clone()),
-            like: Some(first.id),
-        },
-    ] {
+    // A relative folder, or a folder and a Session at once, cannot be asked for at all
+    // (`CreateSession`'s parsing); a folder that is not there is refused here.
+    for refused in [CreateSession::InFolder(fixture.directory.join("missing"))] {
         assert!(sessions::create(core, refused).await.is_err());
     }
 
@@ -343,15 +320,9 @@ async fn a_terminal_whose_folder_is_gone_is_closed_instead_of_failing_restore() 
     let mut fixture = Fixture::new().await;
     let folder = fixture.directory.join("gone");
     fs::create_dir_all(&folder).unwrap();
-    let record = sessions::create(
-        &fixture.core,
-        CreateSession {
-            folder: Some(folder.clone()),
-            like: None,
-        },
-    )
-    .await
-    .unwrap();
+    let record = sessions::create(&fixture.core, CreateSession::InFolder(folder.clone()))
+        .await
+        .unwrap();
     let other = fixture.new_session().await;
     let terminal = pane(&record, PaneRole::Terminal);
     crate::sessions::stop(&fixture.core).await;
@@ -412,7 +383,7 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
         &fixture.core,
         axo_protocol::rpc::PromptSession {
             session_id: record.id,
-            text: "a long job".into(),
+            text: axo_protocol::rpc::PromptText::parse("a long job".into()).unwrap(),
             delivery: axo_protocol::rpc::PromptDelivery::FollowUp,
             from_session_id: None,
         },
