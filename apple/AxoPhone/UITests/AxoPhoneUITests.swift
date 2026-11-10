@@ -500,14 +500,38 @@ final class AxoPhoneUITests: XCTestCase {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "reply"])
     XCTAssertTrue(app.staticTexts["Using tools…"].waitForExistence(timeout: 10))
     XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Still waiting on the")).firstMatch.exists)
-    // A tool's output starts folded, saying how much there is and that it is still coming.
-    let fold = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "Show output (", "still running")).firstMatch
-    XCTAssertTrue(fold.waitForExistence(timeout: 5))
-    fold.tap()
-    XCTAssertTrue(
-      app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "PhoneWorkbenchTests")).firstMatch.waitForExistence(timeout: 5),
-      "unfolded, the output shows")
-    XCTAssertTrue(app.buttons["Hide output"].exists)
+    // A running tool's row says what it runs, and shows the newest line it printed, folded.
+    let row = app.buttons.matching(NSPredicate(format: "label == %@", "bash swift test, running")).firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["toolLastLine"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.staticTexts["toolLastLine"].label, "Test Case PhoneWorkbenchTests running")
+    // Opened while it runs: what it runs, and what it printed so far.
+    row.tap()
+    XCTAssertTrue(app.staticTexts["toolInput"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.staticTexts["toolInput"].label, "$ swift test")
+    XCTAssertTrue(app.staticTexts["toolOutput"].label.contains("Compiling AxoPhoneModel"), "opened, the output shows")
+    // All of it, on a sheet of its own, still coming in.
+    app.buttons["seeFullOutput"].tap()
+    XCTAssertTrue(app.staticTexts["fullOutputLines"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.staticTexts["fullOutputLines"].label, "7 lines, still running")
+    XCTAssertTrue(app.staticTexts["fullOutput"].label.contains("Building for debugging"))
+    app.buttons["Done"].tap()
+    XCTAssertTrue(app.staticTexts["fullOutputLines"].waitForNonExistence(timeout: 5))
+  }
+
+  @MainActor
+  func testToolsUsedOneAfterAnotherAreABlockHeadedByWhatTheyDid() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"])
+    let title = app.staticTexts["toolGroupTitle"].firstMatch
+    XCTAssertTrue(title.waitForExistence(timeout: 10))
+    XCTAssertEqual(title.label, "Ran 2 commands, read a file")
+    // A finished tool's output stays folded until its row is tapped.
+    let status = app.buttons.matching(NSPredicate(format: "label == %@", "bash git status --short --branch")).firstMatch
+    XCTAssertTrue(status.exists)
+    XCTAssertFalse(app.staticTexts["toolOutput"].exists)
+    status.tap()
+    XCTAssertTrue(app.staticTexts["toolOutput"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["toolOutput"].label.hasPrefix("On branch main"))
   }
 
   @MainActor

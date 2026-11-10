@@ -18,6 +18,8 @@ public struct ToolActivity: Equatable, Sendable {
   public fileprivate(set) var output: String
   /// The output was cut short to cross the wire; the Mac has all of it.
   public fileprivate(set) var outputTruncated = false
+  /// What it was given, to show.
+  public var input: ToolInput?
 
   static func kind(of name: String) -> Kind {
     switch name {
@@ -33,6 +35,76 @@ public struct ToolActivity: Equatable, Sendable {
     status = result.status
     output = result.output
     outputTruncated = result.truncated
+  }
+}
+
+/// What a tool was given, as it reads best: a shell command, a script (codemode), the change an edit
+/// makes, the file a write writes, or else its arguments. As on the web.
+public struct ToolInput: Equatable, Sendable {
+  public enum Kind: Equatable, Sendable { case command, code, diff, text, arguments }
+  public let kind: Kind
+  /// For a diff, one line per changed line, starting `-` or `+`.
+  public let text: String
+
+  public init(kind: Kind, text: String) {
+    self.kind = kind
+    self.text = text
+  }
+
+  /// What `arguments` say to show; nil when there is nothing beyond the tool's subtitle.
+  init?(name: String, kind: ToolActivity.Kind, arguments: JSONValue?) {
+    guard let arguments, case .object(let fields) = arguments else { return nil }
+    if kind == .shell {
+      guard let command = fields["command"]?.stringValue, !command.isEmpty else { return nil }
+      self.init(kind: .command, text: command)
+    } else if let code = fields["code"]?.stringValue, !code.isEmpty {
+      self.init(kind: .code, text: code)
+    } else if name == "edit" {
+      let edits = fields["edits"]?.arrayValue ?? [arguments]
+      let lines = edits.flatMap { edit -> [String] in
+        guard let before = (edit["oldText"] ?? edit["old_string"])?.stringValue,
+          let after = (edit["newText"] ?? edit["new_string"])?.stringValue
+        else { return [] }
+        return before.components(separatedBy: "\n").map { "-" + $0 } + after.components(separatedBy: "\n").map { "+" + $0 }
+      }
+      guard !lines.isEmpty else { return nil }
+      self.init(kind: .diff, text: lines.joined(separator: "\n"))
+    } else if name == "write" {
+      guard let content = fields["content"]?.stringValue else { return nil }
+      self.init(kind: .text, text: content)
+    } else if kind == .file || kind == .search {
+      // Read, search and the like say all they were given in their subtitle.
+      return nil
+    } else {
+      let shown = fields.filter { _, value in value != .null && value != .string("") }
+      guard !shown.isEmpty else { return nil }
+      self.init(kind: .arguments, text: JSONValue.object(shown).pretty())
+    }
+  }
+}
+
+extension JSONValue {
+  /// Written out as JSON, two spaces to a level, keys in order.
+  func pretty(_ indent: String = "") -> String {
+    let inner = indent + "  "
+    switch self {
+    case .null: return "null"
+    case .bool(let value): return value ? "true" : "false"
+    case .number(let value): return value == value.rounded() && abs(value) < 1e15 ? String(Int64(value)) : String(value)
+    case .string(let value): return Self.quoted(value)
+    case .array(let values):
+      if values.isEmpty { return "[]" }
+      return "[\n" + values.map { inner + $0.pretty(inner) }.joined(separator: ",\n") + "\n" + indent + "]"
+    case .object(let fields):
+      if fields.isEmpty { return "{}" }
+      return "{\n" + fields.keys.sorted().map { inner + Self.quoted($0) + ": " + fields[$0]!.pretty(inner) }.joined(separator: ",\n")
+        + "\n" + indent + "}"
+    }
+  }
+
+  private static func quoted(_ text: String) -> String {
+    let data = (try? JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed, .withoutEscapingSlashes])) ?? Data()
+    return String(decoding: data, as: UTF8.self)
   }
 }
 
@@ -493,12 +565,24 @@ public struct ChatTranscript: Equatable, Sendable {
     guard let name = call["name"]?.stringValue else { return nil }
     let arguments = call["arguments"]
     let kind = ToolActivity.kind(of: name)
-    let subtitle = ["path", "file_path", "pattern", "query"].lazy.compactMap { arguments?[$0]?.stringValue }.first
+    var subtitle = ["path", "file_path", "pattern", "query"].lazy.compactMap { arguments?[$0]?.stringValue }.first
+    if name == "read", let path = subtitle, let range = lineRange(arguments) { subtitle = "\(path) · \(range)" }
     return ToolActivity(
       callID: call["id"]?.stringValue, name: name, kind: kind,
       subtitle: kind == .shell ? nil : subtitle,
       command: kind == .shell ? arguments?["command"]?.stringValue : nil,
-      status: .running, output: "")
+      status: .running, output: "",
+      input: ToolInput(name: name, kind: kind, arguments: arguments))
+  }
+
+  /// The lines a read asked for, as "lines 10–59"; nil for the whole file.
+  private static func lineRange(_ arguments: JSONValue?) -> String? {
+    let offset = arguments?["offset"]?.numberValue.map(Int.init)
+    let limit = arguments?["limit"]?.numberValue.map(Int.init)
+    if offset == nil, limit == nil { return nil }
+    let first = offset ?? 1
+    guard let limit else { return "from line \(first)" }
+    return "lines \(first)–\(first + limit - 1)"
   }
 
   /// The words of a message. A picture that came with its data is shown as itself (`images`);

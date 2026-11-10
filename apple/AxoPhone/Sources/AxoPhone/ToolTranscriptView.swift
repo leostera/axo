@@ -1,22 +1,28 @@
 import AxoPhoneModel
 import SwiftUI
 
-/// A tool Pi used: a tinted card with what it ran; what came back stays folded until asked for,
-/// as on the web, so a run of many tools stays short to scroll.
+/// A tool the agent used: a row saying what it is and what it works on, in a block with the tools
+/// used just before and after it. As on the web.
+///
+/// While it runs, the row shows the start of what it was given and the newest line it printed.
+/// Tapped (running or not), it opens to what it was given and what it printed so far, still coming
+/// in; "See full output" shows all of it, on a sheet of its own. What came back starts folded once
+/// it is done, so a run of many tools stays short to scroll.
 struct ToolTranscriptView: View {
   let tool: ToolActivity
   /// Pi is working now, so a tool that has not answered is still running.
   let piIsWorking: Bool
-  @State private var expanded = false
+  /// Its place among the tools used one after another.
+  var group: ToolGroupPlace?
+  @State private var open = false
+  @State private var viewing = false
+
+  /// How many lines of a running tool's input show before it is opened.
+  private static let previewLines = 3
+  /// How many lines of what it was given, and of what it printed, an open row shows; the sheet shows all.
+  private static let openLines = 24
 
   private var isRunning: Bool { tool.status == .running && piIsWorking }
-  private var tint: Color {
-    switch tool.status {
-    case .running: isRunning ? .gray : .gray
-    case .completed: .green
-    case .failed: .red
-    }
-  }
   private var symbol: String {
     switch tool.kind {
     case .shell: "terminal"
@@ -26,78 +32,216 @@ struct ToolTranscriptView: View {
     case .generic: "wrench.and.screwdriver"
     }
   }
-  private var corner: CGFloat { tool.kind == .shell ? 6 : 14 }
+  private var lineCount: Int { tool.output.isEmpty ? 0 : tool.output.split(separator: "\n", omittingEmptySubsequences: false).count }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Label(tool.name, systemImage: symbol).font(.callout.weight(.semibold))
-        Spacer()
-        switch tool.status {
-        case .running:
-          if isRunning { ProgressView().controlSize(.small).accessibilityLabel("Running") }
-        case .completed:
-          Image(systemName: "checkmark").foregroundStyle(.green).accessibilityLabel("Completed")
-        case .failed:
-          Image(systemName: "xmark.circle.fill").foregroundStyle(.red).accessibilityLabel("Failed")
-        }
+    VStack(alignment: .leading, spacing: 0) {
+      if let title = group?.title {
+        Text(title)
+          .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+          .padding(.horizontal, 14).padding(.top, 10)
+          .accessibilityIdentifier("toolGroupTitle")
       }
-      if let subtitle = tool.subtitle, !subtitle.isEmpty {
-        Text(subtitle).font(.caption.monospaced()).textSelection(.enabled)
+      row
+      if open {
+        opened
+      } else if isRunning {
+        glance
       }
-      if let command = tool.command, !command.isEmpty {
-        Text("$ " + command)
-          .font(.callout.monospaced()).textSelection(.enabled)
-          .lineLimit(expanded ? nil : 4)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Color.gray.opacity(0.17), in: shape)
+    .overlay(shape.stroke(Color.gray.opacity(0.32), lineWidth: 0.5))
+    .overlay(alignment: .top) {
+      // Joined to the row above it: a hairline between them, where the outline's top would be.
+      if group?.first == false { Rectangle().fill(Color.gray.opacity(0.32)).frame(height: 0.5) }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("toolBlock")
+    .sheet(isPresented: $viewing) {
+      ToolOutputSheet(tool: tool, running: isRunning)
+    }
+  }
+
+  /// Its outline: rounded where the block starts and ends, square where it joins the rows beside it.
+  private var shape: UnevenRoundedRectangle {
+    let top: CGFloat = group == nil || group?.first == true ? 12 : 0
+    let bottom: CGFloat = group == nil || group?.last == true ? 12 : 0
+    return UnevenRoundedRectangle(topLeadingRadius: top, bottomLeadingRadius: bottom, bottomTrailingRadius: bottom, topTrailingRadius: top)
+  }
+
+  private var row: some View {
+    Button {
+      open.toggle()
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: symbol).font(.footnote).foregroundStyle(.secondary).frame(width: 18)
+        Text(tool.name).font(.subheadline.weight(.semibold))
+          .foregroundStyle(tool.status == .failed ? Color.red : Color.primary)
+        Text(tool.preview)
+          .font(.caption.monospaced()).foregroundStyle(.secondary)
+          .lineLimit(1).truncationMode(.tail)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        status
+        Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
       }
-      if !tool.output.isEmpty, expanded {
-        Text(output)
-          .font(.caption.monospaced())
-          .foregroundStyle(.secondary)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-        if tool.outputTruncated {
-          Text("Output cut short here; the rest is on your Mac.")
-            .font(.caption2).foregroundStyle(.secondary)
-        }
+      .padding(.horizontal, 14).padding(.vertical, 10)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(tool.name)\(tool.preview.isEmpty ? "" : " \(tool.preview)")\(isRunning ? ", running" : "")")
+    .accessibilityValue(open ? "Open" : "Folded")
+    .accessibilityIdentifier("toolRow")
+  }
+
+  @ViewBuilder private var status: some View {
+    switch tool.status {
+    case .running:
+      if isRunning { ProgressView().controlSize(.small).accessibilityLabel("Running") }
+    case .completed:
+      Image(systemName: "checkmark").font(.footnote.weight(.semibold)).foregroundStyle(.green).accessibilityLabel("Completed")
+    case .failed:
+      Image(systemName: "xmark.circle.fill").foregroundStyle(.red).accessibilityLabel("Failed")
+    }
+  }
+
+  /// Running and folded: the start of what it was given (unless the row says all of it), and the
+  /// newest line it printed.
+  @ViewBuilder private var glance: some View {
+    let input = tool.input.flatMap { input in
+      input.kind != .arguments && input.text.trimmingCharacters(in: .whitespacesAndNewlines) != tool.preview ? input : nil
+    }
+    let last = tool.output.components(separatedBy: "\n").last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    if input != nil || last != nil {
+      VStack(alignment: .leading, spacing: 4) {
+        if let input { Text(Self.firstLines(input.text, Self.previewLines)).foregroundStyle(.secondary) }
+        if let last { Text(last).lineLimit(1).accessibilityIdentifier("toolLastLine") }
+      }
+      .font(.caption.monospaced())
+      .padding(.leading, 40).padding(.trailing, 14).padding(.bottom, 10)
+    }
+  }
+
+  /// Open: what it was given, and what it printed so far (its end, while more comes).
+  private var opened: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if let input = tool.input {
+        ToolText(text: input.kind == .command ? "$ " + input.text : input.text, diff: input.kind == .diff, lines: Self.openLines, end: false)
+          .accessibilityIdentifier("toolInput")
       }
       if !tool.output.isEmpty {
-        Button {
-          expanded.toggle()
-        } label: {
-          Label(foldTitle, systemImage: expanded ? "chevron.up" : "chevron.down")
-            .labelStyle(.titleAndIcon)
-        }
-        .font(.caption).foregroundStyle(.secondary)
+        ToolText(text: tool.output, diff: tool.kind == .edit && tool.status != .failed, lines: Self.openLines, end: true)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("toolOutput")
+      } else if isRunning {
+        Text("Nothing printed yet.").font(.caption).foregroundStyle(.secondary)
+      }
+      if isRunning || lineCount > Self.openLines || (tool.input?.text.components(separatedBy: "\n").count ?? 0) > Self.openLines {
+        Button("See full output (\(lineCount) \(lineCount == 1 ? "line" : "lines"))") { viewing = true }
+          .font(.caption).accessibilityIdentifier("seeFullOutput")
+      }
+      if tool.outputTruncated {
+        Text("Cut short here; the rest is on your Mac.").font(.caption2).foregroundStyle(.secondary)
       }
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(tint.opacity(0.17), in: RoundedRectangle(cornerRadius: corner))
-    .overlay(RoundedRectangle(cornerRadius: corner).stroke(tint.opacity(0.32), lineWidth: 0.5))
-    .accessibilityIdentifier("toolBlock")
+    .padding(.horizontal, 14).padding(.bottom, 12)
   }
 
-  private var lineCount: Int { tool.output.split(separator: "\n", omittingEmptySubsequences: false).count }
+  static func firstLines(_ text: String, _ count: Int) -> String {
+    let lines = text.components(separatedBy: "\n")
+    return lines.count > count ? lines.prefix(count).joined(separator: "\n") + "\n…" : text
+  }
+}
 
-  /// "Show output (12 lines, still running)", or "Hide output".
-  private var foldTitle: String {
-    if expanded { return "Hide output" }
-    let lines = "\(lineCount) \(lineCount == 1 ? "line" : "lines")"
-    return "Show output (\(lines)\(isRunning ? ", still running" : ""))"
+/// Monospaced text in a box, at most `lines` of it: its start, or (`end`) its end, as a running
+/// tool's newest output is what matters. A diff keeps its added and removed lines' colours.
+private struct ToolText: View {
+  let text: String
+  let diff: Bool
+  let lines: Int
+  let end: Bool
+
+  var body: some View {
+    Text(shown)
+      .font(.caption.monospaced())
+      .textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 12).padding(.vertical, 10)
+      .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
   }
 
-  /// An edit's result is often a diff; its added and removed lines keep their colours.
-  private var output: AttributedString {
-    guard tool.kind == .edit, tool.status != .failed else { return AttributedString(tool.output) }
+  private var shown: AttributedString {
+    var all = text.components(separatedBy: "\n")
+    var cut: String?
+    if all.count > lines {
+      cut = "… \(all.count - lines) more \(all.count - lines == 1 ? "line" : "lines")"
+      all = end ? Array(all.suffix(lines)) : Array(all.prefix(lines))
+    }
     var result = AttributedString()
-    let lines = tool.output.components(separatedBy: "\n")
-    for (index, line) in lines.enumerated() {
-      var segment = AttributedString(line + (index == lines.count - 1 ? "" : "\n"))
-      if line.hasPrefix("+") { segment.foregroundColor = .green }
-      if line.hasPrefix("-") { segment.foregroundColor = .red }
+    if end, let cut { result.append(Self.note(cut + "\n")) }
+    for (index, line) in all.enumerated() {
+      var segment = AttributedString(line + (index == all.count - 1 ? "" : "\n"))
+      if diff, line.hasPrefix("+") { segment.foregroundColor = .green }
+      if diff, line.hasPrefix("-") { segment.foregroundColor = .red }
       result.append(segment)
     }
+    if !end, let cut { result.append(Self.note("\n" + cut)) }
     return result
+  }
+
+  private static func note(_ text: String) -> AttributedString {
+    var note = AttributedString(text)
+    note.foregroundColor = .secondary
+    return note
+  }
+}
+
+/// All of a tool's output, on a sheet of its own; while it runs, more comes in at the end, which
+/// stays in view.
+private struct ToolOutputSheet: View {
+  let tool: ToolActivity
+  let running: Bool
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 12) {
+          if let input = tool.input {
+            ToolText(text: input.kind == .command ? "$ " + input.text : input.text, diff: input.kind == .diff, lines: .max, end: false)
+          }
+          if tool.output.isEmpty {
+            Text(running ? "Nothing printed yet." : "It printed nothing.").font(.caption).foregroundStyle(.secondary)
+          } else {
+            ToolText(text: tool.output, diff: tool.kind == .edit && tool.status != .failed, lines: .max, end: true)
+              .accessibilityIdentifier("fullOutput")
+          }
+          if tool.outputTruncated {
+            Text("Cut short here; the rest is on your Mac.").font(.caption2).foregroundStyle(.secondary)
+          }
+        }
+        .padding()
+      }
+      .defaultScrollAnchor(.bottom, for: .sizeChanges)
+      .defaultScrollAnchor(.bottom, for: .initialOffset)
+      .navigationTitle("\(tool.name) output")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .principal) {
+          VStack(spacing: 0) {
+            Text("\(tool.name) output").font(.headline)
+            Text(subtitle).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("fullOutputLines")
+          }
+        }
+        ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+      }
+    }
+    .presentationDetents([.large])
+  }
+
+  private var subtitle: String {
+    let lines = tool.output.isEmpty ? 0 : tool.output.components(separatedBy: "\n").count
+    return "\(lines) \(lines == 1 ? "line" : "lines")\(running ? ", still running" : "")"
   }
 }

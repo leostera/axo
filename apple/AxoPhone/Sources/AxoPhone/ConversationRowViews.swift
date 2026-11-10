@@ -12,14 +12,21 @@ struct ConversationItemView: View {
   let feed: ConversationFeed
   let actions: ConversationRowActions
 
+  /// The room under each row. A tool followed by another in its block has none: they join.
+  static let gap: CGFloat = 30
+
   var body: some View {
+    content.padding(.bottom, item.group.map { !$0.last } == true ? 0 : Self.gap)
+  }
+
+  @ViewBuilder private var content: some View {
     switch item.row {
     case .message(let shown):
       ChatMessageView(
         message: shown.message,
         // Only a tool's row asks whether Pi is working, so only tools redraw when it starts or stops.
         piIsWorking: shown.isLive || (shown.message.role == .tool && feed.working),
-        isLive: shown.isLive, entrance: entrance(of: shown))
+        isLive: shown.isLive, entrance: entrance(of: shown), group: item.group)
     case .pending(let prompt):
       PendingPromptView(
         prompt: prompt, editAgain: { actions.editAgain(prompt) }, dismiss: { actions.dismiss(prompt) })

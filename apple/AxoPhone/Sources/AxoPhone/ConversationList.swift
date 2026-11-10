@@ -273,13 +273,11 @@ struct ConversationList: UIViewRepresentable {
       case 0:
         // Less the point the top takes when it has nothing to show (`LeadingColumn`).
         section.contentInsets = .init(top: 23, leading: 20, bottom: 0, trailing: 20)
-      case 1:
-        section.interGroupSpacing = 30
-        section.contentInsets = .init(top: 0, leading: 20, bottom: 0, trailing: 20)
       default:
-        // The room under the last row, as the stack's spacing and its end marker left it, with
-        // the point the bottom takes when it has nothing to show.
-        section.contentInsets = .init(top: 0, leading: 20, bottom: 30, trailing: 20)
+        // No room between rows: each row leaves its own under it (`ConversationItemView.gap`), so
+        // tools used one after another can join into one block. What is under the last row is the
+        // bottom's to leave (`ConversationBottom`).
+        section.contentInsets = .init(top: 0, leading: 20, bottom: 0, trailing: 20)
       }
       return section
     }
@@ -469,11 +467,12 @@ private struct ConversationBottom: View {
           feed: content.feed, chat: content.chat, workbench: content.workbench, session: id, canSend: content.canSend)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.top, cards || footer ? 30 : 0)
-      // The point it takes when it has nothing to show, so the room under the last row is the same.
-      .padding(.bottom, cards || footer ? 1 : 0)
+      // The last row leaves a gap under itself; with no rows, this leaves it.
+      .padding(.top, (cards || footer) && content.feed.items.isEmpty ? ConversationItemView.gap : 0)
+      // The room under it all: a gap, and the point the bottom takes when it has nothing to show.
+      .padding(.bottom, cards || footer || content.feed.items.isEmpty ? ConversationItemView.gap + 1 : 0)
     } else {
-      Color.clear.frame(height: 0)
+      Color.clear.frame(height: content.feed.items.isEmpty ? ConversationItemView.gap + 1 : 0)
     }
   }
 }

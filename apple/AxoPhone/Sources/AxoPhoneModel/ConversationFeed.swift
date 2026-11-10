@@ -27,6 +27,8 @@ public final class ConversationFeed {
     /// How many characters of its words are out while they are let out, by the feed's clock; nil
     /// when it shows whole.
     public fileprivate(set) var revealed: Int?
+    /// A tool's row only: its place among the tools used one after another.
+    public fileprivate(set) var group: ToolGroupPlace?
 
     init(_ row: ConversationRow) {
       id = row.id
@@ -168,6 +170,7 @@ public final class ConversationFeed {
       : transcript.messages.map { .init(message: $0, isLive: false, presentation: .plain) }
         + transcript.live.map { .init(message: $0, isLive: true, presentation: .plain) }
     keep(ConversationRow.rows(shown: shown, pending: pending, queued: transcript.queued))
+    group()
     // A row being let out shows what is out of it; one that is not, all of it.
     let wasRevealing = revealing
     revealing = items.filter { item in
@@ -246,6 +249,18 @@ public final class ConversationFeed {
     let last = items.last
     let end = End(count: items.count, lastKey: last?.id, lastLength: last.map(Self.length) ?? 0)
     if self.end != end { self.end = end }
+  }
+
+  /// Tools used one after another show as one block: each tool's row learns its place in it.
+  private func group() {
+    let places = ToolGroupPlace.places(items.map { item in
+      if case .message(let shown) = item.row { return shown.message.tool }
+      return nil
+    })
+    for (item, place) in zip(items, places) where item.group != place {
+      item.group = place
+      touched.insert(item.id)
+    }
   }
 
   /// Whether a row the conversation does not list now stays anyway: what it shows is still coming.

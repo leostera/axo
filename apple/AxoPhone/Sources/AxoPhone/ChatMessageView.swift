@@ -12,6 +12,8 @@ struct ChatMessageView: View {
   var isLive = false
   /// How it comes in, when it was written while the chat is on screen (`ConversationReveal`).
   var entrance: Entrance?
+  /// A tool's place among the tools used one after another.
+  var group: ToolGroupPlace?
   @State private var copied = false
 
   /// A message written while its chat is on screen: its words let out, or a rise.
@@ -83,7 +85,7 @@ struct ChatMessageView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("thinkingBlock")
     case .tool:
-      if let tool = message.tool { ToolTranscriptView(tool: tool, piIsWorking: piIsWorking) }
+      if let tool = message.tool { ToolTranscriptView(tool: tool, piIsWorking: piIsWorking, group: group) }
     }
   }
 
