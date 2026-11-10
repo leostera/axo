@@ -30,7 +30,7 @@ export default defineConfig(({ isPreview }) => ({
       // The site's own files, for the pages the Worker serves itself (a share's page is index.html).
       ASSETS: bindings.assets(),
       PUBLIC_SESSIONS: bindings.r2({ name: "axo-public-sessions" }),
-      // The Mac app `/cdn/Axo.app` serves and `/install` downloads; `scripts/publish-mac.sh` uploads it.
+      // The Mac app `/cdn/Axo.app` serves and `/install` downloads; `bazel run //:publish` uploads it.
       CDN: bindings.r2({ name: "axo-cdn" }),
       // Assets (RFD0030): every account's files, under accounts/<accountId>/<sha256>.
       AXO_ASSETS: bindings.r2({ name: "axo-assets" }),

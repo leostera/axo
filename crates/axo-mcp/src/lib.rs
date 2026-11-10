@@ -19,7 +19,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 use axo_ipc::{Local, LocalError, Upgraded};
 use axo_protocol::SessionId;
-use axo_protocol::rpc::method;
+use axo_protocol::rpc::{MAX_PROMPT_BYTES, method};
 use serde_json::{Map, Value, json};
 
 /// axod's build number from config.json (RFD0021), which `axod mcp` is part of.
@@ -127,7 +127,7 @@ const TOOLS: &[Tool] = &[
         properties: || {
             json!({
                 "sessionId": session_id_schema(),
-                "text": { "type": "string", "description": "1 to 16000 bytes." },
+                "text": { "type": "string", "description": format!("1 to {MAX_PROMPT_BYTES} bytes.") },
                 "delivery": {
                     "type": "string",
                     "enum": ["followUp", "steer", "turn"],

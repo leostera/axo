@@ -1,11 +1,12 @@
 //! Axod is the single, permanent reader of every PTY it owns.
 //!
 //! Each shell gets one pump from the moment it is spawned until its PTY reaches end of file: a
-//! task on axo-pty's own small runtime, woken by tokio (`AsyncFd`) when the PTY has output (RFD0037), so a
-//! hundred idle shells cost no threads. The pump feeds every byte into the shell's headless terminal (its `TerminalScreen`),
-//! publishes `terminal.output` events, and fans raw bytes out to every attached client. A shell therefore never blocks on a full PTY buffer because no
-//! client is attached, and any number of clients (Mac windows, the web relay, the CLI) can watch
-//! the same shell.
+//! task on axod's runtime, woken by tokio (`AsyncFd`) when the PTY has output (RFD0037), so a
+//! hundred idle shells cost no threads. The pump feeds every byte into the shell's headless
+//! terminal (its `TerminalScreen`), publishes `terminal.output` events, and fans raw bytes out to
+//! every attached client. A shell therefore never blocks on a full PTY buffer because no client
+//! is attached, and any number of clients (Mac windows, the web relay, the CLI) can watch the
+//! same shell.
 //!
 //! Invariants:
 //! - Only the pump reads the PTY master. Attached clients receive the master descriptor for

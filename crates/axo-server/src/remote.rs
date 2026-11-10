@@ -1,5 +1,5 @@
 //! The account's calls to this Mac: `axo.remote.*`, from the web and the phone through the relay
-//! (RFD0019, RFD0024, RFD0034 step 6).
+//! (RFD0024, RFD0034 step 6).
 //!
 //! They are ordinary methods of axod, beside the local ones, that answer only
 //! [`Caller::Relay`]: the relay is a transport that hands each request to axod as the account

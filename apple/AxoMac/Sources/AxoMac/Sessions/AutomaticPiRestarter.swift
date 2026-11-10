@@ -3,7 +3,7 @@ import Foundation
 
 /// Retries recovery of unavailable Pi panes while the user preference is enabled. Each pane has at
 /// most one retry loop; loops stop when the pane recovers, disappears, or the preference is
-/// disabled. Recovery itself is Axod's idle-only, non-forcing `auto` restart.
+/// disabled. Recovery itself is Axod's `auto` restart, which restarts only an unavailable Pi pane.
 @MainActor
 final class AutomaticPiRestarter {
   enum Failure: Error {
