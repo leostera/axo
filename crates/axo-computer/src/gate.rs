@@ -106,8 +106,10 @@ pub enum Verdict {
     Ask(String),
 }
 
-/// This process's gate, with Clef beside axod when installed: `axod mcp` for this Mac's agents,
-/// axod for other Macs' scripts (RFD0028). `socket` is axod's, beside which Clef's runs.
+/// This process's gate, with Clef beside axod when installed. It runs in axod for every caller,
+/// this Mac's agents (through `axod mcp`, a proxy) and other Macs' scripts alike (RFD0028).
+/// `socket` is axod's, beside which Clef's runs. Blocks on the filesystem the first time: call
+/// it off the runtime.
 pub fn for_socket(socket: &Path) -> &'static Gate {
     static GATE: OnceLock<Gate> = OnceLock::new();
     GATE.get_or_init(|| {
@@ -122,7 +124,7 @@ pub fn for_socket(socket: &Path) -> &'static Gate {
                     let outcome = infer.install_in_background();
                     log::info!(
                         "event=computer.gate_model_missing download={}",
-                        outcome.map_or_else(|why| why, |()| "started".into())
+                        outcome.map_or_else(|why| why.to_string(), |()| "started".into())
                     );
                 }
             })

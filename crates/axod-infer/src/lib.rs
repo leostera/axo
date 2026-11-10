@@ -114,6 +114,37 @@ fn lifeline() -> io::Result<&'static Lifeline> {
     Ok(LIFELINE.get_or_init(|| lifeline))
 }
 
+/// Why [`Infer::install_in_background`] started no download.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoDownload {
+    /// The model files are already there.
+    Installed,
+    /// Another download holds the download lock.
+    AlreadyRunning,
+    /// This Mac has less memory than the model needs, in GB.
+    TooLittleMemory { gigabytes: u64 },
+    /// The disk has less room than the files need, in GB.
+    TooLittleDisk { gigabytes: u64 },
+    /// The download could not be set up or started.
+    Failed(String),
+}
+
+impl std::fmt::Display for NoDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Installed => f.write_str("already installed"),
+            Self::AlreadyRunning => f.write_str("a download is already running"),
+            Self::TooLittleMemory { gigabytes } => {
+                write!(f, "this Mac has {gigabytes} GB of memory; Clef needs 16")
+            }
+            Self::TooLittleDisk { gigabytes } => {
+                write!(f, "only {gigabytes} GB of disk is free; Clef needs 10")
+            }
+            Self::Failed(why) => write!(f, "the download could not start: {why}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum InferError {
     /// The helper or the model files are missing, so local checks are off.
@@ -175,40 +206,41 @@ impl Infer {
     }
 
     /// Starts downloading the model files in the background, unless they are there, one
-    /// download is already running, or this Mac lacks the memory or disk for them. Returns why
-    /// not when it did not start one.
-    pub fn install_in_background(&self) -> Result<(), String> {
+    /// download is already running, or this Mac lacks the memory or disk for them. Blocks on the
+    /// filesystem: call it off the runtime.
+    pub fn install_in_background(&self) -> Result<(), NoDownload> {
         if self.models.join(MODEL_FILE).exists() && self.models.join(VISION_FILE).exists() {
-            return Err("already installed".into());
+            return Err(NoDownload::Installed);
         }
         let ram = physical_memory();
         if ram < MINIMUM_RAM {
-            return Err(format!(
-                "this Mac has {} GB of memory; Clef needs 16",
-                ram >> 30
-            ));
+            return Err(NoDownload::TooLittleMemory {
+                gigabytes: ram >> 30,
+            });
         }
-        std::fs::create_dir_all(&self.models).map_err(|e| e.to_string())?;
+        self.start_download()
+    }
+
+    fn start_download(&self) -> Result<(), NoDownload> {
+        let failed = |error: io::Error| NoDownload::Failed(error.to_string());
+        std::fs::create_dir_all(&self.models).map_err(failed)?;
         let free = free_disk(&self.models);
         if free < MINIMUM_FREE_DISK {
-            return Err(format!(
-                "only {} GB of disk is free; Clef needs 10",
-                free >> 30
-            ));
+            return Err(NoDownload::TooLittleDisk {
+                gigabytes: free >> 30,
+            });
         }
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(self.models.join(".download.lock"))
-            .map_err(|e| e.to_string())?;
+            .map_err(failed)?;
         if !try_lock(&lock) {
-            return Err("a download is already running".into());
+            return Err(NoDownload::AlreadyRunning);
         }
-        let log = File::create(self.models.join("download.log")).map_err(|e| e.to_string())?;
-        let mut command = lifeline()
-            .map_err(|e| e.to_string())?
-            .guarded(Path::new("/bin/sh"));
+        let log = File::create(self.models.join("download.log")).map_err(failed)?;
+        let mut command = lifeline().map_err(failed)?.guarded(Path::new("/bin/sh"));
         command
             .arg("-c")
             .arg(DOWNLOAD_SCRIPT)
@@ -219,12 +251,12 @@ impl Infer {
         }
         command
             .stdin(Stdio::null())
-            .stdout(log.try_clone().map_err(|e| e.to_string())?)
+            .stdout(log.try_clone().map_err(failed)?)
             .stderr(log);
         hold(&mut command, lock.as_raw_fd());
-        let child = command.spawn().map_err(|e| e.to_string())?;
+        let child = command.spawn().map_err(failed)?;
         log::info!("event=infer.model_download_started pid={}", child.id());
-        let child = WatchedChild::new(child).map_err(|e| e.to_string())?;
+        let child = WatchedChild::new(child).map_err(failed)?;
         self.lock_children().download = Some(child);
         Ok(())
     }
