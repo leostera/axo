@@ -167,3 +167,74 @@ fn an_asker_that_goes_away_withdraws_its_question() {
     assert_eq!(resolved["action"], "cancel");
     assert!(pending(&axod).is_empty());
 }
+
+/// Count only the daemon's threads, not the test's clients or its fake Pi child. macOS's ps
+/// reports one row per thread; Linux exposes the same information as /proc/<pid>/task.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn daemon_threads(axod: &Axod) -> usize {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-M", &axod.pid().to_string()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let rows = std::str::from_utf8(&output.stdout).unwrap().lines().count();
+        assert!(rows > 1, "ps must report the daemon's threads");
+        rows - 1
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir(format!("/proc/{}/task", axod.pid()))
+            .unwrap()
+            .count()
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn thirty_two_pending_questions_do_not_allocate_a_thread_each() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let axod = Axod::start();
+    let session = axod.new_session()["id"].clone();
+    assert!(pending(&axod).is_empty());
+    // Warm the permission probe before taking the baseline. Allow two incidental OS/runtime
+    // threads, but not one thread per question (the old implementation added 32).
+    axod.ok("axo.daemon.health", json!({}));
+    let baseline = daemon_threads(&axod);
+    let mut askers = Vec::new();
+    let mut peak = baseline;
+    for count in 1..=32 {
+        let mut socket = UnixStream::connect(axod.socket()).unwrap();
+        writeln!(
+            socket,
+            "{}",
+            json!({
+                "jsonrpc": "2.0", "id": count, "method": "axo.elicitation.request",
+                "params": { "sessionId": session, "message": format!("Question {count}?") }
+            })
+        )
+        .unwrap();
+        askers.push(socket);
+        axod.wait_for("every question to be waiting", || {
+            (pending(&axod).len() == count).then_some(())
+        });
+        peak = peak.max(daemon_threads(&axod));
+    }
+    // They stay pending while other RPCs continue to work, rather than being dropped early.
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(pending(&axod).len(), 32);
+    peak = peak.max(daemon_threads(&axod));
+    assert!(
+        peak <= baseline + 2,
+        "32 waiting questions grew daemon threads from {baseline} to {peak}: {}",
+        axod.log()
+    );
+    drop(askers);
+    axod.wait_for("all disconnected askers' questions to be withdrawn", || {
+        pending(&axod).is_empty().then_some(())
+    });
+}
