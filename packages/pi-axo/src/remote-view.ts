@@ -90,6 +90,16 @@ export interface PeerSessionView {
 
 export type PendingState = "sending" | "sent" | "queued" | "uncertain";
 
+/** The most of a client's own prompts one stop names (`axo_relay::MAX_STOP_COMMANDS`). */
+const MAX_STOP_COMMANDS = 32;
+
+/** What a client saw of the run it asks to stop; at least one is set. */
+interface StopTarget {
+  turnId?: string;
+  seen?: string;
+  commandIds?: string[];
+}
+
 export interface PendingPrompt {
   readonly commandId: string;
   readonly text: string;
@@ -288,20 +298,45 @@ export class RemoteSession {
     this.retries.delete(commandId);
   }
 
-  /** Stops the turn shown running, by its user message; a later turn carries on. */
+  /**
+   * Stops the run shown running, by what this copy saw of it: its user message, the newest entry
+   * held (of the run however long it is), and this Mac's own prompts, which name a run before
+   * any of its records arrive. A run none of these belong to carries on.
+   */
   async stop(): Promise<boolean> {
-    const turnId = this.lastUserEntry;
-    if (!this.working || !turnId || this.stopping) return false;
+    const target = this.stopTarget();
+    if (!this.working || !target || this.stopping) return false;
     this.stopping = true;
     this.changed();
     try {
-      await this.link.command("axo.remote.session.stop", { sessionId: this.config.sessionId, turnId });
+      await this.link.command("axo.remote.session.stop", { sessionId: this.config.sessionId, ...target });
       return true;
     } catch {
       this.stopping = false;
       this.changed();
       return false;
     }
+  }
+
+  /** What a stop names (RFD0024, as amended); null when this copy saw nothing to name. */
+  private stopTarget(): StopTarget | null {
+    const turnId = this.lastUserEntry ?? undefined;
+    const seen = this.newestEntry();
+    const commandIds = this.pending.slice(-MAX_STOP_COMMANDS).map(prompt => prompt.commandId);
+    if (turnId === undefined && seen === undefined && commandIds.length === 0) return null;
+    return {
+      ...(turnId === undefined ? {} : { turnId }),
+      ...(seen === undefined ? {} : { seen }),
+      ...(commandIds.length ? { commandIds } : {}),
+    };
+  }
+
+  private newestEntry(): string | undefined {
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const id = this.entries[index]?.id;
+      if (typeof id === "string") return id;
+    }
+    return undefined;
   }
 
   /** Answers the other Mac's question: yes is Enter there, no is Escape. */

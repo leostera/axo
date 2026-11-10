@@ -149,7 +149,39 @@ test("Escape stops the turn shown running, by its user message, once", async () 
   session.apply(view([message("e1", "user", "go"), message("e2", "assistant", "working")], { status: "working" }));
   const [stopped, again] = await Promise.all([session.stop(), session.stop()]);
   assert.deepEqual([stopped, again], [true, false]);
-  assert.deepEqual(sent, [{ method: "axo.remote.session.stop", params: { sessionId, turnId: "e1" } }]);
+  assert.deepEqual(sent, [{ method: "axo.remote.session.stop", params: { sessionId, turnId: "e1", seen: "e2" } }]);
   session.apply(view([], { status: "ready", cursor: 2 }, 3));
   assert.equal(session.stopping, false);
+});
+
+test("Escape stops a run this Mac started before any of its records arrive", async () => {
+  const { sent, link } = axod([{ accepted: true }, { stopped: true }]);
+  const session = new RemoteSession(config, link, () => {}, 60_000, newId);
+  session.apply(view([message("e1", "user", "earlier"), assistant("e2", "stop")]));
+  const outcome = await session.send("now this");
+  assert.equal(outcome.kind, "accepted");
+  const commandId = session.pending[0]!.commandId;
+  // The prompt started a run on the other Mac; its records have not arrived.
+  session.apply(view([], { status: "working", cursor: 2 }, 3));
+  assert.equal(await session.stop(), true);
+  assert.deepEqual(sent[1], {
+    method: "axo.remote.session.stop",
+    params: { sessionId, turnId: "e1", seen: "e2", commandIds: [commandId] },
+  });
+  session.dispose();
+});
+
+test("Escape names at most the newest 32 of this Mac's prompts", async () => {
+  const answers = Array.from({ length: 40 }, () => ({ accepted: true }));
+  const { sent, link } = axod([...answers, { stopped: true }]);
+  const session = new RemoteSession(config, link, () => {}, 60_000, newId);
+  session.apply(view([], { status: "working" }));
+  for (let index = 0; index < 40; index += 1) await session.send(`prompt ${index}`);
+  assert.equal(await session.stop(), true);
+  const stop = sent.at(-1)!;
+  const commandIds = stop.params.commandIds as string[];
+  assert.equal(commandIds.length, 32);
+  assert.deepEqual(commandIds, session.pending.slice(-32).map(prompt => prompt.commandId));
+  assert.equal(stop.params.turnId, undefined, "nothing of the run is held");
+  session.dispose();
 });
