@@ -280,6 +280,19 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testMarkAllReadMarksEveryChatSeen() {
+    let app = launch(["AXO_PHONE_PREVIEW_UNSEEN": "1"])
+    app.buttons["Chats menu"].tapWhereItIs()
+    let markAll = app.buttons["mark-all-read"]
+    XCTAssertTrue(markAll.waitForExistence(timeout: 5), "shown while a chat has activity nobody here saw")
+    let unseen = app.buttons.matching(NSPredicate(format: "value CONTAINS %@", "Unseen"))
+    XCTAssertGreaterThan(unseen.count, 0)
+    markAll.tapWhereItIs()
+    XCTAssertTrue(markAll.waitForNonExistence(timeout: 5), "gone once every chat is seen")
+    XCTAssertEqual(unseen.count, 0, "every chat is seen")
+  }
+
+  @MainActor
   func testTheMenuListsChatsAsTheMacDoesPinnedThenActiveThenEarlier() {
     var app = launch()
     // The listing is kept across launches: put it back for the other tests, however this one ends.

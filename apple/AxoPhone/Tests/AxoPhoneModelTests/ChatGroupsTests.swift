@@ -97,6 +97,32 @@ final class ChatGroupsTests: XCTestCase {
     XCTAssertEqual(sections.map(\.group), [.pinned])
   }
 
+  func testMarkAllReadSeesEveryChatAndKeepsOnlyLaterMarks() {
+    let seenLongAgo = entry(1, name: "seen long ago", ago: 1_800)
+    let neverSeen = entry(2, name: "never seen", ago: 300)
+    // Its Mac's clock runs ahead.
+    let ahead = entry(3, name: "ahead", ago: -600)
+    var seen = ChatSeen(baseline: now - 3_600, seenAt: [seenLongAgo.session.sessionId: now - 2_400])
+    let all = [seenLongAgo, neverSeen, ahead].map(\.session)
+    XCTAssertEqual(all.filter(seen.isUnseen).count, 3)
+    XCTAssertTrue(seen.markAllSeen(all, now: now))
+    XCTAssertEqual(all.filter(seen.isUnseen).count, 0)
+    XCTAssertEqual(seen.baseline, now, "the baseline moves on, so chats not listed now are seen too")
+    XCTAssertEqual(Array(seen.seenAt.keys), [ahead.session.sessionId], "only marks after the baseline are kept")
+    XCTAssertFalse(seen.markAllSeen(all, now: now), "nothing changes")
+  }
+
+  @MainActor
+  func testMarkAllReadIsSaved() {
+    let defaults = UserDefaults(suiteName: "mark-all-read-\(UUID())")!
+    let start = Date(timeIntervalSince1970: TimeInterval(now - 3_600))
+    let prefs = ChatListPreferences(defaults: defaults, now: start)
+    let chat = entry(1, name: "news", ago: 60)
+    XCTAssertTrue(prefs.seen.isUnseen(chat.session))
+    prefs.markAllSeen([chat.session], now: Date(timeIntervalSince1970: TimeInterval(now)))
+    XCTAssertFalse(ChatListPreferences(defaults: defaults).seen.isUnseen(chat.session), "read again, it is still seen")
+  }
+
   func testTheHeldListKeepsRowsInPlaceButPinsApplyAtOnce() {
     let seen = ChatSeen(baseline: now)
     let a = entry(1, name: "a", ago: 30)

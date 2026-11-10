@@ -117,6 +117,11 @@ struct WorkbenchView: View {
   private static func chatListDefaults() -> UserDefaults {
     guard PreviewFixture.requested, let preview = UserDefaults(suiteName: "preview.chatList") else { return .standard }
     preview.removePersistentDomain(forName: "preview.chatList")
+    // AXO_PHONE_PREVIEW_UNSEEN=1: this phone started keeping track long ago, so every chat has
+    // activity nobody here saw.
+    if ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_UNSEEN"] == "1" {
+      preview.set(0, forKey: ChatListPreferences.Key.seenBaseline)
+    }
     return preview
   }
 
@@ -382,6 +387,28 @@ struct WorkbenchView: View {
     }
   }
 
+  /// "Mark all read": every chat seen on this phone at once. Shown only while one has activity
+  /// nobody here looked at.
+  @ViewBuilder private var markAllRead: some View {
+    let all = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
+    let unseen = all.filter { chatPrefs.seen.isUnseen($0.session) }.count
+    if unseen > 0 {
+      Button {
+        chatPrefs.markAllSeen(all.map(\.session))
+        // Seen chats leave Active now, not on the list's next slow regrouping.
+        held.groups = liveGroups(now: .now)
+      } label: {
+        Image(systemName: "checkmark")
+          .font(.system(size: 17, weight: .semibold))
+          .floatingCircle(diameter: MenuLayout.controlSize)
+      }
+      .accessibilityLabel("Mark all read")
+      .accessibilityValue("\(unseen) \(unseen == 1 ? "chat" : "chats")")
+      .accessibilityIdentifier("mark-all-read")
+      .transition(.opacity)
+    }
+  }
+
   /// Pinned chats, in pin order: the top of the folders list.
   private var pinnedEntries: [ChatMenuEntry] {
     let all = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
@@ -626,6 +653,8 @@ struct WorkbenchView: View {
       .accessibilityLabel("New chat")
 
       Spacer(minLength: 0)
+
+      markAllRead
 
       Button {
         settings = .settings

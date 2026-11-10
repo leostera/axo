@@ -4,7 +4,7 @@ import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
 import { AppsSettings, signInNotice, signInPage } from "./apps.tsx";
-import { ChatList, ChatListSettings } from "./chat-list.tsx";
+import { ChatList, ChatListSettings, MarkAllRead } from "./chat-list.tsx";
 import { Icon } from "./icons.tsx";
 import { Alert } from "./alert.tsx";
 import { runtimeLabel } from "./pi-controls.ts";
@@ -273,6 +273,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
       <header className="layer-bar top panel-header">
         <AxoMascot className="header-mascot" loading={workbench.hostsPhase === "loading"} />
         <span className="spacer" />
+        <MarkAllRead entries={entries} />
         <button className="circle-button" onClick={onAccount} aria-label="Account and Macs"><Icon name="person" /></button>
         <button className="circle-button" onClick={onSearch} aria-label="Search chats"><Icon name="search" /></button>
       </header>

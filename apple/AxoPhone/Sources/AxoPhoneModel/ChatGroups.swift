@@ -76,8 +76,8 @@ public struct ChatPins: Equatable, Sendable {
 /// A chat never marked counts as seen at `baseline`, when this phone started keeping track.
 public struct ChatSeen: Equatable, Sendable {
   public static let capacity = 1024
-  /// Unix seconds.
-  public let baseline: Int64
+  /// Unix seconds. Moves on when every chat is marked seen at once.
+  public private(set) var baseline: Int64
   public private(set) var seenAt: [SessionID: Int64]
 
   public init(baseline: Int64, seenAt: [SessionID: Int64] = [:]) {
@@ -113,6 +113,22 @@ public struct ChatSeen: Equatable, Sendable {
     seenAt[session.sessionId] = mark
     trim()
     return true
+  }
+
+  /// Marks every chat seen at `now`: the baseline moves to it, so chats on Macs not listed now
+  /// are seen too, and only marks after it are kept. One of `sessions` active later (a Mac's clock
+  /// may run ahead) is marked at its last activity. Returns whether anything changed.
+  @discardableResult
+  public mutating func markAllSeen(_ sessions: [RemoteSession], now: Int64) -> Bool {
+    let before = self
+    baseline = max(baseline, now)
+    seenAt = seenAt.filter { $0.value > baseline }
+    for session in sessions {
+      let activity = ChatGrouping.lastActivity(of: session)
+      if activity > (seenAt[session.sessionId] ?? baseline) { seenAt[session.sessionId] = activity }
+    }
+    trim()
+    return self != before
   }
 
   private mutating func trim() {
@@ -358,6 +374,13 @@ public final class ChatListPreferences {
 
   public func markSeen(_ session: RemoteSession, now: Date = .now) {
     guard seen.markSeen(session, now: Int64(now.timeIntervalSince1970)) else { return }
+    defaults.set(seen.storedValue, forKey: Key.seen)
+  }
+
+  /// Marks every chat seen ("Mark all read"); `sessions` are the chats listed now.
+  public func markAllSeen(_ sessions: [RemoteSession], now: Date = .now) {
+    guard seen.markAllSeen(sessions, now: Int64(now.timeIntervalSince1970)) else { return }
+    defaults.set(seen.baseline, forKey: Key.seenBaseline)
     defaults.set(seen.storedValue, forKey: Key.seen)
   }
 }

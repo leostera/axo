@@ -49,7 +49,7 @@ export class SessionPins {
 export class SessionSeen {
   static readonly capacity = 1024;
 
-  /** Milliseconds since 1970, as are the marks. */
+  /** Milliseconds since 1970, as are the marks. Moves on when every chat is marked seen at once. */
   readonly baseline: number;
   readonly seenAt: ReadonlyMap<string, number>;
 
@@ -88,6 +88,23 @@ export class SessionSeen {
     if (!this.isUnseen(entry) && this.seenAt.has(id)) return this;
     if ((this.seenAt.get(id) ?? -Infinity) >= mark) return this;
     return new SessionSeen(this.baseline, new Map(this.seenAt).set(id, mark));
+  }
+
+  /**
+   * Every chat marked seen at `now` ("Mark all read"): the baseline moves to it, so chats on Macs
+   * not listed now are seen too, and only marks after it are kept. One of `entries` active later
+   * (a Mac's clock may run ahead) is marked at its last activity. The same marks when nothing
+   * changes, so callers can tell.
+   */
+  allMarked(entries: readonly ChatMenuEntry[], now: number): SessionSeen {
+    if (!entries.some(entry => this.isUnseen(entry)) && now <= this.baseline) return this;
+    const baseline = Math.max(this.baseline, now);
+    const marks = new Map([...this.seenAt].filter(([, at]) => at > baseline));
+    for (const entry of entries) {
+      const activity = lastActivity(entry.session);
+      if (activity > (marks.get(entry.session.sessionId) ?? baseline)) marks.set(entry.session.sessionId, activity);
+    }
+    return new SessionSeen(baseline, marks);
   }
 }
 
@@ -304,7 +321,10 @@ export function storedSeen(now: number): SessionSeen {
   if (typeof baseline !== "number") write(storageKeys.seenBaseline, seen.baseline);
   return seen;
 }
-export const saveSeen = (seen: SessionSeen) => write(storageKeys.seen, seen.stored);
+export const saveSeen = (seen: SessionSeen) => {
+  write(storageKeys.seenBaseline, seen.baseline);
+  write(storageKeys.seen, seen.stored);
+};
 
 export const storedGrouping = () => parseGrouping(read(storageKeys.grouping));
 export const saveGrouping = (settings: GroupingSettings) => write(storageKeys.grouping, settings);

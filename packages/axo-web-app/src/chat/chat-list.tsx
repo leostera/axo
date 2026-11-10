@@ -45,6 +45,15 @@ class ChatListStore {
     this.changed();
   }
 
+  /** "Mark all read": every chat seen, those listed and those on Macs not listed now. */
+  markAllSeen(entries: readonly ChatMenuEntry[], now: number): void {
+    const seen = this.seen.allMarked(entries, now);
+    if (seen === this.seen) return;
+    this.current.seen = seen;
+    saveSeen(seen);
+    this.changed();
+  }
+
   setSettings(settings: GroupingSettings): void {
     this.current.settings = settings;
     saveGrouping(settings);
@@ -144,6 +153,22 @@ export function ChatList({ entries, showHost, asking, openChat, pageVisible, isS
           onClose={() => setMenu(null)} />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * "Mark all read": every chat seen, on this browser, at once. Shown only while one has activity
+ * nobody here looked at.
+ */
+export function MarkAllRead({ entries }: { entries: readonly ChatMenuEntry[] }) {
+  const store = useChatListStore();
+  const unseen = entries.filter(entry => store.seen.isUnseen(entry)).length;
+  if (unseen === 0) return null;
+  const label = `Mark all read (${unseen} ${unseen === 1 ? "chat" : "chats"})`;
+  return (
+    <button className="circle-button" onClick={() => store.markAllSeen(entries, Date.now())} aria-label="Mark all read" title={label}>
+      <Icon name="check" />
+    </button>
   );
 }
 

@@ -1311,3 +1311,22 @@ test("tools used one after another are a block, headed by what they did", () => 
     { first: true, last: true, title: null },
   ]);
 });
+
+test("mark all read: every chat is seen, and one active after now stays marked at its activity", () => {
+  const now = Date.parse("2026-10-16T12:00:00.000Z");
+  const seconds = (minutesAgo: number) => Math.floor((now - minutesAgo * 60_000) / 1000);
+  const entries = recentChatList([host([
+    session(1, "Axo", { name: "Seen long ago", lastMessageAt: seconds(30) }),
+    session(2, "Axo", { name: "Never seen", lastMessageAt: seconds(5) }),
+    // Its Mac's clock runs ahead.
+    session(3, "Axo", { name: "Ahead", lastMessageAt: seconds(-10) }),
+  ])]);
+  // Seen 40 minutes ago, before its last message.
+  const seen = new SessionSeen(now - 60 * 60_000, new Map([[sid(1), now - 40 * 60_000]]));
+  assert.equal(entries.filter(entry => seen.isUnseen(entry)).length, 3);
+  const all = seen.allMarked(entries, now);
+  assert.equal(entries.filter(entry => all.isUnseen(entry)).length, 0);
+  assert.equal(all.baseline, now, "the baseline moves on, so chats not listed now are seen too");
+  assert.deepEqual([...all.seenAt.keys()], [sid(3)], "only marks after the baseline are kept");
+  assert.equal(all.allMarked(entries, now), all, "the same marks when nothing changes");
+});

@@ -74,6 +74,7 @@ node_test(
     ],
     tests = [
         "test/browser.test.mjs",
+        "test/chat-list.test.mjs",
         "test/conversation.test.mjs",
         "test/shared-session.test.mjs",
         "test/tools.test.mjs",
