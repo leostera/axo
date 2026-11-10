@@ -17,11 +17,6 @@ enum AxoAppSelfTest {
     }
     let socketPath = try UnixSocketPath(socketValue)
     let axod = AxodConnection(socketPath: socketPath)
-    let helperURL =
-      environment["AXO_SELF_TEST_AXOD"].map {
-        URL(fileURLWithPath: $0)
-      } ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
-
     let health = try await axod.health()
     guard health.status == "running" else {
       throw SelfTestError.daemonUnavailable
@@ -41,7 +36,7 @@ enum AxoAppSelfTest {
         throw SelfTestError.createdShellMissing
       }
       try await verifyShells(
-        [piShell, firstShell], in: session, on: axod, helperURL: helperURL)
+        [piShell, firstShell], in: session, on: axod)
       try await verifyUnchangedSessions(baselineSessions, on: axod)
 
       let secondShell = try await axod.createShell(inSession: session.id)
@@ -49,8 +44,7 @@ enum AxoAppSelfTest {
       try await verifyShells(
         [piShell, firstShell, secondShell, thirdShell],
         in: session,
-        on: axod,
-        helperURL: helperURL
+        on: axod
       )
       try await verifyUnchangedSessions(baselineSessions, on: axod)
 
@@ -63,7 +57,7 @@ enum AxoAppSelfTest {
         guard closed.archivedShellId == closing.id, closed.archivedSessionId == nil else {
           throw SelfTestError.splitShellCloseArchivedSession
         }
-        try await verifyShells(remaining, in: session, on: axod, helperURL: helperURL)
+        try await verifyShells(remaining, in: session, on: axod)
       }
       try await verifyUnchangedSessions(baselineSessions, on: axod)
 
@@ -94,8 +88,7 @@ enum AxoAppSelfTest {
   private static func verifyShells(
     _ shells: [TerminalShell],
     in session: TerminalSession,
-    on axod: AxodConnection,
-    helperURL: URL
+    on axod: AxodConnection
   ) async throws {
     let sessions = try await axod.listSessionSnapshot().sessions
     guard let listedSession = sessions.first(where: { $0.id == session.id }) else {
@@ -105,7 +98,7 @@ enum AxoAppSelfTest {
       throw SelfTestError.splitShellSetMismatch
     }
     for shell in shells where !shell.isPi {
-      try verifyPTYAttachment(shell, helperURL: helperURL)
+      try verifyPTYAttachment(shell)
     }
   }
 
@@ -119,35 +112,24 @@ enum AxoAppSelfTest {
     }
   }
 
-  private static func verifyPTYAttachment(
-    _ shell: TerminalShell,
-    helperURL: URL
-  ) throws {
-    guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
-      throw SelfTestError.helperMissing(helperURL.path)
-    }
-
-    let helper = Process()
-    let input = Pipe()
-    let output = Pipe()
-    helper.executableURL = helperURL
-    helper.arguments = [
-      "terminal-attach",
-      "--attach-socket", shell.attachSocketPath,
-      "--shell-id", shell.id.description,
-    ]
-    helper.standardInput = input
-    helper.standardOutput = output
-    helper.standardError = FileHandle.nullDevice
-    try helper.run()
-    defer { stop(helper) }
+  /// Attaches to `shell` as the app's terminals do, types a command and waits for its output.
+  private static func verifyPTYAttachment(_ shell: TerminalShell) throws {
+    let attachment = try TerminalAttachment.open(
+      socketPath: try UnixSocketPath(shell.attachSocketPath), shellID: shell.id)
+    defer { attachment.close() }
 
     let markerText = "\(successMarker)_SHELL_\(shell.id)"
     let command =
       "test -f \"$TERMINFO/78/xterm-ghostty\" && test -f \"$GHOSTTY_RESOURCES_DIR/shell-integration/zsh/ghostty-integration\" && printf '\(successMarker)' && printf '_SHELL_\(shell.id)\\n'\n"
-    try input.fileHandleForWriting.write(contentsOf: Data(command.utf8))
+    let bytes = Array(command.utf8)
+    let written = bytes.withUnsafeBytes {
+      Darwin.write(attachment.ptyDescriptor, $0.baseAddress, $0.count)
+    }
+    guard written == bytes.count else {
+      throw SelfTestError.inputFailed(String(cString: strerror(errno)))
+    }
 
-    let outputDescriptor = output.fileHandleForReading.fileDescriptor
+    let outputDescriptor = attachment.outputDescriptor
     let deadline = Date().addingTimeInterval(5)
     var received = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
@@ -175,7 +157,7 @@ enum AxoAppSelfTest {
         throw SelfTestError.outputReadFailed(String(cString: strerror(errno)))
       }
       guard count > 0 else {
-        throw SelfTestError.helperClosedBeforeMarker
+        throw SelfTestError.attachmentClosedBeforeMarker
       }
       received.append(contentsOf: buffer.prefix(count))
       if received.range(of: marker) != nil {
@@ -184,22 +166,6 @@ enum AxoAppSelfTest {
     }
 
     throw SelfTestError.outputTimedOut(shell.id)
-  }
-
-  private static func stop(_ process: Process) {
-    guard process.isRunning else { return }
-    process.terminate()
-    let deadline = Date().addingTimeInterval(3)
-    while process.isRunning && Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.02)
-    }
-    guard process.isRunning else { return }
-
-    _ = Darwin.kill(process.processIdentifier, SIGKILL)
-    let killDeadline = Date().addingTimeInterval(3)
-    while process.isRunning && Date() < killDeadline {
-      Thread.sleep(forTimeInterval: 0.02)
-    }
   }
 }
 
@@ -215,8 +181,8 @@ private enum SelfTestError: Error, LocalizedError {
   case splitShellCloseArchivedSession
   case lastShellDidNotArchiveSession
   case closedSessionWasReplaced
-  case helperMissing(String)
-  case helperClosedBeforeMarker
+  case inputFailed(String)
+  case attachmentClosedBeforeMarker
   case outputReadFailed(String)
   case outputTimedOut(ShellID)
 
@@ -244,10 +210,10 @@ private enum SelfTestError: Error, LocalizedError {
       "Closing the Pi pane did not archive its session."
     case .closedSessionWasReplaced:
       "Closing the last session opened another in its place."
-    case .helperMissing(let path):
-      "The terminal-attach helper is missing or not executable at \(path)."
-    case .helperClosedBeforeMarker:
-      "The terminal-attach helper exited before the test command returned output."
+    case .inputFailed(let reason):
+      "Could not type into the shell's PTY: \(reason)"
+    case .attachmentClosedBeforeMarker:
+      "The shell's attachment closed before the test command returned output."
     case .outputReadFailed(let reason):
       "Could not read PTY output: \(reason)"
     case .outputTimedOut(let shellID):

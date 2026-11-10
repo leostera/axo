@@ -17,10 +17,10 @@ final class TerminalAppE2ETests: XCTestCase {
 
     let appURL = root.appendingPathComponent("Axo.app", isDirectory: true)
     let appExecutable = appURL.appendingPathComponent("Contents/MacOS/Axo")
-    let attachHelper = appURL.appendingPathComponent("Contents/Helpers/axod")
+    let axod = appURL.appendingPathComponent("Contents/Helpers/axod")
     let resources = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
     XCTAssertTrue(FileManager.default.isExecutableFile(atPath: appExecutable.path))
-    XCTAssertTrue(FileManager.default.isExecutableFile(atPath: attachHelper.path))
+    XCTAssertTrue(FileManager.default.isExecutableFile(atPath: axod.path))
     XCTAssertTrue(
       FileManager.default.fileExists(
         atPath: resources.appendingPathComponent(
@@ -37,10 +37,13 @@ final class TerminalAppE2ETests: XCTestCase {
     let socketPath = root.appendingPathComponent("axod.sock").path
     let serverDirectory = root.appendingPathComponent("server", isDirectory: true)
     let daemon = Process()
-    daemon.executableURL = attachHelper
+    daemon.executableURL = axod
     daemon.arguments = [
       "--socket", socketPath,
       "--server-dir", serverDirectory.path,
+      // Hermetic: never the login Keychain or the production relay.
+      "--host-credentials", "files",
+      "--relay-url", "http://127.0.0.1:9",
     ]
     // Every Session starts Pi at once: use the fixture, never the user's Pi.
     daemon.environment = ProcessInfo.processInfo.environment.merging([
@@ -58,7 +61,6 @@ final class TerminalAppE2ETests: XCTestCase {
     app.arguments = ["--self-test"]
     app.environment = ProcessInfo.processInfo.environment.merging([
       "AXO_SELF_TEST_SOCKET": socketPath,
-      "AXO_SELF_TEST_AXOD": attachHelper.path,
     ]) { _, newValue in newValue }
     let standardOutput = Pipe()
     let standardError = Pipe()

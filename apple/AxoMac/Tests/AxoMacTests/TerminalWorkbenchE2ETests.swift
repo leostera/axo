@@ -728,21 +728,21 @@ private final class DaemonFixture {
   }
 
   func sendExit(to shell: TerminalShell) throws {
-    let attachment = try attach(to: shell, output: FileHandle.nullDevice)
-    try attachment.input.fileHandleForWriting.write(contentsOf: Data("exit\n".utf8))
+    let attachment = try attach(to: shell)
+    defer { attachment.close() }
+    try type("exit\n", into: attachment)
   }
 
   func assertCanRunCommand(in shell: TerminalShell) throws {
-    let output = Pipe()
-    let attachment = try attach(to: shell, output: output)
-    defer { stop(attachment.process) }
+    let attachment = try attach(to: shell)
+    defer { attachment.close() }
 
     let suffix = "SHELL_\(shell.id)_READY"
     let expectedMarker = Data("AXO_E2E_\(suffix)".utf8)
     let command = "printf 'AXO_E2E_' && printf '\(suffix)\\n'\n"
-    try attachment.input.fileHandleForWriting.write(contentsOf: Data(command.utf8))
+    try type(command, into: attachment)
 
-    let descriptor = output.fileHandleForReading.fileDescriptor
+    let descriptor = attachment.outputDescriptor
     let deadline = Date().addingTimeInterval(4)
     var received = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
@@ -770,20 +770,18 @@ private final class DaemonFixture {
     try? FileManager.default.removeItem(at: root)
   }
 
-  private func attach(to shell: TerminalShell, output: Any) throws -> Attachment {
-    let input = Pipe()
-    let process = Process()
-    process.executableURL = executableURL
-    process.arguments = [
-      "terminal-attach",
-      "--attach-socket", shell.attachSocketPath,
-      "--shell-id", shell.id.description,
-    ]
-    process.standardInput = input
-    process.standardOutput = output
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-    return Attachment(process: process, input: input)
+  /// Attaches as the app does: output on the attach socket, input on the PTY.
+  private func attach(to shell: TerminalShell) throws -> TerminalAttachment {
+    try TerminalAttachment.open(
+      socketPath: try UnixSocketPath(shell.attachSocketPath), shellID: shell.id)
+  }
+
+  private func type(_ text: String, into attachment: TerminalAttachment) throws {
+    let bytes = Array(text.utf8)
+    let written = bytes.withUnsafeBytes {
+      Darwin.write(attachment.ptyDescriptor, $0.baseAddress, $0.count)
+    }
+    if written != bytes.count { throw E2EError.inputFailed(String(cString: strerror(errno))) }
   }
 
   private func waitForSocket() throws {
@@ -846,16 +844,12 @@ private final class DaemonFixture {
   }
 }
 
-private struct Attachment {
-  let process: Process
-  let input: Pipe
-}
-
 private enum E2EError: Error, LocalizedError {
   case missingRunfile(String)
   case runfileNotFound(String)
   case daemonExitedEarly(String, Int32, String)
   case daemonTimedOut
+  case inputFailed(String)
 
   var errorDescription: String? {
     switch self {
@@ -864,6 +858,7 @@ private enum E2EError: Error, LocalizedError {
     case .daemonExitedEarly(let path, let status, let log):
       "The isolated axod process at \(path) exited with status \(status) before creating its socket. Log: \(log)"
     case .daemonTimedOut: "The isolated axod process did not create its socket within five seconds."
+    case .inputFailed(let why): "Typing into the shell's PTY failed: \(why)."
     }
   }
 }

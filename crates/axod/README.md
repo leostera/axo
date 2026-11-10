@@ -16,7 +16,7 @@ The PID file is diagnostic metadata, not a process-control mechanism: launchd re
 
 | Crate | Owns |
 | --- | --- |
-| `axod` | This binary and the `terminal-attach` and `mcp` subcommands. |
+| `axod` | This binary and the `mcp` subcommand. |
 | [`axo-server`](../axo-server/README.md) | The daemon (RFD0041): a task per Session owning its panes, Pi and prompts; a `watch` catalog; the store on `tokio-rusqlite`; events on `broadcast`; the local methods, the attach socket and the relay adapter. No SQL outside its tests. |
 | [`axo-store`](../axo-store/README.md) | The SQLite catalog: `open` (WAL, `synchronous=FULL`, owner-only file), schema and migrations, and every database-only read and write, each tested against an in-memory database. It knows no processes, files or settings syntax. |
 | [`axo-protocol`](../axo-protocol/README.md) | Wire types: IDs, `PaneRole`, layouts, records, typed RPC params/results and events, and `base64` for terminal bytes (bounded, canonical input decoding). |

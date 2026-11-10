@@ -16,20 +16,12 @@ rust_binary(
     version = AXO["version"] + ".0",
     deps = [
         "//crates/axo-mcp:axo_mcp",
-        "//crates/axo-pty:axo_pty",
         "//crates/axo-server:axo_server",
         "@crates//:clap",
         "@crates//:env_logger",
         "@crates//:libc",
         "@crates//:log",
     ],
-)
-
-# The CLI's own tests: terminal attach's raw mode and resize forwarding.
-rust_test(
-    name = "axod_tests",
-    crate = ":axod",
-    edition = "2024",
 )
 
 rust_test(

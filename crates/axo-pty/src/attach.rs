@@ -411,7 +411,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Client behaviour against scripted servers (moved from `axod terminal-attach`).
+    // Client behaviour against scripted servers.
 
     #[test]
     fn terminal_attach_reports_truncated_history_progress() {

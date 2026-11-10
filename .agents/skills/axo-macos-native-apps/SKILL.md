@@ -9,7 +9,7 @@ Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-ma
 
 ## Ownership
 
-- **Axod owns processes; Pi owns transcripts.** Axod (`crates/axod`, `crates/axo-server`) owns PTYs, Sessions (each in its own folder, RFD0038), layouts and Pi lifecycle. The app presents and commands that state over Axod's local JSON-RPC socket; it never spawns, adopts or signals Session processes. Each Ghostty surface attaches in-process to a daemon-owned PTY (`TerminalAttachment`, attach protocol v2): Axod is the PTY's only reader and streams replay plus live output; the surface gets the PTY descriptor for input, resizing and termios only (Ghostty external-I/O patch). `axod terminal-attach` is a CLI for tests and debugging, not part of the app.
+- **Axod owns processes; Pi owns transcripts.** Axod (`crates/axod`, `crates/axo-server`) owns PTYs, Sessions (each in its own folder, RFD0038), layouts and Pi lifecycle. The app presents and commands that state over Axod's local JSON-RPC socket; it never spawns, adopts or signals Session processes. Each Ghostty surface attaches in-process to a daemon-owned PTY (`TerminalAttachment`, attach protocol v2): Axod is the PTY's only reader and streams replay plus live output; the surface gets the PTY descriptor for input, resizing and termios only (Ghostty external-I/O patch).
 - `SessionID`/`ShellID` (`apple/AxoProtocol/Sources/AxoProtocol/Identifiers.swift`) are the only identities. Axod allocates them with SQLite `AUTOINCREMENT`, so they are never reused: after an `await`, revalidate by looking the ID up again.
 - Explicit **Restart Pi** may affect only the verified pane; automatic Pi recovery is Axod's idle-only, non-forcing `auto` restart. Closing windows or the app never stops daemon work.
 

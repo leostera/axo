@@ -1,8 +1,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -431,62 +430,6 @@ fn stream_contains(stream: &UnixStream, needle: &[u8], timeout: Duration) -> boo
     false
 }
 
-fn start_terminal_attach(attach_socket: &str, shell_id: i64) -> Child {
-    Command::new(axod_binary())
-        .arg("terminal-attach")
-        .arg("--attach-socket")
-        .arg(attach_socket)
-        .arg("--shell-id")
-        .arg(shell_id.to_string())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("axod terminal-attach should start")
-}
-
-fn output_channel(mut stdout: ChildStdout) -> Receiver<Vec<u8>> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
-        loop {
-            match stdout.read(&mut buffer) {
-                Ok(0) | Err(_) => return,
-                Ok(count) => {
-                    if sender.send(buffer[..count].to_vec()).is_err() {
-                        return;
-                    }
-                }
-            }
-        }
-    });
-    receiver
-}
-
-fn output_contains(receiver: &Receiver<Vec<u8>>, needle: &[u8], timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    let mut output = Vec::new();
-    while Instant::now() < deadline {
-        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(chunk) => {
-                // Scan only what could newly contain the needle: a replay of a large shell
-                // history arrives in hundreds of chunks, and rescanning everything each time
-                // was quadratic enough to outlast the timeout on a loaded machine.
-                let start = output.len().saturating_sub(needle.len() - 1);
-                output.extend_from_slice(&chunk);
-                if output[start..]
-                    .windows(needle.len())
-                    .any(|window| window == needle)
-                {
-                    return true;
-                }
-            }
-            Err(_) => return false,
-        }
-    }
-    false
-}
-
 fn active_sessions(socket: &std::path::Path) -> Vec<Value> {
     rpc(socket, "axo.session.list")["result"]["sessions"]
         .as_array()
@@ -513,50 +456,6 @@ fn terminal_shell(session: &Value) -> &Value {
 }
 
 #[test]
-fn terminal_attach_subcommand_bridges_input_and_output() {
-    let root = unique_test_directory("axoa");
-    let server_directory = root.join("server");
-    let socket = root.join("axod.sock");
-    let mut daemon = start_axod(&server_directory, &socket);
-    wait_for_socket(&socket, &mut daemon);
-    let session = create_session(&socket);
-    let shell = terminal_shell(&session);
-    let mut process = Command::new(axod_binary())
-        .arg("terminal-attach")
-        .arg("--attach-socket")
-        .arg(shell["attachSocketPath"].as_str().unwrap())
-        .arg("--shell-id")
-        .arg(shell["id"].as_i64().unwrap().to_string())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("axod terminal-attach should start");
-    let mut stdin = process.stdin.take().unwrap();
-    let mut stdout = process.stdout.take().unwrap();
-    let output_reader = thread::spawn(move || {
-        let mut output = String::new();
-        std::io::Read::read_to_string(&mut stdout, &mut output).unwrap();
-        output
-    });
-
-    writeln!(stdin, "printf 'AXO_TERMINAL_ATTACH_OK\\n'; exit").unwrap();
-    drop(stdin);
-    let status = wait_for_exit(&mut process, READY_WAIT);
-    assert!(status.success(), "terminal-attach exited with {status}");
-    let output = output_reader
-        .join()
-        .expect("PTY output reader should finish when the shell exits");
-    assert!(
-        output.contains("AXO_TERMINAL_ATTACH_OK"),
-        "attached PTY output did not contain the marker: {output:?}"
-    );
-
-    daemon.stop();
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
 fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     let root = unique_test_directory("axoa");
     let server_directory = root.join("server");
@@ -567,39 +466,27 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     let session_id = session["id"].as_str().unwrap().to_owned();
     let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
-    let attach_socket = shell["attachSocketPath"].as_str().unwrap();
 
     // Two concurrent attachments both receive the replay and every live byte.
-    let mut first = ChildGuard(start_terminal_attach(attach_socket, shell_id));
-    let first_output = output_channel(first.0.stdout.take().unwrap());
-    writeln!(
-        first.0.stdin.as_mut().unwrap(),
-        "printf '%s%s\\n' AXO_REPLAY_ SCREEN_9971"
-    )
-    .unwrap();
-    assert!(output_contains(
-        &first_output,
-        b"AXO_REPLAY_SCREEN_9971",
-        READY_WAIT,
-    ));
-    let mut second = ChildGuard(start_terminal_attach(attach_socket, shell_id));
-    let second_output = output_channel(second.0.stdout.take().unwrap());
+    let (first, first_master) = open_shell(shell);
+    write_pty(
+        first_master.as_raw_fd(),
+        b"printf '%s%s\\n' AXO_REPLAY_ SCREEN_9971\n",
+    );
+    assert!(stream_contains(&first, b"AXO_REPLAY_SCREEN_9971", READY_WAIT));
+    let (second, _second_master) = open_shell(shell);
     assert!(
-        output_contains(&second_output, b"AXO_REPLAY_SCREEN_9971", READY_WAIT,),
+        stream_contains(&second, b"AXO_REPLAY_SCREEN_9971", READY_WAIT),
         "a concurrent attachment should replay earlier output"
     );
-    writeln!(
-        first.0.stdin.as_mut().unwrap(),
-        "printf '%s%s\\n' AXO_SHARED_ LIVE_4412"
-    )
-    .unwrap();
-    for output in [&first_output, &second_output] {
-        assert!(output_contains(output, b"AXO_SHARED_LIVE_4412", READY_WAIT,));
+    write_pty(
+        first_master.as_raw_fd(),
+        b"printf '%s%s\\n' AXO_SHARED_ LIVE_4412\n",
+    );
+    for output in [&first, &second] {
+        assert!(stream_contains(output, b"AXO_SHARED_LIVE_4412", READY_WAIT));
     }
-    first.0.kill().unwrap();
-    let _ = wait_for_exit(&mut first.0, Duration::from_secs(3));
-    second.0.kill().unwrap();
-    let _ = wait_for_exit(&mut second.0, Duration::from_secs(3));
+    drop((first, first_master, second, _second_master));
 
     // With nothing attached, far more output than a PTY buffer holds must not block the shell.
     let command = b"seq 1 100000 >/dev/tty; printf '%s%s\\n' AXO_UNATTACHED_ DONE_5521\n";
@@ -616,15 +503,12 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     assert_eq!(input["result"]["accepted"], true, "{input}");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let mut third = ChildGuard(start_terminal_attach(attach_socket, shell_id));
-        let third_output = output_channel(third.0.stdout.take().unwrap());
-        let finished = output_contains(
-            &third_output,
+        let (third, _third_master) = open_shell(shell);
+        let finished = stream_contains(
+            &third,
             b"AXO_UNATTACHED_DONE_5521",
             Duration::from_millis(500),
         );
-        third.0.kill().unwrap();
-        let _ = wait_for_exit(&mut third.0, Duration::from_secs(3));
         if finished {
             break;
         }
@@ -676,11 +560,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     assert_eq!(initial["type"], "session.snapshot");
     assert_eq!(initial["session"]["id"], session_id);
 
-    let mut attach = ChildGuard(start_terminal_attach(
-        shell["attachSocketPath"].as_str().unwrap(),
-        shell_id,
-    ));
-    let output = output_channel(attach.0.stdout.take().unwrap());
+    let (output, _master) = open_shell(shell);
     let attach_deadline = Instant::now() + READY_WAIT;
     loop {
         let event = events.next(Duration::from_millis(500)).unwrap_or_default();
@@ -732,7 +612,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
         }),
     );
     assert_eq!(out_of_order["error"]["code"], -32602);
-    assert!(output_contains(&output, b"AXO_REMOTE_INPUT_OK", READY_WAIT));
+    assert!(stream_contains(&output, b"AXO_REMOTE_INPUT_OK", READY_WAIT));
 
     let event_deadline = Instant::now() + READY_WAIT;
     let mut output_event_seen = false;
@@ -794,7 +674,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     }
     shell_busy(false);
 
-    attach.stop();
+    drop((output, _master));
     drop(events);
     daemon.stop();
     let _ = std::fs::remove_dir_all(root);
