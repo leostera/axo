@@ -1,10 +1,10 @@
 # RFD0030 - Axo: Assets
 
 - Feature Name: `axo-assets`
-- Status: Implemented
+- Status: Implemented (attachments on prompts, and screenshots from `codemode.computer.run`); later uses listed in the Summary are not built unless marked
 - Author: leostera
 - Start Date: 2026-11-04
-- Updated: 2026-11-04
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0024](RFD0024-remote-sessions-in-pi.md)
 
@@ -16,7 +16,7 @@ An **asset** is a file the account keeps in the cloud: a photo from the phone, a
 - **Reading:** every read goes through Workers Cache. A gateway entrypoint authenticates the caller, then asks a cached entrypoint, `AxoAssetCache`, with the account in `ctx.props`. On a hit, neither the cached entrypoint nor the Durable Object runs.
 - **First use, attachments:** a person attaches photos and files to a message on the web or iOS. The client uploads them, then sends the prompt naming them. The Mac downloads each one, checks its hash, and gives Pi the images as images and the other files as paths on disk.
 
-Later uses, each in its own change: screenshots from `codemode.computer.run` (RFD0028), images in the confirmation cards of RFD0029, and moving the images inside transcripts out to assets.
+Later uses, each in its own change: screenshots from `codemode.computer.run` (RFD0028, built), images in the confirmation cards of RFD0029 (not built: those cards carry no screenshot yet), and moving the images inside transcripts out to assets (not built; see Unresolved questions).
 
 ## Motivation
 
@@ -109,7 +109,7 @@ flowchart LR
 - **axod**, before passing the prompt to Pi:
   - downloads each attachment it doesn't have to `~/.axo/assets/<hash>/<name>` (written to a temporary file and renamed into place), with the Mac's host credential, from the cached `GET`;
   - checks the SHA-256 of the bytes against the name, and refuses the prompt if any attachment is missing (`404`), too large, or doesn't match: the person sees *the attachment could not be fetched*, and Pi gets nothing. A prompt is never delivered with some of its attachments missing.
-  - does this on a thread of its own (at most 4 prompts fetching at once), answering the relay's request once Pi has the prompt or with why it was refused (`-32010`), so the relay socket never waits on a download.
+  - does this as a task on axod's runtime, with at most 16 remote prompts on their way at once (`MAX_PROMPTS` in `crates/axo-server/src/remote.rs`; more are refused as busy). It answers the relay's request once Pi has the prompt, or says why it was refused (`-32010`), so the relay socket never waits on a download. *This RFD first specified a thread per fetch, at most 4 at once. [RFD0042](RFD0042-async-relay-and-extensions.md) made it async.*
 - **pi-axo:** the bridge's `send` command takes `attachments: [{ path, asset, mimeType, name, size }]`.
   - `image/png`, `image/jpeg`, `image/gif` and `image/webp` up to 5 MiB become image blocks in `sendUserMessage([{type:"text"}, {type:"image", data, mimeType}])`.
   - Anything else, or a larger image, becomes a text line naming the file, its type, its size and its path, and `axo-asset:sha256:<hex>`, so clients can turn it into a download link. An image sent inline gets a line too, with its path, so the agent can use the file in its tools; clients hide that one, since the image shows itself.

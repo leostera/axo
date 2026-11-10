@@ -1,10 +1,10 @@
 # RFD0026 - Axo: Native Remote Panes
 
 - Feature Name: `axo-native-remote-panes`
-- Status: Draft
+- Status: Implemented (`packages/pi-axo/src/remote-view.ts`, `remote-mirror.ts`; `spawn_remote_view` in `crates/axo-agent/src/pi/launch.rs`)
 - Author: leostera
 - Start Date: 2026-11-02
-- Updated: 2026-11-02
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0024](RFD0024-remote-sessions-in-pi.md)
 
@@ -83,8 +83,8 @@ Axod starts the pane's Pi with `--no-session --no-extensions --no-mcp --no-skill
 
 ## Testing
 
-- **pi-axo:** the model keeps the copy record by record, and a cut replaces it. A view rewrites only the header and model changes. A turn's open span follows its stop reasons. `MirrorTurn` returns a turn's assistant messages in order, follows progress, and stops on a mid-turn user message, an abort, or giving up. `AssistantStream` emits balanced events and ends with the record.
-- **Real panes:** pi-axo in a real Pi, against a fake axod serving a real transcript:
+- **pi-axo** (`packages/pi-axo/test/remote-view.test.ts`, `remote-mirror.test.ts`): the model keeps the copy record by record, and a cut replaces it. A view rewrites only the header and model changes. A turn's open span follows its stop reasons. `MirrorTurn` returns a turn's assistant messages in order, follows progress, and stops on a mid-turn user message, an abort, or giving up. `AssistantStream` emits balanced events and ends with the record.
+- **Real panes**, checked when this landed. No test in the tree runs a remote pane in a real Pi. pi-axo ran in a real Pi, against a fake axod serving a real transcript:
   - opening the pane draws the history natively;
   - a turn streams and fills in its bash result;
   - joining mid-turn plays the rest;

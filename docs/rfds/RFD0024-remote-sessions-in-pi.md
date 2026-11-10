@@ -1,13 +1,32 @@
 # RFD0024 - Axo: Remote Sessions in Pi
 
 - Feature Name: `axo-remote-sessions-in-pi`
-- Status: Draft
+- Status: Implemented, as amended (see Current state); not built: `axo.remote.session.answer`, and the Mac pane's richer stop
 - Author: leostera
 - Start Date: 2026-11-01
-- Updated: 2026-11-07
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0022](RFD0022-sessions-across-macs.md)
-- Amended By: [RFD0026](RFD0026-native-remote-panes.md)
+- Amended By: [RFD0026](RFD0026-native-remote-panes.md) (drawing), [RFD0033](RFD0033-session-controls-for-clients.md) (steering and queued prompts)
+
+## Current state
+
+Checked against `main` on 2026-11-10. The one-writer rule, receipts, at-most-once `commandId`s, retries, the remote pane and the Mac menu are built:
+
+- axod serves `axo.peer.sessions.list`, `axo.peer.session.open`, `.close`, `.watch` and `axo.peer.command` (`crates/axo-server/src/peers.rs`, `crates/axod/tests/conformance/account.rs`, `packages/axo-api-worker/tests/axod-peers.test.ts`). View shells start at 2^48.
+- pi-axo on the owner writes `axo.command` receipts, dedupes `commandId`s and holds prompts itself (`packages/pi-axo/src/remote-commands.ts`).
+- A command whose HostDO call throws is answered `-32004` by the ClientDO and the host sockets. Other methods' unexpected failures still answer `-32603 "Unavailable; try again"`.
+- The sidebar's Mac menu offers This Mac, each Mac and All Macs (`TerminalSessionsModel`, `SessionNavigation`).
+
+What changed after this RFD:
+
+- **Drawing** is [RFD0026](RFD0026-native-remote-panes.md)'s. Pi draws views of the copy, and the look-alike renderers, the progress widget and the exit-75 restart on a cut are gone. The sections below that describe them are historical.
+- **Steering and queueing** are [RFD0033](RFD0033-session-controls-for-clients.md)'s. Prompts carry `delivery` (`followUp`, `steer`, `interrupt`). Queued prompts are written to the log as `axo.command.queued`. A steer is handed to Pi in `turn_end`, so Pi's own queue still never holds a client's prompt. "Remote prompts become follow-ups, never steering" below no longer holds.
+
+Specified here but not built:
+
+- **`axo.remote.session.answer`.** The remote pane's `/yes` and `/no` still send Enter or Escape through `axo.remote.session.key`. axod's peer allowlist has only prompt, stop and key. The person's questions now go through RFD0029's elicitations, which no longer depend on this method.
+- **The Mac pane's stop sends only `turnId`.** The web app and the phone send `seen` and `commandIds` too (the 2026-11-07 amendment). `RemoteSession.stop` in `packages/pi-axo/src/remote-view.ts` does not, so the pane's stop can still miss a long run whose newest page has no user record.
 
 ## Summary
 
@@ -73,6 +92,8 @@ A Session's log is written only by the Pi of the Mac that runs it, called its **
 
 ### pi-axo in remote mode
 
+*Historical where it describes drawing: [RFD0026](RFD0026-native-remote-panes.md) replaced the custom entries, the progress widget and the exit-75 restart. Nothing running here, and what is sent, still hold.*
+
 - **Nothing runs here.**
   - The `input` handler returns `{ action: "handled" }`, so Pi starts no turn.
   - No tools are active.
@@ -102,14 +123,14 @@ This amends RFD0018's Commands for every client.
 - An `offline` answer to a **first** try means nothing ran, so the text goes back to the editor.
 - An `offline` answer to a **retry** proves nothing, because the first try may still land. The prompt stays pending until the owner is back (rule `unknownStaysUnknown`).
 
-**pi-axo queues, Pi does not.** A remote prompt that arrives during a turn waits in pi-axo, which prompts Pi with it when the turn ends, in arrival order (rule `ownQueue`).
+**pi-axo queues, Pi does not.** *Amended by [RFD0033](RFD0033-session-controls-for-clients.md): prompts may now steer or interrupt, and queued prompts live in the log. The reason below still applies.* A remote prompt that arrives during a turn waits in pi-axo, which prompts Pi with it when the turn ends, in arrival order (rule `ownQueue`).
 
 - **Why:** Pi's terminal UI moves its steering queue into the owner's editor on any stop (`restoreQueuedMessagesToEditor`). A steered remote prompt could therefore vanish from the log, and nobody would see it.
 - **The cost:** remote prompts become follow-ups, never steering. A stop ends the turn, and a queued remote prompt still runs afterwards. The client shows it as "Queued on Mac Studio".
 
-**A stop names its turn.** `axo.remote.session.stop { sessionId, turnId }` carries the entry id of the user record that started the turn the client showed running. pi-axo stops the turn only if that turn is the one running, and otherwise answers `ignored` (rule `stopNamesTurn`). It replaces sending Escape through `axo.remote.session.key` for stops. Answers to a question likewise name the question's tool call (`axo.remote.session.answer { sessionId, toolCallId, answer }`), which the spec does not model.
+**A stop names its turn.** `axo.remote.session.stop { sessionId, turnId }` carries the entry id of the user record that started the turn the client showed running. pi-axo stops the turn only if that turn is the one running, and otherwise answers `ignored` (rule `stopNamesTurn`). It replaces sending Escape through `axo.remote.session.key` for stops. Answers to a question likewise name the question's tool call (`axo.remote.session.answer { sessionId, toolCallId, answer }`), which the spec does not model. That method is not built (see Current state).
 
-**A stop names what the client saw of the run** (amended 2026-11-07, after "the x on Thinking doesn't always stop it"). Naming the run by its user record alone failed in two common cases. In a long run, the newest page a client reads holds only tool records, so the client has no user record to name and its x did nothing. And right after sending, the client shows the run working before any of its records have arrived. A stop therefore carries everything the client saw: `turnId?` (a user record of the run), `seen?` (the newest entry it holds, which is always of the running run once its records arrive), and `commandIds?` (the client's own prompts, whose receipts are the run's first entries). It must carry at least one. pi-axo stops the running run if any of them belongs to it, and a run the client saw none of still goes on. A stop that finds Pi idle also re-publishes `activity.snapshot {working: false}`, because the client that sent it was showing a stale "working". A stop that stopped nothing ends the client's "Stopping…" at once, so the next tap tries again with what has arrived by then. Clients fall back to `turnId` alone against a Mac that refuses the new fields.
+**A stop names what the client saw of the run** (amended 2026-11-07, after "the x on Thinking doesn't always stop it"). Naming the run by its user record alone failed in two common cases. In a long run, the newest page a client reads holds only tool records, so the client has no user record to name and its x did nothing. And right after sending, the client shows the run working before any of its records have arrived. A stop therefore carries everything the client saw: `turnId?` (a user record of the run), `seen?` (the newest entry it holds, which is always of the running run once its records arrive), and `commandIds?` (the client's own prompts, whose receipts are the run's first entries). It must carry at least one. pi-axo stops the running run if any of them belongs to it, and a run the client saw none of still goes on. A stop that finds Pi idle also re-publishes `activity.snapshot {working: false}`, because the client that sent it was showing a stale "working". A stop that stopped nothing ends the client's "Stopping…" at once, so the next tap tries again with what has arrived by then. Clients fall back to `turnId` alone against a Mac that refuses the new fields. The web app and the phone send the new fields. The Mac's remote pane still sends `turnId` alone.
 
 ### The sidebar
 
@@ -178,9 +199,9 @@ All five steps ship together, to every Mac at once.
 
 ## Drawbacks
 
-- **Look-alike rendering.** Until Pi can show messages it did not write, pi-axo draws records with its own renderers, which can drift from Pi's look.
-- **No remote steering.** Remote prompts wait for the turn to end. A phone prompt can no longer steer a running turn.
-- **A pane restarts on a cut.** This is rare, since it needs a rewritten session file, but it is visible.
+- **Look-alike rendering** (historical). Until Pi can show messages it did not write, pi-axo draws records with its own renderers, which can drift from Pi's look. Resolved by RFD0026.
+- **No remote steering** (historical). Remote prompts wait for the turn to end. A phone prompt can no longer steer a running turn. Resolved by RFD0033.
+- **A pane restarts on a cut** (historical). This is rare, since it needs a rewritten session file, but it is visible. RFD0026 redraws in place instead.
 
 ## Rationale and alternatives
 
@@ -191,9 +212,9 @@ All five steps ship together, to every Mac at once.
 
 ## Unresolved questions
 
-- **Rendering.** Should Pi gain an API that lets an extension show user, assistant and tool messages it did not create? That would replace the look-alike renderers.
-- **Steering.** If Pi told extensions when a steering message is read or dropped, remote prompts could steer again.
-- **Editor text across a restart.** How is the editor's text carried over when the pane restarts, through the environment or a file?
+- **Rendering.** Should Pi gain an API that lets an extension show user, assistant and tool messages it did not create? RFD0026 showed that public Pi APIs are enough for now. Such an API would still be cleaner.
+- ~~**Steering.** If Pi told extensions when a steering message is read or dropped, remote prompts could steer again.~~ Settled by RFD0033, without a new Pi API: steers are handed over in `turn_end`.
+- ~~**Editor text across a restart.**~~ Moot: RFD0026 redraws in place, and `switchSession` keeps the editor's text.
 
 ## Future possibilities
 

@@ -1,12 +1,13 @@
 # RFD0032 - Axo: Push Delivery
 
 - Feature Name: `axo-push-delivery`
-- Status: Accepted; host sync from the index, release P and release 3 for the web app are implemented (2026-11-08)
+- Status: Implemented (2026-11-08): host sync from the index, release P, and release 3 in the Worker, the web app, axod's peer sync and the phone. Removing protocol 2 is [RFD0036](RFD0036-retiring-protocol-2.md)'s, still a Draft, gated on a week of evidence.
 - Author: leostera
 - Start Date: 2026-11-05
-- Updated: 2026-11-08
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0022](RFD0022-sessions-across-macs.md), [RFD0031](RFD0031-durable-objects-wake-on-demand.md)
+- Amended By: [RFD0036](RFD0036-retiring-protocol-2.md) (protocol 2's end)
 
 ## Summary
 
@@ -108,7 +109,7 @@ Route: `GET /api/v1/account/hosts/:host/client`, a WebSocket upgrade signed in l
 | `axo.client.session.reset { epoch, keep }` | HostDO → client | The Session was cut back. The client drops what is past `keep`. |
 | `axo.client.session.older`, `close`, `command` | client → HostDO | As in RFD0018 and RFD0024. `older` reads the SessionDO. |
 
-`setWebSocketAutoResponse` answers client pings without waking the HostDO.
+`setWebSocketAutoResponse` answers client pings without waking the HostDO. *Not built. axod's peer sockets send WebSocket control pings (`crates/axo-relay/src/peers/socket.rs`), but no client sends an application-level ping message, and the Worker sets no auto-response.*
 
 ### Delivery rules
 
@@ -223,7 +224,7 @@ Ships first, and is the oldest release a rollback may go to once protocol 3 has 
 1. Deploy release P from `main`. Wait until every HostDO has adopted it: axod's heartbeats wake each HostDO within seconds, and a reset follows within 5 minutes.
 2. Deploy release 3. Clients move to protocol 3 as they reconnect. The deploy itself disconnects no one, except objects that the deadline resets.
 3. Update axod's peer sync (done) and the phone (done) to protocol 3 in their own releases. Until then they use protocol 2 against the same HostDO index.
-4. Remove protocol 2 only after no client has said `hello` 2 for a set period. That is a later RFD.
+4. Remove protocol 2 only after no client has said `hello` 2 for a set period. That is [RFD0036](RFD0036-retiring-protocol-2.md), a Draft. Until it lands, every client still falls back to protocol 2, and the Worker still serves it.
 
 ### Rolling back
 

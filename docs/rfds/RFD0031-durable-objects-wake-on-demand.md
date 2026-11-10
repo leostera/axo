@@ -1,10 +1,10 @@
 # RFD0031 - Axo: Durable Objects Wake on Demand
 
 - Feature Name: `axo-durable-objects-wake-on-demand`
-- Status: Draft
+- Status: Implemented (2026-11-04). Since [RFD0032](RFD0032-push-delivery.md), it governs only protocol 2. [RFD0036](RFD0036-retiring-protocol-2.md) plans to remove that path.
 - Author: leostera
 - Start Date: 2026-11-04
-- Updated: 2026-11-04
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0019](RFD0019-planned-restarts.md)
 - Amended By: [RFD0032](RFD0032-push-delivery.md)
@@ -19,6 +19,11 @@ A Durable Object runs only when something asks it to: a frame on one of its sock
 4. **Heartbeats stay on the HostDO.** A HostDO answers a host's heartbeat itself, and tells the account at most every ten minutes.
 
 The account tells the ClientDOs following it when a Mac is paired, so the host list no longer depends on a renewal either.
+
+**Current state (2026-11-10).** All four changes and `hostsChanged` are in the Worker. The ClientDO's `alarm()` is a no-op, kept only so alarms set before this change end cleanly. The HostDO has `followers` and `watchers`. `SYNC.stallMs` and `SYNC.lastSeenMs` replace the lease constants. Two things changed after this RFD:
+
+- **The heartbeat throttle was first kept in memory**, so it was lost on every hibernation. It is now in the HostDO's SQLite (`account_touch`), as RFD0032 records.
+- **Protocol 3** ([RFD0032](RFD0032-push-delivery.md)) moved delivery onto sockets to each HostDO. There, the ClientDO follows no HostDO, and none of this RFD's `subscribe`, `watch` or `notify` is called. Everything below still describes protocol 2, which stays until [RFD0036](RFD0036-retiring-protocol-2.md) removes it.
 
 ## Motivation
 
@@ -145,8 +150,7 @@ RFD0018's invariants hold. Two are added:
   - progress reaches only the client with the Session open, and the HostDO records one watcher;
   - a Mac paired after hello reaches connected clients without `refresh`.
 
-  Not yet tested: that a notice at an unchanged head reads nothing, and the heartbeat throttle.
-  Both need a way to count calls between Durable Objects in the harness.
+  Not yet tested: that a protocol 2 notice at an unchanged head reads nothing. The heartbeat throttle is now tested: `tests/release-p.test.ts` checks that a heartbeat within `SYNC.lastSeenMs` of registering leaves the account alone. Read counting exists for protocol 3 (`tests/fixtures/counting-reads.ts`, used by `tests/push-delivery.test.ts`).
 
 ## Drawbacks
 

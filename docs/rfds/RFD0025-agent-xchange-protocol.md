@@ -1,10 +1,10 @@
 # RFD0025 - Axo: AXP, the Agent Xchange Protocol
 
 - Feature Name: `axp`
-- Status: Accepted
+- Status: Accepted; rollout step 1 and the extension documents of step 3 are done; steps 2, 4 and 5 are not started (see As specified)
 - Author: leostera
 - Start Date: 2026-11-02
-- Updated: 2026-11-02 (see As specified)
+- Updated: 2026-11-10 (reconciled with `axp/`)
 - Document Type: Proposal
 
 ## Summary
@@ -236,11 +236,23 @@ Out of scope:
 
 ## As specified
 
-`axp/` (SPEC.md, extensions/, schema/v0.1, examples/) and `sites/axp.leostera.dev` implement rollout step 1 and the documents of step 3. Where writing the spec changed this RFD's design:
+`axp/` (SPEC.md, extensions/, schema/v0.1, examples/) and `sites/axp.leostera.dev` implement rollout step 1 and the documents of step 3. `bazel test //axp:test` checks that the documents, schemas and examples agree: messages validate, hashes, chains and signatures check out, and every documented method has a schema.
+
+Not built yet, as of 2026-11-10. These are still part of the accepted plan:
+
+- **Step 2:** `axp-ts` and `axp-rs`, the reference hub, host and client, `fixtures/`, `scripts/cross-check.sh`, and the Feynman models under `axp/specs/`. The only script in `axp/scripts/` is `examples.ts`.
+- **Step 3's packages:** each extension has a document, a schema and examples, but no implementation.
+- **Step 4:** `axp-swift`.
+- **Step 5:** moving Axo onto AXP. Axo's wire is still `axo.*`. [RFD0034](RFD0034-axod-as-an-axp-server.md) reshaped axod as an AXP-style server with extensions (`axo-server`), but it does not speak AXP's methods.
+
+The repository layout above is the plan, and `axp/` does not match it yet: there is no `packages/`, `fixtures/` or `specs/` directory.
+
+Where writing the spec changed this RFD's design:
 
 - **No `axp.command` envelope.** A hub forwards any extension method whose params carry `hostId` to that host without understanding it (SPEC §10.1). A routed call that carries a `commandId` is a command (SPEC §10.2). `pi.prompt` is sent as itself, not wrapped.
 - **One exchange for replication.** The hub reads each log from its host with the same `axp.log.open`/`records`/`ack` a client uses to read from the hub (SPEC §9.2, §9.3). There is no separate upload method set.
 - **Recovery, not epochs.** Logs are append-only and never truncated. A host that lost records a replica holds reads them back and rebuilds its log as the common prefix, the replica's records, then its own; ATXF record hashes do not depend on position (SPEC §9.4).
 - **A `sessions` extension** for creating, renaming and archiving Sessions remotely, which the core leaves out; `local` keeps only health, configuration, the hub link and the viewport.
 - **An `assets` extension**, from RFD0030: files named by a hash of their bytes (`sha256:<hex>` by default, with stronger algorithms allowed), uploaded and read in band or through a URL the hub hands out, attached to commands such as `pi.prompt`, and referred to from logs by RFC 6920 `ni:` URIs.
+- **`apps` instead of `connections`.** The extension for tools a Session calls through the hub is `apps` (`extensions/apps.md`), following Axo's rename of connections to apps.
 - **`agent` instead of `pi`.** Steering is agent-neutral: `agent.prompt`, `agent.stop` and `agent.restart` work for any agent ATXF can represent, the log header's `source.agent` says which one runs, and Pi is a section of agent notes. Questions to the person moved out, to an elicitations extension still being designed.

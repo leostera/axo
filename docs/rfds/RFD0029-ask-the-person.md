@@ -1,10 +1,10 @@
 # RFD0029 - Axo: Ask the Person
 
 - Feature Name: `axo-ask-the-person`
-- Status: Partially implemented (steps 1 to 3: yes-or-no questions; the computer-use gate asks; the Mac app answers)
+- Status: Partially implemented. Steps 1 to 5 are built: yes-or-no questions, the computer-use gate asks, the Mac app answers, input past the agent, and device-signed answers. Designed but not built yet: push notifications, opening a link, Always allow, and Face ID. App tools that ask are planned, and which ones is an open question.
 - Author: leostera
 - Start Date: 2026-11-04
-- Updated: 2026-11-05
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0028](RFD0028-computer-use.md), [RFD0018](RFD0018-session-sync-and-client-delivery.md)
 
@@ -27,6 +27,15 @@ A request appears on every client the person has open:
 The first answer wins, and the other clients dismiss their card. Only requests that block on the person notify; a new message never does.
 
 **Tools ask; agents cannot approve.** A tool that needs the person's consent asks for it itself, for the exact action it is about to take, and acts only on the answer to that request. No tool takes consent as an argument. An agent may ask questions of its own, but their answers authorize nothing.
+
+## Current state
+
+Checked against `main` on 2026-11-10. The Guide-level and Reference-level sections describe the whole design. Steps 1 to 5, near the end of Reference-level, say what is built. Where the two differ, the steps describe the code:
+
+- **Requests live in memory, not in `axo.db`** (`crates/axo-questions`). When axod stops, the tool calls waiting on them end too. At most 32 wait at once (`MAX_PENDING`).
+- **Two kinds are built: `confirm` and `input`.** The answers are Accept and Decline, and nobody answering is Cancel. There is no `authenticate` kind, no Allow once or Always allow, and no `link` kind.
+- **A request carries** `id`, `sessionId`, `kind`, `askedBy` (`agent` or `computerUse`), the asker's `message`, the `input` form for input, `createdAt` and `expiresAt`. It has no screenshot and no separate `where`, `why` or `gate` fields: the gate writes them into its message.
+- **Not built:** APNs push (`AxoPushNotifier`), `request_link` and the `axod-open` shim, Always-allow rules, Face ID or Touch ID answers, consent for app tools (planned; see Unresolved questions), accepting a changed input key at the Mac, and blacking out plain fields in screenshots. All of these are still part of the design. None has been rejected.
 
 ## Motivation
 
@@ -105,7 +114,7 @@ axod, the daemon, owns every request. A request holds:
 
 **How `axod mcp` waits:** it calls `axo.elicitation.request` on the daemon and blocks until the request resolves. The call returns `allowed` (and the action runs), `denied`, `expired` or `filled` (with a receipt).
 
-**Persistence:** requests live in `axo.db`. When axod restarts, pending requests expire, because the waiting tool call died with the old process.
+**Persistence:** requests live in `axo.db`. When axod restarts, pending requests expire, because the waiting tool call died with the old process. *As built, requests live only in memory (step 1). They still end when axod stops.*
 
 ### Tools ask; agents cannot approve
 
@@ -242,8 +251,8 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 
 - **The agent's tool:** `axod mcp` offers `elicitation_request({ message })`. It calls `axo.elicitation.request` on `axod.sock` for its own Session, whatever the agent passes, and waits up to 5 minutes. It returns `{ id, action }`, where `action` is `accept`, `decline` or `cancel` (nobody answered in time).
 - **axod** keeps pending elicitations in memory (at most 32), publishes `elicitation.requested` and `elicitation.resolved` events, and sends them over the relay as `axo.elicitation.requested` and `axo.elicitation.resolved`. It sends every pending one again on each new relay connection. The first answer it takes removes the elicitation, so later answers find nothing (`-32011`).
-- **Answers come only through the relay.** `axod.sock` has no method that answers one. axod takes `axo.elicitation.resolve` only from HostDO, for its own host and generation.
-- **HostDO** keeps the pending ones in memory, sends them to the ClientDOs following it, including in the listing a client gets on hello, and dismisses them all (`cancel`) when the Mac goes offline. It forwards an answer only for a pending elicitation.
+- **Answers come only through the relay** (historical: step 3 added answers from Axo.app on `axod.sock`, checked by code signature). `axod.sock` has no method that answers one. axod takes `axo.elicitation.resolve` only from HostDO, for its own host and generation.
+- **HostDO** keeps the pending ones in memory, sends them to the ClientDOs following it (and, in protocol 3, on its own client sockets: [RFD0032](RFD0032-push-delivery.md)), including in the listing a client gets on hello, and dismisses them all (`cancel`) when the Mac goes offline. It forwards an answer only for a pending elicitation.
 - **ClientDO** takes `axo.elicitation.resolve` only from a person's client. A Mac following its peers (`host-…` clients) neither receives elicitations nor answers them (`-32012`).
 - **Clients:** the web and iOS show a card in the chat, with the agent's words, Yes and No, and mark the chat as needing the person in the chat list. The card stays until the Mac says it is settled.
 
@@ -257,7 +266,7 @@ The first step built, ahead of the gate and the Mac app, is the channel itself: 
 
 **Step 4, input (built):** `request_input` as above, from this Mac's agents (`axod mcp` hands it to axod with `axo.computer.input`) and from other Macs' scripts (`codemode.computer.run`); input cards on the web, the phone and the Mac app, with autofill hints; HPKE sealing on the web and the phone, checked against axod's opening; pinning per Mac. `screenshot` is Cua's `get_desktop_state` under a clearer name. Not yet: accepting a changed key at the Mac, Face ID before filling, and blacking out plain fields in screenshots. Tested live by `packages/axo-api-worker/tests/input-live.test.ts` (`AXO_LIVE_COMPUTER=1`), which signs in to a page in Safari.
 
-**Step 5, device-signed answers (built):** device keys on the phone (Secure Enclave) and the web (IndexedDB); signing in `@axo/app` and `AxoProtocol`, checked against axod's verifying by shared vectors; `crates/axo-server/src/session/devices.rs`. Spec: `specs/elicitations/device-trust.ts`.
+**Step 5, device-signed answers (built):** device keys on the phone (Secure Enclave) and the web (IndexedDB); signing in `@axo/app` and `AxoProtocol`, checked against axod's verifying by shared vectors; `crates/axo-server/src/devices.rs`. Spec: `specs/elicitations/device-trust.ts`.
 
 Not yet built, in the order of this RFD: push notifications, links, Always allow and Face ID.
 

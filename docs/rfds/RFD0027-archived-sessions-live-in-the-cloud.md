@@ -1,10 +1,10 @@
 # RFD0027 - Axo: Archived Sessions Live in the Cloud
 
 - Feature Name: `axo-archived-sessions-in-the-cloud`
-- Status: Draft
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-11-03
-- Updated: 2026-11-03 (as built)
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0022](RFD0022-sessions-across-macs.md)
 
@@ -21,7 +21,7 @@ Every Mac keeps every transcript. That is 812 MB of this Mac's own Sessions on L
 
 ## Guide-level explanation
 
-Archiving a Session is unchanged. A little later, once its last line is safely in the cloud, its transcript file disappears from `~/.axo/sessions/`. Everything else about the Session stays in `axo.db`: its name, its Workspace, its panes, and where the transcript lived. Reopening it (⇧⌘T, or resuming its Pi) downloads the transcript to the same path first, and then reopens as before. With no connection, reopening says that the transcript is in the cloud and could not be fetched.
+Archiving a Session is unchanged. A little later, once its last line is safely in the cloud, its transcript file disappears from `~/.axo/sessions/`. Everything else about the Session stays in `axo.db`: its name, its folder, its panes, and where the transcript lived. (Workspaces were removed by [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md).) Reopening it (⇧⌘T, or resuming its Pi) downloads the transcript to the same path first, and then reopens as before. With no connection, reopening says that the transcript is in the cloud and could not be fetched.
 
 Other Macs' archived chats work the same way. They are not kept here, and opening one shows it as soon as it arrives.
 
@@ -41,7 +41,7 @@ The uploader (`sync.rs`) evicts an archived Session's transcript when all of the
 2. **Confirmed.** The cloud holds every record of the file. The last handshake or acknowledgement put the cloud's count at the file's count, with the same chain, and that cursor is stored in `axo.db`.
 3. **Settled.** The file has not changed since that confirmation: the uploader's last check found nothing new, and the file is not invalid past some line.
 
-The uploader asks axod to evict it (`RelayHost::evict_transcript`), passing the count, chain and file length it confirmed. Under the catalog lock, axod refuses if:
+The uploader asks axod to evict it (`SyncStore::evict_transcript`, which [RFD0042](RFD0042-async-relay-and-extensions.md) moved off `RelayHost`; axod's side is `evict_transcript` in `crates/axo-server/src/relay_host.rs`), passing the count, chain and file length it confirmed. Under the catalog lock, axod refuses if:
 
 - the Session has panes, or is being reopened;
 - it is no longer archived;
@@ -88,7 +88,7 @@ If the fetch fails or times out (60 seconds), the reopen fails with "This Sessio
   It checks four properties: no line Pi wrote is lost, Pi runs only on the whole transcript, a missing transcript is recorded as in the cloud, and a reopen is not undone. It also checks the rules each property needs: `confirmedWhole`, `recordBeforeDelete` and `keepWhileReopening`.
 - **axod:**
   - `axo-store`: only an archived Session at its acknowledged cursor is marked.
-  - `cloud_transcripts`:
+  - `crates/axo-server/src/scenarios/transcripts.rs` (first written as `cloud_transcripts`):
     - eviction is refused for a changed file, another cursor, or an open Session;
     - a reopen needs the whole transcript back;
     - a crash between recording and deleting needs no fetch;

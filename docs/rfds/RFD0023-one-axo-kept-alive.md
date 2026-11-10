@@ -1,10 +1,10 @@
 # RFD0023 - Axo: One Axo, kept alive
 
 - Feature Name: `axo-one-axo-kept-alive`
-- Status: Implementing (see As built)
+- Status: Implemented (2026-11-01; the menu-bar upgrade was added later; two contributor-document follow-ups under Rollout are still open)
 - Author: leostera
 - Start Date: 2026-11-01
-- Updated: 2026-11-01
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Related: [RFD0019](RFD0019-planned-restarts.md)
 
@@ -107,7 +107,7 @@ The opened Axo finds Axo build 259 running from `~/Developer/github.com/leostera
 > Build 260 is installed; this is build 259. Restarting restarts axod if its build changed: terminals restart and Pi sessions resume.
 > [Restart] [Not Now]
 
-**Restart** opens a new instance of the bundle with `--replace-running`. The new instance replaces the old one without asking again. **Not Now** is remembered until another build is installed.
+**Restart** opens a new instance of the bundle with `--replace-running`. The new instance replaces the old one without asking again. **Not Now** is remembered, in memory, until another build is installed or this Axo restarts.
 
 ### When macOS refuses
 
@@ -240,7 +240,7 @@ SIGTERM from `launchctl bootout` or `kill` is not routed through `applicationSho
 
 - The build this process loaded (`Bundle.main.infoDictionary`) is compared with `CFBundleVersion` read from `Bundle.main.bundleURL/Contents/Info.plist` now.
 - If they differ and the person hasn't declined that build, Axo asks.
-- **Restart** opens the bundle with `NSWorkspace.OpenConfiguration.createsNewApplicationInstance = true` and `--replace-running`. The new process decides `replace(askFirst: false)`, and the running Axo receives `quitForReplacement`.
+- **Restart** calls `AppUpgradeModel.restart(into:)`, which opens the bundle with `NSWorkspace.OpenConfiguration.createsNewApplicationInstance = true` and `--replace-running`. The new process decides `replace(askFirst: false)`, and the running Axo receives `quitForReplacement`.
 
 ### Upgrading from the menu bar
 
@@ -336,7 +336,7 @@ Done on 2026-11-01, in this order:
 
 Moving a Mac onto it needs one opened Axo. Axos from before this RFD don't know the handover. The first new Axo replaces them: it removes the hand-made agent if present, boots out the label, and force-terminates what's left. On this Mac that was `open -n dist/Axo.app --args --replace-running`, run once. A plain `open` can bring the old Axo forward instead.
 
-Still to do:
+Still to do (open on 2026-11-10; neither document says this yet):
 
 - Update the `axo-macos-packaging` skill: the bundle embeds two LaunchAgents, an install does not reach the running Axo until it is opened and replaced, and **Quit Axo** is the only quit.
 - `CONTRIBUTING.md` should say how to stop Axo for good while developing (Quit Axo, or `launchctl bootout gui/$(id -u)/dev.leostera.axo.app`).
@@ -426,7 +426,7 @@ During implementation:
 Out of scope:
 
 - Several Axos side by side for different checkouts.
-- Updates from the CDN (`https://axo.leostera.dev/cdn/Axo.app`).
+- Automatic updates. A download from the CDN when the person picks it was added later (Upgrading from the menu bar); nothing installs without that choice.
 
 ## As built
 

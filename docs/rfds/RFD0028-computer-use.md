@@ -1,10 +1,10 @@
 # RFD0028 - Axo: Computer Use
 
 - Feature Name: `axo-computer-use`
-- Status: Draft
+- Status: Implemented, with computer use from anywhere; computer use on a locked Mac is refused, and how to make it work is still open
 - Author: leostera
 - Start Date: 2026-10-31
-- Updated: 2026-11-05 (computer use from anywhere)
+- Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md), [RFD0016](RFD0016-connections-and-tools.md)
 - Amended By: [RFD0029](RFD0029-ask-the-person.md)
@@ -51,9 +51,9 @@ The call waits, up to 5 minutes. If the person allows it, the click runs and the
 - **Elsewhere:** on other platforms the crate is empty, and `axod mcp` doesn't offer the two tools.
 - **Bazel:** two Cua build scripts compile Swift and run outside the sandbox (`.bazelrc`). `cua-driver-core`'s guides are patched into its crate; regenerate the patch on every Cua bump.
 
-### Risk gate (`crates/axo-server/src/computer_gate.rs`)
+### Risk gate (`crates/axo-computer/src/gate.rs`)
 
-The gate runs in `axod mcp` before every `computer` call.
+The gate runs before every `computer` call: in `axod mcp` for this Mac's agents, and in axod for other Macs' scripts (`crates/axo-computer-use`). Its `Judge` is async. Since [RFD0042](RFD0042-async-relay-and-extensions.md), only gate initialization and Cua's calls run on the blocking pool.
 
 1. **Asked for, or read-only:** `confirm: true` asks the person without the checks below; read-only tools (`get_window_state`, `list_windows`, …) pass. `computer` refuses any argument but `tool`, `args` and `confirm`, so nothing passed can approve.
 2. **Describe:** every action is described in words: its tool and target, plus its text, keys, value or script.
@@ -90,7 +90,7 @@ An action reaches the app only if it passed or the person allowed it. Every call
 
 ### Computer use from anywhere
 
-An agent on any of the account's Macs, including one the person chats with from the phone, drives another Mac through `connections_execute`:
+An agent on any of the account's Macs, including one the person chats with from the phone, drives another Mac through `apps_run` (first built as `connections_execute`; connections are now apps):
 
 ```js
 const macs = await codemode.hosts.list();
@@ -108,18 +108,18 @@ await codemode.bash.run({ host: "studio", command: "ls ~/Desktop" });
 
 `host` is a name from `hosts.list()`, or `"self"`. An unknown host fails listing the account's Macs; an offline one fails as offline (`hostOffline`), naming the online ones. `hosts`, `computer`, `bash` and `apps` are reserved: no connection is added under those names. Mac apps (1Password) still name a Mac by the same `name`.
 
-**On the Mac.** The Worker sends `axo.connections.computer` down the target Mac's relay socket, like `bash`: `{ accountId, callId, tool, args, confirm, sessionId, from, timeoutMs }`, where `sessionId` is the calling Session and `from` the calling Mac's label. axod (the daemon, which holds the Accessibility and Screen Recording grants) runs it on a thread of its own:
+**On the Mac.** The Worker sends `axo.apps.computer` (first built as `axo.connections.computer`) down the target Mac's relay socket, like `bash`: `{ accountId, callId, tool, args, confirm, sessionId, from, timeoutMs }`, where `sessionId` is the calling Session and `from` the calling Mac's label. axod (the daemon, which holds the Accessibility and Screen Recording grants) runs it as a task. Since RFD0042, Cua's call runs on the blocking pool, and the gate and the person's answer are awaited:
 1. **The gate,** the same checks as the local tool: `confirm: true` asks; otherwise the word filter and Clef decide.
-2. **Asking** is an elicitation made by the target Mac's axod, `askedBy: computerUse`, in the *calling* Session: its card shows in that chat on the web and the phone (clients place cards by Session id, and answer the Mac that asked), and on the target Mac as a notification naming the calling Mac. The question says where it came from: *asked from Laptop's Session*. It expires before the script's time runs out.
+2. **Asking** is an elicitation made by the target Mac's axod, `askedBy: computerUse`, in the *calling* Session: its card shows in that chat on the web and the phone (clients place cards by Session id, and answer the Mac that asked), and on the target Mac in the menu bar's questions panel (RFD0029 step 3, which replaced the first build's notification). The question says where it came from: *asked from Laptop's Session*. It expires before the script's time runs out.
 3. **Images** in the result (screenshots, window captures) are uploaded to the account's assets (RFD0030) with the Mac's host credential, through the same asset route the web and the phone upload to (`axo_relay::assets::upload`, beside the download of a prompt's attachments), and replaced by `{ type: "image", attachment }`, where `attachment` is the same `Attachment` a prompt's files are (`{ asset: "sha256:…", name, mimeType, size }`). A result stays small and the images show wherever assets do. The text and `structuredContent` come back as they are.
 
-`axo.connections.computer.status` answers `{ available, accessibility, screenRecording }` for `hosts.list()`.
+`axo.apps.computer.status` answers `{ available, accessibility, screenRecording, locked }` for `hosts.list()`.
 
-**Back to the agent.** `axod mcp`'s `connections_execute` returns the script's value as before; for image attachments anywhere in it (at most 4, 5 MiB in all) it asks axod to fetch them (`axo.assets.fetch`, only for axod's own binary, by code signature), which uses the same fetch as a prompt's attachments, into `~/.axo/assets`, and adds each to the tool result as an MCP image, so the model sees the screenshot. Images past the limit stay as references.
+**Back to the agent.** `axod mcp`'s `apps_run` returns the script's value as before; for image attachments anywhere in it (at most 4, 5 MiB in all) it asks axod to fetch them (`axo.assets.fetch`, only for axod's own binary, by code signature), which uses the same fetch as a prompt's attachments, into `~/.axo/assets`, and adds each to the tool result as an MCP image, so the model sees the screenshot. Images past the limit stay as references.
 
 **Logging.** Every `computer.run` and `bash.run` is in the account's call log (RFD0016) before it is sent, as service `computer` or `bash`, tool the computer tool's name or `run`, with the target Mac. Screenshots are not logged; typed text is, as commands are.
 
-**Not built here:** the target Mac's own Axo.app card for a Session it doesn't have (it gets the notification); binding an Allow to the window it named (RFD0029).
+**Not built here:** a card in the target Mac's chat view for a Session it doesn't have. Its questions panel names such a Session only as "a Session", and the question's text names the calling Mac. Also not built: binding an Allow to the window it named (RFD0029).
 
 ### Invariants
 
@@ -151,7 +151,7 @@ await codemode.bash.run({ host: "studio", command: "ls ~/Desktop" });
 - axod grows from 10 MB to 28 MB, and the app gains a 23 MB helper. Clean builds pay for about 370 more crates, plus a llama.cpp build of about 2 minutes.
 - **Coordinate clicks:** a click at bare coordinates names no element, so the gate sees only the window. It passes unless its text is flagged.
 - **Word list:** the list misses risky actions that use other words, and flags harmless ones (each costs a Clef question of about 1 s).
-- **Screen locked:** while the screen is locked, macOS hides every window from Accessibility, so computer use refuses to read or act.
+- **Screen locked:** while the screen is locked, macOS hides every window from Accessibility. Every tool except `check_permissions` and `get_guide` refuses with "Not done: this Mac is locked…" (`axo_computer::LOCKED`), and `computer.status` reports `locked`.
 
 ## Unresolved questions
 
@@ -168,5 +168,5 @@ await codemode.bash.run({ host: "studio", command: "ls ~/Desktop" });
   - whether a virtual display, or a second graphical session, can host the apps while the physical one stays locked;
   - whether the person can unlock it on purpose from their phone, with Face ID as in RFD0029, and have it lock again when the call ends; macOS offers no public remote unlock, so this may not exist;
   - keeping the Mac awake (the display-awake guard does that) is not enough, and keeping it unlocked is a security setting axod must not change for the person.
-  Until then a computer call on a locked Mac should say so plainly ("this Mac is locked") rather than act on the lock screen.
-- **Asking the person:** proposed in [RFD0029](RFD0029-ask-the-person.md). The gate asks the person on their own clients instead of refusing, and `confirm: true` only asks (built). Values such as logins and cards going past the agent is still to come.
+  Until then a computer call on a locked Mac says so plainly rather than act on the lock screen. That refusal is built (`refusal_while` in `crates/axo-computer/src/lib.rs`). The spike is not done.
+- **Asking the person:** proposed in [RFD0029](RFD0029-ask-the-person.md). The gate asks the person on their own clients instead of refusing, and `confirm: true` only asks (built). Values such as logins and cards now go past the agent too: `request_input` is built (RFD0029, step 4).
