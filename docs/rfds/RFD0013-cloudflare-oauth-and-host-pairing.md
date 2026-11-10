@@ -28,6 +28,10 @@ What changed after this RFD:
 - **The private fleet is gone** (`1d95d4c`): no `/v1/*` routes, synthetic principals or `private-fleet` directory. The `AxoHostDirectory` and `AxoHostRelay` exports are deleted; neither ever held an object. The "Before acceptance" question about adopting their data no longer applies, and the Current source boundary section is historical.
 - **"The full currently supported protocol" is a list.** A client reaches a Mac through the `axo.remote.*` methods in `hostRemoteMethods` (`src/host-do.ts`), decided per method in `crates/axo-protocol/src/parity.rs`, and through the sync protocol (RFD0018). axod's local methods (settings, linking, and so on) are not reachable remotely.
 
+**Trust boundary (decision, 2026-10-26).** Axo owns self-service sign-in, rather than using Cloudflare Access as product identity. Account traffic and stored transcripts are not end-to-end encrypted: TLS authenticates and encrypts each hop, but the account's Cloudflare deployment can read them. RFD0029's sealed input forms are a later, narrower exception: those values pass the agent and Worker sealed to the target Mac.
+
+**Public-launch policy remains open.** Per-account quotas, account deletion, terms and privacy pages, additional providers and Sign in with Apple for an App Store release need explicit rollout decisions; this implementation status does not declare Axo ready for general public launch.
+
 Not built:
 
 - **Separate keys.** One Worker secret, `SESSION_SECRET`, keys every HMAC and seal, separated by purpose (`pairing-code`, `pairing-source`, `host-credential`, `login-code`, and HKDF purposes for sealed values). There are no key IDs and no rotation.

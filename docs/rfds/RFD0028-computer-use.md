@@ -53,7 +53,7 @@ The call waits, up to 5 minutes. If the person allows it, the click runs and the
 
 ### Risk gate (`crates/axo-computer/src/gate.rs`)
 
-The gate runs before every `computer` call: in `axod mcp` for this Mac's agents, and in axod for other Macs' scripts (`crates/axo-computer-use`). Its `Judge` is async. Since [RFD0042](RFD0042-async-relay-and-extensions.md), only gate initialization and Cua's calls run on the blocking pool.
+The gate runs in axod before every `computer` call, for this Mac's agents and other Macs' scripts (`crates/axo-computer-use`). `axod mcp` is only a byte-copying proxy to that daemon; it does not run the gate. Its `Judge` is async. Since [RFD0042](RFD0042-async-relay-and-extensions.md), only gate initialization and Cua's calls run on the blocking pool.
 
 1. **Asked for, or read-only:** `confirm: true` asks the person without the checks below; read-only tools (`get_window_state`, `list_windows`, …) pass. `computer` refuses any argument but `tool`, `args` and `confirm`, so nothing passed can approve.
 2. **Describe:** every action is described in words: its tool and target, plus its text, keys, value or script.

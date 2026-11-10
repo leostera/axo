@@ -41,7 +41,7 @@ The uploader (`sync.rs`) evicts an archived Session's transcript when all of the
 2. **Confirmed.** The cloud holds every record of the file. The last handshake or acknowledgement put the cloud's count at the file's count, with the same chain, and that cursor is stored in `axo.db`.
 3. **Settled.** The file has not changed since that confirmation: the uploader's last check found nothing new, and the file is not invalid past some line.
 
-The uploader asks axod to evict it (`SyncStore::evict_transcript`, which [RFD0042](RFD0042-async-relay-and-extensions.md) moved off `RelayHost`; axod's side is `evict_transcript` in `crates/axo-server/src/relay_host.rs`), passing the count, chain and file length it confirmed. Under the catalog lock, axod refuses if:
+The uploader asks axod to evict it (`SyncStore::evict_transcript`, which [RFD0042](RFD0042-async-relay-and-extensions.md) moved off `RelayHost`; axod's side is `evict_transcript` in `crates/axo-server/src/relay_host.rs`), passing the count, chain and file length it confirmed. axod first checks the registry and the reopening set, then serializes the persistent checks and deletion on the store's thread. It refuses if:
 
 - the Session has panes, or is being reopened;
 - it is no longer archived;
