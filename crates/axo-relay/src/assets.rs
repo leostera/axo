@@ -6,12 +6,15 @@
 //! and renamed into place only if the bytes match the name and the size. A prompt gets all its
 //! attachments or none: the first that can't be fetched refuses the whole prompt.
 
-use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::fs;
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
+use tokio::net::TcpStream;
 
 use axo_protocol::asset::{
     AssetHash, AssetName, AssetType, Attachment, Attachments, FetchedAttachment, MAX_ASSET_BYTES,
@@ -70,33 +73,34 @@ impl From<io::Error> for FetchError {
 }
 
 /// Fetches every attachment, or none: the first failure ends it.
-pub fn fetch_all(
+pub async fn fetch_all(
     source: &AssetSource,
     attachments: &Attachments,
 ) -> Result<Vec<FetchedAttachment>, FetchError> {
-    attachments
-        .iter()
-        .map(|attachment| {
-            let started = Instant::now();
-            let outcome = fetch_one(source, attachment);
-            log::info!(
-                "event=assets.fetch hash={} bytes={} ms={} outcome={}",
-                attachment.asset.hex(),
-                attachment.size,
-                started.elapsed().as_millis(),
-                match &outcome {
-                    Ok((_, true)) => "cached".to_owned(),
-                    Ok((_, false)) => "fetched".to_owned(),
-                    Err(error) => error.to_string(),
-                }
-            );
-            outcome.map(|(fetched, _)| fetched)
-        })
-        .collect()
+    let mut fetched = Vec::new();
+    for attachment in attachments.iter() {
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(FETCH_DEADLINE, fetch_one(source, attachment))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the asset took too long"))?;
+        log::info!(
+            "event=assets.fetch hash={} bytes={} ms={} outcome={}",
+            attachment.asset.hex(),
+            attachment.size,
+            started.elapsed().as_millis(),
+            match &outcome {
+                Ok((_, true)) => "cached".to_owned(),
+                Ok((_, false)) => "fetched".to_owned(),
+                Err(error) => error.to_string(),
+            }
+        );
+        fetched.push(outcome?.0);
+    }
+    Ok(fetched)
 }
 
 /// One attachment, and whether it was already on this Mac.
-fn fetch_one(
+async fn fetch_one(
     source: &AssetSource,
     attachment: &Attachment,
 ) -> Result<(FetchedAttachment, bool), FetchError> {
@@ -110,37 +114,56 @@ fn fetch_one(
         size: attachment.size,
     };
     // Only checked bytes are ever renamed into the folder, so a file there is the asset.
-    if path.is_file() {
+    if fs::metadata(&path).await.is_ok_and(|meta| meta.is_file()) {
         return Ok((fetched, true));
     }
-    fs::create_dir_all(&folder)?;
-    if let Some(sibling) = existing_file(&folder)? {
-        copy_into_place(&sibling, &path)?;
+    fs::create_dir_all(&folder).await?;
+    if let Some(sibling) = existing_file(&folder).await? {
+        copy_into_place(&sibling, &path).await?;
         return Ok((fetched, true));
     }
     let temporary = folder.join(format!(".download-{}", axo_protocol::new_uuid_v4()?));
-    let result = download(source, attachment, &temporary);
+    let _cleanup = DownloadFile(temporary.clone());
+    let result = download(source, attachment, &temporary).await;
     match result {
         Ok(()) => {
-            fs::rename(&temporary, &path)?;
+            fs::rename(&temporary, &path).await?;
             Ok((fetched, false))
         }
         Err(error) => {
-            let _ = fs::remove_file(&temporary);
+            let _ = fs::remove_file(&temporary).await;
             Err(error)
         }
     }
 }
 
+/// A partial download belongs to its future, including when a caller drops that future.
+struct DownloadFile(PathBuf);
+
+impl Drop for DownloadFile {
+    fn drop(&mut self) {
+        let path = self.0.clone();
+        tokio::spawn(async move {
+            let _ = fs::remove_file(path).await;
+        });
+    }
+}
+
+async fn within<T>(operation: impl std::future::Future<Output = io::Result<T>>) -> io::Result<T> {
+    tokio::time::timeout(READ_TIMEOUT, operation)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "asset transfer stalled"))?
+}
+
 /// A file already fetched under another name.
-fn existing_file(folder: &Path) -> io::Result<Option<PathBuf>> {
-    for entry in fs::read_dir(folder)? {
-        let entry = entry?;
+async fn existing_file(folder: &Path) -> io::Result<Option<PathBuf>> {
+    let mut entries = fs::read_dir(folder).await?;
+    while let Some(entry) = entries.next_entry().await? {
         if !entry
             .file_name()
             .to_string_lossy()
             .starts_with(".download-")
-            && entry.file_type()?.is_file()
+            && entry.file_type().await?.is_file()
         {
             return Ok(Some(entry.path()));
         }
@@ -148,14 +171,14 @@ fn existing_file(folder: &Path) -> io::Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn copy_into_place(from: &Path, to: &Path) -> io::Result<()> {
+async fn copy_into_place(from: &Path, to: &Path) -> io::Result<()> {
     let temporary = to.with_file_name(format!(".download-{}", axo_protocol::new_uuid_v4()?));
-    fs::copy(from, &temporary)?;
-    fs::rename(&temporary, to)
+    fs::copy(from, &temporary).await?;
+    fs::rename(&temporary, to).await
 }
 
 /// Downloads the asset to `temporary`, checking its size and hash as it goes.
-fn download(
+async fn download(
     source: &AssetSource,
     attachment: &Attachment,
     temporary: &Path,
@@ -165,11 +188,11 @@ fn download(
         &source.host_id,
         &attachment.asset.hex(),
     );
-    let headers = authorization(source)?;
+    let headers = authorization(source).await?;
     let deadline = Instant::now() + FETCH_DEADLINE;
-    let mut file = fs::File::create(temporary)?;
-    let digest = get(&url, &headers, attachment.size, deadline, &mut file)?;
-    file.sync_all()?;
+    let mut file = fs::File::create(temporary).await?;
+    let digest = get(&url, &headers, attachment.size, deadline, &mut file).await?;
+    file.sync_all().await?;
     if digest != attachment.asset {
         return Err(FetchError::Mismatch);
     }
@@ -177,8 +200,10 @@ fn download(
 }
 
 /// This Mac's host credential as request headers.
-fn authorization(source: &AssetSource) -> io::Result<String> {
-    let mut secret = source.credentials.load(source.account.credential_id())?;
+async fn authorization(source: &AssetSource) -> io::Result<String> {
+    let credentials = Arc::clone(&source.credentials);
+    let id = source.account.credential_id().to_owned();
+    let mut secret = crate::blocking(move || credentials.load(&id)).await?;
     if secret.len() != 32 {
         secret.fill(0);
         return Err(io::Error::new(
@@ -197,7 +222,7 @@ fn authorization(source: &AssetSource) -> io::Result<String> {
 /// Stores `bytes` in the account's assets with this Mac's credential, through the same route a
 /// person's client uploads to, and keeps a copy where fetched attachments go. Answers the
 /// attachment that names it, as an upload from the web or the phone does.
-pub fn upload(
+pub async fn upload(
     source: &AssetSource,
     bytes: &[u8],
     name: AssetName,
@@ -216,15 +241,19 @@ pub fn upload(
         .asset_url(source.account.account_id(), &source.host_id, &asset.hex());
     let headers = format!(
         "{}Content-Type: {}\r\nContent-Length: {}\r\nX-Axo-Asset-Name: {}\r\n",
-        authorization(source)?,
+        authorization(source).await?,
         mime_type.as_str(),
         bytes.len(),
         percent_encode(name.as_str())
     );
     let started = Instant::now();
-    let status = request(&url, "PUT", &headers, bytes, |stream| {
-        Ok(read_head(&mut BufReader::new(stream))?.status)
-    });
+    let status = async {
+        let stream = request(&url, "PUT", &headers, bytes).await?;
+        Ok::<_, io::Error>(read_head(&mut BufReader::new(stream)).await?.status)
+    };
+    let status = tokio::time::timeout(READ_TIMEOUT, status)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "asset upload took too long"))?;
     log::info!(
         "event=assets.upload hash={} bytes={} ms={} outcome={}",
         asset.hex(),
@@ -246,8 +275,8 @@ pub fn upload(
     }
     // A copy where a fetch would put it, so this Mac never downloads its own image again.
     let folder = source.directory.join(asset.hex());
-    if fs::create_dir_all(&folder).is_ok() {
-        let _ = fs::write(folder.join(name.as_str()), bytes);
+    if fs::create_dir_all(&folder).await.is_ok() {
+        let _ = fs::write(folder.join(name.as_str()), bytes).await;
     }
     Ok(Attachment {
         asset,
@@ -279,17 +308,12 @@ fn percent_encode(text: &str) -> String {
 }
 
 /// A stream to `url`'s host: TLS for https, plain for http (tests).
-fn connect(url: &Url) -> io::Result<(Box<dyn ReadWrite>, String)> {
+async fn connect(url: &Url) -> io::Result<(Box<dyn ReadWrite>, String)> {
     let host = url
         .host_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "asset URL has no host"))?;
     let port = url.port_or_known_default().unwrap_or(443);
-    let address = (host, port).to_socket_addrs()?.next().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::AddrNotAvailable, "asset URL has no address")
-    })?;
-    let stream = TcpStream::connect_timeout(&address, READ_TIMEOUT)?;
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
-    stream.set_write_timeout(Some(READ_TIMEOUT))?;
+    let stream = TcpStream::connect((host, port)).await?;
     let host_header = if port == 443 || port == 80 {
         host.to_owned()
     } else {
@@ -298,58 +322,59 @@ fn connect(url: &Url) -> io::Result<(Box<dyn ReadWrite>, String)> {
     if url.scheme() == "http" {
         return Ok((Box::new(stream), host_header));
     }
-    let stream = TlsConnector::new()
-        .map_err(|_| io::Error::other("could not initialize TLS"))?
+    let connector = crate::blocking(TlsConnector::new)
+        .await
+        .map_err(|_| io::Error::other("could not initialize TLS"))?;
+    let stream = tokio_native_tls::TlsConnector::from(connector)
         .connect(host, stream)
+        .await
         .map_err(|_| io::Error::other("could not establish a secure connection"))?;
     Ok((Box::new(stream), host_header))
 }
 
-trait ReadWrite: Read + Write {}
-impl<T: Read + Write> ReadWrite for T {}
+trait ReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> ReadWrite for T {}
 
-/// Sends one request with `body` and hands the response stream to `answer`.
-fn request<T>(
+/// Sends one request and returns its response stream.
+async fn request(
     url: &Url,
     method: &str,
     extra_headers: &str,
     body: &[u8],
-    answer: impl FnOnce(&mut dyn ReadWrite) -> io::Result<T>,
-) -> io::Result<T> {
-    let (mut stream, host_header) = connect(url)?;
-    write!(
-        stream,
+) -> io::Result<Box<dyn ReadWrite>> {
+    let (mut stream, host_header) = within(connect(url)).await?;
+    let headers = format!(
         "{method} {} HTTP/1.1\r\nHost: {host_header}\r\n{extra_headers}Accept-Encoding: identity\r\nConnection: close\r\n\r\n",
         url.path()
-    )?;
-    stream.write_all(body)?;
-    stream.flush()?;
-    answer(&mut *stream)
+    );
+    within(stream.write_all(headers.as_bytes())).await?;
+    within(stream.write_all(body)).await?;
+    within(stream.flush()).await?;
+    Ok(stream)
 }
 
 /// GETs `url`, streams at most `expected` bytes into `out`, and returns their hash. Fails with
 /// `Mismatch` if the body is not exactly `expected` bytes.
-fn get(
+async fn get(
     url: &Url,
     extra_headers: &str,
     expected: u64,
     deadline: Instant,
-    out: &mut impl Write,
+    out: &mut (impl AsyncWrite + Unpin),
 ) -> Result<axo_protocol::asset::AssetHash, FetchError> {
-    request(url, "GET", extra_headers, &[], |stream| {
-        Ok(receive(stream, expected, deadline, out))
-    })?
+    let mut stream = request(url, "GET", extra_headers, &[]).await?;
+    receive(&mut *stream, expected, deadline, out).await
 }
 
 /// Reads a GET's response: the body's bytes into `out`, checked against `expected`.
-fn receive(
+async fn receive(
     stream: &mut dyn ReadWrite,
     expected: u64,
     deadline: Instant,
-    out: &mut impl Write,
+    out: &mut (impl AsyncWrite + Unpin),
 ) -> Result<AssetHash, FetchError> {
     let mut reader = BufReader::new(stream);
-    let head = read_head(&mut reader)?;
+    let head = read_head(&mut reader).await?;
     if head.status == 404 {
         return Err(FetchError::NotFound);
     }
@@ -364,14 +389,14 @@ fn receive(
         out,
     };
     if head.chunked {
-        read_chunked(&mut reader, &mut body)?;
+        read_chunked(&mut reader, &mut body).await?;
     } else if let Some(length) = head.length {
         if length != expected {
             return Err(FetchError::Mismatch);
         }
-        copy_exact(&mut reader, length, &mut body)?;
+        copy_exact(&mut reader, length, &mut body).await?;
     } else {
-        copy_to_end(&mut reader, &mut body)?;
+        copy_to_end(&mut reader, &mut body).await?;
     }
     if body.written != expected {
         return Err(FetchError::Mismatch);
@@ -386,10 +411,15 @@ struct Head {
     chunked: bool,
 }
 
-fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
+async fn read_head(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Head> {
     let mut raw = Vec::new();
     loop {
-        let read = reader.read_until(b'\n', &mut raw)?;
+        let read = within(
+            reader
+                .take((MAX_HEADER_BYTES + 1 - raw.len()) as u64)
+                .read_until(b'\n', &mut raw),
+        )
+        .await?;
         if read == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -437,7 +467,7 @@ fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
     })
 }
 
-struct Body<'a, W: Write> {
+struct Body<'a, W: AsyncWrite + Unpin> {
     hasher: Sha256,
     written: u64,
     expected: u64,
@@ -445,8 +475,8 @@ struct Body<'a, W: Write> {
     out: &'a mut W,
 }
 
-impl<W: Write> Body<'_, W> {
-    fn take(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+impl<W: AsyncWrite + Unpin> Body<'_, W> {
+    async fn take(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
         self.written += bytes.len() as u64;
         // More bytes than the attachment said is a mismatch, and never fills the disk.
         if self.written > self.expected || self.written > MAX_ASSET_BYTES {
@@ -456,47 +486,50 @@ impl<W: Write> Body<'_, W> {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "the asset took too long").into());
         }
         self.hasher.update(bytes);
-        self.out.write_all(bytes)?;
+        self.out.write_all(bytes).await?;
         Ok(())
     }
 }
 
-fn copy_exact<W: Write>(
-    reader: &mut impl Read,
+async fn copy_exact<W: AsyncWrite + Unpin>(
+    reader: &mut (impl AsyncRead + Unpin),
     mut remaining: u64,
     body: &mut Body<'_, W>,
 ) -> Result<(), FetchError> {
     let mut buffer = vec![0_u8; 64 * 1024];
     while remaining > 0 {
         let want = remaining.min(buffer.len() as u64) as usize;
-        let read = reader.read(&mut buffer[..want])?;
+        let read = within(reader.read(&mut buffer[..want])).await?;
         if read == 0 {
             return Err(FetchError::Mismatch);
         }
-        body.take(&buffer[..read])?;
+        body.take(&buffer[..read]).await?;
         remaining -= read as u64;
     }
     Ok(())
 }
 
-fn copy_to_end<W: Write>(reader: &mut impl Read, body: &mut Body<'_, W>) -> Result<(), FetchError> {
+async fn copy_to_end<W: AsyncWrite + Unpin>(
+    reader: &mut (impl AsyncRead + Unpin),
+    body: &mut Body<'_, W>,
+) -> Result<(), FetchError> {
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
-        let read = reader.read(&mut buffer)?;
+        let read = within(reader.read(&mut buffer)).await?;
         if read == 0 {
             return Ok(());
         }
-        body.take(&buffer[..read])?;
+        body.take(&buffer[..read]).await?;
     }
 }
 
-fn read_chunked<W: Write>(
-    reader: &mut impl BufRead,
+async fn read_chunked<W: AsyncWrite + Unpin>(
+    reader: &mut (impl AsyncBufRead + Unpin),
     body: &mut Body<'_, W>,
 ) -> Result<(), FetchError> {
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line.len() > 1024 {
+        if within(reader.take(1025).read_line(&mut line)).await? == 0 || line.len() > 1024 {
             return Err(FetchError::Mismatch);
         }
         let size_text = line.trim().split(';').next().unwrap_or("");
@@ -505,9 +538,9 @@ fn read_chunked<W: Write>(
         if size == 0 {
             return Ok(());
         }
-        copy_exact(reader, size, body)?;
+        copy_exact(reader, size, body).await?;
         let mut end = [0_u8; 2];
-        reader.read_exact(&mut end)?;
+        within(reader.read_exact(&mut end)).await?;
         if &end != b"\r\n" {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "malformed chunk").into());
         }
@@ -517,6 +550,8 @@ fn read_chunked<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex;
     use std::thread;
@@ -621,8 +656,41 @@ mod tests {
         path
     }
 
-    #[test]
-    fn uploads_with_the_host_credential_to_the_asset_s_own_name_and_keeps_a_copy() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stalled_body_yields_the_runtime_until_its_remaining_bytes_arrive() {
+        use tokio::io::AsyncWriteExt;
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let transfer = tokio::spawn(async move {
+            let mut out = Vec::new();
+            let hash = receive(&mut client, 4, Instant::now() + FETCH_DEADLINE, &mut out)
+                .await
+                .unwrap();
+            assert_eq!(out, b"abcd");
+            assert_eq!(hash, AssetHash::from_digest(Sha256::digest(b"abcd").into()));
+        });
+        server
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nab")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(!transfer.is_finished());
+        server.write_all(b"cd").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), transfer)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn response_headers_are_bounded_even_without_a_newline() {
+        let oversized = vec![b'x'; MAX_HEADER_BYTES + 2];
+        let mut reader = BufReader::new(oversized.as_slice());
+        let error = read_head(&mut reader).await.err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn uploads_with_the_host_credential_to_the_asset_s_own_name_and_keeps_a_copy() {
         let directory = temporary_directory();
         let bytes = b"a screenshot".as_slice();
         let (origin, seen) = relay(vec![
@@ -630,7 +698,9 @@ mod tests {
         ]);
         let name = AssetName::parse("Mail — Inbox.png".into()).unwrap();
         let mime = AssetType::parse("image/png").unwrap();
-        let attachment = upload(&source(&origin, &directory), bytes, name, mime).unwrap();
+        let attachment = upload(&source(&origin, &directory), bytes, name, mime)
+            .await
+            .unwrap();
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         assert_eq!(attachment.asset, AssetHash::from_digest(digest));
         assert_eq!(attachment.size, bytes.len() as u64);
@@ -652,8 +722,8 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
     }
 
-    #[test]
-    fn an_upload_the_account_refuses_fails() {
+    #[tokio::test]
+    async fn an_upload_the_account_refuses_fails() {
         let directory = temporary_directory();
         let (origin, _) = relay(vec![
             b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n".to_vec(),
@@ -664,18 +734,21 @@ mod tests {
             AssetName::parse("a.png".into()).unwrap(),
             AssetType::parse("image/png").unwrap(),
         )
+        .await
         .unwrap_err();
         assert!(error.to_string().contains("full"), "{error}");
         let _ = fs::remove_dir_all(&directory);
     }
 
-    #[test]
-    fn fetches_with_the_host_credential_checks_the_hash_and_keeps_the_file() {
+    #[tokio::test]
+    async fn fetches_with_the_host_credential_checks_the_hash_and_keeps_the_file() {
         let directory = temporary_directory();
         let bytes = b"a photo of a whiteboard".as_slice();
         let (origin, seen) = relay(vec![ok(bytes)]);
         let wanted = attachments(&[(bytes, "whiteboard.png")]);
-        let fetched = fetch_all(&source(&origin, &directory), &wanted).unwrap();
+        let fetched = fetch_all(&source(&origin, &directory), &wanted)
+            .await
+            .unwrap();
         assert_eq!(fs::read(&fetched[0].path).unwrap(), bytes);
         assert_eq!(
             fetched[0].path,
@@ -698,13 +771,14 @@ mod tests {
             &source(&origin, &directory),
             &attachments(&[(bytes, "copy.png")]),
         )
+        .await
         .unwrap();
         assert_eq!(fs::read(&again[0].path).unwrap(), bytes);
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
-    #[test]
-    fn a_chunked_answer_is_read_and_checked() {
+    #[tokio::test]
+    async fn a_chunked_answer_is_read_and_checked() {
         let directory = temporary_directory();
         let bytes = b"chunked bytes arrive in pieces".as_slice();
         let (origin, _) = relay(vec![chunked(bytes)]);
@@ -712,37 +786,38 @@ mod tests {
             &source(&origin, &directory),
             &attachments(&[(bytes, "a.png")]),
         )
+        .await
         .unwrap();
         assert_eq!(fs::read(&fetched[0].path).unwrap(), bytes);
     }
 
-    #[test]
-    fn bytes_that_do_not_match_leave_nothing_behind() {
+    #[tokio::test]
+    async fn bytes_that_do_not_match_leave_nothing_behind() {
         let directory = temporary_directory();
         // Same length, so only the hash can tell.
         let (origin, _) = relay(vec![ok(b"BBBBBBBBBB")]);
         let wanted = attachments(&[(b"AAAAAAAAAA", "a.png")]);
         let wanted_hex = wanted.iter().next().unwrap().asset.hex();
         assert!(matches!(
-            fetch_all(&source(&origin, &directory), &wanted),
+            fetch_all(&source(&origin, &directory), &wanted).await,
             Err(FetchError::Mismatch)
         ));
         assert_eq!(fs::read_dir(directory.join(wanted_hex)).unwrap().count(), 0);
     }
 
-    #[test]
-    fn a_body_longer_than_the_attachment_is_refused_without_reading_it_all() {
+    #[tokio::test]
+    async fn a_body_longer_than_the_attachment_is_refused_without_reading_it_all() {
         let directory = temporary_directory();
         let (origin, _) = relay(vec![chunked(&[1_u8; 64])]);
         let wanted = attachments(&[(&[1_u8; 8], "a.png")]);
         assert!(matches!(
-            fetch_all(&source(&origin, &directory), &wanted),
+            fetch_all(&source(&origin, &directory), &wanted).await,
             Err(FetchError::Mismatch)
         ));
     }
 
-    #[test]
-    fn a_missing_asset_refuses_the_whole_prompt() {
+    #[tokio::test]
+    async fn a_missing_asset_refuses_the_whole_prompt() {
         let directory = temporary_directory();
         let first = b"first".as_slice();
         let (origin, _) = relay(vec![
@@ -751,7 +826,7 @@ mod tests {
         ]);
         let wanted = attachments(&[(first, "one.png"), (b"second", "two.png")]);
         assert!(matches!(
-            fetch_all(&source(&origin, &directory), &wanted),
+            fetch_all(&source(&origin, &directory), &wanted).await,
             Err(FetchError::NotFound)
         ));
     }

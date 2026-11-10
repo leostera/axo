@@ -86,11 +86,7 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
         let tool = params.tool.clone();
         log::info!("event=apps.computer_started call={call_id} tool={tool}");
         let outcome = match sessions.remote_computer(params).await {
-            // Its images are uploaded over blocking HTTPS.
-            Ok(result) => Ok(crate::blocking(move || {
-                crate::computer::to_account(result, assets.as_ref(), &tool)
-            })
-            .await),
+            Ok(result) => Ok(crate::computer::to_account(result, assets.as_ref(), &tool).await),
             Err(error) => Err(error),
         };
         drop(place);

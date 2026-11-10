@@ -397,9 +397,8 @@ async fn deliver(
     let fetched = match source {
         Some(source) if !request.attachments.is_empty() => {
             let attachments = request.attachments.clone();
-            tokio::task::spawn_blocking(move || axo_relay::assets::fetch_all(&source, &attachments))
+            axo_relay::assets::fetch_all(&source, &attachments)
                 .await
-                .map_err(|_| MethodError::new(REFUSED, "Operation failed"))?
                 .map_err(|error| {
                     MethodError::new(
                         -32010,

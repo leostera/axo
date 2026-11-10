@@ -79,24 +79,23 @@ pub fn parse_status(params: &Value, account_id: &str) -> Result<(), MethodError>
 
 /// A tool's MCP answer as the account takes it: text as it is, each image uploaded and named by
 /// its attachment, anything else said in words. Without a way to upload, images become a note.
-pub fn to_account(result: Value, assets: Option<&AssetSource>, tool: &str) -> Value {
+pub async fn to_account(result: Value, assets: Option<&AssetSource>, tool: &str) -> Value {
     let mut images = 0;
-    let content: Vec<Value> = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|item| match item["type"].as_str() {
+    let mut content: Vec<Value> = Vec::new();
+    for item in result["content"].as_array().into_iter().flatten() {
+        let entry = match item["type"].as_str() {
             Some("text") => {
                 json!({ "type": "text", "text": item["text"].as_str().unwrap_or_default() })
             }
             Some("image") => {
                 images += 1;
                 if images > MAX_IMAGES {
-                    return note(&format!(
+                    content.push(note(&format!(
                         "[more than {MAX_IMAGES} images; the rest were left out]"
-                    ));
+                    )));
+                    continue;
                 }
-                match (assets, upload_image(assets, item, tool, images)) {
+                match (assets, upload_image(assets, item, tool, images).await) {
                     (_, Ok(attachment)) => json!({ "type": "image", "attachment": attachment }),
                     (None, Err(_)) => note(
                         "[an image this Mac can't store: it is not linked to the account's assets]",
@@ -108,8 +107,9 @@ pub fn to_account(result: Value, assets: Option<&AssetSource>, tool: &str) -> Va
             }
             Some(other) => note(&format!("[{other} content left out]")),
             None => note("[content without a type left out]"),
-        })
-        .collect();
+        };
+        content.push(entry);
+    }
     let mut answer = json!({ "content": content });
     if let Some(structured) = result
         .get("structuredContent")
@@ -133,7 +133,7 @@ fn note(text: &str) -> Value {
     json!({ "type": "text", "text": text })
 }
 
-fn upload_image(
+async fn upload_image(
     assets: Option<&AssetSource>,
     item: &Value,
     tool: &str,
@@ -148,7 +148,7 @@ fn upload_image(
     let extension = mime.rsplit('/').next().unwrap_or("png");
     let name = AssetName::parse(format!("{tool}-{index}.{extension}"))
         .map_err(|_| std::io::Error::other("the image's name was refused"))?;
-    crate::assets::upload(assets, &bytes, name, mime_type)
+    crate::assets::upload(assets, &bytes, name, mime_type).await
 }
 
 #[cfg(test)]
@@ -172,8 +172,8 @@ mod tests {
         assert_eq!(parse(&extra, "a").unwrap_err().code, -32602);
     }
 
-    #[test]
-    fn text_passes_and_images_without_assets_become_a_note() {
+    #[tokio::test]
+    async fn text_passes_and_images_without_assets_become_a_note() {
         let answer = to_account(
             json!({
                 "content": [
@@ -186,7 +186,8 @@ mod tests {
             }),
             None,
             "get_window_state",
-        );
+        )
+        .await;
         assert_eq!(
             answer["content"][0],
             json!({ "type": "text", "text": "Mail — Inbox" })

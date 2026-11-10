@@ -54,7 +54,7 @@ impl Extension for Assets {
 
     fn register(&self, methods: &mut IoHandler) {
         let slot = Arc::clone(&self.slot);
-        methods.add_typed_only(
+        methods.add_typed_only_async(
             Only {
                 caller: Caller::Signed(Signer::ThisBinary),
                 code: -32003,
@@ -62,35 +62,43 @@ impl Extension for Assets {
             },
             ASSETS_FETCH,
             "expected {attachments}",
-            move |request: FetchAssets| fetch_files(&slot, &request),
+            move |request: FetchAssets| {
+                let slot = Arc::clone(&slot);
+                async move { fetch_files(&slot, &request).await }
+            },
         );
     }
 }
 
 /// `axo.assets.fetch`'s answer: where each attachment now is.
-fn fetch_files(slot: &AssetSlot, request: &FetchAssets) -> Result<Fetched, RpcError> {
-    let fetched = fetch(slot, &request.attachments)?;
+async fn fetch_files(slot: &AssetSlot, request: &FetchAssets) -> Result<Fetched, RpcError> {
+    let fetched = fetch(slot, &request.attachments).await?;
     Ok(Fetched {
         files: fetched.into_iter().map(FetchedFile::from).collect(),
     })
 }
 
 /// Fetches attachments into `~/.axo/assets`, as a prompt's are, with this Mac's credential.
-fn fetch(slot: &AssetSlot, attachments: &Attachments) -> Result<Vec<FetchedAttachment>, RpcError> {
+async fn fetch(
+    slot: &AssetSlot,
+    attachments: &Attachments,
+) -> Result<Vec<FetchedAttachment>, RpcError> {
     let source = slot.get().ok_or_else(|| RpcError {
         code: ErrorCode::ServerError(NOT_CONNECTED),
         message: "this Mac is not connected to its account".into(),
         data: None,
     })?;
-    axo_relay::assets::fetch_all(&source, attachments).map_err(|error| RpcError {
-        code: ErrorCode::ServerError(FETCH_FAILED),
-        message: match error {
-            FetchError::NotFound => "an asset is no longer in the account".into(),
-            FetchError::Mismatch => "an asset did not match its name".into(),
-            FetchError::Failed(error) => format!("an asset could not be fetched: {error}"),
-        },
-        data: None,
-    })
+    axo_relay::assets::fetch_all(&source, attachments)
+        .await
+        .map_err(|error| RpcError {
+            code: ErrorCode::ServerError(FETCH_FAILED),
+            message: match error {
+                FetchError::NotFound => "an asset is no longer in the account".into(),
+                FetchError::Mismatch => "an asset did not match its name".into(),
+                FetchError::Failed(error) => format!("an asset could not be fetched: {error}"),
+            },
+            data: None,
+        })
 }
 
 #[derive(Deserialize)]
@@ -130,8 +138,8 @@ impl From<FetchedAttachment> for FetchedFile {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_axods_own_binary_fetches_and_an_empty_slot_is_not_connected() {
+    #[tokio::test]
+    async fn only_axods_own_binary_fetches_and_an_empty_slot_is_not_connected() {
         let mut handler = IoHandler::new();
         Assets::new(Arc::default()).register(&mut handler);
         // Outside a connection nobody is axod's binary: refused before anything else.
@@ -147,7 +155,7 @@ mod tests {
         // The slot itself: empty until the relay fills it.
         let slot = AssetSlot::default();
         assert!(slot.get().is_none());
-        let refused = fetch(&slot, &Attachments::default()).unwrap_err();
+        let refused = fetch(&slot, &Attachments::default()).await.unwrap_err();
         assert_eq!(refused.code, ErrorCode::ServerError(NOT_CONNECTED));
     }
 
@@ -232,11 +240,13 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_fetched_asset_is_answered_with_where_it_now_is() {
+    #[tokio::test]
+    async fn a_fetched_asset_is_answered_with_where_it_now_is() {
         let bytes = b"a screenshot of the build".as_slice();
         let (slot, directory) = connected(&account(vec![answer("200 OK", bytes)]));
-        let fetched = fetch_files(&slot, &request(bytes, "build.png")).unwrap();
+        let fetched = fetch_files(&slot, &request(bytes, "build.png"))
+            .await
+            .unwrap();
         let file = &fetched.files[0];
         assert_eq!(std::fs::read(&file.path).unwrap(), bytes);
         assert!(file.path.ends_with("/build.png"), "{}", file.path);
@@ -248,21 +258,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(directory);
     }
 
-    #[test]
-    fn an_asset_that_is_gone_or_not_what_its_name_says_is_refused_plainly() {
+    #[tokio::test]
+    async fn an_asset_that_is_gone_or_not_what_its_name_says_is_refused_plainly() {
         let (slot, directory) = connected(&account(vec![
             answer("404 Not Found", b""),
             answer("200 OK", b"BBBBBBBBBB"),
             answer("500 Internal Server Error", b""),
         ]));
-        let refused = |bytes: &[u8]| fetch_files(&slot, &request(bytes, "a.png")).err().unwrap();
-        let gone = refused(b"gone");
+        let refused = |bytes: &'static [u8]| {
+            let slot = &slot;
+            async move {
+                fetch_files(slot, &request(bytes, "a.png"))
+                    .await
+                    .err()
+                    .unwrap()
+            }
+        };
+        let gone = refused(b"gone").await;
         assert_eq!(gone.code, ErrorCode::ServerError(FETCH_FAILED));
         assert_eq!(gone.message, "an asset is no longer in the account");
         // Same length, so only the hash tells.
-        let other = refused(b"AAAAAAAAAA");
+        let other = refused(b"AAAAAAAAAA").await;
         assert_eq!(other.message, "an asset did not match its name");
-        let failed = refused(b"broken");
+        let failed = refused(b"broken").await;
         assert!(
             failed.message.starts_with("an asset could not be fetched:"),
             "{}",
