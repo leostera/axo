@@ -116,8 +116,8 @@ pub(super) fn start_prompt(request: Value, context: &RelaySessionContext) {
 
 /// Starts a loopback sign-in; its reply goes back on this socket only.
 pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionContext) {
-    let params = match crate::signin::parse(params, &context.account_id) {
-        Ok(params) => params,
+    let request = match crate::signin::parse(params, &context.account_id) {
+        Ok(request) => request,
         Err(error) => return context.replies.reply(&id, Err(error)),
     };
     let place = match SIGN_INS.admit() {
@@ -127,12 +127,9 @@ pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionCon
     let replies = context.replies.clone();
     tokio::spawn(async move {
         // The code and the URL's parameters are never logged.
-        log::info!("event=apps.sign_in_started call={}", params.call_id);
-        let call_id = params.call_id.clone();
-        // The loopback listener is a blocking one for now.
-        let outcome = crate::signin::run(&params, axo_signin::open_in_browser)
-            .await
-            .map(|result| serde_json::to_value(result).expect("a sign-in result serializes"));
+        let call_id = &request.call_id;
+        log::info!("event=apps.sign_in_started call={call_id}");
+        let outcome = crate::signin::run(&request, axo_signin::open_in_browser).await;
         drop(place);
         log::info!(
             "event=apps.sign_in_finished call={call_id} outcome={}",

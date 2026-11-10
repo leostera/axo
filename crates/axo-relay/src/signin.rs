@@ -13,9 +13,10 @@ use serde_json::Value;
 
 pub const METHOD: &str = "axo.apps.signIn";
 
+/// A sign-in as the Worker asks for it, before it is checked.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SignInParams {
+struct SignInParams {
     /// The account that sent it; axod refuses a sign-in for any other.
     pub account_id: String,
     pub call_id: String,
@@ -28,9 +29,18 @@ pub struct SignInParams {
     pub timeout_ms: u64,
 }
 
+/// A sign-in, checked: what this Mac runs.
+#[derive(Debug)]
+pub struct SignInRequest {
+    /// The Worker's id for it, for the logs.
+    pub call_id: String,
+    pub sign_in: axo_signin::SignIn,
+}
+
+/// What the Worker reads back: the code, or the service's error.
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SignInResult {
+struct SignInResult {
     pub redirect_uri: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -43,8 +53,23 @@ pub struct SignInResult {
 /// The sign-in could not be taken: no port was free, or the redirect was not one it could read.
 const SIGN_IN_FAILED: i64 = -32009;
 
+impl From<axo_signin::Callback> for SignInResult {
+    fn from(callback: axo_signin::Callback) -> Self {
+        let (code, error, error_description) = match callback.outcome {
+            axo_signin::Outcome::Code(code) => (Some(code), None, None),
+            axo_signin::Outcome::Refused { error, description } => (None, error, description),
+        };
+        Self {
+            redirect_uri: callback.redirect_uri,
+            code,
+            error,
+            error_description,
+        }
+    }
+}
+
 /// Checks a request: `Err` is a JSON-RPC error for the reply.
-pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, MethodError> {
+pub fn parse(params: &Value, account_id: &str) -> Result<SignInRequest, MethodError> {
     let params: SignInParams =
         serde_json::from_value(params.clone()).map_err(MethodError::invalid_params)?;
     if params.account_id != account_id {
@@ -92,28 +117,26 @@ pub fn parse(params: &Value, account_id: &str) -> Result<SignInParams, MethodErr
     if params.timeout_ms == 0 || params.timeout_ms > axo_signin::MAX_TIMEOUT.as_millis() as u64 {
         return invalid("timeoutMs must be 1 to 600000");
     }
-    Ok(params)
+    Ok(SignInRequest {
+        call_id: params.call_id,
+        sign_in: axo_signin::SignIn {
+            authorize_url: params.authorize_url,
+            ports: params.ports,
+            path: params.path,
+            state: params.state,
+            timeout: Duration::from_millis(params.timeout_ms),
+        },
+    })
 }
 
-/// Runs the sign-in to its callback or its timeout.
+/// Runs the sign-in to its callback or its timeout; the reply's result is what the Worker reads.
 pub async fn run<F: std::future::Future<Output = std::io::Result<()>>>(
-    params: &SignInParams,
+    request: &SignInRequest,
     open_browser: impl FnOnce(String) -> F,
-) -> Result<SignInResult, MethodError> {
-    let request = axo_signin::SignIn {
-        authorize_url: params.authorize_url.clone(),
-        ports: params.ports.clone(),
-        path: params.path.clone(),
-        state: params.state.clone(),
-        timeout: Duration::from_millis(params.timeout_ms),
-    };
-    match axo_signin::sign_in(&request, open_browser).await {
-        Ok(callback) => Ok(SignInResult {
-            redirect_uri: callback.redirect_uri,
-            code: callback.code,
-            error: callback.error,
-            error_description: callback.error_description,
-        }),
+) -> Result<Value, MethodError> {
+    match axo_signin::sign_in(&request.sign_in, open_browser).await {
+        Ok(callback) => Ok(serde_json::to_value(SignInResult::from(callback))
+            .expect("a sign-in result serializes")),
         Err(axo_signin::SignInError::TimedOut) => Err(MethodError::new(
             TIMED_OUT,
             "the sign-in was not finished in time",
@@ -146,7 +169,31 @@ mod tests {
     #[test]
     fn a_sign_in_for_this_account_with_https_and_its_state_is_accepted() {
         let parsed = parse(&params(json!({})), "acct").unwrap();
-        assert_eq!(parsed.ports, vec![27461, 27462, 27463]);
+        assert_eq!(parsed.call_id, "call");
+        assert_eq!(parsed.sign_in.ports, vec![27461, 27462, 27463]);
+        assert_eq!(parsed.sign_in.timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn the_worker_reads_a_code_or_the_services_error() {
+        let result = |outcome| {
+            serde_json::to_value(SignInResult::from(axo_signin::Callback {
+                redirect_uri: "http://localhost:27461/callback".into(),
+                outcome,
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            result(axo_signin::Outcome::Code("c0de".into())),
+            json!({ "redirectUri": "http://localhost:27461/callback", "code": "c0de" })
+        );
+        assert_eq!(
+            result(axo_signin::Outcome::Refused {
+                error: Some("access_denied".into()),
+                description: None
+            }),
+            json!({ "redirectUri": "http://localhost:27461/callback", "error": "access_denied" })
+        );
     }
 
     #[test]

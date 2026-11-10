@@ -46,10 +46,20 @@ pub struct SignIn {
 pub struct Callback {
     /// The redirect URI the code was issued for; the token request must send the same.
     pub redirect_uri: String,
-    pub code: Option<String>,
-    /// The service's `error` and `error_description` when the person declined, or it failed.
-    pub error: Option<String>,
-    pub error_description: Option<String>,
+    pub outcome: Outcome,
+}
+
+/// How the sign-in ended at the service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Signed in: the one-time code, for the caller to exchange with its PKCE verifier.
+    Code(String),
+    /// The person declined, or the service failed: its `error` and `error_description`, when it
+    /// said.
+    Refused {
+        error: Option<String>,
+        description: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -197,28 +207,24 @@ async fn serve(mut stream: TcpStream, request: &SignIn, redirect_uri: &str) -> O
         .await;
         return None;
     }
-    let callback = Callback {
-        redirect_uri: redirect_uri.to_owned(),
-        code: value("code"),
-        error: value("error"),
-        error_description: value("error_description"),
+    let outcome = match value("code") {
+        Some(code) => Outcome::Code(code),
+        None => Outcome::Refused {
+            error: value("error"),
+            description: value("error_description"),
+        },
     };
-    if callback.code.is_some() {
-        respond(
-            &mut stream,
-            "200 OK",
-            "Signed in. You can close this tab and go back to Axo.",
-        )
-        .await;
-    } else {
-        respond(
-            &mut stream,
-            "200 OK",
-            "The sign-in did not finish. You can close this tab; Axo says what happened.",
-        )
-        .await;
-    }
-    Some(callback)
+    let message = match outcome {
+        Outcome::Code(_) => "Signed in. You can close this tab and go back to Axo.",
+        Outcome::Refused { .. } => {
+            "The sign-in did not finish. You can close this tab; Axo says what happened."
+        }
+    };
+    respond(&mut stream, "200 OK", message).await;
+    Some(Callback {
+        redirect_uri: redirect_uri.to_owned(),
+        outcome,
+    })
 }
 
 /// The request target of a `GET`, from the request line.
@@ -414,9 +420,7 @@ mod tests {
             callback,
             Callback {
                 redirect_uri: redirect,
-                code: Some("a/b c".into()),
-                error: None,
-                error_description: None
+                outcome: Outcome::Code("a/b c".into()),
             }
         );
     }
@@ -431,11 +435,12 @@ mod tests {
             "/callback?error=access_denied&error_description=The+user+declined&state=s3cr3t-state",
         );
         let callback = handle.join().unwrap().unwrap();
-        assert_eq!(callback.code, None);
-        assert_eq!(callback.error.as_deref(), Some("access_denied"));
         assert_eq!(
-            callback.error_description.as_deref(),
-            Some("The user declined")
+            callback.outcome,
+            Outcome::Refused {
+                error: Some("access_denied".into()),
+                description: Some("The user declined".into()),
+            }
         );
     }
 
@@ -449,7 +454,10 @@ mod tests {
             "http://localhost:{free}/callback"
         ))));
         get(free, "/callback?code=x&state=s3cr3t-state");
-        assert_eq!(handle.join().unwrap().unwrap().code.as_deref(), Some("x"));
+        assert_eq!(
+            handle.join().unwrap().unwrap().outcome,
+            Outcome::Code("x".into())
+        );
         let refused = block(sign_in(&request(vec![busy]), |_| async { Ok(()) })).unwrap_err();
         assert!(matches!(refused, SignInError::NoFreePort(_)), "{refused}");
     }
