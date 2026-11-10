@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatTranscript } from "./transcript.ts";
 import type { WaitingPrompt } from "./workbench.ts";
 import { conversationRows } from "./pi-controls.ts";
+import { toolGroups, type ToolGroupPlace } from "./tool-groups.ts";
 
 /**
  * One chat's conversation as the screen lists it: rows that are made once and kept, in the order
@@ -133,8 +134,15 @@ export class ConversationFeed {
         enter: row.message.enter, reveal: row.message.reveal,
         // Only a tool's row asks whether Pi is working, so only tools change as it starts and stops.
         working: row.message.message.role === "tool" && working,
+        group: null,
       }
       : { kind: "waiting", id: `pending:${row.prompt.id}`, prompt: row.prompt });
+    // Tools used one after another show as one block.
+    const places = toolGroups(wanted.map(row => ({ row, tool: row.kind === "message" ? row.message.tool : null })));
+    places.forEach((group, index) => {
+      const row = wanted[index]!;
+      if (group && row.kind === "message") wanted[index] = { ...row, group };
+    });
     this.keep(wanted, transcript, shown.length < messages.length + live.length);
 
     this.revealing = this.items.filter(item => item.row.kind === "message" && item.row.reveal !== null);
@@ -210,6 +218,8 @@ export type FeedRow =
     reveal: RowReveal | null;
     /** A tool's row only: whether Pi is working, which a running tool shows. */
     working: boolean;
+    /** A tool's row only: its place among the tools used one after another. */
+    group: ToolGroupPlace | null;
   }
   | { kind: "waiting"; id: string; prompt: WaitingPrompt };
 
@@ -253,6 +263,7 @@ function sameRow(a: FeedRow, b: FeedRow): boolean {
       && x.at === y.at && x.files.length === y.files.length && x.files.every((file, index) => file === y.files[index]));
   }
   return a.live === b.live && a.enter === b.enter && a.working === b.working
+    && a.group?.first === b.group?.first && a.group?.last === b.group?.last && a.group?.title === b.group?.title
     && a.reveal?.final === b.reveal?.final && a.reveal?.hurry === b.reveal?.hurry && (a.reveal === null) === (b.reveal === null)
     && sameMessage(a.message, b.message);
 }
@@ -264,7 +275,8 @@ function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
     && (a.files?.length ?? 0) === (b.files?.length ?? 0)
     && (a.tool === b.tool || (a.tool !== null && b.tool !== null && a.tool.callId === b.tool.callId
       && a.tool.status === b.tool.status && a.tool.output === b.tool.output && a.tool.outputTruncated === b.tool.outputTruncated
-      && a.tool.command === b.tool.command && a.tool.subtitle === b.tool.subtitle && a.tool.name === b.tool.name));
+      && a.tool.command === b.tool.command && a.tool.subtitle === b.tool.subtitle && a.tool.name === b.tool.name
+      && a.tool.input?.kind === b.tool.input?.kind && a.tool.input?.text === b.tool.input?.text));
 }
 
 type Shown = { message: ChatMessage; live: boolean; enter: boolean; reveal: RowReveal | null };

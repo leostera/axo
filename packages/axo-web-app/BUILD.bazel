@@ -76,6 +76,7 @@ node_test(
         "test/browser.test.mjs",
         "test/conversation.test.mjs",
         "test/shared-session.test.mjs",
+        "test/tools.test.mjs",
     ],
     tests_in_data = True,
 )

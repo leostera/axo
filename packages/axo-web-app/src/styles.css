@@ -189,7 +189,7 @@ button:disabled { cursor: default; }
 .conversation-header, .conversation-footer { background: none; pointer-events: none; }
 .conversation-header > *, .conversation-footer > * { pointer-events: auto; }
 .transcript { min-height: 0; flex: 1; overflow-y: auto; overflow-anchor: none; padding: 80px 20px calc(var(--footer-height, 72px) + 24px); }
-.transcript-column { display: flex; width: 100%; max-width: 760px; min-height: 100%; flex-direction: column; gap: 30px; margin: 0 auto; }
+.transcript-column { --gap: 30px; display: flex; width: 100%; max-width: 760px; min-height: 100%; flex-direction: column; gap: var(--gap); margin: 0 auto; }
 .history-note { align-self: center; margin: 0; border: 0; color: var(--secondary); background: none; font-size: 12px; }
 .history-note.link { color: var(--blue); }
 .history-note.warning { color: var(--orange); }
@@ -271,22 +271,50 @@ button:disabled { cursor: default; }
   border: 0.5px solid color-mix(in srgb, var(--tint) 32%, transparent); border-radius: 14px;
   background: color-mix(in srgb, var(--tint) 17%, transparent);
 }
-.tool-card.tool-kind-shell { border-radius: 6px; }
-.tool-card.tool-completed { --tint: var(--green); }
-.tool-card.tool-failed { --tint: var(--red); }
 .tool-heading { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
-.tool-name { flex: 1; }
+.tool-name { flex: none; }
+.tool-heading .tool-name { flex: 1; }
 .tool-badge.done { display: block; color: var(--green); }
-.tool-badge.failed { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: #fff; background: var(--red); }
-.tool-subtitle { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-.tool-command { font: 15px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tool-command.clamped { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
-.tool-output { margin: 0; color: var(--secondary); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-badge.failed { display: grid; width: 18px; height: 18px; place-items: center; border-radius: 50%; color: #fff; background: var(--red); }
 .diff-add { color: var(--green); }
 .diff-remove { color: var(--red); }
-.tool-expand { align-self: flex-start; padding: 0; border: 0; color: var(--secondary); background: none; font-size: 12px; }
-.tool-expand:hover { color: var(--text); }
-.tool-truncated { margin: 0; color: var(--secondary); font-size: 10px; }
+
+/*
+ * A tool the agent used is a row; tools used one after another are one block, its rows joined
+ * (the column's gap closed up), headed by what they did together.
+ */
+.tool-card:not(.elicitation-card) { gap: 0; padding: 0; border-radius: 0; }
+.tool-card.tool-first, .tool-card.tool-alone { border-top-left-radius: 12px; border-top-right-radius: 12px; }
+.tool-card.tool-last, .tool-card.tool-alone { border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+.tool-card:not(.tool-first):not(.tool-alone):not(.elicitation-card) { margin-top: calc(-1 * var(--gap)); border-top: 0; }
+.tool-card:not(.tool-first):not(.tool-alone):not(.elicitation-card) .tool-row { border-top: 0.5px solid color-mix(in srgb, var(--tint) 32%, transparent); }
+.tool-group-title { padding: 10px 14px 2px; color: var(--secondary); font-size: 12px; font-weight: 600; }
+.tool-row {
+  display: flex; width: 100%; min-height: 36px; align-items: center; gap: 8px; padding: 8px 14px;
+  border: 0; color: var(--text); background: none; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.tool-row > .icon { flex: none; color: var(--secondary); }
+.tool-row .tool-name { font-weight: 600; }
+.tool-preview { min-width: 0; flex: 1; overflow: hidden; color: var(--secondary); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.tool-status { display: flex; flex: none; align-items: center; }
+.tool-failed .tool-name { color: var(--red); }
+.tool-glance { display: flex; flex-direction: column; gap: 4px; padding: 0 14px 10px 38px; }
+.tool-input-preview { margin: 0; color: var(--secondary); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-last-line { overflow: hidden; color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.tool-body { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; }
+.tool-input, .tool-output {
+  max-height: 320px; margin: 0; overflow: auto; padding: 10px 12px; border-radius: 8px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.tool-output { color: var(--secondary); }
+.tool-actions { display: flex; align-items: center; gap: 12px; }
+.tool-action { padding: 0; border: 0; color: var(--blue); background: none; font-size: 12px; cursor: pointer; }
+.tool-note { margin: 0; color: var(--secondary); font-size: 11px; }
+.sheet.output-sheet { display: flex; width: min(960px, 100%); height: calc(100% - 40px); flex-direction: column; }
+.output-sheet-note { display: flex; gap: 12px; margin: 0 0 8px; color: var(--secondary); font-size: 12px; }
+.output-sheet-what { min-width: 0; flex: 1; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.output-sheet-text { min-height: 0; max-height: none; flex: 1; }
 
 /* What a Mac's agent asks the person (RFD0029): a tool card in blue, answered in place. */
 .tool-card.elicitation-card { --tint: var(--blue); }
@@ -619,7 +647,7 @@ button.grouped-row:hover { background: var(--fill); }
   .facts dd.mono { font-size: 10.5px; }
 
   .transcript { padding: 56px 24px calc(var(--footer-height, 60px) + 16px); }
-  .transcript-column { max-width: 820px; gap: 14px; }
+  .transcript-column { --gap: 14px; max-width: 820px; }
   .empty-chat-mascot { width: 92px; margin-bottom: 12px; }
   .empty-chat h2 { margin-bottom: 6px; font-size: 16.5px; }
   .empty-chat p { font-size: 13px; }
@@ -637,13 +665,16 @@ button.grouped-row:hover { background: var(--fill); }
   .md-code-language { font-size: 10px; }
   .md-table table { font-size: 12.5px; }
   .md-table th, .md-table td { padding: 4px 14px 4px 0; }
-  .tool-card { gap: 6px; padding: 9px 11px; border-radius: 10px; }
+  .tool-card.elicitation-card { gap: 6px; padding: 9px 11px; border-radius: 10px; }
   .tool-heading { gap: 6px; font-size: 12px; }
   .tool-heading .icon { width: 15px; height: 15px; }
-  .tool-subtitle { font-size: 10.5px; }
-  .tool-command { font-size: 11.5px; }
-  .tool-output { font-size: 10.5px; }
-  .tool-expand, .tool-truncated { font-size: 10.5px; }
+  .tool-row { min-height: 30px; gap: 6px; padding: 6px 11px; font-size: 12px; }
+  .tool-preview, .tool-input-preview, .tool-last-line { font-size: 10.5px; }
+  .tool-group-title { padding: 8px 11px 0; font-size: 11px; }
+  .tool-glance { padding: 0 11px 8px 32px; }
+  .tool-body { padding: 0 11px 10px; }
+  .tool-input, .tool-output { font-size: 10.5px; }
+  .tool-action, .tool-note { font-size: 10.5px; }
   .tool-badge.failed { width: 16px; height: 16px; }
   .elicitation-message { font-size: 13.5px; }
   .elicitation-actions { gap: 6px; }
@@ -667,7 +698,7 @@ button.grouped-row:hover { background: var(--fill); }
   .unseen-dot { margin-left: -8px; }
   .chat-show-more { height: 26px; padding: 0 10px; border-radius: 7px; font-size: 12px; }
   .context-menu button { font-size: 13px; }
-  .transcript-column { gap: 22px; }
+  .transcript-column { --gap: 22px; }
   .host-trouble { padding: 4px 10px; font-size: 11px; }
   .agent-activity { font-size: 13px; }
   .agent-activity-stop { width: 32px; height: 32px; }

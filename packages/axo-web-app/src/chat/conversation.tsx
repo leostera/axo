@@ -691,7 +691,7 @@ const RowView = memo(function RowView({ item, dismiss }: { item: FeedItem; dismi
   const row = item.row;
   if (row.kind === "waiting") return <PendingView prompt={row.prompt} onDismiss={() => dismiss(row.prompt.id)} />;
   return <MessageView message={row.message} working={row.working} live={row.live} enter={row.enter}
-    revealed={row.reveal ? item.revealed ?? 0 : null} />;
+    revealed={row.reveal ? item.revealed ?? 0 : null} group={row.group} />;
 });
 
 /** Typing on a touch screen, where Return has to be how a new line goes in. */

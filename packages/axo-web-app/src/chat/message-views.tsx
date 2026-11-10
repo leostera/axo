@@ -1,10 +1,12 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
-import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
+import type { ChatMessage, ChatQuestion } from "./transcript.ts";
 import type { AskedQuestion, WaitingPrompt } from "./workbench.ts";
 import { pendingLabel } from "./pi-controls.ts";
-import { Icon, type IconName } from "./icons.tsx";
+import { Icon } from "./icons.tsx";
 import { highlight } from "./highlight.ts";
+import { ToolCard } from "./tool-views.tsx";
+import type { ToolGroupPlace } from "./tool-groups.ts";
 import { noteRender } from "./render-count.ts";
 import type { InputFieldKind } from "@axo/protocol";
 
@@ -176,8 +178,10 @@ function ShareButton({ text }: { text: string }) {
  * One message. `live` is the reply still being written; `enter` is a message that arrived while the
  * chat was on screen, which comes in with a short rise; `reveal` lets a reply's words out evenly.
  */
-export const MessageView = memo(function MessageView({ message, working, live = false, enter = false, revealed = null }: {
+export const MessageView = memo(function MessageView({ message, working, live = false, enter = false, revealed = null, group = null }: {
   message: ChatMessage; working: boolean; live?: boolean; enter?: boolean;
+  /** A tool's place among the tools used one after another. */
+  group?: ToolGroupPlace | null;
   /** How many characters of its words are out, while they are let out; null when it shows whole. */
   revealed?: number | null;
 }) {
@@ -227,49 +231,9 @@ export const MessageView = memo(function MessageView({ message, working, live = 
         </div>
       );
     case "tool":
-      return message.tool ? <ToolCard tool={message.tool} working={working} enter={enter} /> : null;
+      return message.tool ? <ToolCard tool={message.tool} working={working} enter={enter} group={group} /> : null;
   }
 });
-
-const toolIcons: Record<ToolActivity["kind"], IconName> = {
-  shell: "terminal", edit: "pencil", file: "doc", search: "search", generic: "wrench",
-};
-
-/** A tool Pi used: a tinted card with what it ran; what came back stays folded until asked for. */
-function ToolCard({ tool, working, enter }: { tool: ToolActivity; working: boolean; enter: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const running = tool.status === "running" && working;
-  const lines = tool.output.split("\n");
-  const lineCount = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
-  return (
-    <div className={`tool-card tool-${tool.status} tool-kind-${tool.kind}${enter ? " message-enter" : ""}`} data-testid="tool-card">
-      <div className="tool-heading">
-        <Icon name={toolIcons[tool.kind]} size={18} />
-        <span className="tool-name">{tool.name}</span>
-        <span className="tool-status">
-          {tool.status === "completed" ? <span className="tool-badge done" aria-label="Completed"><Icon name="check" size={18} /></span>
-            : tool.status === "failed" ? <span className="tool-badge failed" aria-label="Failed"><Icon name="close" size={14} /></span>
-              : running ? <span className="spinner" aria-label="Running" /> : null}
-        </span>
-      </div>
-      {tool.subtitle ? <div className="tool-subtitle">{tool.subtitle}</div> : null}
-      {tool.command ? <div className={expanded ? "tool-command" : "tool-command clamped"}>$ {tool.command}</div> : null}
-      {tool.output && expanded ? (
-        <pre className="tool-output">
-          {tool.kind === "edit" && tool.status !== "failed"
-            ? lines.map((line, index) => <span key={index} className={line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : undefined}>{line}{"\n"}</span>)
-            : tool.output}
-        </pre>
-      ) : null}
-      {tool.output ? (
-        <button className="tool-expand" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-          {expanded ? "Hide output" : `Show output (${lineCount}${running ? ", still running" : ""})`}
-        </button>
-      ) : null}
-      {tool.outputTruncated && expanded ? <p className="tool-truncated">Output cut short here; the rest is on your Mac.</p> : null}
-    </div>
-  );
-}
 
 /** A message the agent has not recorded yet: sent from here, or queued in the log. */
 export function PendingView({ prompt, onDismiss }: { prompt: WaitingPrompt; onDismiss: () => void }) {

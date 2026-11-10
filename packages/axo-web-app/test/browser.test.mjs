@@ -620,11 +620,12 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByText("Review the latest changes.", { exact: true }));
     await expect(page.locator("strong", { hasText: "look" }));
     const tool = page.getByTestId("tool-card");
-    await expect(tool.getByText("$ git status"));
+    await expect(tool.getByText("git status", { exact: true }));
     await expect(tool.getByLabel("Completed"));
     // Output stays folded until asked for.
     assert.equal(await tool.getByText("On branch main").count(), 0);
-    await tool.getByRole("button", { name: "Show output (1 line)" }).click();
+    await tool.getByRole("button", { name: /^bash git status/ }).click();
+    await expect(tool.getByLabel("Input").getByText("$ git status"));
     await expect(tool.getByText("On branch main"));
     await shot("history");
 

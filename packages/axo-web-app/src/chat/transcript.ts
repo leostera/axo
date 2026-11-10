@@ -22,6 +22,18 @@ export interface ToolActivity {
   readonly output: string;
   /** Cut short to cross the wire; the Mac has all of it. */
   readonly outputTruncated: boolean;
+  /** What it was given, to show: none for a shared Session's tools, which do not carry it. */
+  readonly input?: ToolInput | null;
+}
+
+/**
+ * What a tool was given, as it reads best: a shell command, a script (codemode), the change an
+ * edit makes, the file a write writes, or else its arguments.
+ */
+export interface ToolInput {
+  readonly kind: "command" | "code" | "diff" | "text" | "args";
+  /** For a diff, one line per changed line, starting `-` or `+`. */
+  readonly text: string;
 }
 
 export interface ChatImage {
@@ -458,16 +470,48 @@ function toolActivity(raw: unknown): ToolActivity | null {
   const subtitle = ["path", "file_path", "pattern", "query"]
     .map(key => args?.[key]).find((value): value is string => typeof value === "string") ?? null;
   const command = typeof args?.command === "string" ? args.command : null;
+  const range = call.name === "read" ? lineRange(args) : null;
   return {
     callId: typeof call.id === "string" ? call.id : null,
     name: call.name,
     kind,
-    subtitle: kind === "shell" ? null : subtitle,
+    subtitle: kind === "shell" ? null : subtitle && range ? `${subtitle} · ${range}` : subtitle,
     command: kind === "shell" ? command : null,
     status: "running",
     output: "",
     outputTruncated: false,
+    input: toolInput(call.name, kind, args),
   };
+}
+
+/** What a tool was given, to show; null when there is nothing beyond its subtitle. */
+export function toolInput(name: string, kind: ToolKind, args: Record<string, unknown> | null): ToolInput | null {
+  if (!args) return null;
+  if (kind === "shell") return typeof args.command === "string" && args.command ? { kind: "command", text: args.command } : null;
+  if (typeof args.code === "string" && args.code) return { kind: "code", text: args.code };
+  if (name === "edit") {
+    const edits = Array.isArray(args.edits) ? args.edits.map(asObject) : [args];
+    const lines = edits.flatMap(edit => {
+      const before = edit?.oldText ?? edit?.old_string, after = edit?.newText ?? edit?.new_string;
+      if (typeof before !== "string" || typeof after !== "string") return [];
+      return [...before.split("\n").map(line => `-${line}`), ...after.split("\n").map(line => `+${line}`)];
+    });
+    return lines.length ? { kind: "diff", text: lines.join("\n") } : null;
+  }
+  if (name === "write") return typeof args.content === "string" ? { kind: "text", text: args.content } : null;
+  // Read, search and the like say all they were given in their subtitle.
+  if (kind === "file" || kind === "search") return null;
+  const shown = Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined && value !== null && value !== ""));
+  return Object.keys(shown).length ? { kind: "args", text: JSON.stringify(shown, null, 2) } : null;
+}
+
+/** The lines a read asked for, as "lines 10–59"; null for the whole file. */
+function lineRange(args: Record<string, unknown> | null): string | null {
+  const offset = typeof args?.offset === "number" ? args.offset : null;
+  const limit = typeof args?.limit === "number" ? args.limit : null;
+  if (offset === null && limit === null) return null;
+  const first = offset ?? 1;
+  return limit === null ? `from line ${first}` : `lines ${first}–${first + limit - 1}`;
 }
 
 /** The words of a message; a picture without its data (cut to cross the wire) is named. */

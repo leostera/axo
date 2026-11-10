@@ -4,32 +4,15 @@
 // AXO_WEB_BENCH=<file.json> also writes what was measured there, with where it came from.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
-import { existsSync, realpathSync, writeFileSync } from "node:fs";
-import { once } from "node:events";
-import { resolve } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
-import react from "@vitejs/plugin-react";
-import { chromium } from "playwright-core";
-import { WebSocketServer } from "ws";
-import { createServer as createViteServer } from "vite";
+import { chromePath, hostId, listed, record, sid, sleep, startApp, startCloud } from "./fake-cloud.mjs";
 
-const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
-const now = "2026-10-16T12:00:00.000Z";
-const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
-const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 /** The chat under test, and another on the same Mac. */
 const open = sid(1);
 const other = sid(2);
 /** How long the open chat is: long enough that rendering all of it on every update would show. */
 const HISTORY = 400;
-
-function record(cursor, message) {
-  const entry = { type: "message", id: `entry-${cursor}`, parentId: cursor > 1 ? `entry-${cursor - 1}` : null, timestamp: now, message };
-  return { cursor, id: entry.id, format: "pi/3", hash: `sha256:${cursor.toString(16).padStart(64, "0")}`, line: JSON.stringify(entry) };
-}
 
 const paragraph = (n) => `Step ${n}: and then the next step of the plan, with \`code\` and **bold** words, `.repeat(3);
 function history(count) {
@@ -41,77 +24,6 @@ function history(count) {
   }
   return lines;
 }
-
-function listed(sessionId, name, head) {
-  return {
-    hostId, sessionId, epoch: 1, head, status: "ready",
-    metadata: { name, emoji: null, folderName: null, hasAgent: true, createdAt: null, lastMessageAt: Math.floor(Date.now() / 1000) - 60, archived: false },
-  };
-}
-
-async function freePort() {
-  const server = createNetServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address();
-  await new Promise((done) => server.close(done));
-  return port;
-}
-
-/** A cloud with one Mac and two chats, whose socket the test drives. */
-async function startCloud() {
-  const transcripts = new Map([[open, history(HISTORY)], [other, history(4)]]);
-  const sessions = [listed(open, "Long chat", HISTORY), listed(other, "Other chat", 4)];
-  const sockets = new Set();
-  const http = createHttpServer((request, response) => {
-    response.setHeader("Content-Type", "application/json");
-    if (request.url?.startsWith("/api/v1/account/apps")) return response.end(JSON.stringify({ apps: [] }));
-    response.statusCode = 404;
-    response.end(JSON.stringify({ error: "not here" }));
-  });
-  const wss = new WebSocketServer({ noServer: true });
-  http.on("upgrade", (request, socket, head) => wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws)));
-  wss.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-    socket.on("message", (raw) => {
-      const call = JSON.parse(raw.toString());
-      if (!call.method || call.id === undefined) return;
-      const reply = (result) => socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
-      if (call.method === "axo.client.hello" && call.params.protocolVersion !== 2) {
-        return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "Invalid params" } }));
-      }
-      if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
-        return reply({ hosts: [{ hostId, hostGeneration: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230", label: "Mac", hostKind: "macos", online: true, lastSeenAt: now }], sessions });
-      }
-      if (call.method === "axo.client.session.open") {
-        const lines = transcripts.get(call.params.sessionId) ?? [];
-        const records = call.params.have ? lines.filter((line) => line.cursor > call.params.have.cursor) : lines.slice(-call.params.window.last);
-        return reply({ epoch: 1, records, cursor: lines.length, older: null, progress: [] });
-      }
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32601, message: "unknown method" } }));
-    });
-  });
-  const send = (method, params) => { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params })); };
-  return {
-    http, wss,
-    /** Writes a line of `sessionId`, as Pi would. */
-    write(sessionId, message) {
-      const lines = transcripts.get(sessionId);
-      const next = record(lines.length + 1, message);
-      lines.push(next);
-      send("axo.client.session.records", { sessionId, epoch: 1, records: [next], cursor: next.cursor });
-    },
-    progress(sessionId, snapshot) { send("axo.client.session.progress", { sessionId, slot: "message", snapshot }); },
-    status(sessionId, status) {
-      const index = sessions.findIndex((session) => session.sessionId === sessionId);
-      sessions[index] = { ...sessions[index], status };
-      send("axo.client.sessions", { hostId, sessions: [sessions[index]] });
-    },
-  };
-}
-
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** Twenty updates of a reply being written, five a second, then its record. */
 async function stream(cloud, sessionId, words = 20) {
@@ -131,31 +43,15 @@ test("a long chat renders incrementally: a reply streaming renders only itself, 
   skip: !existsSync(chromePath) && "Set CHROME_PATH to a Chrome/Chromium executable to run this browser test",
   timeout: 120_000,
 }, async () => {
-  const cloud = await startCloud();
-  let vite;
-  let browser;
+  const cloud = await startCloud(
+    new Map([[open, history(HISTORY)], [other, history(4)]]),
+    [listed(open, "Long chat", HISTORY), listed(other, "Other chat", 4)],
+  );
+  let app;
   const results = {};
   try {
-    cloud.http.listen(0, "127.0.0.1");
-    await once(cloud.http, "listening");
-    const apiPort = cloud.http.address().port;
-    const appPort = await freePort();
-    const appUrl = `http://127.0.0.1:${appPort}`;
-    vite = await createViteServer({
-      configFile: false,
-      root: siteRoot,
-      define: { "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(appUrl), __AXO_WEB_BUILD__: JSON.stringify("test") },
-      plugins: [react()],
-      resolve: { dedupe: ["react", "react-dom"], alias: { "@axo/web-app": resolve(import.meta.dirname, "../src/main.tsx") } },
-      server: {
-        host: "127.0.0.1", port: appPort, strictPort: true,
-        fs: { allow: [resolve(siteRoot, "../.."), resolve(realpathSync(resolve(siteRoot, "index.html")), "../../..")] },
-        proxy: { "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true } },
-      },
-      logLevel: "error",
-    });
-    await vite.listen();
-    browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+    app = await startApp(cloud);
+    const { appUrl, browser } = app;
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -323,9 +219,6 @@ test("a long chat renders incrementally: a reply streaming renders only itself, 
     assert.equal(results.elsewhere.renders.Message ?? 0, 0, "a reply in another chat renders no row here");
     assert.equal(results.elsewhere.renders.Growing ?? 0, 0);
   } finally {
-    await browser?.close();
-    await vite?.close();
-    cloud.wss.close();
-    await new Promise((done) => cloud.http.close(() => done()));
+    await app?.close();
   }
 });

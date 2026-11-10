@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
-import { attachmentsIn, ChatTranscript } from "../src/chat/transcript.ts";
+import { attachmentsIn, ChatTranscript, toolInput, type ToolActivity } from "../src/chat/transcript.ts";
+import { toolGroupTitle } from "../src/chat/tool-groups.ts";
 import { ConversationFeed } from "../src/chat/feed.ts";
 import { conversationRows, levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
@@ -1272,4 +1273,41 @@ test("a waiting message is a row, and only a tool's row asks whether Pi works", 
   transcript.working = true;
   feed.update(transcript, [prompt]);
   assert.equal(changed, 0);
+});
+
+// MARK: - Tools (what they were given, and the blocks they make)
+
+test("a tool shows what it was given: a command, a script, an edit's change, a file, or its arguments", () => {
+  assert.deepEqual(toolInput("bash", "shell", { command: "ls -la" }), { kind: "command", text: "ls -la" });
+  assert.deepEqual(toolInput("codemode", "generic", { code: "return 1;" }), { kind: "code", text: "return 1;" });
+  assert.deepEqual(toolInput("edit", "edit", { path: "a.ts", edits: [{ oldText: "a\nb", newText: "c" }] }), { kind: "diff", text: "-a\n-b\n+c" });
+  assert.deepEqual(toolInput("write", "edit", { path: "a.ts", content: "x" }), { kind: "text", text: "x" });
+  assert.equal(toolInput("read", "file", { path: "a.ts" }), null, "a read says it all in its subtitle");
+  assert.deepEqual(toolInput("mcp", "generic", { server: "linear", search: "" }), { kind: "args", text: '{\n  "server": "linear"\n}' });
+  const transcript = transcriptOf([said(1, "assistant", [{ type: "toolCall", id: "r", name: "read", arguments: { path: "a.ts", offset: 5, limit: 10 } }])]);
+  assert.equal(transcript.messages[0]!.tool!.subtitle, "a.ts · lines 5–14");
+});
+
+test("tools used one after another are a block, headed by what they did", () => {
+  const tool = (name: string, subtitle: string | null = null): ToolActivity => ({
+    callId: name, name, kind: "generic", subtitle, command: null, status: "completed", output: "", outputTruncated: false,
+  });
+  assert.equal(toolGroupTitle([tool("read", "a.ts"), tool("read", "b.ts"), tool("bash")]), "Read 2 files, ran a command");
+  assert.equal(toolGroupTitle([tool("edit", "a.ts"), tool("edit", "a.ts"), tool("codemode"), tool("codemode")]), "Edited a file, ran 2 scripts");
+  assert.equal(toolGroupTitle([tool("mcp"), tool("mcp"), tool("mcp")]), "Used mcp 3 times");
+
+  const transcript = transcriptOf([
+    said(1, "user", "go"),
+    said(2, "assistant", [{ type: "text", text: "Looking." }, { type: "toolCall", id: "a", name: "read", arguments: { path: "a.ts" } }, { type: "toolCall", id: "b", name: "bash", arguments: { command: "ls" } }]),
+    said(3, "assistant", [{ type: "text", text: "Now one more." }, { type: "toolCall", id: "c", name: "bash", arguments: { command: "pwd" } }]),
+  ]);
+  const feed = feedOf(transcript);
+  const places = feed.items.map(item => item.row.kind === "message" ? item.row.group : null);
+  assert.deepEqual(places, [
+    null, null,
+    { first: true, last: false, title: "Read a file, ran a command" },
+    { first: false, last: true, title: null },
+    null,
+    { first: true, last: true, title: null },
+  ]);
 });
