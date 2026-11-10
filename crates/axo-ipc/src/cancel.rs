@@ -2,15 +2,15 @@
 //!
 //! Each request gets a [`Cancellation`]. The transport cancels it when the request's connection
 //! closes before the answer is sent: per AXP §5, the caller has given up on it. A handler that
-//! waits (for the person, for the account, for Pi) reads [`current`] and either checks
-//! [`Cancellation::is_cancelled`] or registers [`Cancellation::on_cancel`] to wake itself. A
-//! handler that does not wait ignores it, and runs to the end as before.
+//! waits (for the person, for the account, for Pi) reads [`current`] and races what it waits for
+//! with [`Cancellation::cancelled`]. A handler that does not wait ignores it, and runs to the end
+//! as before.
 //!
 //! Outside a request, [`current`] is a cancellation that never fires.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// One request's cancellation. Cloning shares it.
 #[derive(Clone, Default)]
@@ -21,21 +21,13 @@ struct Inner {
     cancelled: AtomicBool,
     /// Wakes [`Cancellation::cancelled`].
     fired: tokio::sync::Notify,
-    /// What to run when it fires; taken (and so run once) by `cancel`.
-    callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Cancellation {
-    /// Fires it: runs every callback registered so far, once, and every one registered later
-    /// at once.
+    /// Fires it, once: every waiter wakes, and every later wait ends at once.
     pub fn cancel(&self) {
-        if self.0.cancelled.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        self.0.fired.notify_waiters();
-        let callbacks = std::mem::take(&mut *self.callbacks());
-        for callback in callbacks {
-            callback();
+        if !self.0.cancelled.swap(true, Ordering::SeqCst) {
+            self.0.fired.notify_waiters();
         }
     }
 
@@ -57,27 +49,6 @@ impl Cancellation {
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::SeqCst)
     }
-
-    /// Runs `callback` when this fires, or now if it already has. Callbacks run on the thread
-    /// that cancels, so they must be quick: wake a waiter, don't do its work.
-    pub fn on_cancel(&self, callback: impl FnOnce() + Send + 'static) {
-        let mut callbacks = self.callbacks();
-        // Checked under the lock `cancel` takes after setting the flag: a callback is either
-        // taken by `cancel` or run here, never neither.
-        if self.is_cancelled() {
-            drop(callbacks);
-            callback();
-            return;
-        }
-        callbacks.push(Box::new(callback));
-    }
-
-    fn callbacks(&self) -> std::sync::MutexGuard<'_, Vec<Box<dyn FnOnce() + Send>>> {
-        self.0
-            .callbacks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 }
 
 tokio::task_local! {
@@ -97,35 +68,6 @@ pub async fn scope<F: Future>(cancellation: Cancellation, request: F) -> F::Outp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
-
-    #[test]
-    fn callbacks_run_once_whether_registered_before_or_after_it_fires() {
-        let cancellation = Cancellation::default();
-        let runs = Arc::new(AtomicUsize::new(0));
-        let counted = || {
-            let runs = Arc::clone(&runs);
-            move || {
-                runs.fetch_add(1, Ordering::SeqCst);
-            }
-        };
-        cancellation.on_cancel(counted());
-        assert_eq!(runs.load(Ordering::SeqCst), 0);
-        cancellation.cancel();
-        cancellation.cancel();
-        assert_eq!(
-            runs.load(Ordering::SeqCst),
-            1,
-            "fired once, however often it is cancelled"
-        );
-        cancellation.on_cancel(counted());
-        assert_eq!(
-            runs.load(Ordering::SeqCst),
-            2,
-            "a late callback runs at once"
-        );
-        assert!(cancellation.is_cancelled());
-    }
 
     #[test]
     fn waiting_for_it_ends_when_it_fires_or_at_once_after() {

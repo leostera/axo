@@ -1333,7 +1333,13 @@ mod tests {
         axod.add_typed(method::ELICITATION_REQUEST, "", move |_: Value| {
             let told = told.clone();
             let cancellation = axo_ipc::cancel::current();
-            cancellation.on_cancel(move || {
+            // Watched from outside the handler, whose future goes with the server.
+            let watched = cancellation.clone();
+            thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(watched.cancelled());
                 let _ = told.send(true);
             });
             async move {

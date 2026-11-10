@@ -807,17 +807,17 @@ pub(crate) async fn prompt_from_client(
 /// is cancelled. It waits on the catalog; nothing polls.
 pub(crate) async fn wait_for_pi(core: &Core, id: SessionId, timeout: Duration) -> io::Result<()> {
     let mut catalog = core.catalog.subscribe();
-    let cancelled = Arc::new(tokio::sync::Notify::new());
-    let wake = Arc::clone(&cancelled);
     let cancellation = axo_ipc::cancel::current();
-    cancellation.on_cancel(move || wake.notify_one());
+    let cancelled = || {
+        io::Error::new(
+            io::ErrorKind::Interrupted,
+            "the prompt was cancelled while Pi started",
+        )
+    };
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if cancellation.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "the prompt was cancelled while Pi started",
-            ));
+            return Err(cancelled());
         }
         match catalog
             .borrow_and_update()
@@ -832,7 +832,7 @@ pub(crate) async fn wait_for_pi(core: &Core, id: SessionId, timeout: Duration) -
         tokio::select! {
             changed = catalog.changed() => if changed.is_err() { return Err(PromptError::NoPi.into()) },
             () = tokio::time::sleep_until(deadline) => return Err(prompts::still_starting()),
-            () = cancelled.notified() => {}
+            () = cancellation.cancelled() => return Err(cancelled()),
         }
     }
 }
