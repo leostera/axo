@@ -653,16 +653,10 @@ impl ComputerUse {
         let socket = host.agent_socket().ok_or_else(|| {
             MethodError::new(error_code::INTERNAL_ERROR, "axod has no socket yet")
         })?;
-        let gate = Arc::new(axo_computer::gate::for_socket(&socket));
-        let verdict = {
-            let (gate, tool, args, confirm) = (
-                Arc::clone(&gate),
-                request.tool.clone(),
-                request.args.clone(),
-                request.confirm,
-            );
-            off_runtime(move || gate.check(&tool, &args, confirm)).await
-        };
+        let gate = off_runtime(move || axo_computer::gate::for_socket(&socket)).await;
+        let verdict = gate
+            .check(&request.tool, &request.args, request.confirm)
+            .await;
         if let axo_computer::gate::Verdict::Ask(question) = verdict {
             ask_for_computer(host, request, &question).await?;
         }

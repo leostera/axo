@@ -12,13 +12,13 @@
 //! loads it again on demand.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axo_pty::exit::WatchedChild;
@@ -80,6 +80,7 @@ pub struct Infer {
     pub run: PathBuf,
     /// The side-car and the download this process started, reaped once they exit.
     children: Arc<Mutex<Children>>,
+    starting: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Default)]
@@ -137,6 +138,7 @@ impl Infer {
             models,
             run,
             children: Arc::default(),
+            starting: Arc::default(),
         }
     }
 
@@ -229,11 +231,13 @@ impl Infer {
 
     /// Asks a `systemone` request (`{ state, images?, questions }`) and returns its `answers`:
     /// for each question, `{ type, <type>: probability or choice probabilities }`.
-    pub fn ask(&self, request: &Value) -> Result<Value, InferError> {
-        self.installed()?;
-        self.ensure_running()?;
+    pub async fn ask(&self, request: &Value) -> Result<Value, InferError> {
+        let infer = self.clone();
+        blocking(move || infer.installed()).await?;
+        self.ensure_running().await?;
         let body = serde_json::to_vec(request).map_err(|e| InferError::Failed(e.to_string()))?;
         let reply = http(&self.socket(), "POST", "/v1/systemone", &body, ASK_TIMEOUT)
+            .await
             .map_err(|e| InferError::Failed(e.to_string()))?;
         if reply.status != 200 {
             return Err(InferError::Failed(format!(
@@ -251,14 +255,35 @@ impl Infer {
     }
 
     /// Starts the side-car unless one is running, and waits until it answers.
-    fn ensure_running(&self) -> Result<(), InferError> {
-        // Held throughout, so questions asked together start one side-car and wait for it.
+    async fn ensure_running(&self) -> Result<(), InferError> {
+        let _starting = self.starting.lock().await;
+        let infer = self.clone();
+        let watch = blocking(move || infer.prepare_start()).await?;
+        let deadline = Instant::now() + START_TIMEOUT;
+        loop {
+            if self.healthy().await {
+                return Ok(());
+            }
+            let infer = self.clone();
+            if blocking(move || infer.died_without_lock()).await {
+                return Err(InferError::Failed(format!(
+                    "axod-infer exited; see {}",
+                    self.run.join("infer.log").display()
+                )));
+            }
+            if !watch.wait_until(deadline).await {
+                return Err(InferError::Failed(
+                    "axod-infer did not start in time".into(),
+                ));
+            }
+        }
+    }
+
+    /// Process ownership and filesystem setup block, but no cold-start wait does.
+    fn prepare_start(&self) -> Result<StartWatch, InferError> {
         let mut children = self.lock_children();
         if !children.side_car_running() {
             self.stop_left_running();
-        }
-        if self.healthy() {
-            return Ok(());
         }
         std::fs::create_dir_all(&self.run).map_err(|e| InferError::Failed(e.to_string()))?;
         let lock = OpenOptions::new()
@@ -270,28 +295,8 @@ impl Infer {
         if try_lock(&lock) {
             children.side_car = Some(self.start(lock)?);
         }
-        // It says nothing when it is ready, but everything that leads there shows: its socket
-        // appears in the run directory, its log grows as the model loads, or it exits. So it is
-        // asked only then.
-        let watch = StartWatch::new(&self.run, children.side_car.as_ref())
-            .map_err(|e| InferError::Failed(e.to_string()))?;
-        let deadline = Instant::now() + START_TIMEOUT;
-        loop {
-            if self.healthy() {
-                return Ok(());
-            }
-            if self.died_without_lock() {
-                return Err(InferError::Failed(format!(
-                    "axod-infer exited; see {}",
-                    self.run.join("infer.log").display()
-                )));
-            }
-            if !watch.wait_until(deadline) {
-                return Err(InferError::Failed(
-                    "axod-infer did not start in time".into(),
-                ));
-            }
-        }
+        StartWatch::new(&self.run, children.side_car.as_ref())
+            .map_err(|e| InferError::Failed(e.to_string()))
     }
 
     fn lock_children(&self) -> std::sync::MutexGuard<'_, Children> {
@@ -335,7 +340,7 @@ impl Infer {
             .unwrap_or(true)
     }
 
-    fn healthy(&self) -> bool {
+    async fn healthy(&self) -> bool {
         http(
             &self.socket(),
             "GET",
@@ -343,6 +348,7 @@ impl Infer {
             &[],
             Duration::from_secs(2),
         )
+        .await
         .is_ok_and(|reply| reply.status == 200)
     }
 
@@ -387,18 +393,19 @@ impl Infer {
 /// directory (its socket appearing, its log growing as the model loads), through `notify`, and
 /// its exit when this process started it.
 struct StartWatch {
-    happened: mpsc::Receiver<()>,
+    happened: Arc<tokio::sync::Notify>,
     _watcher: notify::RecommendedWatcher,
 }
 
 impl StartWatch {
     fn new(run: &Path, started: Option<&WatchedChild>) -> io::Result<Self> {
-        let (happen, happened) = mpsc::channel();
+        let happened = Arc::new(tokio::sync::Notify::new());
+        let happen = Arc::clone(&happened);
         let telling = happen.clone();
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if !matches!(event, Ok(ref event) if matches!(event.kind, notify::EventKind::Access(_)))
             {
-                let _ = telling.send(());
+                telling.notify_one();
             }
         })
         .map_err(io::Error::other)?;
@@ -407,7 +414,7 @@ impl StartWatch {
             .map_err(io::Error::other)?;
         if let Some(child) = started {
             child.exit().on_exit(move || {
-                let _ = happen.send(());
+                happen.notify_one();
             });
         }
         Ok(Self {
@@ -417,15 +424,11 @@ impl StartWatch {
     }
 
     /// Waits for something to happen; false once `deadline` has passed.
-    fn wait_until(&self, deadline: Instant) -> bool {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return false;
-        }
-        let _ = self.happened.recv_timeout(left);
-        // Several events may have come at once; one look covers them all.
-        while self.happened.try_recv().is_ok() {}
-        true
+    async fn wait_until(&self, deadline: Instant) -> bool {
+        let deadline = tokio::time::Instant::from_std(deadline);
+        tokio::time::timeout_at(deadline, self.happened.notified())
+            .await
+            .is_ok()
     }
 }
 
@@ -504,25 +507,29 @@ struct Reply {
 }
 
 /// One HTTP/1.1 request over a Unix socket; the server closes the connection after it.
-fn http(
+async fn http(
     socket: &Path,
     method: &str,
     path: &str,
     body: &[u8],
     timeout: Duration,
 ) -> io::Result<Reply> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: axod-infer\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(body)?;
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw)?;
-    parse_reply(&raw)
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let exchange = async {
+        let mut stream = tokio::net::UnixStream::connect(socket).await?;
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nHost: axod-infer\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(body).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        parse_reply(&raw)
+    };
+    tokio::time::timeout(timeout, exchange)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local inference timed out"))?
 }
 
 fn parse_reply(raw: &[u8]) -> io::Result<Reply> {
@@ -563,9 +570,24 @@ fn dechunk(mut data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+async fn blocking<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    fn block<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
 
     fn run_directory() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -578,21 +600,50 @@ mod tests {
         run
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_an_inference_request_closes_its_stalled_socket() {
+        use tokio::io::AsyncReadExt;
+        let run = run_directory();
+        let socket = run.join("test.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let request = tokio::spawn(async move {
+            http(
+                &socket,
+                "POST",
+                "/v1/systemone",
+                b"{}",
+                Duration::from_secs(30),
+            )
+            .await
+        });
+        let (mut server, _) = listener.accept().await.unwrap();
+        let mut byte = [0];
+        assert_eq!(server.read(&mut byte).await.unwrap(), 1);
+        assert!(!request.is_finished());
+        request.abort();
+        assert!(matches!(request.await, Err(error) if error.is_cancelled()));
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), server.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(listener);
+        std::fs::remove_dir_all(run).unwrap();
+    }
+
     #[test]
     fn a_starting_side_car_is_looked_at_again_when_it_does_something() {
         let run = run_directory();
         std::fs::write(run.join("infer.log"), "").unwrap();
         let watch = StartWatch::new(&run, None).unwrap();
         // FSEvents also reports what happened just before the watch: the log's creation.
-        while watch
-            .happened
-            .recv_timeout(Duration::from_millis(200))
-            .is_ok()
-        {}
+        while block(watch.wait_until(Instant::now() + Duration::from_millis(200))) {}
         // Nothing happens: it sleeps until the deadline.
         let started = Instant::now();
-        assert!(!watch.wait_until(Instant::now()));
-        assert!(watch.wait_until(started + Duration::from_millis(100)));
+        assert!(!block(watch.wait_until(Instant::now())));
+        assert!(!block(
+            watch.wait_until(started + Duration::from_millis(100))
+        ));
         assert!(started.elapsed() >= Duration::from_millis(90));
         // The log grows (the model loading), or the socket appears: it wakes at once.
         for happen in [
@@ -611,7 +662,7 @@ mod tests {
                 happen(&happening);
             });
             let started = Instant::now();
-            assert!(watch.wait_until(started + Duration::from_secs(30)));
+            assert!(block(watch.wait_until(started + Duration::from_secs(30))));
             assert!(started.elapsed() < Duration::from_secs(10));
             writer.join().unwrap();
         }
@@ -619,13 +670,9 @@ mod tests {
         let mut child =
             WatchedChild::new(Command::new("/bin/sleep").arg("0.3").spawn().unwrap()).unwrap();
         let watch = StartWatch::new(&run, Some(&child)).unwrap();
-        while watch
-            .happened
-            .recv_timeout(Duration::from_millis(100))
-            .is_ok()
-        {}
+        while block(watch.wait_until(Instant::now() + Duration::from_millis(100))) {}
         let started = Instant::now();
-        assert!(watch.wait_until(started + Duration::from_secs(30)));
+        assert!(block(watch.wait_until(started + Duration::from_secs(30))));
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(child.exit().has_exited());
         child.wait().unwrap();
@@ -652,7 +699,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("axod-infer-test-{}", std::process::id()));
         let infer = Infer::new(dir.join("axod-infer"), dir.join("models"), dir.join("run"));
         assert!(matches!(
-            infer.ask(&serde_json::json!({})),
+            block(infer.ask(&serde_json::json!({}))),
             Err(InferError::Unavailable(_))
         ));
     }
@@ -695,7 +742,7 @@ while True:
     #[test]
     fn the_side_car_is_started_once_as_this_processs_child() {
         let infer = fake_infer();
-        infer.ensure_running().unwrap();
+        block(infer.ensure_running()).unwrap();
         let pid = serving_pid(&infer);
         let guard = infer.lock_children().side_car.as_ref().unwrap().id() as i32;
         // SAFETY: getppid-like lookup of a process this test started.
@@ -718,7 +765,7 @@ while True:
             parent, guard,
             "the side-car runs under this process's guard"
         );
-        infer.ensure_running().unwrap();
+        block(infer.ensure_running()).unwrap();
         assert_eq!(
             serving_pid(&infer),
             pid,
@@ -751,12 +798,12 @@ while True:
         let mut stranger = command.spawn().unwrap();
         drop(lock);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !infer.healthy() {
+        while !block(infer.healthy()) {
             assert!(Instant::now() < deadline, "the stranger never served");
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        infer.ensure_running().unwrap();
+        block(infer.ensure_running()).unwrap();
         assert!(stranger.wait().is_ok());
         let pid = serving_pid(&infer);
         assert_ne!(pid as u32, stranger.id());

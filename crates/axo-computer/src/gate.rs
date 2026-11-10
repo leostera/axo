@@ -16,7 +16,9 @@
 //! otherwise.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 
 use axod_infer::{Infer, InferError};
@@ -132,18 +134,24 @@ pub fn for_socket(socket: &Path) -> &'static Gate {
 /// What decides a flagged action; Clef on this Mac in production.
 pub trait Judge: Send + Sync {
     /// The probability that `action` in `window` is destructive or hard to undo.
-    fn risky(&self, action: &str, window: &str) -> Result<f64, InferError>;
+    fn risky<'a>(&'a self, action: &'a str, window: &'a str) -> JudgeFuture<'a>;
 }
 
+pub type JudgeFuture<'a> = Pin<Box<dyn Future<Output = Result<f64, InferError>> + Send + 'a>>;
+
 impl Judge for Infer {
-    fn risky(&self, action: &str, window: &str) -> Result<f64, InferError> {
-        let answers = self.ask(&json!({
-            "state": { "action": action, "window": window },
-            "questions": { "risky": { "type": "noul", "instructions": RISK_QUESTION } },
-        }))?;
-        answers["risky"]["noul"]
-            .as_f64()
-            .ok_or_else(|| InferError::Failed(format!("no probability in {answers}")))
+    fn risky<'a>(&'a self, action: &'a str, window: &'a str) -> JudgeFuture<'a> {
+        Box::pin(async move {
+            let answers = self
+                .ask(&json!({
+                    "state": { "action": action, "window": window },
+                    "questions": { "risky": { "type": "noul", "instructions": RISK_QUESTION } },
+                }))
+                .await?;
+            answers["risky"]["noul"]
+                .as_f64()
+                .ok_or_else(|| InferError::Failed(format!("no probability in {answers}")))
+        })
     }
 }
 
@@ -199,7 +207,7 @@ impl Gate {
 
     /// Decides one call. `asked_for` is the agent's `confirm: true`: it can only make the gate
     /// ask, never let a call through.
-    pub fn check(&self, tool: &str, args: &Value, asked_for: bool) -> Verdict {
+    pub async fn check(&self, tool: &str, args: &Value, asked_for: bool) -> Verdict {
         let actions = self.describe(tool, args);
         if asked_for {
             log::info!("event=computer.gate_asked reason=agent");
@@ -215,7 +223,7 @@ impl Gate {
             actions.iter().filter(|(action, _)| flags(action)).collect();
         for (action, window) in flagged {
             let judged = match &self.judge {
-                Some(judge) => judge.risky(action, window),
+                Some(judge) => judge.risky(action, window).await,
                 None => Err(InferError::Unavailable("no local model".into())),
             };
             match judged {
@@ -388,14 +396,21 @@ fn question(actions: &[(String, String)], why: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn block<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Fixed(f64, Arc<AtomicUsize>);
     impl Judge for Fixed {
-        fn risky(&self, _: &str, _: &str) -> Result<f64, InferError> {
+        fn risky<'a>(&'a self, _: &'a str, _: &'a str) -> JudgeFuture<'a> {
             self.1.fetch_add(1, Ordering::SeqCst);
-            Ok(self.0)
+            Box::pin(std::future::ready(Ok(self.0)))
         }
     }
 
@@ -419,13 +434,13 @@ mod tests {
     fn harmless_actions_are_never_checked() {
         let (gate, calls) = gate(0.99);
         let click = json!({ "pid": 7, "window_id": 9, "element_token": "s1:5" });
-        assert_eq!(gate.check("click", &click, false), Verdict::Allow);
+        assert_eq!(block(gate.check("click", &click, false)), Verdict::Allow);
         assert_eq!(
-            gate.check("get_window_state", &json!({}), false),
+            block(gate.check("get_window_state", &json!({}), false)),
             Verdict::Allow
         );
         assert_eq!(
-            gate.check("type_text", &json!({ "text": "hello there" }), false),
+            block(gate.check("type_text", &json!({ "text": "hello there" }), false)),
             Verdict::Allow
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -435,7 +450,7 @@ mod tests {
     fn a_flagged_action_runs_only_if_clef_finds_it_harmless_or_the_person_is_asked() {
         let click = json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" });
         let (risky, _) = gate(0.97);
-        let Verdict::Ask(question) = risky.check("click", &click, false) else {
+        let Verdict::Ask(question) = block(risky.check("click", &click, false)) else {
             panic!("the person must be asked about a risky click");
         };
         assert!(
@@ -444,7 +459,10 @@ mod tests {
         );
         assert!(question.contains("97%"), "{question}");
         let (harmless, calls) = gate(0.02);
-        assert_eq!(harmless.check("click", &click, false), Verdict::Allow);
+        assert_eq!(
+            block(harmless.check("click", &click, false)),
+            Verdict::Allow
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -454,7 +472,7 @@ mod tests {
         let delete = json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" });
         let cancel = json!({ "pid": 7, "window_id": 9, "element_token": "s1:5" });
         for args in [&delete, &cancel] {
-            let Verdict::Ask(question) = gate.check("click", args, true) else {
+            let Verdict::Ask(question) = block(gate.check("click", args, true)) else {
                 panic!("confirm: true must ask the person");
             };
             assert!(question.contains("The agent asked"), "{question}");
@@ -470,7 +488,10 @@ mod tests {
     fn without_a_local_model_the_flag_alone_asks() {
         let gate = Gate::new(None);
         let send = json!({ "role": "AXButton", "name": "Send" });
-        assert!(matches!(gate.check("click", &send, false), Verdict::Ask(_)));
+        assert!(matches!(
+            block(gate.check("click", &send, false)),
+            Verdict::Ask(_)
+        ));
     }
 
     #[test]
@@ -494,12 +515,12 @@ mod tests {
             { "press_key": { "key": "return" } },
         ] });
         assert!(matches!(
-            gate.check("run_steps", &steps, false),
+            block(gate.check("run_steps", &steps, false)),
             Verdict::Ask(_)
         ));
         let script = json!({ "script": "await click({ role: 'AXButton', name: 'Empty Trash' })" });
         assert!(matches!(
-            gate.check("run_script", &script, false),
+            block(gate.check("run_script", &script, false)),
             Verdict::Ask(_)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);

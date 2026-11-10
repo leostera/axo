@@ -1022,17 +1022,14 @@ impl McpServer {
             Some(Value::Bool(true)) => true,
             Some(_) => return tool_error("confirm must be true or false"),
         };
-        // The gate's judge and Cua's calls block: they run on the blocking pool.
-        let verdict = {
-            let (socket, tool, args) = (self.socket.clone(), tool.to_owned(), args.clone());
-            tokio::task::spawn_blocking(move || {
-                axo_computer::gate::for_socket(&socket).check(&tool, &args, asked_for)
-            })
-            .await
-        };
-        let Ok(verdict) = verdict else {
+        // Gate initialization may inspect files or start a download; inference itself is async.
+        let socket = self.socket.clone();
+        let gate =
+            tokio::task::spawn_blocking(move || axo_computer::gate::for_socket(&socket)).await;
+        let Ok(gate) = gate else {
             return tool_error("the computer-use check failed");
         };
+        let verdict = gate.check(tool, &args, asked_for).await;
         let asked = match verdict {
             axo_computer::gate::Verdict::Allow => false,
             axo_computer::gate::Verdict::Ask(question) => {

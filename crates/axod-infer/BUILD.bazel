@@ -13,6 +13,7 @@ rust_library(
         "@crates//:notify",
         "@crates//:log",
         "@crates//:serde_json",
+        "@crates//:tokio",
     ],
 )
 
