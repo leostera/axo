@@ -63,7 +63,6 @@ pub struct RelayWorker {
     stop: Stop,
     control: Arc<RelayControl>,
     channel: Arc<RelayChannel>,
-    runtime: tokio::runtime::Handle,
     task: Option<tokio::task::JoinHandle<()>>,
     waker: SyncWaker,
     /// Uploads every Session's transcript while the socket is open (RFD0018).
@@ -145,7 +144,6 @@ impl RelayWorker {
             stop,
             control,
             channel,
-            runtime,
             task: Some(task),
             waker,
             sync,
@@ -162,25 +160,25 @@ impl RelayWorker {
         Arc::clone(&self.channel)
     }
 
-    /// Stops the connection and waits for it to close. Call it from outside the runtime.
-    pub fn shutdown(&mut self) {
+    /// Stops the connection and waits for it to close. Await it on axod's runtime.
+    pub async fn shutdown(&mut self) {
         self.stop.stop();
         self.waker.wake();
-        if let Some(task) = self.task.take() {
-            self.runtime.block_on(async {
-                let _ = tokio::time::timeout(SHUTDOWN_WAIT, task).await;
-            });
-        }
-        self.sync.join();
+        crate::finish_task(&mut self.task, SHUTDOWN_WAIT).await;
+        self.sync.join().await;
         if let Some(peers) = &mut self.peers {
-            peers.join();
+            peers.join().await;
         }
     }
 }
 
 impl Drop for RelayWorker {
     fn drop(&mut self) {
-        self.shutdown();
+        self.stop.stop();
+        self.waker.wake();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 

@@ -76,7 +76,6 @@ pub struct PeersDependencies {
 }
 
 pub struct PeersWorker {
-    runtime: tokio::runtime::Handle,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -91,18 +90,19 @@ impl PeersWorker {
         stop: axo_ipc::Stop,
     ) -> io::Result<Self> {
         let task = runtime.spawn(run(dependencies, stop));
-        Ok(Self {
-            runtime,
-            task: Some(task),
-        })
+        Ok(Self { task: Some(task) })
     }
 
-    /// Waits for the socket to close once axod stops. Call it from outside the runtime.
-    pub fn join(&mut self) {
-        if let Some(task) = self.task.take() {
-            self.runtime.block_on(async {
-                let _ = tokio::time::timeout(SHUTDOWN_WAIT, task).await;
-            });
+    /// Waits for the socket to close once axod stops. Await it on axod's runtime.
+    pub async fn join(&mut self) {
+        crate::finish_task(&mut self.task, SHUTDOWN_WAIT).await;
+    }
+}
+
+impl Drop for PeersWorker {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
         }
     }
 }

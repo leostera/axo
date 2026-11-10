@@ -117,7 +117,6 @@ impl SyncWaker {
 /// The uploader: a task on axod's runtime. Its turns wait for the cloud's acknowledgements in
 /// order; reading transcripts goes to the blocking pool.
 pub struct SyncWorker {
-    runtime: tokio::runtime::Handle,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -171,19 +170,19 @@ impl SyncWorker {
                 catalog_changed = waker.take_catalog_changed();
             }
         });
-        Ok(Self {
-            runtime,
-            task: Some(task),
-        })
+        Ok(Self { task: Some(task) })
     }
 
-    /// Waits for the uploader to finish its turn once axod stops. Call it from outside the
-    /// runtime.
-    pub fn join(&mut self) {
-        if let Some(task) = self.task.take() {
-            self.runtime.block_on(async {
-                let _ = tokio::time::timeout(SHUTDOWN_WAIT, task).await;
-            });
+    /// Waits for the uploader to finish its turn once axod stops.
+    pub async fn join(&mut self) {
+        crate::finish_task(&mut self.task, SHUTDOWN_WAIT).await;
+    }
+}
+
+impl Drop for SyncWorker {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
         }
     }
 }

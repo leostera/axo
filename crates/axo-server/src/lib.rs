@@ -324,10 +324,12 @@ pub fn serve_ipc(
     });
     let served = axo_ipc::serve(runtime.handle(), listener, handler, upgrades, stop.clone());
     stop.stop();
-    if let Some(relay) = remote_relay.as_mut() {
-        relay.shutdown();
-    }
-    runtime.block_on(sessions::stop(&core));
+    runtime.block_on(async {
+        if let Some(relay) = remote_relay.as_mut() {
+            relay.shutdown().await;
+        }
+        sessions::stop(&core).await;
+    });
     attachments::remove_socket(&core.attach_socket_path);
     // Requests still running get a moment to finish; then they are cut short.
     runtime.shutdown_timeout(SHUTDOWN_GRACE);

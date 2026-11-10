@@ -173,7 +173,7 @@ impl Drop for World {
         self.stop.stop();
         self.waker.wake();
         if let Some(mut worker) = self.worker.take() {
-            worker.join();
+            self.runtime.as_ref().unwrap().block_on(worker.join());
         }
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_timeout(Duration::from_secs(1));

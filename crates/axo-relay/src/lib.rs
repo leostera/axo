@@ -38,3 +38,34 @@ pub(crate) async fn blocking<R: Send + 'static>(work: impl FnOnce() -> R + Send 
         Err(error) => std::panic::resume_unwind(error.into_panic()),
     }
 }
+
+/// Gives a worker time to close normally, then cancels and joins it rather than detaching it.
+async fn finish_task(task: &mut Option<tokio::task::JoinHandle<()>>, wait: std::time::Duration) {
+    if let Some(mut task) = task.take() {
+        if tokio::time::timeout(wait, &mut task).await.is_err() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    #[tokio::test]
+    async fn shutdown_cancels_and_joins_a_worker_that_never_finishes() {
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (held, released) = tokio::sync::oneshot::channel::<()>();
+        let mut task = Some(tokio::spawn(async move {
+            let _held = held;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        }));
+        ready.await.unwrap();
+        super::finish_task(&mut task, std::time::Duration::ZERO).await;
+        assert!(task.is_none());
+        assert!(
+            released.await.is_err(),
+            "a timed-out worker must not remain detached"
+        );
+    }
+}
