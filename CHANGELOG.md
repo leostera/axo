@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.49 (Mac app build 320, axod 72)
+
+### Changed
+
+- Waiting for answers, other Macs, sign-ins, files and the local model no longer holds a thread in axod. The relay and extension methods run asynchronously on the daemon's runtime (RFD0042), keeping the cloud connection responsive while a call waits.
+
+### Fixed
+
+- A question is withdrawn even when its agent exits by dropping the waiting call. Cancelled cloud requests are forgotten immediately, and sign-in and relay tasks are cancelled rather than left behind during shutdown.
+- Stopping axod or its model guard kills and reaps the model even if it ignores SIGTERM; it cannot outlive the guard.
+
 ## 0.48 (Mac app build 319, axod 71)
 
 ### Changed
