@@ -7,6 +7,7 @@ Pseudo-terminals for axod: launching programs on a PTY, the permanent output pum
 | `process` | `PtyProcess`: opening a PTY (retrying the kernel's `EREDRIVEOPEN` race), launching a session leader on it, resizing, input, `stop_all` |
 | `output` | `TerminalOutput`: the one pump per shell that feeds every byte to its headless terminal (`axo-vt`), publishes it, and fans it out |
 | `attach` | Attach protocol v2, both ends: replay length, the PTY master over `SCM_RIGHTS`, then replay and live bytes |
+| `lifeline` | `Lifeline`: the pipe whose end, when axod ends, ends every process it started; `guarded` runs a program that cannot watch one under a shell that does |
 | `command` | Configured command lines (`shell.command`, `agent.command`) and finding their executables |
 
 ## Rules

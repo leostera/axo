@@ -4,10 +4,12 @@
 //!
 //! The model runs in `axod-infer`, our pinned `llama-server` build next to axod in
 //! `Axo.app/Contents/Helpers`, as a side-car: a crash in Metal or the model cannot take axod and
-//! its Sessions down. Whichever process first needs it starts it, detached, holding an exclusive
-//! lock on `infer.lock`; the lock lives exactly as long as the side-car, so there is never more
-//! than one, and a crashed one is started again on the next question. The side-car unloads the
-//! model after ten idle minutes (`--sleep-idle-seconds`) and loads it again on demand.
+//! its Sessions down. axod starts it on the first question, as its child under the lifeline
+//! (RFD0041): it ends with axod, however axod ends. It holds an exclusive lock on `infer.lock`
+//! that lives exactly as long as it does, so there is never more than one; a crashed one is
+//! started again on the next question, and one an earlier axod left running is killed and
+//! replaced. The side-car unloads the model after ten idle minutes (`--sleep-idle-seconds`) and
+//! loads it again on demand.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -16,10 +18,11 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use axo_pty::exit::WatchedChild;
+use axo_pty::lifeline::Lifeline;
 use notify::Watcher;
 
 use serde_json::Value;
@@ -75,6 +78,39 @@ pub struct Infer {
     pub models: PathBuf,
     /// Holds `infer.sock`, `infer.lock` and `infer.log`.
     pub run: PathBuf,
+    /// The side-car and the download this process started, reaped once they exit.
+    children: Arc<Mutex<Children>>,
+}
+
+#[derive(Debug, Default)]
+struct Children {
+    side_car: Option<WatchedChild>,
+    download: Option<WatchedChild>,
+}
+
+impl Children {
+    /// Reaps whichever has exited; true while the side-car this process started still runs.
+    fn side_car_running(&mut self) -> bool {
+        for slot in [&mut self.side_car, &mut self.download] {
+            if slot
+                .as_mut()
+                .is_some_and(|child| !matches!(child.try_wait(), Ok(None)))
+            {
+                *slot = None;
+            }
+        }
+        self.side_car.is_some()
+    }
+}
+
+/// The pipe whose end, when this process ends, stops what it started here.
+fn lifeline() -> io::Result<&'static Lifeline> {
+    static LIFELINE: OnceLock<Lifeline> = OnceLock::new();
+    if let Some(lifeline) = LIFELINE.get() {
+        return Ok(lifeline);
+    }
+    let lifeline = Lifeline::new()?;
+    Ok(LIFELINE.get_or_init(|| lifeline))
 }
 
 #[derive(Debug)]
@@ -95,15 +131,24 @@ impl std::fmt::Display for InferError {
 }
 
 impl Infer {
+    pub fn new(helper: PathBuf, models: PathBuf, run: PathBuf) -> Self {
+        Self {
+            helper,
+            models,
+            run,
+            children: Arc::default(),
+        }
+    }
+
     /// The side-car next to this executable, Axo's models directory and axod's run directory.
     pub fn beside_current_exe(run: &Path) -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
         let home = std::env::var_os("HOME")?;
-        Some(Self {
-            helper: exe.parent()?.join("axod-infer"),
-            models: PathBuf::from(home).join("Library/Application Support/Axo/models/clef-flash"),
-            run: run.to_path_buf(),
-        })
+        Some(Self::new(
+            exe.parent()?.join("axod-infer"),
+            PathBuf::from(home).join("Library/Application Support/Axo/models/clef-flash"),
+            run.to_path_buf(),
+        ))
     }
 
     pub fn socket(&self) -> PathBuf {
@@ -159,7 +204,9 @@ impl Infer {
             return Err("a download is already running".into());
         }
         let log = File::create(self.models.join("download.log")).map_err(|e| e.to_string())?;
-        let mut command = Command::new("/bin/sh");
+        let mut command = lifeline()
+            .map_err(|e| e.to_string())?
+            .guarded(Path::new("/bin/sh"));
         command
             .arg("-c")
             .arg(DOWNLOAD_SCRIPT)
@@ -172,9 +219,11 @@ impl Infer {
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
             .stderr(log);
-        detach_holding(&mut command, lock.as_raw_fd());
+        hold(&mut command, lock.as_raw_fd());
         let child = command.spawn().map_err(|e| e.to_string())?;
         log::info!("event=infer.model_download_started pid={}", child.id());
+        let child = WatchedChild::new(child).map_err(|e| e.to_string())?;
+        self.lock_children().download = Some(child);
         Ok(())
     }
 
@@ -203,6 +252,11 @@ impl Infer {
 
     /// Starts the side-car unless one is running, and waits until it answers.
     fn ensure_running(&self) -> Result<(), InferError> {
+        // Held throughout, so questions asked together start one side-car and wait for it.
+        let mut children = self.lock_children();
+        if !children.side_car_running() {
+            self.stop_left_running();
+        }
         if self.healthy() {
             return Ok(());
         }
@@ -213,16 +267,13 @@ impl Infer {
             .write(true)
             .open(self.run.join("infer.lock"))
             .map_err(|e| InferError::Failed(e.to_string()))?;
-        // Held while it starts, so its exit is heard; never reaped here, as it outlives us.
-        let started = if try_lock(&lock) {
-            Some(self.start(lock)?)
-        } else {
-            None
-        };
-        // Started here or by another process: wait for it either way. It says nothing when it
-        // is ready, but everything that leads there shows: its socket appears in the run
-        // directory, its log grows as the model loads, or it exits. So it is asked only then.
-        let watch = StartWatch::new(&self.run, started.as_ref())
+        if try_lock(&lock) {
+            children.side_car = Some(self.start(lock)?);
+        }
+        // It says nothing when it is ready, but everything that leads there shows: its socket
+        // appears in the run directory, its log grows as the model loads, or it exits. So it is
+        // asked only then.
+        let watch = StartWatch::new(&self.run, children.side_car.as_ref())
             .map_err(|e| InferError::Failed(e.to_string()))?;
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
@@ -240,6 +291,38 @@ impl Infer {
                     "axod-infer did not start in time".into(),
                 ));
             }
+        }
+    }
+
+    fn lock_children(&self) -> std::sync::MutexGuard<'_, Children> {
+        self.children
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A side-car this process did not start (an earlier axod's, from before the lifeline) is
+    /// killed, so the next one is this axod's child. It is found by its socket's peer: the
+    /// process serving `infer.sock` in axod's private run directory.
+    fn stop_left_running(&self) {
+        if self.died_without_lock() {
+            return;
+        }
+        let Some(pid) = UnixStream::connect(self.socket())
+            .ok()
+            .and_then(|stream| peer_pid(&stream))
+        else {
+            return;
+        };
+        log::warn!("event=infer.previous_killed pid={pid}");
+        // SAFETY: signals the process serving our own side-car's socket.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        // It releases the lock as it dies; waiting for that is waiting for it to be gone.
+        if let Ok(lock) = OpenOptions::new()
+            .write(true)
+            .open(self.run.join("infer.lock"))
+        {
+            // SAFETY: flock on a file descriptor we own; it returns once the dead one's is gone.
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
         }
     }
 
@@ -263,15 +346,17 @@ impl Infer {
         .is_ok_and(|reply| reply.status == 200)
     }
 
-    /// Spawns the side-car in its own session, handing it the locked file so the lock lasts as
-    /// long as it does.
+    /// Spawns the side-car under this process's lifeline, handing it the locked file so the lock
+    /// lasts as long as it does.
     fn start(&self, lock: File) -> Result<WatchedChild, InferError> {
         let socket = self.socket();
         let _ = std::fs::remove_file(&socket);
         let log = File::create(self.run.join("infer.log"))
             .map_err(|e| InferError::Failed(e.to_string()))?;
         let lock_fd = lock.as_raw_fd();
-        let mut command = Command::new(&self.helper);
+        let mut command = lifeline()
+            .map_err(|e| InferError::Failed(e.to_string()))?
+            .guarded(&self.helper);
         command
             .arg("--model")
             .arg(self.models.join(MODEL_FILE))
@@ -287,7 +372,7 @@ impl Infer {
                     .map_err(|e| InferError::Failed(e.to_string()))?,
             )
             .stderr(log);
-        detach_holding(&mut command, lock_fd);
+        hold(&mut command, lock_fd);
         let child = command
             .spawn()
             .map_err(|e| InferError::Failed(format!("could not start axod-infer: {e}")))?;
@@ -344,9 +429,9 @@ impl StartWatch {
     }
 }
 
-/// Runs the command in its own session, so it outlives this process, and keeps `lock_fd` open in
-/// it, so the lock lasts as long as it does.
-fn detach_holding(command: &mut Command, lock_fd: std::os::fd::RawFd) {
+/// Keeps `lock_fd` open in the command, so the lock lasts as long as it does, and gives it a
+/// session of its own, away from axod's signals; the lifeline still ends it.
+fn hold(command: &mut Command, lock_fd: std::os::fd::RawFd) {
     // SAFETY: between fork and exec this only calls async-signal-safe functions.
     unsafe {
         command.pre_exec(move || {
@@ -360,6 +445,23 @@ fn detach_holding(command: &mut Command, lock_fd: std::os::fd::RawFd) {
             Ok(())
         });
     }
+}
+
+/// The process at the other end of a connected Unix socket.
+fn peer_pid(stream: &UnixStream) -> Option<i32> {
+    let mut pid: libc::pid_t = 0;
+    let mut size = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: LOCAL_PEERPID writes one pid_t into `pid`, whose size `size` gives.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    };
+    (result == 0 && pid > 0).then_some(pid)
 }
 
 fn physical_memory() -> u64 {
@@ -548,15 +650,121 @@ mod tests {
     #[test]
     fn missing_model_files_turn_local_checks_off() {
         let dir = std::env::temp_dir().join(format!("axod-infer-test-{}", std::process::id()));
-        let infer = Infer {
-            helper: dir.join("axod-infer"),
-            models: dir.join("models"),
-            run: dir.join("run"),
-        };
+        let infer = Infer::new(dir.join("axod-infer"), dir.join("models"), dir.join("run"));
         assert!(matches!(
             infer.ask(&serde_json::json!({})),
             Err(InferError::Unavailable(_))
         ));
+    }
+
+    /// A side-car that only answers `/health`, on the socket `--host` names.
+    const FAKE_SIDE_CAR: &str = r#"#!/usr/bin/python3
+import socket, sys
+path = sys.argv[sys.argv.index("--host") + 1]
+server = socket.socket(socket.AF_UNIX)
+server.bind(path)
+server.listen(8)
+while True:
+    client, _ = server.accept()
+    try:
+        if client.recv(65536):
+            client.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+    except OSError:
+        pass
+    client.close()
+"#;
+
+    fn fake_infer() -> Infer {
+        let run = run_directory();
+        let helper = run.join("fake-side-car");
+        std::fs::write(&helper, FAKE_SIDE_CAR).unwrap();
+        std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        Infer::new(helper, run.join("models"), run)
+    }
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only asks whether the process exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    fn serving_pid(infer: &Infer) -> i32 {
+        peer_pid(&UnixStream::connect(infer.socket()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_side_car_is_started_once_as_this_processs_child() {
+        let infer = fake_infer();
+        infer.ensure_running().unwrap();
+        let pid = serving_pid(&infer);
+        let guard = infer.lock_children().side_car.as_ref().unwrap().id() as i32;
+        // SAFETY: getppid-like lookup of a process this test started.
+        let parent = {
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let filled = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    (&mut info as *mut libc::proc_bsdinfo).cast(),
+                    size,
+                )
+            };
+            assert_eq!(filled, size);
+            info.pbi_ppid as i32
+        };
+        assert_eq!(
+            parent, guard,
+            "the side-car runs under this process's guard"
+        );
+        infer.ensure_running().unwrap();
+        assert_eq!(
+            serving_pid(&infer),
+            pid,
+            "a running side-car is used, not replaced"
+        );
+        // SAFETY: stops the guard this test started; it stops the side-car.
+        unsafe { libc::kill(guard, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(pid) {
+            assert!(Instant::now() < deadline, "the side-car outlived its guard");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&infer.run);
+    }
+
+    #[test]
+    fn a_side_car_this_process_did_not_start_is_replaced() {
+        let infer = fake_infer();
+        // One an earlier axod left: started without the lifeline, holding the lock.
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(infer.run.join("infer.lock"))
+            .unwrap();
+        assert!(try_lock(&lock));
+        let mut command = Command::new(&infer.helper);
+        command.arg("--host").arg(infer.socket());
+        hold(&mut command, lock.as_raw_fd());
+        let mut stranger = command.spawn().unwrap();
+        drop(lock);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !infer.healthy() {
+            assert!(Instant::now() < deadline, "the stranger never served");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        infer.ensure_running().unwrap();
+        assert!(stranger.wait().is_ok());
+        let pid = serving_pid(&infer);
+        assert_ne!(pid as u32, stranger.id());
+        assert!(infer.lock_children().side_car.is_some());
+        // SAFETY: stops the guard this test started.
+        let guard = infer.lock_children().side_car.as_ref().unwrap().id() as i32;
+        unsafe { libc::kill(guard, libc::SIGTERM) };
+        let _ = std::fs::remove_dir_all(&infer.run);
     }
 
     #[test]

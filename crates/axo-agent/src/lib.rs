@@ -8,7 +8,6 @@
 pub mod activity;
 mod command;
 mod history;
-pub mod lifeline;
 mod lock;
 pub mod pi;
 pub mod process;
@@ -16,7 +15,7 @@ pub mod process;
 pub use activity::Activity;
 pub use command::AgentCommand;
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
-pub use lifeline::Lifeline;
+pub use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 pub use lock::{FORK_EXEC_WINDOW, WriterLock};
 
 /// A fresh directory under /tmp (not the per-user temp directory: socket paths are limited to

@@ -4,6 +4,7 @@
 pub mod attach;
 pub mod command;
 pub mod exit;
+pub mod lifeline;
 pub mod output;
 pub mod process;
 mod runtime;

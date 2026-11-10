@@ -72,7 +72,7 @@ Services: questions, computer use, input key, assets, devices, git state
 
 One change: the old core is deleted, not migrated. The integration suites (`//crates/axod:rpc_tests`, the conformance targets, the Swift interop tests and the relay's end-to-end tests) are the contract it must keep. `axod mcp` as a thin proxy and the removal of `axod terminal-attach` follow as their own releases.
 
-The inference side-car (`axod-infer`) stays detached until then: the computer-use gate that starts it runs in `axod mcp` processes, so the first to ask starts it. Once `axod mcp` is a thin proxy, the gate runs in axod, and the side-car becomes axod's child with a lifeline of its own.
+The inference side-car (`axod-infer`, llama.cpp's server) is axod's child too. It cannot read a lifeline itself, so it runs under a small shell that does and kills it when the lifeline ends (`Lifeline::guarded`); the model download runs the same way. A side-car an earlier axod left running is found through its socket's peer (`LOCAL_PEERPID` on `infer.sock`, in axod's private run directory), killed and replaced on the next question. `axod mcp` was already a thin proxy (RFD0034): the computer-use gate that starts the side-car runs in axod.
 
 ## Drawbacks
 

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axo_pty::process::{self, PtyProcess, WindowSize};
 
-use crate::lifeline::{LIFELINE_FD, Lifeline};
+use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 use crate::pi::{BridgeSocketPath, SocketCleanup};
 use crate::process::ProcessIdentity;
 use crate::{AgentCommand, WriterLock};

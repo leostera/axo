@@ -8,7 +8,7 @@ Today it holds Pi processes for axod: launching Pi for a Session, the transcript
 | --- | --- |
 | `command` | The configured `agent.command` |
 | `lock` | `WriterLock`: the exclusive `flock` on `<transcript>.jsonl.lock`. axod takes it and the agent inherits it, so holding it proves no agent for the Session is alive |
-| `lifeline` | The pipe every agent inherits (`AXO_LIFELINE_FD`); its read end reaches end of file when axod exits, however it exits, and the agent exits with it |
+| `lifeline` | Re-exports `axo_pty::lifeline`: the pipe every agent inherits (`AXO_LIFELINE_FD`), whose read end reaches end of file when axod exits, however it exits |
 | `process` | `ProcessIdentity`: a pid and its start time, stored per Session so axod can kill, at boot, an agent a previous axod left behind, and never a reused pid |
 | `history`, `activity` | Recognising the transcript Axo created, and a Session's status from what its agent reports |
 | `pi` | Pi itself: `launch` (Pi on a PTY with the pi-axo extension; `STOP_GRACE`), `socket` (`BridgeSocketPath`), `protocol` (shared with `packages/pi-axo/src/protocol.ts`), `connection` (the connection as a state machine), `link` (the async bridge link for one running Pi: events out, `LinkCommands` in), `pi3` (record identity and hashing for Pi files, the upload's wire format, shared with `packages/axo-api/src/pi3.ts`) and `TranscriptFile` (a Session's Pi file read and hashed for upload; `transcript_chain`) |
