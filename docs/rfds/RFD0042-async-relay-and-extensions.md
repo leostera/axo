@@ -16,7 +16,9 @@ The wires stay as they are: the relay protocol, every RPC method, the attach pro
 
 ## Motivation
 
-Before this change, 0.47's outage came from this shape. One blocking read on a runtime worker held up the relay's task, which stopped heartbeating, and the Mac went offline while axod said it was connected. The read itself is fixed, but the relay is still built from the same pieces. Every hop is a thread that can be held:
+*Historical: axod as of 0.48, before this change.*
+
+0.47's outage came from this shape. One blocking read on a runtime worker held up the relay's task, which stopped heartbeating, and the Mac went offline while axod said it was connected. The read itself was fixed in `175b3b6`, but the relay was still built from the same pieces. Every hop was a thread that could be held:
 
 - **`RelayHost` is synchronous** (18 methods). The relay calls it from `spawn_blocking` (9 places). axod implements it with `call_blocking` (10) and `Handle::block_on` (2). A phone's prompt goes async loop → blocking thread → `block_on` → async handler → back.
 - **Requests to the cloud block a thread until the answer comes.** `RelayChannel::request` waits on an `mpsc::recv_timeout`. That covers the uploader, `axo.apps.*` forwarding, sharing a conversation, and asking the person on the phone.
@@ -30,7 +32,7 @@ Before this change, 0.47's outage came from this shape. One blocking read on a r
 
 Nothing changes for a person. For axod:
 
-- A request from the phone or the web is answered by the same async methods the Mac app calls, on the relay's task, with no thread in between.
+- A request from the phone or the web is answered by the same async methods the Mac app calls, as futures on axod's shared runtime, with no thread in between. They do not run on the relay's socket loop. Quick calls (computer status, a person's answer, the other `axo.remote.*` calls) are answered in arrival order by one answering task beside the loop. Prompts, bash, computer calls and sign-ins each get a task of their own (`crates/axo-relay/src/relay/session.rs`, `jobs.rs`). The loop only reads, writes and heartbeats, so a slow answer cannot hold up the heartbeat (`a_slow_relayed_handler_does_not_delay_heartbeats` in `crates/axod/tests/conformance/relay.rs`).
 - Each pending question costs a future, not a thread. The existing limit is 32 pending questions, independent of the runtime's thread count.
 - axod at rest retains its main thread, runtime workers, SQLite's owner thread and platform watcher/service threads. No thread is reserved for a pending network request or question. Blocking-pool threads handle actual synchronous work and expire when idle.
 
@@ -59,9 +61,12 @@ Nothing changes for a person. For axod:
 
 ### Tests
 
-- **First, separately: port the unit tests RFD0041 dropped** that still describe behaviour (from `git show e41018e:crates/axo-server/src/session/...`): terminal attachments, prompts and provenance, readiness, stop notices, transcripts, peer views, remote methods. Takeover tests are obsolete and stay deleted. This is a commit of its own before the change, so the change is checked against them.
+- **Ported first, separately** (`6265d2f`): the unit tests RFD0041 dropped that still describe behaviour (from `git show e41018e:crates/axo-server/src/session/...`), covering terminal attachments, prompts and provenance, readiness, stop notices, transcripts, peer views and remote methods. Takeover tests are obsolete and stayed deleted. They landed as a commit of their own before the change, so the change was checked against them.
 - **The contract:** `//crates/axod:conformance_relay`, `conformance_elicitations`, `conformance_mcp`, `conformance_account`, `rpc_tests`, the relay's end-to-end tests (`axod-relay`, `phone-path`, `apps-e2e`, `axod-peers`, `attachments-e2e`, `elicitations-e2e`), and `AxoClientDaemonInteropTests`.
-- **New:** asking many questions at once does not grow axod's threads; a slow method answered through the relay does not delay the relay's heartbeat; a request whose caller gives up stops waiting at once.
+- **New:**
+  - Asking many questions at once does not grow axod's threads: 32 real daemon requests, in `crates/axod/tests/conformance/elicitations.rs` (`32dfaba`).
+  - A slow method answered through the relay does not delay the heartbeat, with a cloud command pending (`a_slow_relayed_handler_does_not_delay_heartbeats`, `53670f7`).
+  - A request whose caller gives up stops waiting at once and is forgotten (`crates/axo-relay/src/outbound.rs`, `a3bba7c`).
 
 ### Lifecycle and error contracts
 
