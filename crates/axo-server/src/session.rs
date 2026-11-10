@@ -1,544 +1,744 @@
-use axo_pty::exit::WatchedChild;
-use std::collections::{HashMap, HashSet};
-use std::fs;
+//! One open Session as a task (RFD0041): it owns its panes, its Pi and the Pi's bridge link, and
+//! the prompts waiting for that Pi. Everything that changes a Session is a message to its task,
+//! handled one at a time, so nothing about a Session needs a lock. What the Session looks like is
+//! published to the catalog, which anyone reads without asking the task.
+//!
+//! Nothing slow runs inside the task: a Pi launch runs on the blocking pool and reports back, a
+//! command for Pi is sent on its link by whoever asked, and waiting for a Pi to come up is a wait
+//! on the catalog.
+
+pub(crate) mod controls;
+pub(crate) mod panes;
+pub(crate) mod pi;
+pub(crate) mod prompts;
+pub(crate) mod record;
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::future::Future;
 use std::io;
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::os::fd::AsRawFd;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use axo_agent::pi::BridgeSocketPath;
-use axo_agent::takeover::TakeoverGrace;
-use axo_agent::{AgentCommand, WriterLock};
-use axo_panes::{PaneProcess, Panes, RuntimeId};
-use axo_protocol::{PaneRole, SessionId, Viewport, new_uuid_v4};
-use axo_pty::TerminalOutput;
-use axo_pty::process;
-use axo_store::Connection;
-use axo_store::{
-    DATABASE_FILE, ensure_pi_bridge_socket_paths, load_or_create_host_id, load_viewport,
+use axo_agent::pi::link::LinkEvent;
+use axo_protocol::rpc;
+use axo_protocol::{
+    Event, Layout, PaneRole, SessionId, SessionRecord, ShellActivity, ShellId, ShellRecord,
 };
+use axo_pty::process;
+use axo_pty::{TerminalOutput, WindowSize};
+use axo_store::{Connection, StoredSession, StoredSessionRow};
+use tokio::sync::mpsc;
 
-mod agents;
-mod catalog;
-mod cloud_transcripts;
-mod computer;
-mod create;
-mod devices;
-pub(crate) mod event_stream;
-mod events;
-mod handlers;
-mod input_key;
-mod lifecycle;
-mod peer_views;
-mod pi_bridge;
-mod pi_controls;
-mod pi_recovery;
-mod prompts;
-mod questions;
-mod readiness;
-mod remote;
-mod settings;
-mod spawn;
-mod stop_notice;
-pub(crate) use spawn::set_agent_socket;
-mod terminal;
-mod terminal_input;
-#[cfg(test)]
-mod test_support;
-mod transcripts;
-mod workspace_state;
+use self::panes::{Running, RuntimeId, spawn_shell, stop_in_background, window_size};
+use self::pi::Pi;
+pub(crate) use self::pi::{Launched, PiStart, Waiter};
+use crate::catalog::{Entry, PiPhase};
+use crate::core::Core;
+use crate::terminal_input::TerminalInput;
 
-use self::events::{EventBus, LocalSubscription};
-pub(crate) use self::handlers::RelayHostAdapter;
-use self::lifecycle::IdlePis;
-use self::pi_bridge::remove_abandoned_pi_bridge_sockets;
-pub(crate) use self::remote::Remote;
-use self::settings::{ShellCommand, load_or_create_agent_command, load_or_create_shell_command};
-use self::transcripts::PiDirectories;
-
-const ATTACH_SOCKET_FILE: &str = "attach.sock";
-
-#[derive(Debug)]
-struct RunningShell {
-    runtime_id: RuntimeId,
-    session_id: SessionId,
-    role: PaneRole,
-    pane_id: Option<String>,
-    initial_pwd: PathBuf,
-    child: WatchedChild,
-    wait_error_reported: bool,
-    master: OwnedFd,
-    slave_device: String,
-    /// Live terminal attachments. Only Axod's output pump reads `master`.
-    attachments: usize,
-    output: Arc<TerminalOutput>,
-    /// Where input to the pane is written, outside the Session state's lock.
-    input: Arc<terminal_input::TerminalInput>,
-    _writer_lock: Option<WriterLock>,
-    pi_bridge_socket: Option<BridgeSocketPath>,
-    pi_bridge_token: Option<String>,
-    /// Commands for this Pi, sent on its bridge worker's connection; set when the worker starts.
-    pi_commands: Option<axo_agent::pi::worker::CommandSender>,
+/// What a Session's task is asked to do.
+pub(crate) enum Message {
+    /// Run this on the Session, in turn.
+    Job(Job),
+    /// A pane's process exited.
+    PaneExited {
+        shell_id: ShellId,
+        runtime_id: RuntimeId,
+    },
+    /// The Pi's link said something.
+    Link {
+        runtime_id: RuntimeId,
+        event: LinkEvent,
+    },
+    /// A Pi launch ended.
+    Launched {
+        attempt: u64,
+        result: io::Result<Launched>,
+    },
+    /// A Pi asked to exit did not in time.
+    KillPi { runtime_id: RuntimeId },
 }
 
-impl RunningShell {
-    /// How long this pane's process gets to exit when stopped, before SIGKILL.
-    fn stop_grace(&self) -> Duration {
-        match self.role {
-            PaneRole::Terminal => process::SHELL_STOP_GRACE,
-            PaneRole::Pi => axo_agent::pi::STOP_GRACE,
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub(crate) type Job = Box<dyn for<'a> FnOnce(&'a mut Session) -> BoxFuture<'a, ()> + Send>;
+
+fn gone() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "session is not open")
+}
+
+/// How the rest of axod reaches a Session's task. Cheap to clone.
+#[derive(Clone)]
+pub(crate) struct SessionHandle {
+    pub(crate) id: SessionId,
+    mailbox: mpsc::UnboundedSender<Message>,
+}
+
+impl SessionHandle {
+    /// Runs `job` on the Session, in turn, and returns what it returns.
+    pub(crate) async fn call<R, F>(&self, job: F) -> io::Result<R>
+    where
+        R: Send + 'static,
+        F: for<'a> FnOnce(&'a mut Session) -> BoxFuture<'a, R> + Send + 'static,
+    {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.mailbox
+            .send(Message::Job(Box::new(move |session| {
+                Box::pin(async move {
+                    let _ = reply.send(job(session).await);
+                })
+            })))
+            .map_err(|_| gone())?;
+        answer.await.map_err(|_| gone())
+    }
+
+    /// [`Self::call`] for work that does not wait.
+    pub(crate) async fn with<R, F>(&self, job: F) -> io::Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Session) -> R + Send + 'static,
+    {
+        self.call(move |session| {
+            let result = job(session);
+            Box::pin(async move { result })
+        })
+        .await
+    }
+
+    /// Asks the Session to do something without waiting for it.
+    pub(crate) fn post(&self, job: impl FnOnce(&mut Session) + Send + 'static) {
+        let _ = self.mailbox.send(Message::Job(Box::new(move |session| {
+            job(session);
+            Box::pin(async {})
+        })));
+    }
+}
+
+/// One open Session's state, owned by its task.
+pub(crate) struct Session {
+    pub(crate) core: Arc<Core>,
+    pub(crate) id: SessionId,
+    /// Set as the Session closes: its catalog entry is never written again.
+    closed: Arc<AtomicBool>,
+    mailbox: mpsc::WeakUnboundedSender<Message>,
+    /// What the store holds of it, as of its last write.
+    row: StoredSessionRow,
+    /// Every pane whose process runs.
+    panes: BTreeMap<ShellId, Running>,
+    /// Its Pi pane, running or not.
+    pi: Option<Pi>,
+    /// The task ends after this message.
+    ended: bool,
+    /// Nothing is published until its first Pi launch ends: a new Session appears with its Pi.
+    quiet: bool,
+}
+
+/// Opens `stored` as a Session: its terminals start now; its Pi starts as `pi` says. With a
+/// `waiter`, the Session appears only once its Pi has started (or failed to), and `waiter` hears
+/// which.
+pub(crate) async fn open(
+    core: &Arc<Core>,
+    stored: StoredSession,
+    pi: PiStart,
+    waiter: Option<Waiter>,
+) -> io::Result<SessionHandle> {
+    let id = stored.id;
+    let row = core
+        .store
+        .call(move |database| axo_store::open_session_row(database, id))
+        .await?;
+    let (sender, mailbox) = mpsc::unbounded_channel();
+    let handle = SessionHandle {
+        id,
+        mailbox: sender.clone(),
+    };
+    let mut session = Session {
+        core: Arc::clone(core),
+        id,
+        closed: Arc::new(AtomicBool::new(false)),
+        mailbox: sender.downgrade(),
+        row,
+        panes: BTreeMap::new(),
+        pi: None,
+        ended: false,
+        quiet: waiter.is_some(),
+    };
+    core.registry.insert(handle.clone());
+    session.restore(stored, pi, waiter).await;
+    tokio::spawn(run(session, mailbox));
+    Ok(handle)
+}
+
+async fn run(mut session: Session, mut mailbox: mpsc::UnboundedReceiver<Message>) {
+    if session.ended {
+        return;
+    }
+    while let Some(message) = mailbox.recv().await {
+        session.handle(message).await;
+        if session.ended {
+            break;
         }
     }
 }
 
-/// The one way a pane's process is stopped (close, archive, cancelled recovery, shutdown):
-/// SIGHUP/SIGTERM to all at once, SIGKILL to each whose own grace runs out. Takes ownership so
-/// a Pi's writer lock and PTY are released only after its process has exited. Blocks for up to
-/// the longest grace; never call it under the catalog lock.
-fn stop_panes(mut panes: Vec<RunningShell>) {
-    process::stop_all(
-        panes
-            .iter_mut()
-            .map(|pane| process::Stopping {
-                grace: pane.stop_grace(),
-                child: &mut pane.child,
-            })
-            .collect(),
-    );
+fn not_open(what: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, format!("{what} is not open"))
 }
 
-impl PaneProcess for RunningShell {
-    fn session_id(&self) -> SessionId {
-        self.session_id
-    }
-}
-
-impl Drop for RunningShell {
-    fn drop(&mut self) {
-        // Removing a shell from the catalog ends its output stream even if a stray process
-        // still holds the PTY slave open.
-        self.output.stop();
-    }
-}
-
-struct SessionState {
-    database: Connection,
-    agent_command: AgentCommand,
-    shell_command: ShellCommand,
-    /// Every open pane, running or unavailable; see `panes`.
-    panes: Panes<RunningShell>,
-    shutting_down: bool,
-    /// Every shell's output is published here once it enters the catalog.
-    events: EventBus,
-    /// The latest client's terminal area; panes no client is attached to are sized from it.
-    viewport: Option<Viewport>,
-    /// Remote panes on other Macs' Sessions (RFD0024): never in `panes`, never in the database.
-    peer_views: peer_views::PeerViews,
-    /// Archived Sessions being reopened: their transcripts are not deleted (RFD0027).
-    reopening: HashSet<SessionId>,
-    /// Woken by each process's exit, as it enters the catalog (`bind_output`).
-    reaper: Arc<lifecycle::Reaper>,
-}
-
-pub struct SessionManager {
-    state: Mutex<SessionState>,
-    /// The Pis' part of the state; see `agents`. Locked after `state` when both are needed,
-    /// never the other way round.
-    agents: Mutex<agents::AgentState>,
-    attach_socket_path: PathBuf,
-    pi_directories: PiDirectories,
-    host_id: String,
-    host_generation: String,
-    stop_workers: Arc<AtomicBool>,
-    /// Wakes the reaper when a child exits or axod stops.
-    reaper: Arc<lifecycle::Reaper>,
-    /// Raised by each write to `state`; see `catalog::StateChanges`.
-    state_changes: catalog::StateChanges,
-    /// Wakes prompts waiting for a Pi to bind; see `prompts`.
-    pi_wake: Arc<agents::PiWake>,
-    /// Dropped when axod stops, which wakes the attachment acceptor.
-    stop_acceptor: Mutex<Option<std::os::unix::net::UnixStream>>,
-    workers: Mutex<Vec<JoinHandle<()>>>,
-    subscriptions: Mutex<HashMap<String, Arc<LocalSubscription>>>,
-    subscribers: EventBus,
-    next_subscription_id: AtomicU64,
-    pending_resume_focus: Mutex<Option<(SessionId, Instant)>>,
-    /// The user's home directory, canonical: where a Session starts when nothing says where.
-    home: PathBuf,
-    /// Each Session's folder as git saw it when the agent last settled (RFD0022).
-    workspace_states: workspace_state::WorkspaceStates,
-    /// Every Mac's transcripts by host (RFD0022); other Macs' are copies.
-    sessions_directory: PathBuf,
-    /// The other Macs, once the relay follows them (RFD0024).
-    peers: peer_views::PeerSlot,
-    /// What agents here are asking the person (RFD0029).
-    elicitations: Arc<axo_questions::Questions>,
-    /// The account's assets while the relay is connected (RFD0028).
-    asset_source: Arc<axo_assets::AssetSlot>,
-    /// This Mac's input key, which forms are sealed to (RFD0029): read or made on first use,
-    /// from where the host credential is kept.
-    input_key: std::sync::OnceLock<axo_seal::InputKey>,
-    input_key_store: std::sync::OnceLock<Arc<dyn axo_relay::credential::HostCredentialStore>>,
-    /// Computer use here: what the person filled in, hidden from every later read (RFD0029).
-    computer: Arc<axo_computer_use::ComputerUse>,
-}
-
-impl SessionManager {
-    /// `sessions_directory` holds every Mac's transcripts by host (RFD0022): this Mac's are
-    /// written under `<sessions_directory>/<hostId>/`; `server_directory` keeps only this Mac's
-    /// server state.
-    pub fn open(
-        server_directory: &Path,
-        sessions_directory: &Path,
-    ) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-        fs::create_dir_all(server_directory)?;
-        let server_directory = fs::canonicalize(server_directory)?;
-        let database_path = server_directory.join(DATABASE_FILE);
-        let attach_socket_path = server_directory.join(ATTACH_SOCKET_FILE);
-        let initial_pwd = crate::current_user_home_directory()?;
-
-        let mut database = axo_store::open(&database_path)?;
-        let host_id = load_or_create_host_id(&database)?;
-        let agent_command = load_or_create_agent_command(&database)?;
-        let shell_command = load_or_create_shell_command(&database)?;
-        let viewport = load_viewport(&database)?;
-        let host_generation = new_uuid_v4()?;
-        let pi_session_directory = server_directory.join("pi-sessions");
-        fs::create_dir_all(&pi_session_directory)?;
-        fs::set_permissions(&pi_session_directory, fs::Permissions::from_mode(0o700))?;
-        ensure_pi_bridge_socket_paths(&database, &pi_session_directory)?;
-        let pi_directories = transcripts::open(
-            &mut database,
-            pi_session_directory,
-            sessions_directory,
-            &host_id,
-        )?;
-        remove_abandoned_pi_bridge_sockets(&database)?;
-
-        let previous_stop = take_previous_stop(&database)?;
-        let home = initial_pwd.canonicalize().unwrap_or(initial_pwd);
-        let subscribers = EventBus::default();
-        let reaper = Arc::new(lifecycle::Reaper::default());
-        let manager = Arc::new(Self {
-            state: Mutex::new(SessionState {
-                database,
-                agent_command,
-                shell_command,
-                panes: Panes::default(),
-                shutting_down: false,
-                events: subscribers.clone(),
-                viewport,
-                peer_views: Default::default(),
-                reopening: HashSet::new(),
-                reaper: Arc::clone(&reaper),
-            }),
-            agents: Default::default(),
-            attach_socket_path,
-            pi_directories,
-            host_id,
-            host_generation,
-            stop_workers: Arc::new(AtomicBool::new(false)),
-            reaper,
-            state_changes: Default::default(),
-            pi_wake: Default::default(),
-            stop_acceptor: Default::default(),
-            workers: Mutex::new(Vec::new()),
-            subscriptions: Mutex::new(HashMap::new()),
-            subscribers,
-            next_subscription_id: AtomicU64::new(1),
-            pending_resume_focus: Mutex::new(None),
-            home,
-            workspace_states: Default::default(),
-            sessions_directory: sessions_directory.to_path_buf(),
-            peers: Default::default(),
-            elicitations: Default::default(),
-            asset_source: Default::default(),
-            input_key: Default::default(),
-            input_key_store: Default::default(),
-            computer: Default::default(),
-        });
-
-        // Sessions a stop interrupted mid-turn get their Pi back first, then are told (see
-        // `stop_notice`).
-        let interrupted = previous_stop
-            .as_ref()
-            .map_or(&[][..], |stop| &stop.interrupted[..]);
-        manager.restore_open_sessions_first(interrupted, IdlePis::StayDormant)?;
-        if let Some(stop) = &previous_stop {
-            manager.tell_interrupted_sessions(stop);
+impl Session {
+    async fn handle(&mut self, message: Message) {
+        match message {
+            Message::Job(job) => job(self).await,
+            Message::PaneExited {
+                shell_id,
+                runtime_id,
+            } => self.pane_exited(shell_id, runtime_id).await,
+            Message::Link { runtime_id, event } => self.link_event(runtime_id, event).await,
+            Message::Launched { attempt, result } => self.launched(attempt, result).await,
+            Message::KillPi { runtime_id } => self.kill_pi(runtime_id),
         }
-        manager.begin_launch()?;
-        manager.start_attachment_listener()?;
-        manager.start_reaper();
-        Ok(manager)
     }
 
-    /// Tells the reaper and the attachment acceptor to stop, and wakes them; join them after.
-    fn stop_background_workers(&self) {
-        self.stop_workers.store(true, Ordering::Relaxed);
-        self.reaper.wake();
-        // Pi bridge workers sleep until Pi writes or they are woken.
-        if let Ok(mut state) = self.state.lock() {
-            for (_, running) in state.panes.running_iter_mut() {
-                if let Some(commands) = &running.pi_commands {
-                    commands.wake();
+    /// Posts a message to this Session's own task, for when something it started reports.
+    fn mailbox(&self) -> mpsc::WeakUnboundedSender<Message> {
+        self.mailbox.clone()
+    }
+
+    /// Starts the stored panes: terminals now, Pi as `pi` says. A terminal that cannot start
+    /// (its folder was deleted, say) is archived as if its shell had exited; a Session left with
+    /// no pane is archived.
+    async fn restore(&mut self, stored: StoredSession, pi: PiStart, waiter: Option<Waiter>) {
+        let mut failed = Vec::new();
+        for (shell_id, role, pane_id) in &stored.shell_ids {
+            match role {
+                PaneRole::Terminal => {
+                    let size = self.pane_size(*shell_id);
+                    let settings = self.core.settings();
+                    match spawn_shell(&settings.shell_command, &stored.initial_pwd, size) {
+                        Ok(running) => self.install(*shell_id, running),
+                        Err(error) => {
+                            log::warn!(
+                                "event=session.shell_restore_failed session_id={} shell_id={} error_kind={:?} reason={error}",
+                                self.id,
+                                shell_id.get(),
+                                error.kind()
+                            );
+                            failed.push(*shell_id);
+                        }
+                    }
+                }
+                PaneRole::Pi => match pane_id {
+                    Some(pane_id) => {
+                        self.pi = Some(Pi::new(*shell_id, pane_id.clone()));
+                    }
+                    None => {
+                        log::warn!(
+                            "event=session.pi_pane_invalid session_id={} reason=missing_pane_id",
+                            self.id
+                        );
+                        failed.push(*shell_id);
+                    }
+                },
+            }
+        }
+        if !failed.is_empty() {
+            let remaining: HashSet<ShellId> = self.open_shell_ids().into_iter().collect();
+            if remaining.is_empty() {
+                self.close("shell_restore_failed").await;
+                return;
+            }
+            for shell_id in failed {
+                let remaining = remaining.clone();
+                let id = self.id;
+                if let Err(error) = self
+                    .write(move |database| {
+                        axo_store::archive_shell_and_prune_layout(
+                            database,
+                            shell_id,
+                            id,
+                            "shell_restore_failed",
+                            &remaining,
+                        )
+                    })
+                    .await
+                {
+                    log::warn!("event=session.archive_failed session_id={id} reason={error}");
                 }
             }
         }
-        // A byte wakes the acceptor even if a forked child holds a copy of this end.
-        if let Ok(mut acceptor) = self.stop_acceptor.lock()
-            && let Some(acceptor) = acceptor.take()
-        {
-            let _ = io::Write::write(&mut &acceptor, &[1]);
-        }
+        self.publish();
+        self.start_pi_as(pi, waiter).await;
     }
 
-    pub fn shutdown(&self) {
-        // Fence in-flight launches before joining workers or draining processes.
-        // stop_workers alone is also used to quiesce background fixture workers.
-        // Through the catalog guard, so waiters (a recovery's) hear that axod is stopping.
-        if let Ok(mut state) = self.lock_state() {
-            // First, before anything slow: launchd kills an Axod that takes too long to stop.
-            if !state.shutting_down {
-                record_stop(&state, &self.lock_agents());
+    /// A process enters the Session: its output is published, and its exit is told to the task.
+    fn install(&mut self, shell_id: ShellId, running: Running) {
+        let mailbox = self.mailbox();
+        let runtime_id = running.runtime_id;
+        running.bind(&self.core, self.id, shell_id, move || {
+            if let Some(mailbox) = mailbox.upgrade() {
+                let _ = mailbox.send(Message::PaneExited {
+                    shell_id,
+                    runtime_id,
+                });
             }
-            state.shutting_down = true;
+        });
+        if let Some(replaced) = self.panes.insert(shell_id, running) {
+            stop_in_background(vec![replaced]);
         }
-        self.stop_background_workers();
-        let workers = self
-            .workers
-            .lock()
-            .map(|mut workers| std::mem::take(&mut *workers))
-            .unwrap_or_default();
-        join_session_workers(workers);
-        // Slow child cleanup must not monopolize the catalog/PTY lock. Drain
-        // runtime ownership once so repeated shutdown (including Drop) is safe.
-        let shells = self
-            .lock_state()
-            .map(|mut state| {
-                let mut shells = state.panes.drain();
-                shells.extend(state.peer_views.drain());
-                shells
+    }
+
+    /// Every open pane, running or not.
+    pub(crate) fn open_shell_ids(&self) -> BTreeSet<ShellId> {
+        let mut ids: BTreeSet<ShellId> = self.panes.keys().copied().collect();
+        ids.extend(self.pi.as_ref().map(|pi| pi.shell_id));
+        ids
+    }
+
+    /// Runs a write on the store, then reads the Session's row back.
+    async fn write<R: Send + 'static>(
+        &mut self,
+        write: impl FnOnce(&mut Connection) -> io::Result<R> + Send + 'static,
+    ) -> io::Result<R> {
+        let id = self.id;
+        let (result, row) = self
+            .core
+            .store
+            .call(move |database| {
+                let result = write(database)?;
+                Ok((result, axo_store::open_session_row(database, id)?))
             })
-            .unwrap_or_default();
-        stop_panes(shells);
+            .await?;
+        self.row = row;
+        Ok(result)
     }
-}
 
-impl Drop for SessionManager {
-    fn drop(&mut self) {
-        self.shutdown();
-        let _ = fs::remove_file(&self.attach_socket_path);
+    /// The layout clients show: the stored one, or the open panes side by side.
+    fn effective_layout(&self) -> Option<Layout> {
+        self.row
+            .layout
+            .clone()
+            .or_else(|| record::default_layout(self.open_shell_ids().into_iter().collect()))
     }
-}
 
-/// The record the previous Axod left of how it stopped, if it left one that reads.
-fn take_previous_stop(
-    database: &axo_store::Connection,
-) -> io::Result<Option<stop_notice::DaemonStop>> {
-    let Some(stored) = axo_store::take_daemon_stop(database)? else {
-        return Ok(None);
-    };
-    match stop_notice::DaemonStop::parse(&stored) {
-        Ok(stop) => Ok(Some(stop)),
-        Err(error) => {
-            log::warn!("event=daemon.stop_record_invalid reason={error}");
-            Ok(None)
-        }
-    }
-}
-
-/// Writes down this Axod's version and the Sessions whose Pi is mid-turn, most recently active
-/// first, for the next Axod to restore first and tell.
-fn record_stop(state: &SessionState, agents: &agents::AgentState) {
-    let mut interrupted: Vec<(SessionId, i64)> = agents
-        .activity
-        .iter()
-        .filter(|(_, activity)| activity.connected && activity.working)
-        .map(|(id, _)| {
-            let activity = axo_store::open_session_row(&state.database, *id)
-                .ok()
-                .and_then(|row| row.last_message_at)
-                .unwrap_or(0);
-            (*id, activity)
-        })
-        .collect();
-    interrupted.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
-    let stop = stop_notice::this_daemon(interrupted.into_iter().map(|(id, _)| id).collect());
-    match axo_store::store_daemon_stop(&state.database, &stop.to_stored()) {
-        Ok(()) => log::info!(
-            "event=daemon.stop_recorded interrupted={}",
-            stop.interrupted.len()
-        ),
-        Err(error) => log::warn!("event=daemon.stop_record_failed reason={error}"),
-    }
-}
-
-fn join_session_workers(workers: Vec<JoinHandle<()>>) {
-    let current_thread = thread::current().id();
-    for worker in workers {
-        // A worker may release the last upgraded Arc and run SessionManager's
-        // destructor itself. Joining that same thread would deadlock/panic.
-        if worker.thread().id() != current_thread {
-            let _ = worker.join();
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use super::{terminal::*, test_support::*};
-
-    use axo_protocol::{is_uuid, new_uuid_v4};
-    use axo_pty::process;
-
-    use axo_store::Connection;
-    use axo_store::initialize_database;
-    use axo_store::load_or_create_host_id;
-
-    use std::fs;
-
-    use std::io::Read;
-    use std::io::Write;
-    use std::os::fd::AsRawFd;
-
-    use std::os::unix::net::UnixStream;
-
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc;
-    use std::thread::{self, JoinHandle};
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn shutdown_does_not_hold_the_catalog_lock_during_child_cleanup() {
-        let fixture = LifecycleFixture::new();
-        let manager = &fixture.manager;
-        let session = new_session(&manager);
-        let shell_id = terminal_shell(&session);
-        let termed = fixture.directory.join("termed");
-        {
-            let state = manager.lock_state().unwrap();
-            let running = &state.panes.running(shell_id).unwrap();
-            let (_, output) = running.output.subscribe(None, None);
-            // It says when it is asked to stop, then carries on until it is killed.
-            let script = format!(
-                "exec /bin/sh -c 'trap \": > {}\" HUP TERM; printf \"%s%s\\\\n\" AXO_STOP_ READY; while :; do sleep 1 & wait; done'\n",
-                termed.display()
-            );
-            process::write_all(
-                running.master.as_raw_fd(),
-                script.as_bytes(),
-                TERMINAL_INPUT_WRITE_TIMEOUT,
-            )
-            .unwrap();
-            assert!(read_until(&output, b"AXO_STOP_READY", SHELL_OUTPUT_WAIT));
-        }
-        let (done, completed) = mpsc::channel();
-        let owner = Arc::clone(manager);
-        let shutdown = thread::spawn(move || {
-            owner.shutdown();
-            done.send(()).unwrap();
+    /// The size a pane should start at: its place in the layout, or the whole terminal area for
+    /// a pane the layout does not have yet.
+    fn pane_size(&self, shell_id: ShellId) -> WindowSize {
+        let Some(viewport) = *self.core.viewport.borrow() else {
+            return WindowSize::DEFAULT;
+        };
+        let placed = self.effective_layout().and_then(|layout| {
+            viewport
+                .grid_sizes(layout.root())
+                .into_iter()
+                .find(|(id, _)| *id == shell_id)
         });
-        // Asked to stop, the shell waits out its grace before it is killed: the lock must be free
-        // all that time, not only once the shell has gone.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !termed.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "the shell was never asked to stop"
-            );
-            thread::sleep(Duration::from_millis(1));
+        window_size(placed.map_or_else(|| viewport.full_grid(), |(_, grid)| grid))
+    }
+
+    /// Sizes the panes no client is attached to from the viewport. Attached panes are sized by
+    /// their client, so the two never contend for one PTY.
+    pub(crate) fn fit_unattached_panes(&self) {
+        let (Some(viewport), Some(layout)) =
+            (*self.core.viewport.borrow(), self.effective_layout())
+        else {
+            return;
+        };
+        for (shell_id, grid) in viewport.grid_sizes(layout.root()) {
+            let Some(running) = self
+                .panes
+                .get(&shell_id)
+                .filter(|running| running.attachments == 0)
+            else {
+                continue;
+            };
+            let size = window_size(grid);
+            if let Err(error) = process::resize_if_changed(&running.master, &running.child, size) {
+                log::warn!(
+                    "event=pane.fit_failed session_id={} shell_id={} error_kind={:?}",
+                    self.id,
+                    shell_id.get(),
+                    error.kind()
+                );
+            }
         }
-        assert!(
-            manager
-                .state
-                .try_lock()
-                .is_ok_and(|state| state.panes.running_is_empty()),
-            "shutdown held the catalog lock while stopping a child"
+    }
+
+    /// How clients see the Session now.
+    pub(crate) fn record(&self) -> SessionRecord {
+        let attach = &self.core.attach_socket_path;
+        let mut shells: Vec<ShellRecord> = self
+            .panes
+            .iter()
+            .map(|(shell_id, running)| running.record(*shell_id, attach))
+            .collect();
+        if let Some(pi) = &self.pi
+            && !self.panes.contains_key(&pi.shell_id)
+        {
+            shells.push(record::idle_pi_record(
+                pi.shell_id,
+                Some(pi.pane_id.clone()),
+                self.row.folder.clone(),
+                pi.is_dormant(),
+                attach,
+            ));
+        }
+        shells.sort_by_key(|shell| shell.id.get());
+        let status = record::status(&shells, self.pi.as_ref().and_then(Pi::status));
+        let row = &self.row;
+        SessionRecord {
+            id: self.id,
+            pi_session_file: row.pi_session_file.clone(),
+            pi_session_id: row.pi_session_id.clone(),
+            name: row.name.clone(),
+            manual_name: row.manual_name.clone(),
+            emoji: row.emoji.clone(),
+            last_message_at: row.last_message_at.or_else(|| {
+                row.pi_session_file
+                    .as_deref()
+                    .and_then(record::file_modification_timestamp)
+            }),
+            created_at: row.created_at,
+            status,
+            folder: row.folder.clone(),
+            shells,
+            layout: row.layout.clone(),
+            pi: self.pi.as_ref().and_then(|pi| pi.controls.runtime.clone()),
+        }
+    }
+
+    /// Writes the Session's catalog entry and tells clients.
+    pub(crate) fn publish(&self) {
+        if self.ended || self.quiet {
+            return;
+        }
+        let record = self.record();
+        let (phase, working) = self
+            .pi
+            .as_ref()
+            .map_or((PiPhase::Absent, false), |pi| (pi.phase(), pi.working()));
+        self.core.catalog.put(
+            Entry {
+                record: record.clone(),
+                pi: phase,
+                working,
+            },
+            &self.closed,
         );
-        completed.recv_timeout(Duration::from_secs(5)).unwrap();
-        shutdown.join().unwrap();
-        manager.shutdown(); // Idempotent: no repeat signals or joins.
+        self.core.events.publish(Event::snapshot(record));
     }
 
-    #[test]
-    fn shutdown_releases_an_idle_terminal_attachment() {
-        let fixture = LifecycleFixture::new();
-        let manager = &fixture.manager;
-        manager.stop_workers.store(false, Ordering::Relaxed);
-        let session = new_session(&manager);
-        let shell_id = session.shells[0].id;
-        let (mut client, server) = UnixStream::pair().unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        writeln!(client, "{}", shell_id.get()).unwrap();
-        let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
-        let weak = Arc::downgrade(manager);
-        let (done, completed) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            handle_attachment(server, weak, permit);
-            done.send(()).unwrap();
+    fn shell_activity(&self, shell_id: ShellId, activity: ShellActivity) {
+        self.core.events.publish(Event::ShellActivity {
+            session_id: self.id,
+            shell_id,
+            activity,
         });
-        let mut header = [0; 8];
-        client.read_exact(&mut header).unwrap();
-        assert_ne!(u64::from_be_bytes(header), u64::MAX);
-        manager.shutdown();
-        completed.recv_timeout(Duration::from_secs(3)).unwrap();
-        worker.join().unwrap();
-        assert!(manager.lock_state().unwrap().panes.running_is_empty());
-        assert_eq!(Arc::strong_count(manager), 1);
     }
 
-    #[test]
-    fn worker_cleanup_never_joins_itself() {
-        let (sender, receiver) = mpsc::channel::<JoinHandle<()>>();
-        let (done, completed) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            join_session_workers(vec![receiver.recv().unwrap()]);
-            done.send(()).unwrap();
-        });
-        sender.send(worker).unwrap();
-        completed.recv_timeout(Duration::from_secs(2)).unwrap();
-    }
-
-    #[test]
-    fn host_identity_persists_while_generation_rotates() {
-        let directory =
-            std::env::temp_dir().join(format!("axo-host-identity-{}", new_uuid_v4().unwrap()));
-        fs::create_dir(&directory).unwrap();
-        let path = directory.join("axo.db");
-
-        let first_host_id;
-        let first_generation = new_uuid_v4().unwrap();
-        {
-            let mut database = Connection::open(&path).unwrap();
-            initialize_database(&mut database).unwrap();
-            first_host_id = load_or_create_host_id(&database).unwrap();
+    /// Archives the Session, stops its panes, and ends its task.
+    pub(crate) async fn close(&mut self, reason: &'static str) {
+        if self.ended {
+            return;
         }
-
-        let second_generation = new_uuid_v4().unwrap();
-        let second_host_id;
+        let id = self.id;
+        if let Err(error) = self
+            .core
+            .store
+            .call(move |database| axo_store::archive_session(database, id, reason))
+            .await
         {
-            let mut database = Connection::open(&path).unwrap();
-            initialize_database(&mut database).unwrap();
-            second_host_id = load_or_create_host_id(&database).unwrap();
+            log::warn!("event=session.archive_failed session_id={id} reason={error}");
         }
-
-        assert_eq!(first_host_id, second_host_id);
-        assert_ne!(first_generation, second_generation);
-        assert!(is_uuid(&first_host_id));
-        assert_eq!(first_host_id.as_bytes()[14], b'4');
-        assert!(matches!(
-            first_host_id.as_bytes()[19],
-            b'8' | b'9' | b'a' | b'b'
-        ));
-        fs::remove_dir_all(directory).unwrap();
+        let announced = !self.quiet;
+        self.end();
+        log::info!("event=session.closed session_id={id} reason={reason}");
+        if announced {
+            self.core
+                .events
+                .publish(Event::SessionRemoved { session_id: id });
+        }
     }
+
+    /// Leaves the catalog and stops every pane, without touching the store.
+    fn end(&mut self) {
+        self.ended = true;
+        self.closed.store(true, Ordering::Release);
+        self.core.catalog.remove(self.id);
+        self.core.registry.remove(self.id);
+        crate::core::lock(&self.core.provenance).forget(self.id);
+        if let Some(pi) = &mut self.pi {
+            pi.let_go();
+        }
+        stop_in_background(std::mem::take(&mut self.panes).into_values().collect());
+    }
+
+    /// Stops every pane and waits for them, as axod stops.
+    pub(crate) async fn shut_down(&mut self) {
+        self.ended = true;
+        self.closed.store(true, Ordering::Release);
+        if let Some(pi) = &mut self.pi {
+            pi.let_go();
+        }
+        let mut stopping = tokio::task::JoinSet::new();
+        for (_, running) in std::mem::take(&mut self.panes) {
+            stopping.spawn(running.stop());
+        }
+        while stopping.join_next().await.is_some() {}
+    }
+
+    async fn pane_exited(&mut self, shell_id: ShellId, runtime_id: RuntimeId) {
+        if self
+            .panes
+            .get(&shell_id)
+            .is_none_or(|running| running.runtime_id != runtime_id)
+        {
+            return;
+        }
+        let Some(mut running) = self.panes.remove(&shell_id) else {
+            return;
+        };
+        match running.child.try_wait() {
+            Ok(status) => log::info!(
+                "event=session.child_exited session_id={} shell_id={} runtime_id={runtime_id} pid={} status={status:?}",
+                self.id,
+                shell_id.get(),
+                running.child.id()
+            ),
+            Err(error) => log::warn!(
+                "event=session.child_wait_failed session_id={} shell_id={} error_kind={:?}",
+                self.id,
+                shell_id.get(),
+                error.kind()
+            ),
+        }
+        stop_in_background(vec![running]);
+        self.shell_activity(shell_id, ShellActivity::Exited);
+        if self.pi.as_ref().is_some_and(|pi| pi.shell_id == shell_id) {
+            self.pi_exited().await;
+            return;
+        }
+        let remaining: HashSet<ShellId> = self.open_shell_ids().into_iter().collect();
+        if remaining.is_empty() {
+            self.close("shell_exited").await;
+            return;
+        }
+        let id = self.id;
+        if let Err(error) = self
+            .write(move |database| {
+                axo_store::archive_shell_and_prune_layout(
+                    database,
+                    shell_id,
+                    id,
+                    "shell_exited",
+                    &remaining,
+                )
+            })
+            .await
+        {
+            log::warn!("event=session.archive_failed session_id={id} reason={error}");
+        }
+        self.publish();
+    }
+
+    pub(crate) async fn create_shell(&mut self) -> io::Result<ShellRecord> {
+        let folder = self.row.folder.clone();
+        let id = self.id;
+        let shell_id = self
+            .write(move |database| axo_store::insert_terminal_shell(database, id, &folder))
+            .await?;
+        let size = self.pane_size(shell_id);
+        let settings = self.core.settings();
+        let running = match spawn_shell(&settings.shell_command, &self.row.folder, size) {
+            Ok(running) => running,
+            Err(error) => {
+                let _ = self
+                    .write(move |database| {
+                        axo_store::archive_shell(database, shell_id, "spawn_failed")
+                    })
+                    .await;
+                return Err(error);
+            }
+        };
+        let record = running.record(shell_id, &self.core.attach_socket_path);
+        self.install(shell_id, running);
+        self.publish();
+        self.shell_activity(shell_id, ShellActivity::Started);
+        Ok(record)
+    }
+
+    /// Closes a pane; closing its Pi or its last pane closes the Session.
+    pub(crate) async fn close_shell(&mut self, shell_id: ShellId) -> io::Result<rpc::ShellClosed> {
+        let open = self.open_shell_ids();
+        if !open.contains(&shell_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "shell is not open in this session",
+            ));
+        }
+        let is_pi = self.pi.as_ref().is_some_and(|pi| pi.shell_id == shell_id);
+        if is_pi || open.len() == 1 {
+            self.close("explicit_close").await;
+            self.shell_activity(shell_id, ShellActivity::Exited);
+            return Ok(rpc::ShellClosed {
+                archived_shell_id: shell_id,
+                archived_session_id: Some(self.id),
+            });
+        }
+        let remaining: HashSet<ShellId> = open.into_iter().filter(|id| *id != shell_id).collect();
+        let id = self.id;
+        self.write(move |database| {
+            axo_store::archive_shell_and_prune_layout(
+                database,
+                shell_id,
+                id,
+                // Not `explicit_close`, which marks the panes that closed with their Session and
+                // so come back when it is reopened.
+                "pane_closed",
+                &remaining,
+            )
+        })
+        .await?;
+        stop_in_background(self.panes.remove(&shell_id).into_iter().collect());
+        self.publish();
+        self.shell_activity(shell_id, ShellActivity::Exited);
+        Ok(rpc::ShellClosed {
+            archived_shell_id: shell_id,
+            archived_session_id: None,
+        })
+    }
+
+    pub(crate) async fn set_layout(&mut self, layout: Layout) -> io::Result<()> {
+        let open: HashSet<ShellId> = self.open_shell_ids().into_iter().collect();
+        if *layout.shell_ids() != open {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "layout does not match the session's open shells",
+            ));
+        }
+        let id = self.id;
+        self.write(move |database| axo_store::write_session_layout(database, id, &layout))
+            .await?;
+        self.fit_unattached_panes();
+        self.publish();
+        Ok(())
+    }
+
+    pub(crate) async fn rename(&mut self, name: String) -> io::Result<SessionRecord> {
+        if !record::valid_session_title(&name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Session name must be between 1 and 80 characters",
+            ));
+        }
+        let id = self.id;
+        self.write(move |database| axo_store::set_manual_session_name(database, id, &name))
+            .await?;
+        self.publish();
+        Ok(self.record())
+    }
+
+    fn running(&self, shell_id: ShellId) -> io::Result<&Running> {
+        self.panes.get(&shell_id).ok_or_else(|| not_open("shell"))
+    }
+
+    pub(crate) fn input(&self, shell_id: ShellId) -> io::Result<Arc<TerminalInput>> {
+        self.running(shell_id)
+            .map(|running| Arc::clone(&running.input))
+    }
+
+    pub(crate) fn output(&self, shell_id: ShellId) -> io::Result<Arc<TerminalOutput>> {
+        self.running(shell_id)
+            .map(|running| Arc::clone(&running.output))
+    }
+
+    pub(crate) fn resize(&self, shell_id: ShellId, size: WindowSize) -> io::Result<()> {
+        let running = self.running(shell_id)?;
+        process::resize(&running.master, &running.child, size)
+    }
+
+    /// Whether closing the pane would stop something: a Pi in a turn, or a shell running a
+    /// program in the foreground.
+    pub(crate) fn busy(&self, shell_id: ShellId) -> io::Result<rpc::ShellBusy> {
+        let running = self.running(shell_id)?;
+        if running.role == PaneRole::Pi {
+            return Ok(rpc::ShellBusy {
+                busy: self.pi.as_ref().is_some_and(Pi::working),
+                foreground_process: None,
+            });
+        }
+        // SAFETY: the PTY master descriptor stays open while the shell is running.
+        let foreground = unsafe { libc::tcgetpgrp(running.master.as_raw_fd()) };
+        if foreground == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if foreground == running.child.id() as libc::pid_t {
+            return Ok(rpc::ShellBusy {
+                busy: false,
+                foreground_process: None,
+            });
+        }
+        Ok(rpc::ShellBusy {
+            busy: true,
+            foreground_process: process_name(foreground),
+        })
+    }
+
+    /// One more attachment to a pane: a copy of its PTY master, its output, and whether it is
+    /// the first.
+    pub(crate) fn attach(&mut self, shell_id: ShellId) -> io::Result<crate::attachments::Attached> {
+        let running = self
+            .panes
+            .get_mut(&shell_id)
+            .ok_or_else(|| not_open("shell"))?;
+        let master = running.duplicate_master()?;
+        running.attachments += 1;
+        let attached = crate::attachments::Attached {
+            master,
+            output: Arc::clone(&running.output),
+            session_id: self.id,
+            runtime_id: running.runtime_id,
+        };
+        if running.attachments == 1 {
+            self.shell_activity(shell_id, ShellActivity::Attached);
+        }
+        Ok(attached)
+    }
+
+    pub(crate) fn detached(&mut self, shell_id: ShellId, runtime_id: RuntimeId) {
+        let Some(running) = self.panes.get_mut(&shell_id) else {
+            return;
+        };
+        if running.runtime_id != runtime_id {
+            return;
+        }
+        running.attachments = running.attachments.saturating_sub(1);
+        if running.attachments == 0 {
+            self.shell_activity(shell_id, ShellActivity::Detached);
+        }
+    }
+
+    /// The Session's folder, as stored.
+    pub(crate) fn folder(&self) -> PathBuf {
+        self.row.folder.clone()
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn process_name(process_id: libc::pid_t) -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is writable for its full length; proc_name NUL-terminates within it.
+    let length =
+        unsafe { libc::proc_name(process_id, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if length <= 0 {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&buffer[..length as usize]).into_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn process_name(_process_id: libc::pid_t) -> Option<String> {
+    None
 }

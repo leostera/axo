@@ -1,9 +1,9 @@
-//! A pane's input side, apart from the Session state (RFD0034, step 8).
+//! A pane's input side, apart from its Session's task (RFD0034 step 8, RFD0041).
 //!
 //! Writing to a PTY blocks while the program in it isn't reading and its input queue is full,
 //! with no limit: the master is a blocking descriptor shared with every attached client, and
 //! `poll` on a macOS PTY says writable when a write would still block. So input is written
-//! outside the Session state's lock, one write at a time per pane. A pane that takes no input
+//! on the blocking pool, outside any task, one write at a time per pane. A pane that takes no input
 //! holds up only its own writers, and they give up after a time; closing the pane ends the
 //! stuck write (the PTY hangs up).
 
@@ -16,7 +16,7 @@ use axo_pty::process;
 
 /// Where a pane's input goes: its own copy of the PTY master, and whose turn it is to write.
 #[derive(Debug)]
-pub(super) struct TerminalInput {
+pub(crate) struct TerminalInput {
     master: OwnedFd,
     state: Mutex<InputState>,
     turn_over: Condvar,
@@ -31,7 +31,7 @@ struct InputState {
 }
 
 impl TerminalInput {
-    pub(super) fn new(master: &OwnedFd) -> io::Result<Self> {
+    pub(crate) fn new(master: &OwnedFd) -> io::Result<Self> {
         // SAFETY: fcntl duplicates a live descriptor; the result is owned below.
         let fd = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if fd == -1 {
@@ -47,7 +47,7 @@ impl TerminalInput {
 
     /// Writes the person's input number `sequence`. The same number again is taken as already
     /// written (a client retrying); any other but the next is refused.
-    pub(super) fn write_sequenced(
+    pub(crate) fn write_sequenced(
         &self,
         sequence: u64,
         bytes: &[u8],
@@ -76,7 +76,7 @@ impl TerminalInput {
     }
 
     /// Writes keys or text outside the person's sequence: an agent typing, a remote key press.
-    pub(super) fn write(&self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
+    pub(crate) fn write(&self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
         let state = self.wait_for_turn(timeout)?;
         self.write_in_turn(state, bytes, timeout, None)
     }

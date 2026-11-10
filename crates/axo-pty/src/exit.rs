@@ -58,6 +58,15 @@ impl Exit {
         true
     }
 
+    /// Waits, without a thread, until the child exits.
+    pub async fn exited(&self) {
+        let (told, heard) = tokio::sync::oneshot::channel();
+        self.on_exit(move || {
+            let _ = told.send(());
+        });
+        let _ = heard.await;
+    }
+
     /// Runs `then` once the child has exited: at once if it already has, otherwise on axo-pty's
     /// runtime when it does. `then` must not block.
     pub fn on_exit(&self, then: impl FnOnce() + Send + 'static) {
@@ -70,7 +79,7 @@ impl Exit {
         }
     }
 
-    fn exited(&self) {
+    fn mark_exited(&self) {
         let callbacks = {
             let mut state = self.lock();
             state.exited = true;
@@ -147,7 +156,7 @@ impl WatchedChild {
 
 /// Watches `pid` from axo-pty's runtime and marks `exit` once it has exited.
 fn watch(pid: libc::id_t, exit: Arc<Exit>) -> io::Result<()> {
-    let runtime = crate::runtime::shared()?;
+    let runtime = crate::runtime::handle()?;
     let _inside = runtime.enter();
     // Listening before the first look: an exit after that look still sends a SIGCHLD it hears.
     let mut children = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
@@ -159,7 +168,7 @@ fn watch(pid: libc::id_t, exit: Arc<Exit>) -> io::Result<()> {
                 return;
             }
         }
-        exit.exited();
+        exit.mark_exited();
     });
     Ok(())
 }
@@ -180,7 +189,13 @@ fn has_exited(pid: libc::id_t) -> bool {
             )
         };
         if result == 0 {
-            return info.si_pid != 0;
+            // macOS reports a stopped or continued child here too, despite `WEXITED`; only
+            // these codes mean it is gone.
+            return info.si_pid != 0
+                && matches!(
+                    info.si_code,
+                    libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
+                );
         }
         if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             return true;
@@ -212,6 +227,33 @@ mod tests {
         let started = Instant::now();
         assert!(child.exit().wait_until(started + Duration::from_secs(5)));
         assert_eq!(child.try_wait().unwrap().unwrap().code(), Some(7));
+    }
+
+    #[test]
+    fn a_stopped_child_has_not_exited() {
+        let mut child = spawn("sleep 30");
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: signals our own child, which is not yet reaped.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!has_exited(pid as libc::id_t));
+        assert!(
+            !child
+                .exit()
+                .wait_until(Instant::now() + Duration::from_millis(200))
+        );
+        assert!(child.try_wait().unwrap().is_none());
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!has_exited(pid as libc::id_t));
+        child.kill().unwrap();
+        assert!(
+            child
+                .exit()
+                .wait_until(Instant::now() + Duration::from_secs(5))
+        );
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]

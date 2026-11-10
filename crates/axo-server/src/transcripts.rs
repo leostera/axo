@@ -17,17 +17,17 @@ use std::path::{Path, PathBuf};
 
 use axo_store::Connection;
 
-pub(super) struct PiDirectories {
+pub(crate) struct PiDirectories {
     /// This Mac's transcripts: `<sessions>/<hostId>`.
-    pub(super) transcripts: PathBuf,
+    pub(crate) transcripts: PathBuf,
     /// Pi's bridge sockets, in `server/pi-sessions`, where transcripts used to be.
-    pub(super) bridges: PathBuf,
+    pub(crate) bridges: PathBuf,
 }
 
 impl PiDirectories {
     /// The folder a transcript must be inside to be Axo's own: the host's folder, or for a file
     /// still at its old place, `pi-sessions`.
-    pub(super) fn home_of(&self, file: &Path) -> &Path {
+    pub(crate) fn home_of(&self, file: &Path) -> &Path {
         let canonical = fs::canonicalize(file).or_else(|_| {
             file.parent()
                 .map(fs::canonicalize)
@@ -41,7 +41,7 @@ impl PiDirectories {
 }
 
 /// Prepares the host's transcript folder and moves older transcripts into it.
-pub(super) fn open(
+pub(crate) fn open(
     database: &mut Connection,
     bridges: PathBuf,
     sessions_directory: &Path,

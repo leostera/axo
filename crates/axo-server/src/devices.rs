@@ -7,22 +7,8 @@
 
 use axo_protocol::elicitation::{BAD_SIGNATURE, DeviceProof, ElicitationAnswer, Sealed};
 
-use super::SessionManager;
-
-impl SessionManager {
-    /// A remote answer counts only with its device's signature over that answer.
-    pub(crate) fn check_answer(
-        &self,
-        id: &str,
-        answer: ElicitationAnswer,
-        sealed: Option<&Sealed>,
-        device: Option<&DeviceProof>,
-    ) -> Result<(), (i64, String)> {
-        check_answer(id, answer, sealed, device)
-    }
-}
-
-fn check_answer(
+/// A remote answer counts only with its device's signature over that answer.
+pub(crate) fn check_answer(
     id: &str,
     answer: ElicitationAnswer,
     sealed: Option<&Sealed>,

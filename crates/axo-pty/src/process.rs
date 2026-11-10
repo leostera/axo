@@ -388,6 +388,45 @@ pub fn stop(child: &mut WatchedChild, grace: Duration) {
     stop_all(vec![Stopping { child, grace }]);
 }
 
+/// [`stop`] without a thread (RFD0041): SIGHUP and SIGTERM, then SIGKILL once `grace` is up, each
+/// exit heard from the child's watch. Reaps the child.
+pub async fn stop_async(child: &mut WatchedChild, grace: Duration) {
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            log::error!(
+                "event=session.shell_stop_unconfirmed pid={} phase=before_signal error_kind={:?}",
+                child.id(),
+                error.kind()
+            );
+            return;
+        }
+    }
+    log::info!("event=session.shell_stop_started pid={}", child.id());
+    signal(child, libc::SIGHUP);
+    signal(child, libc::SIGTERM);
+    let exit = std::sync::Arc::clone(child.exit());
+    if tokio::time::timeout(grace, exit.exited()).await.is_err() {
+        signal(child, libc::SIGKILL);
+        if tokio::time::timeout(KILL_WAIT, exit.exited())
+            .await
+            .is_err()
+        {
+            log::error!("event=session.shell_stop_timed_out pid={}", child.id());
+            return;
+        }
+    }
+    match child.try_wait() {
+        Ok(_) => log::info!("event=session.shell_stopped pid={}", child.id()),
+        Err(error) => log::error!(
+            "event=session.shell_stop_unconfirmed pid={} phase=reap error_kind={:?}",
+            child.id(),
+            error.kind()
+        ),
+    }
+}
+
 /// How long a stopped shell gets to exit after SIGHUP/SIGTERM before SIGKILL.
 pub const SHELL_STOP_GRACE: Duration = Duration::from_millis(500);
 

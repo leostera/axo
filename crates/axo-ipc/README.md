@@ -5,7 +5,6 @@ Axod's local IPC: newline-delimited JSON-RPC over a Unix socket, and the bounded
 | Module | Owns |
 | --- | --- |
 | `server` | `serve` and `TypedMethods`: one tokio task per connection and per request; synchronous handlers run on the blocking pool |
-| `event_queue` | `EventQueue`: a bounded per-subscription queue with blocking and async waiters |
 
 ## Rules
 

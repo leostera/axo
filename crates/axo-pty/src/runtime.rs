@@ -1,8 +1,17 @@
 //! The runtime axo-pty's tasks run on: every PTY's output pump and every child's exit watch.
-//! Two threads for all of them, made on first use (RFD0037).
+//! Inside a tokio runtime (axod's, RFD0041) they run on it; outside one, on two threads of
+//! axo-pty's own, made on first use (RFD0037).
 
 use std::io;
 use std::sync::OnceLock;
+
+/// The runtime to spawn on: the caller's, or axo-pty's own.
+pub(crate) fn handle() -> io::Result<tokio::runtime::Handle> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Ok(handle),
+        Err(_) => Ok(shared()?.handle().clone()),
+    }
+}
 
 pub(crate) fn shared() -> io::Result<&'static tokio::runtime::Runtime> {
     static SHARED: OnceLock<tokio::runtime::Runtime> = OnceLock::new();

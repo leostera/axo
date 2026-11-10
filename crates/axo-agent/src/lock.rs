@@ -1,78 +1,25 @@
 //! The transcript writer lock: Pi's proof of life.
 //!
 //! Every Pi holds an exclusive `flock` on its Session's `<transcript>.jsonl.lock`, inherited at
-//! launch and kept even if Axod crashes. Holding the lock therefore proves no Pi for the Session
-//! is alive; only `acquire` can produce a `WriterLock`.
+//! launch, for as long as it lives (and it dies with axod, RFD0041). Holding the lock proves no
+//! Pi for the Session is alive; only `acquire` can produce a `WriterLock`.
 
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-use crate::interrupt::Interrupt;
 
 #[derive(Debug)]
 pub struct WriterLock(OwnedFd);
 
 /// How long a just-released lock may still be held by a child forked before the release, until
 /// that child execs. Generous: exec waits on the loader, which is slow on a loaded machine.
-const FORK_EXEC_WINDOW: Duration = Duration::from_millis(250);
-const FORK_EXEC_POLL: Duration = Duration::from_millis(5);
-/// How often a lock whose holder is unknown is tried again.
-const UNKNOWN_HOLDER_RETRY: Duration = Duration::from_millis(100);
-
-/// A kqueue that turns readable when a process exits: any process, not only a child. The holder
-/// may be a Pi that outlived the axod that started it, so it is not ours to hear through SIGCHLD,
-/// and tokio has no way to watch another process; this is axod's one kqueue of its own.
-struct ProcessExit(OwnedFd);
-
-impl ProcessExit {
-    /// `None` when `pid` has already exited.
-    fn watch(pid: u32) -> io::Result<Option<Self>> {
-        // SAFETY: kqueue returns a new descriptor, owned at once.
-        let queue = unsafe { libc::kqueue() };
-        if queue == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `queue` was just created and is owned only here.
-        let queue = unsafe { OwnedFd::from_raw_fd(queue) };
-        axo_pty::process::set_cloexec(queue.as_raw_fd())?;
-        let change = libc::kevent {
-            ident: pid as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_ONESHOT,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        };
-        // SAFETY: one initialized change and no event list; returns at once.
-        let result = unsafe {
-            libc::kevent(
-                queue.as_raw_fd(),
-                &change,
-                1,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null(),
-            )
-        };
-        if result == -1 {
-            let error = io::Error::last_os_error();
-            return match error.raw_os_error() {
-                Some(libc::ESRCH) => Ok(None),
-                _ => Err(error),
-            };
-        }
-        Ok(Some(Self(queue)))
-    }
-
-    fn as_raw_fd(&self) -> RawFd {
-        self.0.as_raw_fd()
-    }
-}
+pub const FORK_EXEC_WINDOW: Duration = Duration::from_millis(250);
+/// How often a held lock is tried again while waiting for it. Nothing says when a lock is
+/// released, and a wait only happens at a launch, bounded by its deadline.
+const RETRY: Duration = Duration::from_millis(5);
 
 fn lock_path(session_file: &Path) -> PathBuf {
     session_file.with_extension("jsonl.lock")
@@ -112,95 +59,19 @@ impl WriterLock {
         Ok(Self(OwnedFd::from(lock)))
     }
 
-    /// Like `acquire`, but rides out a holder that is only a process forked mid-launch.
-    ///
-    /// A child forked by any thread holds a copy of every descriptor until it execs, and `flock`
-    /// belongs to the shared open file description. So for a moment after Axod releases a lock
-    /// (a probe, a failed launch), it still looks held. Taking that for a live Pi would send a
-    /// shutdown request to a Pi that does not exist. `WouldBlock` after `FORK_EXEC_WINDOW`.
-    pub fn acquire_settled(session_file: &Path, interrupt: &Interrupt<'_>) -> io::Result<Self> {
-        match Self::poll(
-            session_file,
-            FORK_EXEC_WINDOW,
-            FORK_EXEC_POLL,
-            None,
-            interrupt,
-        ) {
-            Err(error) if error.kind() == io::ErrorKind::TimedOut => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Pi transcript is already owned by a writer",
-            )),
-            settled => settled,
-        }
-    }
-
-    /// Retries `acquire` until `timeout`, then fails with `TimedOut`. Nothing says when a lock
-    /// is released, so with an unknown holder this tries again every `UNKNOWN_HOLDER_RETRY`.
-    pub fn wait(
-        session_file: &Path,
-        timeout: Duration,
-        interrupt: &Interrupt<'_>,
-    ) -> io::Result<Self> {
-        Self::poll(session_file, timeout, UNKNOWN_HOLDER_RETRY, None, interrupt)
-    }
-
-    /// Like `wait`, for a lock held by the process `holder`: tries again the moment it exits.
-    /// A lock still held after that (a child it left holding it) is retried as with `wait`.
-    pub fn wait_for_holder(
-        session_file: &Path,
-        holder: u32,
-        timeout: Duration,
-        interrupt: &Interrupt<'_>,
-    ) -> io::Result<Self> {
-        Self::poll(
-            session_file,
-            timeout,
-            UNKNOWN_HOLDER_RETRY,
-            Some(holder),
-            interrupt,
-        )
-    }
-
-    fn poll(
-        session_file: &Path,
-        timeout: Duration,
-        interval: Duration,
-        holder: Option<u32>,
-        interrupt: &Interrupt<'_>,
-    ) -> io::Result<Self> {
+    /// Like `acquire`, but tries again until `timeout`: for a holder that is only a process
+    /// forked mid-launch (a child holds a copy of every descriptor until it execs, and `flock`
+    /// belongs to the shared open file description), or a Pi just killed. `WouldBlock` after it.
+    pub fn acquire_within(session_file: &Path, timeout: Duration) -> io::Result<Self> {
         let deadline = Instant::now() + timeout;
-        let mut exit = match holder {
-            Some(holder) => ProcessExit::watch(holder)?,
-            None => None,
-        };
         loop {
-            interrupt.check()?;
             match Self::acquire(session_file) {
-                Ok(lock) => return Ok(lock),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "Pi did not release its transcript lock",
-                        ));
-                    }
-                    // While the holder lives, only its exit (or the deadline) is worth waking
-                    // for; after it, or without one, try again after `interval`.
-                    let next = match &exit {
-                        Some(_) => deadline,
-                        None => deadline.min(Instant::now() + interval),
-                    };
-                    let watching: Vec<_> = exit
-                        .iter()
-                        .map(|exit| (exit.as_raw_fd(), libc::POLLIN))
-                        .collect();
-                    match interrupt.wait(&watching, Some(next), "the next try") {
-                        Ok(_) => exit = None,
-                        Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
-                        Err(error) => return Err(error),
-                    }
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(RETRY);
                 }
-                Err(error) => return Err(error),
+                acquired => return acquired,
             }
         }
     }
@@ -305,7 +176,7 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
             child.exec()
         });
-        WriterLock::acquire_settled(&session_file, &Interrupt::never()).unwrap();
+        WriterLock::acquire_within(&session_file, FORK_EXEC_WINDOW * 8).unwrap();
         assert!(spawning.join().unwrap().success());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -317,7 +188,7 @@ mod tests {
         let _writer = WriterLock::acquire(&session_file).unwrap();
         let started = Instant::now();
         assert_eq!(
-            WriterLock::acquire_settled(&session_file, &Interrupt::never())
+            WriterLock::acquire_within(&session_file, FORK_EXEC_WINDOW)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::WouldBlock

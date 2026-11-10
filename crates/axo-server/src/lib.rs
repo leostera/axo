@@ -12,8 +12,28 @@ use axo_ipc::{ErrorCode, Extension, Methods, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
+mod attachments;
+mod catalog;
+mod core;
+mod devices;
+mod event_stream;
+mod events;
+mod handlers;
+mod ops;
+mod peers;
 pub mod permissions;
+mod relay_host;
+mod remote;
 mod session;
+mod sessions;
+mod settings;
+mod stop_notice;
+mod store;
+mod terminal_input;
+#[cfg(test)]
+mod test_support;
+mod transcripts;
+mod workspace_state;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
 
@@ -196,9 +216,11 @@ struct RelayContext {
     control: Arc<axo_relay::RelayControl>,
     channel: Arc<axo_relay::RelayChannel>,
     endpoint: axo_relay::RelayEndpoint,
-    host: Arc<session::RelayHostAdapter>,
+    host: Arc<relay_host::RelayHostAdapter>,
     credentials: Arc<dyn axo_relay::credential::HostCredentialStore>,
 }
+
+const ATTACH_SOCKET_FILE: &str = "attach.sock";
 
 /// Starts Axo's local JSON-RPC server and blocks for the daemon's lifetime.
 pub fn serve_ipc(
@@ -217,15 +239,32 @@ pub fn serve_ipc(
 
     let runtime = axod_runtime()?;
     let stop = axo_ipc::Stop::default();
-    session::set_agent_socket(&socket_path.0);
     let sessions_directory = sessions_directory_for(server_directory);
-    let sessions = session::SessionManager::open(server_directory, &sessions_directory)?;
-    let host = Arc::new(session::RelayHostAdapter::new(Arc::clone(&sessions)));
+    let (core, previous_stop) = {
+        let _inside = runtime.enter();
+        open_core(
+            server_directory,
+            &sessions_directory,
+            &socket_path.0,
+            runtime.handle().clone(),
+        )?
+    };
+    let host = Arc::new(relay_host::RelayHostAdapter::new(Arc::clone(&core)));
     let credentials = remote_access.credential_storage.open(server_directory);
-    sessions.keep_input_key_in(Arc::clone(&credentials));
+    core.keep_input_key_in(Arc::clone(&credentials));
     // What the peers socket follows, shared with the remote panes' handlers (RFD0024).
     let peer_live = axo_relay::peers::PeerLive::new();
-    sessions.attach_peers(Arc::clone(&peer_live), server_directory.join("peers.json"));
+    peers::Peers::attach(
+        &core,
+        Arc::clone(&peer_live),
+        server_directory.join("peers.json"),
+    );
+    let _bridges = runtime.block_on(async {
+        attachments::listen(&core, stop.clone())?;
+        let watched = watch_bridges(&core);
+        sessions::restore(&core, previous_stop).await?;
+        Ok::<_, io::Error>(watched)
+    })?;
     let mut remote_relay = match axo_relay::RelayWorker::start(
         axo_relay::RelayDependencies {
             host: host.clone(),
@@ -258,7 +297,7 @@ pub fn serve_ipc(
         credentials,
     });
     let host_for_calls = relay.as_ref().map(|relay| Arc::clone(&relay.host));
-    let handler = rpc_handler(Arc::clone(&sessions), daemon_version, relay);
+    let handler = rpc_handler(Arc::clone(&core), daemon_version, relay);
     // The account's calls are answered by the same methods, as the relay's caller.
     if let Some(host) = host_for_calls {
         host.answer_with(handler.clone());
@@ -281,15 +320,17 @@ pub fn serve_ipc(
         axo_mcp::upgrade(upgraded, mcp_socket.clone())
     });
     // Clients hear of events on a connection of their own, pushed as they happen (RFD0037).
-    let streaming = Arc::clone(&sessions);
-    upgrades.add(session::event_stream::STREAM, move |upgraded| {
-        session::event_stream::serve(Arc::clone(&streaming), upgraded)
+    let streaming = Arc::clone(&core);
+    upgrades.add(event_stream::STREAM, move |upgraded| {
+        event_stream::serve(Arc::clone(&streaming), upgraded)
     });
-    let served = axo_ipc::serve(runtime.handle(), listener, handler, upgrades, stop);
+    let served = axo_ipc::serve(runtime.handle(), listener, handler, upgrades, stop.clone());
+    stop.stop();
     if let Some(relay) = remote_relay.as_mut() {
         relay.shutdown();
     }
-    sessions.shutdown();
+    runtime.block_on(sessions::stop(&core));
+    attachments::remove_socket(&core.attach_socket_path);
     // Requests still running get a moment to finish; then they are cut short.
     runtime.shutdown_timeout(SHUTDOWN_GRACE);
     log::info!("event=daemon.server_stopped");
@@ -297,11 +338,92 @@ pub fn serve_ipc(
     Ok(())
 }
 
+/// Opens the store and everything axod keeps beside it, and the previous axod's stop record.
+fn open_core(
+    server_directory: &Path,
+    sessions_directory: &Path,
+    agent_socket: &Path,
+    runtime: tokio::runtime::Handle,
+) -> Result<(Arc<core::Core>, Option<stop_notice::DaemonStop>), Box<dyn std::error::Error>> {
+    fs::create_dir_all(server_directory)?;
+    let server_directory = fs::canonicalize(server_directory)?;
+    let mut database = axo_store::open(&server_directory.join(axo_store::DATABASE_FILE))?;
+    let host_id = axo_store::load_or_create_host_id(&database)?;
+    let settings = settings::Settings::load(&database)?;
+    let viewport = axo_store::load_viewport(&database)?;
+    let bridges = server_directory.join("pi-sessions");
+    fs::create_dir_all(&bridges)?;
+    fs::set_permissions(&bridges, fs::Permissions::from_mode(0o700))?;
+    axo_store::ensure_pi_bridge_socket_paths(&database, &bridges)?;
+    let pi_directories = transcripts::open(&mut database, bridges, sessions_directory, &host_id)?;
+    remove_abandoned_pi_bridge_sockets(&database)?;
+    let previous_stop = sessions::take_previous_stop(&database)?;
+    let home = current_user_home_directory()?;
+    let home = home.canonicalize().unwrap_or(home);
+    let core = Arc::new(core::Core::new(core::CoreParts {
+        store: store::Store::new(database, runtime),
+        host_id,
+        host_generation: axo_protocol::new_uuid_v4()?,
+        home,
+        attach_socket_path: server_directory.join(ATTACH_SOCKET_FILE),
+        agent_socket: agent_socket.to_path_buf(),
+        pi_directories,
+        sessions_directory: sessions_directory.to_path_buf(),
+        settings,
+        viewport,
+        lifeline: axo_agent::Lifeline::new()?,
+    }));
+    Ok((core, previous_stop))
+}
+
+/// Startup reconciliation: removes the bridge socket of every Session whose writer lock no Pi
+/// holds. Failures are logged and skipped; they must not keep axod from starting.
+fn remove_abandoned_pi_bridge_sockets(database: &axo_store::Connection) -> io::Result<()> {
+    for (session_id, session_file, socket_path) in axo_store::pi_bridge_sockets(database)? {
+        match axo_agent::pi::BridgeSocketPath::parse(socket_path)
+            .and_then(|socket| socket.reconcile(&session_file))
+        {
+            Ok(cleanup) => session::pi::log_socket_cleanup(session_id, cleanup),
+            Err(error) => log::warn!(
+                "event=pi.bridge_socket_reconcile_failed session_id={session_id} error_kind={:?}",
+                error.kind()
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Tells Pi links when something changes where Pis make their bridge sockets, so a link tries
+/// again the moment its Pi listens. Kept for axod's lifetime; without it links still retry.
+fn watch_bridges(core: &Arc<core::Core>) -> Option<notify::RecommendedWatcher> {
+    use notify::Watcher;
+    let changed = Arc::clone(&core.bridges_changed);
+    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok() {
+            changed.notify_waiters();
+        }
+    });
+    match watcher.and_then(|mut watcher| {
+        watcher
+            .watch(
+                &core.pi_directories.bridges,
+                notify::RecursiveMode::NonRecursive,
+            )
+            .map(|()| watcher)
+    }) {
+        Ok(watcher) => Some(watcher),
+        Err(error) => {
+            log::warn!("event=pi.bridge_watch_unavailable reason={error}");
+            None
+        }
+    }
+}
+
 /// Grace for requests still running when axod stops.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
-/// axod's one runtime (RFD0034, step 7): the socket, its requests, the MCP servers and the
-/// relay run on it; blocking work runs on its blocking pool.
+/// axod's one runtime (RFD0041): the socket, its requests, every Session's task, the MCP servers
+/// and the relay run on it; blocking work runs on its blocking pool.
 fn axod_runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -329,30 +451,30 @@ fn stop_on_signal(stop: axo_ipc::Stop) -> io::Result<impl std::future::Future<Ou
 /// axod's methods, from its extensions (RFD0034). Each method has one owner; two claiming the
 /// same name is a bug, found when axod starts.
 fn rpc_handler(
-    sessions: Arc<session::SessionManager>,
+    core: Arc<core::Core>,
     daemon_version: &'static str,
     relay: Option<RelayContext>,
 ) -> IoHandler {
     let apps = axo_apps::Apps::new(relay.as_ref().map(|relay| Arc::clone(&relay.channel)));
-    let assets = axo_assets::Assets::new(sessions.asset_slot());
+    let assets = axo_assets::Assets::new(Arc::clone(&core.assets));
     let questions = axo_questions::QuestionsExtension::new(
-        sessions.questions(),
-        Arc::clone(&sessions) as Arc<dyn axo_questions::QuestionsHost>,
+        Arc::clone(&core.questions),
+        Arc::clone(&core) as Arc<dyn axo_questions::QuestionsHost>,
     );
     let computer = axo_computer_use::ComputerExtension::new(
-        sessions.computer(),
-        Arc::clone(&sessions) as Arc<dyn axo_computer_use::ComputerHost>,
+        Arc::clone(&core.computer),
+        Arc::clone(&core) as Arc<dyn axo_computer_use::ComputerHost>,
     );
     let daemon = Daemon {
         version: daemon_version,
-        sessions: Arc::clone(&sessions),
+        core: Arc::clone(&core),
     };
     let mut methods = Methods::new();
     for extension in [
         &daemon as &dyn Extension,
         &Relay(relay),
-        &Sessions(Arc::clone(&sessions)),
-        &session::Remote::new(sessions),
+        &handlers::Sessions(Arc::clone(&core)),
+        &remote::Remote::new(core),
         &apps,
         &assets,
         &questions,
@@ -368,7 +490,7 @@ fn rpc_handler(
 /// The daemon's own methods: negotiating the protocol, and its health.
 struct Daemon {
     version: &'static str,
-    sessions: Arc<session::SessionManager>,
+    core: Arc<core::Core>,
 }
 
 impl Extension for Daemon {
@@ -378,8 +500,10 @@ impl Extension for Daemon {
 
     fn register(&self, methods: &mut IoHandler) {
         add_protocol_negotiate_method(methods);
-        let ready = Arc::clone(&self.sessions);
-        add_health_method(methods, self.version, move || ready.is_ready());
+        let core = Arc::clone(&self.core);
+        add_health_method(methods, self.version, move || {
+            core.ready.load(std::sync::atomic::Ordering::Acquire)
+        });
     }
 }
 
@@ -393,20 +517,6 @@ impl Extension for Relay {
 
     fn register(&self, methods: &mut IoHandler) {
         add_relay_methods(methods, self.0.clone());
-    }
-}
-
-/// Sessions, panes, Pi, questions, computer use: the Session manager's methods,
-/// until they move into extensions of their own (RFD0034 step 5).
-struct Sessions(Arc<session::SessionManager>);
-
-impl Extension for Sessions {
-    fn name(&self) -> &'static str {
-        "sessions"
-    }
-
-    fn register(&self, methods: &mut IoHandler) {
-        self.0.register_rpc_methods(methods);
     }
 }
 

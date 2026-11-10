@@ -54,9 +54,22 @@ pub trait TypedMethods {
         R: Serialize + 'static,
         F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static;
 
-    /// An asynchronous handler for requests that wait (long-polls), run on the executor.
+    /// An asynchronous handler, run on the executor: it must never block.
     fn add_typed_async<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
     where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, RpcError>> + Send + 'static;
+
+    /// [`Self::add_typed_async`] for one kind of caller, as [`Self::add_typed_only`].
+    fn add_typed_only_async<P, R, F, Fut>(
+        &mut self,
+        only: Only,
+        name: &str,
+        expected: &'static str,
+        method: F,
+    ) where
         P: DeserializeOwned + 'static,
         R: Serialize + 'static,
         F: Fn(P) -> Fut + Send + Sync + 'static,
@@ -101,6 +114,32 @@ impl TypedMethods for IoHandler {
         self.add_method(name, move |params: Params| {
             let method = Arc::clone(&method);
             async move {
+                let params = parse_params::<P>(params, expected)?;
+                method(params).await.and_then(encode_result)
+            }
+        });
+    }
+
+    fn add_typed_only_async<P, R, F, Fut>(
+        &mut self,
+        only: Only,
+        name: &str,
+        expected: &'static str,
+        method: F,
+    ) where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, RpcError>> + Send + 'static,
+    {
+        let method = Arc::new(method);
+        let method_name = name.to_owned();
+        self.add_method(name, move |params: Params| {
+            let method = Arc::clone(&method);
+            let method_name = method_name.clone();
+            async move {
+                // Checked when the call runs, within its peer's scope.
+                only.admit(&method_name)?;
                 let params = parse_params::<P>(params, expected)?;
                 method(params).await.and_then(encode_result)
             }

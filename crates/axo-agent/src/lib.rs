@@ -1,6 +1,6 @@
-//! Coding agents for Axod. Pi is the only one today: launching Pi for a Session, the transcript
-//! writer lock that proves whether one is alive, its bridge socket, taking a transcript over from
-//! a running Pi, and the bridge transport.
+//! Coding agents for Axod. Pi is the only one today: launching Pi for a Session with the lifeline
+//! that ends it with axod, the transcript writer lock that proves whether one is alive, its
+//! bridge socket, and the link axod follows it over.
 //!
 //! Nothing here knows about the session catalog or its database; callers decide which agent to
 //! launch and when, and what its events mean for the catalog.
@@ -8,16 +8,16 @@
 pub mod activity;
 mod command;
 mod history;
-pub mod interrupt;
+pub mod lifeline;
 mod lock;
 pub mod pi;
-mod process_inspection;
-pub mod takeover;
+pub mod process;
 
 pub use activity::Activity;
 pub use command::AgentCommand;
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
-pub use lock::WriterLock;
+pub use lifeline::Lifeline;
+pub use lock::{FORK_EXEC_WINDOW, WriterLock};
 
 /// A fresh directory under /tmp (not the per-user temp directory: socket paths are limited to
 /// 104 bytes).

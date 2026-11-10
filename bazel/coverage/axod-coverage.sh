@@ -19,7 +19,7 @@ out=${1:-/tmp/axod-coverage}
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 
-crates='//crates/axo-server,//crates/axo-apps,//crates/axo-assets,//crates/axo-questions,//crates/axo-computer-use,//crates/axo-mcp,//crates/axo-computer,//crates/axo-relay,//crates/axo-ipc,//crates/axo-agent,//crates/axo-store,//crates/axo-panes,//crates/axo-pty,//crates/axo-protocol,//crates/axod'
+crates='//crates/axo-server,//crates/axo-apps,//crates/axo-assets,//crates/axo-questions,//crates/axo-computer-use,//crates/axo-mcp,//crates/axo-computer,//crates/axo-relay,//crates/axo-ipc,//crates/axo-agent,//crates/axo-store,//crates/axo-pty,//crates/axo-protocol,//crates/axod'
 rm -rf "$out" && mkdir -p "$out/profiles"
 
 tools="$(bazel info output_base)/external/rules_rust++rust+rust_macos_aarch64__aarch64-apple-darwin__stable_tools/lib/rustlib/aarch64-apple-darwin/bin"
@@ -27,7 +27,7 @@ tools="$(bazel info output_base)/external/rules_rust++rust+rust_macos_aarch64__a
 
 echo "== 1. crate tests"
 bazel coverage //crates/axo-server/... //crates/axo-apps/... //crates/axo-assets/... //crates/axo-questions/... //crates/axo-computer-use/... //crates/axo-relay/... //crates/axo-ipc/... //crates/axo-agent/... \
-  //crates/axo-mcp/... //crates/axo-computer/... //crates/axo-store/... //crates/axo-panes/... //crates/axo-pty/... //crates/axo-protocol/... \
+  //crates/axo-mcp/... //crates/axo-computer/... //crates/axo-store/... //crates/axo-pty/... //crates/axo-protocol/... \
   --nocache_test_results --instrument_test_targets --combined_report=lcov \
   --instrumentation_filter="$crates" --test_tag_filters=-manual 2>&1 | grep -E '^//|Executed|FAILED' || true
 cp bazel-out/_coverage/_coverage_report.dat "$out/units.lcov" && chmod u+w "$out/units.lcov"

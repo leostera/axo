@@ -17,8 +17,8 @@ use jsonrpc_core::{Error as RpcError, ErrorCode};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::SessionManager;
-use super::events::SharedEvent;
+use crate::core::Core;
+use crate::events::SharedEvent;
 
 /// The method that opens a stream.
 pub const STREAM: &str = "axo.session.events.stream";
@@ -30,7 +30,7 @@ pub const EVENTS: &str = "axo.session.events";
 const WAIT: Duration = Duration::from_secs(3600);
 
 /// Serves one stream until the client closes its connection or the subscription lags.
-pub async fn serve(sessions: Arc<SessionManager>, mut upgraded: Upgraded) {
+pub(crate) async fn serve(core: Arc<Core>, mut upgraded: Upgraded) {
     let request: rpc::Subscribe = match serde_json::from_value(upgraded.params.take()) {
         Ok(request) => request,
         Err(_) => {
@@ -44,12 +44,19 @@ pub async fn serve(sessions: Arc<SessionManager>, mut upgraded: Upgraded) {
             return;
         }
     };
-    let subscribing = Arc::clone(&sessions);
-    let subscribed = tokio::task::spawn_blocking(move || {
-        subscribing.subscribe(request.session_id, request.include_terminal_output)
-    })
-    .await
-    .unwrap_or_else(|error| Err(io::Error::other(error)));
+    let subscribed = match request.session_id {
+        Some(id) if !core.catalog.contains(id) => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "session record is missing",
+        )),
+        _ => Ok(()),
+    }
+    .and_then(|()| {
+        core.events
+            .subscribe(request.session_id, request.include_terminal_output, || {
+                core.catalog.records()
+            })
+    });
     let subscription_id = match subscribed {
         Ok(id) => id,
         Err(error) => {
@@ -72,24 +79,20 @@ pub async fn serve(sessions: Arc<SessionManager>, mut upgraded: Upgraded) {
         .await
         .is_ok()
     {
-        if let Err(error) = stream(&sessions, &subscription_id, &mut upgraded).await {
+        if let Err(error) = stream(&core, &subscription_id, &mut upgraded).await {
             log::debug!("event=session.event_stream_ended reason={error}");
         }
     }
-    if let Err(error) = sessions.unsubscribe(&subscription_id) {
+    if let Err(error) = core.events.unsubscribe(&subscription_id) {
         log::debug!("event=session.event_stream_unsubscribe_failed reason={error}");
     }
 }
 
-async fn stream(
-    sessions: &SessionManager,
-    subscription_id: &str,
-    upgraded: &mut Upgraded,
-) -> io::Result<()> {
+async fn stream(core: &Core, subscription_id: &str, upgraded: &mut Upgraded) -> io::Result<()> {
     let mut ignored = [0_u8; 1024];
     loop {
         let events = tokio::select! {
-            events = sessions.next_events_async(subscription_id, WAIT, rpc::MAX_EVENTS_PER_BATCH) => events?,
+            events = core.events.next(subscription_id, WAIT, rpc::MAX_EVENTS_PER_BATCH) => events?,
             // The client says nothing more on this connection; its closing ends the stream.
             read = upgraded.reader.read(&mut ignored) => match read? {
                 0 => return Ok(()),

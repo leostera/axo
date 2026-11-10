@@ -205,7 +205,7 @@ impl TerminalOutput {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stop_signal);
         stopping.set_nonblocking(true)?;
         let pump = Arc::clone(&output);
-        let runtime = crate::runtime::shared()?;
+        let runtime = crate::runtime::handle()?;
         // Registering needs the runtime's reactor; the task itself runs there too.
         let _inside = runtime.enter();
         let stopping = tokio::net::UnixStream::from_std(stopping)?;
@@ -389,6 +389,8 @@ fn has_more(fd: RawFd) -> bool {
 pub struct OutputSubscriber {
     queue: Mutex<SubscriberQueue>,
     ready: Condvar,
+    /// Wakes `next_async`, as `ready` wakes `next`.
+    changed: tokio::sync::Notify,
     overflow_shutdown: Option<OwnedFd>,
 }
 
@@ -431,6 +433,7 @@ impl OutputSubscriber {
                 },
             }),
             ready: Condvar::new(),
+            changed: tokio::sync::Notify::new(),
             overflow_shutdown,
         }
     }
@@ -457,12 +460,14 @@ impl OutputSubscriber {
                 unsafe { libc::shutdown(socket.as_raw_fd(), libc::SHUT_RDWR) };
             }
             self.ready.notify_all();
+            self.changed.notify_waiters();
             return false;
         }
         queue.bytes += chunk.len();
         queue.chunks.push_back(Arc::clone(chunk));
         drop(queue);
         self.ready.notify_all();
+        self.changed.notify_waiters();
         true
     }
 
@@ -473,6 +478,7 @@ impl OutputSubscriber {
         }
         drop(queue);
         self.ready.notify_all();
+        self.changed.notify_waiters();
     }
 
     /// Stops delivery; the hub drops this subscriber on its next chunk.
@@ -483,6 +489,20 @@ impl OutputSubscriber {
         queue.bytes = 0;
         drop(queue);
         self.ready.notify_all();
+        self.changed.notify_waiters();
+    }
+
+    /// Takes every queued chunk, waiting without a thread for the first one, however long.
+    pub async fn next_async(&self) -> NextOutput {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match self.next(Duration::ZERO) {
+                NextOutput::Idle => changed.await,
+                next => return next,
+            }
+        }
     }
 
     /// Takes every queued chunk, waiting up to `timeout` for the first one.

@@ -9,6 +9,7 @@
 //! Every call names the Mac it is for (`target`); a call for an earlier identity of this Mac is
 //! refused as stale, so a phone holding an old list can't act on a Mac that was reset.
 
+use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,7 +24,8 @@ use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::SessionManager;
+use crate::core::Core;
+use crate::ops;
 
 /// What a local client is told when it calls a method meant for the account: there is none.
 const RELAY_ONLY: Only = Only {
@@ -37,16 +39,16 @@ const MAX_PROMPTS: usize = 16;
 /// The longest prompt text the account may send.
 const MAX_PROMPT_BYTES: usize = 16_000;
 
-/// The account's methods, answered with the Session manager.
+/// The account's methods.
 pub(crate) struct Remote {
-    manager: Arc<SessionManager>,
+    core: Arc<Core>,
     prompts: Arc<AtomicUsize>,
 }
 
 impl Remote {
-    pub(crate) fn new(manager: Arc<SessionManager>) -> Self {
+    pub(crate) fn new(core: Arc<Core>) -> Self {
         Self {
-            manager,
+            core,
             prompts: Arc::default(),
         }
     }
@@ -56,23 +58,26 @@ impl Remote {
 type Refusal = (i64, &'static str);
 
 /// Registers `name` to parse its parameters as `P`, check they are for this Mac, and run `call`.
-fn add<P, R>(
-    handler: &mut IoHandler,
-    manager: &Arc<SessionManager>,
-    name: &'static str,
-    call: impl Fn(&Arc<SessionManager>, P) -> Result<R, Refusal> + Send + Sync + 'static,
-) where
-    P: for<'de> Deserialize<'de> + Targeted + 'static,
+fn add<P, R, F, Fut>(handler: &mut IoHandler, core: &Arc<Core>, name: &'static str, call: F)
+where
+    P: for<'de> Deserialize<'de> + Targeted + Send + 'static,
     R: Serialize + 'static,
+    F: Fn(Arc<Core>, P) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, Refusal>> + Send + 'static,
 {
-    let manager = Arc::clone(manager);
-    handler.add_typed_only(RELAY_ONLY, name, "Invalid params", move |params: Value| {
-        let request: P = serde_json::from_value(params).map_err(|_| refusal(INVALID))?;
-        let target = request.target();
-        if target.host_id != manager.host_id || target.host_generation != manager.host_generation {
-            return Err(refusal((-32002, "Stale host")));
+    let core = Arc::clone(core);
+    let call = Arc::new(call);
+    handler.add_typed_only_async(RELAY_ONLY, name, "Invalid params", move |params: Value| {
+        let core = Arc::clone(&core);
+        let call = Arc::clone(&call);
+        async move {
+            let request: P = serde_json::from_value(params).map_err(|_| refusal(INVALID))?;
+            let target = request.target();
+            if target.host_id != core.host_id || target.host_generation != core.host_generation {
+                return Err(refusal((-32002, "Stale host")));
+            }
+            call(core, request).await.map_err(refusal)
         }
-        call(&manager, request).map_err(refusal)
     });
 }
 
@@ -98,10 +103,8 @@ fn failed(error: io::Error) -> Refusal {
     }
 }
 
-impl SessionManager {
-    fn remote(&self, session: &SessionRecord) -> RemoteSessionSnapshot {
-        RemoteSessionSnapshot::from_record(session, &self.host_id, &axo_relay::current_timestamp())
-    }
+fn remote(core: &Core, session: &SessionRecord) -> RemoteSessionSnapshot {
+    RemoteSessionSnapshot::from_record(session, &core.host_id, &axo_relay::current_timestamp())
 }
 
 impl Extension for Remote {
@@ -110,30 +113,34 @@ impl Extension for Remote {
     }
 
     fn register(&self, handler: &mut IoHandler) {
-        let manager = &self.manager;
+        let core = &self.core;
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.create",
             // The account names no paths: a new Session starts beside another, or at home.
-            |m, request: CreateSessionParams| {
-                let session = m
-                    .create_session(rpc::CreateSession {
+            |core, request: CreateSessionParams| async move {
+                let session = crate::sessions::create(
+                    &core,
+                    rpc::CreateSession {
                         folder: None,
                         like: request.like,
-                    })
-                    .map_err(failed)?;
+                    },
+                )
+                .await
+                .map_err(failed)?;
                 Ok(Answer::Session {
-                    session: m.remote(&session),
+                    session: remote(&core, &session),
                 })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.close",
-            |m, request: SessionTargetParams| {
-                m.close_session_and_publish(request.session_id)
+            |core, request: SessionTargetParams| async move {
+                ops::close_session(&core, request.session_id)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::SessionClosed {
                     closed: true,
@@ -143,24 +150,25 @@ impl Extension for Remote {
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.rename",
-            |m, request: RenameSessionParams| {
-                m.rename_session(request.session_id, &request.name)
+            |core, request: RenameSessionParams| async move {
+                ops::rename(&core, request.session_id, request.name)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::Saved { saved: true })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.shell.create",
-            |m, request: SessionTargetParams| {
-                let shell = m
-                    .create_shell_and_publish(request.session_id)
+            |core, request: SessionTargetParams| async move {
+                let shell = ops::create_shell(&core, request.session_id)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::ShellCreated {
-                    host_id: m.host_id.clone(),
+                    host_id: core.host_id.clone(),
                     session_id: request.session_id,
                     shell_id: shell.id,
                 })
@@ -168,14 +176,15 @@ impl Extension for Remote {
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.shell.close",
-            |m, request: ShellTargetParams| {
-                m.close_shell_and_publish(request.session_id, request.shell_id)
+            |core, request: ShellTargetParams| async move {
+                ops::close_shell(&core, request.session_id, request.shell_id)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::ShellClosed {
                     closed: true,
-                    host_id: m.host_id.clone(),
+                    host_id: core.host_id.clone(),
                     session_id: request.session_id,
                     shell_id: request.shell_id,
                 })
@@ -183,32 +192,35 @@ impl Extension for Remote {
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.layout.set",
-            |m, request: LayoutSetParams| {
+            |core, request: LayoutSetParams| async move {
                 let layout = Layout::try_from(request.layout).map_err(|_| INVALID)?;
-                m.set_layout_and_publish(request.session_id, layout)
+                ops::set_layout(&core, request.session_id, layout)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::Saved { saved: true })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.terminal.input",
-            |m, request: TerminalInputParams| {
+            |core, request: TerminalInputParams| async move {
                 // Typing into a dormant Pi starts it; this keystroke is lost, as it has nowhere
                 // to go yet.
-                if !m
-                    .wake_dormant_pane(request.session_id, request.shell_id)
+                if !ops::wake(&core, request.session_id, Some(request.shell_id))
+                    .await
                     .map_err(failed)?
                 {
-                    m.write_terminal_input(
+                    ops::write_input(
+                        &core,
                         request.session_id,
                         request.shell_id,
                         request.sequence,
                         &request.data,
                     )
+                    .await
                     .map_err(failed)?;
                 }
                 Ok(Answer::InputAccepted {
@@ -220,79 +232,97 @@ impl Extension for Remote {
         let prompts = Arc::clone(&self.prompts);
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.prompt",
-            move |m, request: PromptParams| {
-                prompt(m, &prompts, request)?;
-                Ok(Answer::PromptAccepted { accepted: true })
+            move |core, request: PromptParams| {
+                let prompts = Arc::clone(&prompts);
+                async move {
+                    prompt(&core, &prompts, request).await?;
+                    Ok(Answer::PromptAccepted { accepted: true })
+                }
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.commands",
-            |m, request: SessionTargetParams| {
-                let commands = m.pi_commands(request.session_id).map_err(failed)?;
+            |core, request: SessionTargetParams| async move {
+                let commands = ops::pi_commands(&core, request.session_id)
+                    .await
+                    .map_err(failed)?;
                 Ok(Answer::Commands { commands })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.models",
-            |m, request: SessionTargetParams| {
-                let models = m.pi_models(request.session_id).map_err(failed)?;
+            |core, request: SessionTargetParams| async move {
+                let models = ops::pi_models(&core, request.session_id)
+                    .await
+                    .map_err(failed)?;
                 Ok(Answer::Models { models })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.model.set",
-            |m, request: ModelSetParams| {
+            |core, request: ModelSetParams| async move {
                 if request.model.is_none() && request.thinking_level.is_none() {
                     return Err(INVALID);
                 }
-                m.set_pi_model(
+                ops::set_model(
+                    &core,
                     request.session_id,
-                    request
-                        .model
-                        .as_ref()
-                        .map(|model| (model.provider.as_str(), model.id.as_str())),
+                    request.model.map(|model| {
+                        (
+                            model.provider.as_str().to_owned(),
+                            model.id.as_str().to_owned(),
+                        )
+                    }),
                     request.thinking_level,
                 )
+                .await
                 .map_err(failed)?;
                 Ok(Answer::Saved { saved: true })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.restart",
-            |m, request: SessionTargetParams| {
-                m.restart_pi_for_client(request.session_id)
+            |core, request: SessionTargetParams| async move {
+                ops::restart_for_client(&core, request.session_id)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::Restarted { restarted: true })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.stop",
-            |m, request: StopParams| {
+            |core, request: StopParams| async move {
                 let stop = StopTarget::new(request.turn_id, request.seen, request.command_ids)
                     .map_err(|_| INVALID)?;
-                let stopped = m.stop_pi_turn(request.session_id, &stop).map_err(failed)?;
+                let stopped = ops::stop_turn(&core, request.session_id, stop)
+                    .await
+                    .map_err(failed)?;
                 Ok(Answer::Stopped { stopped })
             },
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.session.key",
-            |m, request: KeyParams| {
-                if !m.wake_dormant_pi(request.session_id).map_err(failed)? {
-                    m.press_pi_key(request.session_id, request.key)
+            |core, request: KeyParams| async move {
+                if !ops::wake(&core, request.session_id, None)
+                    .await
+                    .map_err(failed)?
+                {
+                    ops::press_key(&core, request.session_id, request.key)
+                        .await
                         .map_err(failed)?;
                 }
                 Ok(Answer::KeyAccepted { accepted: true })
@@ -300,14 +330,16 @@ impl Extension for Remote {
         );
         add(
             handler,
-            manager,
+            core,
             "axo.remote.terminal.resize",
-            |m, request: TerminalResizeParams| {
+            |core, request: TerminalResizeParams| async move {
                 let size = WindowSize::new(request.rows, request.columns).ok_or(INVALID)?;
                 // A client sizing the pane is showing the Session: its Pi starts, at that size.
-                m.wake_dormant_pane(request.session_id, request.shell_id)
+                ops::wake(&core, request.session_id, Some(request.shell_id))
+                    .await
                     .map_err(failed)?;
-                m.resize_terminal(request.session_id, request.shell_id, size)
+                ops::resize(&core, request.session_id, request.shell_id, size)
+                    .await
                     .map_err(failed)?;
                 Ok(Answer::ResizeAccepted {
                     accepted: true,
@@ -321,8 +353,8 @@ impl Extension for Remote {
 
 /// A person away from the Mac prompts a Session's Pi: its attachments are fetched, all of them
 /// or none (RFD0030), then Pi gets it, and this returns once Pi has it in its log (RFD0033).
-fn prompt(
-    manager: &Arc<SessionManager>,
+async fn prompt(
+    core: &Arc<Core>,
     prompts: &AtomicUsize,
     request: PromptParams,
 ) -> Result<(), Refusal> {
@@ -331,7 +363,7 @@ fn prompt(
     {
         return Err(INVALID);
     }
-    let source = manager.asset_slot().get();
+    let source = core.assets.get();
     if source.is_none() && !request.attachments.is_empty() {
         return Err((-32003, "this Mac can't fetch attachments"));
     }
@@ -339,34 +371,38 @@ fn prompt(
         prompts.fetch_sub(1, Ordering::SeqCst);
         return Err((-32006, "too many prompts are on their way on this Mac"));
     }
-    let delivered = deliver(manager, source.as_ref(), request);
+    let delivered = deliver(core, source, request).await;
     prompts.fetch_sub(1, Ordering::SeqCst);
     delivered
 }
 
-fn deliver(
-    manager: &Arc<SessionManager>,
-    source: Option<&axo_relay::assets::AssetSource>,
+async fn deliver(
+    core: &Arc<Core>,
+    source: Option<axo_relay::assets::AssetSource>,
     request: PromptParams,
 ) -> Result<(), Refusal> {
     let fetched = match source {
         Some(source) if !request.attachments.is_empty() => {
-            axo_relay::assets::fetch_all(source, &request.attachments).map_err(|error| {
-                (
-                    -32010,
-                    match error {
-                        axo_relay::assets::FetchError::NotFound => {
-                            "an attachment is no longer in the account"
-                        }
-                        axo_relay::assets::FetchError::Mismatch => {
-                            "an attachment did not match its name"
-                        }
-                        axo_relay::assets::FetchError::Failed(_) => {
-                            "an attachment could not be fetched"
-                        }
-                    },
-                )
-            })?
+            let attachments = request.attachments.clone();
+            tokio::task::spawn_blocking(move || axo_relay::assets::fetch_all(&source, &attachments))
+                .await
+                .map_err(|_| (-32003, "Operation failed"))?
+                .map_err(|error| {
+                    (
+                        -32010,
+                        match error {
+                            axo_relay::assets::FetchError::NotFound => {
+                                "an attachment is no longer in the account"
+                            }
+                            axo_relay::assets::FetchError::Mismatch => {
+                                "an attachment did not match its name"
+                            }
+                            axo_relay::assets::FetchError::Failed(_) => {
+                                "an attachment could not be fetched"
+                            }
+                        },
+                    )
+                })?
         }
         _ => Vec::new(),
     };
@@ -384,15 +420,16 @@ fn deliver(
         ClientDelivery::Steer => PromptDelivery::Steer,
         ClientDelivery::Interrupt => PromptDelivery::Interrupt,
     };
-    manager
-        .prompt_pi(
-            request.session_id,
-            &request.text,
-            &command_id,
-            &fetched,
-            delivery,
-        )
-        .map_err(failed)
+    crate::sessions::prompt_from_client(
+        core,
+        request.session_id,
+        request.text,
+        command_id,
+        fetched,
+        delivery,
+    )
+    .await
+    .map_err(failed)
 }
 
 /// What `axo.remote.*` calls answer.
@@ -515,32 +552,35 @@ params! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::test_support::LifecycleFixture;
+    use crate::test_support::Fixture;
     use axo_protocol::parity::{PARITY, Remote as Parity};
     use serde_json::json;
 
-    fn methods(fixture: &LifecycleFixture) -> IoHandler {
+    fn methods(fixture: &Fixture) -> IoHandler {
         let mut handler = IoHandler::new();
-        Remote::new(Arc::clone(&fixture.manager)).register(&mut handler);
+        Remote::new(Arc::clone(&fixture.core)).register(&mut handler);
         handler
     }
 
     fn call(handler: &IoHandler, method: &str, params: Value) -> Value {
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        serde_json::from_str(&handler.handle_request_sync(&request.to_string()).unwrap()).unwrap()
+        let answer = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(handler.handle_request(&request.to_string()))
+        });
+        serde_json::from_str(&answer.unwrap()).unwrap()
     }
 
     fn as_account(handler: &IoHandler, method: &str, params: Value) -> Value {
         axo_ipc::peer::as_relay(|| call(handler, method, params))
     }
 
-    fn target(fixture: &LifecycleFixture) -> Value {
-        json!({ "hostId": fixture.manager.host_id, "hostGeneration": fixture.manager.host_generation })
+    fn target(fixture: &Fixture) -> Value {
+        json!({ "hostId": fixture.core.host_id, "hostGeneration": fixture.core.host_generation })
     }
 
-    #[test]
-    fn every_remote_call_the_parity_table_promises_is_answered_and_no_planned_one() {
-        let fixture = LifecycleFixture::new();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn every_remote_call_the_parity_table_promises_is_answered_and_no_planned_one() {
+        let fixture = Fixture::new().await;
         let handler = methods(&fixture);
         for parity in PARITY {
             match parity.remote {
@@ -561,9 +601,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_account_is_answered_and_only_for_this_mac() {
-        let fixture = LifecycleFixture::new();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_the_account_is_answered_and_only_for_this_mac() {
+        let fixture = Fixture::new().await;
         let handler = methods(&fixture);
         let params = json!({ "target": target(&fixture) });
 
@@ -590,7 +630,7 @@ mod tests {
             assert!(
                 !answer
                     .to_string()
-                    .contains(&*fixture.manager.home.to_string_lossy()),
+                    .contains(&*fixture.core.home.to_string_lossy()),
                 "{answer}"
             );
         }
@@ -598,7 +638,7 @@ mod tests {
         let stale = as_account(
             &handler,
             "axo.remote.session.create",
-            json!({ "target": { "hostId": fixture.manager.host_id, "hostGeneration": "an-earlier-one" } }),
+            json!({ "target": { "hostId": fixture.core.host_id, "hostGeneration": "an-earlier-one" } }),
         );
         assert_eq!(
             stale["error"],
@@ -606,9 +646,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_failed_operation_tells_the_account_only_its_kind() {
-        let fixture = LifecycleFixture::new();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_operation_tells_the_account_only_its_kind() {
+        let fixture = Fixture::new().await;
         let handler = methods(&fixture);
         let unknown = SessionId::from_u128(42);
         let renamed = as_account(

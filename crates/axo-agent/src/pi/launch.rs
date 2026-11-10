@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use axo_pty::process::{self, PtyProcess, WindowSize};
 
+use crate::lifeline::{LIFELINE_FD, Lifeline};
 use crate::pi::{BridgeSocketPath, SocketCleanup};
+use crate::process::ProcessIdentity;
 use crate::{AgentCommand, WriterLock};
 
 /// How long a stopped Pi gets before SIGKILL. On SIGTERM/SIGHUP Pi disposes its runtime (the
@@ -28,18 +30,22 @@ pub struct PiLaunch<'a> {
     pub home: &'a Path,
     /// Extra environment, such as the app's bundled terminal resources.
     pub environment: &'a [(&'static str, PathBuf)],
+    /// Pi exits when it ends (RFD0041).
+    pub lifeline: &'a Lifeline,
 }
 
 /// A launched Pi and the writer lock it inherited.
 pub struct PiProcess {
     pub pty: PtyProcess,
     pub writer_lock: WriterLock,
+    /// Who this Pi is, to be killed by a later axod if it ever outlives this one.
+    pub identity: Option<ProcessIdentity>,
     /// What was found at the bridge socket path before launching.
     pub socket_cleanup: SocketCleanup,
 }
 
-/// Starts Pi on a PTY. Pi inherits `writer_lock` (and only it), so the lock is held for as
-/// long as this Pi or any of its descendants lives.
+/// Starts Pi on a PTY. Pi inherits `writer_lock` and the lifeline (and only them), so the lock
+/// is held for as long as this Pi lives, and Pi lives no longer than axod.
 pub fn spawn(
     launch: &PiLaunch<'_>,
     writer_lock: WriterLock,
@@ -65,15 +71,22 @@ pub fn spawn(
         .env("AXO_PANE_ID", launch.pane_id)
         .env("AXO_PI_SESSION_FILE", launch.session_file)
         .env("AXO_PI_BRIDGE_SOCKET", launch.bridge_socket.as_path())
-        .env("AXO_PI_BRIDGE_TOKEN", bridge_token);
+        .env("AXO_PI_BRIDGE_TOKEN", bridge_token)
+        .env(LIFELINE_FD, launch.lifeline.reader().to_string());
     for (name, value) in launch.environment {
         command.env(name, value);
     }
-    // The parent's copy of the lock stays close-on-exec so concurrent launches never leak it.
-    let pty = process::spawn(command, size, &[writer_lock.as_raw_fd()])?;
+    // The parent's copies stay close-on-exec so concurrent launches never leak them.
+    let pty = process::spawn(
+        command,
+        size,
+        &[writer_lock.as_raw_fd(), launch.lifeline.reader()],
+    )?;
+    let identity = ProcessIdentity::of(pty.child.id());
     Ok(PiProcess {
         pty,
         writer_lock,
+        identity,
         socket_cleanup,
     })
 }
@@ -90,6 +103,7 @@ pub struct RemoteViewLaunch<'a> {
     pub session_id: &'a str,
     /// Extra environment: the terminal resources and `AXO_SOCKET`, which pi-axo calls.
     pub environment: &'a [(&'static str, PathBuf)],
+    pub lifeline: &'a Lifeline,
 }
 
 /// Starts a remote view on a PTY. Pi's exit ends the pane.
@@ -126,11 +140,12 @@ pub fn spawn_remote_view(
         .env("AXO_REMOTE_HOST_LABEL", launch.host_label)
         .env("AXO_REMOTE_SESSION_ID", launch.session_id)
         .env_remove("AXO_SESSION_ID")
-        .env_remove("AXO_PI_BRIDGE_SOCKET");
+        .env_remove("AXO_PI_BRIDGE_SOCKET")
+        .env(LIFELINE_FD, launch.lifeline.reader().to_string());
     for (name, value) in launch.environment {
         command.env(name, value);
     }
-    process::spawn(command, size, &[])
+    process::spawn(command, size, &[launch.lifeline.reader()])
 }
 
 fn resolve_executable(program: &str) -> io::Result<PathBuf> {

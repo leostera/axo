@@ -444,22 +444,63 @@ fn sessions_and_conversations_survive_restarting_axod() {
 }
 
 #[test]
-fn sessions_survive_axod_crashing() {
+fn pis_end_with_axod_even_when_it_crashes() {
     let mut axod = Axod::start();
     let created = axod.new_session();
     let id = created["id"].clone();
     let old_pi = pi_pid(&created);
     axod.crash();
-    // A crash leaves Pi running with the transcript lock; the next axod must still recover.
+    // Nothing ran on axod's way out; Pi hears its lifeline end and exits by itself.
+    axod.wait_for("the crashed axod's Pi to exit", || {
+        (!alive(old_pi)).then_some(())
+    });
     axod.restart();
     let restored = session(&axod, &id);
-    axod.wait_for_pi(&restored);
-    let pid = pi_pid(&session(&axod, &id));
-    assert!(pid > 0, "{restored}");
-    if alive(old_pi) && old_pi != pid {
-        // SAFETY: tidies up the orphaned fake Pi from the crashed axod.
-        unsafe { libc::kill(old_pi, libc::SIGKILL) };
-    }
+    assert_eq!(restored["piSessionFile"], created["piSessionFile"]);
+    let restored = axod.wait_for_pi(&restored);
+    assert_ne!(pi_pid(&restored), old_pi);
+}
+
+#[test]
+fn a_pi_left_running_by_an_earlier_axod_is_replaced_at_boot() {
+    // A Pi that ignores hangups and its lifeline outlives axod and keeps the transcript.
+    let mut axod = Axod::with(Options {
+        env: vec![("AXO_FAKE_PI_STUBBORN".into(), "1".into())],
+        ..Options::default()
+    });
+    let created = axod.new_session();
+    let id = created["id"].clone();
+    let old_pi = pi_pid(&created);
+    axod.crash();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(alive(old_pi));
+    axod.restart();
+    let restored = axod.wait_for_pi(&session(&axod, &id));
+    assert_eq!(restored["piSessionFile"], created["piSessionFile"]);
+    assert_ne!(pi_pid(&restored), old_pi);
+    axod.wait_for("the old Pi to be killed", || (!alive(old_pi)).then_some(()));
+    assert!(
+        axod.log().contains("event=pi.previous_killed"),
+        "{}",
+        axod.log()
+    );
+}
+
+#[test]
+fn a_frozen_pi_is_still_stopped_when_axod_stops() {
+    let mut axod = Axod::start();
+    let created = axod.new_session();
+    let old_pi = pi_pid(&created);
+    // SAFETY: signals the fake Pi this test's axod started.
+    assert_eq!(unsafe { libc::kill(old_pi, libc::SIGSTOP) }, 0);
+    // Stopping is not exiting: the Session keeps its Pi.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(pi_pid(&session(&axod, &created["id"])), old_pi);
+    axod.stop();
+    assert!(
+        !alive(old_pi),
+        "axod stops every Pi it started, frozen or not"
+    );
 }
 
 #[test]

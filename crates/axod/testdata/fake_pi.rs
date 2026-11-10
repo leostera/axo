@@ -17,7 +17,11 @@
 //!   `TYPED:`, `SENT:`, `DELIVERY:`, `STOPPED:`, `ATTACHED:`, `MODEL:` and `STARTED:` lines, so
 //!   tests can read what reached Pi.
 //!
+//! - It exits when its lifeline (`AXO_LIFELINE_FD`) ends, as pi-axo does: axod has gone.
+//!
 //! `AXO_FAKE_PI_FAIL=start` makes it exit at once with status 3, as a Pi that cannot start.
+//! `AXO_FAKE_PI_STUBBORN=1` makes it ignore SIGHUP and its lifeline, as a Pi from before the
+//! lifeline did: it outlives the axod that started it.
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -51,7 +55,10 @@ const MODELS: [(&str, &str); 2] = [("fake-1", "Fake One"), ("fake-2", "Fake Two"
 impl Pi {
     fn state(&self) -> Value {
         let id = self.model.unwrap_or(MODELS[0].0);
-        let name = MODELS.iter().find(|(known, _)| *known == id).map_or(id, |(_, name)| name);
+        let name = MODELS
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map_or(id, |(_, name)| name);
         json!({
             "model": { "provider": "fake", "id": id, "name": name },
             "thinkingLevel": self.thinking_level.as_deref().unwrap_or("medium"),
@@ -333,7 +340,11 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                         Some((known, _)) => Some(*known),
                         None => {
                             drop(state);
-                            answer(&mut stream, &record, json!({ "accepted": false, "reason": "invalid" }));
+                            answer(
+                                &mut stream,
+                                &record,
+                                json!({ "accepted": false, "reason": "invalid" }),
+                            );
                             continue;
                         }
                     },
@@ -400,6 +411,23 @@ fn main() {
     }
     raw_stdin();
     log(&format!("STARTED:{}\n", std::process::id()));
+    let stubborn = env("AXO_FAKE_PI_STUBBORN").is_some();
+    if stubborn {
+        // SAFETY: ignoring a signal changes no memory this program holds.
+        unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+    }
+    if let Some(fd) = env("AXO_LIFELINE_FD")
+        .and_then(|fd| fd.parse::<i32>().ok())
+        .filter(|_| !stubborn)
+    {
+        thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            // SAFETY: reads into a one-byte buffer from the inherited lifeline descriptor.
+            while unsafe { libc::read(fd, byte.as_mut_ptr().cast(), 1) } > 0 {}
+            log("LIFELINE_ENDED\n");
+            std::process::exit(0);
+        });
+    }
     let pi = Arc::new(Mutex::new(Pi::default()));
     let session = uuid(1);
     let events = uuid(2);

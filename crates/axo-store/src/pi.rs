@@ -126,6 +126,44 @@ pub fn store_pi_bridge_token(
     Ok(())
 }
 
+pub fn pi_process_key(session_id: SessionId) -> String {
+    format!("pi_process:{session_id}")
+}
+
+/// The Pi process axod last started for a Session, as `pid:started` (RFD0041): a later axod
+/// kills it if it still holds the transcript, and only if it is that same process.
+pub fn load_pi_process(database: &Connection, session_id: SessionId) -> io::Result<Option<String>> {
+    database
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = ?1",
+            params![pi_process_key(session_id)],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)
+}
+
+/// Records the Session's Pi process, or forgets it with `None`.
+pub fn store_pi_process(
+    database: &Connection,
+    session_id: SessionId,
+    process: Option<&str>,
+) -> io::Result<()> {
+    match process {
+        Some(process) => database.execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![pi_process_key(session_id), process],
+        ),
+        None => database.execute(
+            "DELETE FROM daemon_metadata WHERE key = ?1",
+            params![pi_process_key(session_id)],
+        ),
+    }
+    .map_err(io::Error::other)?;
+    Ok(())
+}
+
 /// A Session whose Pi transcript is a given history file.
 #[derive(Debug)]
 pub struct PiHistoryOwner {

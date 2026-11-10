@@ -7,26 +7,22 @@
 //! someone notices. A stop that leaves no record (a crash, a kill) prompts no one.
 
 use std::io;
-use std::sync::Arc;
 
 use axo_protocol::SessionId;
-use axo_protocol::rpc::{PromptDelivery, PromptSession};
 use serde_json::{Value, json};
-
-use super::SessionManager;
 
 /// How the previous Axod stopped, as it recorded it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct DaemonStop {
+pub(crate) struct DaemonStop {
     /// Axo's version, as Cargo has it (`0.7.0`).
-    pub(super) version: String,
-    pub(super) build: u64,
+    pub(crate) version: String,
+    pub(crate) build: u64,
     /// Sessions whose Pi was in the middle of a turn, most recently active first.
-    pub(super) interrupted: Vec<SessionId>,
+    pub(crate) interrupted: Vec<SessionId>,
 }
 
 /// This Axod: what the next one compares against.
-pub(super) fn this_daemon(interrupted: Vec<SessionId>) -> DaemonStop {
+pub(crate) fn this_daemon(interrupted: Vec<SessionId>) -> DaemonStop {
     DaemonStop {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         build: crate::build_number(),
@@ -35,7 +31,7 @@ pub(super) fn this_daemon(interrupted: Vec<SessionId>) -> DaemonStop {
 }
 
 impl DaemonStop {
-    pub(super) fn to_stored(&self) -> String {
+    pub(crate) fn to_stored(&self) -> String {
         json!({
             "version": self.version,
             "build": self.build,
@@ -46,7 +42,7 @@ impl DaemonStop {
 
     /// A stored record, or an error saying what is wrong with it; IDs that aren't Session IDs
     /// make the whole record invalid rather than being skipped, as nothing else writes it.
-    pub(super) fn parse(stored: &str) -> io::Result<Self> {
+    pub(crate) fn parse(stored: &str) -> io::Result<Self> {
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let value: Value = serde_json::from_str(stored).map_err(|_| invalid("not JSON"))?;
         let version = value["version"]
@@ -75,7 +71,7 @@ impl DaemonStop {
     }
 
     /// What an interrupted agent is told when `current` restores it.
-    pub(super) fn notice(&self, current: &DaemonStop) -> String {
+    pub(crate) fn notice(&self, current: &DaemonStop) -> String {
         let reason = if self.version != current.version {
             format!(
                 "to update Axo from {} to {}",
@@ -92,29 +88,6 @@ impl DaemonStop {
             "when Axo restarted".to_owned()
         };
         format!("(the session was stopped {reason}, you may continue)")
-    }
-}
-
-impl SessionManager {
-    /// Prompts each Session `stop` interrupted with what happened. Pis restored moments ago
-    /// are still starting, so the prompt waits for each to be up; a Session that is gone or
-    /// has no Pi now is skipped.
-    pub(super) fn tell_interrupted_sessions(self: &Arc<Self>, stop: &DaemonStop) {
-        let notice = stop.notice(&this_daemon(Vec::new()));
-        for &session_id in &stop.interrupted {
-            let told = self.prompt_session(&PromptSession {
-                session_id,
-                text: notice.clone(),
-                delivery: PromptDelivery::FollowUp,
-                from_session_id: None,
-            });
-            match told {
-                Ok(_) => log::info!("event=session.stop_notice_sent session_id={session_id}"),
-                Err(error) => log::warn!(
-                    "event=session.stop_notice_skipped session_id={session_id} reason={error}"
-                ),
-            }
-        }
     }
 }
 
@@ -154,57 +127,6 @@ mod tests {
         );
         assert_eq!(short_version("1.0"), "1.0");
         assert_eq!(short_version("0.10.0"), "0.10");
-    }
-
-    /// Through two Axods: the first stops while a Pi is working; the next restores that Pi
-    /// and has the notice waiting for it to come up.
-    #[test]
-    fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
-        use super::super::pi_bridge::PiRuntimeBinding;
-        use super::super::test_support::PiRecoveryFixture;
-        use serde_json::json;
-
-        let fixture = PiRecoveryFixture::new();
-        let directory = fixture.lifecycle.directory.clone();
-        let manager = &fixture.lifecycle.manager;
-        manager
-            .restart_unavailable_pi(fixture.session_id, fixture.shell_id)
-            .unwrap();
-        let binding = PiRuntimeBinding {
-            session_id: fixture.session_id,
-            shell_id: fixture.shell_id,
-            runtime_id: manager
-                .lock_state()
-                .unwrap()
-                .panes
-                .running(fixture.shell_id)
-                .unwrap()
-                .runtime_id,
-        };
-        manager.set_pi_connection(binding, true).unwrap();
-        manager
-            .observe_pi_event(binding, "activity.snapshot", &json!({ "working": true }))
-            .unwrap();
-        manager.shutdown();
-
-        let next = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
-        {
-            let state = next.lock_state().unwrap();
-            let agents = next.lock_agents();
-            let queued = &agents.queued_prompts[&fixture.session_id];
-            assert_eq!(queued.len(), 1);
-            assert_eq!(
-                queued[0].text(),
-                "(the session was stopped when Axo restarted, you may continue)"
-            );
-            // The record is acted on once.
-            assert_eq!(axo_store::take_daemon_stop(&state.database).unwrap(), None);
-        }
-        next.shutdown();
-        // This Axod stopped with nothing working, so the one after it tells no one.
-        let after = SessionManager::open(&directory, &directory.join("sessions")).unwrap();
-        assert!(after.lock_agents().queued_prompts.is_empty());
-        after.shutdown();
     }
 
     #[test]
