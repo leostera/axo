@@ -14,6 +14,8 @@ struct ChatMessageView: View {
   var entrance: Entrance?
   /// A tool's place among the tools used one after another.
   var group: ToolGroupPlace?
+  /// A tool's: whether its row is open, and the way to open or fold it.
+  var toolOpened: (isOpen: Bool, toggle: () -> Void)?
   @State private var copied = false
 
   /// A message written while its chat is on screen: its words let out, or a rise.
@@ -85,7 +87,7 @@ struct ChatMessageView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("thinkingBlock")
     case .tool:
-      if let tool = message.tool { ToolTranscriptView(tool: tool, piIsWorking: piIsWorking, group: group) }
+      if let tool = message.tool { ToolTranscriptView(tool: tool, piIsWorking: piIsWorking, group: group, opened: toolOpened) }
     }
   }
 

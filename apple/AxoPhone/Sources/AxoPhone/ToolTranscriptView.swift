@@ -14,8 +14,13 @@ struct ToolTranscriptView: View {
   let piIsWorking: Bool
   /// Its place among the tools used one after another.
   var group: ToolGroupPlace?
-  @State private var open = false
+  /// Whether it is open, and the way to open or fold it, when its row keeps that (in the
+  /// conversation's list, `ConversationFeed.Item.open`); otherwise the view keeps it.
+  var opened: (isOpen: Bool, toggle: () -> Void)?
+  @State private var openHere = false
   @State private var viewing = false
+
+  private var open: Bool { opened?.isOpen ?? openHere }
 
   /// How many lines of a running tool's input show before it is opened.
   private static let previewLines = 3
@@ -44,7 +49,7 @@ struct ToolTranscriptView: View {
       }
       row
       if open {
-        opened
+        openedContent
       } else if isRunning {
         glance
       }
@@ -72,7 +77,7 @@ struct ToolTranscriptView: View {
 
   private var row: some View {
     Button {
-      open.toggle()
+      if let opened { opened.toggle() } else { openHere.toggle() }
     } label: {
       HStack(spacing: 8) {
         Image(systemName: symbol).font(.footnote).foregroundStyle(.secondary).frame(width: 18)
@@ -123,7 +128,7 @@ struct ToolTranscriptView: View {
   }
 
   /// Open: what it was given, and what it printed so far (its end, while more comes).
-  private var opened: some View {
+  private var openedContent: some View {
     VStack(alignment: .leading, spacing: 8) {
       if let input = tool.input {
         ToolText(text: input.kind == .command ? "$ " + input.text : input.text, diff: input.kind == .diff, lines: Self.openLines, end: false)

@@ -29,6 +29,11 @@ public final class ConversationFeed {
     public fileprivate(set) var revealed: Int?
     /// A tool's row only: its place among the tools used one after another.
     public fileprivate(set) var group: ToolGroupPlace?
+    /// A tool's row only: the reader opened it, to all it was given and printed. Kept here, not
+    /// in the row's view, so the list sizes it in the frame it opens in (a view's own state sizes
+    /// its cell a frame late, its new lines drawn over the rows below meanwhile), and so it stays
+    /// open as its cell scrolls away and back.
+    public fileprivate(set) var open = false
 
     init(_ row: ConversationRow) {
       id = row.id
@@ -87,6 +92,19 @@ public final class ConversationFeed {
 
   /// The row with `id`, while the feed holds it.
   public func item(_ id: String) -> Item? { byID[id] }
+
+  /// The row the reader just opened or folded, for the list to keep where it is; read once.
+  @ObservationIgnored public private(set) var held: String?
+
+  /// Opens a row, or folds it, for the reader: it stays where it is, and what is below moves.
+  public func toggleOpen(_ id: String) {
+    guard let item = byID[id] else { return }
+    item.open.toggle()
+    touched.insert(id)
+    held = id
+    tell()
+    held = nil
+  }
 
   /// The chat's transcript or its pending messages changed.
   func update(transcript: ChatTranscript, pending: [HostWorkbenchModel.PendingPrompt]) {

@@ -26,7 +26,8 @@ struct ConversationItemView: View {
         message: shown.message,
         // Only a tool's row asks whether Pi is working, so only tools redraw when it starts or stops.
         piIsWorking: shown.isLive || (shown.message.role == .tool && feed.working),
-        isLive: shown.isLive, entrance: entrance(of: shown), group: item.group)
+        isLive: shown.isLive, entrance: entrance(of: shown), group: item.group,
+        toolOpened: shown.message.tool == nil ? nil : (item.open, { [feed, id = item.id] in feed.toggleOpen(id) }))
     case .pending(let prompt):
       PendingPromptView(
         prompt: prompt, editAgain: { actions.editAgain(prompt) }, dismiss: { actions.dismiss(prompt) })

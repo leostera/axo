@@ -12,33 +12,39 @@ import { chromePath, hostId, listed, record, sid, sleep, startApp, startCloud } 
 const chat = sid(1);
 const script = "const files = await tools.bash({ command: \"ls\" });\nconst text = files.output;\nreturn text.split(\"\\n\").length;\n// and more";
 
+/** Enough before the tools that the chat scrolls, so it opens at its end. */
+const EARLIER = 30;
+
 function transcript() {
-  return [
-    record(1, { role: "user", content: [{ type: "text", text: "Build the login." }] }),
-    record(2, {
+  const earlier = Array.from({ length: EARLIER }, (_, n) => n % 2
+    ? { role: "assistant", timestamp: 1_699_000_000_000 + n, content: [{ type: "text", text: `Earlier answer ${n}, long enough to take a few lines of the column when it is drawn.` }] }
+    : { role: "user", content: [{ type: "text", text: `Earlier question ${n}` }] });
+  return [...earlier, ...[
+    { role: "user", content: [{ type: "text", text: "Build the login." }] },
+    {
       role: "assistant", timestamp: 1_700_000_000_001, content: [
         { type: "text", text: "I’ll look first." },
         { type: "toolCall", id: "t-read", name: "read", arguments: { path: "src/login.ts", offset: 10, limit: 50 } },
         { type: "toolCall", id: "t-code", name: "codemode", arguments: { code: script } },
       ],
-    }),
-    record(3, { role: "toolResult", toolCallId: "t-read", toolName: "read", content: [{ type: "text", text: "export function login() {}" }] }),
-    record(4, { role: "toolResult", toolCallId: "t-code", toolName: "codemode", content: [{ type: "text", text: "12" }] }),
-    record(5, {
+    },
+    { role: "toolResult", toolCallId: "t-read", toolName: "read", content: [{ type: "text", text: "export function login() {}" }] },
+    { role: "toolResult", toolCallId: "t-code", toolName: "codemode", content: [{ type: "text", text: "12" }] },
+    {
       role: "assistant", timestamp: 1_700_000_000_002, content: [
         { type: "toolCall", id: "t-edit", name: "edit", arguments: { path: "src/login.ts", edits: [{ oldText: "export function login() {}", newText: "export function login(user) {\n  return user;\n}" }] } },
         { type: "toolCall", id: "t-test", name: "bash", arguments: { command: "npm test -- --grep login" } },
       ],
-    }),
-    record(6, { role: "toolResult", toolCallId: "t-edit", toolName: "edit", content: [{ type: "text", text: "Edited src/login.ts" }] }),
-  ];
+    },
+    { role: "toolResult", toolCallId: "t-edit", toolName: "edit", content: [{ type: "text", text: "Edited src/login.ts" }] },
+  ]].map((message, index) => record(index + 1, message));
 }
 
 test("tools are rows in a block: a running one shows what it runs, and any opens to all of it", {
   skip: !existsSync(chromePath) && "Set CHROME_PATH to a Chrome/Chromium executable to run this browser test",
   timeout: 120_000,
 }, async () => {
-  const cloud = await startCloud(new Map([[chat, transcript()]]), [{ ...listed(chat, "Login", 6), status: "working" }]);
+  const cloud = await startCloud(new Map([[chat, transcript()]]), [{ ...listed(chat, "Login", EARLIER + 6), status: "working" }]);
   const shots = process.env.AXO_WEB_SHOTS;
   if (shots) mkdirSync(shots, { recursive: true });
   let app;
@@ -72,7 +78,16 @@ test("tools are rows in a block: a running one shows what it runs, and any opens
 
     // A finished tool's output stays folded; opened, it shows all it was given and what it printed.
     assert.equal(await page.getByText("export function login() {}", { exact: true }).count(), 0);
+    // Opened at the end of the chat, the row stays where it is and opens downwards: the end does
+    // not hold still and push it up.
+    const transcriptBox = page.getByTestId("transcript");
+    const transcriptFromEnd = () => transcriptBox.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+    assert.ok(await transcriptFromEnd() < 1, "the chat opens at its end");
+    const before = (await row("codemode").boundingBox()).y;
     await row("codemode").click();
+    await sleep(100);
+    assert.ok(Math.abs((await row("codemode").boundingBox()).y - before) < 1, "the opened row stays where it was");
+    assert.ok(await transcriptFromEnd() > 1, "what it opened to goes on below, past the end");
     await cards.nth(1).getByLabel("Input").getByText("// and more", { exact: false }).waitFor();
     await cards.nth(1).getByLabel("Output").getByText("12").waitFor();
     await row("edit").click();

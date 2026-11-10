@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import type { ToolActivity, ToolInput } from "./transcript.ts";
 import type { ToolGroupPlace } from "./tool-groups.ts";
@@ -9,6 +9,13 @@ import { Icon, type IconName } from "./icons.tsx";
 const toolIcons: Record<ToolActivity["kind"], IconName> = {
   shell: "terminal", edit: "pencil", file: "doc", search: "search", generic: "wrench",
 };
+
+/**
+ * Tells the conversation a row is about to change its size because the reader opened or folded
+ * it: the row stays where it is, and what is below it moves, rather than the end staying put and
+ * the row moving up under the reader's finger.
+ */
+export const HoldRow = createContext<(row: Element) => void>(() => {});
 
 /** How many lines of a running tool's input show before it is opened. */
 const PREVIEW_LINES = 3;
@@ -29,6 +36,12 @@ export function ToolCard({ tool, working, enter, group }: {
 }) {
   const [open, setOpen] = useState(false);
   const [viewing, setViewing] = useState(false);
+  const holdRow = useContext(HoldRow);
+  const card = useRef<HTMLDivElement>(null);
+  const toggle = () => {
+    if (card.current) holdRow(card.current);
+    setOpen(!open);
+  };
   const running = tool.status === "running" && working;
   const preview = toolPreview(tool);
   const input = tool.input ?? null;
@@ -38,10 +51,10 @@ export function ToolCard({ tool, working, enter, group }: {
   const glance = input && input.kind !== "args" && input.text.trim() !== preview ? firstLines(input.text, PREVIEW_LINES) : null;
   const lines = tool.output ? tool.output.split("\n").length : 0;
   return (
-    <div className={`tool-card tool-${tool.status} tool-kind-${tool.kind}${place}${open ? " tool-open" : ""}${enter ? " message-enter" : ""}`}
+    <div ref={card} className={`tool-card tool-${tool.status} tool-kind-${tool.kind}${place}${open ? " tool-open" : ""}${enter ? " message-enter" : ""}`}
       data-testid="tool-card">
       {group?.title ? <div className="tool-group-title" data-testid="tool-group-title">{group.title}</div> : null}
-      <button className="tool-row" aria-expanded={open} onClick={() => setOpen(!open)}
+      <button className="tool-row" aria-expanded={open} onClick={toggle}
         aria-label={`${tool.name}${preview ? ` ${preview}` : ""}${running ? ", running" : ""}`}>
         <Icon name={toolIcons[tool.kind]} size={16} />
         <span className="tool-name">{tool.name}</span>

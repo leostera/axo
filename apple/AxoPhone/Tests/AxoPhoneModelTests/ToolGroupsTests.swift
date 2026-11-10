@@ -84,4 +84,22 @@ final class ToolGroupsTests: XCTestCase {
     XCTAssertEqual(above.group, ToolGroupPlace(first: true, last: false, title: "Ran a command, read a file"))
     XCTAssertTrue(grew.contains(above.id), "the list sizes the row it joined")
   }
+
+  func testOpeningARowSizesItAtOnceAndAsksTheListToHoldIt() {
+    let record = piRecord(1, message: #"{"role":"assistant","content":[\#(call("a", "bash", #"{"command":"ls"}"#))]}"#)
+    let feed = ConversationFeed(ticks: false)
+    feed.update(transcript: ChatTranscript(records: [record]), pending: [])
+    feed.opened()
+    let row = feed.items[0]
+    var told: (grew: Set<String>, held: String?)?
+    feed.changed = { [weak feed] grew in told = (grew, feed?.held) }
+    feed.toggleOpen(row.id)
+    XCTAssertTrue(row.open)
+    XCTAssertEqual(told?.grew, [row.id], "the list sizes it in the same turn")
+    XCTAssertEqual(told?.held, row.id, "and keeps it where it is")
+    XCTAssertNil(feed.held, "read once")
+    // It stays open as the transcript changes around it.
+    feed.update(transcript: ChatTranscript(records: [record]), pending: [])
+    XCTAssertTrue(row.open)
+  }
 }

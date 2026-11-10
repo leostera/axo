@@ -4,6 +4,7 @@ import { Icon } from "./icons.tsx";
 import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
+import { HoldRow } from "./tool-views.tsx";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 import { ModelPicker, SendButton, SlashMenu } from "./composer-controls.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
@@ -49,6 +50,13 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     if (sessionRef.current) workbench.dismissPending(sessionRef.current, id);
   }, [workbench]);
   const scroller = useRef<HTMLDivElement>(null);
+  /** The row the reader just opened or folded, where it was: the next layout keeps it there. */
+  const held = useRef<ScrollAnchor | null>(null);
+  const holdRow = useCallback((row: Element) => {
+    const element = scroller.current;
+    if (!element) return;
+    held.current = { element: row, offset: row.getBoundingClientRect().top - element.getBoundingClientRect().top };
+  }, []);
   const following = useRef(true);
   const lastScrollTop = useRef(0);
   const [showJump, setShowJump] = useState(false);
@@ -103,7 +111,15 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
       const last = feedRef.current.items.at(-1)?.id;
       const added = last !== seenLastRow.current;
       seenLastRow.current = last;
-      if (following.current) scrollToEnd(element);
+      const opened = held.current;
+      held.current = null;
+      if (opened) {
+        // A row the reader opened or folded stays where it is; the end is followed again only if
+        // it is still in view.
+        restoreAnchor(element, opened);
+        following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 1;
+        setShowJump(!following.current);
+      } else if (following.current) scrollToEnd(element);
       else {
         restoreAnchor(element, anchor.current);
         if (added) setHasNew(true);
@@ -214,7 +230,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             </div>
           ) : null}
 
-          <ConversationRows feed={feed} dismiss={dismiss} />
+          <HoldRow.Provider value={holdRow}><ConversationRows feed={feed} dismiss={dismiss} /></HoldRow.Provider>
           {session && workbench.questions(session.sessionId).map(question => (
             <ElicitationCard
               key={question.elicitation.id}

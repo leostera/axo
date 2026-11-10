@@ -529,9 +529,16 @@ final class AxoPhoneUITests: XCTestCase {
     let status = app.buttons.matching(NSPredicate(format: "label == %@", "bash git status --short --branch")).firstMatch
     XCTAssertTrue(status.exists)
     XCTAssertFalse(app.staticTexts["toolOutput"].exists)
+    // At the end of the chat, an opened row stays where it was and opens downwards, what was
+    // below it moving down out of its way.
+    let before = status.frame.minY
     status.tap()
     XCTAssertTrue(app.staticTexts["toolOutput"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.staticTexts["toolOutput"].label.hasPrefix("On branch main"))
+    XCTAssertEqual(status.frame.minY, before, accuracy: 1, "the opened row stays where it was")
+    let output = app.staticTexts["toolOutput"].frame
+    let next = app.buttons.matching(NSPredicate(format: "label == %@", "read apple/AxoPhone/README.md")).firstMatch.frame
+    XCTAssertGreaterThanOrEqual(next.minY, output.maxY, "the row below moved out of its way")
   }
 
   @MainActor

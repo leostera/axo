@@ -208,6 +208,7 @@ struct ConversationList: UIViewRepresentable {
     private func rowsChanged(_ feed: ConversationFeed, grew: Set<String>) {
       guard feed === listed, let dataSource, let view else { return }
       apply(feed, to: dataSource)
+      if let held = feed.held { view.hold(.row(held)) }
       let changed = grew.compactMap { dataSource.indexPath(for: .row($0)) }
       view.size(Set(changed).intersection(view.indexPathsForVisibleItems))
     }
@@ -330,6 +331,7 @@ final class ConversationCollectionView: UICollectionView {
       scroll?.goToEnd = { [weak self] in self?.goToEnd() }
       scroll?.keepAtEnd = { [weak self] in self?.setNeedsLayout() }
       scroll?.setInsets = { [weak self] top, bottom in self?.setInsets(top: top, bottom: bottom) }
+      rowResized = { [weak scroll] atEnd in scroll?.follow.rowResized(atEnd: atEnd) }
       if let scroll { setInsets(top: scroll.insets.top, bottom: scroll.insets.bottom) }
     }
   }
@@ -339,6 +341,19 @@ final class ConversationCollectionView: UICollectionView {
   var animatingToEnd = false
   /// The reader's row, by its place in the content, as of the last layout pass.
   private var anchor: (entry: ConversationList.Entry, minY: CGFloat)?
+  /// A row the reader opened or folded, by where it was on screen and how tall it was: layouts
+  /// keep it there until its new size is laid out (SwiftUI draws it anew a pass or two later), or
+  /// a moment passes.
+  private var holding: (entry: ConversationList.Entry, onScreen: CGFloat, height: CGFloat, until: Date)?
+  /// Told, after a held row was laid out, whether the end is in view.
+  private var rowResized: (Bool) -> Void = { _ in }
+
+  /// Keeps `entry` where it is on screen through the next layout, whatever it is following: the
+  /// reader opened or folded it, and it opens downwards from under their finger.
+  func hold(_ entry: ConversationList.Entry) {
+    guard let indexPath = indexPathOf(entry), let frame = layoutAttributesForItem(at: indexPath)?.frame else { return }
+    holding = (entry, frame.minY - contentOffset.y, frame.height, Date().addingTimeInterval(0.5))
+  }
 
   private var scale: CGFloat { max(1, traitCollection.displayScale) }
 
@@ -373,6 +388,26 @@ final class ConversationCollectionView: UICollectionView {
   override func layoutSubviews() {
     let before = contentOffset.y
     super.layoutSubviews()
+    if let holding, !isTracking, !isDragging {
+      guard let indexPath = indexPathOf(holding.entry), let frame = layoutAttributesForItem(at: indexPath)?.frame else {
+        self.holding = nil
+        return
+      }
+      // Where it was on screen, as far as the content reaches: a row folded at the end leaves
+      // the end where it can be.
+      contentOffset.y = max(-contentInset.top, min(end, frame.minY - holding.onScreen))
+      let resized = abs(frame.height - holding.height) > 0.5
+      if resized || Date() > holding.until {
+        self.holding = nil
+        rowResized(isAtEnd)
+      } else {
+        // Not laid out at its new size yet: look again once it is.
+        DispatchQueue.main.async { [weak self] in self?.setNeedsLayout() }
+      }
+      anchor = readerRow()
+      return
+    }
+    holding = nil
     let following = scroll?.follow.isFollowing ?? true
     if following, !held {
       pinToEnd()

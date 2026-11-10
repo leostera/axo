@@ -72,6 +72,13 @@ public struct ScrollFollow: Equatable, Sendable {
     }
   }
 
+  /// The reader opened or folded a row, which stayed where it was: the end is followed again only
+  /// if it is still in view.
+  public mutating func rowResized(atEnd: Bool) {
+    isFollowing = atEnd
+    if atEnd { hasNew = false }
+  }
+
   /// The person sent a message: they want to see it go.
   public mutating func sent() -> Move { goToEnd() }
 
