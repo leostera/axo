@@ -295,7 +295,6 @@ async fn stream_output(
                     delivered = delivered.saturating_add(chunk.len() as u64);
                 }
             }
-            NextOutput::Idle => {}
             NextOutput::Ended => break "shell_output_ended",
             NextOutput::Overflowed => break "client_overflowed",
             NextOutput::Detached => break "detached",

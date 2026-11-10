@@ -856,7 +856,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !String::from_utf8_lossy(&seen).contains(&process.device) && Instant::now() < deadline
         {
-            if let crate::output::NextOutput::Chunks(chunks) =
+            if let Some(crate::output::NextOutput::Chunks(chunks)) =
                 crate::output::next_output(&subscriber, Duration::from_millis(100))
             {
                 chunks

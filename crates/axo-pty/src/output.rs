@@ -37,8 +37,6 @@ pub const MAX_SUBSCRIBER_BACKLOG_BYTES: usize = 8 * 1024 * 1024;
 /// usually far smaller; `TerminalScreen::replay` sheds history if one would still be too large.
 const SCREEN_SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
-/// How often an idle pump rechecks whether its shell was removed from the catalog. Shell exit is
-/// observed immediately as end of file; this only bounds descriptor retention after a close.
 
 /// The screen a PTY's program has drawn, kept by a headless terminal fed every byte it writes.
 ///
@@ -361,7 +359,6 @@ impl TerminalOutput {
     }
 }
 
-/// Whether `fd` can be read again without blocking: more output, end of file or an error.
 /// What one look at the master found.
 #[derive(Debug)]
 enum Read {
@@ -437,8 +434,6 @@ enum SubscriberStatus {
 #[derive(Debug)]
 pub enum NextOutput {
     Chunks(Vec<Arc<[u8]>>),
-    /// Nothing arrived within the timeout; the caller should check its peer and wait again.
-    Idle,
     /// The shell's PTY reached end of file and every queued chunk was delivered.
     Ended,
     /// The subscriber fell too far behind and must reattach to resynchronize.
@@ -520,37 +515,39 @@ impl OutputSubscriber {
             tokio::pin!(changed);
             changed.as_mut().enable();
             match self.take_queued() {
-                NextOutput::Idle => changed.await,
-                next => return next,
+                Some(next) => return next,
+                None => changed.await,
             }
         }
     }
 
-    /// Takes queued output without waiting; the async waiter registers before checking this.
-    fn take_queued(&self) -> NextOutput {
+    /// Takes queued output without waiting, `None` while there is nothing yet; the async waiter
+    /// registers before checking this.
+    fn take_queued(&self) -> Option<NextOutput> {
         let mut queue = self.lock();
         match queue.status {
-            SubscriberStatus::Overflowed => return NextOutput::Overflowed,
-            SubscriberStatus::Detached => return NextOutput::Detached,
+            SubscriberStatus::Overflowed => return Some(NextOutput::Overflowed),
+            SubscriberStatus::Detached => return Some(NextOutput::Detached),
             SubscriberStatus::Live | SubscriberStatus::Ended => {}
         }
         if !queue.chunks.is_empty() {
             queue.bytes = 0;
-            return NextOutput::Chunks(queue.chunks.drain(..).collect());
+            return Some(NextOutput::Chunks(queue.chunks.drain(..).collect()));
         }
         if queue.status == SubscriberStatus::Ended {
-            NextOutput::Ended
+            Some(NextOutput::Ended)
         } else {
-            NextOutput::Idle
+            None
         }
     }
 }
 
+/// The subscriber's next output within `timeout`; `None` when nothing came.
 #[cfg(test)]
 pub(crate) fn next_output(
     subscriber: &OutputSubscriber,
     timeout: std::time::Duration,
-) -> NextOutput {
+) -> Option<NextOutput> {
     if timeout.is_zero() {
         return subscriber.take_queued();
     }
@@ -561,7 +558,7 @@ pub(crate) fn next_output(
         .block_on(async {
             tokio::time::timeout(timeout, subscriber.next_async())
                 .await
-                .unwrap_or(NextOutput::Idle)
+                .ok()
         })
 }
 
@@ -614,7 +611,8 @@ mod tests {
     }
 
     fn live(subscriber: &OutputSubscriber) -> Vec<u8> {
-        let NextOutput::Chunks(chunks) = next_output(&subscriber, Duration::from_millis(10)) else {
+        let Some(NextOutput::Chunks(chunks)) = next_output(&subscriber, Duration::from_millis(10))
+        else {
             panic!("expected live output");
         };
         chunks.concat()
@@ -635,10 +633,7 @@ mod tests {
         output.record(b"1mafter");
         let live = live(&subscriber);
         assert_eq!(live, b"1mafter", "live output is the raw PTY stream");
-        assert!(matches!(
-            next_output(&subscriber, Duration::from_millis(1)),
-            NextOutput::Idle
-        ));
+        assert!(next_output(&subscriber, Duration::from_millis(1)).is_none());
         // The replay ends inside the same escape sequence, so the live bytes complete it.
         let size = WindowSize::DEFAULT;
         assert_eq!(
@@ -718,7 +713,8 @@ mod tests {
         output.record(b"one");
         output.record(b"two");
         for subscriber in &subscribers {
-            let NextOutput::Chunks(chunks) = next_output(&subscriber, Duration::from_millis(10))
+            let Some(NextOutput::Chunks(chunks)) =
+                next_output(&subscriber, Duration::from_millis(10))
             else {
                 panic!("expected output");
             };
@@ -740,7 +736,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(matches!(
             next_output(&stalled, Duration::ZERO),
-            NextOutput::Overflowed
+            Some(NextOutput::Overflowed)
         ));
         assert_eq!(output.subscriber_count(), 1);
     }
@@ -751,18 +747,18 @@ mod tests {
         let (_, subscriber) = output.subscribe(None, None);
         output.record(b"last words");
         output.end();
-        let NextOutput::Chunks(chunks) = next_output(&subscriber, Duration::ZERO) else {
+        let Some(NextOutput::Chunks(chunks)) = next_output(&subscriber, Duration::ZERO) else {
             panic!("expected queued output");
         };
         assert_eq!(chunks.concat(), b"last words");
         assert!(matches!(
             next_output(&subscriber, Duration::ZERO),
-            NextOutput::Ended
+            Some(NextOutput::Ended)
         ));
         let (_, late) = output.subscribe(None, None);
         assert!(matches!(
             next_output(&late, Duration::ZERO),
-            NextOutput::Ended
+            Some(NextOutput::Ended)
         ));
     }
 
@@ -793,7 +789,7 @@ mod tests {
         output.stop();
         assert!(matches!(
             next_output(&subscriber, Duration::from_secs(5)),
-            NextOutput::Ended
+            Some(NextOutput::Ended)
         ));
         assert!(
             stopped.elapsed() < Duration::from_millis(100),
@@ -856,12 +852,12 @@ mod tests {
         loop {
             assert!(Instant::now() < deadline, "pump did not end");
             match next_output(&subscriber, Duration::from_millis(100)) {
-                NextOutput::Chunks(chunks) => {
+                None => {}
+                Some(NextOutput::Chunks(chunks)) => {
                     received += chunks.iter().map(|c| c.len()).sum::<usize>()
                 }
-                NextOutput::Ended => break,
-                NextOutput::Idle => {}
-                other => panic!("unexpected {other:?}"),
+                Some(NextOutput::Ended) => break,
+                Some(other) => panic!("unexpected {other:?}"),
             }
         }
         // The PTY line discipline may expand bytes (no ONLCR here), so compare at least.
