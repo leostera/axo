@@ -6,6 +6,11 @@ import { accountOf, messageChange, textOf } from "../src/apps/whatsapp/messages"
 import { WhatsAppStore, type Sql, type SqlValue } from "../src/apps/whatsapp/store";
 import { chatJid, whatsapp } from "../src/apps/whatsapp";
 import type { WhatsAppDevice } from "../src/apps/whatsapp/device";
+import { derivePairingCodeKey } from "../src/apps/whatsapp/workers/pairing-key";
+import { withPairingKey } from "../bundling.mjs";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 /** A Durable Object's SqlStorage, over node:sqlite, for the store's own SQL. */
 function sqlStorage(): Sql {
@@ -122,4 +127,18 @@ test("accounts are named by their number, and chats by an id or a number", () =>
   assert.throws(() => chatJid("ana"), /not a chat id/);
   assert.equal(whatsapp.tools.every((t) => t.idempotent), true, "every tool only reads");
   void ME;
+});
+
+test("a pairing code's key is the one Baileys derives, and the bundle derives it without Web Crypto", async () => {
+  const salt = new Uint8Array(32).map((_, i) => i * 7);
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode("3GLLQ66A"), "PBKDF2", false, ["deriveBits"]);
+  const expected = Buffer.from(await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 2 << 16, hash: "SHA-256" }, material, 256));
+  assert.deepEqual(await derivePairingCodeKey("3GLLQ66A", salt), expected);
+
+  let directory = dirname(fileURLToPath(import.meta.resolve("baileys")));
+  while (!directory.endsWith("/baileys")) directory = dirname(directory);
+  const path = join(directory, "lib", "Utils", "crypto.js");
+  const swapped = withPairingKey(await readFile(path, "utf8"), path);
+  assert.match(swapped, /^export \{ derivePairingCodeKey \} from ".*pairing-key\.ts";/);
+  assert.doesNotMatch(swapped, /export async function derivePairingCodeKey/);
 });

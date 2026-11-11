@@ -7,6 +7,8 @@
 // - whatsapp-rust-bridge, its Signal crypto, compiles WebAssembly it carries as base64 when it
 //   loads. Workers never compile WebAssembly at run time, so the module is taken out into a .wasm
 //   file the bundle imports, which Workers compile when the Worker is deployed.
+// - Its `derivePairingCodeKey` is pairing-key.ts: Baileys asks Web Crypto for more PBKDF2
+//   iterations than Workers allow.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const WS_SHIM = fileURLToPath(new URL("./src/apps/whatsapp/workers/ws.ts", import.meta.url));
 const UNAVAILABLE = fileURLToPath(new URL("./src/apps/whatsapp/workers/unavailable.ts", import.meta.url));
+const PAIRING_KEY = fileURLToPath(new URL("./src/apps/whatsapp/workers/pairing-key.ts", import.meta.url));
 const OPTIONAL = new Set(["sharp", "jimp", "link-preview-js", "audio-decode"]);
 
 /**
@@ -28,6 +31,15 @@ function bridgePath() {
   const path = join(directory, "..", "whatsapp-rust-bridge", "dist", "index.js");
   if (!existsSync(path)) throw new Error(`whatsapp-rust-bridge is not beside Baileys (${path}); update packages/axo-apps/bundling.mjs`);
   return path;
+}
+
+const isBaileysCrypto = (id) => /[\\/]baileys[\\/]lib[\\/]Utils[\\/]crypto\.js(\?|$)/.test(id);
+const PAIRING_KEY_DEFINITION = "export async function derivePairingCodeKey(";
+
+/** Baileys' Utils/crypto.js with its `derivePairingCodeKey` taken from pairing-key.ts. */
+export function withPairingKey(source, path) {
+  if (!source.includes(PAIRING_KEY_DEFINITION)) throw new Error(`Baileys changed derivePairingCodeKey (${path}); update packages/axo-apps/bundling.mjs`);
+  return `export { derivePairingCodeKey } from ${JSON.stringify(PAIRING_KEY)};\n${source.replace(PAIRING_KEY_DEFINITION, "async function baileysDerivePairingCodeKey(")}`;
 }
 
 const inBaileys = (importer) => /[\\/]baileys[\\/]/.test(importer ?? "");
@@ -79,6 +91,10 @@ export function whatsappVite() {
       return replaced(source, importer);
     },
     async load(id) {
+      if (isBaileysCrypto(id)) {
+        const path = id.split("?")[0];
+        return withPairingKey(await readFile(path, "utf8"), path);
+      }
       if (!isBridge(id)) return null;
       const directory = join(tmpdir(), "axo-whatsapp-bridge");
       const path = id.split("?")[0];
@@ -101,6 +117,10 @@ export function whatsappEsbuild({ wasmDir }) {
         return path ? { path } : undefined;
       });
       build.onResolve({ filter: /^\.\/whatsapp-bridge\.wasm$/ }, (args) => ({ path: args.path, external: true }));
+      build.onLoad({ filter: /[\\/]baileys[\\/]lib[\\/]Utils[\\/]crypto\.js$/ }, async (args) => ({
+        contents: withPairingKey(await readFile(args.path, "utf8"), args.path),
+        loader: "js",
+      }));
       build.onLoad({ filter: /whatsapp-rust-bridge[\\/]dist[\\/]index\.js$/ }, async (args) => {
         const { code, wasm } = await bridge(args.path, "./whatsapp-bridge.wasm");
         await mkdir(wasmDir, { recursive: true });

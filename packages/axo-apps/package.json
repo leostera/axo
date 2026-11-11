@@ -18,6 +18,7 @@
   "dependencies": {
     "@axo/protocol": "workspace:*",
     "@discordjs/rest": "^2.6.3",
+    "@noble/hashes": "^2.4.0",
     "@octokit/core": "^7.0.8",
     "@octokit/plugin-paginate-rest": "^16.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^18.0.0",

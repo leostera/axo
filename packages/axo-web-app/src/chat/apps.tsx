@@ -575,6 +575,8 @@ function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel
 }) {
   const [shown, setShown] = useState<Extract<AppLink, { state: "connecting" | "qr" | "code" }> | null>(null);
   const [usingCode, setUsingCode] = useState(false);
+  // Starting takes a few seconds: Axo's device connects to WhatsApp and makes its keys first.
+  const [starting, setStarting] = useState(false);
   const [phone, setPhone] = useState("");
   const [image, setImage] = useState<string | null>(null);
   const provider = app.provider || app.title;
@@ -586,7 +588,10 @@ function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel
     if (answer.state === "failed") return finished.current.onFailed(answer.error);
     setShown(answer);
   };
-  const start = (body: Record<string, string>) => act(async () => answered(appLinkSchema.parse(await request(url, "POST", body))));
+  const start = (body: Record<string, string>) => {
+    setStarting(true);
+    return act(async () => answered(appLinkSchema.parse(await request(url, "POST", body)))).finally(() => setStarting(false));
+  };
   const flow = shown?.flow ?? null;
   useEffect(() => {
     if (!flow) return;
@@ -621,7 +626,11 @@ function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel
   return (
     <>
       <h2 className="settings-section">Link {provider}</h2>
-      {!shown ? (
+      {starting || shown?.state === "connecting" ? (
+        <div className="grouped">
+          <p className="grouped-row muted link-waiting"><span className="spinner" aria-hidden="true" /> Connecting to {provider}…</p>
+        </div>
+      ) : !shown ? (
         usingCode ? (
           <form className="grouped connection-form" onSubmit={(event) => { event.preventDefault(); void start({ step: "code", phone: phone.trim() }); }}>
             <p className="grouped-row muted">Your {provider} number, with its country code. You type the code Axo shows into {provider} on that phone.</p>
@@ -643,11 +652,10 @@ function LinkForm({ app, helpUrl, busy, act, appsUrl, onDone, onFailed, onCancel
         )
       ) : (
         <div className="grouped device-code">
-          {shown.state === "connecting" ? <p className="grouped-row muted">Connecting to {provider}…</p> : null}
           {shown.state === "qr" ? <>
             <p className="grouped-row muted">{steps}, and point the camera at this code. It changes every so often; this page finishes by itself once your phone has linked.</p>
             <div className="grouped-row link-qr-row">
-              {image ? <img className="link-qr" src={image} alt={`${provider} linking QR code`} width={264} height={264} /> : null}
+              {image ? <img className="link-qr" src={image} alt={`${provider} linking QR code`} width={264} height={264} /> : <span className="spinner" aria-hidden="true" />}
             </div>
           </> : null}
           {shown.state === "code" ? <>

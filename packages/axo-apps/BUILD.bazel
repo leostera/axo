@@ -16,6 +16,7 @@ npm_package(
 _DEPS = [
     ":node_modules/@axo/protocol",
     ":node_modules/@discordjs/rest",
+    ":node_modules/@noble/hashes",
     ":node_modules/@octokit/core",
     ":node_modules/@octokit/plugin-paginate-rest",
     ":node_modules/@octokit/plugin-rest-endpoint-methods",
@@ -29,7 +30,7 @@ _DEPS = [
 
 ts_project(
     name = "typecheck",
-    srcs = glob(["src/**/*.ts", "tests/**/*.ts"]),
+    srcs = ["bundling.d.mts"] + glob(["src/**/*.ts", "tests/**/*.ts"]),
     no_emit = True,
     tsconfig = "tsconfig.json",
     deps = _DEPS + [":node_modules/@types/node"],
@@ -38,7 +39,7 @@ ts_project(
 node_test(
     name = "test",
     # package.json says the sources are ES modules; Baileys' crypto can only be imported as one.
-    data = ["package.json"] + glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx"],
+    data = ["bundling.d.mts", "bundling.mjs", "package.json"] + glob(["src/**/*.ts"]) + _DEPS + [":node_modules/tsx"],
     tests = glob(["tests/*.test.ts"]),
     tsx = True,
 )

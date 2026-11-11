@@ -950,3 +950,4 @@ a.link:hover { text-decoration: underline; }
 .device-code > .muted { padding-block: 10px; }
 .link-choice { padding-block: 10px; cursor: pointer; }
 .link-choice > svg { flex: none; margin-left: auto; color: var(--tertiary); }
+.link-waiting { gap: 10px; padding-block: 12px; }

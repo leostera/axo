@@ -204,7 +204,8 @@ export class WhatsAppDevice {
         try {
           const code = await socket.requestPairingCode(link.start.phone.replace(/\D/g, ""));
           link.state = { state: "code", code: code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code };
-        } catch {
+        } catch (error) {
+          console.warn("whatsapp: no pairing code", error instanceof Error ? error.stack ?? error.message : String(error));
           this.failLink("WhatsApp did not give a pairing code for that number. Check it, or link with the QR code.");
         }
       }
