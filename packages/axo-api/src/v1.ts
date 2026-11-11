@@ -10,6 +10,16 @@ export const hostCapabilitySchema = z.object({
   id: z.enum(["agent.pi", "terminal.pty", "workspace.filesystem"]),
   version: z.number().int().positive().max(255),
 }).strict();
+/**
+ * What kind of Mac a host is, as it reports itself: its model identifier (`hw.model`, "Mac13,2")
+ * and, where macOS knows it, the model's name ("Mac Studio", "MacBook Pro (14-inch, Nov 2024)").
+ * Clients show it by its icon.
+ */
+export const hostModelSchema = z.object({
+  identifier: z.string().regex(/^[A-Za-z][A-Za-z0-9,]{0,63}$/),
+  name: z.string().min(1).max(128).optional(),
+}).strict();
+export type HostModel = z.infer<typeof hostModelSchema>;
 export const hostCapabilitiesSchema = z.array(hostCapabilitySchema).max(32).superRefine((capabilities, context) => {
   const ids = new Set<string>();
   capabilities.forEach((capability, index) => {
@@ -139,6 +149,7 @@ export const hostSnapshotSchema = z.object({
   hostGeneration: hostGenerationSchema,
   label: z.string().min(1).max(128),
   hostKind: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  model: hostModelSchema.optional(),
   capabilities: hostCapabilitiesSchema.optional(),
   status: z.enum(["online", "offline"]),
   stale: z.boolean(),
@@ -158,6 +169,7 @@ export const hostRegisterSchema = z.object({
   hostGeneration: hostGenerationSchema,
   label: z.string().min(1).max(128),
   hostKind: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  model: hostModelSchema.optional(),
   capabilities: hostCapabilitiesSchema.optional(),
   sessions: z.array(sessionSnapshotSchema).max(256),
 }).strict().superRefine((registration, context) => {

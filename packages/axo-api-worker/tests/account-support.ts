@@ -36,7 +36,9 @@ export async function pairHost(h: Harness, session: AccountSession, label = "Tes
 }
 
 /** The host's socket, negotiated and registered, as axod opens it. */
-export async function connectHost(h: Harness, session: AccountSession, host: PairedHost): Promise<Peer> {
+export async function connectHost(
+  h: Harness, session: AccountSession, host: PairedHost, registration: Record<string, unknown> = {},
+): Promise<Peer> {
   const daemon = await Peer.connectHostDaemon(h.url, session.accountId, host.hostId, {
     Authorization: `Bearer ${host.credential}`,
     "X-Axo-Credential-Id": host.credentialId,
@@ -49,6 +51,7 @@ export async function connectHost(h: Harness, session: AccountSession, host: Pai
     label: host.label,
     hostKind: "macos",
     sessions: [],
+    ...registration,
   });
   assert.ok("result" in registered, JSON.stringify(registered));
   return daemon;

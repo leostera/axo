@@ -372,6 +372,7 @@ async fn connect_and_serve(
         host_generation: &identity.host_generation,
         label: &label,
         host_kind: HostKind::MacOS,
+        model: crate::model::host_model(),
         capabilities: HOST_CAPABILITIES,
         sessions: [],
     };

@@ -426,6 +426,46 @@ test("a paired Mac follows the account's other Macs with its pairing credential,
   await assert.rejects(Peer.connectHostPeers(h.url, session.accountId, laptop.hostId, credential));
 });
 
+test("a Mac says what model it is; every client lists it, and a Mac too old to say keeps what it said", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const host = await pairHost(h, session, "Studio");
+  const { client } = await connectClient(h, session);
+  t.after(() => client.close());
+  type Listed = { hosts: Array<{ hostId: string; model?: unknown }> };
+  const studio = { identifier: "Mac13,2", name: "Mac Studio" };
+
+  const daemon = await connectHost(h, session, host, { model: studio });
+  // A client already following hears what the Mac is at once.
+  // (The Mac coming online may be heard first.)
+  let heard: Listed;
+  do heard = await until(client, "axo.client.hosts") as Listed;
+  while (heard.hosts.find((listed) => listed.hostId === host.hostId)?.model === undefined);
+  assert.deepEqual(heard.hosts.find((listed) => listed.hostId === host.hostId)?.model, studio);
+  const { hello } = await connectClient(h, session);
+  assert.deepEqual((hello as unknown as Listed).hosts.find((listed) => listed.hostId === host.hostId)?.model, studio);
+
+  // An older axod says nothing of its model; the account keeps what the Mac said before.
+  daemon.close();
+  const older = await connectHost(h, session, host);
+  t.after(() => older.close());
+  const listed = await fetch(new URL("api/v1/account/hosts", h.url), { headers: session.headers });
+  assert.deepEqual(((await listed.json()) as Listed).hosts.map((listedHost) => listedHost.model), [studio]);
+
+  // What is not a model is refused.
+  const refused = await Peer.connectHostDaemon(h.url, session.accountId, host.hostId, {
+    Authorization: `Bearer ${host.credential}`, "X-Axo-Credential-Id": host.credentialId,
+  });
+  t.after(() => refused.close());
+  await refused.negotiate();
+  const bad = await refused.call("axo.host.register", {
+    protocolVersion: 2, hostId: host.hostId, hostGeneration: host.hostGeneration, label: "Studio", hostKind: "macos",
+    model: { identifier: "<script>" }, sessions: [],
+  });
+  assert.ok("error" in bad, JSON.stringify(bad));
+});
+
 test("a Mac is named by its person, everywhere at once, and reconnecting never undoes it (RFD0022)", async (t) => {
   const h = await harness();
   t.after(() => h.close());

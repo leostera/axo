@@ -9,6 +9,7 @@ mod endpoint;
 pub mod fragments;
 mod host;
 mod link;
+mod model;
 mod outbound;
 mod pairing;
 pub mod peers;
@@ -22,6 +23,7 @@ pub use host::{
     RemoteAnswer,
 };
 pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
+pub use model::{HostModel, host_model};
 pub use outbound::{Priority, RelayCallError, RelayChannel, ReplySender, SocketEpoch};
 pub use relay::{
     RelayControl, RelayDependencies, RelayWorker, current_timestamp, unavailable_status,

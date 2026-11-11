@@ -25,6 +25,7 @@ import {
   uuid,
   type Call,
   type ClientHost,
+  type HostModel,
   type ClientOpenResult,
   type ClientSession,
   type Elicitation,
@@ -84,7 +85,9 @@ const attachmentSchema = z.object({
 }).strict();
 type Attachment = z.infer<typeof attachmentSchema>;
 
-type HostRow = { host_id: string; host_generation: string; label: string; host_kind: string; online: number; last_seen_at: string };
+type HostRow = {
+  host_id: string; host_generation: string; label: string; host_kind: string; model_json: string | null; online: number; last_seen_at: string;
+};
 /**
  * A Session the client has open. `acked` is the last cursor the client acknowledged, `sent` the
  * last one sent: a batch is outstanding while they differ. `read_id` is no longer used: read ids
@@ -131,6 +134,9 @@ export class AxoClientDO extends DurableObject<Env> {
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL, client_id TEXT NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS hosts (host_id TEXT PRIMARY KEY, host_generation TEXT NOT NULL, label TEXT NOT NULL,
       host_kind TEXT NOT NULL, online INTEGER NOT NULL, last_seen_at TEXT NOT NULL)`);
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(hosts)").toArray().some((column) => column.name === "model_json")) {
+      sql.exec("ALTER TABLE hosts ADD COLUMN model_json TEXT");
+    }
     sql.exec(`CREATE TABLE IF NOT EXISTS open_sessions (session_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, epoch INTEGER,
       sent INTEGER NOT NULL, acked INTEGER NOT NULL, read_id INTEGER NOT NULL, sent_at REAL NOT NULL)`);
   }
@@ -504,10 +510,11 @@ export class AxoClientDO extends DurableObject<Env> {
         const subscription = await this.hostStub(host.hostId).subscribe(name)
           .catch(() => this.hostStub(host.hostId).subscribe(name));
         followed.add(host.hostId);
-        sql.exec(`INSERT INTO hosts (host_id, host_generation, label, host_kind, online, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)
+        sql.exec(`INSERT INTO hosts (host_id, host_generation, label, host_kind, model_json, online, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(host_id) DO UPDATE SET host_generation = excluded.host_generation, label = excluded.label,
-          host_kind = excluded.host_kind, online = excluded.online, last_seen_at = excluded.last_seen_at`,
-          host.hostId, subscription.hostGeneration ?? host.hostGeneration, host.label, host.hostKind, subscription.online ? 1 : 0, host.lastSeenAt);
+          host_kind = excluded.host_kind, model_json = excluded.model_json, online = excluded.online, last_seen_at = excluded.last_seen_at`,
+          host.hostId, subscription.hostGeneration ?? host.hostGeneration, host.label, host.hostKind,
+          host.model === undefined ? null : JSON.stringify(host.model), subscription.online ? 1 : 0, host.lastSeenAt);
         sessions.push(...subscription.sessions);
         for (const elicitation of subscription.elicitations ?? []) this.asked.push({ hostId: host.hostId, elicitation });
       } catch {
@@ -587,6 +594,7 @@ export class AxoClientDO extends DurableObject<Env> {
   private hosts(): ClientHost[] {
     return this.ctx.storage.sql.exec<HostRow>("SELECT * FROM hosts ORDER BY host_id").toArray().map((row) => ({
       hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
+      ...(row.model_json === null ? {} : { model: JSON.parse(row.model_json) as HostModel }),
       online: row.online === 1, lastSeenAt: row.last_seen_at,
     }));
   }

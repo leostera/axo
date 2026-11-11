@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { LIMITS, type ClientHost } from "@axo/protocol";
-import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/protocol/v1";
+import { hostModelSchema, hostRegisterSchema, hostSnapshotSchema, type HostModel, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
 import { AccountApps, type CallOutcome, type AppsCall } from "../apps/account";
@@ -30,6 +30,8 @@ type AccountHostRow = {
   /** What a person named it; shown instead of `label` when set. */
   name: string | null;
   host_kind: string;
+  /** What kind of Mac it reports itself to be (`HostModel`), as JSON; null until it says. */
+  model_json: string | null;
   capabilities_json: string | null;
   linked_at: number;
   last_seen_at: number;
@@ -44,6 +46,13 @@ type HostStub = {
   callHost(request: { method: string; params: unknown; deadlineMs: number }): Promise<CallOutcome>;
 };
 type ClientStub = { hostsChanged(): Promise<boolean> };
+
+/** What kind of Mac it said it is, if it has said and it still reads as one. */
+function modelOf(row: AccountHostRow): { model?: HostModel } {
+  if (row.model_json === null) return {};
+  const model = hostModelSchema.safeParse(JSON.parse(row.model_json));
+  return model.success ? { model: model.data } : {};
+}
 
 /** A Mac is shown by the name a person gave it, or else by what it reports. */
 function shownLabel(row: AccountHostRow): string {
@@ -105,6 +114,9 @@ export class AxoAccountManager extends DurableObject<Env> {
     }
     if (!hostColumns.some(column => column.name === "name")) {
       ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN name TEXT");
+    }
+    if (!hostColumns.some(column => column.name === "model_json")) {
+      ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN model_json TEXT");
     }
     // Each host's Session index moved to its HostDO (RFD0018), and the relay tables with it.
     for (const table of ["host_sessions_v1", "host_sessions_v2", "groups", "pending", "route", "fragments_in", "fragments_discarded", "outbox"])
@@ -301,7 +313,7 @@ export class AxoAccountManager extends DurableObject<Env> {
       "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY host_id LIMIT ?", LIMITS.machines,
     ).toArray().map((row) => ({
       hostId: row.host_id, hostGeneration: row.host_generation, label: shownLabel(row), hostKind: row.host_kind,
-      lastSeenAt: new Date(row.last_seen_at).toISOString(),
+      ...modelOf(row), lastSeenAt: new Date(row.last_seen_at).toISOString(),
     }));
   }
 
@@ -343,12 +355,18 @@ export class AxoAccountManager extends DurableObject<Env> {
   /** A host registered on its socket: keeps its boot generation, label and capabilities. */
   async registerHost(registration: unknown, now: number): Promise<HostSnapshot> {
     const input = hostRegisterSchema.parse(registration);
-    if (!this.activeHost(input.hostId)) throw new Error("Host is not linked to this account");
-    this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, capabilities_json = ?, last_seen_at = ?
-      WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind,
+    const host = this.activeHost(input.hostId);
+    if (!host) throw new Error("Host is not linked to this account");
+    // A Mac that does not say what it is (one too old to) keeps what it said before.
+    const model = input.model === undefined ? host.model_json : JSON.stringify(input.model);
+    this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, model_json = ?, capabilities_json = ?, last_seen_at = ?
+      WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind, model,
       input.capabilities === undefined ? null : JSON.stringify(input.capabilities), now, input.hostId);
+    // Clients list hosts as they were when they last said hello; one that changed what it is
+    // shows as it is now.
+    if (model !== host.model_json) this.hostsChanged();
     return hostSnapshotSchema.parse({ hostId: input.hostId, hostGeneration: input.hostGeneration, label: input.label,
-      hostKind: input.hostKind, ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+      hostKind: input.hostKind, ...(input.model === undefined ? {} : { model: input.model }), ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       status: "online", stale: false, lastSeenAt: new Date(now).toISOString(), sessions: [] });
   }
 
@@ -500,7 +518,7 @@ export class AxoAccountManager extends DurableObject<Env> {
     const online = Boolean(presence?.online && presence.hostGeneration === row.host_generation);
     return hostSnapshotSchema.parse({
       hostId: row.host_id, hostGeneration: row.host_generation, label: shownLabel(row), hostKind: row.host_kind,
-      ...(row.capabilities_json === null ? {} : { capabilities: JSON.parse(row.capabilities_json) as unknown }),
+      ...modelOf(row), ...(row.capabilities_json === null ? {} : { capabilities: JSON.parse(row.capabilities_json) as unknown }),
       status: online ? "online" : "offline", stale: !online,
       lastSeenAt: new Date(row.last_seen_at).toISOString(), sessions: [],
     });

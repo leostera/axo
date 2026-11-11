@@ -49,6 +49,9 @@ pub(super) struct HostRegistration<'a> {
     pub(super) host_generation: &'a str,
     pub(super) label: &'a str,
     pub(super) host_kind: HostKind,
+    /// None when macOS does not say; the account keeps what it said before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) model: Option<crate::model::HostModel>,
     pub(super) capabilities: &'static [Capability],
     /// Sessions are synced with `axo.host.sync` after registering (RFD0018).
     pub(super) sessions: [(); 0],

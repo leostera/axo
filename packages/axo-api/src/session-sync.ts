@@ -13,6 +13,7 @@ import { z } from "zod";
 import { uuid } from "./identity.ts";
 import { PI3_FORMAT } from "./pi3.ts";
 import { piRuntimeSchema } from "./pi.ts";
+import { hostModelSchema } from "./v1.ts";
 
 export const SYNC = {
   /** Records and bytes of lines in one append batch. */
@@ -255,6 +256,7 @@ export const clientHostSchema = z.object({
   hostGeneration: uuid,
   label: z.string().min(1).max(128),
   hostKind: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  model: hostModelSchema.optional(),
   online: z.boolean(),
   lastSeenAt: z.string().datetime({ offset: true }),
 }).strict();
