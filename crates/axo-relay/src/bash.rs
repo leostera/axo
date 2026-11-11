@@ -129,7 +129,7 @@ pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
     let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => (status.ok(), false),
         Err(_) => {
-            kill_group(group);
+            kill_shell_and_group(group);
             (child.wait().await.ok(), true)
         }
     };
@@ -140,7 +140,7 @@ pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
     let (stdout, stderr) = match tokio::time::timeout(DRAIN_GRACE, drained).await {
         Ok(both) => both,
         Err(_) => {
-            kill_group(group);
+            kill_group_left(group);
             (stdout.await, stderr.await)
         }
     };
@@ -164,12 +164,25 @@ pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
 
 /// Kills the shell, then everything in its group. The shell goes first: under load, macOS's
 /// `killpg` can stop at a member that is already exiting and miss the rest, and a shell that
-/// survives runs the command's next step after the timeout.
-fn kill_group(group: Option<u32>) {
+/// survives runs the command's next step after the timeout. Only before the shell is reaped:
+/// until then its pid cannot name another process.
+fn kill_shell_and_group(group: Option<u32>) {
     if let Some(group) = group {
-        // SAFETY: signals only the command's own shell and its process group.
+        // SAFETY: signals only the command's own, unreaped shell and its process group.
         unsafe {
             libc::kill(group as libc::pid_t, libc::SIGKILL);
+            libc::killpg(group as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// Kills what the reaped shell left running in its group. Not the pid itself: reaped, it may
+/// already be another process's. The group's id is not reused while any member lives.
+fn kill_group_left(group: Option<u32>) {
+    if let Some(group) = group {
+        // SAFETY: signals only the command's process group, which outlives the shell while any
+        // of its children do.
+        unsafe {
             libc::killpg(group as libc::pid_t, libc::SIGKILL);
         }
     }
