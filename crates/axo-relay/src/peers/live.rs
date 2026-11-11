@@ -95,24 +95,34 @@ impl Default for PeerLive {
     }
 }
 
+/// Every lock here guards state changed whole between statements, so a panic elsewhere leaves it
+/// usable: remote panes keep following, and commands keep going out.
+fn recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl PeerLive {
+    fn state(&self) -> std::sync::MutexGuard<'_, LiveState> {
+        recover(&self.state)
+    }
+
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
     /// Called whenever the listing of the other Macs or their Sessions changes.
     pub fn observe_listing(&self, observer: impl Fn() + Send + Sync + 'static) {
-        if let Ok(mut slot) = self.listing_observer.lock() {
-            *slot = Some(Box::new(observer));
-        }
+        *recover(&self.listing_observer) = Some(Box::new(observer));
     }
 
     pub fn version(&self) -> u64 {
-        self.state.lock().map_or(0, |state| state.version)
+        self.state().version
     }
 
     pub fn is_connected(&self) -> bool {
-        self.state.lock().is_ok_and(|state| state.connected)
+        self.state().connected
     }
 
     /// Waits until something changes after `since`, or `timeout` passes; returns the version.
@@ -163,25 +173,19 @@ impl PeerLive {
     }
 
     pub(super) fn take_restores(&self) -> Vec<RestoreRequest> {
-        self.state
-            .lock()
-            .map(|mut state| state.restores.drain(..).collect())
-            .unwrap_or_default()
+        self.state().restores.drain(..).collect()
     }
 
     pub(super) fn wanted(&self) -> HashSet<String> {
-        self.state
-            .lock()
-            .map(|state| state.wanted.clone())
-            .unwrap_or_default()
+        self.state().wanted.clone()
     }
 
     /// The newest snapshot of each progress slot of a Session, by slot.
     pub fn progress(&self, session_id: &str) -> Vec<(String, Value)> {
-        self.state
-            .lock()
-            .ok()
-            .and_then(|state| state.progress.get(session_id).cloned())
+        self.state()
+            .progress
+            .get(session_id)
+            .cloned()
             .map(|slots| slots.into_iter().collect())
             .unwrap_or_default()
     }
@@ -198,7 +202,7 @@ impl PeerLive {
     ) -> Result<Value, PeerCommandError> {
         let (reply, answer) = oneshot::channel();
         {
-            let mut state = self.state.lock().map_err(|_| PeerCommandError::offline())?;
+            let mut state = self.state();
             if !state.connected {
                 return Err(PeerCommandError::offline());
             }
@@ -217,7 +221,8 @@ impl PeerLive {
     }
 
     fn update(&self, change: impl FnOnce(&mut LiveState)) {
-        if let Ok(mut state) = self.state.lock() {
+        {
+            let mut state = self.state();
             change(&mut state);
             state.version += 1;
             self.changed.send_replace(state.version);
@@ -236,9 +241,7 @@ impl PeerLive {
 
     pub(super) fn listing_changed(&self) {
         self.touch();
-        if let Ok(observer) = self.listing_observer.lock()
-            && let Some(observer) = observer.as_ref()
-        {
+        if let Some(observer) = recover(&self.listing_observer).as_ref() {
             observer();
         }
     }
@@ -293,10 +296,7 @@ impl PeerLive {
     }
 
     pub(super) fn take_commands(&self) -> Vec<PeerCommand> {
-        self.state
-            .lock()
-            .map(|mut state| state.outbox.drain(..).collect())
-            .unwrap_or_default()
+        self.state().outbox.drain(..).collect()
     }
 }
 

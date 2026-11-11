@@ -1,6 +1,5 @@
 //! The relay connection's status as Axo.app shows it, and the manual retry it offers.
 
-use std::io;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,12 +42,9 @@ impl RelayControl {
     }
 
     /// Applies `change` and notifies the observer only when the status actually changed.
-    fn update(&self, change: impl FnOnce(&mut RelayStatus)) -> io::Result<()> {
+    fn update(&self, change: impl FnOnce(&mut RelayStatus)) {
         let changed = {
-            let mut status = self
-                .status
-                .lock()
-                .map_err(|_| io::Error::other("relay status lock was poisoned"))?;
+            let mut status = self.lock();
             let before = status.clone();
             change(&mut status);
             (*status != before).then(|| status.clone())
@@ -56,20 +52,23 @@ impl RelayControl {
         if let (Some(status), Some(observer)) = (changed, &self.observer) {
             observer(&status);
         }
-        Ok(())
     }
 
-    pub fn snapshot(&self) -> io::Result<RelayStatus> {
+    /// The status is replaced whole under its lock, so a panic elsewhere leaves it readable.
+    fn lock(&self) -> std::sync::MutexGuard<'_, RelayStatus> {
         self.status
             .lock()
-            .map(|status| status.clone())
-            .map_err(|_| io::Error::other("relay status lock was poisoned"))
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn request_connect(&self) -> io::Result<()> {
+    pub fn snapshot(&self) -> RelayStatus {
+        self.lock().clone()
+    }
+
+    pub fn request_connect(&self) {
         self.reconnect_requested.store(true, Ordering::Relaxed);
         self.wake();
-        self.update(Self::connecting)
+        self.update(Self::connecting);
     }
 
     /// Wakes the relay loop to look at its flags again.
@@ -89,11 +88,11 @@ impl RelayControl {
     }
 
     pub(super) fn mark_connecting(&self) {
-        let _ = self.update(Self::connecting);
+        self.update(Self::connecting);
     }
 
     pub(super) fn mark_connected(&self) {
-        let _ = self.update(|status| {
+        self.update(|status| {
             if status.state != RelayState::Connected {
                 status.state = RelayState::Connected;
                 status.connected_since_unix_millis = Some(unix_timestamp_millis());
@@ -103,7 +102,7 @@ impl RelayControl {
     }
 
     pub(super) fn mark_disconnected(&self, error: impl std::fmt::Display) {
-        let _ = self.update(|status| {
+        self.update(|status| {
             status.state = RelayState::Disconnected;
             status.connected_since_unix_millis = None;
             status.last_error = Some(error.to_string().chars().take(512).collect());
@@ -129,24 +128,24 @@ mod tests {
     #[test]
     fn relay_status_tracks_connection_and_manual_retry_states() {
         let control = RelayControl::new("Test Mac".to_owned(), HostKind::MacOS);
-        assert_eq!(control.snapshot().unwrap().state, RelayState::Disconnected);
+        assert_eq!(control.snapshot().state, RelayState::Disconnected);
 
         control.mark_connected();
-        let connected = control.snapshot().unwrap();
+        let connected = control.snapshot();
         assert_eq!(connected.state, RelayState::Connected);
         assert!(connected.connected_since_unix_millis.is_some());
         assert_eq!(connected.host_name, "Test Mac");
 
         control.mark_disconnected("HTTP error: 302 Found");
-        let disconnected = control.snapshot().unwrap();
+        let disconnected = control.snapshot();
         assert_eq!(disconnected.state, RelayState::Disconnected);
         assert_eq!(
             disconnected.last_error.as_deref(),
             Some("HTTP error: 302 Found")
         );
 
-        control.request_connect().unwrap();
-        let retrying = control.snapshot().unwrap();
+        control.request_connect();
+        let retrying = control.snapshot();
         assert_eq!(retrying.state, RelayState::Connecting);
         assert_eq!(retrying.connected_since_unix_millis, None);
         assert_eq!(retrying.last_error, None);
@@ -163,10 +162,10 @@ mod tests {
         control.mark_connecting();
         control.mark_connecting();
         control.mark_connected();
-        let connected_since = control.snapshot().unwrap().connected_since_unix_millis;
+        let connected_since = control.snapshot().connected_since_unix_millis;
         control.mark_connected();
         assert_eq!(
-            control.snapshot().unwrap().connected_since_unix_millis,
+            control.snapshot().connected_since_unix_millis,
             connected_since,
             "a repeated connected mark must not reset the connection time"
         );

@@ -543,10 +543,7 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
                     log::warn!("event=relay.link_failed reason={error}");
                     internal_error("could not link this Mac")
                 })?;
-                context
-                    .control
-                    .request_connect()
-                    .map_err(|_| internal_error("could not start the host relay"))?;
+                context.control.request_connect();
                 Ok(rpc::HostLinked {
                     linked: true,
                     host_label,
@@ -561,10 +558,7 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
         "expected no parameters",
         move |_: rpc::NoParams| {
             std::future::ready(match &context {
-                Some(context) => context
-                    .control
-                    .snapshot()
-                    .map_err(|_| internal_error("could not read remote connection status")),
+                Some(context) => Ok(context.control.snapshot()),
                 None => Ok(axo_relay::unavailable_status()),
             })
         },
@@ -593,10 +587,7 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
             async move {
                 let requested = match &relay {
                     Some(context) => {
-                        context
-                            .control
-                            .request_connect()
-                            .map_err(|_| internal_error("could not request remote connection"))?;
+                        context.control.request_connect();
                         true
                     }
                     None => false,
