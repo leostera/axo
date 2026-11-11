@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.51 (Mac app build 322, axod 74)
+
+### Added
+
+- Each Mac tells your account what model it is, so the web and the iPhone show a Mac Studio, Mac mini, iMac or Mac Pro by its own icon instead of a laptop.
+
 ## 0.50 (Mac app build 321, axod 73)
 
 ### Added
