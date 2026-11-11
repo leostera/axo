@@ -360,6 +360,23 @@ final class RelayWebSocketChannelTests: XCTestCase {
     channel.close()
   }
 
+  func testAPartialMessageThatGetsNoFragmentForAMinuteIsDroppedAndFreesItsPlace() {
+    let chunk = Data(repeating: 0x61, count: Fragments.chunkBytes).base64EncodedString()
+    func first(_ id: String) -> Data {
+      Data(#"{"jsonrpc":"2.0","method":"axo.transport.fragment","params":{"messageId":"\#(id)","index":0,"count":2,"data":"\#(chunk)"}}"#.utf8)
+    }
+    let start = Date(timeIntervalSince1970: 1_000)
+    var assembler = FragmentAssembler()
+    // Four messages whose senders gave up and whose discard notices never came.
+    for id in ["a", "b", "c", "d"] { XCTAssertEqual(assembler.receive(first(id), at: start), .pending) }
+    XCTAssertEqual(
+      assembler.receive(first("e"), at: start.addingTimeInterval(30)), .invalid("too many partial messages"),
+      "within the minute they still hold their places")
+    XCTAssertEqual(
+      assembler.receive(first("e"), at: start.addingTimeInterval(61)), .pending,
+      "a minute without a fragment drops them, as the other sides do")
+  }
+
   func testAFragmentThatBreaksTheRulesEndsTheConnection() async {
     let socket = FakeSocket()
     let channel = RelayWebSocketChannel(task: socket)

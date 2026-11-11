@@ -17,6 +17,8 @@ enum Fragments {
   static let partialMessages = 4
   /// Dropped messages remembered, so their late fragments are ignored.
   static let discardedMessages = 64
+  /// A partial message that gets no fragment for this long is dropped: its discard notice was lost.
+  static let partialTimeout: TimeInterval = 60
 
   /// The frames that carry `message`: itself when it fits in one, otherwise its fragments in
   /// order. Nil when it is larger than any message may be.
@@ -48,20 +50,23 @@ struct FragmentAssembler {
     let count: Int
     var bytes = 0
     var chunks: [Int: Data] = [:]
+    /// When its latest fragment came.
+    var last: Date
   }
 
   private var partials: [String: Partial] = [:]
   private var discarded: [String] = []
 
-  /// Takes one received frame.
-  mutating func receive(_ frame: Data) -> FragmentOutcome {
+  /// Takes one received frame, which came at `now`.
+  mutating func receive(_ frame: Data, at now: Date = Date()) -> FragmentOutcome {
+    expire(now)
     guard let header = try? JSONDecoder().decode(MethodHeader.self, from: frame) else { return .message(frame) }
     switch header.method {
     case Fragments.method:
       guard let params = try? JSONDecoder().decode(FragmentNotification.self, from: frame).params else {
         return .invalid("malformed fragment")
       }
-      return receive(params)
+      return receive(params, at: now)
     case Fragments.discardMethod:
       if let id = try? JSONDecoder().decode(DiscardNotification.self, from: frame).params.messageId { discard(id) }
       return .pending
@@ -70,7 +75,7 @@ struct FragmentAssembler {
     }
   }
 
-  private mutating func receive(_ fragment: FragmentNotification.Params) -> FragmentOutcome {
+  private mutating func receive(_ fragment: FragmentNotification.Params, at now: Date) -> FragmentOutcome {
     let maxCount = (Fragments.messageBytes + Fragments.chunkBytes - 1) / Fragments.chunkBytes
     guard fragment.count >= 2, fragment.count <= maxCount, fragment.index >= 0, fragment.index < fragment.count,
       !fragment.messageId.isEmpty, fragment.messageId.count <= 64
@@ -81,7 +86,7 @@ struct FragmentAssembler {
     guard last ? (!chunk.isEmpty && chunk.count <= Fragments.chunkBytes) : chunk.count == Fragments.chunkBytes else {
       return .invalid("fragment size")
     }
-    var partial = partials[fragment.messageId] ?? Partial(count: fragment.count)
+    var partial = partials[fragment.messageId] ?? Partial(count: fragment.count, last: now)
     guard partial.count == fragment.count else { return .invalid("fragment count changed") }
     if partials[fragment.messageId] == nil, partials.count >= Fragments.partialMessages {
       return .invalid("too many partial messages")
@@ -90,6 +95,7 @@ struct FragmentAssembler {
     guard partial.bytes + chunk.count <= Fragments.messageBytes else { return .invalid("message too large") }
     partial.chunks[fragment.index] = chunk
     partial.bytes += chunk.count
+    partial.last = now
     guard partial.chunks.count == partial.count else {
       partials[fragment.messageId] = partial
       return .pending
@@ -99,6 +105,14 @@ struct FragmentAssembler {
     for index in 0..<partial.count { whole.append(partial.chunks[index]!) }
     guard String(data: whole, encoding: .utf8) != nil else { return .invalid("message is not UTF-8") }
     return .message(whole)
+  }
+
+  /// Drops the partials that got no fragment for `Fragments.partialTimeout`, so a lost discard
+  /// notice does not hold a place for the rest of the connection.
+  private mutating func expire(_ now: Date) {
+    for (id, partial) in partials where now.timeIntervalSince(partial.last) >= Fragments.partialTimeout {
+      discard(id)
+    }
   }
 
   private mutating func discard(_ messageID: String) {
