@@ -56,6 +56,40 @@ use crate::sync::{SyncStore, SyncWaker, SyncWorker};
 /// How often axod renews its lease on the HostDO: `LIMITS.heartbeatMs` (RFD0037).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+const FIRST_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+
+/// The wait before the next connection attempt: a second at first, doubling across attempts that
+/// fail, up to [`MAX_RECONNECT_DELAY`]. A connection that registered starts it over, however long
+/// it lived and however it ended, so a socket dropped after hours comes back in a second.
+struct Backoff {
+    delay: Duration,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Self {
+            delay: FIRST_RECONNECT_DELAY,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.delay = FIRST_RECONNECT_DELAY;
+    }
+
+    /// The wait before this attempt; the next one waits twice as long.
+    fn next(&mut self) -> Duration {
+        let delay = self.delay;
+        self.delay = (delay * 2).min(MAX_RECONNECT_DELAY);
+        delay
+    }
+}
+
+/// How one connection ended.
+struct ConnectionEnd {
+    /// It got as far as `axo.host.register`, so this Mac was online.
+    registered: bool,
+    result: io::Result<()>,
+}
 
 const NOT_LINKED: &str = "This Mac is not linked to an Axo account.";
 
@@ -189,28 +223,28 @@ async fn run_reconnect_loop(
     channel: Arc<RelayChannel>,
     waker: SyncWaker,
 ) {
-    let mut retry_delay = Duration::from_secs(1);
+    let mut backoff = Backoff::new();
     while !stop.is_stopped() {
         let link = match dependencies.links.load_link().await {
             Ok(link) => link,
             Err(error) => {
                 control.mark_disconnected(&error);
                 log::warn!("event=relay.link_unavailable reason={error}");
-                wait_for_reconnect(&control, &stop, retry_delay).await;
-                retry_delay = (retry_delay * 2).min(MAX_RECONNECT_DELAY);
+                wait_for_reconnect(&control, &stop, backoff.next()).await;
                 continue;
             }
         };
         // Only a linked host connects; linking requests a reconnect, which ends this wait.
         let Some(account) = link.account().cloned() else {
             control.mark_disconnected(NOT_LINKED);
-            wait_for_reconnect(&control, &stop, Duration::from_secs(1)).await;
-            retry_delay = Duration::from_secs(1);
+            backoff.reset();
+            wait_for_reconnect(&control, &stop, FIRST_RECONNECT_DELAY).await;
             continue;
         };
 
         control.mark_connecting();
-        match run_connection(&dependencies, account, &stop, &control, &channel, &waker).await {
+        let end = run_connection(&dependencies, account, &stop, &control, &channel, &waker).await;
+        match end.result {
             Ok(()) if stop.is_stopped() => break,
             Ok(()) => {
                 control.mark_disconnected("relay connection ended");
@@ -224,12 +258,12 @@ async fn run_reconnect_loop(
         if stop.is_stopped() {
             break;
         }
-        let requested_now = wait_for_reconnect(&control, &stop, retry_delay).await;
-        retry_delay = if requested_now {
-            Duration::from_secs(1)
-        } else {
-            (retry_delay * 2).min(MAX_RECONNECT_DELAY)
-        };
+        if end.registered {
+            backoff.reset();
+        }
+        if wait_for_reconnect(&control, &stop, backoff.next()).await {
+            backoff.reset();
+        }
     }
 }
 
@@ -262,6 +296,30 @@ async fn run_connection(
     control: &Arc<RelayControl>,
     channel: &Arc<RelayChannel>,
     waker: &SyncWaker,
+) -> ConnectionEnd {
+    let mut registered = false;
+    let result = connect_and_serve(
+        dependencies,
+        account,
+        stop,
+        control,
+        channel,
+        waker,
+        &mut registered,
+    )
+    .await;
+    ConnectionEnd { registered, result }
+}
+
+/// Connects, registers (setting `registered`), and serves the socket until it ends.
+async fn connect_and_serve(
+    dependencies: &RelayDependencies,
+    account: AccountLink,
+    stop: &Stop,
+    control: &Arc<RelayControl>,
+    channel: &Arc<RelayChannel>,
+    waker: &SyncWaker,
+    registered: &mut bool,
 ) -> io::Result<()> {
     let sessions = &dependencies.host;
     let identity = sessions.identity().clone();
@@ -332,6 +390,7 @@ async fn run_connection(
         return Err(error);
     }
     control.mark_connected();
+    *registered = true;
 
     // Tasks queue onto this socket only while it lives (RFD0016, Transport).
     let socket = channel.attach();
@@ -393,8 +452,19 @@ async fn run_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::HEARTBEAT_INTERVAL;
+    use super::{Backoff, FIRST_RECONNECT_DELAY, HEARTBEAT_INTERVAL, MAX_RECONNECT_DELAY};
     use std::time::Duration;
+
+    #[test]
+    fn failed_attempts_back_off_and_a_registered_connection_starts_over() {
+        let mut backoff = Backoff::new();
+        let waits: Vec<u64> = (0..7).map(|_| backoff.next().as_secs()).collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
+        // A connection registered, lived for hours, and dropped: the next try is in a second.
+        backoff.reset();
+        assert_eq!(backoff.next(), FIRST_RECONNECT_DELAY);
+        assert!(backoff.next() < MAX_RECONNECT_DELAY);
+    }
 
     /// A limit from `LIMITS` in `packages/axo-api/src/contracts.ts`, in milliseconds.
     fn cloud_limit(name: &str) -> u64 {

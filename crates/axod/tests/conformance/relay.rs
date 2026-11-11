@@ -137,6 +137,25 @@ fn a_dropped_socket_comes_back_and_registers_again() {
     wait_for_status(&axod, "connected");
 }
 
+/// A socket that registered was online: when it drops, however often, the next one comes in
+/// about a second, not after a backoff that grew across healthy connections.
+#[test]
+fn a_registered_socket_that_drops_again_and_again_still_comes_back_at_once() {
+    let hub = FakeHub::start();
+    let (_axod, _target) = linked(&hub, Pi::Fake);
+    hub.wait_until_connected();
+    for drop in 0..5 {
+        let dropped = std::time::Instant::now();
+        hub.drop_socket();
+        hub.wait_until_connected();
+        let back = dropped.elapsed();
+        assert!(
+            back < std::time::Duration::from_millis(1_900),
+            "drop {drop} took {back:?} to come back"
+        );
+    }
+}
+
 #[test]
 fn the_account_creates_renames_and_closes_sessions_on_the_mac() {
     let hub = FakeHub::start();
