@@ -231,7 +231,7 @@ impl Questions {
             message: message.to_owned(),
             input,
             created_at: now,
-            expires_at: now + timeout.as_millis() as u64,
+            expires_at: expiry(now, timeout),
         };
         let id = elicitation.id.clone();
         // The asker gave up before its question was asked: nobody sees it (RFD0034).
@@ -500,6 +500,12 @@ impl Extension for QuestionsExtension {
     }
 }
 
+/// When a question asked at `now` (Unix milliseconds) with `timeout` expires; never wraps.
+fn expiry(now: u64, timeout: Duration) -> u64 {
+    let timeout = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    now.saturating_add(timeout)
+}
+
 fn unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -572,6 +578,13 @@ mod tests {
             created_at: 1,
             expires_at: 2,
         }
+    }
+
+    #[test]
+    fn a_question_that_waits_for_ever_expires_at_the_end_of_time_not_before_it_was_asked() {
+        assert_eq!(expiry(1_000, Duration::from_millis(500)), 1_500);
+        assert_eq!(expiry(1_000, Duration::MAX), u64::MAX);
+        assert_eq!(expiry(1_000, Duration::from_millis(u64::MAX)), u64::MAX);
     }
 
     #[test]
