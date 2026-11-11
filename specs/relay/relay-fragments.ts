@@ -28,9 +28,9 @@ type Frame = { epoch: number; message: string; index: number; count: number; pri
 /** Faults on one path: lost messages and crashes (RFD0012). `--set faults=2` raises it. */
 const faults = budget("faults", 1);
 
-const Fragment = defineMessage("Fragment", { epoch: Number, message: String, index: Number, count: Number, priority: oneOf("reply", "upload") }, { name: "axo.transport.fragment", over: "websocket" });
-const Close = defineMessage("Close", { epoch: Number, reason: String }, { name: "close the socket", over: "websocket", tone: "refused" });
-const Discard = defineMessage("Discard", { epoch: Number, message: String }, { name: "axo.transport.discard", over: "websocket" });
+const Fragment = defineMessage("Fragment", { epoch: Number, message: String, index: Number, count: Number, priority: oneOf("reply", "upload") }, { name: "axo.transport.fragment", over: "websocket", ordered: true });
+const Close = defineMessage("Close", { epoch: Number, reason: String }, { name: "close the socket", over: "websocket", tone: "refused", ordered: true });
+const Discard = defineMessage("Discard", { epoch: Number, message: String }, { name: "axo.transport.discard", over: "websocket", ordered: true });
 
 const mac = defineZone({ name: "Host Mac", description: "axod's relay sender" });
 const cloud = defineZone({ name: "Cloudflare", description: "the HostDO that owns the socket", place: { column: 1 } });
@@ -207,6 +207,10 @@ export const Receiver = defineActor({
   },
 });
 
+const messageReachesParser = defineProperty("messageReachesParser", {
+  description: "A sent message can reach the parser whole.",
+  reachable: (w) => w.the(Receiver).state.delivered.length > 0,
+});
 const deliveredWhole = defineProperty("deliveredWhole", {
   description: "The parser only ever sees a message with every one of its fragments, all from one socket.",
   always: (w) => w.the(Receiver).state.delivered.every((d) => d.got.length === d.count && d.got.every((i, n) => i === n)),
@@ -295,7 +299,7 @@ export default defineSpec({
     "How a relay message larger than one frame crosses the host relay: split into fragments sent by priority, reassembled by the receiver before parsing, and dropped with the socket that carried them or when its sender gives up.",
   actors: [Sender, Receiver],
   limits: [limit1, limit2, limit3, limit4],
-  properties: [deliveredWhole, deliveredOnce, abandonedNeverDelivered, oneStartedPerClass, honestSendersAreNeverRefused, partialsBounded, partialsDrain, everythingQueuedGoesOut],
+  properties: [messageReachesParser, deliveredWhole, deliveredOnce, abandonedNeverDelivered, oneStartedPerClass, honestSendersAreNeverRefused, partialsBounded, partialsDrain, everythingQueuedGoesOut],
   finalState: {
     description: "Nothing is in flight and nothing is queued.",
     when: (w) => w.quiet && w.the(Sender).state.queue.length === 0,

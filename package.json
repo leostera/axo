@@ -8,9 +8,23 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.3.0",
-    "@leostera/feynman": "^0.15.0",
+    "@leostera/feynman": "^0.16.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
     "typescript": "^7.0.2"
+  },
+  "workspaces": [
+    "assets",
+    "axp",
+    "packages/*",
+    "sites/*",
+    "docs/explainers/remote-access"
+  ],
+  "overrides": {
+    "sharp": "0.35.5",
+    "miniflare@5.20260930.0-alpha>workerd": "1.20261016.1",
+    "miniflare@5.20261006.0-alpha>workerd": "1.20261016.1",
+    "@cloudflare/runtime-types>workerd": "1.20261016.1",
+    "@cloudflare/unenv-preset>workerd": "1.20261016.1"
   }
 }
