@@ -139,9 +139,21 @@ pub(crate) async fn receive(
             sink.flush().await.map_err(io::Error::other)?;
             Ok(None)
         }
-        None | Some(Ok(Message::Close(_))) => Err(io::Error::new(
+        None => Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
             "relay connection closed",
+        )),
+        // The cloud says why (a rate limit, a newer connection), and the retry log keeps it.
+        Some(Ok(Message::Close(frame))) => Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            match frame {
+                Some(frame) => format!(
+                    "relay closed the connection ({}: {})",
+                    u16::from(frame.code),
+                    frame.reason.chars().take(120).collect::<String>()
+                ),
+                None => "relay closed the connection".to_owned(),
+            },
         )),
         Some(Ok(Message::Binary(_))) => Err(io::Error::new(
             io::ErrorKind::InvalidData,

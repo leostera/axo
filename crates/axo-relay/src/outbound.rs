@@ -3,9 +3,10 @@
 //!
 //! Any task may send a request, which waits for its reply without holding a thread, or a
 //! notification, each with a priority class. The relay loop owns the socket: it drains what tasks
-//! queued, sends frames
-//! by priority (replies and control, then durable upload, then ephemeral progress), interleaving
-//! fragments across classes and keeping messages in order within one, and routes replies back.
+//! queued, sends frames by priority (replies and control, then durable upload, then ephemeral
+//! progress) within a frame budget, interleaving fragments across classes and keeping messages in
+//! order within one, and routes replies back. When the budget holds frames back, ephemeral
+//! progress queues up and its oldest is dropped.
 //! Everything belongs to one socket: when it closes, requests waiting on it fail with an outcome
 //! that may have happened, and replies meant for it are dropped rather than sent on the next one.
 
@@ -39,9 +40,55 @@ const MAX_EPHEMERAL_QUEUED: usize = 32;
 /// for room: replies are bounded by the cloud's pending limits). Room for a largest message (a 12 MiB
 /// Pi line, as a 16 MiB append) with others still queued behind it.
 const MAX_QUEUED_BYTES: usize = 3 * fragments::MESSAGE_BYTES;
-/// Frames the relay loop sends per turn; it turns about every 20 ms, so this stays well under the
-/// cloud's 600 inbound frames a second.
+/// Frames the relay loop sends in one go before it looks at everything else again.
 pub(crate) const FRAMES_PER_TURN: usize = 8;
+/// Frames a second the outbox sends at most. The cloud closes a host's socket that sends more than
+/// 600 in a second (`DAEMON_FRAMES_PER_SECOND` in `axo-host-relay.ts`); this leaves room for the
+/// burst below and for the few frames sent outside the outbox (the heartbeat, registering).
+pub(crate) const FRAMES_PER_SECOND: u32 = 400;
+/// Frames that may go at once after a quiet spell, on top of the rate.
+const FRAME_BURST: u32 = 50;
+
+/// How many frames the outbox may send now: a token bucket of [`FRAME_BURST`] that refills at
+/// [`FRAMES_PER_SECOND`], so no second of the cloud's count sees more than the two together.
+pub(crate) struct FrameBudget {
+    tokens: f64,
+    refilled: tokio::time::Instant,
+}
+
+impl FrameBudget {
+    pub(crate) fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            tokens: f64::from(FRAME_BURST),
+            refilled: now,
+        }
+    }
+
+    /// Takes up to `wanted` frames from the budget; returns how many may go now.
+    pub(crate) fn take(&mut self, now: tokio::time::Instant, wanted: usize) -> usize {
+        self.refill(now);
+        let allowed = (self.tokens.floor() as usize).min(wanted);
+        self.tokens -= allowed as f64;
+        allowed
+    }
+
+    /// When the next frame may go: `now` if one may already.
+    pub(crate) fn next_at(&mut self, now: tokio::time::Instant) -> tokio::time::Instant {
+        self.refill(now);
+        if self.tokens >= 1.0 {
+            return now;
+        }
+        let wait = (1.0 - self.tokens) / f64::from(FRAMES_PER_SECOND);
+        now + Duration::from_secs_f64(wait)
+    }
+
+    fn refill(&mut self, now: tokio::time::Instant) {
+        let elapsed = now.saturating_duration_since(self.refilled).as_secs_f64();
+        self.tokens =
+            (self.tokens + elapsed * f64::from(FRAMES_PER_SECOND)).min(f64::from(FRAME_BURST));
+        self.refilled = now;
+    }
+}
 
 /// Why a request to the cloud did not get an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,6 +471,44 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_second_sends_more_frames_than_the_cloud_takes() {
+        let start = tokio::time::Instant::now();
+        let mut budget = FrameBudget::new(start);
+        // As fast as the loop can ask, for three seconds, in steps of a millisecond.
+        let mut per_second = [0_usize; 3];
+        for millisecond in 0..3000_u64 {
+            let now = start + Duration::from_millis(millisecond);
+            per_second[(millisecond / 1000) as usize] += budget.take(now, FRAMES_PER_TURN);
+        }
+        let ceiling = (FRAMES_PER_SECOND + FRAME_BURST) as usize;
+        assert!(
+            per_second.iter().all(|&sent| sent <= ceiling),
+            "{per_second:?}"
+        );
+        assert!(ceiling < 600, "the cloud closes a socket past 600 a second");
+        // And it does not starve: steady state is the rate.
+        assert!(
+            per_second[2] >= FRAMES_PER_SECOND as usize - 1,
+            "{per_second:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_budget_says_when_the_next_frame_may_go() {
+        let start = tokio::time::Instant::now();
+        let mut budget = FrameBudget::new(start);
+        assert_eq!(budget.next_at(start), start);
+        assert_eq!(budget.take(start, usize::MAX), FRAME_BURST as usize);
+        let next = budget.next_at(start);
+        assert!(
+            next > start && next <= start + Duration::from_millis(3),
+            "{:?}",
+            next - start
+        );
+        assert_eq!(budget.take(next, 1), 1);
+    }
 
     fn big(priority: Priority, fill: char) -> Outgoing {
         Outgoing {

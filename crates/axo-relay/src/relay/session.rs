@@ -26,7 +26,9 @@ use super::status::RelayControl;
 use super::wire::{JSONRPC, OutgoingRequest};
 use crate::fragments::Reassembler;
 use crate::host::{HostIdentity, RelayHost};
-use crate::outbound::{FRAMES_PER_TURN, Outbox, Outgoing, Priority, RelayChannel, ReplySender};
+use crate::outbound::{
+    FRAMES_PER_TURN, FrameBudget, Outbox, Outgoing, Priority, RelayChannel, ReplySender,
+};
 use crate::sync::SyncWaker;
 
 /// How long the relay has to answer a handshake request.
@@ -143,6 +145,7 @@ pub(super) async fn relay_session(
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut expiry = tokio::time::interval_at(start + REASSEMBLY_CHECK, REASSEMBLY_CHECK);
     let mut outbox = Outbox::default();
+    let mut budget = FrameBudget::new(start);
     let queue = |outbox: &mut Outbox, queued: Outgoing| {
         if !outbox.push(queued, &context.socket_id) {
             log::warn!("event=relay.outbound_refused reason=too_large_or_full");
@@ -166,9 +169,10 @@ pub(super) async fn relay_session(
                 }
             }
             // What tasks queued goes out by priority, a few frames a turn, so a reply can
-            // overtake an upload between its fragments.
-            () = std::future::ready(()), if !outbox.is_empty() => {
-                for _ in 0..FRAMES_PER_TURN {
+            // overtake an upload between its fragments, and within the budget the cloud allows.
+            () = tokio::time::sleep_until(budget.next_at(tokio::time::Instant::now())), if !outbox.is_empty() => {
+                let allowed = budget.take(tokio::time::Instant::now(), FRAMES_PER_TURN);
+                for _ in 0..allowed {
                     while let Ok(queued) = outgoing.try_recv() {
                         queue(&mut outbox, queued);
                     }
