@@ -617,12 +617,7 @@ impl McpServer {
     async fn images_in(&self, result: &Value) -> Vec<Value> {
         let mut attachments = Vec::new();
         collect_image_attachments(result, &mut attachments);
-        let mut total = 0;
-        attachments.retain(|attachment| {
-            total += attachment["size"].as_u64().unwrap_or(u64::MAX);
-            total <= MAX_SHOWN_BYTES
-        });
-        attachments.truncate(MAX_SHOWN_IMAGES);
+        let attachments = within_shown_budget(attachments);
         if attachments.is_empty() {
             return Vec::new();
         }
@@ -636,19 +631,21 @@ impl McpServer {
                 return Vec::new();
             }
         };
-        fetched["files"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|file| {
-                let bytes = std::fs::read(file["path"].as_str()?).ok()?;
-                Some(json!({
+        let mut images = Vec::new();
+        for file in fetched["files"].as_array().into_iter().flatten() {
+            let Some(path) = file["path"].as_str() else {
+                continue;
+            };
+            // Off the runtime's workers: these are megabytes.
+            if let Ok(bytes) = tokio::fs::read(path).await {
+                images.push(json!({
                     "type": "image",
                     "data": axo_protocol::base64::encode(&bytes),
                     "mimeType": file["mimeType"],
-                }))
-            })
-            .collect()
+                }));
+            }
+        }
+        images
     }
 
     /// What the account reaches now, as one paragraph, or `None` when this Mac is not linked or
@@ -718,6 +715,23 @@ const MAX_SHOWN_IMAGES: usize = 4;
 const MAX_SHOWN_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Every `{ type: "image", attachment }` in a script's value, in order, once each.
+/// The attachments shown, in order: at most `MAX_SHOWN_IMAGES`, while their sizes fit in
+/// `MAX_SHOWN_BYTES` together. One that does not say its size is not shown, nor any after it.
+fn within_shown_budget(attachments: Vec<Value>) -> Vec<Value> {
+    let mut total = 0_u64;
+    attachments
+        .into_iter()
+        .take(MAX_SHOWN_IMAGES)
+        .take_while(|attachment| {
+            let Some(size) = attachment["size"].as_u64() else {
+                return false;
+            };
+            total = total.saturating_add(size);
+            total <= MAX_SHOWN_BYTES
+        })
+        .collect()
+}
+
 fn collect_image_attachments(value: &Value, found: &mut Vec<Value>) {
     match value {
         Value::Object(object) => {
@@ -1441,6 +1455,31 @@ mod tests {
     }
 
     const SID: SessionId = SessionId::from_u128(0x0b8f4e2a_7c1d_4e6b_9a3f_5d2c8e1b7a49);
+
+    #[test]
+    fn images_are_shown_while_they_fit_and_one_without_a_size_ends_them() {
+        let image = |size: Option<u64>| match size {
+            Some(size) => json!({ "asset": "sha256:00", "size": size }),
+            None => json!({ "asset": "sha256:00" }),
+        };
+        let small = MAX_SHOWN_BYTES / 4;
+        assert_eq!(
+            within_shown_budget(vec![image(Some(small)), image(Some(small))]).len(),
+            2
+        );
+        assert_eq!(
+            within_shown_budget(vec![image(Some(small)), image(Some(MAX_SHOWN_BYTES))]).len(),
+            1,
+            "past the budget"
+        );
+        // A size-less one counted as u64::MAX once let the next through by wrapping around.
+        assert_eq!(
+            within_shown_budget(vec![image(None), image(Some(1))]).len(),
+            0
+        );
+        let many = vec![image(Some(1)); MAX_SHOWN_IMAGES + 3];
+        assert_eq!(within_shown_budget(many).len(), MAX_SHOWN_IMAGES);
+    }
 
     #[test]
     fn a_script_s_images_are_found_once_wherever_it_put_them() {
