@@ -52,3 +52,27 @@ export function settingsPath(base: string, route: SettingsRoute): string {
     case "activity": return `${apps}/activity`;
   }
 }
+
+/** Where Axo's own pages are: this page's origin, and Axo's, which the cloud names in the links it makes. */
+const AXO_ORIGIN = "https://axo.leostera.dev";
+
+/**
+ * A sign-in link the cloud handed back, as a URL to go to: only one of Axo's own pages, resolved
+ * against `here`. Anything else (another site, `javascript:`, no URL at all) is null, and the page
+ * stays where it is.
+ */
+export function signInTarget(link: string, here: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(link, here);
+  } catch {
+    return null;
+  }
+  return url.origin === new URL(here).origin || url.origin === AXO_ORIGIN ? url : null;
+}
+
+/** A sign-in link that starts an OAuth sign-in (rather than asking for a client first), or null. */
+export function oauthStart(link: string, here: string): URL | null {
+  const url = signInTarget(link, here);
+  return url?.pathname === "/api/v1/connections/oauth/start" ? url : null;
+}

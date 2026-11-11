@@ -11,7 +11,7 @@ import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { appsResults } from "@axo/protocol";
-import { parseRoute, parseSettingsRoute, routePath, settingsPath, type SettingsRoute } from "../src/chat/route.ts";
+import { oauthStart, parseRoute, parseSettingsRoute, routePath, settingsPath, signInTarget, type SettingsRoute } from "../src/chat/route.ts";
 import { memoryDevice } from "../src/chat/device.ts";
 import { chatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
 import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
@@ -1329,4 +1329,17 @@ test("mark all read: every chat is seen, and one active after now stays marked a
   assert.equal(all.baseline, now, "the baseline moves on, so chats not listed now are seen too");
   assert.deepEqual([...all.seenAt.keys()], [sid(3)], "only marks after the baseline are kept");
   assert.equal(all.allMarked(entries, now), all, "the same marks when nothing changes");
+});
+
+test("a sign-in goes only to Axo's own pages, and to OAuth only through its start", () => {
+  const here = "http://localhost:5173/app/settings/apps";
+  assert.equal(signInTarget("/app/settings/apps/github?signedIn=apps.github", here)?.href, "http://localhost:5173/app/settings/apps/github?signedIn=apps.github");
+  assert.equal(signInTarget("https://axo.leostera.dev/api/v1/connections/oauth/start?flow=f", here)?.pathname, "/api/v1/connections/oauth/start");
+  for (const elsewhere of ["javascript:alert(1)//api/v1/connections/oauth/start", "https://evil.example/api/v1/connections/oauth/start", "//evil.example/x", "data:text/html,hi", "http://[::1"]) {
+    assert.equal(signInTarget(elsewhere, here), null, elsewhere);
+  }
+  assert.ok(oauthStart("https://axo.leostera.dev/api/v1/connections/oauth/start?flow=f", here));
+  // The page that asks for a client is a page of Axo's, not an OAuth start.
+  assert.equal(oauthStart("https://axo.leostera.dev/app/settings/apps/mcp", here), null);
+  assert.equal(oauthStart("https://evil.example/api/v1/connections/oauth/start", here), null);
 });

@@ -3,7 +3,7 @@ import { appDeviceSignInSchema, appLinkSchema, appMacSignInSchema, appPhoneSignI
 import QRCode from "qrcode";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
-import type { SettingsRoute } from "./route.ts";
+import { oauthStart, signInTarget, type SettingsRoute } from "./route.ts";
 import { KNOWN_SERVERS, knownServerOf, type KnownServer } from "./servers.ts";
 import calendarLogo from "./logos/calendar.svg";
 import chatgptLogo from "./logos/chatgpt.svg";
@@ -332,7 +332,9 @@ function AppPage({ app, macs, version, appsUrl, busy, act, setNotice }: Shared &
     }
     void act(async () => {
       const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(app.name)}/sign-in`, "POST")) as { signInUrl: string };
-      window.location.assign(signInUrl);
+      const target = signInTarget(signInUrl, window.location.href);
+      if (!target) throw new Error("Axo's cloud answered with a sign-in link that is not Axo's.");
+      window.location.assign(target);
     });
   };
   const revoked = app.signIn.kind === "token"
@@ -928,13 +930,15 @@ function useServers({ appsUrl, act, setNotice }: Shared) {
   const add = (draft: { name: string; url: string }, then: () => void) => act(async () => {
     const result = appsResults["axo.apps.add"].parse(await request(appsUrl, "POST", { name: draft.name.trim(), url: draft.url }));
     then();
-    if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
+    const start = result.signInUrl === null ? null : oauthStart(result.signInUrl, window.location.href);
+    if (start) window.location.assign(start);
     else if (result.app.kind === "thirdParty" && result.app.state === "needsSignIn") setClientFor(result.app.name);
     else if (result.app.kind === "thirdParty") setNotice({ kind: "ok", text: `Added ${nameOf(result.app)}.` });
   });
   const signIn = (name: string) => act(async () => {
     const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(name)}/sign-in`, "POST")) as { signInUrl: string };
-    if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
+    const start = oauthStart(signInUrl, window.location.href);
+    if (start) window.location.assign(start);
     else setClientFor(name);
   });
   const saveClient = (name: string) => act(async () => {
@@ -942,7 +946,8 @@ function useServers({ appsUrl, act, setNotice }: Shared) {
     const { signInUrl } = (await request(`${appsUrl}/${encodeURIComponent(name)}/client`, "POST", body)) as { signInUrl: string };
     setClient({ clientId: "", clientSecret: "" });
     setClientFor(null);
-    if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
+    const start = oauthStart(signInUrl, window.location.href);
+    if (start) window.location.assign(start);
   });
   const remove = (server: Server) => {
     if (!window.confirm(`Remove ${nameOf(server)}? Your Sessions can no longer use it.`)) return;

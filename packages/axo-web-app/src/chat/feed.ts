@@ -39,8 +39,14 @@ export class ConversationFeed {
   private clock: ReturnType<typeof setTimeout> | null = null;
   private lastTick = 0;
 
+  private readonly ticks: boolean;
+  private readonly now: () => number;
+
   /** `ticks`: whether the clock runs on its own; tests step it with `tick`. */
-  constructor(private readonly ticks = true, private readonly now: () => number = () => performance.now()) {}
+  constructor(ticks = true, now: () => number = () => performance.now()) {
+    this.ticks = ticks;
+    this.now = now;
+  }
 
   /** For `useSyncExternalStore`: told when the set of rows changes, not when one of them does. */
   subscribe = (listener: () => void): (() => void) => {
