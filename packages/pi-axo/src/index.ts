@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { installAxoPiExtension, type AxoPiExtensionConfig } from "./extension.js";
 import { parseAxoMcpConfig, registerAxoMcpServer } from "./mcp.js";
+import { fetchBriefFromAxod, installAxoBrief } from "./brief.js";
 import { exitWithAxod, watchLifeline } from "./lifeline.js";
 import { installRemoteView, parseRemoteViewConfig } from "./remote-view.js";
 
@@ -37,6 +38,7 @@ export {
 
 export { exitWithAxod, watchLifeline } from "./lifeline.js";
 export { parseAxoMcpConfig, registerAxoMcpServer, type AxoMcpConfig } from "./mcp.js";
+export { BRIEF_SECTION, fetchBriefFromAxod, installAxoBrief, parseBrief } from "./brief.js";
 export { installRemoteView, parseRemoteViewConfig, RemoteSession, type RemoteViewConfig } from "./remote-view.js";
 
 export default function axoPiExtension(pi: ExtensionAPI): void | Promise<void> {
@@ -52,6 +54,8 @@ export default function axoPiExtension(pi: ExtensionAPI): void | Promise<void> {
     } catch (error) {
       console.error(`Axo MCP server unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // What the agent can do through Axo, in its system prompt from the first turn.
+    installAxoBrief(pi, fetchBriefFromAxod(mcp));
   }
   const config = parseAxoPiExtensionConfig(process.env);
   if (config === null) {
