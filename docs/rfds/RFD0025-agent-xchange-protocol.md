@@ -243,7 +243,7 @@ Not built yet, as of 2026-11-10. These are still part of the accepted plan:
 - **Step 2:** `axp-ts` and `axp-rs`, the reference hub, host and client, `fixtures/`, `scripts/cross-check.sh`, and the Feynman models under `axp/specs/`. The only script in `axp/scripts/` is `examples.ts`.
 - **Step 3's packages:** each extension has a document, a schema and examples, but no implementation.
 - **Step 4:** `axp-swift`.
-- **Step 5:** moving Axo onto AXP. Axo's wire is still `axo.*`. [RFD0034](RFD0034-axod-as-an-axp-server.md) reshaped axod as an AXP-style server with extensions (`axo-server`), but it does not speak AXP's methods.
+- **Step 5:** moving Axo onto AXP, proposed in [RFD0043](RFD0043-axo-on-axp.md) (Draft). Axo's wire is still `axo.*`. [RFD0034](RFD0034-axod-as-an-axp-server.md) reshaped axod as an AXP-style server with extensions (`axo-server`), but it does not speak AXP's methods.
 
 The repository layout above is the plan, and `axp/` does not match it yet: there is no `packages/`, `fixtures/` or `specs/` directory.
 
