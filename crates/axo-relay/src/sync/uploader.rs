@@ -431,20 +431,14 @@ impl Uploader {
             if reply.round != self.round {
                 return Err(io::Error::other("a newer handshake replaced this one"));
             }
-            let mut differs_at = None;
-            for (position, chain) in positions.iter().zip(reply.chains) {
-                let agrees =
-                    chain.as_deref().is_some() && local.chain_at(*position) == chain.as_deref();
-                if let Some(chain) = chain {
-                    cloud_chains.insert(*position, chain);
-                }
-                if !agrees {
-                    differs_at = Some(*position);
-                    break;
-                }
-                best = Some(*position);
-            }
-            let Some(differs_at) = differs_at else { break };
+            let compared = compare_chains(&positions, reply.chains, |position| {
+                local.chain_at(position)
+            })?;
+            best = compared.agreed.or(best);
+            cloud_chains.extend(compared.cloud_chains);
+            let Some(differs_at) = compared.differs_at else {
+                break;
+            };
             let next_low = best.map_or(low, |best| best + 1);
             if differs_at == 0 || next_low >= differs_at {
                 break;
@@ -826,11 +820,88 @@ impl AppendOutcome {
     }
 }
 
+/// One `chainAt` round compared with this Mac's copy.
+struct ChainComparison {
+    /// The last position asked about where both copies agree, before any where they differ.
+    agreed: Option<u64>,
+    /// The first position asked about where they differ, or the cloud has nothing.
+    differs_at: Option<u64>,
+    /// The cloud's chains, by position, up to `differs_at`.
+    cloud_chains: Vec<(u64, String)>,
+}
+
+/// Compares the cloud's chains at `positions` (one each, in order) with `local`'s. A reply with
+/// another number of chains is refused: read short, it would seem to agree everywhere it
+/// stopped, and the search would cut the cloud back further than the copies differ.
+fn compare_chains<'a>(
+    positions: &[u64],
+    chains: Vec<Option<String>>,
+    local: impl Fn(u64) -> Option<&'a str>,
+) -> io::Result<ChainComparison> {
+    if chains.len() != positions.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the cloud answered {} chains for {} positions",
+                chains.len(),
+                positions.len()
+            ),
+        ));
+    }
+    let mut compared = ChainComparison {
+        agreed: None,
+        differs_at: None,
+        cloud_chains: Vec::new(),
+    };
+    for (&position, chain) in positions.iter().zip(chains) {
+        let agrees = chain.is_some() && local(position) == chain.as_deref();
+        if let Some(chain) = chain {
+            compared.cloud_chains.push((position, chain));
+        }
+        if !agrees {
+            compared.differs_at = Some(position);
+            break;
+        }
+        compared.agreed = Some(position);
+    }
+    Ok(compared)
+}
+
 #[cfg(test)]
 mod reply_tests {
     use super::*;
 
     const SESSION: &str = "8f8f8f8f-0000-4000-8000-000000000001";
+
+    #[test]
+    fn chains_agree_up_to_the_first_difference_and_a_short_answer_is_refused() {
+        let local = |position: u64| ["h", "a", "b", "c"].get(position as usize).copied();
+        let chains = |found: &[Option<&str>]| -> Vec<Option<String>> {
+            found.iter().map(|chain| chain.map(str::to_owned)).collect()
+        };
+
+        let compared = compare_chains(
+            &[0, 1, 2],
+            chains(&[Some("h"), Some("a"), Some("x")]),
+            local,
+        )
+        .unwrap();
+        assert_eq!((compared.agreed, compared.differs_at), (Some(1), Some(2)));
+        assert_eq!(
+            compared.cloud_chains.len(),
+            3,
+            "the differing chain is kept"
+        );
+
+        let compared = compare_chains(&[0, 3], chains(&[Some("h"), None]), local).unwrap();
+        assert_eq!((compared.agreed, compared.differs_at), (Some(0), Some(3)));
+
+        // Read short, this agreed everywhere and the search took 1 as the common prefix.
+        let short = compare_chains(&[0, 1, 2, 3], chains(&[Some("h"), Some("a")]), local);
+        assert!(short.is_err());
+        let long = compare_chains(&[0], chains(&[Some("h"), Some("a")]), local);
+        assert!(long.is_err());
+    }
 
     #[test]
     fn a_handshake_answer_is_known_with_where_the_cloud_is_or_unknown() {
