@@ -524,7 +524,12 @@ final class AxoPhoneUITests: XCTestCase {
     XCTAssertEqual(app.staticTexts["toolInput"].label, "$ swift test")
     XCTAssertTrue(app.staticTexts["toolOutput"].label.contains("Compiling AxoPhoneModel"), "opened, the output shows")
     // All of it, on a sheet of its own, still coming in.
-    app.buttons["seeFullOutput"].tap()
+    // The row opened downwards, under the composer: scrolled up to, as a person would.
+    let seeAll = app.buttons["seeFullOutput"]
+    for _ in 0..<3 where seeAll.frame.maxY > app.windows.firstMatch.frame.height - 300 {
+      app.collectionViews.firstMatch.swipeUp(velocity: .slow)
+    }
+    seeAll.tap()
     XCTAssertTrue(app.staticTexts["fullOutputLines"].waitForExistence(timeout: 5))
     XCTAssertEqual(app.staticTexts["fullOutputLines"].label, "7 lines, still running")
     XCTAssertTrue(app.staticTexts["fullOutput"].label.contains("Building for debugging"))
