@@ -84,6 +84,20 @@ test("a person named by their LID lands in the chat of their number", () => {
   assert.deepEqual(store.chats({ limit: 10 }).map((c) => c.id), [ANA]);
 });
 
+test("a message kept under both a person's LID and their number is one message once the LID is mapped", () => {
+  const store = new WhatsAppStore(sqlStorage());
+  const keep = (m: WAMessage) => {
+    const change = messageChange(m, (jid) => store.canonical(jid));
+    if (change?.kind === "message") store.upsertMessage(change.row);
+  };
+  // History sync delivered it under the number, and again under the LID before the mapping came.
+  keep(message({ chat: ANA, id: "D1", text: "delivered twice", at: 1 }));
+  keep(message({ chat: ANA_LID, id: "D1", text: "delivered twice", at: 1 }));
+  store.mapLid(ANA_LID, ANA);
+  assert.deepEqual(store.search("twice", { limit: 10 }).map((m) => m.id), ["D1"]);
+  assert.equal(store.counts().messages, 1);
+});
+
 test("search matches every word, ignoring accents and case, and a word's start", () => {
   const store = new WhatsAppStore(sqlStorage());
   store.upsertMessage({ chatId: ANA, id: "1", fromMe: false, sender: ANA, pushName: "Ana", at: 10, type: "conversation", text: "Café mañana at the Plaza?", quotedId: null, deleted: false });

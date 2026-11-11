@@ -98,6 +98,8 @@ export class WhatsAppStore {
     this.sql.exec("INSERT INTO wa_lids (lid, pn) VALUES (?, ?) ON CONFLICT (lid) DO UPDATE SET pn = excluded.pn", lid, pn);
     // What was kept under the LID moves to the number, so one person is one chat.
     this.sql.exec("UPDATE OR IGNORE wa_messages SET chat_id = ? WHERE chat_id = ?", pn, lid);
+    // What could not move is already kept under the number: the copies left under the LID go.
+    this.sql.exec("DELETE FROM wa_messages WHERE chat_id = ?", lid);
     this.sql.exec("UPDATE wa_messages SET sender = ? WHERE sender = ?", pn, lid);
     const chat = this.sql.exec<RawChat>("SELECT * FROM wa_chats WHERE id = ?", lid).toArray()[0];
     if (chat) {
