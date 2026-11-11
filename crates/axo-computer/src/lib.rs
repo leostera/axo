@@ -1,12 +1,15 @@
-//! Computer use on this Mac: seeing and operating its apps, embedded in `axod mcp` for this Mac's
-//! agents and in axod for other Macs' scripts (RFD0028).
+//! Computer use on this Mac: seeing and operating its apps, in axod, for this Mac's agents over
+//! MCP and for other Macs' scripts over the relay (RFD0028).
 //!
 //! This wraps Cua Driver's macOS runtime (`platform-macos`) in-process, so its Accessibility
 //! and Screen Recording checks are answered with Axo's grants and it never prompts. Actions are
 //! delivered in the background where the app allows it: no focus change, no pointer movement.
 //!
-//! Only an allowlist of Cua's tools is exposed. The runtime is built on first use, because
-//! every Pi starts its own `axod mcp` and most never touch the screen.
+//! Only an allowlist of Cua's tools is exposed. The driver is built on first use, because most
+//! Sessions never touch the screen. It runs on a small tokio runtime of its own, and [`call`]
+//! blocks its caller (axod calls it from the blocking pool): the driver's tasks make synchronous
+//! Accessibility and window-server calls that can take seconds, and on axod's runtime they would
+//! hold the workers every Session's sockets and terminals need.
 
 use serde_json::{Value, json};
 
