@@ -20,6 +20,9 @@ public struct ToolActivity: Equatable, Sendable {
   public fileprivate(set) var outputTruncated = false
   /// What it was given, to show.
   public var input: ToolInput?
+  /// The pictures it came back with: those in its result (a read of an image), and image assets
+  /// its output names (a computer tool's screenshot, which codemode prints as an attachment).
+  public fileprivate(set) var images: [ChatImage] = []
 
   static func kind(of name: String) -> Kind {
     switch name {
@@ -35,6 +38,7 @@ public struct ToolActivity: Equatable, Sendable {
     status = result.status
     output = result.output
     outputTruncated = result.truncated
+    images = result.images
   }
 }
 
@@ -113,13 +117,48 @@ private struct ToolResult: Equatable, Sendable {
   let status: ToolActivity.Status
   let output: String
   var truncated = false
+  var images: [ChatImage] = []
 }
 
-/// A picture in a message, as Pi recorded it.
+/// A picture in a message, as Pi recorded it, or one kept in the account's assets (RFD0030).
 public struct ChatImage: Equatable, Sendable, Identifiable {
+  public enum Source: Equatable, Sendable {
+    /// Its bytes, in the record.
+    case data(Data)
+    /// The asset's 64 hex digits: `/api/v1/account/assets/<hex>` downloads it.
+    case asset(String)
+  }
+
   public let id: Int
-  public let data: Data
+  public let source: Source
   public let mimeType: String?
+
+  public init(id: Int, source: Source, mimeType: String?) {
+    self.id = id
+    self.source = source
+    self.mimeType = mimeType
+  }
+
+  /// Image assets, named as an attachment is: `{"asset":"sha256:<hex>","mimeType":"image/…"}`.
+  private static let assetObject = #/\{[^{}]*"asset"\s*:\s*"sha256:([0-9a-f]{64})"[^{}]*\}/#
+  private static let mimeType = #/"mimeType"\s*:\s*"([^"]+)"/#
+  private static let imageTypes: Set<String> = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+
+  /// The image assets a tool's output names: a computer tool's screenshot comes back as an
+  /// attachment kept in the account's assets, which codemode prints as JSON. Each once, in the
+  /// order named, numbered from `first`. As on the web.
+  public static func assets(in output: String, from first: Int = 0) -> [ChatImage] {
+    var seen = Set<String>()
+    var images: [ChatImage] = []
+    for match in output.matches(of: assetObject) {
+      let hex = String(match.output.1)
+      guard let type = match.output.0.firstMatch(of: mimeType).map({ String($0.output.1) }), imageTypes.contains(type),
+        seen.insert(hex).inserted
+      else { continue }
+      images.append(ChatImage(id: first + images.count, source: .asset(hex), mimeType: type))
+    }
+    return images
+  }
 }
 
 /// What Pi is asking the person, while it waits for an answer.
@@ -472,9 +511,12 @@ public struct ChatTranscript: Equatable, Sendable {
   private mutating func recordResult(of message: JSONValue) {
     guard let callID = message["toolCallId"]?.stringValue else { return }
     let status: ToolActivity.Status = message["isError"]?.boolValue == true ? .failed : .completed
+    let output = Self.visibleText(message["content"])
+    let own = Self.images(in: message["content"])
     let result = ToolResult(
-      status: status, output: Self.visibleText(message["content"]),
-      truncated: message["truncated"]?.boolValue == true)
+      status: status, output: output,
+      truncated: message["truncated"]?.boolValue == true,
+      images: own + ChatImage.assets(in: output, from: own.count))
     results[callID] = result
     toolOutput[callID] = nil
     if let index = messages.firstIndex(where: { $0.tool?.callID == callID }) {
@@ -607,6 +649,6 @@ public struct ChatTranscript: Equatable, Sendable {
     guard let encoded = block["data"]?.stringValue, let data = Data(base64Encoded: encoded), !data.isEmpty else {
       return nil
     }
-    return ChatImage(id: index, data: data, mimeType: block["mimeType"]?.stringValue)
+    return ChatImage(id: index, source: .data(data), mimeType: block["mimeType"]?.stringValue)
   }
 }

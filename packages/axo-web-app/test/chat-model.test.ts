@@ -1343,3 +1343,19 @@ test("a sign-in goes only to Axo's own pages, and to OAuth only through its star
   assert.equal(oauthStart("https://axo.leostera.dev/app/settings/apps/mcp", here), null);
   assert.equal(oauthStart("https://evil.example/api/v1/connections/oauth/start", here), null);
 });
+
+test("a tool's pictures: its result's own, and the image assets its output names", () => {
+  const pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const hex = "ab".repeat(32);
+  const transcript = transcriptOf([
+    said(1, "assistant", [
+      { type: "toolCall", id: "r", name: "read", arguments: { path: "/tmp/a.png" } },
+      { type: "toolCall", id: "c", name: "codemode", arguments: { code: "1" } },
+    ]),
+    said(2, "toolResult", [{ type: "text", text: "Read image file [image/png]" }, { type: "image", data: pixel, mimeType: "image/png" }], { toolCallId: "r" }),
+    said(3, "toolResult", [{ type: "text", text: `[{"attachment":{"asset":"sha256:${hex}","mimeType":"image/png","name":"a.png"},"type":"image"},{"asset":"sha256:${hex}","mimeType":"image/png"},{"asset":"sha256:${"cd".repeat(32)}","mimeType":"application/pdf"}]` }], { toolCallId: "c" }),
+  ]);
+  const [read, code] = transcript.messages.map(message => message.tool!);
+  assert.deepEqual(read!.images, [{ src: `data:image/png;base64,${pixel}` }]);
+  assert.deepEqual(code!.images, [{ src: `/api/v1/account/assets/${hex}` }], "each image asset once; not a PDF");
+});

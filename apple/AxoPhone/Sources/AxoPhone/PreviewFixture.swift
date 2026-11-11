@@ -2,6 +2,7 @@ import AxoClient
 import AxoPhoneModel
 import AxoProtocol
 import Foundation
+import UIKit
 
 /// Sample Macs and conversations for looking at the app in the simulator without signing in:
 /// `AXO_PHONE_PREVIEW=1`. It exists only in simulator debug builds.
@@ -93,6 +94,17 @@ enum PreviewFixture {
     }
 
     /// What the sample chats' Pis run (RFD0033).
+    /// What every asset is in the preview: a tall screenshot-shaped picture.
+    static let picture: Data = {
+      let size = CGSize(width: 300, height: 420)
+      return UIGraphicsImageRenderer(size: size).pngData { context in
+        UIColor.systemTeal.setFill()
+        context.fill(CGRect(origin: .zero, size: size))
+        UIColor.white.setFill()
+        context.fill(CGRect(x: 20, y: 20, width: 260, height: 40))
+      }
+    }()
+
     static let pi = #"{"model":{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1"},"thinkingLevel":"high"}"#
 
     /// Chat `number` as the account's socket lists it, with `status` in place of its own: the
@@ -162,6 +174,10 @@ enum PreviewFixture {
           #"{"role":"user","content":[{"type":"text","text":"Here are the screenshots."},\#(image),\#(image),\#(image),\#(image)]}"#,
           #"{"role":"assistant","timestamp":1792810292070,"content":[{"type":"text","text":"Live and correct now."},{"type":"toolCall","id":"w1","name":"bash","arguments":{"command":"cd /tmp/sharepage && U=https://axo.leostera.dev/s/fuVgs7XzUJNX7wpVhCTqWg/riot-zcaml-toolchain; node shot2.mjs $U live-dark.png"}}]}"#,
           #"{"role":"toolResult","toolCallId":"w1","content":"ok","isError":false}"#,
+          // A screenshot a tool keeps in the account's assets, and a picture read whole.
+          #"{"role":"assistant","timestamp":1792810292071,"content":[{"type":"toolCall","id":"p1","name":"codemode","arguments":{"code":"return await tools.screenshot();"}},{"type":"toolCall","id":"p2","name":"read","arguments":{"path":"/tmp/live-dark.png"}}]}"#,
+          #"{"role":"toolResult","toolCallId":"p1","content":[{"type":"text","text":"Output:\n[{\"attachment\":{\"asset\":\"sha256:\#(String(repeating: "ab", count: 32))\",\"mimeType\":\"image/png\",\"name\":\"shot.png\",\"size\":70},\"type\":\"image\"}]"}],"isError":false}"#,
+          #"{"role":"toolResult","toolCallId":"p2","content":[{"type":"text","text":"Read image file [image/png]"},\#(image)],"isError":false}"#,
           message("assistant", "The relay keeps each Session's log in order, from https://axo.leostera.dev/s/fuVgs7XzUJNX7wpVhCTqWg/riot-zcaml-toolchain-and-a-very-long-path-without-spaces"),
         ]
       }

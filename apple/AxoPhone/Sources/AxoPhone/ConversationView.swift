@@ -30,6 +30,7 @@ struct ConversationView: View {
   @State private var actions = ConversationRowActions()
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(SidewaysScrolling.self) private var sidewaysScrolling
+  @Environment(\.assetLoader) private var assetLoader
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
   private var keyboardIsUp: Bool { bottomInset > 100 }
 
@@ -80,7 +81,7 @@ struct ConversationView: View {
         content: .init(
           feed: feed, chat: chat, phone: phone, workbench: workbench, session: session?.sessionId, canSend: canSend,
           actions: actions, pull: pull, loadOlder: loadOlder, refresh: refresh),
-        scroll: scroll, sidewaysScrolling: sidewaysScrolling, tint: accentColor.color
+        scroll: scroll, sidewaysScrolling: sidewaysScrolling, tint: accentColor.color, assetLoader: assetLoader
       )
       .ignoresSafeArea()
       // Following what is new; watched apart, so the reply growing does not redraw the list.

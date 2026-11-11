@@ -38,6 +38,7 @@ struct ConversationList: UIViewRepresentable {
   /// What the rows read from SwiftUI's environment, which cells hosted by UIKit do not inherit.
   let sidewaysScrolling: SidewaysScrolling
   let tint: Color
+  let assetLoader: AssetLoader?
 
   func makeCoordinator() -> Coordinator { Coordinator(scroll: scroll) }
 
@@ -54,7 +55,7 @@ struct ConversationList: UIViewRepresentable {
 
   private func update(_ view: ConversationCollectionView, context: Context) {
     let coordinator = context.coordinator
-    coordinator.environment = .init(sidewaysScrolling: sidewaysScrolling, tint: tint)
+    coordinator.environment = .init(sidewaysScrolling: sidewaysScrolling, tint: tint, assetLoader: assetLoader)
     coordinator.show(content)
   }
 
@@ -75,6 +76,7 @@ struct ConversationList: UIViewRepresentable {
   struct Environment {
     var sidewaysScrolling: SidewaysScrolling
     var tint: Color
+    var assetLoader: AssetLoader?
   }
 
   @MainActor
@@ -152,6 +154,7 @@ struct ConversationList: UIViewRepresentable {
       LeadingColumn { row }
         .environment(environment?.sidewaysScrolling ?? SidewaysScrolling())
         .tint(environment?.tint)
+        .environment(\.assetLoader, environment?.assetLoader)
     }
 
     /// The chat on screen, or what the list shows of it, changed.

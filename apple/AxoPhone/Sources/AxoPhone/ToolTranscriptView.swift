@@ -48,6 +48,11 @@ struct ToolTranscriptView: View {
           .accessibilityIdentifier("toolGroupTitle")
       }
       row
+      // For a screenshot or a read image, the picture is what it came back with: shown folded too.
+      if !tool.images.isEmpty {
+        ToolImagesView(images: tool.images)
+          .padding(.leading, 40).padding(.trailing, 14).padding(.bottom, 10)
+      }
       if open {
         openedContent
       } else if isRunning {

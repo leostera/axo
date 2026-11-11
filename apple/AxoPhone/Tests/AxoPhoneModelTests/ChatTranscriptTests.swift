@@ -66,6 +66,20 @@ final class ChatTranscriptTests: XCTestCase {
     XCTAssertEqual(transcript.messages.first?.text, "look\n[Image attachment]\nat this")
   }
 
+  func testAToolsPicturesAreItsResultsOwnAndTheImageAssetsItsOutputNames() throws {
+    let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    let hex = String(repeating: "ab", count: 32)
+    let output = #"[{"attachment":{"asset":"sha256:\#(hex)","mimeType":"image/png","name":"a.png"},"type":"image"},{"asset":"sha256:\#(hex)","mimeType":"image/png"},{"asset":"sha256:\#(String(repeating: "cd", count: 32))","mimeType":"application/pdf"}]"#
+    let encoded = String(data: try JSONEncoder().encode(output), encoding: .utf8)!
+    let transcript = transcript(
+      record(1, #"{"role":"assistant","content":[{"type":"toolCall","id":"r","name":"read","arguments":{"path":"/tmp/a.png"}},{"type":"toolCall","id":"c","name":"codemode","arguments":{"code":"1"}}]}"#),
+      record(2, #"{"role":"toolResult","toolCallId":"r","content":[{"type":"text","text":"Read image file"},{"type":"image","data":"\#(pixel)","mimeType":"image/png"}]}"#),
+      record(3, #"{"role":"toolResult","toolCallId":"c","content":[{"type":"text","text":\#(encoded)}]}"#))
+    let tools = transcript.messages.compactMap(\.tool)
+    XCTAssertEqual(tools.first?.images, [ChatImage(id: 0, source: .data(Data(base64Encoded: pixel)!), mimeType: "image/png")])
+    XCTAssertEqual(tools.last?.images, [ChatImage(id: 0, source: .asset(hex), mimeType: "image/png")], "each image asset once; not a PDF")
+  }
+
   func testSystemMessagesAndBareToolResultsAreNotShown() {
     let transcript = transcript(message(1, role: "toolResult", content: #""output""#), message(2, role: "system", content: #""setup""#))
     XCTAssertTrue(transcript.messages.isEmpty)
@@ -236,7 +250,7 @@ final class ChatTranscriptTests: XCTestCase {
     let png = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
     transcript.append([message(1, role: "user", content: #"[{"type":"text","text":"look"},{"type":"image","data":"\#(png)","mimeType":"image/png"}]"#)])
     XCTAssertEqual(transcript.messages.first?.text, "look")
-    XCTAssertEqual(transcript.messages.first?.images.map(\.data), [Data([0x89, 0x50, 0x4E, 0x47])])
+    XCTAssertEqual(transcript.messages.first?.images.map(\.source), [.data(Data([0x89, 0x50, 0x4E, 0x47]))])
     XCTAssertEqual(transcript.messages.first?.images.first?.mimeType, "image/png")
     transcript.append([message(2, role: "user", content: #"[{"type":"image","data":"cut…"}]"#)])
     XCTAssertEqual(transcript.messages.last?.text, "[Image attachment]", "a picture cut to cross the wire is named")

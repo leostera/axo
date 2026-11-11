@@ -183,6 +183,23 @@ final class AppsClientTests: XCTestCase {
     try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
   }
 
+  func testADownloadAsksForTheAssetByItsHashSignedIn() async throws {
+    let hex = String(repeating: "ab", count: 32)
+    let loader = StubLoader(status: 200, body: "picture")
+    let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
+    let data = try await assets.download(hex: hex)
+    XCTAssertEqual(data, Data("picture".utf8))
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.httpMethod, "GET")
+    XCTAssertEqual(request.url?.absoluteString, "https://axo.leostera.dev/api/v1/account/assets/\(hex)")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(SessionToken.fixture().value)")
+    do {
+      _ = try await assets.download(hex: "../../etc")
+      XCTFail("only an asset's name is asked for")
+    } catch {}
+    XCTAssertEqual(loader.requests.count, 1)
+  }
+
   func testAnUploadIsNamedByItsHashAndCarriesItsTypeAndASafeName() async throws {
     let loader = StubLoader(status: 201, body: #"{"asset":"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824","name":"a_b.png","mimeType":"image/png","size":5,"createdAt":"2026-11-04T00:00:00.000Z","version":1}"#)
     let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)

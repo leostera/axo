@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import type { ToolActivity, ToolInput } from "./transcript.ts";
+import type { ChatImage, ToolActivity, ToolInput } from "./transcript.ts";
 import type { ToolGroupPlace } from "./tool-groups.ts";
 import { toolPreview } from "./tool-groups.ts";
 import { highlight } from "./highlight.ts";
@@ -66,6 +66,7 @@ export function ToolCard({ tool, working, enter, group }: {
         </span>
         <Icon name={open ? "chevronDown" : "chevronRight"} size={12} />
       </button>
+      {tool.images?.length ? <ToolImages tool={tool} /> : null}
       {open ? (
         <div className="tool-body">
           {input ? <ToolInputView input={input} subtitle={tool.subtitle} /> : null}
@@ -84,6 +85,40 @@ export function ToolCard({ tool, working, enter, group }: {
       ) : null}
       {viewing ? <OutputViewer tool={tool} running={running} onClose={() => setViewing(false)} /> : null}
     </div>
+  );
+}
+
+/**
+ * The pictures a tool came back with, shown whether or not its row is open: for a screenshot or a
+ * read image, the picture is what it came back with. Each opens as big as the window.
+ */
+function ToolImages({ tool }: { tool: ToolActivity }) {
+  const [viewing, setViewing] = useState<ChatImage | null>(null);
+  return (
+    <div className="tool-images">
+      {tool.images!.map((image, index) => (
+        <button key={image.src.length > 200 ? index : image.src} className="tool-image" onClick={() => setViewing(image)}
+          aria-label={`Open picture ${index + 1} from ${tool.name}`}>
+          <img src={image.src} alt="" loading="lazy" />
+        </button>
+      ))}
+      {viewing ? <ImageViewer image={viewing} title={`Picture from ${tool.name}`} onClose={() => setViewing(null)} /> : null}
+    </div>
+  );
+}
+
+function ImageViewer({ image, title, onClose }: { image: ChatImage; title: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return createPortal(
+    <div className="sheet-backdrop image-viewer" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
+      <img src={image.src} alt="" onClick={event => event.stopPropagation()} />
+      <button className="circle-button image-viewer-close" onClick={onClose} aria-label={`Close ${title}`}><Icon name="close" size={16} /></button>
+    </div>,
+    document.body,
   );
 }
 

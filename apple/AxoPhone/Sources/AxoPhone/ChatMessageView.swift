@@ -573,7 +573,7 @@ struct ChatImagesView: View {
       HStack(spacing: 8) {
         ForEach(images) { image in
           Button { opened = image } label: {
-            DecodedImage(data: image.data, maxSide: side, fill: true)
+            DecodedImage(source: image.source, maxSide: side, fill: true)
               .frame(width: side, height: side)
               .clipShape(RoundedRectangle(cornerRadius: 18))
           }
@@ -590,19 +590,63 @@ struct ChatImagesView: View {
     .defaultScrollAnchor(alignment == .trailing ? .trailing : .leading)
     .frame(maxWidth: .infinity, alignment: alignment == .trailing ? .trailing : .leading)
     .fullScreenCover(item: $opened) { opened in
-      FullScreenImage(data: opened.data)
+      FullScreenImage(source: opened.source)
     }
   }
 }
 
+/// Pictures a tool came back with, whole rather than cropped (a screenshot is tall), in a row of
+/// their own; a tap opens one full screen.
+struct ToolImagesView: View {
+  let images: [ChatImage]
+  @State private var opened: ChatImage?
+
+  var body: some View {
+    ScrollView(.horizontal) {
+      HStack(spacing: 8) {
+        ForEach(images) { image in
+          Button { opened = image } label: {
+            DecodedImage(source: image.source, maxSide: 240)
+              .frame(maxWidth: 240, maxHeight: 180, alignment: .leading)
+              .clipShape(RoundedRectangle(cornerRadius: 8))
+              .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Picture \(image.id + 1)")
+          .accessibilityHint("Opens it full screen")
+          .accessibilityIdentifier("toolImage")
+        }
+      }
+    }
+    .scrollIndicators(.hidden)
+    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    .scrollsSideways()
+    .fullScreenCover(item: $opened) { opened in
+      FullScreenImage(source: opened.source)
+    }
+  }
+}
+
+/// Downloads an asset's bytes, for a picture kept in the account's assets (RFD0030): given by the
+/// workbench, through the environment.
+struct AssetLoader: Sendable {
+  let load: @Sendable (_ hex: String) async throws -> Data
+}
+
+extension EnvironmentValues {
+  @Entry var assetLoader: AssetLoader?
+}
+
 /// A picture decoded at the size it is shown, away from the main actor: a photo in a message is
-/// megapixels of data, and decoding it whole as its row scrolls into view drops frames.
+/// megapixels of data, and decoding it whole as its row scrolls into view drops frames. One kept
+/// in the account's assets is downloaded first, once.
 private struct DecodedImage: View {
-  let data: Data
+  let source: ChatImage.Source
   /// The longest side it is shown at, in points.
   let maxSide: CGFloat
   var fill = false
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.assetLoader) private var assets
   @State private var image: UIImage?
 
   var body: some View {
@@ -614,8 +658,27 @@ private struct DecodedImage: View {
       }
     }
     .task(id: maxSide) {
+      let data: Data?
+      switch source {
+      case .data(let bytes): data = bytes
+      case .asset(let hex): data = await AssetBytes.bytes(hex, from: assets)
+      }
+      guard let data else { return }
       image = await ImageDecoding.image(data, maxPixels: Int(maxSide * displayScale))
     }
+  }
+}
+
+/// Assets' bytes, downloaded once and kept while memory allows: a picture shows in a row and full
+/// screen, and its row comes and goes as it scrolls.
+private enum AssetBytes {
+  nonisolated(unsafe) private static let cache = NSCache<NSString, NSData>()
+
+  static func bytes(_ hex: String, from assets: AssetLoader?) async -> Data? {
+    if let hit = cache.object(forKey: hex as NSString) { return hit as Data }
+    guard let assets, let data = try? await assets.load(hex) else { return nil }
+    cache.setObject(data as NSData, forKey: hex as NSString, cost: data.count)
+    return data
   }
 }
 
@@ -645,9 +708,10 @@ private enum ImageDecoding {
 
 /// One picture, full screen, pinch to zoom.
 private struct FullScreenImage: View {
-  let data: Data
+  let source: ChatImage.Source
   @State private var image: UIImage?
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.assetLoader) private var assets
   @State private var scale: CGFloat = 1
   @GestureState private var pinch: CGFloat = 1
 
@@ -655,7 +719,7 @@ private struct FullScreenImage: View {
     ZStack(alignment: .topLeading) {
       Color.black.ignoresSafeArea()
       // Large enough to stay sharp when zoomed in, without decoding a huge photo whole.
-      DecodedImage(data: data, maxSide: 1600)
+      DecodedImage(source: source, maxSide: 1600)
         .scaleEffect(scale * pinch)
         .gesture(
           MagnifyGesture()
@@ -688,7 +752,15 @@ private struct FullScreenImage: View {
     .environment(\.colorScheme, .dark)
     .statusBarHidden()
     // The original bytes, for sharing; decoded once, away from the main actor.
-    .task { image = await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value }
+    .task {
+      let data: Data?
+      switch source {
+      case .data(let bytes): data = bytes
+      case .asset(let hex): data = await AssetBytes.bytes(hex, from: assets)
+      }
+      guard let data else { return }
+      image = await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value
+    }
   }
 }
 

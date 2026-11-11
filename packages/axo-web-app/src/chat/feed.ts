@@ -282,7 +282,9 @@ function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
     && (a.tool === b.tool || (a.tool !== null && b.tool !== null && a.tool.callId === b.tool.callId
       && a.tool.status === b.tool.status && a.tool.output === b.tool.output && a.tool.outputTruncated === b.tool.outputTruncated
       && a.tool.command === b.tool.command && a.tool.subtitle === b.tool.subtitle && a.tool.name === b.tool.name
-      && a.tool.input?.kind === b.tool.input?.kind && a.tool.input?.text === b.tool.input?.text));
+      && a.tool.input?.kind === b.tool.input?.kind && a.tool.input?.text === b.tool.input?.text
+      && (a.tool.images?.length ?? 0) === (b.tool.images?.length ?? 0)
+      && (a.tool.images ?? []).every((image, index) => image.src === b.tool!.images?.[index]?.src)));
 }
 
 type Shown = { message: ChatMessage; live: boolean; enter: boolean; reveal: RowReveal | null };

@@ -77,6 +77,8 @@ struct WorkbenchView: View {
   @State private var showingAllEarlier = false
   /// Voice prompting, one dictation at a time for the whole app (nil before iOS 26).
   @State private var voice = Dictation.makeVoicePrompt()
+  /// Downloads the pictures tools came back with that are kept in the account's assets.
+  private let assetLoader: AssetLoader
 
   init(environment: AppEnvironment) {
     self.environment = environment
@@ -85,6 +87,7 @@ struct WorkbenchView: View {
     let client = AccountClient(endpoint: endpoint, tokens: account.tokens)
     #if DEBUG && targetEnvironment(simulator)
       if PreviewFixture.requested {
+        assetLoader = AssetLoader { _ in PreviewFixture.picture }
         pairingIssuer = PreviewPairing()
         _apps = State(initialValue: AppsModel(service: PreviewApps()))
         let feed = AccountConnection(transport: PreviewTransport(), clientID: .random())
@@ -103,6 +106,7 @@ struct WorkbenchView: View {
     let feed = AccountConnection(endpoint: endpoint, clientID: .installed(), tokens: account.tokens)
     // Photos and files go to the account's assets before the message that carries them (RFD0030).
     let assets = AssetsClient(endpoint: endpoint, tokens: account.tokens)
+    assetLoader = AssetLoader { hex in try await assets.download(hex: hex) }
     _workbench = State(initialValue: PhoneWorkbench(
       hosts: HostsModel(profile: client), feed: feed, account: account,
       uploadAsset: { data, name, mimeType in try await assets.upload(data, name: name, mimeType: mimeType) },
@@ -143,6 +147,7 @@ struct WorkbenchView: View {
       ]
     )
     .background(ChatColors.background.ignoresSafeArea())
+    .environment(\.assetLoader, assetLoader)
     .onChange(of: layer) { _, layer in
       // The keyboard belongs to the conversation's box; it goes when the conversation does.
       if layer != .conversation {

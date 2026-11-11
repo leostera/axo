@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { chromePath, hostId, listed, record, sid, sleep, startApp, startCloud } from "./fake-cloud.mjs";
+import { chromePath, hostId, listed, PIXEL, record, sid, sleep, startApp, startCloud } from "./fake-cloud.mjs";
 
 const chat = sid(1);
 const script = "const files = await tools.bash({ command: \"ls\" });\nconst text = files.output;\nreturn text.split(\"\\n\").length;\n// and more";
@@ -30,6 +30,7 @@ function transcript() {
     },
     { role: "toolResult", toolCallId: "t-read", toolName: "read", content: [{ type: "text", text: "export function login() {}" }] },
     { role: "toolResult", toolCallId: "t-code", toolName: "codemode", content: [{ type: "text", text: "12" }] },
+
     {
       role: "assistant", timestamp: 1_700_000_000_002, content: [
         { type: "toolCall", id: "t-edit", name: "edit", arguments: { path: "src/login.ts", edits: [{ oldText: "export function login() {}", newText: "export function login(user) {\n  return user;\n}" }] } },
@@ -123,6 +124,27 @@ test("tools are rows in a block: a running one shows what it runs, and any opens
     await running.getByLabel("Completed").waitFor();
     await running.getByLabel("Output").getByText("# pass 1", { exact: false }).waitFor();
     await shot("done");
+
+    // A tool's pictures show without opening it: a read image, and a screenshot the output names
+    // as an asset.
+    cloud.write(chat, {
+      role: "assistant", timestamp: 1_700_000_000_003, content: [
+        { type: "text", text: "A look at the page." },
+        { type: "toolCall", id: "t-shot", name: "codemode", arguments: { code: "return await tools.screenshot();" } },
+        { type: "toolCall", id: "t-png", name: "read", arguments: { path: "/tmp/page.png" } },
+      ],
+    });
+    cloud.write(chat, { role: "toolResult", toolCallId: "t-shot", toolName: "codemode", content: [{ type: "text", text: `Output:\n[{"attachment":{"asset":"sha256:${"ab".repeat(32)}","mimeType":"image/png","name":"shot.png","size":70},"type":"image"}]` }] });
+    cloud.write(chat, { role: "toolResult", toolCallId: "t-png", toolName: "read", content: [{ type: "text", text: "Read image file [image/png]" }, { type: "image", data: PIXEL, mimeType: "image/png" }] });
+    const pictures = page.locator(".tool-image img");
+    await pictures.nth(1).waitFor();
+    assert.equal(await pictures.count(), 2);
+    await page.waitForFunction(() => [...document.querySelectorAll(".tool-image img")].every((img) => img.complete && img.naturalWidth > 0));
+    await shot("pictures");
+    await page.getByRole("button", { name: "Open picture 1 from read" }).click();
+    await page.getByRole("dialog", { name: "Picture from read" }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "Picture from read" }).waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
   } finally {
     await app?.close();

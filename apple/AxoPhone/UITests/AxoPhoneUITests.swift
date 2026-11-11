@@ -435,6 +435,31 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testAToolsPicturesShowUnderItsRowAndOpenFullScreen() {
+    // "Explain the relay" ends with a screenshot kept in the account's assets, and a picture read.
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "3"])
+    let pictures = app.buttons.matching(identifier: "toolImage")
+    XCTAssertTrue(pictures.firstMatch.waitForExistence(timeout: 5))
+    XCTAssertEqual(pictures.count, 2, "the screenshot named as an asset, and the picture read")
+    // The screenshot is downloaded and shown whole: taller than it is wide, as it was taken.
+    let shot = pictures.element(boundBy: 0)
+    for _ in 0..<20 where shot.frame.height <= shot.frame.width * 1.2 {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    XCTAssertGreaterThan(shot.frame.height, shot.frame.width * 1.2, "\(shot.frame)")
+    let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "codemode")).firstMatch
+    XCTAssertEqual(row.value as? String, "Folded", "shown without opening its row")
+    XCTAssertGreaterThan(shot.frame.minY, row.frame.maxY - 1, "under its row")
+    capture(app, named: "tool-pictures-light")
+    shot.tapWhereItIs()
+    let close = app.buttons["Close image"]
+    XCTAssertTrue(close.waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["Share image"].waitForExistence(timeout: 5), "the downloaded bytes can be shared")
+    close.tap()
+    XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+  }
+
+  @MainActor
   func testSettingsOpenFromTheMenu() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

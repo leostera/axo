@@ -309,6 +309,12 @@ button:disabled { cursor: default; }
 }
 .tool-output { color: var(--secondary); }
 .tool-actions { display: flex; align-items: center; gap: 12px; }
+.tool-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 12px 38px; }
+.tool-image { padding: 0; border: 0.5px solid var(--separator); border-radius: 8px; overflow: hidden; background: none; cursor: zoom-in; }
+.tool-image img { display: block; max-width: min(100%, 360px); max-height: 240px; object-fit: contain; }
+.image-viewer { padding: 32px; cursor: zoom-out; }
+.image-viewer img { max-width: 100%; max-height: 100%; border-radius: 8px; object-fit: contain; box-shadow: 0 24px 80px var(--shadow); cursor: default; }
+.image-viewer-close { position: absolute; top: 16px; right: 16px; }
 .tool-action { padding: 0; border: 0; color: var(--blue); background: none; font-size: 12px; cursor: pointer; }
 .tool-note { margin: 0; color: var(--secondary); font-size: 11px; }
 .sheet.output-sheet { display: flex; width: min(960px, 100%); height: calc(100% - 40px); flex-direction: column; }
@@ -672,6 +678,7 @@ button.grouped-row:hover { background: var(--fill); }
   .tool-preview, .tool-input-preview, .tool-last-line { font-size: 10.5px; }
   .tool-group-title { padding: 8px 11px 0; font-size: 11px; }
   .tool-glance { padding: 0 11px 8px 32px; }
+  .tool-images { padding: 0 11px 10px 32px; }
   .tool-body { padding: 0 11px 10px; }
   .tool-input, .tool-output { font-size: 10.5px; }
   .tool-action, .tool-note { font-size: 10.5px; }

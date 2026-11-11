@@ -16,6 +16,8 @@ const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev")
 export const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 export const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+/** A one-pixel PNG, base64. */
+export const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 /** Pi's line at `cursor`: a message entry. */
 export function record(cursor, message) {
@@ -48,6 +50,11 @@ export async function startCloud(transcripts, sessions) {
   const http = createHttpServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.url?.startsWith("/api/v1/account/apps")) return response.end(JSON.stringify({ apps: [] }));
+    // Every asset is the same one-pixel picture.
+    if (request.url?.startsWith("/api/v1/account/assets/")) {
+      response.setHeader("Content-Type", "image/png");
+      return response.end(Buffer.from(PIXEL, "base64"));
+    }
     response.statusCode = 404;
     response.end(JSON.stringify({ error: "not here" }));
   });

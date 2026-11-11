@@ -48,7 +48,8 @@ public struct Attachment: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-/// Uploads files to the account's assets over HTTPS, with the phone's session token.
+/// Uploads files to the account's assets, and downloads them, over HTTPS with the phone's session
+/// token.
 public struct AssetsClient: Sendable {
   private let endpoint: RelayEndpoint
   private let tokens: any SessionTokenProvider
@@ -62,6 +63,34 @@ public struct AssetsClient: Sendable {
     self.endpoint = endpoint
     self.tokens = tokens
     self.loader = loader
+  }
+
+  /// The bytes of the asset whose SHA-256 is `hex` (64 hex digits): a picture a tool came back
+  /// with, kept in the account's assets.
+  public func download(hex: String) async throws -> Data {
+    guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
+      throw AxoClientError.invalidResponse("not an asset's name")
+    }
+    var request = URLRequest(url: endpoint.assetURL(hex: hex))
+    request.httpMethod = "GET"
+    request = try await RelayCredentials.authorize(request, with: tokens)
+    let (body, response): (Data, HTTPURLResponse)
+    do {
+      (body, response) = try await loader.load(request)
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch let error as URLError where error.code == .cancelled {
+      throw CancellationError()
+    } catch let error as AxoClientError {
+      throw error
+    } catch {
+      throw RelayError.unreachable(error.localizedDescription)
+    }
+    switch response.statusCode {
+    case 200..<300: return body
+    case 401: throw RelayError.signInRequired
+    default: throw AppsRefusal(status: response.statusCode, message: "Download failed (\(response.statusCode))")
+    }
   }
 
   /// Uploads `data` as `name`; what a prompt names it by. The account answers at once if it

@@ -24,6 +24,11 @@ export interface ToolActivity {
   readonly outputTruncated: boolean;
   /** What it was given, to show: none for a shared Session's tools, which do not carry it. */
   readonly input?: ToolInput | null;
+  /**
+   * The pictures it came back with: those in its result (a read of an image), and image assets its
+   * output names (a computer tool's screenshot, which codemode prints as an attachment).
+   */
+  readonly images?: readonly ChatImage[];
 }
 
 /**
@@ -81,6 +86,7 @@ interface ToolResult {
   status: ToolStatus;
   output: string;
   truncated: boolean;
+  images: ChatImage[];
 }
 
 export function toolKind(name: string): ToolKind {
@@ -355,10 +361,12 @@ export class ChatTranscript {
   private recordResult(message: Record<string, unknown>): void {
     const callId = message.toolCallId;
     if (typeof callId !== "string") return;
+    const output = visibleText(message.content);
     const result: ToolResult = {
       status: message.isError === true ? "failed" : "completed",
-      output: visibleText(message.content),
+      output,
       truncated: message.truncated === true,
+      images: [...imagesIn(message.content), ...assetImagesIn(output)],
     };
     this.results.set(callId, result);
     this.toolOutput.delete(callId);
@@ -380,7 +388,28 @@ function isUserOrSystem(entry: Entry): boolean {
 }
 
 function filled(tool: ToolActivity, result: ToolResult): ToolActivity {
-  return { ...tool, status: result.status, output: result.output, outputTruncated: result.truncated };
+  return { ...tool, status: result.status, output: result.output, outputTruncated: result.truncated, images: result.images };
+}
+
+/** An image asset, named as an attachment is: `{"asset":"sha256:<hex>","mimeType":"image/…"}`. */
+const ASSET_OBJECT = /\{[^{}]*"asset"\s*:\s*"sha256:([0-9a-f]{64})"[^{}]*\}/g;
+
+/**
+ * The image assets a tool's output names: a computer tool's screenshot comes back as an
+ * attachment kept in the account's assets (RFD0030), which codemode prints as JSON. Each once,
+ * in the order named.
+ */
+export function assetImagesIn(output: string): ChatImage[] {
+  const seen = new Set<string>();
+  const images: ChatImage[] = [];
+  for (const match of output.matchAll(ASSET_OBJECT)) {
+    const hex = match[1]!;
+    const type = /"mimeType"\s*:\s*"([^"]+)"/.exec(match[0])?.[1];
+    if (!type || !imageTypes.has(type) || seen.has(hex)) continue;
+    seen.add(hex);
+    images.push({ src: `/api/v1/account/assets/${hex}` });
+  }
+  return images;
 }
 
 interface Piece {
