@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
+import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
 import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
@@ -622,7 +623,7 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
   if (!host) return null;
   const face = (
     <>
-      <Icon name="laptop" size={15} />
+      <Icon name={hostIcon(host)} size={15} />
       <span className="host-picker-label">{host.label}</span>
       <span className={`mac-dot ${host.status}`} aria-hidden="true" />
     </>
@@ -643,7 +644,7 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
             <button key={candidate.hostId} type="button" role="menuitemradio" aria-checked={candidate.hostId === host.hostId}
               className="host-menu-item" disabled={candidate.status !== "online"}
               onClick={() => { workbench.chooseHost(candidate.hostId); setOpen(false); }}>
-              <Icon name={candidate.hostId === host.hostId ? "check" : "laptop"} size={15} />
+              <Icon name={candidate.hostId === host.hostId ? "check" : hostIcon(candidate)} size={15} />
               <span className="host-picker-label">{candidate.label}</span>
               <small>{candidate.status === "online" ? "Online" : "Offline"}</small>
             </button>

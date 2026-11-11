@@ -162,6 +162,7 @@ button:disabled { cursor: default; }
 .mac-row.selected .mac-copy strong { font-weight: 600; }
 /* The pencil shows on hover or focus, so the list stays quiet; touch screens always show it. */
 .mac-row-wrap { position: relative; }
+.mac-icon { display: flex; flex: none; }
 .mac-rename { position: absolute; top: 50%; right: 30px; transform: translateY(-50%); opacity: 0; color: var(--secondary); }
 .mac-row-wrap:hover .mac-rename, .mac-rename:focus-visible { opacity: 1; }
 @media (hover: none) { .mac-rename { opacity: 1; } }

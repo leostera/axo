@@ -967,8 +967,10 @@ private struct HostRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: "laptopcomputer")
+      Image(systemName: host.symbol)
         .font(.system(size: 17))
+        .accessibilityLabel(host.model?.name ?? "Mac")
+        .accessibilityIdentifier("host-symbol-\(host.symbol)")
         .foregroundStyle(host.status == .online ? Color.primary : Color.secondary)
         .frame(width: 26)
       VStack(alignment: .leading, spacing: 1) {

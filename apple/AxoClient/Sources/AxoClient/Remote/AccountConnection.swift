@@ -342,11 +342,7 @@ private actor Router {
     case "axo.client.host.label":
       guard let host, let label = try? notification.params(as: LabelNotice.self).label else { return }
       accountHosts = accountHosts.map { listed in
-        listed.hostId == host
-          ? ClientHost(
-            hostId: listed.hostId, hostGeneration: listed.hostGeneration, label: label, hostKind: listed.hostKind,
-            online: listed.online, lastSeenAt: listed.lastSeenAt)
-          : listed
+        listed.hostId == host ? listed.named(label) : listed
       }
       sink.yield(.hosts(hostList()))
     case "axo.client.sessions":
@@ -453,9 +449,7 @@ private actor Router {
   private func hostList() -> [ClientHost] {
     accountHosts.map { host in
       guard let link = links[host.hostId] else { return host }
-      return ClientHost(
-        hostId: host.hostId, hostGeneration: link.hostGeneration ?? host.hostGeneration, label: host.label,
-        hostKind: host.hostKind, online: link.online, lastSeenAt: host.lastSeenAt)
+      return host.present(online: link.online, generation: link.hostGeneration)
     }
   }
 

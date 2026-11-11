@@ -104,6 +104,8 @@ public struct RemoteHost: Equatable, Sendable {
   public let hostGeneration: UUID
   public let label: String
   public let hostKind: String
+  /// What kind of Mac it is, once it has said.
+  public let model: HostModel?
   public let status: RemoteHostStatus
   public let stale: Bool
   public let lastSeenAt: String
@@ -112,13 +114,14 @@ public struct RemoteHost: Equatable, Sendable {
   public var reference: RemoteHostRef { RemoteHostRef(hostId: hostId, hostGeneration: hostGeneration) }
 
   public init(
-    hostId: UUID, hostGeneration: UUID, label: String, hostKind: String = "macos", status: RemoteHostStatus,
-    stale: Bool = false, lastSeenAt: String = "", sessions: [RemoteSession]
+    hostId: UUID, hostGeneration: UUID, label: String, hostKind: String = "macos", model: HostModel? = nil,
+    status: RemoteHostStatus, stale: Bool = false, lastSeenAt: String = "", sessions: [RemoteSession]
   ) {
     self.hostId = hostId
     self.hostGeneration = hostGeneration
     self.label = label
     self.hostKind = hostKind
+    self.model = model
     self.status = status
     self.stale = stale
     self.lastSeenAt = lastSeenAt
@@ -129,7 +132,7 @@ public struct RemoteHost: Equatable, Sendable {
   public init(_ listed: ClientHost, sessions: [RemoteSession]) {
     self.init(
       hostId: listed.hostId, hostGeneration: listed.hostGeneration, label: listed.label, hostKind: listed.hostKind,
-      status: listed.online ? .online : .offline, stale: !listed.online, lastSeenAt: listed.lastSeenAt,
+      model: listed.model, status: listed.online ? .online : .offline, stale: !listed.online, lastSeenAt: listed.lastSeenAt,
       sessions: sessions)
   }
 }
@@ -219,19 +222,40 @@ public struct WorkspaceState: Decodable, Equatable, Sendable {
 /// One of the account's hosts, as its client follows it.
 public struct ClientHost: Decodable, Equatable, Sendable {
   public let hostId: UUID
-  public let hostGeneration: UUID
-  public let label: String
+  public private(set) var hostGeneration: UUID
+  public private(set) var label: String
   public let hostKind: String
-  public let online: Bool
+  /// What kind of Mac it is, once it has said; a Mac too old to say has none.
+  public let model: HostModel?
+  public private(set) var online: Bool
   public let lastSeenAt: String
 
-  public init(hostId: UUID, hostGeneration: UUID, label: String, hostKind: String = "macos", online: Bool, lastSeenAt: String = "") {
+  public init(
+    hostId: UUID, hostGeneration: UUID, label: String, hostKind: String = "macos", model: HostModel? = nil,
+    online: Bool, lastSeenAt: String = ""
+  ) {
     self.hostId = hostId
     self.hostGeneration = hostGeneration
     self.label = label
     self.hostKind = hostKind
+    self.model = model
     self.online = online
     self.lastSeenAt = lastSeenAt
+  }
+
+  /// The same host, shown by another name.
+  public func named(_ label: String) -> ClientHost {
+    var host = self
+    host.label = label
+    return host
+  }
+
+  /// The same host, as its HostDO says it is now.
+  public func present(online: Bool, generation: UUID?) -> ClientHost {
+    var host = self
+    host.online = online
+    host.hostGeneration = generation ?? hostGeneration
+    return host
   }
 
   public var reference: RemoteHostRef { RemoteHostRef(hostId: hostId, hostGeneration: hostGeneration) }

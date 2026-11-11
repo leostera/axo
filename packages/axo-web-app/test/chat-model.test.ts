@@ -5,6 +5,7 @@ import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@a
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { attachmentsIn, ChatTranscript, toolInput, type ToolActivity } from "../src/chat/transcript.ts";
 import { toolGroupTitle } from "../src/chat/tool-groups.ts";
+import { hostFamily, hostIcon } from "../src/chat/host-model.ts";
 import { ConversationFeed } from "../src/chat/feed.ts";
 import { conversationRows, levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
@@ -1358,4 +1359,33 @@ test("a tool's pictures: its result's own, and the image assets its output names
   const [read, code] = transcript.messages.map(message => message.tool!);
   assert.deepEqual(read!.images, [{ src: `data:image/png;base64,${pixel}` }]);
   assert.deepEqual(code!.images, [{ src: `/api/v1/account/assets/${hex}` }], "each image asset once; not a PDF");
+});
+
+test("a Mac is shown by the shape its model's name says, or else its identifier; as on the phone", () => {
+  assert.equal(hostFamily({ identifier: "Mac16,8", name: "MacBook Pro (14-inch, Nov 2024)" }), "laptop");
+  assert.equal(hostFamily({ identifier: "Mac13,2", name: "Mac Studio" }), "studio");
+  assert.equal(hostFamily({ identifier: "Mac16,10", name: "Mac mini (2024)" }), "mini");
+  assert.equal(hostFamily({ identifier: "Mac16,2", name: "iMac (24-inch, 2024)" }), "desktop");
+  assert.equal(hostFamily({ identifier: "Mac14,8", name: "Mac Pro (2023)" }), "tower");
+  // An Intel Mac has no name in its device tree; its identifier says it.
+  assert.equal(hostFamily({ identifier: "MacBookPro16,1" }), "laptop");
+  assert.equal(hostFamily({ identifier: "Macmini8,1" }), "mini");
+  assert.equal(hostFamily({ identifier: "iMac20,1" }), "desktop");
+  assert.equal(hostFamily({ identifier: "MacPro7,1" }), "tower");
+  // An Apple silicon identifier alone, or no model at all, says nothing: a laptop, as before.
+  assert.equal(hostFamily({ identifier: "Mac13,2" }), null);
+  assert.equal(hostFamily(undefined), null);
+  assert.equal(hostIcon({ model: { identifier: "Mac13,2", name: "Mac Studio" } }), "macStudio");
+  assert.equal(hostIcon({}), "laptop");
+});
+
+test("the workbench keeps the model each Mac said it is", async () => {
+  const studio = { identifier: "Mac13,2", name: "Mac Studio" };
+  const account = new FakeAccount();
+  account.hello = { ...account.hello, hosts: [{ ...account.hello.hosts[0]!, model: studio }] };
+  const { workbench } = await workbenchWith(account);
+  assert.deepEqual(workbench.hosts[0]?.model, studio);
+  // A Mac that has not said is listed without one.
+  const { workbench: older } = await workbenchWith();
+  assert.equal(older.hosts[0]?.model, undefined);
 });

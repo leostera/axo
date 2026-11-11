@@ -5,6 +5,7 @@ import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
 import { AppsSettings, signInNotice, signInPage } from "./apps.tsx";
 import { ChatList, ChatListSettings, MarkAllRead } from "./chat-list.tsx";
+import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
 import { Alert } from "./alert.tsx";
 import { runtimeLabel } from "./pi-controls.ts";
@@ -341,7 +342,7 @@ function MacRow({ host, selected, onOpen, onRename }: {
   if (editing) {
     return (
       <form className="mac-row editing" onSubmit={event => { event.preventDefault(); void save(); }}>
-        <Icon name="laptop" size={22} />
+        <Icon name={hostIcon(host)} size={22} />
         <input className="mac-name-input" value={name} maxLength={64} autoFocus disabled={saving}
           aria-label={`Name for ${host.label}`} placeholder="Empty goes back to the Mac's own name"
           onChange={event => setName(event.target.value)}
@@ -354,7 +355,7 @@ function MacRow({ host, selected, onOpen, onRename }: {
     <div className="mac-row-wrap">
       <button className={selected ? "mac-row selected" : "mac-row"} aria-current={selected ? "true" : undefined} onClick={onOpen}
         disabled={host.status !== "online"} title={host.status === "online" ? "Start a new chat on this Mac" : undefined}>
-        <Icon name="laptop" size={22} />
+        <span className="mac-icon" data-icon={hostIcon(host)} title={host.model?.name}><Icon name={hostIcon(host)} size={22} /></span>
         <span className="mac-copy">
           <strong>{host.label}</strong>
           <small>{hostSummary(host)}</small>

@@ -153,6 +153,17 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testEachMacIsShownAsTheKindOfMacItIs() {
+    let app = launch(["AXO_PHONE_PREVIEW_HOSTS": "1"])
+    XCTAssertTrue(accountShowing(app))
+    // The Studio says it is a Mac Studio; the old iMac only gives an Intel identifier, which says it.
+    XCTAssertTrue(app.images["host-symbol-macstudio"].waitForExistence(timeout: 5), app.debugDescription)
+    XCTAssertTrue(app.images["host-symbol-desktopcomputer"].exists)
+    XCTAssertFalse(app.images["host-symbol-laptopcomputer"].exists)
+    capture(app, named: "hosts-kinds-light")
+  }
+
+  @MainActor
   func testAMacIsRenamedFromTheAccountPanel() {
     let app = launch(["AXO_PHONE_PREVIEW_HOSTS": "1"])
     XCTAssertTrue(accountShowing(app))

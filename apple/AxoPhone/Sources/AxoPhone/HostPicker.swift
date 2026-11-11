@@ -19,7 +19,7 @@ struct HostPicker: View {
               } label: {
                 Label(
                   "\(candidate.label)\(candidate.status == .online ? "" : ", offline")",
-                  systemImage: candidate.hostId == host.hostId ? "checkmark" : "laptopcomputer")
+                  systemImage: candidate.hostId == host.hostId ? "checkmark" : candidate.symbol)
               }
               .disabled(candidate.status != .online)
             }
@@ -48,7 +48,7 @@ struct HostPicker: View {
 
   private func chip(_ host: RemoteHost, choosing: Bool) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: "laptopcomputer").font(.system(size: 13, weight: .medium))
+      Image(systemName: host.symbol).font(.system(size: 13, weight: .medium))
       Text(host.label).font(.footnote).lineLimit(1)
       Circle()
         .fill(host.status == .online ? Color.green : Color.secondary.opacity(0.5))
@@ -65,5 +65,18 @@ struct HostPicker: View {
     .contentShape(Capsule())
     // As wide as the Mac's name.
     .fixedSize()
+  }
+}
+
+extension RemoteHost {
+  /// The symbol it is shown by: the shape of Mac it is, or a laptop when it has not said.
+  var symbol: String {
+    switch model?.family {
+    case .laptop, nil: "laptopcomputer"
+    case .studio: "macstudio"
+    case .mini: "macmini"
+    case .desktop: "desktopcomputer"
+    case .tower: "macpro.gen3"
+    }
   }
 }

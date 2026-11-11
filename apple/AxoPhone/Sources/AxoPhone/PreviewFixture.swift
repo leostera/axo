@@ -87,8 +87,8 @@ enum PreviewFixture {
     static var listing: String {
       """
         {"hosts":[
-        {"hostId":"\(studio.uuidString.lowercased())","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"},
-        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","online":false,"lastSeenAt":"2026-10-15T00:00:00Z"}],
+        {"hostId":"\(studio.uuidString.lowercased())","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","model":{"identifier":"Mac13,2","name":"Mac Studio"},"online":true,"lastSeenAt":"2026-10-16T00:00:00Z"},
+        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","model":{"identifier":"iMac20,1"},"online":false,"lastSeenAt":"2026-10-15T00:00:00Z"}],
         "sessions":[\(sessions().map(\.json).joined(separator: ","))]}
         """
     }

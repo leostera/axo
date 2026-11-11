@@ -70,10 +70,7 @@ public final class HostsModel {
   /// A host was named: shown by its new name at once, before the account's notice arrives.
   func renamed(_ hostID: UUID, to label: String) {
     listed = listed.map { host in
-      guard host.hostId == hostID else { return host }
-      return ClientHost(
-        hostId: host.hostId, hostGeneration: host.hostGeneration, label: label, hostKind: host.hostKind,
-        online: host.online, lastSeenAt: host.lastSeenAt)
+      host.hostId == hostID ? host.named(label) : host
     }
     rebuild()
   }

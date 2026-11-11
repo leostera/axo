@@ -18,7 +18,7 @@ const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/C
 
 const clientHost = { hostId, hostGeneration, label: "Browser fixture Mac", hostKind: "macos", online: true, lastSeenAt: now };
 /** A second Mac of the account's, with no chats yet. */
-const studioHost = { hostId: "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7", hostGeneration: "a9c5761c-3b2d-42a8-bb19-9a8c0b8cf231", label: "Mac Studio", hostKind: "macos", online: true, lastSeenAt: now };
+const studioHost = { hostId: "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7", hostGeneration: "a9c5761c-3b2d-42a8-bb19-9a8c0b8cf231", label: "Mac Studio", hostKind: "macos", model: { identifier: "Mac13,2", name: "Mac Studio" }, online: true, lastSeenAt: now };
 
 /** A chat as the ClientDO lists it. */
 function listed({ sessionId, status = "ready", head = 0, ...metadata }) {
@@ -905,6 +905,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     const account = page.getByRole("navigation", { name: "Account" });
     await expect(account.getByText("Browser fixture Mac"));
     await expect(account.getByText("4 chats"));
+    // Each Mac is shown as the kind of Mac it says it is; one that has not said, as a laptop.
+    assert.equal(await account.locator(".mac-row-wrap", { hasText: "Mac Studio" }).locator(".mac-icon").getAttribute("data-icon"), "macStudio");
+    assert.equal(await account.locator(".mac-row-wrap", { hasText: "Browser fixture Mac" }).locator(".mac-icon").getAttribute("data-icon"), "laptop");
     await shot("account");
 
     // A Mac is named by its person: the pencil, a name, Enter.

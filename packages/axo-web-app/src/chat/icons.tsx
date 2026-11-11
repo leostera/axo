@@ -3,7 +3,8 @@ export type IconName =
   | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "laptop" | "copy" | "check"
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
   | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud" | "paperclip"
-  | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown" | "restart";
+  | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown" | "restart"
+  | "macStudio" | "macMini" | "desktop" | "tower";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -14,6 +15,14 @@ const paths: Record<IconName, string> = {
   arrowUp: "M12 19V5m-6 6 6-6 6 6",
   arrowDown: "M12 5v14m6-6-6 6-6-6",
   laptop: "M5 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v9H5V6Zm-3 11h20l-1 2H3l-1-2Z",
+  // A deep, square box with ports along the front's bottom.
+  macStudio: "M5 7h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Zm2 8h3m6 0h1",
+  // A flat square box with a light at its front.
+  macMini: "M4 10h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Zm13 3h1",
+  // A screen on a stand.
+  desktop: "M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm8 12v4m-4 0h8",
+  // A tall case with holes in its front.
+  tower: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm2.5 4h0m3 0h0m-3 3h0m3 0h0m-3 3h0m3 0h0",
   copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1Zm-4 6H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
   check: "m5 12 5 5L20 7",
   close: "M6 6l12 12M18 6 6 18",

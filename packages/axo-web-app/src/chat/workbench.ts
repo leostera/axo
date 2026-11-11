@@ -14,7 +14,7 @@ import type {
 } from "@axo/app";
 import { sealInput, type DeviceProof } from "@axo/app";
 import { browserDevice, type AnswerDevice } from "./device.ts";
-import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
+import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 import { ChatTranscript, type Delivery, type TranscriptRecord } from "./transcript.ts";
 
@@ -50,6 +50,8 @@ export interface Host {
   readonly hostId: string;
   readonly hostGeneration: string;
   readonly label: string;
+  /** What kind of Mac it is, once it has said. */
+  readonly model?: HostModel;
   readonly status: "online" | "offline";
   readonly lastSeenAt: string;
   readonly sessions: Session[];
@@ -673,6 +675,7 @@ export class ChatWorkbench {
       hostId: host.hostId,
       hostGeneration: host.hostGeneration,
       label: host.label,
+      ...(host.model ? { model: host.model } : {}),
       status: host.online ? "online" : "offline",
       lastSeenAt: host.lastSeenAt,
       sessions: [...(this.sessions.get(host.hostId)?.values() ?? [])].sort(bySessionOrder),
