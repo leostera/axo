@@ -142,3 +142,30 @@ test("a pairing code's key is the one Baileys derives, and the bundle derives it
   assert.match(swapped, /^export \{ derivePairingCodeKey \} from ".*pairing-key\.ts";/);
   assert.doesNotMatch(swapped, /export async function derivePairingCodeKey/);
 });
+
+test("the device's keys are written in the order Baileys set them, however long each takes to seal", async () => {
+  const { WhatsAppDevice } = await import("../src/apps/whatsapp/device");
+  const sql = sqlStorage();
+  const device = new WhatsAppDevice({
+    sql,
+    // The older value takes longer to seal, as a larger set does.
+    async seal(plain) {
+      if (plain.includes("older")) await new Promise((resolve) => setTimeout(resolve, 20));
+      return `sealed:${plain}`;
+    },
+    async unseal(sealed) {
+      return sealed.startsWith("sealed:") ? sealed.slice("sealed:".length) : null;
+    },
+    transaction(work) {
+      work();
+    },
+    setAlarm() {},
+    deleteAlarm() {},
+  });
+  const keys = (device as unknown as { keyStore(): import("baileys").SignalKeyStore }).keyStore();
+  const older = keys.set({ session: { "peer.0": { record: "older" } as never } });
+  const newer = keys.set({ session: { "peer.0": { record: "newer" } as never } });
+  await Promise.all([older, newer]);
+  const found = await keys.get("session", ["peer.0"]);
+  assert.deepEqual(found["peer.0"], { record: "newer" }, "the later set wins");
+});

@@ -339,7 +339,9 @@ export class WhatsAppDevice {
     const creds = this.creds;
     if (!creds) return;
     const plain = JSON.stringify(creds, BufferJSON.replacer);
-    this.writes = this.writes.then(async () => this.store.writeAuth("creds", "", await this.deps.seal(plain))).catch(() => undefined);
+    this.writes = this.writes.then(async () => this.store.writeAuth("creds", "", await this.deps.seal(plain))).catch((error) => {
+      console.warn("whatsapp: the credentials were not saved", error instanceof Error ? error.message : String(error));
+    });
   }
 
   private keyStore(): SignalKeyStore {
@@ -357,16 +359,23 @@ export class WhatsAppDevice {
         }
         return found;
       },
+      // Each set takes its place among the writes as it is called, with its values as they are
+      // then, and is sealed in that place: sealed first, a later set that seals faster would be
+      // written first, and the older keys would overwrite it (a session that no longer decrypts).
       set: async (data: SignalDataSet) => {
-        const sealed: Array<[string, string, string | null]> = [];
+        const plain: Array<[string, string, string | null]> = [];
         for (const type in data) {
           for (const [id, value] of Object.entries(data[type as keyof SignalDataSet] ?? {})) {
-            sealed.push([type, id, value ? await this.deps.seal(JSON.stringify(value, BufferJSON.replacer)) : null]);
+            plain.push([type, id, value ? JSON.stringify(value, BufferJSON.replacer) : null]);
           }
         }
-        const write = this.writes.then(() => this.deps.transaction(() => {
-          for (const [type, id, value] of sealed) this.store.writeAuth(type, id, value);
-        }));
+        const write = this.writes.then(async () => {
+          const sealed: Array<[string, string, string | null]> = [];
+          for (const [type, id, value] of plain) sealed.push([type, id, value === null ? null : await this.deps.seal(value)]);
+          this.deps.transaction(() => {
+            for (const [type, id, value] of sealed) this.store.writeAuth(type, id, value);
+          });
+        });
         this.writes = write.catch(() => undefined);
         await write;
       },
