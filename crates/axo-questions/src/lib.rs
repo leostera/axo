@@ -76,24 +76,26 @@ struct Pending {
     answer: oneshot::Sender<Settled>,
 }
 
-/// The elicitations waiting for an answer, by id.
+/// The elicitations waiting for an answer, by id. Each change is one insert or remove, so the
+/// map is never half-written: a panic elsewhere while it was locked leaves it usable, and
+/// questions keep being asked, answered and withdrawn.
 #[derive(Default)]
 struct Elicitations {
     pending: Mutex<HashMap<String, Pending>>,
 }
 
 impl Elicitations {
-    fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, HashMap<String, Pending>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
         self.pending
             .lock()
-            .map_err(|_| io::Error::other("elicitation lock was poisoned"))
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Opens one, and what its asker waits on; `None` when too many wait already.
-    fn open(&self, elicitation: Elicitation) -> io::Result<Option<oneshot::Receiver<Settled>>> {
-        let mut pending = self.lock()?;
+    fn open(&self, elicitation: Elicitation) -> Option<oneshot::Receiver<Settled>> {
+        let mut pending = self.lock();
         if pending.len() >= MAX_PENDING {
-            return Ok(None);
+            return None;
         }
         let (answer, settled) = oneshot::channel();
         pending.insert(
@@ -103,11 +105,11 @@ impl Elicitations {
                 answer,
             },
         );
-        Ok(Some(settled))
+        Some(settled)
     }
 
     /// Ends one with `action` if it still waits; whoever gets it first wins.
-    fn settle(&self, id: &str, action: ElicitationAction) -> io::Result<Option<Elicitation>> {
+    fn settle(&self, id: &str, action: ElicitationAction) -> Option<Elicitation> {
         self.settle_with(
             id,
             Settled {
@@ -117,25 +119,20 @@ impl Elicitations {
         )
     }
 
-    fn settle_with(&self, id: &str, settled: Settled) -> io::Result<Option<Elicitation>> {
-        let Some(pending) = self.lock()?.remove(id) else {
-            return Ok(None);
-        };
+    fn settle_with(&self, id: &str, settled: Settled) -> Option<Elicitation> {
+        let pending = self.lock().remove(id)?;
         let _ = pending.answer.send(settled);
-        Ok(Some(pending.elicitation))
+        Some(pending.elicitation)
     }
 
     fn get(&self, id: &str) -> Option<Elicitation> {
         self.lock()
-            .ok()?
             .get(id)
             .map(|pending| pending.elicitation.clone())
     }
 
     fn pending(&self) -> Vec<Elicitation> {
-        let Ok(pending) = self.lock() else {
-            return Vec::new();
-        };
+        let pending = self.lock();
         let mut listed: Vec<Elicitation> = pending
             .values()
             .map(|pending| pending.elicitation.clone())
@@ -243,7 +240,7 @@ impl Questions {
             log::info!("event=elicitation.withdrawn id={id} reason=asker_gone before=asked");
             return Ok(Answer::to(id, Settled::cancelled()));
         }
-        let Some(mut answer) = self.pending.open(elicitation.clone()).map_err(internal)? else {
+        let Some(mut answer) = self.pending.open(elicitation.clone()) else {
             return Err(RpcError {
                 code: ErrorCode::ServerError(TOO_MANY),
                 message: format!(
@@ -279,11 +276,7 @@ impl Questions {
             () = tokio::time::sleep(timeout) => "expired",
             () = cancellation.cancelled() => "asker_gone",
         };
-        let settled = match self
-            .pending
-            .settle(&id, ElicitationAction::Cancel)
-            .map_err(internal)?
-        {
+        let settled = match self.pending.settle(&id, ElicitationAction::Cancel) {
             Some(elicitation) => {
                 log::info!("event=elicitation.withdrawn id={id} reason={withdrawn}");
                 publish_resolved(host, &elicitation, ElicitationAction::Cancel);
@@ -321,13 +314,12 @@ impl Questions {
             // A Decline needs nothing, and what came with it is dropped unread.
             _ => None,
         };
-        match self.pending.settle_with(id, Settled { action, values }) {
-            Ok(Some(elicitation)) => {
-                publish_resolved(host, &elicitation, action);
-                Ok(())
-            }
-            _ => Err(not_pending()),
-        }
+        let elicitation = self
+            .pending
+            .settle_with(id, Settled { action, values })
+            .ok_or_else(not_pending)?;
+        publish_resolved(host, &elicitation, action);
+        Ok(())
     }
 
     /// The questions waiting, oldest first.
@@ -402,15 +394,8 @@ struct PendingQuestion<'a> {
 
 impl Drop for PendingQuestion<'_> {
     fn drop(&mut self) {
-        match self.pending.settle(&self.id, ElicitationAction::Cancel) {
-            Ok(Some(elicitation)) => {
-                publish_resolved(self.host, &elicitation, ElicitationAction::Cancel);
-            }
-            Ok(None) => {}
-            Err(error) => log::warn!(
-                "event=elicitation.withdraw_failed id={} reason={error}",
-                self.id
-            ),
+        if let Some(elicitation) = self.pending.settle(&self.id, ElicitationAction::Cancel) {
+            publish_resolved(self.host, &elicitation, ElicitationAction::Cancel);
         }
     }
 }
@@ -590,20 +575,38 @@ mod tests {
     }
 
     #[test]
+    fn a_panic_while_the_questions_were_locked_does_not_stop_them() {
+        let elicitations = std::sync::Arc::new(Elicitations::default());
+        let mut answer = elicitations.open(elicitation("a")).unwrap();
+        let poisoning = std::sync::Arc::clone(&elicitations);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoning.pending.lock().unwrap();
+            panic!("poisons the lock");
+        })
+        .join();
+        assert!(elicitations.pending.is_poisoned());
+        assert_eq!(elicitations.pending().len(), 1, "still listed");
+        assert!(
+            elicitations
+                .settle("a", ElicitationAction::Accept)
+                .is_some()
+        );
+        assert!(answer.try_recv().is_ok(), "and still answered");
+    }
+
+    #[test]
     fn the_first_answer_wins_and_later_ones_find_nothing() {
         let elicitations = Elicitations::default();
-        let mut answer = elicitations.open(elicitation("a")).unwrap().unwrap();
+        let mut answer = elicitations.open(elicitation("a")).unwrap();
         assert_eq!(elicitations.pending().len(), 1);
         assert!(
             elicitations
                 .settle("a", ElicitationAction::Decline)
-                .unwrap()
                 .is_some()
         );
         assert!(
             elicitations
                 .settle("a", ElicitationAction::Accept)
-                .unwrap()
                 .is_none()
         );
         let Ok(settled) = answer.try_recv() else {
@@ -866,18 +869,8 @@ mod tests {
         let elicitations = Elicitations::default();
         let mut waiting = Vec::new();
         for index in 0..MAX_PENDING {
-            waiting.push(
-                elicitations
-                    .open(elicitation(&index.to_string()))
-                    .unwrap()
-                    .unwrap(),
-            );
+            waiting.push(elicitations.open(elicitation(&index.to_string())).unwrap());
         }
-        assert!(
-            elicitations
-                .open(elicitation("one more"))
-                .unwrap()
-                .is_none()
-        );
+        assert!(elicitations.open(elicitation("one more")).is_none());
     }
 }
