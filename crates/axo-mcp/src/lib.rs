@@ -25,6 +25,7 @@ use serde_json::{Map, Value, json};
 /// axod's build number from config.json (RFD0021), which `axod mcp` is part of.
 const BUILD_NUMBER: &str = env!("AXO_BUILD_NUMBER");
 
+pub mod brief;
 mod calls;
 
 /// The MCP revision this server implements; newer clients negotiate down to it.

@@ -98,6 +98,30 @@ fn the_accounts_apps_are_not_connected_without_an_account() {
 }
 
 #[test]
+fn an_unlinked_sessions_brief_leaves_the_account_out() {
+    let axod = Axod::start();
+    let session = axod.new_session()["id"].clone();
+    let started = Instant::now();
+    let brief = axod.ok("axo.session.brief", json!({ "sessionId": session }))["brief"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "waited {:?}",
+        started.elapsed()
+    );
+    assert!(brief.starts_with("You run inside Axo"), "{brief}");
+    assert!(brief.contains("`session_prompt`"), "{brief}");
+    assert!(brief.contains("`elicitation_request`"), "{brief}");
+    assert!(!brief.contains("apps_run"), "{brief}");
+    assert!(!brief.contains("account, if this Mac is linked"), "{brief}");
+
+    let malformed = axod.err("axo.session.brief", json!({}));
+    assert_eq!(malformed.code, INVALID_PARAMS, "{malformed:?}");
+}
+
+#[test]
 fn other_macs_are_none_without_an_account() {
     let axod = Axod::start();
     let peers = axod.ok("axo.peer.sessions.list", json!({}));

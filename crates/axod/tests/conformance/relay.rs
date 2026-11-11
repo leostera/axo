@@ -534,6 +534,46 @@ fn a_sessions_apps_calls_go_to_the_account_and_its_answer_comes_back() {
 }
 
 #[test]
+fn a_linked_sessions_brief_names_the_accounts_macs_and_apps() {
+    let hub = FakeHub::start();
+    let (axod, _target) = linked(&hub, Pi::Fake);
+    let session = axod.new_session()["id"].clone();
+    hub.respond(
+        "axo.apps.list",
+        Answer::Result(json!({ "apps": [
+            { "kind": "host", "name": "studio", "hostId": "h1", "state": "online" },
+            { "kind": "app", "name": "apps.gmail", "title": "Gmail", "state": "ready", "tools": [],
+              "accounts": [{ "account": "a@x.test", "state": "ready" }] }
+        ] })),
+    );
+    let brief = axod.ok("axo.session.brief", json!({ "sessionId": session }))["brief"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(brief.contains("`apps_run`"), "{brief}");
+    assert!(brief.contains("Macs (`host`): \"studio\"."), "{brief}");
+    assert!(brief.contains("`apps.gmail` (a@x.test)"), "{brief}");
+    // Asked as this Session's agent.
+    let forwarded = hub.wait_for_request("axo.apps.list");
+    assert_eq!(forwarded["params"]["sessionId"], session, "{forwarded}");
+
+    // An account that does not answer holds the brief up a few seconds, not the whole turn.
+    hub.hold("axo.apps.list");
+    let started = Instant::now();
+    let brief = axod.ok("axo.session.brief", json!({ "sessionId": session }))["brief"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "waited {:?}",
+        started.elapsed()
+    );
+    assert!(brief.contains("it does not answer now"), "{brief}");
+    assert!(!brief.contains("studio"), "{brief}");
+}
+
+#[test]
 fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves() {
     let hub = FakeHub::start();
     let (axod, _target) = linked(&hub, Pi::Fake);

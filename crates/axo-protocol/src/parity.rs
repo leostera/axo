@@ -221,6 +221,10 @@ pub const PARITY: &[Parity] = &[
         method::COMPUTER_REDACTIONS,
         Remote::LocalOnly("axod hides filled values from remote reads itself"),
     ),
+    row(
+        method::SESSION_BRIEF,
+        Remote::LocalOnly("the system prompt of an agent running on this Mac"),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

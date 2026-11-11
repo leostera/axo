@@ -13,6 +13,7 @@ use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
 mod attachments;
+mod brief;
 mod catalog;
 mod core;
 mod devices;
@@ -456,6 +457,10 @@ fn rpc_handler(
     relay: Option<RelayContext>,
 ) -> IoHandler {
     let apps = axo_apps::Apps::new(relay.as_ref().map(|relay| Arc::clone(&relay.channel)));
+    let brief = brief::Brief::new(relay.as_ref().map(|relay| brief::AccountRoute {
+        links: Arc::clone(&relay.host) as Arc<dyn axo_relay::HostLinkStore>,
+        channel: Arc::clone(&relay.channel),
+    }));
     let assets = axo_assets::Assets::new(Arc::clone(&core.assets));
     let questions = axo_questions::QuestionsExtension::new(
         Arc::clone(&core.questions),
@@ -476,6 +481,7 @@ fn rpc_handler(
         &handlers::Sessions(Arc::clone(&core)),
         &remote::Remote::new(core),
         &apps,
+        &brief,
         &assets,
         &questions,
         &computer,

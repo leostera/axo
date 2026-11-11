@@ -120,6 +120,8 @@ pub mod method {
     pub const COMPUTER_INPUT: &str = "axo.computer.input";
     /// Salted hashes of values the person filled in, which `axod mcp` hides from its reads.
     pub const COMPUTER_REDACTIONS: &str = "axo.computer.redactions";
+    /// What a Session's agent can do through Axo, for pi-axo to put in its system prompt.
+    pub const SESSION_BRIEF: &str = "axo.session.brief";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -165,6 +167,7 @@ pub mod method {
         ASSETS_FETCH,
         COMPUTER_INPUT,
         COMPUTER_REDACTIONS,
+        SESSION_BRIEF,
     ];
 }
 
@@ -646,6 +649,20 @@ pub struct SessionList {
 pub struct ConfigValue {
     pub key: ConfigKey,
     pub value: String,
+}
+
+/// `axo.session.brief`'s request: the Session whose agent it is for.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionBriefRequest {
+    pub session_id: SessionId,
+}
+
+/// `axo.session.brief`'s answer: plain text, one line per thing the agent can use.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBrief {
+    pub brief: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
