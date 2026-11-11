@@ -2,6 +2,21 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.50 (Mac app build 321, axod 73)
+
+### Added
+
+- An agent knows what it can do through Axo from its first turn. Its system prompt lists its Sessions and terminals, asking you a question, computer use with `request_input` for logins and codes, and your account's Macs, apps and signed-in accounts by name, so it no longer has to explore Axo's tools before using them.
+
+### Fixed
+
+- A lock left poisoned by a panic no longer stops questions, the relay status, remote panes, computer use's gate and redactions, or reading Sessions' git state.
+- The Mac sends at most 400 messages a second to the cloud, under the rate at which the cloud closes the connection, and a connection that dropped right after registering comes back within a second.
+- A transcript is not deleted when its Session starts reopening while the transcript is being evicted.
+- A transcript upload refuses a reply that compares the wrong number of chains.
+- After a remote shell exits, Axo kills only its process group, never a process that has since taken its pid.
+- A question with a very long timeout no longer expires at once.
+
 ## 0.49 (Mac app build 320, axod 72)
 
 ### Changed
