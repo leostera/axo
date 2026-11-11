@@ -343,21 +343,28 @@ async fn sync_catalog(core: &Core) -> io::Result<Vec<axo_relay::SyncSession>> {
 /// Deletes an archived Session's transcript the cloud acknowledged whole at `acknowledged`, while
 /// the file was `length` bytes. Kept, deleting nothing, if the Session reopened, is reopening,
 /// changed, or is not at that cursor any more.
+///
+/// Whether it is open or reopening is asked on the store's thread, right before the delete. A
+/// reopen marks itself reopening before it asks the store whether to fetch the transcript back,
+/// so either this runs first (and the reopen fetches it back) or it sees the reopen and keeps it.
+/// Asked any earlier, a reopen could look between the two, find the file, and lose it.
 pub(crate) async fn evict_transcript(
-    core: &Core,
+    core: &Arc<Core>,
     session_id: SessionId,
     acknowledged: SyncCursor,
     length: u64,
 ) -> io::Result<Eviction> {
-    if core.registry.contains(session_id) || lock(&core.reopening).contains(&session_id) {
-        return Ok(Eviction::Kept);
-    }
     let position = acknowledged.position;
+    let opened = Arc::clone(core);
     // The store's thread does the file work too: it is a few syscalls, kept in step with the
     // record that says the cloud has it.
     let eviction = core
         .store
         .call(move |database| {
+            if opened.registry.contains(session_id) || lock(&opened.reopening).contains(&session_id)
+            {
+                return Ok(Eviction::Kept);
+            }
             let of = axo_store::TranscriptOf::Session(session_id);
             let Some(transcript) = axo_store::load_transcript(database, of)? else {
                 return Ok(Eviction::Kept);

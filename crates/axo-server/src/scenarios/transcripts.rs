@@ -104,6 +104,43 @@ async fn a_transcript_is_deleted_only_as_the_cloud_acknowledged_it_and_recorded_
     assert!(in_cloud(&fixture, id).await);
 }
 
+/// An eviction that passed its checks before a reopen began, but reaches the store after the
+/// reopen looked for the transcript (still here, so not fetched), must not delete it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reopen_that_begins_while_an_eviction_waits_for_the_store_keeps_the_transcript() {
+    let fixture = Fixture::new().await;
+    let core = Arc::clone(&fixture.core);
+    let (id, file, chain) = archived(&fixture).await;
+    let length = fs::metadata(&file).unwrap().len();
+
+    // Holds the store's thread, so the eviction waits in its queue.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let holding = {
+        let core = Arc::clone(&core);
+        tokio::spawn(async move {
+            core.store
+                .call(move |_| {
+                    let _ = held.recv();
+                    Ok(())
+                })
+                .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let evicting = {
+        let core = Arc::clone(&core);
+        tokio::spawn(async move { evict(&core, id, 2, &chain, length).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // The reopen begins now, as `Reopening::begin` does.
+    crate::core::lock(&core.reopening).insert(id);
+    release.send(()).unwrap();
+    holding.await.unwrap().unwrap();
+
+    assert!(!evicting.await.unwrap(), "kept for the reopen");
+    assert!(file.exists() && !in_cloud(&fixture, id).await);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_open_session_keeps_its_transcript() {
     let fixture = Fixture::new().await;
