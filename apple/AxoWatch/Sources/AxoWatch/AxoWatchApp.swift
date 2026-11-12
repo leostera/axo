@@ -2,9 +2,22 @@ import AxoClient
 import AxoCompanion
 import AxoWatchModel
 import SwiftUI
+import WidgetKit
 
 @main
 struct AxoWatchApp: App {
+  init() {
+    // Refresh installed artwork once per build, not on every wrist raise. The complication
+    // remains a static launcher and never spends its update budget on an animation loop.
+    let defaults = UserDefaults.standard
+    let key = "axo.watch.complication-build"
+    if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+      defaults.string(forKey: key) != build {
+      WidgetCenter.shared.reloadAllTimelines()
+      defaults.set(build, forKey: key)
+    }
+  }
+
   var body: some Scene { WindowGroup { WatchHome() } }
 }
 

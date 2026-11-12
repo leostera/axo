@@ -16,6 +16,7 @@ private struct MascotTimeline: TimelineProvider {
 
 private struct MascotComplicationView: View {
   @Environment(\.widgetFamily) private var family
+  @Environment(\.widgetRenderingMode) private var renderingMode
 
   var body: some View {
     Group {
@@ -24,12 +25,21 @@ private struct MascotComplicationView: View {
     }
     .containerBackground(for: .widget) { Color.clear }
     .accessibilityLabel("Open Axo")
+    .privacySensitive(false)
+    .unredacted() // Public artwork stays visible in placeholders/Always On; no account data.
   }
 
   private var mark: some View {
-    // Outlines, rather than the filled face: template tinting must preserve the eyes and mouth.
-    Image("AxoMark").resizable().renderingMode(.template).scaledToFit()
-      .padding(3).foregroundStyle(.primary).widgetAccentable()
+    // The real face in full color; outlines in tinted modes so the eyes/mouth do not vanish
+    // into a single filled silhouette. Complications are snapshots, not live Rive animations.
+    Group {
+      if renderingMode == .fullColor {
+        Image("AxoFace").resizable().renderingMode(.original).scaledToFit()
+      } else {
+        Image("AxoMark").resizable().renderingMode(.template).scaledToFit().widgetAccentable()
+      }
+    }
+    .padding(3).foregroundStyle(.primary)
   }
 }
 

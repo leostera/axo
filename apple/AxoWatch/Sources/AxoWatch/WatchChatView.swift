@@ -16,15 +16,20 @@ struct WatchChatView: View {
   @State private var localFailure: String?
   @State private var lastConnectedAt: Date?
   @State private var conversationHeight: CGFloat = 0
-  @State private var footerHeight: CGFloat = 0
+  @State private var footerHeight: CGFloat = 58
+  @State private var readingID: String?
+  @State private var hasScrolled = false
+  @State private var nearHistoryTop = false
+  @State private var historyPaging = WatchHistoryPaging()
+  @State private var olderTask: Task<Void, Never>?
 
   private var capturing: Bool { voice?.isBusy == true }
   private var title: String { model.selectedSession?.displayName ?? model.rememberedSessionName ?? "Axo" }
 
   var body: some View {
-    // Controls keep one 44pt row in every voice phase, with a quiet Session label below.
-    // Neither replaces the conversation; the same ScrollView keeps Crown focus and position.
-    VStack(spacing: 0) {
+    // A bounded glass overlay, not an opaque panel. Content can pass beneath it while
+    // scrolling; bottom content margins keep the newest message clear of the controls.
+    ZStack(alignment: .bottom) {
       conversation
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
@@ -79,7 +84,16 @@ struct WatchChatView: View {
     .onChange(of: voice?.transcript) { _, transcript in
       if let transcript { deliver(transcript) }
     }
-    .onChange(of: model.target) { cancelVoice() }
+    .onChange(of: model.target) {
+      cancelVoice()
+      olderTask?.cancel()
+      historyPaging.reset()
+      readingID = nil
+      hasScrolled = false
+      nearHistoryTop = false
+    }
+    .onChange(of: model.chat?.history) { requestOlderHistory() }
+    .onDisappear { olderTask?.cancel() }
     .onChange(of: model.selectedSession?.sessionId) { _, selected in
       if selected == nil, capturing { cancelVoice(); localFailure = "This session is unavailable. Nothing was sent." }
     }
@@ -88,7 +102,10 @@ struct WatchChatView: View {
       if state == .signedOut { cancelVoice(); model.stop() }
     }
     .onAppear { reportConnection() }
-    .onChange(of: model.workbench.link) { reportConnection() }
+    .onChange(of: model.workbench.link) {
+      reportConnection()
+      if model.workbench.link == .connected { requestOlderHistory() }
+    }
   }
 
   private var conversation: some View {
@@ -101,12 +118,13 @@ struct WatchChatView: View {
             Text("Mac offline · read-only").font(.caption2).foregroundStyle(.secondary)
           }
           if let chat = model.chat {
+            historyHeader(chat)
             if chat.transcript == nil {
               if case .loading = chat.history { ProgressView() }
               if case .failed(let message) = chat.history { Text(message).font(.caption).foregroundStyle(.orange) }
             }
             ForEach(chat.feed.items.filter { WatchConversationContent($0.row) != nil }) { item in
-              WatchChatRow(item: item)
+              WatchChatRow(item: item).id(item.id)
             }
             if chat.feed.working { ProgressView().accessibilityLabel("Agent working") }
             if chat.feed.question != nil {
@@ -133,10 +151,52 @@ struct WatchChatView: View {
           Text(message).font(.caption).foregroundStyle(.orange)
         }
       }
+      .scrollTargetLayout()
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 4).padding(.vertical, 6)
     }
-    .defaultScrollAnchor(.bottom)
+    .contentMargins(.bottom, footerHeight + 4, for: .scrollContent)
+    .defaultScrollAnchor(.bottom, for: .initialOffset)
+    .scrollPosition(id: $readingID, anchor: .top)
+    .onScrollGeometryChange(for: Bool.self) { geometry in
+      geometry.contentOffset.y + geometry.contentInsets.top < 70
+    } action: { _, nearTop in
+      nearHistoryTop = nearTop
+      if nearTop { requestOlderHistory() }
+    }
+    .onScrollPhaseChange { _, phase in
+      if phase == .interacting {
+        historyPaging.interactionBegan()
+        hasScrolled = true
+        requestOlderHistory()
+      }
+    }
+  }
+
+  @ViewBuilder private func historyHeader(_ chat: Chat) -> some View {
+    switch chat.history {
+    case .loaded(_, true):
+      Button("Earlier messages") { requestOlderHistory(explicit: true) }
+        .font(.caption2).frame(maxWidth: .infinity)
+    case .loadingOlder:
+      ProgressView("Earlier messages…").font(.caption2).frame(maxWidth: .infinity)
+    default: EmptyView()
+    }
+  }
+
+  private func requestOlderHistory(explicit: Bool = false) {
+    guard olderTask == nil, model.workbench.link == .connected,
+      historyPaging.begin(history: model.chat?.history, hasScrolled: hasScrolled,
+        nearTop: nearHistoryTop, explicit: explicit) else { return }
+    // Pin the first visible message before prepending. Do not scroll to the newly added top
+    // or change the binding on completion: the person may keep reading while the page arrives.
+    if readingID == nil {
+      readingID = model.chat?.feed.items.first(where: { WatchConversationContent($0.row) != nil })?.id
+    }
+    olderTask = Task {
+      defer { olderTask = nil }
+      await model.loadOlderHistory()
+    }
   }
 
   @ViewBuilder private var composer: some View {
@@ -167,7 +227,7 @@ struct WatchChatView: View {
             .frame(height: 14).clipped()
         } else {
           Text(voice.state == .finishing ? "Transcribing…" : "Preparing…")
-            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
         }
       }
       .frame(maxWidth: .infinity)
@@ -175,7 +235,7 @@ struct WatchChatView: View {
         .disabled(!voice.isListening)
     }
     .frame(height: 44)
-    .background(.background)
+    .modifier(WatchVoiceGlass())
   }
 
   private func startVoice() {
@@ -218,6 +278,16 @@ struct WatchChatView: View {
   private func reportConnection() {
     if model.workbench.link == .connected { lastConnectedAt = Date() }
     WatchConnectionReport.write(link: model.workbench.link, lastConnectedAt: lastConnectedAt)
+  }
+}
+
+private struct WatchVoiceGlass: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(watchOS 26, *) {
+      content.glassEffect(.clear, in: Capsule())
+    } else {
+      content.background(.ultraThinMaterial, in: Capsule())
+    }
   }
 }
 
@@ -300,6 +370,7 @@ private struct WatchSessionPicker: View {
 
 private struct WatchChatRow: View {
   let item: ConversationFeed.Item
+  @ScaledMetric(relativeTo: .footnote) private var messageSize = 14.0
 
   var body: some View {
     switch WatchConversationContent(item.row) {
@@ -307,11 +378,11 @@ private struct WatchChatRow: View {
       if case .message(let shown) = item.row, !shown.message.blocks.isEmpty {
         WatchMarkdown(blocks: shown.message.blocks)
       } else {
-        Text(text).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
+        Text(text).font(.system(size: messageSize)).frame(maxWidth: .infinity, alignment: .leading)
       }
     case .user(let text, let status):
       VStack(alignment: .trailing, spacing: 4) {
-        Text(text).font(.footnote)
+        Text(text).font(.system(size: messageSize))
           .padding(.horizontal, 10).padding(.vertical, 8)
           .background(Color.blue.opacity(status == nil ? 0.24 : 0.14), in: RoundedRectangle(cornerRadius: 14))
           .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))

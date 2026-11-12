@@ -5,6 +5,8 @@ import SwiftUI
 /// Code wraps and tables become labeled rows, instead of requiring sideways Crown scrolling.
 struct WatchMarkdown: View {
   let blocks: [MarkdownBlock]
+  @ScaledMetric(relativeTo: .footnote) private var bodySize = 14.0
+  @ScaledMetric(relativeTo: .caption2) private var codeSize = 12.0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -12,7 +14,7 @@ struct WatchMarkdown: View {
         content(block)
       }
     }
-    .font(.footnote)
+    .font(.system(size: bodySize))
     .frame(maxWidth: .infinity, alignment: .leading)
     .environment(\.openURL, OpenURLAction { url in
       ["https", "http"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
@@ -25,7 +27,7 @@ struct WatchMarkdown: View {
       prose(text)
     case .heading(let level, let text):
       prose(text)
-        .font(level == 1 ? .headline : level == 2 ? .subheadline : .footnote)
+        .font(.system(size: bodySize * (level == 1 ? 1.2 : level == 2 ? 1.1 : 1)))
         .fontWeight(.semibold)
         .padding(.top, 3)
         .accessibilityAddTraits(.isHeader)
@@ -44,7 +46,7 @@ struct WatchMarkdown: View {
       VStack(alignment: .leading, spacing: 4) {
         if let language { Text(language).font(.caption2).foregroundStyle(.secondary) }
         Text(verbatim: text)
-          .font(.system(.caption2, design: .monospaced))
+          .font(.system(size: codeSize, design: .monospaced))
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }

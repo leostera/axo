@@ -8,7 +8,7 @@ The companion verifies the account with the existing `/api/auth/me` endpoint on 
 
 1. Sign in on the iPhone if needed, then open Axo on the Watch.
 2. Choose an existing agent Session from the account-wide **Active** and **Earlier** groups, using the shared iPhone/web rules. Machines are secondary row labels, never groups. The account-bound selection and title survive relaunches; the in-memory catalog and conversation survive foreground changes. The same Session can reopen after its Mac restarts, but an old recording cannot cross that host-generation boundary. A disappeared Session never silently reroutes.
-3. Tap the **microphone** and allow microphone access on the Watch. A fixed 44-point bottom row shows small Cancel/Send icons and a 10-point metered waveform—no system dictation sheet, keyboard, or live transcript. The conversation occupies the remaining height and stays scrollable with the Digital Crown throughout preparation, recording, and transcription; its Session title sits in a quiet, single-line label at the very bottom. Your messages—including pending and queued prompts—use right-aligned blue bubbles like iPhone, with agent replies on the left. Tools, reasoning, and empty messages are filtered before layout, rather than leaving blank rows. Recording is capped at 90 seconds.
+3. Tap the **microphone** and allow microphone access on the Watch. A fixed 44-point bottom row shows small Cancel/Send icons and a 10-point metered waveform—no system dictation sheet, keyboard, or live transcript. The conversation scrolls beneath a transparent glass overlay, with bottom content spacing to keep the newest line unobscured, and stays scrollable with the Digital Crown throughout preparation, recording, and transcription; its Session title sits in a quiet, single-line label at the very bottom. Your messages—including pending and queued prompts—use right-aligned blue bubbles like iPhone, with agent replies on the left. Tools, reasoning, and empty messages are filtered before layout, rather than leaving blank rows. Recording is capped at 90 seconds.
 4. Tap **↑ Send** to stop the microphone, transcribe on the paired iPhone, and send directly to that Session. There is no review sheet. **× Cancel** discards the attempt, including during transcription. An unsent message remains explicitly retryable without displaying a transcript preview.
 5. Read the streamed conversation. Tools and reasoning remain hidden. Scroll with the Digital Crown; there is no Latest/down-scroll button.
 
@@ -16,13 +16,29 @@ watchOS cannot use Apple's Speech framework. Audio is recorded locally as bounde
 
 Requests/results are bound to the account, exact sign-in fingerprint, request ID, and expiry. Cancellation fences late callbacks. Audio/file size, duration, reply size, cached replies, and outstanding work are bounded.
 
-Prompts use the shared command-ID/retry logic and follow-up delivery, so they do not interrupt an agent already working on the Mac. Uncertain delivery is shown instead of inviting a duplicate send. Offline hosts remain readable but cannot receive a prompt. Elicitation answers, voice playback, complications, and a routing agent are not implemented; questions currently direct you to the iPhone.
+Prompts use the shared command-ID/retry logic and follow-up delivery, so they do not interrupt an agent already working on the Mac. Uncertain delivery is shown instead of inviting a duplicate send. Offline hosts remain readable but cannot receive a prompt. Elicitation answers, voice playback, and a routing agent are not implemented; questions currently direct you to the iPhone.
 
 Agent replies use the same parsed Markdown blocks and inline styles as iPhone: headings,
 paragraphs, bullets/numbered lists, quotes, rules, code fences, and tables. Code wraps for the small
 screen; tables become labeled row cards rather than requiring sideways scrolling. Bold, italics,
 inline code, and web links retain their styles. Links do not fetch anything automatically, and
 only HTTP(S) URLs may open from the renderer.
+
+Build 50 uses 14-point base message text and 12-point code, both Dynamic Type scaled. On watchOS
+26 the voice controls use clear Liquid Glass (translucent material on older systems), with no solid
+rectangular backing. Scrolling towards the top now loads older pages through the same history API
+as iPhone. Stable message IDs retain the reading anchor. Loading requires a reader gesture, is
+single-flight, and scans at most three automatic pages per gesture when pages contain only hidden
+tools. A failed window is not retried in a loop; a fresh gesture or the Earlier messages button
+can retry it. No paging runs automatically just from opening a chat at its newest messages.
+
+Build 50’s signed bundle installed on both devices and was fresh-launched on the physical Watch.
+Its runtime report confirmed build `50`, marker `glass-footer-v4-history`, and the full-height
+conversation viewport. Shared iPhone history tests and the Watch paging-gate tests pass, including
+no initial eager load, duplicate/failure suppression, explicit/new-gesture retries, and bounded
+tool-only scans. Physical Crown paging, glass appearance, and complication colors still need the
+person’s visual check. The final phone relaunch was denied while it was locked; the Watch launch
+and runtime-version check succeeded.
 
 ## Brand and watch-face mascot
 
@@ -34,7 +50,13 @@ A lightweight WidgetKit extension provides the mascot for **circular** and **cor
 slots. On the Watch, edit a compatible face → Complications → select a small circular/corner slot
 → **Axo**. Tapping the mascot opens the app and its remembered session; it never starts recording.
 The complication is a static launcher, not a live status indicator: no polling, shared credentials,
-account details, or microphone access. WidgetKit controls its tint and Always On rendering.
+account details, or microphone access. Full-color faces show the actual filled mascot; tinted
+faces use its template outlines to preserve eyes/mouth. Public artwork is unredacted for Always
+On, and installing a new build requests a single timeline refresh (not one per wrist raise).
+
+**No continuous blinking/head animation:** Apple explicitly says complications show snapshots and
+do not support animation. Live mascot animation belongs inside the app, not a watch-face timeline
+loop. See [Apple’s complication design constraints](https://developer.apple.com/documentation/widgetkit/converting-a-clockkit-app#Design-the-complication-using-SwiftUI).
 
 ## Sign-in behavior
 

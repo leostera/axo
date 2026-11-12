@@ -178,6 +178,12 @@ public final class WatchChatModel {
     }
   }
 
+  public func loadOlderHistory() async {
+    guard account.state == .signedIn, let target, selectedSession != nil,
+      workbench.current?.reference == target.host, let current = workbench.current else { return }
+    await current.loadOlderHistory(of: target.session)
+  }
+
   public func suspend() { workbench.suspend() }
   public func stop() {
     draft = nil

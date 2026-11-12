@@ -21,7 +21,7 @@ by `packages/axo-mascot` (`npm run build`), not by the Rive editor.
 
 `watchos/Brand.xcassets` holds real Face, happy Face, and template Mark frames from that same Rive
 file. The Watch has no Rive runtime; its in-app mascot uses lightweight frames and the complication
-uses the monochrome outlines so watch-face tinting preserves the eyes and mouth. Regenerate with:
+uses the filled face in full-color mode and monochrome outlines when tinted, preserving the eyes and mouth. Regenerate with:
 
 ```sh
 bazel run //packages/axo-mascot:export_watch_assets -- "$PWD/assets/watchos/Brand.xcassets"
