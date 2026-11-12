@@ -24,17 +24,19 @@ keychain again.
 # may add the keys in _LOCAL_SCHEMA.
 _SCHEMA = {
     "version": "string",
-    "builds": {"mac": "int", "phone": "int", "axod": "int"},
+    "builds": {"mac": "int", "phone": "int", "watch": "int", "axod": "int"},
     "apple": {
         "team": "string",
         "macos_min": "string",
         "ios_min": "string",
+        "watchos_min": "string",
         "bundle_ids": {
             "mac": "string",
             "mac_ui_tests": "string",
             "mac_visual_tests": "string",
             "mac_mascot_tests": "string",
             "phone": "string",
+            "watch": "string",
         },
         "phone_profile": "string",
         "simulator": {"device": "string", "os": "string"},

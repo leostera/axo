@@ -1,0 +1,29 @@
+load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("@rules_apple//apple:watchos.bzl", "watchos_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@axo_config//:defs.bzl", "AXO")
+
+package(default_visibility = ["//visibility:public"])
+
+swift_library(
+    name = "AxoWatch",
+    srcs = glob(["Sources/AxoWatch/*.swift"]),
+    module_name = "AxoWatch",
+    copts = ["-swift-version", "5"],
+    target_compatible_with = ["@platforms//os:watchos"],
+)
+
+watchos_application(
+    name = "AxoWatchApp",
+    bundle_id = AXO["apple"]["bundle_ids"]["watch"],
+    infoplists = ["Info.plist"],
+    minimum_os_version = AXO["apple"]["watchos_min"],
+    version = ":build_version",
+    deps = [":AxoWatch"],
+)
+
+apple_bundle_version(
+    name = "build_version",
+    build_version = str(AXO["builds"]["watch"]),
+    short_version_string = AXO["version"],
+)

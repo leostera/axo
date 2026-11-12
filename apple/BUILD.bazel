@@ -1,5 +1,5 @@
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
-load("@axo_config//:defs.bzl", "MACHINE")
+load("@axo_config//:defs.bzl", "CAN", "MACHINE")
 load("//bazel/apple:defs.bzl", "xcodeproj_install")
 
 # apple/Package.swift lists every remote Swift package; MODULE.bazel resolves them from here.
@@ -13,11 +13,13 @@ exports_files([
 xcodeproj(
     name = "xcodeproj",
     project_name = "Axo",
+    # The Mac's native dependencies need host tools such as CMake and Ninja.
+    bazel_env = {"PATH": None},
     tags = ["manual"],
     top_level_targets = [
         "//apple/AxoMac:AxoApp",
         "//apple/AxoPhone:AxoPhoneApp",
-        "//apple/AxoPhone:AxoPhoneDevice",
+        "//apple/AxoWatch:AxoWatchApp",
         "//apple/AxoPhone:AxoPhoneModelTests",
         "//apple/AxoMac:AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
@@ -30,7 +32,7 @@ xcodeproj(
         "//apple/AxoMac:TerminalWorkbenchE2ETests",
         "//apple/AxoMac:AxoVisualUITests",
         "//apple/AxoMac:AxoAppSelfTestTests",
-    ],
+    ] + (["//apple/AxoPhone:AxoPhoneDevice"] if CAN.phone_device else []),
     visibility = ["//apple:__subpackages__"],
 )
 

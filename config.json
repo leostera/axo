@@ -3,18 +3,21 @@
   "builds": {
     "mac": 322,
     "phone": 39,
+    "watch": 1,
     "axod": 74
   },
   "apple": {
     "team": "RGH6S9S55G",
     "macos_min": "14.0",
     "ios_min": "18.0",
+    "watchos_min": "11.0",
     "bundle_ids": {
       "mac": "dev.leostera.axo",
       "mac_ui_tests": "dev.leostera.axo.ui-tests",
       "mac_visual_tests": "dev.leostera.axo.vt",
       "mac_mascot_tests": "dev.leostera.axo.mascot-tests",
-      "phone": "dev.leostera.axo.phone"
+      "phone": "dev.leostera.axo.phone",
+      "watch": "dev.leostera.axo.watch"
     },
     "phone_profile": "iOS Team Provisioning Profile: dev.leostera.axo.phone",
     "simulator": {

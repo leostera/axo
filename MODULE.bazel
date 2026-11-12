@@ -17,6 +17,10 @@ bazel_dep(name = "rules_swift_package_manager", version = "1.25.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "rules_xcodeproj", version = "4.1.0")
 
+# rules_swift scans only Mac/iPhone SDKs by default; the watch app needs both watch SDKs.
+system_sdk = use_extension("@rules_swift//swift:extensions.bzl", "system_sdk")
+system_sdk.configure_sdks(names = ["WatchOS", "WatchSimulator"])
+
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
