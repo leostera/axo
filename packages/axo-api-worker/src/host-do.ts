@@ -173,6 +173,12 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
       "UPDATE session_index SET metadata_json = ? WHERE session_id = ?",
       JSON.stringify(withoutWorkspace(JSON.parse(row.metadata_json))), row.session_id);
   },
+  (sql) => {
+    // RFD0029: what the Mac is asking now. Kept here, not in memory: an idle object is evicted while
+    // the Mac's socket hibernates, and the Mac only asks again on a new socket. Oldest first, by rowid.
+    sql.exec(`CREATE TABLE IF NOT EXISTS pending_elicitations (
+      id TEXT PRIMARY KEY, elicitation_json TEXT NOT NULL, expires_at INTEGER NOT NULL)`);
+  },
 ];
 
 /** What a client may ask the Mac to do, through `command`, and the params each takes. */
@@ -199,11 +205,6 @@ export class AxoHostDO extends AxoHostRelay {
   /** The newest progress snapshot per Session and slot; never stored (RFD0018, Ephemeral progress). */
   private readonly progress = new Map<string, Map<string, unknown>>();
   private readonly statuses = new Map<string, SessionStatus>();
-  /**
-   * What the Mac is asking the person now, by id (RFD0029); never stored. The Mac owns them and
-   * sends them again when it reconnects, so they are dropped with its socket.
-   */
-  private readonly elicitations = new Map<string, Elicitation>();
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -231,7 +232,7 @@ export class AxoHostDO extends AxoHostRelay {
       },
       read: (sessionId, request) => this.session(sessionId).read(this.binding(sessionId), request),
       progress: (sessionId) => [...(this.progress.get(sessionId) ?? [])].map(([slot, snapshot]) => ({ slot, snapshot })),
-      elicitations: () => [...this.elicitations.values()],
+      elicitations: () => this.pendingElicitations(),
       command: (method, params) => this.command(method, params),
       resolveElicitation: (params) => this.resolveElicitation(params),
     });
@@ -313,9 +314,9 @@ export class AxoHostDO extends AxoHostRelay {
     if (status === "offline") {
       this.progress.clear();
       this.statuses.clear();
-      for (const elicitation of this.elicitations.values())
+      for (const elicitation of this.pendingElicitations())
         this.queue({ kind: "elicitationResolved", resolved: { id: elicitation.id, sessionId: elicitation.sessionId, action: "cancel" } });
-      this.elicitations.clear();
+      this.ctx.storage.sql.exec("DELETE FROM pending_elicitations");
     }
     this.queue({ kind: "presence", online: status === "online", hostGeneration }, true);
   }
@@ -363,8 +364,7 @@ export class AxoHostDO extends AxoHostRelay {
     if (call.method === ELICITATION_METHODS.requested) {
       const parsed = elicitationSchema.safeParse(call.params);
       if (!parsed.success || !this.ready(peer)) return true;
-      if (!this.elicitations.has(parsed.data.id) && this.elicitations.size >= ELICITATION_LIMITS.pendingPerHost) return true;
-      this.elicitations.set(parsed.data.id, parsed.data);
+      if (!this.rememberElicitation(parsed.data)) return true;
       recordApiEvent({ event: "elicitation_requested", kind: parsed.data.kind });
       this.queue({ kind: "elicitationRequested", elicitation: parsed.data }, true);
       return true;
@@ -372,7 +372,7 @@ export class AxoHostDO extends AxoHostRelay {
     if (call.method === ELICITATION_METHODS.resolved) {
       const parsed = elicitationResolvedSchema.safeParse(call.params);
       if (!parsed.success || !this.ready(peer)) return true;
-      this.elicitations.delete(parsed.data.id);
+      this.ctx.storage.sql.exec("DELETE FROM pending_elicitations WHERE id = ?", parsed.data.id);
       recordApiEvent({ event: "elicitation_resolved", outcome: parsed.data.action });
       this.queue({ kind: "elicitationResolved", resolved: parsed.data }, true);
       return true;
@@ -579,7 +579,7 @@ export class AxoHostDO extends AxoHostRelay {
       hostGeneration: presence.hostGeneration,
       sessions: this.ctx.storage.sql.exec<IndexRow>("SELECT * FROM session_index").toArray().map((row) => this.clientSession(row)),
       progress: [...this.progress].flatMap(([sessionId, slots]) => [...slots].map(([slot, snapshot]) => ({ sessionId, slot, snapshot }))),
-      elicitations: [...this.elicitations.values()],
+      elicitations: this.pendingElicitations(),
     };
   }
 
@@ -593,7 +593,7 @@ export class AxoHostDO extends AxoHostRelay {
     const presence = this.presence();
     if (!presence.online) return { error: { code: -32005, message: "Host offline; nothing sent" } };
     if (parsed.data.target.hostGeneration !== presence.hostGeneration) return { error: { code: -32002, message: "Stale host" } };
-    if (!this.elicitations.has(parsed.data.elicitationId))
+    if (!this.pendingElicitations().some((elicitation) => elicitation.id === parsed.data.elicitationId))
       return { error: { code: ELICITATION_ERRORS.notPending, message: "Already answered, or no longer asked" } };
     const outcome = await this.callHost({ method: ELICITATION_METHODS.resolve, params: parsed.data, deadlineMs: 15_000 });
     if ("error" in outcome) return outcome;
@@ -778,6 +778,36 @@ export class AxoHostDO extends AxoHostRelay {
     return identity ? this.presenceOfMachine(identity.host_id) : { online: false, hostGeneration: null };
   }
 
+  // ─── What the Mac asks (RFD0029) ───────────────────────────────────────────
+
+  /**
+   * What the Mac is asking now, oldest first. One past its expiry is dropped: the Mac gives it up
+   * then, and its `resolved` may have been lost with a socket.
+   */
+  private pendingElicitations(): Elicitation[] {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM pending_elicitations WHERE expires_at <= ?", Date.now());
+    return sql.exec<{ elicitation_json: string }>("SELECT elicitation_json FROM pending_elicitations ORDER BY rowid").toArray()
+      .flatMap((row) => {
+        const parsed = elicitationSchema.safeParse(JSON.parse(row.elicitation_json));
+        return parsed.success ? [parsed.data] : [];
+      });
+  }
+
+  /**
+   * Keeps what the Mac asks; asked again (a new socket), it keeps its place. False when the host
+   * already has as many waiting as it may.
+   */
+  private rememberElicitation(elicitation: Elicitation): boolean {
+    const sql = this.ctx.storage.sql;
+    const known = sql.exec("SELECT 1 FROM pending_elicitations WHERE id = ?", elicitation.id).toArray().length > 0;
+    if (!known && this.pendingElicitations().length >= ELICITATION_LIMITS.pendingPerHost) return false;
+    sql.exec(`INSERT INTO pending_elicitations (id, elicitation_json, expires_at) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET elicitation_json = excluded.elicitation_json, expires_at = excluded.expires_at`,
+      elicitation.id, JSON.stringify(elicitation), elicitation.expiresAt);
+    return true;
+  }
+
   // ─── Notices ───────────────────────────────────────────────────────────────
 
   private queueSession(sessionId: string): void {
@@ -849,7 +879,7 @@ export class AxoHostDO extends AxoHostRelay {
         .map((row): HostNotice => ({ kind: "session", session: this.clientSession(row) })),
       ...[...watches].flatMap((sessionId) => [...(this.progress.get(sessionId) ?? [])]
         .map(([slot, snapshot]): HostNotice => ({ kind: "progress", sessionId, slot, snapshot }))),
-      ...[...this.elicitations.values()].map((elicitation): HostNotice => ({ kind: "elicitationRequested", elicitation })),
+      ...this.pendingElicitations().map((elicitation): HostNotice => ({ kind: "elicitationRequested", elicitation })),
     ];
   }
 

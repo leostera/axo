@@ -105,3 +105,51 @@ test("a Mac going offline dismisses what it asked; nothing is answered for it", 
   const offline = (await client.call("axo.elicitation.resolve", { hostId: host.hostId, elicitationId: elicitation.id, action: "accept" })) as Message;
   assert.equal(offline.error?.code, -32005);
 });
+
+test("what a Mac asks outlives its object being evicted while its socket hibernates", async (t) => {
+  const { h, session, host, daemon, elicitation } = await fixture(t);
+  const { client: phone } = await connectClient(h, session);
+  t.after(() => phone.close());
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: elicitation });
+  await until(phone, "axo.elicitation.requested");
+
+  // Production evicts an idle object and keeps its hibernated sockets: the Mac stays connected,
+  // so it never sends what it asks again.
+  for (const id of await h.mf.listDurableObjectIds("TEST_HOST_DO"))
+    await h.mf.unsafeEvictDurableObject("api-test", "AxoHostDO", { id, webSockets: "hibernate" });
+
+  // A client that connects now still hears what waits for its person.
+  const { client: browser } = await connectClient(h, session);
+  t.after(() => browser.close());
+  assert.deepEqual(await until(browser, "axo.elicitation.requested"), { hostId: host.hostId, elicitation });
+
+  // And an answer still reaches the Mac, over the socket that hibernated.
+  const answer = browser.call("axo.elicitation.resolve", { hostId: host.hostId, elicitationId: elicitation.id, action: "accept" });
+  const forwarded = (await daemon.next()) as Message;
+  assert.equal(forwarded.method, "axo.elicitation.resolve");
+  daemon.send({ jsonrpc: "2.0", id: forwarded.id, result: { resolved: true } });
+  assert.deepEqual(((await answer) as Message).result, { resolved: true });
+
+  // Once settled, it is gone for good: a client connecting after eviction does not hear it again.
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.resolved", params: { id: elicitation.id, sessionId: elicitation.sessionId, action: "accept" } });
+  await until(browser, "axo.elicitation.resolved");
+  for (const id of await h.mf.listDurableObjectIds("TEST_HOST_DO"))
+    await h.mf.unsafeEvictDurableObject("api-test", "AxoHostDO", { id, webSockets: "hibernate" });
+  const { client: later } = await connectClient(h, session);
+  t.after(() => later.close());
+  assert.equal(await hears(later, "axo.elicitation.requested"), false);
+});
+
+test("a question past its expiry is not delivered, even if the Mac's resolved never came", async (t) => {
+  const { h, session, daemon, elicitation } = await fixture(t);
+  const soon = { ...elicitation, expiresAt: Date.now() + 300 };
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: soon });
+  const { client: phone } = await connectClient(h, session);
+  t.after(() => phone.close());
+  await until(phone, "axo.elicitation.requested");
+
+  await new Promise((done) => setTimeout(done, 400));
+  const { client: later } = await connectClient(h, session);
+  t.after(() => later.close());
+  assert.equal(await hears(later, "axo.elicitation.requested"), false);
+});
