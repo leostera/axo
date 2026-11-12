@@ -8,7 +8,7 @@ The companion verifies the account with the existing `/api/auth/me` endpoint on 
 
 1. Sign in on the iPhone if needed, then open Axo on the Watch.
 2. Choose an existing agent Session from the account-wide **Active** and **Earlier** groups, using the shared iPhone/web rules. Machines are secondary row labels, never groups. The account-bound selection and title survive relaunches; the in-memory catalog and conversation survive foreground changes. The same Session can reopen after its Mac restarts, but an old recording cannot cross that host-generation boundary. A disappeared Session never silently reroutes.
-3. Tap the **microphone** and allow microphone access on the Watch. A custom recording screen shows the Session name and the same metered waveform as iPhone—no system dictation sheet, keyboard, or live transcript. Recording is capped at 90 seconds.
+3. Tap the **microphone** and allow microphone access on the Watch. A compact bottom bar shows Cancel, the same metered waveform as iPhone, and Send—no system dictation sheet, keyboard, or live transcript. The conversation stays visible and scrollable with the Digital Crown throughout preparation, recording, and transcription; its Session title remains at the top. Recording is capped at 90 seconds.
 4. Tap **↑ Send** to stop the microphone, transcribe on the paired iPhone, and send directly to that Session. There is no review sheet. **× Cancel** discards the attempt, including during transcription. An unsent message remains explicitly retryable without displaying a transcript preview.
 5. Read the streamed conversation. Tools and reasoning remain hidden. Scroll with the Digital Crown; there is no Latest/down-scroll button.
 
@@ -102,4 +102,6 @@ development identifier/profile was created only after explicit approval. Physica
 selection/rendering still needs a person to add the complication; installation alone does not
 prove the complication has been selected or rendered.
 
-A person still needs to approve the Watch microphone permission and verify the full physical recording → WatchConnectivity → iPhone transcription → Session reply round trip. Mac file-transcription tests and device launch do **not** prove that hardware audio path.
+A person reported sending a spoken message from the physical Watch on build 46, confirming the recording → WatchConnectivity → iPhone transcription → Session prompt path. This is user-reported hardware evidence, separate from the Mac file-transcription tests.
+
+Build 47 keeps that same voice pipeline but moves its controls into a compact bottom bar. The conversation ScrollView is no longer replaced during capture, and the recording-specific Axo title is removed in favor of the Session title. Scrolling/reading while speaking still needs physical UX verification.

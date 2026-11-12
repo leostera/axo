@@ -36,10 +36,10 @@ private struct WatchHome: View {
               }
             }
             .multilineTextAlignment(.center).padding(.horizontal)
+            .navigationTitle("Axo")
           }
         }
       }
-      .navigationTitle("Axo")
     }
     .onChange(of: chat?.account.state) { _, state in
       if state == .signedOut { companion.model.authorizationRefused() }

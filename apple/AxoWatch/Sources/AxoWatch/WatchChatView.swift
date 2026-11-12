@@ -21,15 +21,14 @@ struct WatchChatView: View {
   private var title: String { model.selectedSession?.displayName ?? model.rememberedSessionName ?? "Axo" }
 
   var body: some View {
-    Group {
-      if let voice, capturing {
-        capture(voice)
-      } else {
-        conversation
-          .safeAreaInset(edge: .bottom) { composer }
-      }
+    // Keep the same ScrollView alive through permission, recording, and transcription so
+    // starting voice never loses the reader's position or takes the Digital Crown away.
+    conversation
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if let voice, capturing { recordingBar(voice) }
+      else { composer }
     }
-    .navigationTitle(capturing ? "Axo" : title)
+    .navigationTitle(title)
     .toolbar {
       ToolbarItem(placement: .topBarLeading) { WatchMascot().frame(width: 30, height: 20) }
       if !capturing, !handingOff {
@@ -137,33 +136,31 @@ struct WatchChatView: View {
     }
   }
 
-  private func capture(_ voice: VoicePrompt) -> some View {
-    VStack(spacing: 12) {
-      Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
-      Spacer(minLength: 0)
-      if voice.isListening {
-        AudioWaveform(bars: 24, height: 36) { voice.audioLevel }
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-          let seconds = max(0, Int(context.date.timeIntervalSince(startedListening ?? context.date)))
-          Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
-            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-            .accessibilityLabel("Recording duration")
-        }
-      } else {
-        ProgressView()
-        Text(voice.state == .finishing ? "Transcribing on iPhone…" : "Getting microphone ready…")
-          .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-      }
-      Spacer(minLength: 0)
-      HStack {
-        VoiceCircle(symbol: "xmark", label: "Cancel recording") { cancelVoice() }
-        Spacer()
+  private func recordingBar(_ voice: VoicePrompt) -> some View {
+    HStack(spacing: 6) {
+      VoiceCircle(symbol: "xmark", label: "Cancel recording") { cancelVoice() }
+      VStack(spacing: 1) {
         if voice.isListening {
-          VoiceCircle(symbol: "arrow.up", label: "Stop and send", prominent: true) { voice.finish(.send) }
+          AudioWaveform(bars: 14, height: 14) { voice.audioLevel }
+          TimelineView(.periodic(from: .now, by: 1)) { context in
+            let seconds = max(0, Int(context.date.timeIntervalSince(startedListening ?? context.date)))
+            Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
+              .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+              .accessibilityLabel("Recording duration")
+          }
+        } else {
+          ProgressView().controlSize(.mini)
+          Text(voice.state == .finishing ? "Transcribing…" : "Preparing…")
+            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
         }
       }
+      .frame(maxWidth: .infinity)
+      VoiceCircle(symbol: "arrow.up", label: "Stop and send", prominent: true) { voice.finish(.send) }
+        .disabled(!voice.isListening)
     }
-    .padding(.horizontal, 4)
+    .frame(height: 44)
+    .padding(2)
+    .background(.ultraThinMaterial, in: Capsule())
   }
 
   private func startVoice() {
