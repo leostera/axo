@@ -845,14 +845,20 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the steer is delivered once, and is no longer waiting");
     await chatInfo.getByRole("button", { name: "Close chat info" }).click();
 
-    // The agent asks the person yes or no (RFD0029): a card in its chat, answered from here.
+    // The agent asks the person yes or no (RFD0029): a card in its chat, answered from here. It
+    // waits above the message box, so it is seen wherever the reader is in the history.
+    await page.locator(".transcript").evaluate((element) => { element.scrollTop = 0; });
     const elicitationId = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a";
     for (const socket of sockets) notify(socket, "axo.elicitation.requested", { hostId, elicitation: {
       id: elicitationId, sessionId: sid(1), kind: "confirm",
       message: "Delete the branch feat/old-ui? It has 3 unmerged commits.", createdAt: Date.now(), expiresAt: Date.now() + 300_000,
     } });
-    const card = page.getByRole("group", { name: "The agent asks you" });
+    const card = page.locator(".conversation-footer").getByRole("group", { name: "The agent asks you" });
     await expect(card.getByText("Delete the branch feat/old-ui? It has 3 unmerged commits."));
+    const shown = await card.boundingBox();
+    const viewport = page.viewportSize();
+    assert.ok(shown && shown.y >= 0 && shown.y + shown.height <= viewport.height, `the card is on screen: ${JSON.stringify(shown)}`);
+    assert.equal(await page.locator(".transcript .elicitation-card").count(), 0, "not also at the end of the transcript");
     await shot("elicitation");
     await page.emulateMedia({ colorScheme: "dark" });
     await shot("elicitation-dark");

@@ -232,21 +232,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           ) : null}
 
           <HoldRow.Provider value={holdRow}><ConversationRows feed={feed} dismiss={dismiss} /></HoldRow.Provider>
-          {session && workbench.questions(session.sessionId).map(question => (
-            <ElicitationCard
-              key={question.elicitation.id}
-              question={question}
-              canAnswer={online}
-              onAnswer={(action, values) => void workbench.answerQuestion(question.elicitation.id, action, values)}
-            />
-          ))}
-          {session && transcript?.question ? (
-            <QuestionCard
-              question={transcript.question}
-              canAnswer={online}
-              onAnswer={answer => void workbench.answer(session.sessionId, answer)}
-            />
-          ) : null}
           {session && working ? (
             <div className="agent-activity" data-testid="agent-activity">
               <span className="agent-activity-icon"><Icon name="sparkles" size={18} /></span>
@@ -267,6 +252,27 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           <div className="chat-failure" role="alert">
             <span>{workbench.failure}</span>
             <button className="plain-icon-button" onClick={() => workbench.dismissFailure()} aria-label="Dismiss"><Icon name="close" size={14} /></button>
+          </div>
+        ) : null}
+        {/* What waits for the person sits above the message box, not at the end of the transcript:
+            it holds the agent up, so it is seen wherever the reader is in the history (RFD0029). */}
+        {session && (workbench.questions(session.sessionId).length > 0 || transcript?.question) ? (
+          <div className="footer-questions" aria-label="Waiting for you">
+            {workbench.questions(session.sessionId).map(question => (
+              <ElicitationCard
+                key={question.elicitation.id}
+                question={question}
+                canAnswer={online}
+                onAnswer={(action, values) => void workbench.answerQuestion(question.elicitation.id, action, values)}
+              />
+            ))}
+            {transcript?.question ? (
+              <QuestionCard
+                question={transcript.question}
+                canAnswer={online}
+                onAnswer={answer => void workbench.answer(session.sessionId, answer)}
+              />
+            ) : null}
           </div>
         ) : null}
         {showJump ? (
