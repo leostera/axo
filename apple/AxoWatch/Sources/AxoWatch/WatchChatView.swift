@@ -12,21 +12,34 @@ struct WatchChatView: View {
   @State private var choosingSession = false
   @State private var voice: VoicePrompt?
   @State private var voiceTarget: WatchChatTarget?
-  @State private var startedListening: Date?
   @State private var handingOff = false
   @State private var localFailure: String?
   @State private var lastConnectedAt: Date?
+  @State private var conversationHeight: CGFloat = 0
+  @State private var footerHeight: CGFloat = 0
 
   private var capturing: Bool { voice?.isBusy == true }
   private var title: String { model.selectedSession?.displayName ?? model.rememberedSessionName ?? "Axo" }
 
   var body: some View {
-    // Keep the same ScrollView alive through permission, recording, and transcription so
-    // starting voice never loses the reader's position or takes the Digital Crown away.
-    conversation
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      if let voice, capturing { recordingBar(voice) }
-      else { composer }
+    // The footer owns exactly one 44pt row, in every voice phase. It cannot take the
+    // conversation's place or grow into it; the same ScrollView keeps Crown focus and position.
+    VStack(spacing: 0) {
+      conversation
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+          conversationHeight = $0
+          reportLayout()
+        }
+      Group {
+        if let voice, capturing { recordingBar(voice) }
+        else { composer }
+      }
+      .frame(height: 44).clipped()
+      .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+        footerHeight = $0
+        reportLayout()
+      }
     }
     .navigationTitle(title)
     .toolbar {
@@ -50,9 +63,9 @@ struct WatchChatView: View {
     }
     .onChange(of: voice?.state) { _, state in
       if case .listening = state {
-        startedListening = Date()
         WKInterfaceDevice.current().play(.start)
       } else if state == .finishing { WKInterfaceDevice.current().play(.stop) }
+      reportLayout()
     }
     .onChange(of: voice?.transcript) { _, transcript in
       if let transcript { deliver(transcript) }
@@ -83,7 +96,9 @@ struct WatchChatView: View {
               if case .loading = chat.history { ProgressView() }
               if case .failed(let message) = chat.history { Text(message).font(.caption).foregroundStyle(.orange) }
             }
-            ForEach(chat.feed.items) { item in WatchChatRow(item: item) }
+            ForEach(chat.feed.items.filter { WatchConversationContent($0.row) != nil }) { item in
+              WatchChatRow(item: item)
+            }
             if chat.feed.working { ProgressView().accessibilityLabel("Agent working") }
             if chat.feed.question != nil {
               Label("Your answer is needed on iPhone.", systemImage: "questionmark.bubble")
@@ -132,35 +147,27 @@ struct WatchChatView: View {
         }
         Spacer(minLength: 0)
       }
-      .padding(.bottom, 2)
     }
   }
 
   private func recordingBar(_ voice: VoicePrompt) -> some View {
     HStack(spacing: 6) {
-      VoiceCircle(symbol: "xmark", label: "Cancel recording") { cancelVoice() }
-      VStack(spacing: 1) {
+      VoiceCircle(symbol: "xmark", label: "Cancel recording", compact: true) { cancelVoice() }
+      Group {
         if voice.isListening {
-          AudioWaveform(bars: 14, height: 14) { voice.audioLevel }
-          TimelineView(.periodic(from: .now, by: 1)) { context in
-            let seconds = max(0, Int(context.date.timeIntervalSince(startedListening ?? context.date)))
-            Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
-              .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
-              .accessibilityLabel("Recording duration")
-          }
+          AudioWaveform(bars: 12, height: 10) { voice.audioLevel }
+            .frame(height: 14).clipped()
         } else {
-          ProgressView().controlSize(.mini)
           Text(voice.state == .finishing ? "Transcribing…" : "Preparing…")
             .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
         }
       }
       .frame(maxWidth: .infinity)
-      VoiceCircle(symbol: "arrow.up", label: "Stop and send", prominent: true) { voice.finish(.send) }
+      VoiceCircle(symbol: "arrow.up", label: "Stop and send", prominent: true, compact: true) { voice.finish(.send) }
         .disabled(!voice.isListening)
     }
     .frame(height: 44)
-    .padding(2)
-    .background(.ultraThinMaterial, in: Capsule())
+    .background(.background)
   }
 
   private func startVoice() {
@@ -195,6 +202,11 @@ struct WatchChatView: View {
     }
   }
 
+  private func reportLayout() {
+    WatchLayoutReport.write(recording: voice?.isListening == true, busy: capturing,
+      conversationHeight: conversationHeight, footerHeight: footerHeight)
+  }
+
   private func reportConnection() {
     if model.workbench.link == .connected { lastConnectedAt = Date() }
     WatchConnectionReport.write(link: model.workbench.link, lastConnectedAt: lastConnectedAt)
@@ -205,6 +217,7 @@ private struct VoiceCircle: View {
   let symbol: String
   let label: String
   var prominent = false
+  var compact = false
   let action: () -> Void
   @Environment(\.colorScheme) private var colorScheme
 
@@ -213,9 +226,10 @@ private struct VoiceCircle: View {
       Image(systemName: symbol)
         .font(.system(size: symbol == "arrow.up" ? 17 : 18, weight: prominent ? .semibold : .regular))
         .foregroundStyle(prominent ? (colorScheme == .dark ? Color.black : Color.white) : Color.primary)
-        .frame(width: 44, height: 44)
+        .frame(width: compact ? 28 : 44, height: compact ? 28 : 44)
         .background(prominent ? Color.primary : Color.secondary.opacity(0.15), in: Circle())
-        .contentShape(Circle())
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(label)
@@ -280,27 +294,23 @@ private struct WatchChatRow: View {
   let item: ConversationFeed.Item
 
   var body: some View {
-    switch item.row {
-    case .message(let shown) where shown.message.role == .assistant:
-      Text(shown.message.text).font(.body).frame(maxWidth: .infinity, alignment: .leading)
-    case .message(let shown) where shown.message.role == .user:
-      Text(shown.message.text).font(.caption).padding(8)
+    switch WatchConversationContent(item.row) {
+    case .assistant(let text):
+      Text(LocalizedStringKey(text)).font(.footnote)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
-    case .pending(let prompt):
-      Label(pendingLabel(prompt.state), systemImage: "arrow.up").font(.caption2).foregroundStyle(.secondary)
-    case .queued:
-      Text("Waiting for the agent").font(.caption2).foregroundStyle(.secondary)
-    default: EmptyView()
-    }
-  }
-
-  private func pendingLabel(_ state: HostWorkbenchModel.PendingPrompt.State) -> String {
-    switch state {
-    case .sending: "Sending…"
-    case .sent: "Message sent"
-    case .queued, .waitingForPi: "Waiting for the agent"
-    case .uncertain: "Checking delivery…"
+        .accessibilityLabel("Axo: " + text)
+    case .user(let text, let status):
+      VStack(alignment: .trailing, spacing: 4) {
+        Text(text).font(.footnote)
+          .padding(.horizontal, 10).padding(.vertical, 8)
+          .background(Color.blue.opacity(status == nil ? 0.24 : 0.14), in: RoundedRectangle(cornerRadius: 14))
+          .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
+        if let status { Text(status).font(.caption2).foregroundStyle(.secondary) }
+      }
+      .padding(.leading, 22)
+      .frame(maxWidth: .infinity, alignment: .trailing)
+      .accessibilityElement(children: .combine)
+    case nil: EmptyView()
     }
   }
 }

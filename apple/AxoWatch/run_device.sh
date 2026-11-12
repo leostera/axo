@@ -47,8 +47,8 @@ xcrun devicectl device install app --device "$phone_device" "$phone" --timeout 9
 xcrun devicectl device install app --device "$watch_device" "$watch" --timeout 90 --json-output "$artifacts/watch-install.json"
 phone_bundle=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$phone/Info.plist")
 watch_bundle=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$watch/Info.plist")
-xcrun devicectl device process launch --device "$phone_device" "$phone_bundle" --timeout 30 --json-output "$artifacts/phone-launch.json"
-xcrun devicectl device process launch --device "$watch_device" "$watch_bundle" --timeout 30 --json-output "$artifacts/watch-launch.json"
+xcrun devicectl device process launch --device "$phone_device" --terminate-existing "$phone_bundle" --timeout 30 --json-output "$artifacts/phone-launch.json"
+xcrun devicectl device process launch --device "$watch_device" --terminate-existing "$watch_bundle" --timeout 30 --json-output "$artifacts/watch-launch.json"
 xcrun devicectl device info processes --device "$watch_device" --timeout 30 --json-output "$artifacts/watch-processes.json" >/dev/null
 python3 - "$artifacts" <<'PY'
 import json, pathlib, sys
