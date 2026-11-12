@@ -1,7 +1,32 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 
 package(default_visibility = ["//visibility:public"])
+
+js_library(
+    name = "vector_source_js",
+    srcs = ["Sources/AxoMascotVector/AxoMascotGeometry.swift"],
+)
+
+filegroup(
+    name = "vector_source",
+    srcs = glob(["Sources/AxoMascotVector/*.swift"]),
+)
+
+swift_library(
+    name = "AxoMascotVector",
+    module_name = "AxoMascotVector",
+    srcs = [":vector_source"],
+    copts = ["-swift-version", "5"],
+)
+
+swift_test(
+    name = "AxoMascotVectorTests",
+    srcs = glob(["Tests/AxoMascotVectorTests/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoMascotVector"],
+)
 
 # The mascot's rules that are not animation (how pokes become reactions), shared by the Mac and
 # the phone. The animation itself is assets/mascot/axo.riv; no Rive here.

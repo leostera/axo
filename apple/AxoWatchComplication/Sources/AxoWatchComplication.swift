@@ -1,3 +1,4 @@
+import AxoMascotVector
 import SwiftUI
 import WidgetKit
 
@@ -16,7 +17,6 @@ private struct MascotTimeline: TimelineProvider {
 
 private struct MascotComplicationView: View {
   @Environment(\.widgetFamily) private var family
-  @Environment(\.widgetRenderingMode) private var renderingMode
 
   var body: some View {
     Group {
@@ -30,16 +30,12 @@ private struct MascotComplicationView: View {
   }
 
   private var mark: some View {
-    // The real face in full color; outlines in tinted modes so the eyes/mouth do not vanish
-    // into a single filled silhouette. Complications are snapshots, not live Rive animations.
-    Group {
-      if renderingMode == .fullColor {
-        Image("AxoFace").resizable().renderingMode(.original).scaledToFit()
-      } else {
-        Image("AxoMark").resizable().renderingMode(.template).scaledToFit().widgetAccentable()
-      }
-    }
-    .padding(3).foregroundStyle(.primary)
+    // Native paths from the Rive source, not an Image/template mask. WidgetKit accents
+    // only the actual mascot ink, and image-placeholder redaction cannot fill its bounds.
+    AxoMascotMark().fill(.primary)
+      .padding(3)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .widgetAccentable()
   }
 }
 

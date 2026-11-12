@@ -52,6 +52,22 @@ js_binary(
     ],
 )
 
+js_binary(
+    name = "export_vector",
+    entry_point = "src/export-mascot-vector.ts",
+    data = [":browser_test_files"],
+)
+
+js_test(
+    name = "vector_up_to_date",
+    entry_point = "src/export-mascot-vector.ts",
+    args = ["--check"],
+    data = [
+        ":browser_test_files",
+        "//apple/AxoMascot:vector_source_js",
+    ],
+)
+
 # Plays the mascot in the Rive web runtime, in the Chrome installed on this Mac.
 node_test(
     name = "browser_test",

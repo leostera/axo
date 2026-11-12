@@ -11,11 +11,14 @@ struct AxoWatchApp: App {
     // remains a static launcher and never spends its update budget on an animation loop.
     let defaults = UserDefaults.standard
     let key = "axo.watch.complication-build"
-    if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-      defaults.string(forKey: key) != build {
-      WidgetCenter.shared.reloadAllTimelines()
-      defaults.set(build, forKey: key)
+    if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
+      let rendererVersion = build + ":native-vector-v1"
+      if defaults.string(forKey: key) != rendererVersion {
+        WidgetCenter.shared.reloadAllTimelines()
+        defaults.set(rendererVersion, forKey: key)
+      }
     }
+    Task { await WatchComplicationReport.capture() }
   }
 
   var body: some Scene { WindowGroup { WatchHome() } }

@@ -50,13 +50,23 @@ A lightweight WidgetKit extension provides the mascot for **circular** and **cor
 slots. On the Watch, edit a compatible face → Complications → select a small circular/corner slot
 → **Axo**. Tapping the mascot opens the app and its remembered session; it never starts recording.
 The complication is a static launcher, not a live status indicator: no polling, shared credentials,
-account details, or microphone access. Full-color faces show the actual filled mascot; tinted
-faces use its template outlines to preserve eyes/mouth. Public artwork is unredacted for Always
-On, and installing a new build requests a single timeline refresh (not one per wrist raise).
+account details, or microphone access. The complication draws native SwiftUI vector paths from
+the same geometry that generates the Rive Mark artboard, with no bitmap/template-image mask.
+The watch-face accent colors only the mascot ink. Public artwork is unredacted for Always On,
+and installing a new build/renderer requests a single timeline refresh (not one per wrist raise).
 
 **No continuous blinking/head animation:** Apple explicitly says complications show snapshots and
 do not support animation. Live mascot animation belongs inside the app, not a watch-face timeline
 loop. See [Apple’s complication design constraints](https://developer.apple.com/documentation/widgetkit/converting-a-clockkit-app#Design-the-complication-using-SwiftUI).
+
+Build 51 addresses the person-reported accent-colored square. The source PNGs were confirmed to
+have transparent canvases, so the complication now bypasses the bitmap/redaction path entirely.
+A native red-accent rendering regression test verifies transparent corners, bounded ink coverage,
+and eye/mouth geometry; generated Swift paths and the unchanged Rive file are checked against
+`mascot.ts`. The signed bundle installed and the physical Watch reported build 51, the native
+renderer marker, and one configured `accessoryCircular` Axo complication. This confirms discovery
+and the running version, not a visual watch-face check. `watch-complication.json` stores only that
+non-sensitive discovery status; no face identifiers, account data, or arbitrary errors.
 
 ## Sign-in behavior
 

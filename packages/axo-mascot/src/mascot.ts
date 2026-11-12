@@ -54,6 +54,13 @@ export const MascotContract = {
 const LOGO_SIZE = 1254;
 const CENTER_X = 626;
 const OUTLINE = 42;
+const eyeCenters = [{ name: "Left Eye", x: 455 }, { name: "Right Eye", x: 797 }] as const;
+const eyeY = 695;
+const eyeSize = 97;
+const mouthVertices = [
+  { at: { x: 566, y: 744 }, in: { x: 566, y: 744 }, out: { x: 606, y: 756 } },
+  { at: { x: 686, y: 744 }, in: { x: 646, y: 756 }, out: { x: 686, y: 744 } },
+];
 
 const Color = {
   background: 0xffdfdfdf,
@@ -208,12 +215,9 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
   // Eyes and mouth move together when Axo looks somewhere.
   const features = board.node(art, { name: "Features", x: 0, y: 0 });
   const eyes: ComponentId[] = [];
-  for (const [name, x] of [
-    ["Left Eye", 455],
-    ["Right Eye", 797],
-  ] as const) {
-    const eye = board.shape(features, { name, x, y: 695 });
-    board.ellipse(eye, { name: `${name} Path`, width: 97, height: 97 });
+  for (const { name, x } of eyeCenters) {
+    const eye = board.shape(features, { name, x, y: eyeY });
+    board.ellipse(eye, { name: `${name} Path`, width: eyeSize, height: eyeSize });
     board.fill(eye, style.ink);
     eyes.push(eye);
   }
@@ -260,10 +264,7 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
   board.cubicPath(
     mouth,
     "Mouth Path",
-    [
-      { at: { x: 566, y: 744 }, in: { x: 566, y: 744 }, out: { x: 606, y: 756 } },
-      { at: { x: 686, y: 744 }, in: { x: 646, y: 756 }, out: { x: 686, y: 744 } },
-    ],
+    mouthVertices,
     false,
   );
   board.stroke(mouth, style.ink, 40);
@@ -622,6 +623,20 @@ function croppedArtboard(name: string, style: Style, bounds: Bounds, spins = fal
   const axolotl = board.node(board.root, { name: "Axolotl", x: -bounds.x, y: -bounds.y });
   addMascotMachine(board, drawAxolotl(board, axolotl, style), { spins });
   return board.objects();
+}
+
+/** Neutral Mark geometry, shared with the native SwiftUI complication shape generator. */
+export function mascotMarkGeometry() {
+  return {
+    bounds: MascotBounds.mark,
+    paths: [
+      { vertices: head, closed: true, width: OUTLINE },
+      ...leftGills.map((gill) => ({ vertices: gillVertices(gill), closed: false, width: OUTLINE })),
+      ...leftGills.map((gill) => ({ vertices: mirrorVertices(gillVertices(gill)), closed: false, width: OUTLINE })),
+      { vertices: mouthVertices, closed: false, width: 40 },
+    ],
+    eyes: eyeCenters.map(({ x }) => ({ x, y: eyeY, size: eyeSize })),
+  };
 }
 
 const grow = (bounds: Bounds, by: number): Bounds => ({

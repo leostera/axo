@@ -37,5 +37,20 @@ Each artboard runs the `Mascot` state machine, in layers (a later layer wins a p
 These are state machine inputs, which the web runtime and the Apple runtime's `RiveViewModel` take;
 Rive's newer Apple API expects data binding instead, which the generator does not write yet.
 
+## Native Watch complication
+
+The complication uses `AxoMascotMark`, a native SwiftUI Shape generated from
+`mascotMarkGeometry()` in `src/mascot.ts`. These are the same head/gill/eye/mouth paths as the
+Rive Mark, not a separately drawn logo or an alpha-tinted bitmap. Regenerate from the repo root:
+
+```sh
+bazel run //packages/axo-mascot:export_vector -- "$PWD/apple/AxoMascot/Sources/AxoMascotVector/AxoMascotGeometry.swift"
+bazel test //packages/axo-mascot:vector_up_to_date //apple/AxoMascot:AxoMascotVectorTests
+```
+
+The tests render the native shape in red at complication size and reject an opaque rectangular
+canvas, check feature geometry, and ensure the generated paths stay in sync. This avoids confusing
+bitmap/template-placeholder rendering with watch-face accent colors.
+
 On the Mac, `AxoMascot` (apple/AxoMac) plays `Mark` and `Icon` offscreen through
 `AxoMascotRive` and publishes the frames as images. Earlier objects in an artboard draw on top.

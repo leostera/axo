@@ -10,6 +10,7 @@ swift_library(
     srcs = ["Sources/AxoWatchComplication.swift"],
     copts = ["-swift-version", "5", "-application-extension"],
     target_compatible_with = ["@platforms//os:watchos"],
+    deps = ["//apple/AxoMascot:AxoMascotVector"],
 )
 
 watchos_extension(
@@ -18,7 +19,6 @@ watchos_extension(
     bundle_id = AXO["apple"]["bundle_ids"]["watch"] + ".complications",
     infoplists = ["Info.plist"],
     minimum_os_version = AXO["apple"]["watchos_min"],
-    resources = ["//assets:watch_complication_art"],
     provisioning_profile = ":AxoWatchComplicationProfile" if CAN.watch_device else None,
     version = "//apple/AxoWatch:build_version",
     deps = [":AxoWatchComplication"],
