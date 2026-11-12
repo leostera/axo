@@ -40,6 +40,7 @@ _SCHEMA = {
         },
         "phone_profile": "string",
         "watch_profile": "string",
+        "watch_complication_profile": "string",
         "simulator": {"device": "string", "os": "string"},
     },
     "dist": {"mac_app": "string"},
@@ -237,11 +238,14 @@ def _axo_config_impl(rctx):
     if reason:
         reasons["sign"] = reason
 
-    has_watch_profile, watch_reason = _provisioning_profile(rctx, config["apple"]["watch_profile"])
+    has_watch_app_profile, watch_reason = _provisioning_profile(rctx, config["apple"]["watch_profile"])
+    has_complication_profile, complication_reason = _provisioning_profile(rctx, config["apple"]["watch_complication_profile"])
+    has_watch_profile = has_watch_app_profile and has_complication_profile
+    watch_reason = watch_reason or complication_reason
     if watch_reason:
         reasons["watch_device"] = watch_reason
     has_phone_profile, reason = _provisioning_profile(rctx, config["apple"]["phone_profile"])
-    # The device iPhone bundle embeds its Watch companion; both need signing profiles.
+    # The device phone embeds the Watch and its WidgetKit extension; all three need profiles.
     has_profile = has_phone_profile and has_watch_profile
     if reason or watch_reason:
         reasons["phone_device"] = reason or watch_reason

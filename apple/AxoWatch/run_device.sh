@@ -15,7 +15,7 @@ cd "$root"
 bazel build //apple/AxoPhone:AxoPhone_ipa --watchos_cpus=device_arm64
 outputs=$(bazel cquery //apple/AxoPhone:AxoPhone_ipa --watchos_cpus=device_arm64 --output=files)
 ipa=$(printf '%s\n' "$outputs" | awk '/\.ipa$/ { print; count++ } END { if (count != 1) exit 1 }') || {
-  echo "No signed companion IPA. Install the phone and Watch development profiles first (see README.md)." >&2
+  echo "No signed companion IPA. Install the phone, Watch, and complication development profiles first (see README.md)." >&2
   exit 1
 }
 [[ -f "$ipa" ]] || { echo "Missing IPA: $ipa" >&2; exit 1; }
@@ -27,6 +27,20 @@ phone="$artifacts/Payload/AxoPhoneDevice.app"
 watch="$phone/Watch/AxoWatchApp.app"
 [[ -d "$phone" && -d "$watch" ]] || { echo "Missing companion bundles" >&2; exit 1; }
 codesign --verify --deep --strict "$phone"
+python3 - "$phone" "$watch" <<'PY'
+import pathlib, plistlib, sys
+phone, watch = map(pathlib.Path, sys.argv[1:])
+widget = watch / 'PlugIns/AxoWatchComplicationExtension.appex'
+def info(bundle):
+    return plistlib.loads((bundle / 'Info.plist').read_bytes())
+p, w, c = map(info, [phone, watch, widget])
+assert p['CFBundleVersion'] == w['CFBundleVersion'] == c['CFBundleVersion'], 'Companion build versions differ'
+assert c['CFBundleIdentifier'] == w['CFBundleIdentifier'] + '.complications', 'Unexpected complication identity'
+assert c.get('CFBundleName') and c.get('CFBundlePackageType') == 'XPC!', 'Invalid extension bundle metadata'
+assert c['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.widgetkit-extension', 'Not a WidgetKit extension'
+assert w['CFBundleIcons']['CFBundlePrimaryIcon']['CFBundleIconName'] == 'AppIcon', 'Missing Watch brand icon'
+print('Verified: signed mascot complication, Watch app icon, and matching companion versions.')
+PY
 
 xcrun devicectl device install app --device "$phone_device" "$phone" --timeout 90 --json-output "$artifacts/phone-install.json"
 # Explicit installation avoids waiting for the iPhone's automatic Watch-install queue during development.

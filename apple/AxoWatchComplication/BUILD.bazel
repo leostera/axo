@@ -1,0 +1,31 @@
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
+load("@rules_apple//apple:watchos.bzl", "watchos_extension")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@axo_config//:defs.bzl", "AXO", "CAN")
+
+package(default_visibility = ["//visibility:public"])
+
+swift_library(
+    name = "AxoWatchComplication",
+    srcs = ["Sources/AxoWatchComplication.swift"],
+    copts = ["-swift-version", "5", "-application-extension"],
+    target_compatible_with = ["@platforms//os:watchos"],
+)
+
+watchos_extension(
+    name = "AxoWatchComplicationExtension",
+    application_extension = True,
+    bundle_id = AXO["apple"]["bundle_ids"]["watch"] + ".complications",
+    infoplists = ["Info.plist"],
+    minimum_os_version = AXO["apple"]["watchos_min"],
+    resources = ["//assets:watch_complication_mark"],
+    provisioning_profile = ":AxoWatchComplicationProfile" if CAN.watch_device else None,
+    version = "//apple/AxoWatch:build_version",
+    deps = [":AxoWatchComplication"],
+)
+
+local_provisioning_profile(
+    name = "AxoWatchComplicationProfile",
+    profile_name = AXO["apple"]["watch_complication_profile"],
+    team_id = AXO["apple"]["team"],
+) if CAN.watch_device else None

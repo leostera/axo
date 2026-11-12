@@ -18,6 +18,18 @@ Requests/results are bound to the account, exact sign-in fingerprint, request ID
 
 Prompts use the shared command-ID/retry logic and follow-up delivery, so they do not interrupt an agent already working on the Mac. Uncertain delivery is shown instead of inviting a duplicate send. Offline hosts remain readable but cannot receive a prompt. Elicitation answers, voice playback, complications, and a routing agent are not implemented; questions currently direct you to the iPhone.
 
+## Brand and watch-face mascot
+
+The Watch uses Axo’s existing app-icon artwork, Fredoka wordmark, and actual Rive mascot frames.
+The mascot lives in the app header; tapping it gets a small happy reaction, respecting Reduce
+Motion. It is not a separate drawing or a bundled Rive runtime.
+
+A lightweight WidgetKit extension provides the mascot for **circular** and **corner** complication
+slots. On the Watch, edit a compatible face → Complications → select a small circular/corner slot
+→ **Axo**. Tapping the mascot opens the app and its remembered session; it never starts recording.
+The complication is a static launcher, not a live status indicator: no polling, shared credentials,
+account details, or microphone access. WidgetKit controls its tint and Always On rendering.
+
 ## Sign-in behavior
 
 - Keep the phone and Watch apps open for the first sync. Apple may wake the phone app for later Watch requests, but reachability and background delivery are controlled by watchOS/iOS.
@@ -44,7 +56,7 @@ All targets are declared in the same generated Xcode project. Shared project gen
 
 ## Run on devices
 
-Xcode must already trust both devices, Developer Mode must be enabled, and the development profiles named by `apple.phone_profile` and `apple.watch_profile` in `config.json` must be installed. Profile creation/registration is an explicit Apple-account operation; the script below never does it automatically. Signing credentials and profiles stay outside Git.
+Xcode must already trust both devices, Developer Mode must be enabled, and the development profiles named by `apple.phone_profile`, `apple.watch_profile`, and `apple.watch_complication_profile` in `config.json` must be installed. Profile creation/registration is an explicit Apple-account operation; the script below never does it automatically. Signing credentials and profiles stay outside Git.
 
 ```sh
 xcrun devicectl list devices
@@ -81,5 +93,13 @@ bazel test //apple/AxoCompanion:AxoCompanionTests \
   --test_env=AXO_REAL_SPEECH_FIXTURE=/tmp/axo-watch-synthetic-voice.aiff \
   --strategy=TestRunner=local --test_timeout=180
 ```
+
+Build 46 restores brand assets and embeds the signed WidgetKit mascot extension. Its real Bazel
+bundle installed on the iPhone and Watch and the Watch process launched successfully. Its
+physical report recorded a completed HTTPS account hello at `2026-11-12T20:30:47Z` before
+normal wrist-down suspension. The extra
+development identifier/profile was created only after explicit approval. Physical watch-face
+selection/rendering still needs a person to add the complication; installation alone does not
+prove the complication has been selected or rendered.
 
 A person still needs to approve the Watch microphone permission and verify the full physical recording → WatchConnectivity → iPhone transcription → Session reply round trip. Mac file-transcription tests and device launch do **not** prove that hardware audio path.

@@ -31,6 +31,7 @@ struct WatchChatView: View {
     }
     .navigationTitle(capturing ? "Axo" : title)
     .toolbar {
+      ToolbarItem(placement: .topBarLeading) { WatchMascot().frame(width: 30, height: 20) }
       if !capturing, !handingOff {
         ToolbarItem(placement: .topBarTrailing) {
           Button("Sessions", systemImage: "list.bullet") { choosingSession = true }
@@ -98,6 +99,7 @@ struct WatchChatView: View {
             Button("Choose another session") { choosingSession = true }
           } else { ProgressView("Reconnecting…") }
         } else {
+          WatchBrandHeader().frame(maxWidth: .infinity)
           Text("One session on your wrist").font(.headline)
           Text("Choose a session once. Axo brings you back here.").font(.caption).foregroundStyle(.secondary)
           Button("Choose session") { choosingSession = true }

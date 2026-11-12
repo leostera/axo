@@ -25,6 +25,9 @@ swift_library(
 watchos_application(
     name = "AxoWatchApp",
     bundle_id = AXO["apple"]["bundle_ids"]["watch"],
+    app_icons = ["//assets:watch_app_icon"],
+    extensions = ["//apple/AxoWatchComplication:AxoWatchComplicationExtension"],
+    resources = ["//assets:watch_brand", "//assets:fonts"],
     infoplists = ["Info.plist", ":companion_info"],
     minimum_os_version = AXO["apple"]["watchos_min"],
     version = ":build_version",

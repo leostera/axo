@@ -28,7 +28,7 @@ private struct WatchHome: View {
         } else {
           ScrollView {
             VStack(spacing: 12) {
-              Image(systemName: "applewatch").font(.largeTitle).foregroundStyle(.mint).accessibilityHidden(true)
+              WatchBrandHeader()
               status
               Button("Refresh", systemImage: "arrow.clockwise") {
                 companion.sync()

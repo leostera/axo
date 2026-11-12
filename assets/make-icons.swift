@@ -62,17 +62,20 @@ func write(_ image: CGImage, to path: String) {
   precondition(CGImageDestinationFinalize(destination), "could not write \(path)")
 }
 
-// iOS: one flat 1024 square; the system rounds it.
-write(render(size: 1024, opaque: true, artFraction: 1, rounded: false), to: "ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png")
-try! """
-{
-  "images" : [
-    { "filename" : "icon-1024.png", "idiom" : "universal", "platform" : "ios", "size" : "1024x1024" }
-  ],
-  "info" : { "author" : "xcode", "version" : 1 }
-}
+// iOS/watchOS: one flat 1024 square; each system applies its own mask (rounded/circular).
+for platform in ["ios", "watchos"] {
+  let directory = "\(platform)/Assets.xcassets/AppIcon.appiconset"
+  write(render(size: 1024, opaque: true, artFraction: 1, rounded: false), to: "\(directory)/icon-1024.png")
+  try! """
+  {
+    "images" : [
+      { "filename" : "icon-1024.png", "idiom" : "universal", "platform" : "\(platform)", "size" : "1024x1024" }
+    ],
+    "info" : { "author" : "xcode", "version" : 1 }
+  }
 
-""".write(toFile: "ios/Assets.xcassets/AppIcon.appiconset/Contents.json", atomically: true, encoding: .utf8)
+  """.write(toFile: "\(directory)/Contents.json", atomically: true, encoding: .utf8)
+}
 
 // macOS: a rounded square 80% of the canvas on a transparent one, at every size the system asks for.
 var macImages: [String] = []
