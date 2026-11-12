@@ -25,6 +25,8 @@ public final class AccountSession {
   public private(set) var state: State
   /// Changes on every successful sign-in or sign-out, including a switch between accounts.
   public private(set) var credentialRevision = UUID()
+  /// Explicit sign-out wins over a later foreground restore of previously unavailable storage.
+  public private(set) var hasEndedSession = false
   /// Why the last sign-in did not take, for the sign-in screen to show.
   public private(set) var signInFailure: String?
   private let store: any SessionTokenStoring
@@ -48,13 +50,23 @@ public final class AccountSession {
       return
     }
     signInFailure = nil
+    hasEndedSession = false
     state = .signedIn
     credentialRevision = UUID()
   }
 
   public func signOut() {
+    hasEndedSession = true
     store.delete()
     state = .signedOut
+    credentialRevision = UUID()
+  }
+
+  /// A background launch can occur while the Keychain is locked. Restore on foreground once
+  /// available, but never undo a sign-out made in this app process.
+  public func restoreStoredSession() {
+    guard state == .signedOut, !hasEndedSession, store.load() != nil else { return }
+    state = .signedIn
     credentialRevision = UUID()
   }
 

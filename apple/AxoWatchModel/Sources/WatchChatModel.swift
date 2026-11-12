@@ -42,6 +42,7 @@ public final class WatchChatModel {
   public let workbench: PhoneWorkbench
   public let account: AccountSession
   public private(set) var target: WatchChatTarget?
+  public private(set) var rememberedSessionName: String?
   public private(set) var draft: WatchVoiceDraft?
   public private(set) var failure: String?
   private let defaults: UserDefaults
@@ -57,6 +58,7 @@ public final class WatchChatModel {
     if let bytes = defaults.data(forKey: selectionKey),
       let stored = try? JSONDecoder().decode(WatchChatTarget.self, from: bytes), stored.accountID == accountID {
       target = stored
+      rememberedSessionName = defaults.string(forKey: selectionKey + ".name")
     }
   }
 
@@ -96,14 +98,35 @@ public final class WatchChatModel {
     reconcile()
   }
 
-  /// Called when the account listing changes. Never silently fall back to a different Session.
+  /// Resolve the remembered identity against the new listing, including a restart of the same
+  /// Mac. This is never a fallback to a different host or Session. Old dictations stay fenced.
   public func reconcile() {
-    guard let target, selectedSession != nil else { return }
+    guard let remembered = target, remembered.accountID == accountID,
+      let host = workbench.hosts.hosts.first(where: { $0.hostId == remembered.host.hostId }),
+      let session = workbench.sessions(of: host).first(where: { $0.sessionId == remembered.session && $0.hasAgent != false }) else { return }
+    if remembered.host != host.reference {
+      guard !workbench.isSending else { return }
+      draft = nil
+      target = WatchChatTarget(accountID: accountID, host: host.reference, session: remembered.session)
+      if workbench.current?.reference != host.reference { workbench.close() }
+    }
+    remember(session.displayName)
+    guard let target else { return }
     if workbench.selection?.host != target.host.hostId || workbench.selection?.session != target.session
       || workbench.current?.reference != target.host {
       workbench.select(host: target.host.hostId, session: target.session)
     }
     chat?.feed.animates = false
+  }
+
+  private func remember(_ name: String) {
+    if rememberedSessionName != name {
+      rememberedSessionName = name
+      defaults.set(name, forKey: selectionKey + ".name")
+    }
+    if let target, let bytes = try? JSONEncoder().encode(target), defaults.data(forKey: selectionKey) != bytes {
+      defaults.set(bytes, forKey: selectionKey)
+    }
   }
 
   @discardableResult
@@ -115,7 +138,7 @@ public final class WatchChatModel {
     draft = nil
     failure = nil
     self.target = target
-    if let bytes = try? JSONEncoder().encode(target) { defaults.set(bytes, forKey: selectionKey) }
+    remember(session.displayName)
     reconcile()
     return true
   }
@@ -129,12 +152,15 @@ public final class WatchChatModel {
     return true
   }
 
-  public func discardDraft() { if !workbench.isSending { draft = nil } }
+  public func discardDraft() { if !workbench.isSending { draft = nil; failure = nil } }
 
   public func send() async {
     guard canSend, let draft, let target, draft.target == target,
       workbench.selection == PhoneWorkbench.Selection(host: target.host.hostId, session: target.session),
-      workbench.current?.reference == target.host else { return }
+      workbench.current?.reference == target.host else {
+      if draft != nil { failure = "Not sent. Waiting for the session connection; retry when it is back." }
+      return
+    }
     workbench.setDraft(draft.text, for: PhoneWorkbench.Selection(host: target.host.hostId, session: target.session))
     // Do not interrupt work someone started on the Mac. The shared model keeps one commandId
     // across uncertain retries, so a reconnect cannot duplicate the dictated prompt.

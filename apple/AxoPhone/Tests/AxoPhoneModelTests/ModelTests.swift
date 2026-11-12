@@ -43,6 +43,22 @@ final class AccountSessionTests: XCTestCase {
     XCTAssertNil(session.signInFailure)
   }
 
+  func testAStoreThatBecomesAvailableCanRestoreButCannotUndoExplicitSignOut() throws {
+    let store = MemoryTokenStore()
+    let session = AccountSession(store: store)
+    XCTAssertEqual(session.state, .signedOut)
+    try store.save(SessionToken.fixture())
+    session.restoreStoredSession()
+    XCTAssertEqual(session.state, .signedIn)
+    session.signOut()
+    try store.save(SessionToken.fixture())
+    session.restoreStoredSession()
+    XCTAssertEqual(session.state, .signedOut)
+    XCTAssertTrue(session.hasEndedSession)
+    session.signIn(with: SessionToken.fixture())
+    XCTAssertFalse(session.hasEndedSession)
+  }
+
   func testOnlyAnAccessRefusalSignsThePhoneOut() {
     let session = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
     XCTAssertFalse(session.noteFailure(RelayError.httpStatus(503)))

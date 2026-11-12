@@ -1,4 +1,5 @@
 import AxoPhoneModel
+import AxoVoiceUI
 import SwiftUI
 
 /// The microphone in the empty message box, where Send goes: tap to talk.
@@ -47,7 +48,7 @@ struct VoiceListeningBar: View {
         if finishing {
           ProgressView().frame(maxWidth: .infinity, minHeight: 34)
         } else {
-          VoiceWaveform(voice: voice).frame(maxWidth: .infinity)
+          AudioWaveform { voice.audioLevel }.frame(maxWidth: .infinity)
         }
         circleButton("stop.fill", label: "Stop", id: "voice-stop") { voice.finish(.draft) }
           .accessibilityHint("Put the words in the message box to read first")
@@ -93,33 +94,6 @@ struct VoiceListeningBar: View {
     .foregroundStyle(.primary)
     .accessibilityLabel(label)
     .accessibilityIdentifier(id)
-  }
-}
-
-/// The microphone's loudness over the last second and a half, as bars. Only measured levels are
-/// drawn; nothing is made up.
-private struct VoiceWaveform: View {
-  let voice: VoicePrompt
-  @State private var levels = Array(repeating: 0.0, count: 30)
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  var body: some View {
-    TimelineView(.animation(minimumInterval: reduceMotion ? 0.2 : 0.05)) { context in
-      HStack(spacing: 3) {
-        ForEach(levels.indices, id: \.self) { index in
-          Capsule().fill(Color.secondary)
-            .frame(height: max(3, VoiceWaveformScale.heightFraction(for: levels[index]) * 30))
-            .frame(maxWidth: .infinity)
-        }
-      }
-      .frame(height: 34)
-      .onChange(of: context.date) {
-        levels.removeFirst()
-        levels.append(voice.audioLevel)
-      }
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel("Listening")
   }
 }
 

@@ -2,10 +2,12 @@ import AxoClient
 import AxoCompanion
 import AxoPhoneModel
 import SwiftUI
+import UIKit
 
 /// The app's one set of long-lived objects.
 @MainActor
 final class AppEnvironment: ObservableObject {
+  static let shared = AppEnvironment()
   let endpoint: RelayEndpoint
   let account: AccountSession
   let companion: PhoneCompanionSignIn
@@ -27,18 +29,32 @@ final class AppEnvironment: ObservableObject {
       account = AccountSession(store: KeychainTokenStore())
     #endif
     let account = self.account
-    companion = PhoneCompanionSignIn {
-      guard account.state == .signedIn else { return .signedOut }
-      let revision = account.credentialRevision
-      let token = try await account.tokens.sessionToken()
-      guard account.state == .signedIn, account.credentialRevision == revision else { throw CompanionError.phoneUnavailable }
+    companion = PhoneCompanionSignIn(authentication: {
+      guard !account.hasEndedSession else { return .signedOut }
+      let token: SessionToken?
+      do { token = try KeychainTokenStore().loadForCompanion() }
+      catch let error as KeychainError { throw CompanionError.storage(error.status) }
+      guard let token else { return .signedOut }
       return .signedIn(try CompanionSession(token: token.value))
-    }
+    }, transcribeAudio: { url in
+      guard #available(iOS 26, *) else { throw CompanionVoiceFailure.unsupported }
+      return try await CompanionAudioTranscriber().transcribe(url)
+    })
+  }
+}
+
+/// Activate WatchConnectivity at application launch, including background file delivery before
+/// SwiftUI has created a window. Views and the delegate share the same companion service.
+@MainActor
+public final class AxoPhoneLifecycle: NSObject, UIApplicationDelegate {
+  public func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+    _ = AppEnvironment.shared
+    return true
   }
 }
 
 public struct AxoPhoneRoot: View {
-  @StateObject private var environment = AppEnvironment()
+  @StateObject private var environment = AppEnvironment.shared
   @State private var sidewaysScrolling = SidewaysScrolling()
   @Environment(\.scenePhase) private var scenePhase
 
@@ -56,7 +72,10 @@ public struct AxoPhoneRoot: View {
     .environment(sidewaysScrolling)
     .task(id: environment.account.credentialRevision) { await environment.companion.refresh() }
     .onChange(of: scenePhase) { _, phase in
-      if phase == .active { Task { await environment.companion.refresh() } }
+      if phase == .active {
+        environment.account.restoreStoredSession()
+        Task { await environment.companion.refresh() }
+      }
     }
   }
 }

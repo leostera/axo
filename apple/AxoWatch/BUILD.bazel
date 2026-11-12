@@ -15,6 +15,7 @@ swift_library(
     deps = [
         "//apple/AxoCompanion",
         "//apple/AxoWatchModel",
+        "//apple/AxoVoiceUI",
         "//apple/AxoPhone:AxoPhoneModel",
         "//apple/AxoClient",
         "//apple/AxoProtocol",

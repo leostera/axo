@@ -2,7 +2,7 @@
   "version": "0.51",
   "builds": {
     "mac": 322,
-    "phone": 44,
+    "phone": 45,
     "axod": 74
   },
   "apple": {

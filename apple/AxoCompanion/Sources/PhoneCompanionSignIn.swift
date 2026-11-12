@@ -19,7 +19,16 @@ public final class CompanionSnapshotPublisher {
     defaults.set(authority.uuidString, forKey: prefix + "authority")
     defaults.set(revision, forKey: prefix + "revision")
     defaults.set(authentication.fingerprint, forKey: prefix + "fingerprint")
+    defaults.set(authentication.session?.accountID.uuidString, forKey: prefix + "account")
     return snapshot
+  }
+
+  /// Local transcription only: matching this non-secret metadata never grants a token or
+  /// access to Axo. It lets a cold, locked iPhone process recognize the already signed-in Watch.
+  func matchesPublishedVoiceIdentity(_ request: CompanionVoiceRequest, now: Date = .now) -> Bool {
+    request.isFresh(now: now)
+      && defaults.string(forKey: prefix + "fingerprint") == request.signInFingerprint
+      && defaults.string(forKey: prefix + "account").flatMap(UUID.init(uuidString:)) == request.accountID
   }
 }
 
@@ -44,9 +53,13 @@ public final class PhoneCompanionSignIn: NSObject, WCSessionDelegate {
   private let authentication: @MainActor () async throws -> CompanionAuthentication
   private let publisher: CompanionSnapshotPublisher
   private let session: WCSession?
+  private let voice: PhoneVoiceTranscription
 
-  public init(authentication: @escaping @MainActor () async throws -> CompanionAuthentication) {
+  public init(authentication: @escaping @MainActor () async throws -> CompanionAuthentication,
+    transcribeAudio: @escaping @Sendable (URL) async throws -> String = { _ in throw CompanionVoiceFailure.unsupported }
+  ) {
     self.authentication = authentication
+    voice = PhoneVoiceTranscription(authentication: authentication, transcribe: transcribeAudio)
     publisher = CompanionSnapshotPublisher()
     session = WCSession.isSupported() ? WCSession.default : nil
     super.init()
@@ -58,6 +71,7 @@ public final class PhoneCompanionSignIn: NSObject, WCSessionDelegate {
     guard let session, session.activationState == .activated, session.isPaired else { return }
     do {
       let snapshot = try publisher.snapshot(for: await authentication())
+      voice.authenticationChanged(snapshot.authentication)
       try session.updateApplicationContext([companionPayloadKey: JSONEncoder().encode(snapshot)])
     } catch {
       // Never publish a false sign-out because the phone Keychain is temporarily locked.
@@ -80,10 +94,31 @@ public final class PhoneCompanionSignIn: NSObject, WCSessionDelegate {
     Task { @MainActor in
       do {
         let snapshot = try self.publisher.snapshot(for: await self.authentication())
+        self.voice.authenticationChanged(snapshot.authentication)
         let reply = CompanionSyncReply(requestID: request.requestID, snapshot: snapshot)
         replyHandler([companionPayloadKey: try JSONEncoder().encode(reply)])
       } catch { replyHandler([:]) }
     }
+  }
+
+  public nonisolated func session(_ session: WCSession, didReceiveMessageData messageData: Data, replyHandler: @escaping (Data) -> Void) {
+    // Acknowledge receipt immediately; speech results have their own authenticated reply.
+    replyHandler(Data())
+    guard let (request, copy) = PhoneVoiceTranscription.receivePacket(messageData) else { return }
+    Task { @MainActor in self.voice.receive(request, audio: copy, session: session) }
+  }
+
+  public nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
+    guard let (request, copy) = PhoneVoiceTranscription.receiveFile(file) else { return }
+    Task { @MainActor in self.voice.receive(request, audio: copy, session: session) }
+  }
+
+  public nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) { receiveVoiceCancel(userInfo) }
+  public nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) { receiveVoiceCancel(message) }
+
+  private nonisolated func receiveVoiceCancel(_ message: [String: Any]) {
+    guard let text = message[companionVoiceCancelKey] as? String, let id = UUID(uuidString: text) else { return }
+    Task { @MainActor in self.voice.cancel(id) }
   }
 
   public nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}

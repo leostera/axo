@@ -6,6 +6,8 @@
   <string>en</string>
   <key>CFBundleDisplayName</key>
   <string>Axo</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Axo records your voice when you tap the microphone. Send transcribes it on your paired iPhone and messages the selected session.</string>
   <key>WKApplication</key>
   <true/>
   <key>WKRunsIndependentlyOfCompanionApp</key>

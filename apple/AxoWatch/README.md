@@ -4,13 +4,17 @@ The Watch is a companion client, not a host: it does not run Sessions or enroll 
 
 The companion verifies the account with the existing `/api/auth/me` endpoint on foreground and every 30 seconds while active. A signed-in Watch uses an acknowledged HTTPS mailbox for its account/session stream, with the same native client and conversation models as the iPhone. watchOS blocks ordinary apps from opening WebSockets (Apple TN3135); Mac/iPhone clients retain their existing WebSocket transport. It never runs an agent locally.
 
-## Dictate into one Session
+## Talk into one Session
 
 1. Sign in on the iPhone if needed, then open Axo on the Watch.
-2. Tap **Choose session** and pick an existing agent Session from the account-wide **Active** and **Earlier** groups, using the shared iPhone/web classification and ordering rules. Sessions are never sectioned by machine; a machine name is only secondary row context. The Watch remembers that account, host generation, and Session across launches; it never silently switches to another Session if the chosen one disappears.
-3. Tap **Dictate**. Apple's watchOS text-entry sheet provides dictation, keyboard, and Scribble where available. Dictation availability and speech processing follow the Watch's language, network, and Apple system settings; this is not the iPhone's custom on-device SpeechAnalyzer implementation.
-4. Finish input, review the transcript, and tap **Send**. Cancelling does not send anything. A late dictation callback for an old selection is discarded.
-5. Read the reply as it streams. Full user/assistant text is retained in the loaded history window; tool logs and reasoning are not shown. **Latest** returns to the bottom without forcibly scrolling away from what you are reading.
+2. Choose an existing agent Session from the account-wide **Active** and **Earlier** groups, using the shared iPhone/web rules. Machines are secondary row labels, never groups. The account-bound selection and title survive relaunches; the in-memory catalog and conversation survive foreground changes. The same Session can reopen after its Mac restarts, but an old recording cannot cross that host-generation boundary. A disappeared Session never silently reroutes.
+3. Tap the **microphone** and allow microphone access on the Watch. A custom recording screen shows the Session name and the same metered waveform as iPhone—no system dictation sheet, keyboard, or live transcript. Recording is capped at 90 seconds.
+4. Tap **↑ Send** to stop the microphone, transcribe on the paired iPhone, and send directly to that Session. There is no review sheet. **× Cancel** discards the attempt, including during transcription. An unsent message remains explicitly retryable without displaying a transcript preview.
+5. Read the streamed conversation. Tools and reasoning remain hidden. Scroll with the Digital Crown; there is no Latest/down-scroll button.
+
+watchOS cannot use Apple's Speech framework. Audio is recorded locally as bounded mono AAC and leaves the Watch **only after Send**. Short recordings use an immediate WatchConnectivity data message; longer recordings and unreachable-message fallbacks use its queued file transport. The iPhone copies incoming temporary files before the delegate returns, runs on-device SpeechAnalyzer/SpeechTranscriber, and returns a request-bound result. Audio is not uploaded to a cloud transcription service. Local temporary recordings are removed on completion/cancellation; the OS manages residual temporary storage after a process crash. Speech models may need Apple's asset download on first use. Keep the paired iPhone nearby; if unavailable, nothing is sent. Phone activation occurs at application launch, including background wakes. Locked-Keychain unavailability is not mistaken for sign-out; non-secret metadata can recognize the already published Watch identity for local transcription only, never grant API access.
+
+Requests/results are bound to the account, exact sign-in fingerprint, request ID, and expiry. Cancellation fences late callbacks. Audio/file size, duration, reply size, cached replies, and outstanding work are bounded.
 
 Prompts use the shared command-ID/retry logic and follow-up delivery, so they do not interrupt an agent already working on the Mac. Uncertain delivery is shown instead of inviting a duplicate send. Offline hosts remain readable but cannot receive a prompt. Elicitation answers, voice playback, complications, and a routing agent are not implemented; questions currently direct you to the iPhone.
 
@@ -36,7 +40,7 @@ open apple/Axo.xcodeproj
 
 All targets are declared in the same generated Xcode project. Shared project generation also analyzes Mac dependencies, so an unrelated llama.cpp/sccache build problem can block generation even when both companion apps build directly through Bazel.
 
-`apple/AxoCompanion` contains the shared sign-in parser, ordering rules, Keychain storage, Watch account model, and platform-specific WatchConnectivity adapters. `apple/AxoWatchModel` binds drafts to one remembered target and adapts the shared `PhoneWorkbench` for watchOS. `Sources/AxoWatch/` contains the Watch UI. The phone starts its companion service in `AxoPhoneApp.swift` and publishes changes whenever its credential revision changes.
+`apple/AxoCompanion` contains shared authentication, ordered snapshots, bounded voice messages, phone file transcription, and WatchConnectivity adapters. `apple/AxoWatchModel` binds drafts to one remembered target and adapts `PhoneWorkbench`. `apple/AxoVoiceUI` shares the metered waveform with the phone. `Sources/AxoWatch/` contains the Watch UI and recording engine. `AxoPhoneLifecycle` starts the shared phone environment before window creation; credential changes publish new snapshots.
 
 ## Run on devices
 
@@ -64,6 +68,18 @@ bazel run //sites/axo.leostera.dev:deploy -- --provision=false
 
 A small `Library/Application Support/watch-connection.json` report in the Watch app container contains only build, transport, connection state, and timestamps—never tokens, account IDs, Session names, transcripts, or arbitrary errors. `lastConnectedAt` records a completed account hello, not merely process launch. It can be retrieved with `devicectl device copy from` for physical-device verification.
 
-## Verified on hardware
+## Verification
 
-Build 44 (Active/Earlier picker and HTTPS transport) was installed and launched from the signed Bazel companion bundle on an iPhone 15 Pro and Apple Watch Series 10 running watchOS 26.6. Build 44's physical Watch report verified a completed authenticated HTTPS account/session handshake (`state: connected`, `transport: https`). The earlier build 41 used WebSockets and could launch but not connect on physical watchOS; build/launch success was insufficient evidence. Automated tests cover token parsing, authority/revision ordering, stale replies, sign-out, revocation, network failures, failed secure storage, target/account/host binding, draft cancellation, and refusal to reroute a disappeared Session. Existing iPhone model tests cover shared transcript streaming and prompt delivery. Actual speech recognition and the first real-account dictated prompt still require a person to speak, review, and send on the Watch; process verification alone does not assert that round trip has completed.
+Build 44 verified authenticated HTTPS connectivity on an iPhone 15 Pro and Apple Watch Series 10 (watchOS 26.6), followed by a person-sent Watch message and reply. Build 41's WebSocket version could launch but not connect, so launch alone is not connectivity evidence.
+
+Build 45 adds custom recording/phone transcription, warm-session continuity, and automatic same-Session restoration after a Mac restart. Its signed device bundle builds, installs on both devices, and launches on the physical Watch. Build 45's physical connection report verified `state: connected`, `transport: https`, and a completed account hello at `2026-11-12T20:12:10Z`. Automated tests cover authentication, account/host fencing, cached selection/title, suspend retention, stale voice requests/replies, audio message budgets, no speech, oversized input, and locked-phone identity/sign-out behavior. The actual SpeechAnalyzer file path was separately exercised on this Mac using synthetic hello-world speech; it recognized the expected words in about five seconds. Run that opt-in integration check with:
+
+```sh
+say -o /tmp/axo-watch-synthetic-voice.aiff 'Hello world. This is a test message from my watch.'
+bazel test //apple/AxoCompanion:AxoCompanionTests \
+  --test_filter='CompanionVoiceTests/testRealSpeechFixtureWhenRequested' \
+  --test_env=AXO_REAL_SPEECH_FIXTURE=/tmp/axo-watch-synthetic-voice.aiff \
+  --strategy=TestRunner=local --test_timeout=180
+```
+
+A person still needs to approve the Watch microphone permission and verify the full physical recording → WatchConnectivity → iPhone transcription → Session reply round trip. Mac file-transcription tests and device launch do **not** prove that hardware audio path.

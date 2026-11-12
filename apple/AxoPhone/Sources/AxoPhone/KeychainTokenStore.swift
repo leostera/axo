@@ -9,15 +9,21 @@ struct KeychainTokenStore: SessionTokenStoring {
   private let service = "dev.leostera.axo.phone.access"
   private let account = "session-token"
 
-  func load() -> SessionToken? {
+  func load() -> SessionToken? { try? loadForCompanion() }
+
+  /// A locked Keychain is unavailable, not a sign-out. The companion must preserve that
+  /// distinction when iOS wakes the phone for a Watch recording while its screen is locked.
+  func loadForCompanion() throws -> SessionToken? {
     var query = baseQuery
     query[kSecReturnData as String] = true
     query[kSecMatchLimit as String] = kSecMatchLimitOne
     var item: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-      let data = item as? Data, let text = String(data: data, encoding: .utf8)
-    else { return nil }
-    return SessionToken(text)
+    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    if status == errSecItemNotFound { return nil }
+    guard status == errSecSuccess else { throw KeychainError(status: status) }
+    guard let data = item as? Data, let text = String(data: data, encoding: .utf8), let token = SessionToken(text)
+    else { throw KeychainError(status: errSecDecode) }
+    return token
   }
 
   func save(_ token: SessionToken) throws {

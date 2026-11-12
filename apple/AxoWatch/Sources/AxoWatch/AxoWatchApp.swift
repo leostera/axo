@@ -20,10 +20,11 @@ private struct WatchHome: View {
   }
 
   var body: some View {
+    let companion = self.companion
     NavigationStack {
       Group {
         if let chat, chat.account.state == .signedIn {
-          WatchChatView(model: chat)
+          WatchChatView(model: chat, transcribeAudio: { url in try await companion.transcribeAudio(url) })
         } else {
           ScrollView {
             VStack(spacing: 12) {

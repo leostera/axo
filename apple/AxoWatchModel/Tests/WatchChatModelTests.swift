@@ -9,7 +9,7 @@ final class WatchChatModelTests: XCTestCase {
   private let accountID = UUID(uuidString: "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11")!
   private var sessionID: SessionID { SessionID(UUID(uuidString: "11111111-1111-4111-8111-111111111111")!) }
 
-  private func fixture() throws -> (WatchChatModel, RemoteHost) {
+  private func fixture(defaults storage: UserDefaults? = nil) throws -> (WatchChatModel, RemoteHost) {
     let session = RemoteSession(hostId: UUID(), sessionId: sessionID, name: "Watch test", hasAgent: true)
     let host = RemoteHost(hostId: session.hostId, hostGeneration: UUID(), label: "Test Mac", status: .online, sessions: [session])
     let profile = TestProfile()
@@ -22,8 +22,49 @@ final class WatchChatModelTests: XCTestCase {
     let workbench = PhoneWorkbench(hosts: hosts, feed: connection, account: account, makeWorkbench: { host in
       HostWorkbenchModel(host: host, connection: HostConnection(account: connection, host: host.reference), feed: connection, account: account)
     })
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: "watch-chat-tests-\(UUID())"))
+    let defaults = try XCTUnwrap(storage ?? UserDefaults(suiteName: "watch-chat-tests-\(UUID())"))
     return (WatchChatModel(accountID: accountID, workbench: workbench, account: account, defaults: defaults), host)
+  }
+
+  func testSuspendKeepsTheSessionCatalogAndLastChoiceInMemory() throws {
+    let (model, host) = try fixture()
+    XCTAssertTrue(model.select(host: host, session: host.sessions[0]))
+    let catalog = model.workbench.hosts.hosts
+    let target = model.target
+    model.suspend()
+    XCTAssertEqual(model.workbench.hosts.hosts, catalog)
+    XCTAssertEqual(model.target, target)
+    XCTAssertEqual(model.rememberedSessionName, "Watch test")
+    model.stop()
+  }
+
+  func testLastSessionIdentityAndTitleSurviveAColdLaunchWithoutPickingAnotherHost() throws {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: "watch-restore-tests-\(UUID())"))
+    let (first, host) = try fixture(defaults: defaults)
+    XCTAssertTrue(first.select(host: host, session: host.sessions[0]))
+    let remembered = first.target
+    first.stop()
+    let (second, _) = try fixture(defaults: defaults)
+    XCTAssertEqual(second.target, remembered)
+    XCTAssertEqual(second.rememberedSessionName, "Watch test")
+    XCTAssertNil(second.selectedSession, "a different host is never a fallback")
+    second.stop()
+  }
+
+  func testTheSameSessionRestoresAfterItsMacRestartsButOldDictationIsFenced() throws {
+    let (model, host) = try fixture()
+    XCTAssertTrue(model.select(host: host, session: host.sessions[0]))
+    let oldTarget = try XCTUnwrap(model.target)
+    let generation = UUID()
+    model.workbench.hosts.adopt(ClientHello(
+      hosts: [ClientHost(hostId: host.hostId, hostGeneration: generation, label: host.label, online: true)],
+      sessions: [ClientSession(hostId: host.hostId, sessionId: sessionID, metadata: SessionMetadata(name: "Watch test", hasAgent: true))]))
+    model.reconcile()
+    XCTAssertEqual(model.target?.session, oldTarget.session)
+    XCTAssertEqual(model.target?.host.hostGeneration, generation)
+    XCTAssertEqual(model.workbench.current?.reference.hostGeneration, generation)
+    XCTAssertFalse(model.acceptTranscript("old recording", for: oldTarget))
+    model.stop()
   }
 
   func testAChosenSessionIsBoundToItsAccountAndHostGeneration() throws {

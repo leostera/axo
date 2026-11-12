@@ -75,6 +75,7 @@ swift_library(
         ":AxoPhoneModel",
         "//apple/AxoClient",
         "//apple/AxoCompanion",
+        "//apple/AxoVoiceUI",
         "//apple/AxoMascot",
         "//apple/AxoProtocol",
         "@swiftpkg_rive_ios//:RiveRuntime",
