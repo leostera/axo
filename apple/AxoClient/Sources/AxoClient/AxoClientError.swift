@@ -15,12 +15,12 @@ public enum AxoClientError: Error, Equatable, LocalizedError {
 
   public var errorDescription: String? {
     switch self {
-    case .connectionFailed(let message): "Could not connect to axod: \(message)"
-    case .connectionClosed: "The connection to axod closed before it replied."
+    case .connectionFailed(let message): "Could not connect to Axo: \(message)"
+    case .connectionClosed: "The connection to Axo closed before it replied."
     case .invalidSocketPath: "axod socket path must be absolute and fit in a local socket address."
-    case .invalidResponse(let message): "Invalid response from axod: \(message)"
-    case .serverRejected(let code, let message): "axod rejected the request (\(code)): \(message)"
-    case .requestTimedOut: "axod did not respond before the request timed out."
+    case .invalidResponse(let message): "Invalid response from Axo: \(message)"
+    case .serverRejected(let code, let message): "Axo rejected the request (\(code)): \(message)"
+    case .requestTimedOut: "Axo did not respond before the request timed out."
     }
   }
 }

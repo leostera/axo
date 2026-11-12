@@ -59,6 +59,13 @@ public struct RelayEndpoint: Equatable, Sendable {
     return components.url!
   }
 
+  /// The acknowledged HTTPS mailbox used where watchOS forbids WebSockets.
+  public func accountClientHTTPURL(clientID: ClientID) -> URL {
+    var components = URLComponents(url: url("/api/v1/account/client/http"), resolvingAgainstBaseURL: false)!
+    components.queryItems = [URLQueryItem(name: "clientId", value: clientID.rawValue)]
+    return components.url!
+  }
+
   /// A client's socket on one host's HostDO (RFD0032, protocol 3).
   public func hostClientSocketURL(host: UUID, clientID: ClientID) -> URL {
     var components = URLComponents(

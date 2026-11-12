@@ -24,6 +24,8 @@ xcodeproj(
         "//apple/AxoMac:AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
         "//apple/AxoClient:AxoClientTests",
+        "//apple/AxoCompanion:AxoCompanionTests",
+        "//apple/AxoWatchModel:AxoWatchModelTests",
         "//apple/AxoClient:AxoClientDaemonInteropTests",
         "//apple/AxoSearch:AxoSearchTests",
         "//apple/AxoMascot:AxoMascotTests",

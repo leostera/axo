@@ -1,7 +1,8 @@
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_apple//apple:watchos.bzl", "watchos_application")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
-load("@axo_config//:defs.bzl", "AXO")
+load("@axo_config//:defs.bzl", "AXO", "CAN")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -11,19 +12,40 @@ swift_library(
     module_name = "AxoWatch",
     copts = ["-swift-version", "5"],
     target_compatible_with = ["@platforms//os:watchos"],
+    deps = [
+        "//apple/AxoCompanion",
+        "//apple/AxoWatchModel",
+        "//apple/AxoPhone:AxoPhoneModel",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
 )
 
 watchos_application(
     name = "AxoWatchApp",
     bundle_id = AXO["apple"]["bundle_ids"]["watch"],
-    infoplists = ["Info.plist"],
+    infoplists = ["Info.plist", ":companion_info"],
     minimum_os_version = AXO["apple"]["watchos_min"],
     version = ":build_version",
+    provisioning_profile = ":AxoWatchProfile" if CAN.watch_device else None,
     deps = [":AxoWatch"],
+)
+
+local_provisioning_profile(
+    name = "AxoWatchProfile",
+    profile_name = AXO["apple"]["watch_profile"],
+    team_id = AXO["apple"]["team"],
+) if CAN.watch_device else None
+
+genrule(
+    name = "companion_info",
+    outs = ["Companion-Info.plist"],
+    cmd = "printf '%s' '<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>WKCompanionAppBundleIdentifier</key><string>%s</string></dict></plist>' > $@" % ("%s", AXO["apple"]["bundle_ids"]["phone"]),
 )
 
 apple_bundle_version(
     name = "build_version",
-    build_version = str(AXO["builds"]["watch"]),
+    # Apple requires the companion and iPhone app to have identical bundle versions.
+    build_version = str(AXO["builds"]["phone"]),
     short_version_string = AXO["version"],
 )

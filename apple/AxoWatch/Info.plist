@@ -8,7 +8,7 @@
   <string>Axo</string>
   <key>WKApplication</key>
   <true/>
-  <key>WKWatchOnly</key>
-  <true/>
+  <key>WKRunsIndependentlyOfCompanionApp</key>
+  <false/>
 </dict>
 </plist>

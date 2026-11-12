@@ -3,7 +3,7 @@ import { uuid } from "@axo/protocol";
 import { authExports } from "../auth/account-access";
 import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
-import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostClient, upgradeHostDaemon, upgradeHostPeers, upgradePeerHostClient } from "./account-hosts";
+import { revokeAccountHost, serveAccountHosts, serveAccountHTTPClient, upgradeAccountClient, upgradeHostClient, upgradeHostDaemon, upgradeHostPeers, upgradePeerHostClient } from "./account-hosts";
 import { serveAccountAssets, serveHostAssets, type AssetRoute } from "./assets";
 import { completeConnectionSignIn, serveApps, startConnectionSignIn, type AppsRoute } from "./apps";
 
@@ -109,6 +109,10 @@ app.all("/api/v1/host-pairings/redeem", context =>
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
   ),
+);
+
+app.all("/api/v1/account/client/http", context =>
+  serveAccountHTTPClient(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.executionCtx as ExecutionContext),
 );
 
 app.all("/api/v1/account/hosts", context =>

@@ -148,6 +148,27 @@ export async function upgradeAccountClient(
   }));
 }
 
+/** Native clients such as watchOS use authenticated HTTPS instead of restricted WebSockets. */
+export async function serveAccountHTTPClient(
+  request: Request, env: PairingEnvironment, exports: AuthExports, ctx: ExecutionContext,
+): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "POST required" }, 405, { Allow: "POST" });
+  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
+  if (!clientId.success) return json({ error: "Valid clientId required" }, 400);
+  const caller = await requireAccount(request, env, exports, "change");
+  if (caller instanceof Response) return caller;
+  return ctx.exports.AxoClientDO.getByName(clientDOName(caller.accountId, clientId.data)).fetch(new Request("https://client.internal/http", {
+    method: "POST",
+    body: request.body,
+    headers: {
+      "X-Axo-Account": caller.accountId,
+      "X-Axo-Client": clientId.data,
+      "X-Axo-Expiry": String(caller.expiresAt),
+      "X-Axo-SignIn": caller.sessionDigest,
+    },
+  }));
+}
+
 /**
  * A paired Mac's socket on one of its account's hosts (RFD0032, protocol 3), for following that
  * host's Sessions (RFD0022) or reading back its own (RFD0027). Signed in with the Mac's host

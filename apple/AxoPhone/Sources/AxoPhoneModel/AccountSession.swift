@@ -23,6 +23,8 @@ public final class AccountSession {
   }
 
   public private(set) var state: State
+  /// Changes on every successful sign-in or sign-out, including a switch between accounts.
+  public private(set) var credentialRevision = UUID()
   /// Why the last sign-in did not take, for the sign-in screen to show.
   public private(set) var signInFailure: String?
   private let store: any SessionTokenStoring
@@ -47,11 +49,13 @@ public final class AccountSession {
     }
     signInFailure = nil
     state = .signedIn
+    credentialRevision = UUID()
   }
 
   public func signOut() {
     store.delete()
     state = .signedOut
+    credentialRevision = UUID()
   }
 
   /// Call with any error from a relay request; returns whether it signed the phone out.

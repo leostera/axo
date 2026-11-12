@@ -81,6 +81,19 @@ node_test(
     tsx = True,
 )
 
+# Focused watchOS HTTPS mailbox integration tests (no client WebSockets).
+node_test(
+    name = "http_test",
+    concurrency = 1,
+    data = _DEPS + [
+        ":node_modules/tsx",
+        ":test_files",
+    ],
+    tests = ["tests/http-client.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
 # The Worker relaying to a real axod, as the Mac and the phone use it.
 node_test(
     name = "relay_test",

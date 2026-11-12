@@ -53,13 +53,21 @@ public final class AccountConnection: Sendable {
     ]
   }
 
-  public convenience init(endpoint: RelayEndpoint = .production, clientID: ClientID, tokens: any SessionTokenProvider) {
-    self.init(
-      transport: RelayWebSocketTransport(endpoint: endpoint, clientID: clientID, tokens: tokens), clientID: clientID,
-      hosts: { host in
-        RelayWebSocketTransport(
-          endpoint: endpoint, clientID: clientID, tokens: tokens, url: endpoint.hostClientSocketURL(host: host, clientID: clientID))
-      })
+  public convenience init(endpoint: RelayEndpoint = .production, clientID: ClientID, tokens: any SessionTokenProvider,
+    transport: AccountTransportMode = .platformDefault
+  ) {
+    switch transport {
+    case .https:
+      // One protocol-2 account connection, carried entirely over high-level HTTPS on watchOS.
+      self.init(transport: RelayHTTPTransport(endpoint: endpoint, clientID: clientID, tokens: tokens), clientID: clientID)
+    case .webSocket:
+      self.init(
+        transport: RelayWebSocketTransport(endpoint: endpoint, clientID: clientID, tokens: tokens), clientID: clientID,
+        hosts: { host in
+          RelayWebSocketTransport(
+            endpoint: endpoint, clientID: clientID, tokens: tokens, url: endpoint.hostClientSocketURL(host: host, clientID: clientID))
+        })
+    }
   }
 
   deinit { for task in tasks { task.cancel() } }

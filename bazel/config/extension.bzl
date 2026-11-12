@@ -24,7 +24,7 @@ keychain again.
 # may add the keys in _LOCAL_SCHEMA.
 _SCHEMA = {
     "version": "string",
-    "builds": {"mac": "int", "phone": "int", "watch": "int", "axod": "int"},
+    "builds": {"mac": "int", "phone": "int", "axod": "int"},
     "apple": {
         "team": "string",
         "macos_min": "string",
@@ -39,6 +39,7 @@ _SCHEMA = {
             "watch": "string",
         },
         "phone_profile": "string",
+        "watch_profile": "string",
         "simulator": {"device": "string", "os": "string"},
     },
     "dist": {"mac_app": "string"},
@@ -158,10 +159,9 @@ def _signing_identity(rctx, config):
     candidates = sorted(candidates, key = lambda identity: (not identity.name.startswith("Apple Development"), identity.name, identity.sha1))
     return candidates[0], None
 
-def _phone_profile(rctx, config):
-    """Whether the phone's provisioning profile is installed, and why not."""
+def _provisioning_profile(rctx, name):
+    """Whether an app's provisioning profile is installed, and why not."""
     home = rctx.os.environ.get("HOME", "")
-    name = config["apple"]["phone_profile"]
     for folder in [
         home + "/Library/Developer/Xcode/UserData/Provisioning Profiles",
         home + "/Library/MobileDevice/Provisioning Profiles",
@@ -182,7 +182,7 @@ def _phone_profile(rctx, config):
             rctx.delete("profile.plist")
             if profile_name != None and profile_name.strip() == name:
                 return True, None
-    return False, "no provisioning profile named %r (Xcode makes it the first time it signs the phone app)" % name
+    return False, "no provisioning profile named %r (Xcode makes it the first time it signs the app)" % name
 
 def _git_commit(rctx, workspace):
     """The checked-out commit, rerunning whenever HEAD moves."""
@@ -237,9 +237,14 @@ def _axo_config_impl(rctx):
     if reason:
         reasons["sign"] = reason
 
-    has_profile, reason = _phone_profile(rctx, config)
-    if reason:
-        reasons["phone_device"] = reason
+    has_watch_profile, watch_reason = _provisioning_profile(rctx, config["apple"]["watch_profile"])
+    if watch_reason:
+        reasons["watch_device"] = watch_reason
+    has_phone_profile, reason = _provisioning_profile(rctx, config["apple"]["phone_profile"])
+    # The device iPhone bundle embeds its Watch companion; both need signing profiles.
+    has_profile = has_phone_profile and has_watch_profile
+    if reason or watch_reason:
+        reasons["phone_device"] = reason or watch_reason
 
     phone = config.get("phone", {})
     phone_install = has_profile and phone.get("install", False) and bool(phone.get("device"))
@@ -275,6 +280,7 @@ def _axo_config_impl(rctx):
     can = {
         "sign": identity != None,
         "phone_device": has_profile,
+        "watch_device": has_watch_profile,
         "phone_install": phone_install,
         "pi": pi != None,
     }

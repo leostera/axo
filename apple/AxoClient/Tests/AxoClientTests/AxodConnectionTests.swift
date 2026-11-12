@@ -69,7 +69,7 @@ final class AxodConnectionTests: XCTestCase {
       XCTAssertEqual(message, "Session creation failed")
       XCTAssertEqual(
         error.localizedDescription,
-        "axod rejected the request (1): Session creation failed"
+        "Axo rejected the request (1): Session creation failed"
       )
     }
     _ = try await responder.value

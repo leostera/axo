@@ -1,9 +1,9 @@
-/** A Mac following its peers (`host-…`), the iPhone app (`ios-…`), or a browser tab. */
-export type ClientKind = "peer" | "phone" | "web";
+/** A Mac peer (`host-…`), iPhone (`ios-…`), Watch (`watch-…`), or browser tab. */
+export type ClientKind = "peer" | "phone" | "watch" | "web";
 
 /** The kind of client a client id names; the id itself is never logged. */
 export function clientKind(clientId: string): ClientKind {
-  return clientId.startsWith("host-") ? "peer" : clientId.startsWith("ios-") ? "phone" : "web";
+  return clientId.startsWith("host-") ? "peer" : clientId.startsWith("ios-") ? "phone" : clientId.startsWith("watch-") ? "watch" : "web";
 }
 
 // Deliberately excludes identity, URLs, credentials, payloads, paths and arbitrary error text.

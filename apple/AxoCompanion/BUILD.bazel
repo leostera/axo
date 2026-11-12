@@ -1,0 +1,18 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
+
+package(default_visibility = ["//visibility:public"])
+
+swift_library(
+    name = "AxoCompanion",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AxoCompanion",
+    copts = ["-swift-version", "5"],
+)
+
+swift_test(
+    name = "AxoCompanionTests",
+    srcs = glob(["Tests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoCompanion"],
+)

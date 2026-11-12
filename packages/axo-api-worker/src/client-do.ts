@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { HTTPClientMailbox, closedHTTPClient, readHTTPClientRequest, type ClientConnection } from "./client-http";
+import { json } from "./auth/account-access";
 import {
   CLIENT_METHODS,
   ELICITATION_ERRORS,
@@ -114,6 +116,7 @@ type SessionStub = { read(binding: SessionBinding, request: ReadRequest): Promis
 
 export class AxoClientDO extends DurableObject<Env> {
   private readonly partials = new MemoryPartialStore();
+  private readonly httpMailbox: HTTPClientMailbox;
   /**
    * The latest read per open Session: a reply to an older one is ignored. In memory, since a read
    * in flight keeps the object in memory, so no row is written before each read.
@@ -129,6 +132,7 @@ export class AxoClientDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.httpMailbox = new HTTPClientMailbox(ctx.storage);
     const sql = ctx.storage.sql;
     sql.exec(`CREATE TABLE IF NOT EXISTS client_identity (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL, client_id TEXT NOT NULL)`);
@@ -153,6 +157,8 @@ export class AxoClientDO extends DurableObject<Env> {
     });
     if (!attachment.success || attachment.data.expiresAt <= Date.now() || !this.bind(attachment.data.accountId, attachment.data.clientId))
       return new Response("Invalid internal identity", { status: 403 });
+    if (new URL(request.url).pathname === "/http") return this.httpTransport(request, attachment.data);
+    this.httpMailbox.end();
     // One socket per client: a reconnect replaces the old one and starts afresh.
     for (const old of this.ctx.getWebSockets()) old.close(4000, "Replaced");
     await this.forget();
@@ -163,6 +169,10 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   async webSocketMessage(socket: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    await this.processMessage(socket, raw);
+  }
+
+  private async processMessage(socket: ClientConnection, raw: string | ArrayBuffer): Promise<void> {
     const peer = this.peer(socket);
     if (!peer || peer.expiresAt <= Date.now()) return socket.close(4001, "Sign-in expired");
     if (typeof raw !== "string") return socket.close(1003, "Text required");
@@ -200,18 +210,24 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   async webSocketClose(socket: WebSocket): Promise<void> {
-    if (!this.ctx.getWebSockets().some((other) => other !== socket)) await this.forget();
+    if (!this.ctx.getWebSockets().some((other) => other !== socket) && !this.httpMailbox.active()) await this.forget();
   }
 
   async webSocketError(socket: WebSocket): Promise<void> {
     await this.webSocketClose(socket);
   }
 
-  /**
-   * An alarm a ClientDO set before RFD0031 fires once, does nothing, and is not set again. Kept
-   * so those alarms end cleanly instead of failing and being retried.
-   */
-  async alarm(): Promise<void> {}
+  /** Only HTTP clients need lease cleanup; WebSocket clients still never schedule an alarm. */
+  async alarm(): Promise<void> {
+    const deadline = this.httpMailbox.deadline();
+    if (deadline === undefined) return;
+    if (this.httpMailbox.active() && deadline > Date.now()) {
+      await this.ctx.storage.setAlarm(deadline);
+    } else {
+      this.httpMailbox.end();
+      await this.forget();
+    }
+  }
 
   /**
    * The account's hosts changed (a Mac paired or revoked): list them again and follow any new
@@ -227,6 +243,35 @@ export class AxoClientDO extends DurableObject<Env> {
     await this.followHosts(socket, false);
     this.sendElicitations(socket);
     return true;
+  }
+
+  /** HTTPS carries exactly the same protocol-2 frames without opening a socket on watchOS. */
+  private async httpTransport(request: Request, peer: Attachment): Promise<Response> {
+    const input = await readHTTPClientRequest(request);
+    const digest = request.headers.get("X-Axo-SignIn");
+    if (!input || !digest) return json({ error: "Invalid HTTP client request" }, 400);
+    if (input.action === "connect") {
+      for (const old of this.ctx.getWebSockets()) old.close(4000, "Replaced");
+      this.httpMailbox.end();
+      await this.forget();
+      this.httpMailbox.connect(input.connectionId, digest, peer, peer.expiresAt);
+      await this.ctx.storage.setAlarm(this.httpMailbox.deadline()!);
+      return json({ frames: [] });
+    }
+    const socket = this.httpMailbox.authorize(input.connectionId, digest, peer.expiresAt);
+    if (!socket) return closedHTTPClient();
+    if (input.action === "close") {
+      socket.close();
+      await this.forget();
+      return json({ frames: [] });
+    }
+    if (!this.httpMailbox.page(input.connectionId, input.after)) return closedHTTPClient();
+    if (input.action === "send") await this.processMessage(socket, input.frame!);
+    else await this.httpMailbox.wait(input.connectionId, input.after);
+    const page = this.httpMailbox.page(input.connectionId, input.after);
+    // A replaced poll owns no cleanup: clearing subscriptions here could erase its successor.
+    if (!page) return closedHTTPClient();
+    return json(page);
   }
 
   // ─── Notices from HostDOs ──────────────────────────────────────────────────
@@ -285,7 +330,7 @@ export class AxoClientDO extends DurableObject<Env> {
 
   // ─── Client requests ───────────────────────────────────────────────────────
 
-  private async receive(socket: WebSocket, peer: Attachment, call: Call): Promise<Reply | null> {
+  private async receive(socket: ClientConnection, peer: Attachment, call: Call): Promise<Reply | null> {
     const id = call.id ?? null;
     if (peer.protocol === 3 && !PROTOCOL_3_METHODS.has(call.method)) return call.id === undefined ? null : failure(id, -32601, "Method not found; protocol 3 sends it to the host's socket");
     try {
@@ -385,7 +430,7 @@ export class AxoClientDO extends DurableObject<Env> {
    * Opens a Session: the records after `have`, or the last `window` of them. The open counts as
    * acknowledged, and anything past it follows in batches.
    */
-  private async openSession(socket: WebSocket, params: z.infer<typeof clientOpenParamsSchema>): Promise<ClientOpenResult> {
+  private async openSession(socket: ClientConnection, params: z.infer<typeof clientOpenParamsSchema>): Promise<ClientOpenResult> {
     const sql = this.ctx.storage.sql;
     const readId = this.nextRead(params.sessionId);
     sql.exec(`INSERT INTO open_sessions (session_id, host_id, epoch, sent, acked, read_id, sent_at) VALUES (?, ?, NULL, 0, 0, 0, 0)
@@ -468,7 +513,7 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   /** Tells the client its copy was cut back, and continues in the new epoch from the cut. */
-  private reset(socket: WebSocket, open: OpenRow, read: Extract<ReadResult, { kind: "reset" }>): void {
+  private reset(socket: ClientConnection, open: OpenRow, read: Extract<ReadResult, { kind: "reset" }>): void {
     const keep = Math.min(open.acked, read.keep);
     this.ctx.storage.sql.exec("UPDATE open_sessions SET epoch = ?, sent = ?, acked = ? WHERE session_id = ?", read.epoch, keep, keep, open.session_id);
     this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.reset, params: { sessionId: open.session_id, epoch: read.epoch, keep: read.keep } });
@@ -494,7 +539,7 @@ export class AxoClientDO extends DurableObject<Env> {
    * Lists the account's hosts and subscribes to each, which also returns each host's index. A
    * host the account no longer lists is let go.
    */
-  private async followHosts(socket: WebSocket, hello: boolean): Promise<ClientSession[]> {
+  private async followHosts(socket: ClientConnection, hello: boolean): Promise<ClientSession[]> {
     const account = this.account();
     const self = peerHostOf(this.identity()!.clientId);
     const name = this.name();
@@ -569,7 +614,7 @@ export class AxoClientDO extends DurableObject<Env> {
     return Boolean(identity) && peerHostOf(identity!.clientId) === null;
   }
 
-  private sendElicitations(socket: WebSocket): void {
+  private sendElicitations(socket: ClientConnection): void {
     const asked = this.asked;
     this.asked = [];
     if (!this.isPerson()) return;
@@ -577,7 +622,7 @@ export class AxoClientDO extends DurableObject<Env> {
       this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.requested, params: { hostId, elicitation } });
   }
 
-  private send(socket: WebSocket, value: unknown): boolean {
+  private send(socket: ClientConnection, value: unknown): boolean {
     const frames = splitMessage(JSON.stringify(value), crypto.randomUUID().replaceAll("-", ""));
     if (!frames) {
       recordApiEvent({ event: "relay_send_failed", reason: "too_large" });
@@ -633,12 +678,12 @@ export class AxoClientDO extends DurableObject<Env> {
     return this.ctx.exports.AxoHostDO.getByName(hostDOName(this.identity()!.accountId, hostId)) as unknown as HostStub;
   }
 
-  private socket(): WebSocket | undefined {
+  private socket(): ClientConnection | undefined {
     return this.ctx.getWebSockets().find((socket) =>
-      socket.readyState === WebSocket.OPEN && (this.peer(socket)?.expiresAt ?? 0) > Date.now());
+      socket.readyState === WebSocket.OPEN && (this.peer(socket)?.expiresAt ?? 0) > Date.now()) ?? this.httpMailbox.active();
   }
 
-  private peer(socket: WebSocket): Attachment | null {
+  private peer(socket: ClientConnection): Attachment | null {
     const parsed = attachmentSchema.safeParse(socket.deserializeAttachment());
     return parsed.success ? parsed.data : null;
   }

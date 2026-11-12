@@ -2,8 +2,7 @@
   "version": "0.51",
   "builds": {
     "mac": 322,
-    "phone": 39,
-    "watch": 1,
+    "phone": 44,
     "axod": 74
   },
   "apple": {
@@ -17,9 +16,10 @@
       "mac_visual_tests": "dev.leostera.axo.vt",
       "mac_mascot_tests": "dev.leostera.axo.mascot-tests",
       "phone": "dev.leostera.axo.phone",
-      "watch": "dev.leostera.axo.watch"
+      "watch": "dev.leostera.axo.phone.watchkitapp"
     },
     "phone_profile": "iOS Team Provisioning Profile: dev.leostera.axo.phone",
+    "watch_profile": "iOS Team Provisioning Profile: dev.leostera.axo.phone.watchkitapp",
     "simulator": {
       "device": "iPhone 17",
       "os": "27.0"

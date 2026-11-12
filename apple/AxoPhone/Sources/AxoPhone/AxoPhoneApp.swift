@@ -1,4 +1,5 @@
 import AxoClient
+import AxoCompanion
 import AxoPhoneModel
 import SwiftUI
 
@@ -7,6 +8,7 @@ import SwiftUI
 final class AppEnvironment: ObservableObject {
   let endpoint: RelayEndpoint
   let account: AccountSession
+  let companion: PhoneCompanionSignIn
 
   init() {
     // A local Worker for development: AXO_RELAY_URL=http://127.0.0.1:8787
@@ -24,12 +26,21 @@ final class AppEnvironment: ObservableObject {
     #else
       account = AccountSession(store: KeychainTokenStore())
     #endif
+    let account = self.account
+    companion = PhoneCompanionSignIn {
+      guard account.state == .signedIn else { return .signedOut }
+      let revision = account.credentialRevision
+      let token = try await account.tokens.sessionToken()
+      guard account.state == .signedIn, account.credentialRevision == revision else { throw CompanionError.phoneUnavailable }
+      return .signedIn(try CompanionSession(token: token.value))
+    }
   }
 }
 
 public struct AxoPhoneRoot: View {
   @StateObject private var environment = AppEnvironment()
   @State private var sidewaysScrolling = SidewaysScrolling()
+  @Environment(\.scenePhase) private var scenePhase
 
   public init() {}
 
@@ -43,6 +54,10 @@ public struct AxoPhoneRoot: View {
       }
     }
     .environment(sidewaysScrolling)
+    .task(id: environment.account.credentialRevision) { await environment.companion.refresh() }
+    .onChange(of: scenePhase) { _, phase in
+      if phase == .active { Task { await environment.companion.refresh() } }
+    }
   }
 }
 

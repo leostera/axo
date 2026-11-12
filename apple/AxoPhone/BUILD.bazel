@@ -74,6 +74,7 @@ swift_library(
     deps = [
         ":AxoPhoneModel",
         "//apple/AxoClient",
+        "//apple/AxoCompanion",
         "//apple/AxoMascot",
         "//apple/AxoProtocol",
         "@swiftpkg_rive_ios//:RiveRuntime",
@@ -91,6 +92,7 @@ swift_library(
 
 ios_application(
     name = "AxoPhoneApp",
+    watch_application = "//apple/AxoWatch:AxoWatchApp",
     app_icons = ["//assets:ios_app_icon"],
     bundle_id = AXO["apple"]["bundle_ids"]["phone"],
     entitlements = "AxoPhone.entitlements",
@@ -179,6 +181,7 @@ local_provisioning_profile(
 # it too.
 ios_application(
     name = "AxoPhoneDevice",
+    watch_application = "//apple/AxoWatch:AxoWatchApp",
     app_icons = ["//assets:ios_app_icon"],
     bundle_id = AXO["apple"]["bundle_ids"]["phone"],
     entitlements = "AxoPhone-device.entitlements",

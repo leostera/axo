@@ -42,6 +42,14 @@ cf_bin.cf_binary(
     data = [":app_files"],
 )
 
+# Deploy the Bazel-built site; `cf deploy` otherwise runs npx outside Bazel's dependency graph.
+cf_bin.cf_binary(
+    name = "deploy",
+    args = ["deploy", "--prebuilt"],
+    chdir = package_name(),
+    data = [":app_files", ":site"],
+)
+
 # .cloudflare/types/index.d.ts: the Worker's Env and the Workers runtime (cloudflare:workers),
 # generated from cloudflare.config.ts by `cf workers types`.
 cf_bin.cf(
