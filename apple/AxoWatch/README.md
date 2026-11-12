@@ -52,7 +52,8 @@ slots. On the Watch, edit a compatible face → Complications → select a small
 The complication is a static launcher, not a live status indicator: no polling, shared credentials,
 account details, or microphone access. The complication draws native SwiftUI vector paths from
 the same geometry that generates the Rive Mark artboard, with no bitmap/template-image mask.
-The watch-face accent colors only the mascot ink. Public artwork is unredacted for Always On,
+The mascot stays in WidgetKit’s default foreground group (normally white), not the personal
+watch-face accent group. No user-selected accent is hard-coded. Public artwork is unredacted for Always On,
 and installing a new build/renderer requests a single timeline refresh (not one per wrist raise).
 
 **No continuous blinking/head animation:** Apple explicitly says complications show snapshots and
@@ -67,6 +68,10 @@ and eye/mouth geometry; generated Swift paths and the unchanged Rive file are ch
 renderer marker, and one configured `accessoryCircular` Axo complication. This confirms discovery
 and the running version, not a visual watch-face check. `watch-complication.json` stores only that
 non-sensitive discovery status; no face identifiers, account data, or arbitrary errors.
+
+Build 52 removes accent-group opt-in from the mascot. Red is used only as a rendering-test
+input to detect rectangular masks; production uses the normal semantic foreground, not a
+hard-coded personal color.
 
 ## Sign-in behavior
 

@@ -30,12 +30,12 @@ private struct MascotComplicationView: View {
   }
 
   private var mark: some View {
-    // Native paths from the Rive source, not an Image/template mask. WidgetKit accents
-    // only the actual mascot ink, and image-placeholder redaction cannot fill its bounds.
+    // Native paths from the Rive source, in the default (normally white) foreground group.
+    // Do not opt the mascot into the watch face’s personal accent color.
     AxoMascotMark().fill(.primary)
       .padding(3)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .widgetAccentable()
+      .widgetAccentable(false)
   }
 }
 
