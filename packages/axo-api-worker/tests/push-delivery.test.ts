@@ -373,3 +373,25 @@ test("a command waiting on the Mac's socket is not failed when another connectio
   const reply = await answer;
   assert.ok("result" in reply, `the Mac's answer reaches the client: ${JSON.stringify(reply)}`);
 });
+
+test("a Session's status and progress outlive the HostDO being evicted while the Mac's socket hibernates", async (t) => {
+  const { h, session, host, daemon, transcript } = await fixture(t);
+  const at = Math.floor(Date.now() / 1000);
+  daemon.send({ jsonrpc: "2.0", method: "axo.host.session.status", params: { sessionId: transcript.sessionId, status: "working", at } });
+  daemon.send({ jsonrpc: "2.0", method: "axo.host.session.progress", params: { sessionId: transcript.sessionId, slot: "tool", snapshot: { running: "swift build" }, at } });
+  // A tab that is open hears both: the HostDO has them.
+  const { connection: first, heard } = await tab(t, h, session);
+  await first.open({ hostId: host.hostId, sessionId: transcript.sessionId, have: { epoch: 1, cursor: 2 } });
+  await heard.until(() => heard.progress.length > 0, "the progress");
+
+  // A long quiet tool call: nothing comes from the Mac, the object is evicted, its socket kept.
+  await new Promise((done) => setTimeout(done, 1_500));
+  for (const id of await h.mf.listDurableObjectIds("TEST_HOST_DO"))
+    await h.mf.unsafeEvictDurableObject("api-test", "AxoHostDO", { id, webSockets: "hibernate" });
+
+  const { connection } = await tab(t, h, session);
+  const listed = connection.hello.sessions.find((row) => row.sessionId === transcript.sessionId);
+  assert.equal(listed?.status, "working", "the status the Mac last reported");
+  const opened = await connection.open({ hostId: host.hostId, sessionId: transcript.sessionId, have: { epoch: 1, cursor: 2 } });
+  assert.deepEqual(opened.progress, [{ slot: "tool", snapshot: { running: "swift build" } }], "what the Mac is doing");
+});

@@ -18,6 +18,7 @@ import {
   metaParamsSchema,
   progressParamsSchema,
   sessionMetadataSchema,
+  sessionStatusSchema,
   statusParamsSchema,
   truncateParamsSchema,
   uuid,
@@ -179,7 +180,19 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
     sql.exec(`CREATE TABLE IF NOT EXISTS pending_elicitations (
       id TEXT PRIMARY KEY, elicitation_json TEXT NOT NULL, expires_at INTEGER NOT NULL)`);
   },
+  (sql) => {
+    // What each Session is doing, as the Mac last said, kept so an eviction while the Mac's socket
+    // hibernates loses neither. Progress is saved at most every PROGRESS_SAVE_MS (saveProgress).
+    sql.exec(`CREATE TABLE IF NOT EXISTS session_statuses (session_id TEXT PRIMARY KEY, status TEXT NOT NULL)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS progress_slots (
+      session_id TEXT NOT NULL, slot TEXT NOT NULL, snapshot_json TEXT NOT NULL, PRIMARY KEY (session_id, slot))`);
+  },
 ];
+/** How long a progress snapshot may wait to be saved; an idle object is evicted after longer. */
+const PROGRESS_SAVE_MS = 1_000;
+/** A snapshot longer than this is held but not saved: a row holds at most 2 MB. */
+const MAX_SAVED_SNAPSHOT_CHARS = 512 * 1024;
+
 
 /** What a client may ask the Mac to do, through `command`, and the params each takes. */
 const hostRemoteMethods = {
@@ -203,8 +216,16 @@ type HostRemoteMethod = keyof typeof hostRemoteMethods;
 
 export class AxoHostDO extends AxoHostRelay {
   /** The newest progress snapshot per Session and slot; never stored (RFD0018, Ephemeral progress). */
+  /**
+   * What each Session's agent is doing (progress slots) and its status, as the Mac last said. Held
+   * here and kept in SQLite (`progress_slots`, `session_statuses`), read back when the object wakes:
+   * an idle object is evicted while the Mac's socket hibernates, and the Mac does not send them again.
+   */
   private readonly progress = new Map<string, Map<string, unknown>>();
   private readonly statuses = new Map<string, SessionStatus>();
+  /** Slots changed since they were last saved, as `[sessionId, slot]`, keyed by both. */
+  private readonly unsavedProgress = new Map<string, [string, string]>();
+  private progressSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly notices = new Map<string, HostNotice>();
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -222,6 +243,7 @@ export class AxoHostDO extends AxoHostRelay {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     migrate(ctx.storage, HOST_SCHEMA);
+    this.loadActivity();
     this.clients = new HostClients(ctx, {
       hostId: () => this.identity()?.host_id,
       presence: () => this.presence(),
@@ -312,8 +334,7 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override presenceChanged(hostGeneration: string, status: "online" | "offline"): void {
     if (status === "offline") {
-      this.progress.clear();
-      this.statuses.clear();
+      this.forgetActivity();
       for (const elicitation of this.pendingElicitations())
         this.queue({ kind: "elicitationResolved", resolved: { id: elicitation.id, sessionId: elicitation.sessionId, action: "cancel" } });
       this.ctx.storage.sql.exec("DELETE FROM pending_elicitations");
@@ -354,10 +375,7 @@ export class AxoHostDO extends AxoHostRelay {
       const parsed = progressParamsSchema.safeParse(call.params);
       if (!parsed.success || !this.ready(peer)) return true;
       const { sessionId, slot, snapshot } = parsed.data;
-      const slots = this.progress.get(sessionId) ?? new Map<string, unknown>();
-      if (snapshot === null || snapshot === undefined) slots.delete(slot);
-      else slots.set(slot, snapshot);
-      this.progress.set(sessionId, slots);
+      this.setProgress(sessionId, slot, snapshot ?? null);
       this.queue({ kind: "progress", sessionId, slot, snapshot: snapshot ?? null });
       return true;
     }
@@ -381,6 +399,8 @@ export class AxoHostDO extends AxoHostRelay {
       const parsed = statusParamsSchema.safeParse(call.params);
       if (!parsed.success || !this.ready(peer)) return true;
       this.statuses.set(parsed.data.sessionId, parsed.data.status);
+      this.ctx.storage.sql.exec(`INSERT INTO session_statuses (session_id, status) VALUES (?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET status = excluded.status`, parsed.data.sessionId, parsed.data.status);
       const row = this.indexRow(parsed.data.sessionId);
       if (row) this.queue({ kind: "session", session: this.clientSession(row) });
       return true;
@@ -489,7 +509,8 @@ export class AxoHostDO extends AxoHostRelay {
     if (result.outcome === "fenced") return { outcome: "conflict", epoch: result.epoch, count: result.count, chain: result.chain };
     if (result.outcome !== "committed") return { outcome: result.outcome, epoch: result.epoch, count: result.count, chain: result.chain };
     for (const slot of result.cleared) {
-      if (!this.progress.get(sessionId)?.delete(slot)) continue;
+      if (!this.progress.get(sessionId)?.has(slot)) continue;
+      this.setProgress(sessionId, slot, null);
       this.queue({ kind: "progress", sessionId, slot, snapshot: null });
     }
     // The records it just committed go to protocol 3's sockets from here, with no read
@@ -776,6 +797,67 @@ export class AxoHostDO extends AxoHostRelay {
   presence() {
     const identity = this.identity();
     return identity ? this.presenceOfMachine(identity.host_id) : { online: false, hostGeneration: null };
+  }
+
+  // ─── What each Session is doing ────────────────────────────────────────────
+
+  /** Reads back what the Mac last said each Session is doing, when the object wakes. */
+  private loadActivity(): void {
+    const sql = this.ctx.storage.sql;
+    for (const row of sql.exec<{ session_id: string; status: string }>("SELECT session_id, status FROM session_statuses").toArray()) {
+      const status = sessionStatusSchema.safeParse(row.status);
+      if (status.success) this.statuses.set(row.session_id, status.data);
+    }
+    for (const row of sql.exec<{ session_id: string; slot: string; snapshot_json: string }>(
+      "SELECT session_id, slot, snapshot_json FROM progress_slots").toArray()) {
+      const slots = this.progress.get(row.session_id) ?? new Map<string, unknown>();
+      slots.set(row.slot, JSON.parse(row.snapshot_json));
+      this.progress.set(row.session_id, slots);
+    }
+  }
+
+  /** The Mac went offline: what it said its Sessions were doing no longer holds. */
+  private forgetActivity(): void {
+    this.progress.clear();
+    this.statuses.clear();
+    this.unsavedProgress.clear();
+    if (this.progressSaveTimer) clearTimeout(this.progressSaveTimer);
+    this.progressSaveTimer = null;
+    this.ctx.storage.sql.exec("DELETE FROM progress_slots");
+    this.ctx.storage.sql.exec("DELETE FROM session_statuses");
+  }
+
+  /**
+   * A slot's snapshot, or `null` for none. Held at once; saved at most every PROGRESS_SAVE_MS, as
+   * a reply sends one every 200 ms and an object is only evicted after seconds without events.
+   */
+  private setProgress(sessionId: string, slot: string, snapshot: unknown): void {
+    const slots = this.progress.get(sessionId) ?? new Map<string, unknown>();
+    if (snapshot === null) slots.delete(slot);
+    else slots.set(slot, snapshot);
+    if (slots.size) this.progress.set(sessionId, slots);
+    else this.progress.delete(sessionId);
+    this.unsavedProgress.set(JSON.stringify([sessionId, slot]), [sessionId, slot]);
+    this.progressSaveTimer ??= setTimeout(() => {
+      this.progressSaveTimer = null;
+      this.saveProgress();
+    }, PROGRESS_SAVE_MS);
+  }
+
+  private saveProgress(): void {
+    const sql = this.ctx.storage.sql;
+    for (const [sessionId, slot] of this.unsavedProgress.values()) {
+      const snapshot = this.progress.get(sessionId)?.get(slot);
+      const json = snapshot === undefined ? null : JSON.stringify(snapshot);
+      if (json === null || json.length > MAX_SAVED_SNAPSHOT_CHARS) {
+        // Gone, or too big for a row: an eviction then forgets it, and the next update brings it back.
+        sql.exec("DELETE FROM progress_slots WHERE session_id = ? AND slot = ?", sessionId, slot);
+      } else {
+        sql.exec(`INSERT INTO progress_slots (session_id, slot, snapshot_json) VALUES (?, ?, ?)
+          ON CONFLICT(session_id, slot) DO UPDATE SET snapshot_json = excluded.snapshot_json`, sessionId, slot, json);
+      }
+    }
+    this.unsavedProgress.clear();
   }
 
   // ─── What the Mac asks (RFD0029) ───────────────────────────────────────────
