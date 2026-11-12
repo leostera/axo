@@ -8,7 +8,7 @@ The companion verifies the account with the existing `/api/auth/me` endpoint on 
 
 1. Sign in on the iPhone if needed, then open Axo on the Watch.
 2. Choose an existing agent Session from the account-wide **Active** and **Earlier** groups, using the shared iPhone/web rules. Machines are secondary row labels, never groups. The account-bound selection and title survive relaunches; the in-memory catalog and conversation survive foreground changes. The same Session can reopen after its Mac restarts, but an old recording cannot cross that host-generation boundary. A disappeared Session never silently reroutes.
-3. Tap the **microphone** and allow microphone access on the Watch. A fixed 44-point bottom row shows small Cancel/Send icons and a 10-point metered waveform—no system dictation sheet, keyboard, or live transcript. The conversation occupies the remaining height and stays scrollable with the Digital Crown throughout preparation, recording, and transcription; its Session title remains at the top. Your messages—including pending and queued prompts—use right-aligned blue bubbles like iPhone, with agent replies on the left. Tools, reasoning, and empty messages are filtered before layout, rather than leaving blank rows. Recording is capped at 90 seconds.
+3. Tap the **microphone** and allow microphone access on the Watch. A fixed 44-point bottom row shows small Cancel/Send icons and a 10-point metered waveform—no system dictation sheet, keyboard, or live transcript. The conversation occupies the remaining height and stays scrollable with the Digital Crown throughout preparation, recording, and transcription; its Session title sits in a quiet, single-line label at the very bottom. Your messages—including pending and queued prompts—use right-aligned blue bubbles like iPhone, with agent replies on the left. Tools, reasoning, and empty messages are filtered before layout, rather than leaving blank rows. Recording is capped at 90 seconds.
 4. Tap **↑ Send** to stop the microphone, transcribe on the paired iPhone, and send directly to that Session. There is no review sheet. **× Cancel** discards the attempt, including during transcription. An unsent message remains explicitly retryable without displaying a transcript preview.
 5. Read the streamed conversation. Tools and reasoning remain hidden. Scroll with the Digital Crown; there is no Latest/down-scroll button.
 
@@ -17,6 +17,12 @@ watchOS cannot use Apple's Speech framework. Audio is recorded locally as bounde
 Requests/results are bound to the account, exact sign-in fingerprint, request ID, and expiry. Cancellation fences late callbacks. Audio/file size, duration, reply size, cached replies, and outstanding work are bounded.
 
 Prompts use the shared command-ID/retry logic and follow-up delivery, so they do not interrupt an agent already working on the Mac. Uncertain delivery is shown instead of inviting a duplicate send. Offline hosts remain readable but cannot receive a prompt. Elicitation answers, voice playback, complications, and a routing agent are not implemented; questions currently direct you to the iPhone.
+
+Agent replies use the same parsed Markdown blocks and inline styles as iPhone: headings,
+paragraphs, bullets/numbered lists, quotes, rules, code fences, and tables. Code wraps for the small
+screen; tables become labeled row cards rather than requiring sideways scrolling. Bold, italics,
+inline code, and web links retain their styles. Links do not fetch anything automatically, and
+only HTTP(S) URLs may open from the renderer.
 
 ## Brand and watch-face mascot
 
@@ -113,4 +119,9 @@ regression tests cover both sides and hidden tool/reasoning/empty rows. Device l
 terminate the prior app process. `Library/Application Support/watch-layout.json` records only the
 runtime layout marker, build, voice activity flags, and measured conversation/footer heights—no
 message content or identifiers. It supports checking the physical layout rather than inferring
-it from launch success. The new layout still needs physical recording/scroll verification.
+it from launch success. The person subsequently confirmed the two-sided chat was working on the physical Watch.
+
+Build 49 adds block-level Markdown rendering using the shared iPhone parser and moves the Session
+title below the voice controls, removing the top title. Shared parser/conversation tests and the
+signed device build pass. Direct Watch installation is currently blocked by intermittent CoreDevice
+tunnel timeouts, so the new Markdown/title layout is not yet physically verified.

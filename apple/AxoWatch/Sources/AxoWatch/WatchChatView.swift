@@ -22,8 +22,8 @@ struct WatchChatView: View {
   private var title: String { model.selectedSession?.displayName ?? model.rememberedSessionName ?? "Axo" }
 
   var body: some View {
-    // The footer owns exactly one 44pt row, in every voice phase. It cannot take the
-    // conversation's place or grow into it; the same ScrollView keeps Crown focus and position.
+    // Controls keep one 44pt row in every voice phase, with a quiet Session label below.
+    // Neither replaces the conversation; the same ScrollView keeps Crown focus and position.
     VStack(spacing: 0) {
       conversation
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -31,17 +31,26 @@ struct WatchChatView: View {
           conversationHeight = $0
           reportLayout()
         }
-      Group {
-        if let voice, capturing { recordingBar(voice) }
-        else { composer }
+      VStack(spacing: 0) {
+        Group {
+          if let voice, capturing { recordingBar(voice) }
+          else { composer }
+        }
+        .frame(height: 44).clipped()
+        if model.target != nil {
+          Text(title).font(.system(size: 9)).foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8).padding(.bottom, 2)
+            .accessibilityLabel("Conversation: " + title)
+        }
       }
-      .frame(height: 44).clipped()
       .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
         footerHeight = $0
         reportLayout()
       }
     }
-    .navigationTitle(title)
+    .navigationTitle("")
     .toolbar {
       ToolbarItem(placement: .topBarLeading) { WatchMascot().frame(width: 30, height: 20) }
       if !capturing, !handingOff {
@@ -107,7 +116,6 @@ struct WatchChatView: View {
           }
         } else if model.target != nil {
           // Cold launch restores the remembered identity immediately, without flashing the picker.
-          Text(title).font(.headline)
           if model.workbench.hosts.phase == .loaded {
             Text("This session is unavailable.").font(.caption).foregroundStyle(.secondary)
             Button("Choose another session") { choosingSession = true }
@@ -296,9 +304,11 @@ private struct WatchChatRow: View {
   var body: some View {
     switch WatchConversationContent(item.row) {
     case .assistant(let text):
-      Text(LocalizedStringKey(text)).font(.footnote)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel("Axo: " + text)
+      if case .message(let shown) = item.row, !shown.message.blocks.isEmpty {
+        WatchMarkdown(blocks: shown.message.blocks)
+      } else {
+        Text(text).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
+      }
     case .user(let text, let status):
       VStack(alignment: .trailing, spacing: 4) {
         Text(text).font(.footnote)

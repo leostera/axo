@@ -5,7 +5,7 @@ import Foundation
 enum WatchLayoutReport {
   static func write(recording: Bool, busy: Bool, conversationHeight: CGFloat, footerHeight: CGFloat) {
     let report: [String: Any] = [
-      "layout": "fixed-footer-v2",
+      "layout": "fixed-footer-v3-markdown",
       "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
       "recording": recording, "busy": busy,
       "conversationHeight": Double(conversationHeight), "footerHeight": Double(footerHeight),
