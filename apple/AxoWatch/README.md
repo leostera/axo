@@ -123,5 +123,7 @@ it from launch success. The person subsequently confirmed the two-sided chat was
 
 Build 49 adds block-level Markdown rendering using the shared iPhone parser and moves the Session
 title below the voice controls, removing the top title. Shared parser/conversation tests and the
-signed device build pass. Direct Watch installation is currently blocked by intermittent CoreDevice
-tunnel timeouts, so the new Markdown/title layout is not yet physically verified.
+signed device build pass. After intermittent CoreDevice tunnel failures, a retry installed and
+fresh-launched build 49 on the physical Watch. Its runtime layout report confirmed build 49 and
+`fixed-footer-v3-markdown`. This verifies the running version, not a visual inspection of Markdown
+or the title placement; those still need the person's check.
