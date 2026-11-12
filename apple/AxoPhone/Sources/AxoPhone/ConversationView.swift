@@ -205,6 +205,9 @@ struct ConversationView: View {
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .accessibilityLabel(scroll.hasNew ? "Jump to new message" : "Jump to latest")
       }
+      if let id = session?.sessionId {
+        WaitingQuestions(phone: phone, session: id, canAnswer: workbench?.status == .online)
+      }
       HostPicker(phone: phone)
       DraftComposer(
         phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, showApps: showApps,

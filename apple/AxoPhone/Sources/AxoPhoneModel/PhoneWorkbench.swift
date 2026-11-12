@@ -176,6 +176,15 @@ public final class PhoneWorkbench {
 
   // MARK: - What the agents ask
 
+  #if DEBUG
+    /// For the simulator preview only: a question as if a Mac had asked it.
+    public func askForPreview(_ elicitation: Elicitation, host: UUID) {
+      if !questions.contains(where: { $0.id == elicitation.id }) {
+        questions.append(AskedQuestion(hostID: host, elicitation: elicitation))
+      }
+    }
+  #endif
+
   /// What the agent of `session` asks now.
   public func questions(in session: SessionID) -> [AskedQuestion] {
     questions.filter { $0.elicitation.sessionId == session }

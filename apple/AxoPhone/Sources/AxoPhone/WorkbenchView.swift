@@ -253,6 +253,17 @@ struct WorkbenchView: View {
             try? await Task.sleep(for: .milliseconds(300))
             current.playForPreview(PreviewFixture.liveEvents(live), in: id)
             if live == "stopping" { current.markStoppingForPreview(id) }
+            if live == "elicitation" {
+              // Asked a moment later, once the reader may have scrolled up into the history.
+              try? await Task.sleep(for: .seconds(3))
+              let now = Int64(Date().timeIntervalSince1970 * 1000)
+              workbench.askForPreview(
+                Elicitation(
+                  id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a", sessionId: id,
+                  message: "Delete the branch feat/old-ui? It has 3 unmerged commits.",
+                  createdAt: now, expiresAt: now + 300_000),
+                host: chats[index - 1].host.hostId)
+            }
           }
         #endif
       }

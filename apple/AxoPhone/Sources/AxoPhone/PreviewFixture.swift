@@ -19,7 +19,8 @@ enum PreviewFixture {
     /// Open the Macs and account panel (`AXO_PHONE_PREVIEW_HOSTS=1`).
     static var hostsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_HOSTS"] == "1" }
     /// Play a reply being written, a running tool and a question in the open chat
-    /// (`AXO_PHONE_PREVIEW_LIVE=reply|question|stopping`).
+    /// (`AXO_PHONE_PREVIEW_LIVE=reply|question|stopping|elicitation`); `elicitation` also has the
+    /// account ask a question a few seconds later.
     static var live: String? { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_LIVE"] }
     /// Note where the conversation layer is at every frame, in this file
     /// (`AXO_PHONE_PREVIEW_MOTION=path`, for AxoPhoneMotionTests).

@@ -619,6 +619,20 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testAQuestionAskedWhileReadingTheHistoryIsShownAboveTheMessageBox() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "elicitation"])
+    XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "swipe from the left edge")).firstMatch.waitForExistence(timeout: 10))
+    for _ in 0..<3 { app.swipeDown() }
+    XCTAssertTrue(app.buttons["Jump to latest"].waitForExistence(timeout: 5), "reading the history, away from the end")
+    let card = element(app, "elicitationCard")
+    XCTAssertTrue(card.waitForExistence(timeout: 10))
+    XCTAssertTrue(app.buttons["elicitationYes"].isHittable, "the question is on screen without scrolling to it")
+    let composer = app.textFields["composer"]
+    XCTAssertLessThanOrEqual(card.frame.maxY, composer.frame.minY, "above the message box")
+    capture(app, named: "phone-elicitation-reading-history")
+  }
+
+  @MainActor
   func testAMessageTheMacRefusesSaysNotSentAndKeepsTheWords() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
     let composer = app.textFields["composer"]

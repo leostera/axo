@@ -491,24 +491,23 @@ private struct ConversationTop: View {
   }
 }
 
-/// Below the rows: what the extensions and Pi ask, and what Pi is doing.
+/// Below the rows: what Pi asks, and what it is doing. The account's questions wait above the
+/// message box (`WaitingQuestions`).
 private struct ConversationBottom: View {
   let content: ConversationList.Content
 
   var body: some View {
     if let id = content.session {
-      let cards = !content.phone.questions(in: id).isEmpty
       let footer = content.feed.question != nil || content.feed.working
       VStack(alignment: .leading, spacing: 30) {
-        ElicitationCards(phone: content.phone, session: id, canAnswer: content.workbench?.status == .online)
         ConversationFooter(
           feed: content.feed, chat: content.chat, workbench: content.workbench, session: id, canSend: content.canSend)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       // The last row leaves a gap under itself; with no rows, this leaves it.
-      .padding(.top, (cards || footer) && content.feed.items.isEmpty ? ConversationItemView.gap : 0)
+      .padding(.top, footer && content.feed.items.isEmpty ? ConversationItemView.gap : 0)
       // The room under it all: a gap, and the point the bottom takes when it has nothing to show.
-      .padding(.bottom, cards || footer || content.feed.items.isEmpty ? ConversationItemView.gap + 1 : 0)
+      .padding(.bottom, footer || content.feed.items.isEmpty ? ConversationItemView.gap + 1 : 0)
     } else {
       Color.clear.frame(height: content.feed.items.isEmpty ? ConversationItemView.gap + 1 : 0)
     }

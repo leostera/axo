@@ -113,14 +113,45 @@ struct ConversationEmptyState: View {
   }
 }
 
-/// What the chat's extensions ask, answered here.
-struct ElicitationCards: View {
+/// What the chat's agent and Axo ask the person, above the message box rather than after the last
+/// row: it holds the agent up, so it is seen wherever the reader is in the history (RFD0029). The
+/// oldest two show; the rest wait their turn, counted.
+struct WaitingQuestions: View {
   let phone: PhoneWorkbench
   let session: SessionID
   let canAnswer: Bool
 
+  /// Questions shown at once; more would push the message box off a small screen.
+  private static let shown = 2
+
   var body: some View {
-    ForEach(phone.questions(in: session)) { question in
+    let questions = phone.questions(in: session)
+    if !questions.isEmpty {
+      VStack(alignment: .leading, spacing: 10) {
+        ElicitationCards(phone: phone, questions: Array(questions.prefix(Self.shown)), canAnswer: canAnswer)
+          // The cards are tinted to sit in the transcript; over it, they need the screen behind them.
+          .background(ChatColors.background, in: RoundedRectangle(cornerRadius: 14))
+          .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+        if questions.count > Self.shown {
+          Text("\(questions.count - Self.shown) more waiting")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("more-questions")
+        }
+      }
+      .padding(.horizontal, 16)
+    }
+  }
+}
+
+/// Questions, each answered here.
+struct ElicitationCards: View {
+  let phone: PhoneWorkbench
+  let questions: [AskedQuestion]
+  let canAnswer: Bool
+
+  var body: some View {
+    ForEach(questions) { question in
       if question.elicitation.input != nil {
         InputCard(question: question, canAnswer: canAnswer, failure: phone.answerFailure) { action, values in
           Task { await phone.answer(question.id, action, values: values) }
