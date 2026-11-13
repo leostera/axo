@@ -61,7 +61,6 @@ type Row = {
 
 const ICON_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Where to send a browser that opened a sign-in link, and for which connection. */
 /** Where to send the browser, and the flow it is now in: a fresh one when the link opened was used or had expired. */
 export type OpenedFlow = { authorizeUrl: string; name: string; nonce: string };
 
@@ -189,6 +188,11 @@ export class ThirdPartyApps {
       discovery = await discover(row.url, wwwAuthenticate, this.deps.fetcher);
       this.deps.sql.exec("UPDATE third_party_connections SET discovery_json = ? WHERE name = ?", JSON.stringify(discovery), name);
     }
+    // A client Axo cannot read is as good as none: it registers a new one, or the page asks for one.
+    if (row.client_sealed && !(await this.client(name, row.client_sealed))) {
+      this.deps.sql.exec("UPDATE third_party_connections SET client_sealed = NULL WHERE name = ?", name);
+      row.client_sealed = null;
+    }
     if (!row.client_sealed && discovery.registrationEndpoint) {
       const client = await register(discovery, this.deps.fetcher);
       this.deps.sql.exec("UPDATE third_party_connections SET client_sealed = ? WHERE name = ?", await this.seal("client", client), name);
@@ -220,13 +224,13 @@ export class ThirdPartyApps {
     const live = this.flow(nonce);
     if (!live || live.opened) {
       const row = this.row(remembered.name);
-      if (!row?.client_sealed || !row.discovery_json) return null;
+      if (!row?.client_sealed || !row.discovery_json || !(await this.client(remembered.name, row.client_sealed))) return null;
       return this.openFlow(this.newFlow(remembered.name, (await pkce()).verifier));
     }
     const flow = live;
     this.deps.sql.exec("UPDATE connection_flows SET opened = 1 WHERE nonce = ?", nonce);
     const row = this.row(flow.name);
-    const client = row?.client_sealed ? await this.unseal<Client>("client", row.client_sealed) : null;
+    const client = row?.client_sealed ? await this.client(row.name, row.client_sealed) : null;
     if (!row?.discovery_json || !client) return null;
     const challenge = await pkceChallenge(flow.verifier);
     const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
@@ -239,7 +243,7 @@ export class ThirdPartyApps {
     if (!flow || !flow.opened || flow.redeemed) return { error: "this sign-in link was already used or has expired" };
     this.deps.sql.exec("UPDATE connection_flows SET redeemed = 1 WHERE nonce = ?", nonce);
     const row = this.row(flow.name);
-    const client = row?.client_sealed ? await this.unseal<Client>("client", row.client_sealed) : null;
+    const client = row?.client_sealed ? await this.client(row.name, row.client_sealed) : null;
     if (!row?.discovery_json || !client) return { error: "the connection was removed" };
     let grant: Grant;
     try {
@@ -356,7 +360,7 @@ export class ThirdPartyApps {
   private async renew(name: string, force: boolean): Promise<Grant | null> {
     const row = this.row(name);
     if (!row?.grant_sealed) return null;
-    const grant = await this.unseal<Grant>("grant", row.grant_sealed);
+    const grant = await this.opened<Grant>("grant", name, row.grant_sealed);
     if (!grant) return null;
     const due = force || (grant.expiresAt !== null && grant.expiresAt - this.now() < EXPIRY_MARGIN_MS);
     if (!due) return grant;
@@ -369,7 +373,7 @@ export class ThirdPartyApps {
     if (running) return running;
     const generation = row.grant_generation;
     const attempt = (async () => {
-      const client = await this.unseal<Client>("client", row.client_sealed!);
+      const client = await this.client(name, row.client_sealed!);
       try {
         const renewed = await refresh(JSON.parse(row.discovery_json!) as Discovery, client!, grant.refreshToken!, this.deps.fetcher, this.now());
         const sealed = await this.seal("grant", renewed);
@@ -439,8 +443,22 @@ export class ThirdPartyApps {
     return seal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, value);
   }
 
-  private async unseal<T>(kind: "client" | "grant", sealed: string): Promise<T | null> {
-    return (await unseal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, sealed, 65_536)) as T | null;
+  private client(name: string, sealed: string): Promise<Client | null> {
+    return this.opened<Client>("client", name, sealed);
+  }
+
+  /**
+   * A sealed client or grant of connection `name`, opened. Before dd9a87de they were sealed as
+   * "connections-client" and "connections-grant"; one sealed so is opened under that name too and
+   * sealed again under today's, so the next read needs only one try.
+   */
+  private async opened<T>(kind: "client" | "grant", name: string, sealed: string): Promise<T | null> {
+    const current = await unseal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, sealed, 65_536);
+    if (current !== null) return current as T;
+    const legacy = await unseal(this.deps.secret, `connections-${kind}\0${this.deps.accountId}`, sealed, 65_536);
+    if (legacy === null) return null;
+    this.deps.sql.exec(`UPDATE third_party_connections SET ${kind}_sealed = ? WHERE name = ? AND ${kind}_sealed = ?`, await this.seal(kind, legacy), name, sealed);
+    return legacy as T;
   }
 }
 

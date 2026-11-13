@@ -76,6 +76,12 @@ export class CallLog {
     return `apps-call-input\0${this.accountId}`;
   }
 
+  /** A call's sealed input, opened; calls logged before dd9a87de sealed it as "connections-call-input". */
+  private async input(sealed: string): Promise<unknown> {
+    const max = 4 * APPS_LIMITS.scriptBytes + 1024;
+    return (await unseal(this.secret, this.purpose, sealed, max)) ?? (await unseal(this.secret, `connections-call-input\0${this.accountId}`, sealed, max)) ?? null;
+  }
+
   async start(call: CallStart, now = Date.now()): Promise<void> {
     const text = JSON.stringify(call.input ?? null);
     // A third-party input may be large; the log keeps its first 64 KiB, marked as cut.
@@ -211,7 +217,7 @@ export class CallLog {
       durationMs: row.duration_ms ?? Math.max(0, Math.floor(now - row.at)),
       outcome: row.outcome ?? "unknown",
       error: row.error,
-      input: (await unseal(this.secret, this.purpose, row.input_sealed, 4 * APPS_LIMITS.scriptBytes + 1024)) ?? null,
+      input: await this.input(row.input_sealed),
     })));
   }
 }
