@@ -2,6 +2,19 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.54 (Mac app build 325, axod 77)
+
+### Added
+
+- Agents can run local Gemma through `codemode.ai.run({ model: "hf:ggml-org/gemma-3-270m-it-GGUF", prompt })`. The first call downloads the pinned 292 MB model onto the chosen Mac, checks its SHA-256, loads it and generates text. No Hugging Face account is needed for this public model.
+- `codemode.ai.list/install/load/unload` discovers support, prefetches, prewarms and releases the model. Calls default to the agent's Mac, or take a paired Mac's name as `host`. The script-managed model is separate from the computer-use safety judge and sleeps after ten idle minutes.
+- AI call logs record the model, target and outcome, not prompts or generated text. Inputs and outputs still cross Axo's cloud script and relay. This first version supports Gemma 3 270M IT Q8_0 text generation only, not arbitrary Hugging Face models, images or embeddings.
+
+### Fixed
+
+- Local model startup no longer forks alongside macOS filesystem-notification initialization, which could kill the child before the runtime began. A server that has created its socket but is not ready for HTTP yet is checked again even if it writes no more logs.
+- Building the local runtime no longer depends on a host compiler cache that can fail on generated Metal assembly.
+
 ## 0.53 (Mac app build 324, axod 76)
 
 ### Added
