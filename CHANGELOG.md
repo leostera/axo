@@ -2,6 +2,20 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.53 (Mac app build 324, axod 76)
+
+### Added
+
+- Files an agent's script saves are kept in your account's assets, the same place as files you attach to prompts. Gmail saves an attachment (`save_attachment`) or a whole email as `.eml` (`save_message`), and Drive copies a file in (`save_file`), without the bytes passing through the script. Each comes back with a link that opens it in a browser signed in to Axo.
+- A file a script returns lands on the Mac that ran it, under `~/.axo/assets`, and the agent is told where, so it reads the whole file with its own tools.
+- Scripts reach the account's assets through `codemode.assets`: list them, read one in ranges (as text or base64), and save what they made.
+
+### Fixed
+
+- Gmail and Drive attachments larger than about 700 KB were cut off before an agent could read them.
+- MCP servers signed out since November 6 (Linear, Stripe, Cloudflare and the rest) can sign in again; before, their Sign in button led back to the Apps page.
+- An old or already used sign-in link starts a fresh sign-in instead of saying it has expired.
+
 ## 0.52 (Mac app build 323, axod 75)
 
 ### Added
