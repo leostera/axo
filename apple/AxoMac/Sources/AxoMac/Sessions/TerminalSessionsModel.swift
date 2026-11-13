@@ -355,10 +355,13 @@ final class TerminalSessionsModel {
     wakeSelectedPi()
   }
 
-  /// Starts the selected Session's Pi if Axod left it dormant: being shown is what it waits
-  /// for. Each pane is asked once at a time; a failure leaves it as Axod reports it.
+  /// Starts the selected Session's Pi if Axod left it dormant: being shown to the person is what
+  /// it waits for, so not while they are in another app (Axod puts idle Pis to sleep, RFD0045,
+  /// and one left selected meanwhile stays asleep until they come back). Each pane is asked once
+  /// at a time; a failure leaves it as Axod reports it.
   private func wakeSelectedPi() {
-    guard let id = selectedSessionID, let session = session(for: id) else { return }
+    guard isLookingAtSelection(), let id = selectedSessionID, let session = session(for: id)
+    else { return }
     for shell in session.shells where shell.isPi && shell.isDormant {
       guard wakingPis.insert(shell.id).inserted else { continue }
       Task { [weak self] in
@@ -564,6 +567,12 @@ final class TerminalSessionsModel {
 
   /// Marks the selected Session seen if the person can see it: when it is selected, when it
   /// changes while selected, and when Axo comes to the front.
+  /// The person came back to Axo: the selected Session is seen, and its Pi woken if it slept.
+  func appBecameActive() {
+    markSelectionSeen()
+    wakeSelectedPi()
+  }
+
   func markSelectionSeen() {
     guard let id = selectedSessionID, let session = session(for: id), isLookingAtSelection()
     else { return }

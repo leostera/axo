@@ -133,6 +133,8 @@ fn config_metadata_key(key: ConfigKey) -> &'static str {
     match key {
         ConfigKey::AgentCommand => "agent_command",
         ConfigKey::ShellCommand => "shell_command",
+        ConfigKey::IdleMinutes => "sessions_idle_minutes",
+        ConfigKey::IdleLimit => "sessions_idle_limit",
     }
 }
 

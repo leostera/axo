@@ -7,12 +7,13 @@
 //! left running. A holder axod does not know is never signalled; the pane is unavailable.
 //!
 //! Restarting a Pi asks it to exit on its bridge, kills it if it has not after a grace, and
-//! starts a new one on the same transcript once it has exited.
+//! starts a new one on the same transcript once it has exited. Putting an idle one to sleep
+//! (RFD0045) is the same without the start: its pane is dormant once it has exited.
 
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axo_agent::pi::link::{self, LinkCommands, LinkConfig, LinkEvent};
 use axo_agent::pi::protocol::{CommandResult, RejectReason};
@@ -78,6 +79,11 @@ pub(crate) struct Pi {
     queued: Vec<Prompt>,
     /// Start again once the running one exits.
     restart: bool,
+    /// Become dormant once the running one exits (RFD0045).
+    sleep: bool,
+    /// When anything last happened in the running Pi but its screen: it started, said
+    /// something on its bridge, or was prompted.
+    active_at: Instant,
     attempts: u64,
 }
 
@@ -93,6 +99,8 @@ impl Pi {
             controls: PiControls::default(),
             queued: Vec::new(),
             restart: false,
+            sleep: false,
+            active_at: Instant::now(),
             attempts: 0,
         }
     }
@@ -458,6 +466,7 @@ impl Session {
                 link_task,
             };
             pi.activity = None;
+            pi.active_at = Instant::now();
         }
         log::info!(
             "event=session.pi_started session_id={} shell_id={} pid={process_id}",
@@ -480,11 +489,20 @@ impl Session {
         }
     }
 
-    /// The running Pi exited: it is unavailable, or starts again if a restart asked for it.
+    /// The running Pi exited: it is unavailable, dormant if it was put to sleep, or starts again
+    /// if a restart asked for it, taking the prompts that waited for it.
     pub(super) async fn pi_exited(&mut self) {
         let Some(pi) = &mut self.pi else { return };
         let restart = std::mem::take(&mut pi.restart);
+        let sleep = std::mem::take(&mut pi.sleep);
+        let queued = std::mem::take(&mut pi.queued);
         pi.let_go();
+        if restart {
+            pi.queued = queued;
+        } else if sleep {
+            pi.state = PiState::Dormant;
+            log::info!("event=session.pi_slept session_id={}", self.id);
+        }
         let id = self.id;
         if let Err(error) = self
             .core
@@ -580,22 +598,77 @@ impl Session {
             PiState::Running {
                 runtime_id, link, ..
             } => {
+                // Already exiting to sleep: it starts again instead.
+                let exiting = std::mem::take(&mut pi.sleep);
                 pi.restart = true;
-                let (runtime_id, link) = (*runtime_id, link.clone());
-                let mailbox = self.mailbox();
-                tokio::spawn(async move {
-                    // Pi stops its turn and exits; its answer doesn't matter.
-                    let _ = link.shutdown(ANSWER_TIMEOUT).await;
-                    tokio::time::sleep(EXIT_GRACE).await;
-                    if let Some(mailbox) = mailbox.upgrade() {
-                        let _ = mailbox.send(Message::KillPi { runtime_id });
-                    }
-                });
+                if !exiting {
+                    let (runtime_id, link) = (*runtime_id, link.clone());
+                    self.ask_pi_to_exit(runtime_id, link);
+                }
             }
             PiState::Launching { .. } => {}
             PiState::Dormant | PiState::Unavailable => self.start_pi(None).await,
         }
         Ok(())
+    }
+
+    /// Asks the running Pi to exit (stopping any turn), and kills it if it has not after a grace.
+    fn ask_pi_to_exit(&self, runtime_id: RuntimeId, link: LinkCommands) {
+        let mailbox = self.mailbox();
+        tokio::spawn(async move {
+            // Its answer doesn't matter.
+            let _ = link.shutdown(ANSWER_TIMEOUT).await;
+            tokio::time::sleep(EXIT_GRACE).await;
+            if let Some(mailbox) = mailbox.upgrade() {
+                let _ = mailbox.send(Message::KillPi { runtime_id });
+            }
+        });
+    }
+
+    /// How long the Pi has been idle (RFD0045): running and connected, not working or asking the
+    /// person anything, with nothing waiting for it and not on its way out, for this long since
+    /// anything happened in it or on its screen. `None` when it is not idle.
+    pub(crate) fn pi_idle(&self) -> Option<Duration> {
+        let pi = self.pi.as_ref()?;
+        let PiState::Running { .. } = pi.state else {
+            return None;
+        };
+        let activity = pi.activity?;
+        let busy = !activity.connected
+            || activity.working
+            || activity.ui_waits > 0
+            || !pi.queued.is_empty()
+            || pi.restart
+            || pi.sleep;
+        if busy {
+            return None;
+        }
+        let shown = self
+            .panes
+            .get(&pi.shell_id)
+            .map(|running| running.output.last_output_at());
+        let last = shown.map_or(pi.active_at, |shown| shown.max(pi.active_at));
+        Some(last.elapsed())
+    }
+
+    /// Puts the Pi to sleep if it is still idle: it is asked to exit, and its pane is dormant
+    /// once it has. Whether it was idle.
+    pub(crate) fn sleep_pi(&mut self) -> bool {
+        if self.pi_idle().is_none() {
+            return false;
+        }
+        let Some(pi) = &mut self.pi else { return false };
+        let PiState::Running {
+            runtime_id, link, ..
+        } = &pi.state
+        else {
+            return false;
+        };
+        let (runtime_id, link) = (*runtime_id, link.clone());
+        pi.sleep = true;
+        log::info!("event=session.pi_sleeping session_id={}", self.id);
+        self.ask_pi_to_exit(runtime_id, link);
+        true
     }
 
     /// Whether `runtime_id` is the Pi running now.
@@ -612,9 +685,14 @@ impl Session {
         let Some(pi) = &mut self.pi else {
             return Err(PromptError::NoPi);
         };
-        let connected = pi.connected();
+        pi.active_at = Instant::now();
+        // A Pi on its way to sleep starts again for it; the prompt waits for the next one.
+        if std::mem::take(&mut pi.sleep) {
+            pi.restart = true;
+        }
+        let taking = pi.connected() && !pi.restart;
         match &pi.state {
-            PiState::Running { link, .. } if connected => Ok(Admission::Send(link.clone())),
+            PiState::Running { link, .. } if taking => Ok(Admission::Send(link.clone())),
             PiState::Running { .. } | PiState::Launching { .. } => {
                 if pi.queued.len() >= MAX_QUEUED_PI_PROMPTS {
                     return Err(PromptError::QueueFull);
@@ -656,6 +734,9 @@ impl Session {
     pub(super) async fn link_event(&mut self, runtime_id: RuntimeId, event: LinkEvent) {
         if !self.pi_is_current(runtime_id) {
             return;
+        }
+        if let Some(pi) = &mut self.pi {
+            pi.active_at = Instant::now();
         }
         match event {
             LinkEvent::Bound { pi_session_id } => self.bound(pi_session_id).await,

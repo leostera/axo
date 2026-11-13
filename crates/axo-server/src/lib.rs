@@ -20,6 +20,7 @@ mod devices;
 mod event_stream;
 mod events;
 mod handlers;
+mod idle_pis;
 mod input_key;
 mod ops;
 mod peers;

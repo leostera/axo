@@ -132,6 +132,7 @@ pub(crate) async fn restore(core: &Arc<Core>, previous: Option<DaemonStop>) -> i
     }
     log::info!("event=session.pis_restoring starting={starting} dormant={dormant}");
     tokio::spawn(launch_ready(Arc::clone(core)));
+    tokio::spawn(crate::idle_pis::run(Arc::downgrade(core)));
     // Sessions a stop interrupted mid-turn are told, once their Pi takes prompts.
     if let Some(stop) = previous {
         let notice = match PromptText::parse(stop.notice(&stop_notice::this_daemon(Vec::new()))) {

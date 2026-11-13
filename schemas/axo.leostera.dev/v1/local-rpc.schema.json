@@ -183,7 +183,7 @@
     },
     "ConfigKey": {
       "type": "string",
-      "enum": ["agent.command", "shell.command"]
+      "enum": ["agent.command", "shell.command", "sessions.idleMinutes", "sessions.idleLimit"]
     },
     "ConfigGetCall": {
       "allOf": [

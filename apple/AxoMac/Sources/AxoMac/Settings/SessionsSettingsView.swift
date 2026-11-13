@@ -1,8 +1,12 @@
+import AxoDaemonManager
 import SwiftUI
 
-/// Settings → Sessions: how the sidebar groups and orders Sessions. Changes apply at once.
+/// Settings → Sessions: how the sidebar groups and orders Sessions, and when Axod puts idle Pis
+/// to sleep. Changes apply at once.
 struct SessionsSettingsView: View {
   var sessions: TerminalSessionsModel
+  var daemon: DaemonController
+  let settingsClient: AxodSettingsClient?
 
   private func setting<Value>(_ keyPath: WritableKeyPath<SidebarGroupingSettings, Value>) -> Binding<Value> {
     Binding(
@@ -56,6 +60,8 @@ struct SessionsSettingsView: View {
         Toggle("Show group titles", isOn: setting(\.showsGroupTitles))
           .accessibilityIdentifier("sessions-group-titles-toggle")
       }
+
+      IdlePiLimitsSection(daemon: daemon, client: settingsClient)
 
       Section {
         Button("Restore Defaults") { sessions.setSidebarGrouping(SidebarGroupingSettings()) }

@@ -48,6 +48,7 @@ fn exactly_specified_fixtures_round_trip() {
     round_trips::<ProtocolNegotiated>(&json(fixture!("negotiate.result.json")));
     round_trips::<ConfigValue>(&json(fixture!("config.value.shell.json")));
     round_trips::<ConfigValue>(&json(fixture!("config.value.agent.json")));
+    round_trips::<ConfigValue>(&json(fixture!("config.value.idle-minutes.json")));
     round_trips::<RelayStatus>(&json(fixture!("remote-access-status.result.json")));
 }
 

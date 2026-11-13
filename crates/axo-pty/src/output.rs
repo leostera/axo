@@ -24,6 +24,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
 
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
@@ -154,6 +155,8 @@ pub struct TerminalOutput {
 
 struct OutputState {
     screen: TerminalScreen,
+    /// When the program last wrote anything; when the output started, before that.
+    last_output_at: Instant,
     ended: bool,
     subscribers: Vec<Arc<OutputSubscriber>>,
 }
@@ -175,6 +178,7 @@ impl TerminalOutput {
         Self {
             state: Mutex::new(OutputState {
                 screen: TerminalScreen::new(size),
+                last_output_at: Instant::now(),
                 ended: false,
                 subscribers: Vec::new(),
             }),
@@ -272,6 +276,11 @@ impl TerminalOutput {
         })
     }
 
+    /// When the program last wrote anything, or the output started if it has not.
+    pub fn last_output_at(&self) -> Instant {
+        self.lock().last_output_at
+    }
+
     /// How many clients are attached; for diagnostics and tests.
     pub fn subscriber_count(&self) -> usize {
         self.lock().subscribers.len()
@@ -290,6 +299,7 @@ impl TerminalOutput {
             state.screen.resize(size);
         }
         state.screen.write(output);
+        state.last_output_at = Instant::now();
         state
             .subscribers
             .retain(|subscriber| subscriber.push(&chunk));
@@ -623,6 +633,16 @@ mod tests {
         let output = TerminalOutput::detached_for_tests();
         output.record(b"\x1b[31m$ cargo test\x1b[0m\r\nok\r\n");
         assert_eq!(output.screen_text(), "$ cargo test\nok");
+    }
+
+    #[test]
+    fn output_is_dated_from_its_start_then_its_last_write() {
+        let output = TerminalOutput::detached_for_tests();
+        let started = output.last_output_at();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(output.last_output_at(), started, "nothing written yet");
+        output.record(b"$ ");
+        assert!(output.last_output_at() > started);
     }
 
     #[test]

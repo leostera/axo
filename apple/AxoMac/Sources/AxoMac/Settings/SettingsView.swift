@@ -101,7 +101,7 @@ struct SettingsView: View {
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
         case .sessions:
-          SessionsSettingsView(sessions: sessions)
+          SessionsSettingsView(sessions: sessions, daemon: daemon, settingsClient: settingsClient)
         case .agent:
           AgentSettingsView(daemon: daemon, sessions: sessions, settingsClient: settingsClient)
         case .remoteAccess:

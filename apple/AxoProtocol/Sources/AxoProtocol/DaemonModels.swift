@@ -78,6 +78,8 @@ public struct ProtocolNegotiation: Decodable, Equatable, Sendable {
 public enum AxoConfigKey: String, Codable, Equatable, Sendable {
   case agentCommand = "agent.command"
   case shellCommand = "shell.command"
+  case idleMinutes = "sessions.idleMinutes"
+  case idleLimit = "sessions.idleLimit"
 }
 
 public struct AxoConfigValue: Decodable, Equatable, Sendable {

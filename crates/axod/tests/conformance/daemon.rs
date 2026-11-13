@@ -108,6 +108,28 @@ fn settings_are_read_changed_and_kept_across_a_restart() {
     );
 }
 
+/// When idle Pis sleep (RFD0045): 30 minutes and 20 awake unless changed, in whole numbers.
+#[test]
+fn idle_pi_limits_have_defaults_and_take_whole_numbers() {
+    let mut axod = Axod::start();
+    for (key, default) in [("sessions.idleMinutes", "30"), ("sessions.idleLimit", "20")] {
+        assert_eq!(
+            axod.ok("axo.config.get", json!({ "key": key }))["value"],
+            default
+        );
+        let refused = axod.err("axo.config.set", json!({ "key": key, "value": "-1" }));
+        assert!(refused.code < 0, "{refused:?}");
+        axod.ok("axo.config.set", json!({ "key": key, "value": "5" }));
+    }
+    axod.restart();
+    for key in ["sessions.idleMinutes", "sessions.idleLimit"] {
+        assert_eq!(
+            axod.ok("axo.config.get", json!({ "key": key }))["value"],
+            "5"
+        );
+    }
+}
+
 #[test]
 fn the_envelope_rejects_what_is_not_a_call_it_knows() {
     let axod = Axod::start();

@@ -305,6 +305,12 @@ pub enum ConfigKey {
     /// The command line that starts terminal shells.
     #[serde(rename = "shell.command")]
     ShellCommand,
+    /// Minutes an idle Pi stays awake, 0 for always (RFD0045).
+    #[serde(rename = "sessions.idleMinutes")]
+    IdleMinutes,
+    /// How many idle Pis stay awake (RFD0045).
+    #[serde(rename = "sessions.idleLimit")]
+    IdleLimit,
 }
 
 impl ConfigKey {
@@ -312,6 +318,8 @@ impl ConfigKey {
         match self {
             ConfigKey::AgentCommand => "agent.command",
             ConfigKey::ShellCommand => "shell.command",
+            ConfigKey::IdleMinutes => "sessions.idleMinutes",
+            ConfigKey::IdleLimit => "sessions.idleLimit",
         }
     }
 }

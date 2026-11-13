@@ -187,7 +187,7 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(pinned.map { $0.sessions.map(\.id) }, [[3], [4, 1, 2]])
   }
 
-  @MainActor func testShowingASessionWakesItsDormantPiOnce() async throws {
+  @MainActor func testShowingASessionToThePersonWakesItsDormantPiOnce() async throws {
     let suiteName = "axo-dormant-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -203,12 +203,19 @@ final class SessionNavigationTests: XCTestCase {
     ]
     defaults.set(SessionID(2).rawValue, forKey: AxoPreferenceKey.selectedSession)
     let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    var looking = false
+    model.isLookingAtSelection = { looking }
     await model.refresh()
     XCTAssertEqual(model.selectedSessionID, 2)
     try await Task.sleep(for: .milliseconds(50))
     XCTAssertTrue(client.restartedPis.isEmpty, "not shown, so left dormant")
 
+    // Selected while the person is in another app: it waits for them to come back.
     model.showSession(1)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertTrue(client.restartedPis.isEmpty, "nobody is looking")
+    looking = true
+    model.appBecameActive()
     for _ in 0..<100 where model.shell(for: 21)?.isAvailable != true {
       try await Task.sleep(for: .milliseconds(5))
     }

@@ -4,6 +4,7 @@
 //! [`Fixture`]: crate::test_support::Fixture
 
 mod attachments;
+mod idle_pis;
 mod input_key;
 mod lifecycle;
 mod peers;

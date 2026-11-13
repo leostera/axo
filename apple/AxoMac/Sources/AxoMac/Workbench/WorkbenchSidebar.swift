@@ -134,7 +134,7 @@ struct WorkbenchSidebar: View {
       }
     }
     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-      sessions.markSelectionSeen()
+      sessions.appBecameActive()
     }
   }
 
