@@ -51,10 +51,6 @@ try {
   const host = await waitFor("the Mac online", 20_000, async () =>
     (await listHosts(api.url, phone)).find((candidate) => candidate.status === "online"), daemon);
 
-  const project = join(root, "project");
-  await mkdir(project);
-  await localCall(socketPath, "axo.workspace.create", { name: "Project", directoryPath: project });
-
   console.log(JSON.stringify({ url: api.url, token: phone.token, piLog, hostId: host.hostId }));
   process.stdin.resume();
   await new Promise<void>((done) => process.stdin.on("end", () => done()));
