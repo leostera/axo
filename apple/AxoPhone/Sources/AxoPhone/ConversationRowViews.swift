@@ -130,7 +130,7 @@ struct WaitingQuestions: View {
       VStack(alignment: .leading, spacing: 10) {
         ElicitationCards(phone: phone, questions: Array(questions.prefix(Self.shown)), canAnswer: canAnswer)
           // The cards are tinted to sit in the transcript; over it, they need the screen behind them.
-          .background(ChatColors.background, in: RoundedRectangle(cornerRadius: 14))
+          .background(ChatColors.background, in: RoundedRectangle(cornerRadius: 18))
           .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         if questions.count > Self.shown {
           Text("\(questions.count - Self.shown) more waiting")
@@ -172,6 +172,8 @@ struct ConversationFooter: View {
   let workbench: HostWorkbenchModel?
   let session: SessionID
   let canSend: Bool
+  /// Whether the chat's agent waits on a question to the person, asked through Axo (RFD0029).
+  var personAsked: () -> Bool = { false }
 
   var body: some View {
     if let question = feed.question {
@@ -182,7 +184,7 @@ struct ConversationFooter: View {
     if feed.working {
       AgentActivityView(
         callingTools: feed.callingTools,
-        waiting: feed.question != nil,
+        waiting: feed.question != nil || personAsked(),
         stopping: chat?.isStopping == true,
         canStop: workbench?.status == .online,
         stop: { Task { await workbench?.stopReply(in: session) } })

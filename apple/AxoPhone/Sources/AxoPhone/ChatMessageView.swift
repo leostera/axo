@@ -372,44 +372,80 @@ struct ElicitationCard: View {
   let answer: (ElicitationAnswer) -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        // Axo's computer-use gate asks before an action it stopped; only axod's own tools can.
-        Group {
-          switch question.elicitation.askedBy {
-          case .computerUse: Label("Axo asks before acting on your Mac", systemImage: "desktopcomputer")
-          case .agent: Label("The agent asks you", systemImage: "questionmark.bubble")
-          }
-        }
-        .font(.callout.weight(.semibold))
-        Spacer()
-        if question.answering != nil { ProgressView().controlSize(.small) }
-      }
+    VStack(alignment: .leading, spacing: 12) {
+      AskedHeader(
+        title: question.elicitation.askedBy == .computerUse ? "Axo asks before acting on your Mac" : "The agent asks you",
+        symbol: question.elicitation.askedBy == .computerUse ? "desktopcomputer" : "questionmark.bubble",
+        answering: question.answering != nil)
       Text(question.elicitation.message)
         .font(.body)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 8) {
-        Button("Yes") { answer(.accept) }
-          .buttonStyle(.borderedProminent)
+      HStack(spacing: 10) {
+        AnswerButton(title: "Yes", prominent: true) { answer(.accept) }
           .accessibilityIdentifier("elicitationYes")
-        Button("No") { answer(.decline) }
-          .buttonStyle(.bordered)
+        AnswerButton(title: "No", prominent: false) { answer(.decline) }
           .accessibilityIdentifier("elicitationNo")
       }
-      .controlSize(.small)
-      .buttonBorderShape(.capsule)
       .disabled(!canAnswer || question.answering != nil)
       if let failure {
         Text(failure).font(.caption).foregroundStyle(.secondary)
       }
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
-    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
+    .askedCard()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("elicitationCard")
+  }
+}
+
+/// What a question card says it is, and that its answer is on its way.
+private struct AskedHeader: View {
+  let title: String
+  let symbol: String
+  let answering: Bool
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: symbol).font(.footnote.weight(.semibold)).foregroundStyle(.orange)
+      Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+      Spacer(minLength: 0)
+      if answering { ProgressView().controlSize(.small) }
+    }
+  }
+}
+
+/// An answer to a question: the one it asks for filled in the text's own colour, which reads in
+/// both themes whatever the accent (a white accent made a white Yes on white); the other grey.
+/// Each is as wide as the row shares out, and as tall as a finger.
+struct AnswerButton: View {
+  let title: String
+  let prominent: Bool
+  var fill = true
+  let action: () -> Void
+  @Environment(\.isEnabled) private var isEnabled
+
+  var body: some View {
+    Button(action: action) {
+      Text(title)
+        .font(.body.weight(.semibold))
+        .foregroundStyle(prominent ? ChatColors.background : Color.primary)
+        .frame(maxWidth: fill ? .infinity : nil, minHeight: 44)
+        .padding(.horizontal, 18)
+        .background(prominent ? Color.primary : Color.primary.opacity(0.1), in: Capsule())
+        .contentShape(Capsule())
+        .opacity(isEnabled ? 1 : 0.4)
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+extension View {
+  /// A question's card: the tool blocks' surface, with an orange edge that says it waits on you.
+  func askedCard() -> some View {
+    padding(16)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 18))
+      .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.orange.opacity(0.45), lineWidth: 1))
   }
 }
 
@@ -431,12 +467,7 @@ struct InputCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Label("Axo asks you to sign in on your Mac", systemImage: "key.fill")
-          .font(.callout.weight(.semibold))
-        Spacer()
-        if question.answering != nil { ProgressView().controlSize(.small) }
-      }
+      AskedHeader(title: "Axo asks you to sign in on your Mac", symbol: "key.fill", answering: question.answering != nil)
       VStack(alignment: .leading, spacing: 2) {
         Text(input.origin ?? input.window).font(.body.weight(.semibold)).textSelection(.enabled)
         Text("in \(input.app)\(input.submit.map { ", then “\($0)”" } ?? "")").font(.footnote).foregroundStyle(.secondary)
@@ -451,26 +482,19 @@ struct InputCard: View {
       }
       Text("Goes straight to your Mac, encrypted for it. The agent never sees it.")
         .font(.caption).foregroundStyle(.secondary)
-      HStack(spacing: 8) {
-        Button("Fill in") { send() }
-          .buttonStyle(.borderedProminent)
+      HStack(spacing: 10) {
+        AnswerButton(title: "Fill in", prominent: true) { send() }
           .disabled(disabled || !complete)
           .accessibilityIdentifier("inputFill")
-        Button("Cancel") { answer(.decline, nil) }
-          .buttonStyle(.bordered)
+        AnswerButton(title: "Cancel", prominent: false) { answer(.decline, nil) }
           .disabled(disabled)
           .accessibilityIdentifier("inputCancel")
       }
-      .controlSize(.small)
-      .buttonBorderShape(.capsule)
       if let failure {
         Text(failure).font(.caption).foregroundStyle(.secondary)
       }
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.blue.opacity(0.17), in: RoundedRectangle(cornerRadius: 14))
-    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.32), lineWidth: 0.5))
+    .askedCard()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("inputCard")
   }
@@ -524,8 +548,8 @@ struct QuestionCard: View {
       switch question.kind {
       case .confirm:
         HStack(spacing: 12) {
-          Button("Yes") { answer(.yes) }.buttonStyle(.borderedProminent)
-          Button("No") { answer(.no) }.buttonStyle(.bordered)
+          AnswerButton(title: "Yes", prominent: true) { answer(.yes) }
+          AnswerButton(title: "No", prominent: false) { answer(.no) }
         }
         .disabled(!canAnswer)
       case .input:
@@ -534,7 +558,7 @@ struct QuestionCard: View {
             .textFieldStyle(.roundedBorder)
             .submitLabel(.send)
             .onSubmit(sendWords)
-          Button("Send", action: sendWords).buttonStyle(.borderedProminent)
+          AnswerButton(title: "Send", prominent: true, fill: false, action: sendWords)
             .disabled(!canAnswer || words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         Button("Skip", role: .cancel) { answer(.no) }.font(.callout).disabled(!canAnswer)

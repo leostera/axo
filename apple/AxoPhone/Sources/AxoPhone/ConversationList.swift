@@ -501,7 +501,8 @@ private struct ConversationBottom: View {
       let footer = content.feed.question != nil || content.feed.working
       VStack(alignment: .leading, spacing: 30) {
         ConversationFooter(
-          feed: content.feed, chat: content.chat, workbench: content.workbench, session: id, canSend: content.canSend)
+          feed: content.feed, chat: content.chat, workbench: content.workbench, session: id, canSend: content.canSend,
+          personAsked: { [phone = content.phone] in !phone.questions(in: id).isEmpty })
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       // The last row leaves a gap under itself; with no rows, this leaves it.
