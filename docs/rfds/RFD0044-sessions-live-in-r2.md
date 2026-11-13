@@ -21,7 +21,7 @@ This ships in three releases: store segments, then read from them, then drop lin
 - **The cloud holds the only copy of some Sessions, in a store that is not meant to keep them.** [RFD0027](RFD0027-archived-sessions-live-in-the-cloud.md) deletes an archived Session's file on the Mac once the SessionDO holds it all (`evict_next`, `crates/axo-relay/src/sync/uploader.rs`). A Durable Object's storage can be lost to a storage bug, a bad schema step, a deleted namespace or a mistaken release. Nothing could rebuild it.
 - **A cut deletes records.** `SessionStore.truncate` runs `DELETE FROM records WHERE cursor > ?`. A Mac restored from an old backup cuts the cloud back to it, and for an archived Session those records are gone everywhere. [RFD0043](RFD0043-axo-on-axp.md) removes truncation only in its phase 3d.
 - **The SessionDO pays SQLite prices for bulk.** $0.20/GB-month, against $0.015/GB-month in R2. Bulk bytes belong in durable object storage; the coordinator keeps the small metadata.
-- **ATXF is what Axo shares and serves** (RFD0035, RFD0043). Storing it is storing the thing every reader wants.
+- **ATXF is what Axo shares and serves** (RFD0035, RFD0043). Storing it is storing the thing every reader wants, and with `@leostera/atxf` 0.4.0 it keeps everything Pi wrote.
 
 What the cloud holds, from the three Macs' `~/.axo/sessions` on 2026-11-12 (each Mac follows the others, so each holds the account's Sessions):
 
@@ -47,7 +47,7 @@ What the cloud holds, from the three Macs' `~/.axo/sessions` on 2026-11-12 (each
 ## Non-goals
 
 - The rest of the account (identity, apps and their call log, assets, WhatsApp, shares). It gets its own RFD.
-- Dropping `native` from the stored ATXF. That waits on the ATXF fidelity work (Unresolved questions).
+- Dropping `native` from the stored ATXF. `@leostera/atxf` 0.4.0 makes Pi → ATXF → Pi lossless without it: on 2,146 local Session files, all 195,046 entries come back equal as JSON. But Axo's record hash is over a Pi line's exact bytes (`pi3RecordHash`), and the rebuilt lines are equal only as JSON. Served `pi/3` records and Sessions restored to a Mac (RFD0027) would then fail their hashes and chain. `native` goes once Axo's chain is over ATXF records ([RFD0043](RFD0043-axo-on-axp.md) phase 3), in a new generation.
 - Changing the wire. Clients and axod see the same `pi/3` records; the SessionDO takes lines out of `native` to serve them.
 - A restore command for production. This RFD gives the restore function and its tests.
 
@@ -249,7 +249,7 @@ Reading history costs a Class B operation per range ($0.36 per million), less wh
 Before acceptance:
 
 - **`@leostera/atxf` needs a stream whose state can be saved and resumed** (rule 7). What would `TranscriptStream.state()` and `pi.stream({ resume })` hold, and how big is it for a 118 MB Session? It is the ids and hashes the stream keeps to resolve later references (convert.ts: "A stream keeps the ids and hashes it needs"). Asked of the ATXF Session with the fidelity work.
-- **ATXF must accept every line.** Today a stopped translation stops storage for that Session. Asked of the ATXF Session, by falling back to a `custom` record that carries the line.
+- **ATXF must accept every line.** Done in `@leostera/atxf` 0.4.0: `pi.stream().push` never throws, and a line that is not JSON becomes a `custom` record (namespace `pi.line`). The SessionDO's `atxf_error` stop stays only for a stream that cannot reproduce a stored translation. Axo upgrades its readers to 0.4.0 before its writers, since 0.3.0 validators reject the new fields.
 - **A bucket lock.** (a) None. (b) 30 days on `accounts/`, so nothing, not a bug and not a leaked token, can delete or overwrite a segment for 30 days. (c) Indefinite. Recommendation: (b), after release 3.
 - **The preview Worker** (`axo-public-app-preview`) shares buckets today. (a) Its own, `axo-sessions-preview`. (b) The same; generations keep keys apart. Recommendation: (a).
 - **The delay.** (a) An hour. (b) Ten minutes: six times the operations, still inside the free tier. Recommendation: (a).
@@ -262,7 +262,7 @@ During implementation:
 Out of scope:
 
 - The `archived/` objects in `axo-sessions` and the `axo-session-files` bucket. Compare them with the SessionDOs, keep what exists nowhere else, and decide in a separate change.
-- Dropping `native`. Once the ATXF fidelity test reports no gaps on our Sessions, a new generation could be written without it. That decision gets its own RFD.
+- Dropping `native`. ATXF no longer needs it (0.4.0); Axo's `pi/3` hashes do, until RFD0043 moves the chain to ATXF records. That is when a new generation is written without it.
 
 ## Future possibilities
 
