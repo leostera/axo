@@ -252,8 +252,8 @@ export async function upgradeHostClient(
   }));
 }
 
-function json(body: unknown, status = 200): Response {
-  return Response.json(body, { status, headers: privateHeaders });
+function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
+  return Response.json(body, { status, headers: { ...privateHeaders, ...extraHeaders } });
 }
 function unavailable(): Response {
   return json({ error: "Account service is temporarily unavailable" }, 503);
