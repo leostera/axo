@@ -11,6 +11,8 @@
 //! replaced. The side-car unloads the model after ten idle minutes (`--sleep-idle-seconds`) and
 //! loads it again on demand.
 
+pub mod service;
+
 use std::fs::{File, OpenOptions};
 use std::io::{self};
 use std::os::fd::AsRawFd;
@@ -81,24 +83,39 @@ pub struct Infer {
     /// The side-car and the download this process started, reaped once they exit.
     children: Arc<Mutex<Children>>,
     starting: Arc<tokio::sync::Mutex<()>>,
+    model_file: PathBuf,
+    vision_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
 struct Children {
-    side_car: Option<WatchedChild>,
+    side_car: Option<SideCar>,
     download: Option<WatchedChild>,
+}
+
+/// Own the startup lock until the watched child is reaped, and inherit it into the guard.
+#[derive(Debug)]
+struct SideCar {
+    child: WatchedChild,
+    _lock: File,
 }
 
 impl Children {
     /// Reaps whichever has exited; true while the side-car this process started still runs.
     fn side_car_running(&mut self) -> bool {
-        for slot in [&mut self.side_car, &mut self.download] {
-            if slot
-                .as_mut()
-                .is_some_and(|child| !matches!(child.try_wait(), Ok(None)))
-            {
-                *slot = None;
-            }
+        if self
+            .side_car
+            .as_mut()
+            .is_some_and(|side_car| !matches!(side_car.child.try_wait(), Ok(None)))
+        {
+            self.side_car = None;
+        }
+        if self
+            .download
+            .as_mut()
+            .is_some_and(|child| !matches!(child.try_wait(), Ok(None)))
+        {
+            self.download = None;
         }
         self.side_car.is_some()
     }
@@ -170,6 +187,23 @@ impl Infer {
             run,
             children: Arc::default(),
             starting: Arc::default(),
+            model_file: PathBuf::from(MODEL_FILE),
+            vision_file: Some(PathBuf::from(VISION_FILE)),
+        }
+    }
+
+    /// A script-managed model. Its run directory must not be the safety judge's directory.
+    fn for_model(
+        helper: PathBuf,
+        models: PathBuf,
+        run: PathBuf,
+        model_file: PathBuf,
+        vision_file: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            model_file,
+            vision_file,
+            ..Self::new(helper, models, run)
         }
     }
 
@@ -190,11 +224,11 @@ impl Infer {
 
     /// Whether the helper and the model files are on disk.
     pub fn installed(&self) -> Result<(), InferError> {
-        for path in [
-            self.helper.clone(),
-            self.models.join(MODEL_FILE),
-            self.models.join(VISION_FILE),
-        ] {
+        let mut paths = vec![self.helper.clone(), self.models.join(&self.model_file)];
+        if let Some(vision) = &self.vision_file {
+            paths.push(self.models.join(vision));
+        }
+        for path in paths {
             if !path.exists() {
                 return Err(InferError::Unavailable(format!(
                     "{} is missing",
@@ -290,20 +324,54 @@ impl Infer {
     async fn ensure_running(&self) -> Result<(), InferError> {
         let _starting = self.starting.lock().await;
         let infer = self.clone();
-        let watch = blocking(move || infer.prepare_start()).await?;
+        let mut watch = blocking(move || infer.prepare_start()).await?;
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
             if self.healthy().await {
                 return Ok(());
             }
-            let infer = self.clone();
-            if blocking(move || infer.died_without_lock()).await {
+            let (owned, exited) = {
+                let children = self.lock_children();
+                (
+                    children.side_car.is_some(),
+                    children
+                        .side_car
+                        .as_ref()
+                        .is_some_and(|side_car| side_car.child.exit().has_exited()),
+                )
+            };
+            if exited {
+                let side_car = self.lock_children().side_car.take();
+                let status = if let Some(mut side_car) = side_car {
+                    side_car
+                        .child
+                        .wait()
+                        .await
+                        .map(|status| status.to_string())
+                        .unwrap_or_else(|error| error.to_string())
+                } else {
+                    "unknown status".into()
+                };
                 return Err(InferError::Failed(format!(
-                    "axod-infer exited; see {}",
+                    "axod-infer exited ({status}); see {}",
                     self.run.join("infer.log").display()
                 )));
             }
-            if !watch.wait_until(deadline).await {
+            let infer = self.clone();
+            if !owned && blocking(move || infer.died_without_lock()).await {
+                // A process forked during a lock probe can inherit that temporary lock until
+                // exec. If no child was started and the lock is now free, start ours rather
+                // than reporting the non-existent child as crashed.
+                if Instant::now() < deadline {
+                    let infer = self.clone();
+                    watch = blocking(move || infer.prepare_start()).await?;
+                    continue;
+                }
+            }
+            // Socket/log changes precede HTTP readiness, and the server need not write again
+            // after its final 503. Retry the health handshake as well as listening for events.
+            let retry = deadline.min(Instant::now() + Duration::from_millis(200));
+            if !watch.wait_until(retry).await && Instant::now() >= deadline {
                 return Err(InferError::Failed(
                     "axod-infer did not start in time".into(),
                 ));
@@ -314,9 +382,14 @@ impl Infer {
     /// Process ownership and filesystem setup block, but no cold-start wait does.
     fn prepare_start(&self) -> Result<StartWatch, InferError> {
         let mut children = self.lock_children();
-        if !children.side_car_running() {
-            self.stop_left_running();
+        if children.side_car_running() {
+            return StartWatch::new(
+                &self.run,
+                children.side_car.as_ref().map(|side_car| &side_car.child),
+            )
+            .map_err(|e| InferError::Failed(e.to_string()));
         }
+        self.stop_left_running();
         std::fs::create_dir_all(&self.run).map_err(|e| InferError::Failed(e.to_string()))?;
         let lock = OpenOptions::new()
             .create(true)
@@ -327,8 +400,11 @@ impl Infer {
         if try_lock(&lock) {
             children.side_car = Some(self.start(lock)?);
         }
-        StartWatch::new(&self.run, children.side_car.as_ref())
-            .map_err(|e| InferError::Failed(e.to_string()))
+        StartWatch::new(
+            &self.run,
+            children.side_car.as_ref().map(|side_car| &side_car.child),
+        )
+        .map_err(|e| InferError::Failed(e.to_string()))
     }
 
     fn lock_children(&self) -> std::sync::MutexGuard<'_, Children> {
@@ -386,7 +462,7 @@ impl Infer {
 
     /// Spawns the side-car under this process's lifeline, handing it the locked file so the lock
     /// lasts as long as it does.
-    fn start(&self, lock: File) -> Result<WatchedChild, InferError> {
+    fn start(&self, lock: File) -> Result<SideCar, InferError> {
         let socket = self.socket();
         let _ = std::fs::remove_file(&socket);
         let log = File::create(self.run.join("infer.log"))
@@ -397,9 +473,11 @@ impl Infer {
             .guarded(&self.helper);
         command
             .arg("--model")
-            .arg(self.models.join(MODEL_FILE))
-            .arg("--mmproj")
-            .arg(self.models.join(VISION_FILE))
+            .arg(self.models.join(&self.model_file));
+        if let Some(vision) = &self.vision_file {
+            command.arg("--mmproj").arg(self.models.join(vision));
+        }
+        command
             .arg("--host")
             .arg(&socket)
             .args(["--ctx-size", "8192", "--parallel", "1", "--no-webui"])
@@ -415,9 +493,8 @@ impl Infer {
             .spawn()
             .map_err(|e| InferError::Failed(format!("could not start axod-infer: {e}")))?;
         log::info!("event=infer.started pid={}", child.id());
-        // The child holds the lock now; closing ours does not release it.
-        drop(lock);
-        WatchedChild::new(child).map_err(|e| InferError::Failed(e.to_string()))
+        let child = WatchedChild::new(child).map_err(|e| InferError::Failed(e.to_string()))?;
+        Ok(SideCar { child, _lock: lock })
     }
 }
 
@@ -633,7 +710,7 @@ mod tests {
             .block_on(future)
     }
 
-    fn run_directory() -> PathBuf {
+    pub(super) fn run_directory() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let run = PathBuf::from(format!(
             "/tmp/axo-infer-{}-{}",
@@ -755,18 +832,22 @@ mod tests {
         ));
     }
 
-    /// A side-car that only answers `/health`, on the socket `--host` names.
+    /// A side-car that answers `/health`, first with 503, then 200, without writing more logs
+    /// or changing the socket. Readiness must progress even after the final filesystem event.
     const FAKE_SIDE_CAR: &str = r#"#!/usr/bin/python3
 import socket, sys
 path = sys.argv[sys.argv.index("--host") + 1]
 server = socket.socket(socket.AF_UNIX)
 server.bind(path)
 server.listen(8)
+requests = 0
 while True:
     client, _ = server.accept()
     try:
         if client.recv(65536):
-            client.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            requests += 1
+            status = b"503 Loading" if requests == 1 else b"200 OK"
+            client.sendall(b"HTTP/1.1 " + status + b"\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
     except OSError:
         pass
     client.close()
@@ -795,7 +876,7 @@ while True:
         let infer = fake_infer();
         block(infer.ensure_running()).unwrap();
         let pid = serving_pid(&infer);
-        let guard = infer.lock_children().side_car.as_ref().unwrap().id() as i32;
+        let guard = infer.lock_children().side_car.as_ref().unwrap().child.id() as i32;
         // SAFETY: getppid-like lookup of a process this test started.
         let parent = {
             let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -833,6 +914,24 @@ while True:
     }
 
     #[test]
+    fn a_transient_lock_without_a_side_car_does_not_look_like_a_crash() {
+        let infer = fake_infer();
+        let lock = File::create(infer.run.join("infer.lock")).unwrap();
+        assert!(try_lock(&lock));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(lock);
+        });
+        block(async {
+            infer.ensure_running().await.unwrap();
+            release.join().unwrap();
+            assert!(infer.lock_children().side_car.is_some());
+            infer.stop().await;
+        });
+        std::fs::remove_dir_all(&infer.run).unwrap();
+    }
+
+    #[test]
     fn a_side_car_this_process_did_not_start_is_replaced() {
         let infer = fake_infer();
         // One an earlier axod left: started without the lifeline, holding the lock.
@@ -860,7 +959,7 @@ while True:
         assert_ne!(pid as u32, stranger.id());
         assert!(infer.lock_children().side_car.is_some());
         // SAFETY: stops the guard this test started.
-        let guard = infer.lock_children().side_car.as_ref().unwrap().id() as i32;
+        let guard = infer.lock_children().side_car.as_ref().unwrap().child.id() as i32;
         unsafe { libc::kill(guard, libc::SIGTERM) };
         let _ = std::fs::remove_dir_all(&infer.run);
     }
@@ -879,7 +978,13 @@ while True:
         assert!(try_lock(&first));
         assert!(!try_lock(&second));
         drop(first);
-        assert!(try_lock(&second));
+        // A concurrent process-start test may have forked while first was open. The copy is
+        // close-on-exec; allow that child's exec to release it before asserting ownership.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !try_lock(&second) {
+            assert!(Instant::now() < deadline, "lock was not released");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let _ = std::fs::remove_file(path);
     }
 }

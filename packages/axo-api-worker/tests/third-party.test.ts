@@ -196,8 +196,8 @@ test("a server whose tools answer 401 says so on its page and to the agent, unti
 async function waitForTools(call: (method: string, params?: Record<string, unknown>) => Promise<Reply>) {
   for (let i = 0; i < 50; i++) {
     const found = result(await call("axo.apps.search", {
-      // Apps that need no client of Axo's (Hetzner) and the account's assets are always listed; these tests are about servers.
-      code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.") && t.service !== "assets").map((t) => ["hosts", "bash", "computer"].includes(t.service) ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
+      // Apps that need no client of Axo's (Hetzner) and built-in assets/AI tools are always listed; these tests are about servers.
+      code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.") && t.service !== "assets" && t.service !== "ai").map((t) => ["hosts", "bash", "computer"].includes(t.service) ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
     })).result as Array<{ service: string }>;
     if (found.some((t) => !["hosts", "bash", "computer"].includes(t.service))) return found;
     await new Promise((r) => setTimeout(r, 50));

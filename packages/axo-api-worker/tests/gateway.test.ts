@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BASH_METHOD, COMPUTER_METHOD, COMPUTER_STATUS_METHOD, APPS_ERRORS, appsResults } from "@axo/protocol";
+import { AI_METHOD, AI_MODEL, BASH_METHOD, COMPUTER_METHOD, COMPUTER_STATUS_METHOD, APPS_ERRORS, appsResults } from "@axo/protocol";
 import { harness, signIn } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 
@@ -141,7 +141,7 @@ test("a Mac's name is no longer a service, and the namespaces are reserved", asy
   const { call } = await fixture(t);
   const old = error(await call("axo.apps.run", { code: `async () => codemode.studio.bash({ command: "true" })` }));
   assert.match(old.message, /studio is a Mac: call codemode.bash.run/);
-  for (const name of ["hosts", "computer", "bash", "apps"]) {
+  for (const name of ["hosts", "computer", "bash", "apps", "ai"]) {
     assert.equal(error(await call("axo.apps.add", { name, url: "https://mcp.example.com/mcp" })).code, APPS_ERRORS.nameTaken, name);
   }
 });
@@ -162,10 +162,83 @@ test("a search reads every tool's definition and calls none", async (t) => {
   const { call } = await fixture(t);
   assert.deepEqual(
     result(await call("axo.apps.search", { code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service + "." + t.name)` })),
-    { result: ["hosts.list", "bash.run", "computer.run", "assets.list", "assets.get", "assets.read", "assets.save"] },
+    { result: ["hosts.list", "bash.run", "computer.run", "ai.list", "ai.install", "ai.load", "ai.unload", "ai.run", "assets.list", "assets.get", "assets.read", "assets.save"] },
   );
   const refused = error(await call("axo.apps.search", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
   assert.match(refused.message, /cannot call tools/);
+});
+
+const gemmaSource = {
+  repo: "ggml-org/gemma-3-270m-it-GGUF",
+  revision: "e7647be17ae1108f2f605ed061ca0608b171afff",
+  file: "gemma-3-270m-it-Q8_0.gguf",
+  sha256: "0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3",
+};
+
+test("ai.run targets a Mac and never persists the prompt or generated output in its call log", async (t) => {
+  const { h, session, studio, call } = await fixture(t);
+  const daemon = await connectHost(h, session, studio);
+  t.after(() => daemon.close());
+  const running = call("axo.apps.run", { code: `async () => codemode.ai.run({ host: "studio", model: ${JSON.stringify(AI_MODEL)}, prompt: "private prompt" })` });
+  const sent = await daemon.next() as Sent;
+  assert.equal(sent.method, AI_METHOD);
+  assert.deepEqual(sent.params.request, { op: "run", model: AI_MODEL, prompt: "private prompt", maxTokens: 512 });
+  assert.equal(sent.params.accountId, session.accountId);
+  assert.ok(Number(sent.params.timeoutMs) > 0 && Number(sent.params.timeoutMs) <= 240_000);
+  const answer = { model: AI_MODEL, text: "private output", finishReason: "stop", source: gemmaSource };
+  daemon.send({ jsonrpc: "2.0", id: sent.id, result: answer });
+  assert.deepEqual(result(await running), { result: answer, logs: [] });
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.deepEqual(log.records.map(r => [r.service, r.tool, r.input, r.outcome]), [["ai", "run", { host: "studio", model: AI_MODEL }, "ok"]]);
+  assert.doesNotMatch(JSON.stringify(log), /private prompt|private output/);
+});
+
+test("ai lifecycle defaults to self, validates receipts and sends one operation at a time from a script", async (t) => {
+  const { laptopDaemon, call } = await fixture(t);
+  for (const tool of ["install", "load", "unload"] as const) {
+    const running = call("axo.apps.run", { code: `async () => codemode.ai.${tool}({ model: ${JSON.stringify(AI_MODEL)} })` });
+    const sent = await laptopDaemon.next() as Sent;
+    assert.equal(sent.method, AI_METHOD);
+    assert.deepEqual(sent.params.request, { op: tool, model: AI_MODEL });
+    const answer = { model: AI_MODEL, source: gemmaSource, ...(tool === "install" ? { installed: true } : { status: tool === "load" ? "loaded" : "stopped" }) };
+    laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: answer });
+    assert.deepEqual(result(await running), { result: answer, logs: [] });
+  }
+});
+
+test("ai rejects unsupported models, unknown fields and oversized UTF-8 prompts before routing or logging", async (t) => {
+  const { call } = await fixture(t);
+  for (const args of [
+    { model: "hf:unknown/model", prompt: "x" },
+    { model: AI_MODEL, prompt: "x", url: "https://example.com" },
+    { model: AI_MODEL, prompt: "x", maxTokens: 4097 },
+  ]) {
+    assert.equal(error(await call("axo.apps.run", { code: `async () => codemode.ai.run(${JSON.stringify(args)})` })).code, APPS_ERRORS.scriptFailed);
+  }
+  assert.match(error(await call("axo.apps.run", { code: `async () => codemode.ai.run({model:${JSON.stringify(AI_MODEL)},prompt:"💛".repeat(9000)})` })).message, /UTF-8/);
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.deepEqual(log.records, []);
+});
+
+test("ai rejects a malformed model result and records unknown rather than accepting false provenance", async (t) => {
+  const { laptopDaemon, call } = await fixture(t);
+  const running = call("axo.apps.run", { code: `async () => codemode.ai.run({model:${JSON.stringify(AI_MODEL)},prompt:"x"})` });
+  const sent = await laptopDaemon.next() as Sent;
+  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: { model: AI_MODEL, text: "x", finishReason: "stop", source: { ...gemmaSource, revision: "main" } } });
+  assert.match(error(await running).message, /invalid AI result/);
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.equal(log.records[0]?.outcome, "unknown");
+});
+
+test("an ai call is not retried when its Mac disconnects", async (t) => {
+  const { h, session, studio, call } = await fixture(t);
+  const daemon = await connectHost(h, session, studio);
+  const running = call("axo.apps.run", { code: `async () => codemode.ai.load({host:"studio",model:${JSON.stringify(AI_MODEL)}})` });
+  await daemon.next();
+  daemon.close();
+  assert.match(error(await running).message, /may have run/);
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.deepEqual(log.records.map(r => r.outcome), ["unknown"]);
 });
 
 test("a script has no network of its own, and names only its own account's apps", async (t) => {

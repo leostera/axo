@@ -12,7 +12,9 @@ rust_library(
         "@crates//:libc",
         "@crates//:notify",
         "@crates//:log",
+        "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:sha2",
         "@crates//:tokio",
     ],
 )

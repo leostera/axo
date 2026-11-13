@@ -63,6 +63,8 @@ pub(crate) struct Core {
     pub(crate) questions: Arc<Questions>,
     /// Computer use here (RFD0028).
     pub(crate) computer: Arc<ComputerUse>,
+    /// Script-managed inference, isolated from the computer-use judge.
+    pub(crate) ai: axod_infer::service::Service,
     /// The account's assets while the relay is connected (RFD0030).
     pub(crate) assets: Arc<axo_assets::AssetSlot>,
     /// This Mac's input key (RFD0029).
@@ -105,6 +107,10 @@ impl Core {
             registry: crate::sessions::Registry::default(),
             host_id: parts.host_id,
             host_generation: parts.host_generation,
+            ai: axod_infer::service::Service::beside_current_exe(
+                &parts.home,
+                parts.agent_socket.parent().unwrap_or(&parts.home),
+            ),
             home: parts.home,
             attach_socket_path: parts.attach_socket_path,
             agent_socket: parts.agent_socket,

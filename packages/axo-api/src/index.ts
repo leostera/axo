@@ -21,5 +21,6 @@ export {
 export * from "./pi3.ts";
 export * from "./session-sync.ts";
 export * from "./apps.ts";
+export * from "./ai.ts";
 export * from "./assets.ts";
 export * from "./elicitation.ts";

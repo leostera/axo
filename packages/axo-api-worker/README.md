@@ -24,6 +24,23 @@ Hosts never sign in: they pair. `/api/v1/host-pairings/redeem` and `/api/v1/acco
 
 The public site at `axo.leostera.dev` serves the landing page and app from the same origin as `/api/auth/me` and the new `/api/v1/account/*` APIs. Other `/api/*` paths remain unavailable. The legacy `app.axo.leostera.dev` and `api.axo.leostera.dev` Workers and Access applications have been removed, and their site-shim code is deleted. No legacy host records have been migrated; this change did not issue Durable Object namespace tombstones.
 
+## Local AI tools
+
+`codemode.ai.list/install/load/unload/run` routes a script's request to a paired Mac
+(`host`, default `self`). `run` lazily installs and loads the pinned Gemma 3 270M IT
+GGUF; the Hugging Face MCP connection can help discover models but is not the downloader.
+Only this reviewed model reference is accepted for now.
+
+Definitions and receipts are in `@axo/protocol/src/ai.ts`; `AccountApps` resolves the target
+for every call and sends `axo.apps.ai` on its authenticated relay. The daemon checks the
+account again and admits bounded jobs independently of the relay's ordered requests.
+Receipts must include the pinned artifact's provenance. Prompts/output are omitted from
+the AI call log; call failures and disconnected outcomes are recorded without retrying.
+The model runs locally, but inputs and outputs still traverse the cloud script/relay.
+
+See [the inference service](../../crates/axod-infer/README.md) for examples, limits and testing.
+Both the Worker and target Mac need this version; an older Mac returns an update instruction.
+
 ## Development and validation
 
 From the repository root:

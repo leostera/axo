@@ -51,6 +51,7 @@ rust_library(
         "@crates//:shlex",
         "@crates//:zeroize",
         "@crates//:core-foundation",
+        "//crates/axod-infer:axod_infer",
     ],
 )
 
@@ -95,5 +96,6 @@ rust_test(
         "@crates//:zeroize",
         "@crates//:core-foundation",
         "@crates//:rusqlite",
+        "//crates/axod-infer:axod_infer",
     ],
 )

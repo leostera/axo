@@ -34,12 +34,33 @@ impl JobLimit {
 }
 
 /// Commands: each holds a process group.
+static AI_JOBS: JobLimit = JobLimit::new(1, "another ai operation is running on this Mac");
+
 static BASH_JOBS: JobLimit = JobLimit::new(16, "too many commands running on this Mac");
 /// Computer calls: they wait on the person, and drive one screen.
 static COMPUTER_JOBS: JobLimit = JobLimit::new(4, "too many computer calls running on this Mac");
 /// Sign-ins: each holds a redirect port, and a service registers few.
 static SIGN_INS: JobLimit =
     JobLimit::new(2, "another sign-in is waiting on this Mac; finish it first");
+
+/// Inference and model installation never hold up the relay's ordered host requests.
+pub(super) fn start_ai(id: Value, params: &Value, context: &RelaySessionContext) {
+    let params = match crate::ai::parse(params, &context.account_id) {
+        Ok(params) => params,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    let place = match AI_JOBS.admit() {
+        Ok(place) => place,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    let replies = context.replies.clone();
+    let sessions = Arc::clone(&context.sessions);
+    tokio::spawn(async move {
+        let outcome = sessions.remote_ai(params).await;
+        drop(place);
+        replies.reply(&id, outcome);
+    });
+}
 
 /// Starts a `bash` request as a task of its own; its reply goes back on this socket only.
 pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContext) {

@@ -92,6 +92,14 @@ test("a Session's script runs bash and computer use on a Mac through the account
     };
     assert.deepEqual(hosts.result.map((h) => [h.name, h.online, h.self, typeof h.computerUse?.available]), [[service, true, true, "boolean"]]);
 
+    // AI discovery traverses cloud codemode -> paired Mac -> inference service, with no download.
+    const ai = await localCall(socketPath, "axo.apps.run", { sessionId, code: `async () => codemode.ai.list({})` }) as {
+      result: { models: Array<{ id: string; task: string; installed: boolean; status: string }> };
+    };
+    assert.deepEqual(ai.result.models.map(model => [model.id, model.task, model.installed, model.status]), [
+      ["hf:ggml-org/gemma-3-270m-it-GGUF", "generate", false, "stopped"],
+    ]);
+
     // computer.run with confirm asks the person in the calling Session, as Axo; a No runs nothing.
     const asked: Elicitation[] = [];
     const phone = await accountApi(api.url, account).connect(`phone-${crypto.randomUUID().slice(0, 8)}`, {

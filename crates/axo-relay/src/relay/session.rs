@@ -20,7 +20,7 @@ use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
 use super::forward;
-use super::jobs::{start_bash, start_computer, start_prompt, start_sign_in};
+use super::jobs::{start_ai, start_bash, start_computer, start_prompt, start_sign_in};
 use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
 use super::wire::{JSONRPC, OutgoingRequest};
@@ -226,6 +226,12 @@ fn take_message(
     let id = value.get("id").filter(|id| !id.is_null()).cloned();
     let params = &value["params"];
     let request = match method {
+        Some(crate::ai::METHOD) => {
+            if let Some(id) = id {
+                start_ai(id, params, context);
+            }
+            return Ok(());
+        }
         Some(crate::computer::METHOD) => {
             if let Some(id) = id {
                 start_computer(id, params, context);

@@ -124,6 +124,14 @@ pub trait RelayHost: Send + Sync {
     ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
         Box::pin(std::future::ready(Err(MethodError::method_not_found())))
     }
+    /// Local model inference from an account script. The host owns model/runtime policy.
+    fn remote_ai(
+        &self,
+        _request: crate::ai::AiParams,
+    ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
+        Box::pin(std::future::ready(Err(MethodError::method_not_found())))
+    }
+
     /// Whether this Mac can do computer use now: `{ available, accessibility, screenRecording, locked }`.
     fn computer_status(&self) -> HostFuture<'_, serde_json::Value> {
         Box::pin(std::future::ready(serde_json::json!({

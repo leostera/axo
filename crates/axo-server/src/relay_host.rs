@@ -172,6 +172,30 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         })
     }
 
+    fn remote_ai(
+        &self,
+        request: axo_relay::ai::AiParams,
+    ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
+        Box::pin(async move {
+            use axo_protocol::rpc::error_code::{BUSY, INVALID_PARAMS, REFUSED};
+            use axod_infer::service::{Error, Request};
+            let error = |error: Error| {
+                let code = match &error {
+                    Error::Invalid(_) => INVALID_PARAMS,
+                    Error::Busy => BUSY,
+                    _ => REFUSED,
+                };
+                MethodError::new(code, error.to_string())
+            };
+            let operation = Request::parse(request.request).map_err(error)?;
+            self.core
+                .ai
+                .execute(operation, request.timeout_ms)
+                .await
+                .map_err(error)
+        })
+    }
+
     fn computer_status(&self) -> HostFuture<'_, serde_json::Value> {
         // Cua's probe asks the window server and TCC, which may take a moment.
         Box::pin(async {

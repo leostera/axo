@@ -1,6 +1,13 @@
 import { z } from "zod";
 import {
   APPS_NAMESPACE,
+  AI_NAMESPACE,
+  AI_METHOD,
+  AI_MAX_TIMEOUT_MS,
+  aiInputs,
+  aiResults,
+  aiToolSchema,
+  type AiTool,
   BASH_METHOD,
   ASSETS_NAMESPACE,
   BASH_NAMESPACE,
@@ -312,7 +319,7 @@ export class AccountApps {
 
   /** Every tool a script can reach, as `codemode.tools()` shows them. */
   tools(): ToolDefinition[] {
-    return [...this.hostTools(), ...(this.deps.assets ? assetToolDefinitions() : []), ...this.thirdParty.tools(), ...this.apps.tools()];
+    return [...this.hostTools(), ...this.aiTools(), ...(this.deps.assets ? assetToolDefinitions() : []), ...this.thirdParty.tools(), ...this.apps.tools()];
   }
 
   /** The Macs' namespaces: one definition each, the Mac an argument (RFD0028). */
@@ -360,6 +367,65 @@ export class AccountApps {
     ];
   }
 
+  private aiTools(): ToolDefinition[] {
+    const descriptions: Record<AiTool, string> = {
+      list: "List local AI models on a Mac: supported model IDs, task, helper availability, installed-on-disk and loaded/sleeping/stopped status, download bytes and pinned source. Does not download or load.",
+      install: "Prefetch Gemma onto a Mac without loading it. First use downloads about 292 MB from Hugging Face, resumes partial downloads and verifies SHA-256. Optional: ai.run and ai.load install automatically.",
+      load: "Install if absent and prewarm Gemma in RAM on a Mac. Optional: ai.run loads automatically. The model sleeps after 10 idle minutes.",
+      unload: "Stop the script-managed Gemma process and release its RAM. Keeps downloaded files. Never touches the computer-use safety judge. Refused while another AI operation is running.",
+      run: "Generate text with local Gemma on a Mac. Automatically installs the pinned Hugging Face model if absent, then loads and runs it. Returns { model, text, finishReason, source }; length means maxTokens was reached. Defaults to 512 output tokens, at most 4096. The prompt must fit 32768 UTF-8 bytes. The model has no tools. Prompts/output pass through Axo's cloud script/relay, but are not stored in the AI call log. One AI operation per Mac; no implicit retries or cloud fallback. Only Gemma 3 270M IT Q8_0 is supported for now, not embeddings or images.",
+    };
+    return aiToolSchema.options.map((name) => ({
+      service: AI_NAMESPACE, name, title: `Local AI: ${name}`,
+      description: descriptions[name],
+      inputSchema: z.toJSONSchema(aiInputs[name]) as Record<string, unknown>,
+      call: `codemode.ai.${name}`,
+    }));
+  }
+
+  /** One model operation, logged without its prompt/output. Every target is resolved anew. */
+  private async runAi(from: Caller, name: string, input: unknown, deadline: number): Promise<unknown> {
+    const tool = aiToolSchema.parse(name);
+    const parsed = aiInputs[tool].safeParse(input);
+    if (!parsed.success) throw new Error(`ai.${tool}: ${z.prettifyError(parsed.error)}`);
+    const { host, ...args } = parsed.data;
+    if ("prompt" in args && new TextEncoder().encode(args.prompt).length > 32_768)
+      throw new Error("ai.run: prompt exceeds 32768 UTF-8 bytes");
+    const target = await this.resolveHost(host, from);
+    const remaining = deadline - Date.now() - BASH_GRACE_MS;
+    if (remaining < 1_000) throw new LimitError("scriptWallMs", "the script has no time left for an ai operation");
+    const timeoutMs = Math.min(AI_MAX_TIMEOUT_MS, remaining);
+    const callId = crypto.randomUUID();
+    await this.log.start({
+      callId, sessionId: from.sessionId, hostId: from.hostId, service: AI_NAMESPACE, tool,
+      targetHostId: target.host.hostId,
+      input: { host: target.name, ...( "model" in args ? { model: args.model } : {}) },
+    });
+    let outcome: CallOutcome;
+    try {
+      outcome = await this.deps.callHost(target.host.hostId, {
+        method: AI_METHOD,
+        params: { accountId: this.deps.accountId, callId, request: { op: tool, ...args }, timeoutMs },
+        deadlineMs: timeoutMs + BASH_GRACE_MS,
+      });
+    } catch {
+      outcome = failure(APPS_ERRORS.outcomeUnknown, "did not answer; the AI operation may have run");
+    }
+    if ("error" in outcome) {
+      const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
+      await this.log.finish(callId, unknown ? "unknown" : "error", unknown ? "the Mac did not answer" : "the Mac refused the AI operation");
+      const message = outcome.error.code === -32601 ? "update Axo on that Mac to use local AI" : outcome.error.message;
+      throw new Error(`ai.${tool} on ${target.name}: ${message}`);
+    }
+    const result = aiResults[tool].safeParse(outcome.result);
+    if (!result.success) {
+      await this.log.finish(callId, "unknown", "the Mac returned an invalid AI result");
+      throw new Error(`ai.${tool} on ${target.name}: invalid AI result; the operation may have run`);
+    }
+    await this.log.finish(callId, "ok", null);
+    return result.data;
+  }
+
   /**
    * The Macs by name: each takes its label as a JavaScript-safe name, unique among the account's
    * Macs. Reserved names get a suffix, so `self` and the namespaces never name a Mac.
@@ -388,6 +454,7 @@ export class AccountApps {
         if (tool !== "list") throw new Error(`hosts has no tool named ${tool}; it has list`);
         return this.hostsList(from);
       }
+      if (service === AI_NAMESPACE) return this.runAi(from, tool, input, deadline);
       if (service === COMPUTER_NAMESPACE) {
         if (tool !== "run") throw new Error(`computer has no tool named ${tool}; call computer.run({ host, tool, args })`);
         return this.runComputer(from, input, deadline);
