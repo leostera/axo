@@ -189,7 +189,7 @@ RFD0027 evicts an archived Session's file once the cloud's count and chain match
 
 1. **Store.** The schema, rules 1–3 and 5–6, the read-back without the drop, backfill, observability. The SessionDO still holds every line. Check: every Session reaches `through == count`, and a restore from R2 of the largest Session, one with a cut and one archived Session equals the SessionDO.
 2. **Read through.** `read` and `atxf` also read each stored range from R2 and compare it with the line held. They serve the held line, and log `session.storage_mismatch` on any difference. This needs `checkpoints` (rule 7) from `@leostera/atxf`. Gate: a week with no mismatch.
-3. **Drop.** Rule 4 in full; axod eviction waits for `stored`. Then the bucket lock.
+3. **Drop.** Rule 4 in full; axod eviction waits for `stored`. Then the bucket lock: rule `lock-accounts-30d`, prefix `accounts/`, 30 days, decided 2026-11-12. No segment can be deleted or overwritten in its first 30 days: not by a bug, a script or a leaked object token. A bucket must be empty to be deleted, so the bucket cannot be deleted either while any segment is locked. Someone who may edit the bucket's settings can still remove the rule first. That is what makes 30 days, not forever, the choice: a person's data can still be deleted after a month.
 
 ### Cost
 
@@ -250,7 +250,6 @@ Reading history costs a Class B operation per range ($0.36 per million), less wh
 Before acceptance:
 
 - **ATXF must accept every line.** Done in `@leostera/atxf` 0.4.0: `pi.stream().push` never throws, and a line that is not JSON becomes a `custom` record (namespace `pi.line`). The SessionDO's `atxf_error` stop stays only for a stream that cannot reproduce a stored translation. Axo upgrades its readers to 0.4.0 before its writers, since 0.3.0 validators reject the new fields.
-- **A bucket lock.** (a) None. (b) 30 days on `accounts/`, so nothing, not a bug and not a leaked token, can delete or overwrite a segment for 30 days. (c) Indefinite. Recommendation: (b), after release 3.
 - **The preview Worker** (`axo-public-app-preview`) shares buckets today. (a) Its own, `axo-sessions-preview`. (b) The same; generations keep keys apart. Recommendation: (a).
 - **The delay.** (a) An hour. (b) Ten minutes: six times the operations, still inside the free tier. Recommendation: (a).
 
