@@ -1,3 +1,6 @@
+#if canImport(UIKit)
+  import UIKit
+#endif
 import XCTest
 
 /// The phone app driven as a person would, against its simulator preview (sample Macs and chats,
@@ -152,6 +155,8 @@ final class AxoPhoneUITests: XCTestCase {
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
   }
 
+  // Building the library on its own (`bazel test //apple/...`) compiles it for macOS, which has no UIKit.
+  #if canImport(UIKit)
   @MainActor
   func testAPicturePastedIntoTheBoxIsAttached() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
@@ -177,6 +182,7 @@ final class AxoPhoneUITests: XCTestCase {
     paste.tap()
     XCTAssertEqual(composer.value as? String, "Pasted words")
   }
+  #endif
 
   @MainActor
   func testEachMacIsShownAsTheKindOfMacItIs() {
