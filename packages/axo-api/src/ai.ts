@@ -1,43 +1,108 @@
 import { z } from "zod";
+import { attachmentSchema } from "./assets.ts";
 
-/** Host-targeted local inference. This first release deliberately supports one reviewed model. */
 export const AI_NAMESPACE = "ai";
 export const AI_METHOD = "axo.apps.ai";
-export const AI_MODEL = "hf:ggml-org/gemma-3-270m-it-GGUF";
 export const AI_MAX_TIMEOUT_MS = 240_000;
 
-const host = z.string().min(1).max(64).default("self").describe('A Mac from hosts.list(), or "self" (the default).');
-const model = z.literal(AI_MODEL).describe("Gemma 3 270M instruction-tuned, Q8_0. First use downloads the pinned 292 MB artifact onto this Mac.");
-const modelInput = z.object({ host, model }).strict();
+export const aiModelSchema = z.string().max(259).regex(/^hf:[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?(?:@[A-Za-z0-9][A-Za-z0-9_.-]*)?$/)
+  .describe("Hugging Face reference: hf:owner/repo[:quant][@revision]. Not a model-name allowlist. Use the HF app to search, ai.capabilities for this host's runtime and ai.info to inspect compatibility before downloading weights.");
+const artifact = z.string().max(512).regex(/^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9_.\/-]+\.gguf$/i);
+const host = z.string().min(1).max(64).default("self").describe('A paired online Mac from hosts.list(), or "self" (the default).');
+const selectionFields = { model: aiModelSchema, file: artifact.optional(), projector: artifact.optional() };
+const selection = z.object(selectionFields).strict();
+const task = z.enum(["generate", "classify", "embed"]);
+const image = z.union([
+  z.string().max(12 * 1024 * 1024).regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
+  attachmentSchema.extend({ mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]), size: z.number().int().positive().max(8 * 1024 * 1024) }).strict(),
+]).describe("An account image attachment ({asset,name,mimeType,size}), or a base64 PNG/JPEG/WebP data URL. Prefer attachments: inline data must also fit the 64 KiB relay request budget. No local paths or arbitrary URLs.");
+const images = z.array(image).max(4).optional();
+const text = z.string().min(1).max(32_768);
+const textInput = z.union([text, z.object({ text, images }).strict()]);
+const questionId = z.string().max(64).regex(/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/);
+const instructions = z.string().min(1).max(4096);
+const question = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("noul"), instructions }).strict(),
+  z.object({ type: z.literal("choice"), instructions, criteria: z.record(questionId, z.string().max(4096).nullable()).refine(criteria => Object.keys(criteria).length >= 2 && Object.keys(criteria).length <= 32, "choice needs 2 to 32 criteria") }).strict(),
+  z.object({ type: z.literal("score"), instructions, criteria: z.array(instructions).min(2).max(10) }).strict(),
+]);
+const base = { host, ...selectionFields };
 export const aiInputs = {
+  capabilities: z.object({ host }).strict(),
   list: z.object({ host }).strict(),
-  install: modelInput,
-  load: modelInput,
-  unload: modelInput,
-  run: z.object({ host, model, prompt: z.string().min(1).max(32_768), maxTokens: z.number().int().min(1).max(4096).default(512) }).strict(),
+  info: z.object(base).strict(),
+  install: z.object(base).strict(),
+  load: z.object({ ...base, task: task.default("generate") }).strict(),
+  unload: z.object(base).strict(),
+  run: z.union([
+    z.object({ ...base, task: z.literal("generate").default("generate"), input: textInput, maxTokens: z.number().int().min(1).max(4096).default(512) }).strict(),
+    // Preserve 0.54's public prompt spelling at the cloud boundary; the daemon has one input path.
+    z.object({ ...base, task: z.literal("generate").default("generate"), prompt: text, maxTokens: z.number().int().min(1).max(4096).default(512) }).strict(),
+    z.object({ ...base, task: z.literal("classify"), input: z.object({ state: z.json(), images, questions: z.record(questionId, question).refine(questions => Object.keys(questions).length >= 1 && Object.keys(questions).length <= 16, "supply 1 to 16 questions") }).strict() }).strict(),
+    z.object({ ...base, task: z.literal("embed"), input: z.union([text, z.object({ text }).strict()]) }).strict(),
+  ]),
 } as const;
-export const aiToolSchema = z.enum(["list", "install", "load", "unload", "run"]);
+export const aiToolSchema = z.enum(["capabilities", "list", "info", "install", "load", "unload", "run"]);
 export type AiTool = z.infer<typeof aiToolSchema>;
 
+/** Parse once, normalize the public API to a single daemon request and enforce relay byte limits. */
+export function aiRequest(tool: AiTool, input: unknown): { host: string; request: Record<string, unknown> } {
+  let host: string;
+  let request: Record<string, unknown>;
+  if (tool === "run") {
+    const parsed = aiInputs.run.parse(input);
+    if ("prompt" in parsed) {
+      const { host: target, prompt, ...args } = parsed;
+      host = target; request = { op: tool, ...args, input: prompt };
+    } else {
+      const { host: target, ...args } = parsed;
+      host = target; request = { op: tool, ...args };
+    }
+    const value = request.input;
+    const content = typeof value === "string" ? value : value && typeof value === "object" && "text" in value ? value.text : undefined;
+    if (typeof content === "string" && new TextEncoder().encode(content).length > 32_768) throw new Error("ai.run: text exceeds 32768 UTF-8 bytes");
+  } else {
+    const { host: target, ...args } = aiInputs[tool].parse(input);
+    host = target; request = { op: tool, ...args };
+  }
+  if (new TextEncoder().encode(JSON.stringify(request)).length > 65_536)
+    throw new Error("AI request exceeds the 64 KiB relay budget; pass image attachments instead of inline bytes");
+  return { host, request };
+}
+
+const hash = z.string().regex(/^[a-f0-9]{64}$/);
+const file = z.object({ path: artifact, bytes: z.number().int().positive(), sha256: hash, role: z.enum(["model", "projector"]) }).strict();
 export const aiSourceSchema = z.object({
-  repo: z.literal("ggml-org/gemma-3-270m-it-GGUF"),
-  revision: z.literal("e7647be17ae1108f2f605ed061ca0608b171afff"),
-  file: z.literal("gemma-3-270m-it-Q8_0.gguf"),
-  sha256: z.literal("0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3"),
-}).strict();
-const receipt = { model, source: aiSourceSchema };
+  repo: z.string().max(256), revision: z.string().regex(/^[a-f0-9]{40}$/),
+  file: artifact, sha256: hash, files: z.array(file).min(1).max(128),
+}).strict().refine(source => source.files[0]?.role === "model" && source.files[0].path === source.file && source.files[0].sha256 === source.sha256,
+  "source must identify the first model artifact consistently");
+const resolved = z.object({ selection, revision: z.string().regex(/^[a-f0-9]{40}$/), architecture: z.string().max(128).nullable(), taskHints: z.array(task), files: z.array(file).min(1).max(128) }).strict();
+const compatibility = z.object({ status: z.enum(["candidate", "unsupported", "ambiguous"]), reasons: z.array(z.string().max(4096)).max(32) }).strict();
+const receipt = { model: aiModelSchema, source: aiSourceSchema };
+const probability = z.number().min(0).max(1);
+const answer = z.union([
+  z.object({ type: z.literal("noul"), noul: probability }).passthrough(),
+  z.object({ type: z.literal("choice"), choice: z.string(), probabilities: z.record(z.string(), probability) }).passthrough(),
+  z.object({ type: z.literal("score"), score: z.number().min(0) }).passthrough(),
+]);
 export const aiResults = {
-  list: z.object({ models: z.array(z.object({
-    id: model,
-    task: z.literal("generate"),
-    available: z.boolean(),
-    installed: z.boolean(),
-    status: z.enum(["stopped", "sleeping", "loaded"]),
-    downloadBytes: z.literal(291_545_600),
-    source: aiSourceSchema,
-  }).strict()).max(1) }).strict(),
+  capabilities: z.object({
+    apiVersion: z.literal(2), available: z.boolean(),
+    runtime: z.object({ name: z.literal("llama.cpp"), commit: z.string().regex(/^[a-f0-9]{40}$/), build: z.number().int(), recognizedArchitectures: z.array(z.string()).min(1) }).strict(),
+    formats: z.array(z.literal("gguf")), tasks: z.array(task), inputs: z.object({ generate: z.array(z.string()), classify: z.array(z.string()), embed: z.array(z.string()) }).strict(),
+    architectureCheck: z.string(), modelSource: z.string(), selection: z.string(), customCode: z.literal(false), privateRepositories: z.literal(false), backends: z.array(z.literal("llama.cpp")),
+    limits: z.object({ physicalMemoryBytes: z.number(), maxModelBytes: z.number(), freeDiskBytes: z.number(), maxDownloadBytes: z.number(), maxArtifacts: z.number(), maxImages: z.number(), maxImageBytes: z.number(), maxTotalImageBytes: z.number(), maxTextBytes: z.number(), contextTokens: z.number(), maxOutputTokens: z.number(), maxOperationMs: z.number(), concurrentOperations: z.number() }).strict(),
+    unsupported: z.array(z.string()),
+  }).strict(),
+  info: z.object({ info: z.object({ model: aiModelSchema, compatibility, formats: z.array(z.string()), architecture: z.string().nullable(), taskHints: z.array(task), candidates: z.array(artifact), resolved: resolved.nullable() }).strict(), installed: z.boolean() }).strict(),
+  list: z.object({ models: z.array(z.object({ model: aiModelSchema, selection, installed: z.boolean(), status: z.enum(["stopped", "sleeping", "loaded"]), source: aiSourceSchema, downloadBytes: z.number().int().positive() }).strict()).max(256) }).strict(),
   install: z.object({ ...receipt, installed: z.literal(true) }).strict(),
-  load: z.object({ ...receipt, status: z.literal("loaded") }).strict(),
-  unload: z.object({ ...receipt, status: z.literal("stopped") }).strict(),
-  run: z.object({ ...receipt, text: z.string().max(1_048_576), finishReason: z.enum(["stop", "length"]) }).strict(),
+  load: z.object({ ...receipt, status: z.literal("loaded"), task }).strict(),
+  unload: z.object({ model: aiModelSchema, status: z.literal("stopped") }).strict(),
+  run: z.discriminatedUnion("task", [
+    z.object({ ...receipt, task: z.literal("generate"), text: z.string().max(1_048_576), finishReason: z.enum(["stop", "length"]) }).strict(),
+    z.object({ ...receipt, task: z.literal("classify"), answers: z.record(z.string(), answer) }).strict(),
+    z.object({ ...receipt, task: z.literal("embed"), embedding: z.array(z.number().finite()).min(1).max(65_536) }).strict(),
+  ]),
 } as const;

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AI_METHOD, AI_MODEL, BASH_METHOD, COMPUTER_METHOD, COMPUTER_STATUS_METHOD, APPS_ERRORS, appsResults } from "@axo/protocol";
+import { AI_METHOD, BASH_METHOD, COMPUTER_METHOD, COMPUTER_STATUS_METHOD, APPS_ERRORS, appsResults } from "@axo/protocol";
 import { harness, signIn } from "./harness";
+import { GEMMA } from "./ai-fixtures";
+const AI_MODEL = GEMMA.model;
 import { connectHost, pairHost } from "./account-support";
 
 /**
@@ -162,18 +164,13 @@ test("a search reads every tool's definition and calls none", async (t) => {
   const { call } = await fixture(t);
   assert.deepEqual(
     result(await call("axo.apps.search", { code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service + "." + t.name)` })),
-    { result: ["hosts.list", "bash.run", "computer.run", "ai.list", "ai.install", "ai.load", "ai.unload", "ai.run", "assets.list", "assets.get", "assets.read", "assets.save"] },
+    { result: ["hosts.list", "bash.run", "computer.run", "ai.capabilities", "ai.list", "ai.info", "ai.install", "ai.load", "ai.unload", "ai.run", "assets.list", "assets.get", "assets.read", "assets.save"] },
   );
   const refused = error(await call("axo.apps.search", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
   assert.match(refused.message, /cannot call tools/);
 });
 
-const gemmaSource = {
-  repo: "ggml-org/gemma-3-270m-it-GGUF",
-  revision: "e7647be17ae1108f2f605ed061ca0608b171afff",
-  file: "gemma-3-270m-it-Q8_0.gguf",
-  sha256: "0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3",
-};
+const gemmaSource = GEMMA.source;
 
 test("ai.run targets a Mac and never persists the prompt or generated output in its call log", async (t) => {
   const { h, session, studio, call } = await fixture(t);
@@ -182,14 +179,14 @@ test("ai.run targets a Mac and never persists the prompt or generated output in 
   const running = call("axo.apps.run", { code: `async () => codemode.ai.run({ host: "studio", model: ${JSON.stringify(AI_MODEL)}, prompt: "private prompt" })` });
   const sent = await daemon.next() as Sent;
   assert.equal(sent.method, AI_METHOD);
-  assert.deepEqual(sent.params.request, { op: "run", model: AI_MODEL, prompt: "private prompt", maxTokens: 512 });
+  assert.deepEqual(sent.params.request, { op: "run", model: AI_MODEL, task: "generate", input: "private prompt", maxTokens: 512 });
   assert.equal(sent.params.accountId, session.accountId);
   assert.ok(Number(sent.params.timeoutMs) > 0 && Number(sent.params.timeoutMs) <= 240_000);
-  const answer = { model: AI_MODEL, text: "private output", finishReason: "stop", source: gemmaSource };
+  const answer = { model: AI_MODEL, task: "generate", text: "private output", finishReason: "stop", source: gemmaSource };
   daemon.send({ jsonrpc: "2.0", id: sent.id, result: answer });
   assert.deepEqual(result(await running), { result: answer, logs: [] });
   const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
-  assert.deepEqual(log.records.map(r => [r.service, r.tool, r.input, r.outcome]), [["ai", "run", { host: "studio", model: AI_MODEL }, "ok"]]);
+  assert.deepEqual(log.records.map(r => [r.service, r.tool, r.input, r.outcome]), [["ai", "run", { host: "studio", model: AI_MODEL, task: "generate" }, "ok"]]);
   assert.doesNotMatch(JSON.stringify(log), /private prompt|private output/);
 });
 
@@ -199,17 +196,18 @@ test("ai lifecycle defaults to self, validates receipts and sends one operation 
     const running = call("axo.apps.run", { code: `async () => codemode.ai.${tool}({ model: ${JSON.stringify(AI_MODEL)} })` });
     const sent = await laptopDaemon.next() as Sent;
     assert.equal(sent.method, AI_METHOD);
-    assert.deepEqual(sent.params.request, { op: tool, model: AI_MODEL });
-    const answer = { model: AI_MODEL, source: gemmaSource, ...(tool === "install" ? { installed: true } : { status: tool === "load" ? "loaded" : "stopped" }) };
+    assert.deepEqual(sent.params.request, { op: tool, model: AI_MODEL, ...(tool === "load" ? { task: "generate" } : {}) });
+    const answer = tool === "unload" ? { model: AI_MODEL, status: "stopped" }
+      : { model: AI_MODEL, source: gemmaSource, ...(tool === "install" ? { installed: true } : { status: "loaded", task: "generate" }) };
     laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: answer });
     assert.deepEqual(result(await running), { result: answer, logs: [] });
   }
 });
 
-test("ai rejects unsupported models, unknown fields and oversized UTF-8 prompts before routing or logging", async (t) => {
+test("ai rejects malformed references, unknown fields and oversized UTF-8 prompts before routing or logging", async (t) => {
   const { call } = await fixture(t);
   for (const args of [
-    { model: "hf:unknown/model", prompt: "x" },
+    { model: "https://unknown/model", input: "x" },
     { model: AI_MODEL, prompt: "x", url: "https://example.com" },
     { model: AI_MODEL, prompt: "x", maxTokens: 4097 },
   ]) {
@@ -224,10 +222,36 @@ test("ai rejects a malformed model result and records unknown rather than accept
   const { laptopDaemon, call } = await fixture(t);
   const running = call("axo.apps.run", { code: `async () => codemode.ai.run({model:${JSON.stringify(AI_MODEL)},prompt:"x"})` });
   const sent = await laptopDaemon.next() as Sent;
-  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: { model: AI_MODEL, text: "x", finishReason: "stop", source: { ...gemmaSource, revision: "main" } } });
+  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: { model: AI_MODEL, task: "generate", text: "x", finishReason: "stop", source: { ...gemmaSource, revision: "main" } } });
   assert.match(error(await running).message, /invalid AI result/);
   const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.equal(log.records[0]?.outcome, "unknown");
+});
+
+test("ai accepts arbitrary HF model names and forwards real image attachments for typed classification", async (t) => {
+  const { laptopDaemon, call } = await fixture(t);
+  const model = "hf:someone/new-decision-model:Q4_K_M";
+  const image = { asset: `sha256:${"b".repeat(64)}`, name: "photo.png", mimeType: "image/png", size: 128 };
+  const input = { state: { task: "private photo" }, images: [image], questions: { portrait: { type: "noul", instructions: "Is this a portrait?" } } };
+  const running = call("axo.apps.run", { code: `async () => codemode.ai.run({ model:${JSON.stringify(model)},task:"classify",input:${JSON.stringify(input)} })` });
+  const sent = await laptopDaemon.next() as Sent;
+  assert.deepEqual(sent.params.request, { op: "run", model, task: "classify", input });
+  const answer = { model, task: "classify", answers: { portrait: { type: "noul", noul: 0.97 } }, source: { ...gemmaSource, repo: "someone/new-decision-model" } };
+  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: answer });
+  assert.deepEqual(result(await running), { result: answer, logs: [] });
+  const log = JSON.stringify(result(await call("axo.apps.log")));
+  assert.doesNotMatch(log, /private photo|Is this a portrait|photo.png|bbbbbbbb/);
+});
+
+test("ai.info explains an MLX candidate instead of rejecting its model name", async (t) => {
+  const { laptopDaemon, call } = await fixture(t);
+  const model = "hf:mlx-community/clef-omni-4bit";
+  const running = call("axo.apps.run", { code: `async () => codemode.ai.info({model:${JSON.stringify(model)}})` });
+  const sent = await laptopDaemon.next() as Sent;
+  assert.deepEqual(sent.params.request, { op: "info", model });
+  const answer = { info: { model, compatibility: { status: "unsupported", reasons: ["Requires an MLX backend and reviewed decision-head adapter"] }, formats: ["mlx", "safetensors"], architecture: "qwen3_omni_moe", taskHints: ["classify"], candidates: [], resolved: null }, installed: false };
+  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: answer });
+  assert.deepEqual(result(await running), { result: answer, logs: [] });
 });
 
 test("an ai call is not retried when its Mac disconnects", async (t) => {

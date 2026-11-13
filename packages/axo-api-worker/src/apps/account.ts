@@ -5,6 +5,7 @@ import {
   AI_METHOD,
   AI_MAX_TIMEOUT_MS,
   aiInputs,
+  aiRequest,
   aiResults,
   aiToolSchema,
   type AiTool,
@@ -369,16 +370,18 @@ export class AccountApps {
 
   private aiTools(): ToolDefinition[] {
     const descriptions: Record<AiTool, string> = {
-      list: "List local AI models on a Mac: supported model IDs, task, helper availability, installed-on-disk and loaded/sleeping/stopped status, download bytes and pinned source. Does not download or load.",
-      install: "Prefetch Gemma onto a Mac without loading it. First use downloads about 292 MB from Hugging Face, resumes partial downloads and verifies SHA-256. Optional: ai.run and ai.load install automatically.",
-      load: "Install if absent and prewarm Gemma in RAM on a Mac. Optional: ai.run loads automatically. The model sleeps after 10 idle minutes.",
-      unload: "Stop the script-managed Gemma process and release its RAM. Keeps downloaded files. Never touches the computer-use safety judge. Refused while another AI operation is running.",
-      run: "Generate text with local Gemma on a Mac. Automatically installs the pinned Hugging Face model if absent, then loads and runs it. Returns { model, text, finishReason, source }; length means maxTokens was reached. Defaults to 512 output tokens, at most 4096. The prompt must fit 32768 UTF-8 bytes. The model has no tools. Prompts/output pass through Axo's cloud script/relay, but are not stored in the AI call log. One AI operation per Mac; no implicit retries or cloud fallback. Only Gemma 3 270M IT Q8_0 is supported for now, not embeddings or images.",
+      capabilities: "Describe this Mac's actual pinned inference backend, recognized GGUF architectures (generated from its runtime source), supported tasks/modalities and memory/download/input limits. Not a model-name allowlist. Use this first, then the account's Hugging Face connection to search for compatible model artifacts. Recognition is not a guarantee that every tensor layout, quantization, projector or task head will load. Currently llama.cpp, not MLX or arbitrary repository Python.",
+      list: "List this Mac's managed/cached model selections, pinned provenance, installed state and loaded/sleeping/stopped status. This is an inventory, not the list of models allowed to run. Use ai.capabilities for runtime support, the HF app for discovery and ai.info to inspect a candidate.",
+      info: "Inspect an arbitrary hf:owner/repo[:quant][@revision] candidate using HF metadata, without downloading weights or loading a model. Reports formats, architecture, task hints, candidate artifact paths and compatibility: candidate, unsupported or ambiguous, with reasons. Resolves a unique GGUF selection to immutable revision and artifact SHA-256s; file/projector disambiguate. MLX/custom-head repositories get an actionable backend/adapter explanation, not a model-name rejection.",
+      install: "Resolve and prefetch a compatible HF GGUF selection onto a Mac without loading it. Resumes partial downloads, verifies every artifact's size/SHA-256 and pins the revision. Optional: run/load install automatically. Public ungated repositories only; no repository code execution. Use file/projector when info reports ambiguous artifacts.",
+      load: "Resolve, install if absent and prewarm a HF GGUF selection for task generate, classify or embed. run does this automatically. Task adapters are provided by Axo; the runtime makes the final compatibility check. A different selection/task retires the script-managed process; the safety judge is separate. Sleeps after ten idle minutes.",
+      unload: "Stop this selection's script-managed runtime and release RAM; keep downloaded files. Never touches the computer-use judge. Refused while another AI operation is running.",
+      run: "Run a HF GGUF model on a paired Mac: resolve/pin artifacts, install if absent, load and execute. task=generate takes input text or {text,images?}; task=classify takes input {state,questions,images?} with typed noul/choice/score questions for native decision models; task=embed takes input text or {text}. Images are account attachments (preferred) or small base64 data URLs, not local paths or arbitrary URLs. Returns task-specific text/answers/embedding and exact source provenance. prompt remains a generate-only spelling for 0.54 scripts. No model-name allowlist, automatic remote-code execution, MLX backend, tool execution, cloud fallback or implicit retries. Inputs/results traverse the cloud script/relay, but are not stored in the AI call log. Inspect capabilities/info before choosing a model; unsupported architectures and specialized heads fail explicitly.",
     };
     return aiToolSchema.options.map((name) => ({
       service: AI_NAMESPACE, name, title: `Local AI: ${name}`,
       description: descriptions[name],
-      inputSchema: z.toJSONSchema(aiInputs[name]) as Record<string, unknown>,
+      inputSchema: z.toJSONSchema(aiInputs[name], { io: "input" }) as Record<string, unknown>,
       call: `codemode.ai.${name}`,
     }));
   }
@@ -386,11 +389,7 @@ export class AccountApps {
   /** One model operation, logged without its prompt/output. Every target is resolved anew. */
   private async runAi(from: Caller, name: string, input: unknown, deadline: number): Promise<unknown> {
     const tool = aiToolSchema.parse(name);
-    const parsed = aiInputs[tool].safeParse(input);
-    if (!parsed.success) throw new Error(`ai.${tool}: ${z.prettifyError(parsed.error)}`);
-    const { host, ...args } = parsed.data;
-    if ("prompt" in args && typeof args.prompt === "string" && new TextEncoder().encode(args.prompt).length > 32_768)
-      throw new Error("ai.run: prompt exceeds 32768 UTF-8 bytes");
+    const { host, request } = aiRequest(tool, input);
     const target = await this.resolveHost(host, from);
     const remaining = deadline - Date.now() - BASH_GRACE_MS;
     if (remaining < 1_000) throw new LimitError("scriptWallMs", "the script has no time left for an ai operation");
@@ -399,13 +398,13 @@ export class AccountApps {
     await this.log.start({
       callId, sessionId: from.sessionId, hostId: from.hostId, service: AI_NAMESPACE, tool,
       targetHostId: target.host.hostId,
-      input: { host: target.name, ...( "model" in args ? { model: args.model } : {}) },
+      input: { host: target.name, ...Object.fromEntries(["model", "file", "projector", "task"].filter(key => key in request).map(key => [key, request[key]])) },
     });
     let outcome: CallOutcome;
     try {
       outcome = await this.deps.callHost(target.host.hostId, {
         method: AI_METHOD,
-        params: { accountId: this.deps.accountId, callId, request: { op: tool, ...args }, timeoutMs },
+        params: { accountId: this.deps.accountId, callId, request, timeoutMs },
         deadlineMs: timeoutMs + BASH_GRACE_MS,
       });
     } catch {
@@ -414,11 +413,16 @@ export class AccountApps {
     if ("error" in outcome) {
       const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
       await this.log.finish(callId, unknown ? "unknown" : "error", unknown ? "the Mac did not answer" : "the Mac refused the AI operation");
-      const message = outcome.error.code === -32601 ? "update Axo on that Mac to use local AI" : outcome.error.message;
+      const old = outcome.error.code === -32601 || (outcome.error.code === -32602 && /invalid ai request fields|unsupported model; call ai.list/.test(outcome.error.message));
+      const message = old ? "update Axo on that Mac: this model-discovery and task API requires inference API version 2 (ai.capabilities)" : outcome.error.message;
       throw new Error(`ai.${tool} on ${target.name}: ${message}`);
     }
     const result = aiResults[tool].safeParse(outcome.result);
-    if (!result.success) {
+    const repo = typeof request.model === "string" ? request.model.slice(3).split(/[:@]/, 1)[0] : undefined;
+    if (!result.success || ("model" in result.data && result.data.model !== request.model)
+      || ("task" in result.data && result.data.task !== request.task)
+      || ("source" in result.data && result.data.source.repo !== repo)
+      || ("info" in result.data && result.data.info.model !== request.model)) {
       await this.log.finish(callId, "unknown", "the Mac returned an invalid AI result");
       throw new Error(`ai.${tool} on ${target.name}: invalid AI result; the operation may have run`);
     }

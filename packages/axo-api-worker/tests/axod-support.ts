@@ -43,11 +43,11 @@ export async function terminate(child: ChildProcess, processGroup = false): Prom
 }
 
 /** One JSON-RPC call over axod's local socket (newline-delimited JSON). */
-export async function localCall(socketPath: string, method: string, params?: unknown): Promise<unknown> {
+export async function localCall(socketPath: string, method: string, params?: unknown, timeoutMs = 30_000): Promise<unknown> {
   return new Promise((resolveCall, rejectCall) => {
     const socket = createConnection(socketPath);
     let buffered = "";
-    socket.setTimeout(30_000, () => socket.destroy(new Error(`${method} timed out`)));
+    socket.setTimeout(timeoutMs, () => socket.destroy(new Error(`${method} timed out`)));
     socket.on("error", rejectCall);
     socket.on("data", (chunk) => {
       buffered += chunk.toString("utf8");

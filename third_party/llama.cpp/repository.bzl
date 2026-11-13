@@ -58,10 +58,26 @@ def _llama_server_repository_impl(ctx):
     if build.return_code != 0:
         fail("Building llama-server failed:\n%s\n%s" % (build.stdout[-4000:], build.stderr[-4000:]))
     ctx.symlink("build/bin/llama-server", "axod-infer")
+    # Derive recognition from this exact runtime pin, not a hand-maintained model allowlist.
+    architecture_map = ctx.read("source/src/llama-arch.cpp").split("LLM_ARCH_NAMES = {", 1)[1].split("};", 1)[0]
+    architectures = []
+    for line in architecture_map.split("\n"):
+        if "\"" in line:
+            name = line.split("\"")[1]
+            if name not in ["clip", "(unknown)"]:
+                architectures.append(name)
+    if len(architectures) < 20:
+        fail("Could not extract llama.cpp's architecture inventory; review the pinned source format")
+    ctx.file("capabilities.json", json.encode({
+        "name": "llama.cpp",
+        "commit": LLAMA_CPP_COMMIT,
+        "build": 11960,
+        "recognizedArchitectures": sorted(architectures),
+    }))
     ctx.delete("source")
     ctx.file("BUILD.bazel", """package(default_visibility = ["//visibility:public"])
 
-exports_files(["axod-infer"])
+exports_files(["axod-infer", "capabilities.json"])
 """)
 
 llama_server_repository = repository_rule(

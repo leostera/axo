@@ -11,7 +11,10 @@
 //! replaced. The side-car unloads the model after ten idle minutes (`--sleep-idle-seconds`) and
 //! loads it again on demand.
 
+pub mod api;
+mod catalog;
 pub mod service;
+mod transfer;
 
 use std::fs::{File, OpenOptions};
 use std::io::{self};
@@ -87,6 +90,7 @@ pub struct Infer {
     starting: Arc<tokio::sync::Mutex<()>>,
     model_file: PathBuf,
     vision_file: Option<PathBuf>,
+    embeddings: bool,
 }
 
 #[derive(Debug, Default)]
@@ -191,6 +195,7 @@ impl Infer {
             starting: Arc::default(),
             model_file: PathBuf::from(MODEL_FILE),
             vision_file: Some(PathBuf::from(VISION_FILE)),
+            embeddings: false,
         }
     }
 
@@ -201,10 +206,12 @@ impl Infer {
         run: PathBuf,
         model_file: PathBuf,
         vision_file: Option<PathBuf>,
+        embeddings: bool,
     ) -> Self {
         Self {
             model_file,
             vision_file,
+            embeddings,
             ..Self::new(helper, models, run)
         }
     }
@@ -477,6 +484,9 @@ impl Infer {
             .arg(self.models.join(&self.model_file));
         if let Some(vision) = &self.vision_file {
             command.arg("--mmproj").arg(self.models.join(vision));
+        }
+        if self.embeddings {
+            command.arg("--embeddings");
         }
         command
             .arg("--host")

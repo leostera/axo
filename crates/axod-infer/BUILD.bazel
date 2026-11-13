@@ -7,7 +7,10 @@ rust_library(
     name = "axod_infer",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
+    compile_data = ["@llama_server//:capabilities.json"],
+    rustc_env = {"AXO_INFER_CAPABILITIES": "$(execpath @llama_server//:capabilities.json)"},
     deps = [
+        "//crates/axo-protocol:axo_protocol",
         "//crates/axo-pty:axo_pty",
         "@crates//:libc",
         "@crates//:notify",

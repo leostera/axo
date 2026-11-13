@@ -96,9 +96,13 @@ test("a Session's script runs bash and computer use on a Mac through the account
     const ai = await localCall(socketPath, "axo.apps.run", { sessionId, code: `async () => codemode.ai.list({})` }) as {
       result: { models: Array<{ id: string; task: string; installed: boolean; status: string }> };
     };
-    assert.deepEqual(ai.result.models.map(model => [model.id, model.task, model.installed, model.status]), [
-      ["hf:ggml-org/gemma-3-270m-it-GGUF", "generate", false, "stopped"],
-    ]);
+    assert.deepEqual(ai.result.models, [], "inventory starts empty, not with a model-name allowlist");
+    const capabilities = await localCall(socketPath, "axo.apps.run", { sessionId, code: `async () => codemode.ai.capabilities({})` }) as {
+      result: { apiVersion: number; formats: string[]; runtime: { recognizedArchitectures: string[] } };
+    };
+    assert.equal(capabilities.result.apiVersion, 2);
+    assert.deepEqual(capabilities.result.formats, ["gguf"]);
+    assert.ok(capabilities.result.runtime.recognizedArchitectures.includes("clef"));
 
     // computer.run with confirm asks the person in the calling Session, as Axo; a No runs nothing.
     const asked: Elicitation[] = [];

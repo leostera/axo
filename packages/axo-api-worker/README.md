@@ -26,15 +26,22 @@ The public site at `axo.leostera.dev` serves the landing page and app from the s
 
 ## Local AI tools
 
-`codemode.ai.list/install/load/unload/run` routes a script's request to a paired Mac
-(`host`, default `self`). `run` lazily installs and loads the pinned Gemma 3 270M IT
-GGUF; the Hugging Face MCP connection can help discover models but is not the downloader.
-Only this reviewed model reference is accepted for now.
+`codemode.ai.capabilities/info/list/install/load/unload/run` routes a script's request to a
+paired Mac (`host`, default `self`). Model references are generic `hf:owner/repo[:quant][@revision]`,
+not a name allowlist. `capabilities` describes the pinned runtime's actual architecture inventory,
+tasks, modalities and limits; the HF connection handles search. `info` inspects candidate metadata
+without downloading weights and explains ambiguity or unsupported backends such as MLX.
+`run` resolves/pins/verifies/installs/loads GGUF artifacts and executes generation, native typed
+classification (with optional images), or text embeddings. `list` is the managed-model inventory.
+Image attachments are fetched and verified on the target Mac, not passed as arbitrary file paths.
+No repository code is executed.
 
 Definitions and receipts are in `@axo/protocol/src/ai.ts`; `AccountApps` resolves the target
 for every call and sends `axo.apps.ai` on its authenticated relay. The daemon checks the
 account again and admits bounded jobs independently of the relay's ordered requests.
-Receipts must include the pinned artifact's provenance. Prompts/output are omitted from
+Receipts must include immutable artifact provenance matching the requested model and task.
+The `prompt` spelling from 0.54 is normalized to generation input at the cloud boundary; the
+daemon has one typed input path. Prompts, state, questions, images and outputs are omitted from
 the AI call log; call failures and disconnected outcomes are recorded without retrying.
 The model runs locally, but inputs and outputs still traverse the cloud script/relay.
 

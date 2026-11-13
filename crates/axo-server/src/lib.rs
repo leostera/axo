@@ -12,6 +12,7 @@ use axo_ipc::{ErrorCode, Extension, Methods, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
+mod ai;
 mod attachments;
 mod brief;
 mod catalog;
