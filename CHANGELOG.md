@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.52 (Mac app build 323, axod 75)
+
+### Added
+
+- Idle Pis go to sleep (RFD0045). A Pi that isn't working or asking you anything is stopped after 30 minutes, and at most 20 idle Pis stay awake, longest idle first. The Session stays where it is, and its Pi starts again when you show it, prompt it or type into it. Working Pis are never stopped. Both limits are under Settings → Sessions → Limits.
+
+### Changed
+
+- The selected Session's Pi starts only while you're in Axo, and again when you come back to it.
+- A prompt sent while Pi restarts waits for the new Pi instead of going to the one that is exiting.
+
 ## 0.51 (Mac app build 322, axod 74)
 
 ### Added
