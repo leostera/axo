@@ -38,6 +38,8 @@ def _llama_server_repository_impl(ctx):
             "-DGGML_METAL=ON",
             "-DGGML_METAL_EMBED_LIBRARY=ON",
             "-DGGML_NATIVE=OFF",
+            # Bazel owns caching. Host sccache cannot reliably cache generated Metal assembly.
+            "-DGGML_CCACHE=OFF",
             "-DLLAMA_CURL=OFF",
             "-DLLAMA_OPENSSL=OFF",
             "-DLLAMA_BUILD_TESTS=OFF",

@@ -4,9 +4,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Read;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use axo_pty::exit::WatchedChild;
@@ -15,7 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::{Infer, blocking, free_disk, hold, http, lifeline, physical_memory, try_lock};
+use crate::{Infer, blocking, free_disk, http, lifeline, physical_memory, try_lock};
 
 pub const MODEL: &str = "hf:ggml-org/gemma-3-270m-it-GGUF";
 const REPO: &str = "ggml-org/gemma-3-270m-it-GGUF";
@@ -325,7 +323,8 @@ fn prepare_download(infer: &Infer) -> Result<Option<Download>, Error> {
     let log = File::create(infer.models.join("download.log")).map_err(failed)?;
     let mut command = lifeline()
         .map_err(failed)?
-        .guarded(Path::new("/usr/bin/curl"));
+        .guarded(Path::new("/usr/bin/curl"), Some(&lock))
+        .map_err(failed)?;
     command
         .args([
             "--proto",
@@ -351,10 +350,7 @@ fn prepare_download(infer: &Infer) -> Result<Option<Download>, Error> {
         .arg(format!(
             "https://huggingface.co/{REPO}/resolve/{REVISION}/{FILE}"
         ))
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().map_err(failed)?)
         .stderr(log);
-    hold(&mut command, lock.as_raw_fd());
     let child = WatchedChild::new(command.spawn().map_err(failed)?).map_err(failed)?;
     Ok(Some(Download {
         child: Some(child),
@@ -473,7 +469,8 @@ mod tests {
         let child = WatchedChild::new(
             lifeline()
                 .unwrap()
-                .guarded(Path::new("/bin/sleep"))
+                .guarded(Path::new("/bin/sleep"), None)
+                .unwrap()
                 .arg("60")
                 .spawn()
                 .unwrap(),

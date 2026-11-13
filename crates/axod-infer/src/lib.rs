@@ -17,8 +17,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{self};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
+#[cfg(test)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -274,7 +276,10 @@ impl Infer {
             return Err(NoDownload::AlreadyRunning);
         }
         let log = File::create(self.models.join("download.log")).map_err(failed)?;
-        let mut command = lifeline().map_err(failed)?.guarded(Path::new("/bin/sh"));
+        let mut command = lifeline()
+            .map_err(failed)?
+            .guarded(Path::new("/bin/sh"), Some(&lock))
+            .map_err(failed)?;
         command
             .arg("-c")
             .arg(DOWNLOAD_SCRIPT)
@@ -283,11 +288,7 @@ impl Infer {
         for (file, sha) in MODEL_FILES {
             command.args([*file, *sha, &format!("{MODEL_SOURCE}/{file}")]);
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().map_err(failed)?)
-            .stderr(log);
-        hold(&mut command, lock.as_raw_fd());
+        command.stderr(log);
         let child = command.spawn().map_err(failed)?;
         log::info!("event=infer.model_download_started pid={}", child.id());
         let child = WatchedChild::new(child).map_err(failed)?;
@@ -467,10 +468,10 @@ impl Infer {
         let _ = std::fs::remove_file(&socket);
         let log = File::create(self.run.join("infer.log"))
             .map_err(|e| InferError::Failed(e.to_string()))?;
-        let lock_fd = lock.as_raw_fd();
         let mut command = lifeline()
             .map_err(|e| InferError::Failed(e.to_string()))?
-            .guarded(&self.helper);
+            .guarded(&self.helper, Some(&lock))
+            .map_err(|e| InferError::Failed(e.to_string()))?;
         command
             .arg("--model")
             .arg(self.models.join(&self.model_file));
@@ -482,13 +483,7 @@ impl Infer {
             .arg(&socket)
             .args(["--ctx-size", "8192", "--parallel", "1", "--no-webui"])
             .args(["--sleep-idle-seconds", IDLE_SECONDS])
-            .stdin(Stdio::null())
-            .stdout(
-                log.try_clone()
-                    .map_err(|e| InferError::Failed(e.to_string()))?,
-            )
             .stderr(log);
-        hold(&mut command, lock_fd);
         let child = command
             .spawn()
             .map_err(|e| InferError::Failed(format!("could not start axod-infer: {e}")))?;
@@ -538,24 +533,6 @@ impl StartWatch {
         tokio::time::timeout_at(deadline, self.happened.notified())
             .await
             .is_ok()
-    }
-}
-
-/// Keeps `lock_fd` open in the command, so the lock lasts as long as it does, and gives it a
-/// session of its own, away from axod's signals; the lifeline still ends it.
-fn hold(command: &mut Command, lock_fd: std::os::fd::RawFd) {
-    // SAFETY: between fork and exec this only calls async-signal-safe functions.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::setsid() < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(lock_fd, libc::F_GETFD);
-            if flags < 0 || libc::fcntl(lock_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
     }
 }
 
@@ -943,9 +920,13 @@ while True:
             .unwrap();
         assert!(try_lock(&lock));
         let mut command = Command::new(&infer.helper);
-        command.arg("--host").arg(infer.socket());
-        hold(&mut command, lock.as_raw_fd());
+        command
+            .arg("--host")
+            .arg(infer.socket())
+            .stdout(Stdio::from(lock.try_clone().unwrap()))
+            .process_group(0);
         let mut stranger = command.spawn().unwrap();
+        drop(command);
         drop(lock);
         let deadline = Instant::now() + Duration::from_secs(5);
         while !block(infer.healthy()) {
