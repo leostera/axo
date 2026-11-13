@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppLink, type AppLinkRequest, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type AccountApp, type ToolDefinition } from "@axo/protocol";
+import { APP_ACCOUNTS_MAX, APPS, ASSET_LIMITS, type AppAccount, type AppLink, type AppLinkRequest, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type AccountApp, type ToolDefinition } from "@axo/protocol";
 import {
   allowedUrl,
   APP_DEFINITIONS,
@@ -48,6 +48,7 @@ import {
   type TokenApp,
 } from "@axo/apps";
 import { seal, unseal } from "../../auth/crypto";
+import { AssetRefused, savedFile, type AccountAssets } from "../../assets/store";
 import { CALLBACK_URL } from "../oauth";
 import { FLOW_LIFETIME_MS, FLOW_REMEMBERED_MS, startUrl, type OpenedFlow } from "../third-party";
 
@@ -122,6 +123,8 @@ export type AppsDeps = {
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
   now?: () => number;
+  /** The account's assets, where a tool's `saveFile` stores what it fetched. Without them, `saveFile` refuses. */
+  assets?: AccountAssets;
   /** The account's Macs, by their names as apps: the accounts of a Mac app (1Password). */
   macs?: () => string[];
   /**
@@ -1060,6 +1063,17 @@ export class BuiltinApps {
         return { status: response.status, contentType: response.headers.get("Content-Type") ?? "", body: await response.arrayBuffer() };
       },
       fetch: sdkFetch,
+      saveFile: async (file) => {
+        if (!this.deps.assets) throw new ProviderError(0, "this Axo deployment keeps no assets");
+        if (file.bytes.byteLength > ASSET_LIMITS.toolSaveBytes)
+          throw new ProviderError(0, `${file.name} is ${file.bytes.byteLength} bytes; a tool stores at most ${ASSET_LIMITS.toolSaveBytes} as an asset`);
+        try {
+          return savedFile(await this.deps.assets.save(file, `app:${definition.name}:${tool.name}`));
+        } catch (error) {
+          if (error instanceof AssetRefused) throw new ProviderError(0, error.message);
+          throw error;
+        }
+      },
     };
   }
 

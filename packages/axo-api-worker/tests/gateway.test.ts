@@ -162,7 +162,7 @@ test("a search reads every tool's definition and calls none", async (t) => {
   const { call } = await fixture(t);
   assert.deepEqual(
     result(await call("axo.apps.search", { code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service + "." + t.name)` })),
-    { result: ["hosts.list", "bash.run", "computer.run"] },
+    { result: ["hosts.list", "bash.run", "computer.run", "assets.list", "assets.get", "assets.read", "assets.save"] },
   );
   const refused = error(await call("axo.apps.search", { code: `async () => codemode.bash.run({ host: "studio", command: "true" })` }));
   assert.match(refused.message, /cannot call tools/);

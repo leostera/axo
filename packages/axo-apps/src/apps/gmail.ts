@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Gmail as an app: `codemode.apps.gmail.<tool>({ account, ... })` over the Gmail REST API, as
@@ -87,12 +87,54 @@ const tools: AppTool[] = [
   tool({
     name: "get_message",
     description:
-      "Reads one message: { id, threadId, labelIds, from, to, cc, subject, date, messageId, snippet, text, html?, textTruncated, attachments: [{ filename, mimeType, size }] }. " +
-      "`text` is the plain-text body, or the HTML body as text when there is none.",
+      "Reads one message: { id, threadId, labelIds, from, to, cc, subject, date, messageId, snippet, text, html?, textTruncated, attachments: [{ partId, filename, mimeType, size }] }. " +
+      "`text` is the plain-text body, or the HTML body as text when there is none. Save an attachment with save_attachment.",
     input: z.object({ id, maxBodyChars, includeHtml: z.boolean().optional().describe("Also return the HTML body, if any.") }).strict(),
     idempotent: true,
     async run(api, input) {
       return full((await api.request("GET", `${BASE}/messages/${input.id}`, { query: { format: "full" } })) as Message, input.maxBodyChars, input.includeHtml);
+    },
+  }),
+  tool({
+    name: "save_attachment",
+    description:
+      "Saves one attachment of a message in the account's assets, whole, without its bytes passing through the script, and " +
+      "returns { type: \"file\", attachment: { asset, name, mimeType, size }, url }. Return it from the script and the Mac saves " +
+      "the file under ~/.axo/assets and says where; codemode.assets.read reads it in ranges; url opens it in a browser. " +
+      "Name the attachment by the partId or filename get_message lists.",
+    input: z.object({
+      id,
+      partId: z.string().regex(/^[0-9.]{1,64}$/).optional().describe("The attachment's partId, from get_message."),
+      filename: z.string().min(1).max(255).optional().describe("Its filename, if no other attachment of the message has it."),
+    }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      // Checked here: the gateway rebuilds a tool's schema from its fields, so a refinement would not hold.
+      if ((input.partId === undefined) === (input.filename === undefined)) throw new ProviderError(400, "give the attachment's partId or its filename");
+      const message = (await api.request("GET", `${BASE}/messages/${input.id}`, { query: { format: "full" } })) as Message;
+      const attachments = flatten(message.payload).filter((p) => p.filename && (p.body?.attachmentId || p.body?.data));
+      const matches = attachments.filter((p) => (input.partId !== undefined ? p.partId === input.partId : p.filename === input.filename));
+      const listed = attachments.map((p) => `${p.partId} ${p.filename}`).join(", ") || "none";
+      if (matches.length !== 1)
+        throw new ProviderError(404, `${matches.length ? "several" : "no"} attachments match; the message's: ${listed}`.slice(0, 240));
+      const part = matches[0]!;
+      const data = part.body?.attachmentId
+        ? ((await api.request("GET", `${BASE}/messages/${input.id}/attachments/${part.body.attachmentId}`)) as { data?: string }).data ?? ""
+        : part.body?.data ?? "";
+      return api.saveFile({ name: part.filename!, mimeType: part.mimeType ?? "application/octet-stream", bytes: fromBase64Url(data) });
+    },
+  }),
+  tool({
+    name: "save_message",
+    description:
+      "Saves a whole message as it was received (RFC 822, with every attachment) in the account's assets, as <subject>.eml, and " +
+      "returns the file, as save_attachment does.",
+    input: z.object({ id }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      const message = (await api.request("GET", `${BASE}/messages/${input.id}`, { query: { format: "raw" } })) as Message & { raw?: string };
+      const subject = (await api.request("GET", `${BASE}/messages/${input.id}`, { query: { format: "metadata", metadataHeaders: "Subject" } })) as Message;
+      return api.saveFile({ name: emlName(header(subject.payload, "Subject"), message.id), mimeType: "message/rfc822", bytes: fromBase64Url(message.raw ?? "") });
     },
   }),
   tool({
@@ -286,9 +328,17 @@ function full(message: Message, maxChars = DEFAULT_BODY_CHARS, includeHtml = fal
     textTruncated: body.length > maxChars,
     ...(includeHtml && html !== null ? { html: html.slice(0, maxChars) } : {}),
     attachments: parts
-      .filter((p) => p.filename && p.body?.attachmentId)
-      .map((p) => ({ filename: p.filename!, mimeType: p.mimeType ?? "application/octet-stream", size: p.body?.size ?? 0 })),
+      .filter((p) => p.filename && (p.body?.attachmentId || p.body?.data))
+      .map((p) => ({ partId: p.partId ?? null, filename: p.filename!, mimeType: p.mimeType ?? "application/octet-stream", size: p.body?.size ?? 0 })),
   };
+}
+
+/** A file name for a saved message: its subject, without what a file name may not hold, then .eml. */
+export function emlName(subject: string | null, id: string): string {
+  const cleaned = (subject ?? "").replace(/[/\\\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  let base = cleaned || id;
+  while (new TextEncoder().encode(base).byteLength > 200) base = base.slice(0, -1);
+  return `${base}.eml`;
 }
 
 function flatten(part: Part | undefined): Part[] {
@@ -432,7 +482,7 @@ function toBase64Url(bytes: Uint8Array): string {
   return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function fromBase64Url(data: string): Uint8Array {
+function fromBase64Url(data: string): Uint8Array<ArrayBuffer> {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));

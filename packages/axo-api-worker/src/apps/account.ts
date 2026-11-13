@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   APPS_NAMESPACE,
   BASH_METHOD,
+  ASSETS_NAMESPACE,
   BASH_NAMESPACE,
   COMPUTER_METHOD,
   COMPUTER_NAMESPACE,
@@ -36,6 +37,8 @@ import {
 } from "@axo/protocol";
 import { recordApiEvent } from "../observability";
 import { CallLog } from "./call-log";
+import { assetToolDefinitions, callAssetTool, isAssetTool } from "./assets-tools";
+import type { AccountAssets } from "../assets/store";
 import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller } from "./runner";
 import { ThirdPartyApps, type OpenedFlow } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
@@ -79,6 +82,8 @@ export type AppsDeps = {
   waitUntil(promise: Promise<unknown>): void;
   /** A linked app's device (WhatsApp's), its own Durable Object, by the ID the account gave it. */
   linked?: (app: AppName, device: string) => LinkedDevice;
+  /** The account's assets (RFD0030): `codemode.assets`, and where app tools save files they fetch. */
+  assets?: AccountAssets;
 };
 
 /** Extra time a `bash` call waits beyond the command's own timeout, for the round trip. */
@@ -132,6 +137,7 @@ export class AccountApps {
     });
     this.apps = new BuiltinApps({
       sql: deps.sql, secret: deps.secret, accountId: deps.accountId, legacyGoogle: deps.google, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
+      assets: deps.assets,
       // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
       macs: () => this.named().map((entry) => entry.name),
       runOnMac: (mac, command, timeoutMs) => this.runOnMac(mac, command, timeoutMs),
@@ -306,7 +312,7 @@ export class AccountApps {
 
   /** Every tool a script can reach, as `codemode.tools()` shows them. */
   tools(): ToolDefinition[] {
-    return [...this.hostTools(), ...this.thirdParty.tools(), ...this.apps.tools()];
+    return [...this.hostTools(), ...(this.deps.assets ? assetToolDefinitions() : []), ...this.thirdParty.tools(), ...this.apps.tools()];
   }
 
   /** The Macs' namespaces: one definition each, the Mac an argument (RFD0028). */
@@ -386,6 +392,7 @@ export class AccountApps {
         if (tool !== "run") throw new Error(`computer has no tool named ${tool}; call computer.run({ host, tool, args })`);
         return this.runComputer(from, input, deadline);
       }
+      if (service === ASSETS_NAMESPACE) return this.callAssets(from, tool, input);
       if (service !== BASH_NAMESPACE) {
         if (this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input);
         if (this.named().some((entry) => entry.name === service))
@@ -626,6 +633,24 @@ export class AccountApps {
       const message = error instanceof Error ? error.message : String(error);
       await this.log.finish(callId, error instanceof ProviderOutcomeUnknown ? "unknown" : "error", message);
       throw new Error(`${service}.${tool}: ${message}`);
+    }
+  }
+
+  /** A `codemode.assets` call, logged as the others are. Saves are made as the calling Mac. */
+  private async callAssets(from: Caller, tool: string, input: unknown): Promise<unknown> {
+    const assets = this.deps.assets;
+    if (!assets) throw new Error("this Axo deployment keeps no assets");
+    if (!isAssetTool(tool)) throw new Error(`assets has no tool named ${tool}; it has list, get, read and save`);
+    const callId = crypto.randomUUID();
+    await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service: ASSETS_NAMESPACE, tool, targetHostId: null, input });
+    try {
+      const output = await callAssetTool(assets, tool, input, `host:${from.hostId}`);
+      await this.log.finish(callId, "ok", null);
+      return output;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.log.finish(callId, "error", message);
+      throw error;
     }
   }
 

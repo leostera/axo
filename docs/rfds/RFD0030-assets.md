@@ -1,10 +1,10 @@
 # RFD0030 - Axo: Assets
 
 - Feature Name: `axo-assets`
-- Status: Implemented (attachments on prompts, and screenshots from `codemode.computer.run`); later uses listed in the Summary are not built unless marked
+- Status: Implemented (attachments on prompts, screenshots from `codemode.computer.run`, and assets from scripts); later uses listed in the Summary are not built unless marked
 - Author: leostera
 - Start Date: 2026-11-04
-- Updated: 2026-11-10 (reconciled with the code)
+- Updated: 2026-11-13 (assets from scripts)
 - Document Type: Proposal
 - Amends: [RFD0018](RFD0018-session-sync-and-client-delivery.md), [RFD0024](RFD0024-remote-sessions-in-pi.md)
 
@@ -15,6 +15,8 @@ An **asset** is a file the account keeps in the cloud: a photo from the phone, a
 - **Storage:** one `AxoAssetsDO` per account indexes the account's assets. The bytes are in an R2 bucket, `axo-assets`, under the account's prefix.
 - **Reading:** every read goes through Workers Cache. A gateway entrypoint authenticates the caller, then asks a cached entrypoint, `AxoAssetCache`, with the account in `ctx.props`. On a hit, neither the cached entrypoint nor the Durable Object runs.
 - **First use, attachments:** a person attaches photos and files to a message on the web or iOS. The client uploads them, then sends the prompt naming them. The Mac downloads each one, checks its hash, and gives Pi the images as images and the other files as paths on disk.
+
+- **Assets from scripts:** a script stores what an app tool fetched (a Gmail attachment, a whole email) as an asset, without the bytes passing through it, reads any asset in byte ranges, and hands it on as a file with a link. See *Assets from scripts*.
 
 Later uses, each in its own change: screenshots from `codemode.computer.run` (RFD0028, built), images in the confirmation cards of RFD0029 (not built: those cards carry no screenshot yet), and moving the images inside transcripts out to assets (not built; see Unresolved questions).
 
@@ -114,6 +116,21 @@ flowchart LR
   - `image/png`, `image/jpeg`, `image/gif` and `image/webp` up to 5 MiB become image blocks in `sendUserMessage([{type:"text"}, {type:"image", data, mimeType}])`.
   - Anything else, or a larger image, becomes a text line naming the file, its type, its size and its path, and `axo-asset:sha256:<hex>`, so clients can turn it into a download link. An image sent inline gets a line too, with its path, so the agent can use the file in its tools; clients hide that one, since the image shows itself.
 - **Clients send model-friendly images:** iOS converts HEIC to JPEG before upload; the web uploads images as they are.
+
+### Assets from scripts
+
+A script in the account's cloud sandbox (RFD0016) returns at most 1 MiB, and app tools used to hand files back inside that, as base64. A 2 MB PDF attached to an email was cut off before the script saw it, and slicing inside the script could not recover it. Now files go to assets in the cloud, and the script only passes a reference around.
+
+- **What a script gets:** `{ type: "file", attachment: { asset, name, mimeType, size }, url }`, the attachment as on a prompt. `url` is `https://axo.leostera.dev/api/v1/account/assets/<hash>`, which opens in a browser signed in to the account.
+- **App tools save what they fetch.** `ProviderApi.saveFile({ name, mimeType, bytes })` stores bytes a tool fetched with the account's credential and answers the file. Gmail's `save_attachment({ id, partId | filename })` and `save_message({ id })` (the whole message as `<subject>.eml`), and Drive's `save_file({ id })`, use it. A tool stores at most 32 MiB in one call: the bytes are held in the account's Durable Object while they are hashed. Gmail's attachments are at most 25 MB.
+- **`codemode.assets`:**
+  - `list({ before?, limit? })`: the account's assets, newest first.
+  - `get({ asset })`: one asset as a file.
+  - `read({ asset, offset?, length?, as? })`: up to 512 KiB from `offset`, as `text` (UTF-8) or `base64`, with `size` and `eof`. A script reads a larger file range by range; base64 of one range fits a script's result.
+  - `save({ name, mimeType?, text | base64 })`: stores up to 512 KiB a script made.
+- **A save is an upload the Worker makes:** it hashes the bytes, reserves them in `AxoAssetsDO`, puts them to R2 under their hash with R2's SHA-256 check, and commits, as `PUT` does. The same quota, name rules and type allowlist apply, and the same bytes are one asset. `created_by` is `app:<app>:<tool>` for a tool's save, and `host:<hostId>` for the Mac a script ran from.
+- **Logging:** every `codemode.assets` call is in the apps log, as every other call is. The Worker logs `assets.save` with the account, hash, size and who saved it.
+- **Not in this change:** the Mac's `apps_run` fetching a returned file to `~/.axo/assets/<hash>/<name>` and naming the path, as it shows a returned screenshot; and saving from a stream without holding the whole file.
 
 ### Lifecycle
 

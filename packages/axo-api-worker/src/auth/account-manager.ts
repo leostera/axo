@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { accountAssets } from "../assets/store";
 import { LIMITS, type ClientHost } from "@axo/protocol";
 import { hostModelSchema, hostRegisterSchema, hostSnapshotSchema, type HostModel, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
@@ -485,6 +486,7 @@ export class AxoAccountManager extends DurableObject<Env> {
       waitUntil: (promise) => this.ctx.waitUntil(promise),
       // Each linked WhatsApp device is a Durable Object of its own, named by the account and the device.
       linked: (_app, device) => this.ctx.exports.AxoWhatsAppDO.getByName(`${accountId}:${device}`) as unknown as LinkedDevice,
+      assets: accountAssets(this.env.AXO_ASSETS, this.ctx.exports.AxoAssetsDO, accountId),
     });
   }
 

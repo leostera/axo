@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { APPS, appsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
@@ -70,7 +71,7 @@ async function signedIn(t: { after(fn: () => unknown): void }) {
 test("Gmail is listed needing sign-in; a call before it hands the agent a sign-in link, and after it the tools work", async (t) => {
   const { google, h, session, call, execute } = await fixture(t);
   const listed = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list")));
-  const gmailTools = ["get_profile", "search_messages", "get_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message", "delete_message",
+  const gmailTools = ["get_profile", "search_messages", "get_message", "save_attachment", "save_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message", "delete_message",
     "list_filters", "create_filter", "delete_filter", "get_vacation", "set_vacation", "list_send_as", "request"];
   const gmail = listed.apps.find((c) => c.kind === "app");
   assert.deepEqual({ ...gmail, description: undefined, permissions: undefined }, {
@@ -106,12 +107,70 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
   });
   assert.equal(found.message.text, "Shall we meet?");
   assert.equal(found.message.messageId, "<m1@example.com>");
-  assert.deepEqual(found.message.attachments, [{ filename: "notes.pdf", mimeType: "application/pdf", size: 1234 }]);
+  assert.deepEqual(found.message.attachments, [{ partId: "2", filename: "notes.pdf", mimeType: "application/pdf", size: 1_500_000 }]);
   assert.equal(found.html, "Hello & welcome", "a message with no plain text reads as its HTML, as text");
 
   // The grant stays in the cloud.
   const page = await (await fetch(new URL("api/v1/account/apps", h.url), { headers: session.headers })).text();
   for (const text of [page, JSON.stringify(found), JSON.stringify(result(await call("axo.apps.log")))]) assert.equal(google.leaks(text), false);
+});
+
+test("Gmail saves an attachment and a whole message as assets, which a script reads back in ranges and a browser opens", async (t) => {
+  const { google, h, session, execute } = await signedIn(t);
+  const a = `{ account: "ada@example.com" }`;
+  const saved = result(await execute(`async () => {
+    const pdf = await codemode.apps.gmail.save_attachment({ ...${a}, id: "m1", partId: "2" });
+    const again = await codemode.apps.gmail.save_attachment({ ...${a}, id: "m1", filename: "notes.pdf" });
+    const eml = await codemode.apps.gmail.save_message({ ...${a}, id: "m1" });
+    const head = await codemode.assets.read({ asset: pdf.attachment.asset, length: 16 });
+    const tail = await codemode.assets.read({ asset: pdf.attachment.asset, offset: pdf.attachment.size - 4 });
+    const past = await codemode.assets.read({ asset: pdf.attachment.asset, offset: pdf.attachment.size + 10 });
+    const text = await codemode.assets.read({ asset: eml.attachment.asset, as: "text" });
+    const got = await codemode.assets.get({ asset: eml.attachment.asset });
+    const listed = await codemode.assets.list({});
+    return { pdf, again, eml, head, tail, past, text, got, listed };
+  }`)).result;
+  const hash = createHash("sha256").update(google.attachment).digest("hex");
+  // The whole attachment is stored, though its base64 alone is larger than a script's result.
+  assert.deepEqual(saved.pdf, {
+    type: "file",
+    attachment: { asset: `sha256:${hash}`, name: "notes.pdf", mimeType: "application/pdf", size: 1_500_000 },
+    url: `https://axo.leostera.dev/api/v1/account/assets/${hash}`,
+  });
+  assert.deepEqual(saved.again, saved.pdf, "the same bytes are one asset");
+  assert.deepEqual(Buffer.from(saved.head.data, "base64"), Buffer.from(google.attachment.subarray(0, 16)));
+  assert.deepEqual([saved.head.offset, saved.head.length, saved.head.size, saved.head.eof], [0, 16, 1_500_000, false]);
+  assert.deepEqual(Buffer.from(saved.tail.data, "base64"), Buffer.from(google.attachment.subarray(-4)));
+  assert.equal(saved.tail.eof, true);
+  assert.deepEqual([saved.past.length, saved.past.data, saved.past.eof], [0, "", true]);
+  assert.deepEqual([saved.eml.attachment.name, saved.eml.attachment.mimeType], ["Compilers.eml", "application/octet-stream"]);
+  assert.match(saved.text.data, /^From: Grace <grace@example.com>\r\n[\s\S]*\r\n\r\nShall we meet\?$/);
+  assert.deepEqual(saved.got, saved.eml);
+  assert.deepEqual(new Set(saved.listed.assets.map((x: { asset: string }) => x.asset)), new Set([saved.pdf.attachment.asset, saved.eml.attachment.asset]));
+
+  // The link opens the file in a browser signed in to the account.
+  const opened = await fetch(new URL(`api/v1/account/assets/${hash}`, h.url), { headers: { Cookie: session.headers.Cookie! } });
+  assert.equal(opened.status, 200);
+  assert.deepEqual(new Uint8Array(await opened.arrayBuffer()), google.attachment);
+
+  // An attachment the message does not have is refused, naming the ones it has.
+  assert.match(failure(await execute(`async () => codemode.apps.gmail.save_attachment({ ...${a}, id: "m1", filename: "nope.pdf" })`)), /no attachments match; the message's: 2 notes\.pdf/);
+});
+
+test("a script saves what it made as an asset, and reads it back as text across a cut character", async (t) => {
+  const { execute } = await fixture(t);
+  const out = result(await execute(`async () => {
+    const note = await codemode.assets.save({ name: "notes.md", mimeType: "text/markdown", text: "héllo" });
+    const bin = await codemode.assets.save({ name: "two.bin", base64: "AAE=" });
+    const cut = await codemode.assets.read({ asset: note.attachment.asset, offset: 0, length: 2, as: "text" });
+    let refused = null;
+    try { await codemode.assets.save({ name: "a/b", text: "x" }); } catch (error) { refused = String(error); }
+    return { note, bin, cut, refused };
+  }`)).result;
+  assert.deepEqual([out.note.attachment.mimeType, out.note.attachment.size], ["text/markdown", 6]);
+  assert.deepEqual([out.bin.attachment.mimeType, out.bin.attachment.size], ["application/octet-stream", 2]);
+  assert.deepEqual([out.cut.data, out.cut.eof], ["h\ufffd", false], "a range that cuts é in two shows a replacement character, not an error");
+  assert.match(out.refused, /slashes/);
 });
 
 test("send_message builds the MIME message, threads a reply, and is logged under apps.gmail", async (t) => {
@@ -346,12 +405,13 @@ test("Drive searches, reads Docs as text, refuses binary reads, uploads, moves, 
     const found = await codemode.apps.drive.search_files({ ...a, text: "plan's", folderId: "root" });
     const doc = await codemode.apps.drive.read_file({ ...a, id: "doc1" });
     const pdf = await codemode.apps.drive.download_file({ ...a, id: "pdf1" });
+    const saved = await codemode.apps.drive.save_file({ ...a, id: "pdf1" });
     const up = await codemode.apps.drive.upload_file({ ...a, name: "rows.csv", text: "a,b\\n1,2", mimeType: "text/csv", convertTo: "spreadsheet", folderId: "f1" });
     const folder = await codemode.apps.drive.update_file({ ...a, id: up.id, name: "Rows", folderId: "f2" });
     const shared = await codemode.apps.drive.share_file({ ...a, id: up.id, email: "grace@example.com", role: "writer", notify: false });
     const trashed = await codemode.apps.drive.trash_file({ ...a, id: "doc1" });
     const deleted = await codemode.apps.drive.delete_file({ ...a, id: "pdf1" });
-    return { found, doc, pdf, up, folder, shared, trashed, deleted };
+    return { found, doc, pdf, saved, up, folder, shared, trashed, deleted };
   }`);
   const search = google.workspaceCalls[0]!;
   assert.equal(search.query.get("q"), "fullText contains 'plan\\'s' and 'root' in parents and trashed = false");
@@ -360,6 +420,7 @@ test("Drive searches, reads Docs as text, refuses binary reads, uploads, moves, 
   assert.deepEqual([out.doc.text, out.doc.truncated], ["The plan.", false]);
   assert.ok(google.workspaceCalls.some((c) => c.call === "GET www/drive/v3/files/doc1/export" && c.query.get("mimeType") === "text/plain"));
   assert.equal(Buffer.from(out.pdf.dataBase64, "base64").toString(), "%PDF-1.4");
+  assert.deepEqual(out.saved.attachment, { asset: `sha256:${createHash("sha256").update("%PDF-1.4").digest("hex")}`, name: "scan.pdf", mimeType: "application/pdf", size: 8 });
   assert.equal(google.files.get(out.up.id)!.mimeType, "application/vnd.google-apps.spreadsheet");
   assert.equal(google.files.get(out.up.id)!.content, "a,b\n1,2");
   assert.deepEqual([out.folder.name, out.folder.parents], ["Rows", ["f2"]], "moved out of f1 into f2");

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { ASSET_LIMITS } from "@axo/protocol";
+import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Google Drive as an app: `codemode.apps.drive.<tool>({ account, ... })` over the Drive API, with
@@ -119,6 +120,26 @@ const tools: AppTool[] = [
         : await api.requestBytes("GET", `${BASE}/files/${input.id}`, { query: { alt: "media", supportsAllDrives: "true" }, accept: "*/*" });
       if (bytes.byteLength > MAX_DOWNLOAD_BYTES) throw new Error(`${meta.name} is ${bytes.byteLength} bytes; download_file takes at most ${MAX_DOWNLOAD_BYTES}`);
       return { id: meta.id, name: meta.name ?? null, mimeType: native ? "application/pdf" : meta.mimeType ?? null, size: bytes.byteLength, dataBase64: base64(new Uint8Array(bytes)) };
+    },
+  }),
+  tool({
+    name: "save_file",
+    description:
+      `Saves a file in the account's assets, whole (up to ${ASSET_LIMITS.toolSaveBytes} bytes), without its bytes passing through the ` +
+      "script, and returns { type: \"file\", attachment: { asset, name, mimeType, size }, url }. Return it from the script and the Mac " +
+      "saves it under ~/.axo/assets and says where; codemode.assets.read reads it in ranges. Google Docs, Sheets and Slides save as PDF.",
+    input: z.object({ id }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      const meta = await metadata(api, input.id);
+      const native = meta.mimeType?.startsWith("application/vnd.google-apps.");
+      if (!native && Number(meta.size ?? 0) > ASSET_LIMITS.toolSaveBytes)
+        throw new ProviderError(413, `${meta.name} is ${meta.size} bytes; save_file stores at most ${ASSET_LIMITS.toolSaveBytes}`);
+      const bytes = native
+        ? await api.requestBytes("GET", `${BASE}/files/${input.id}/export`, { query: { mimeType: "application/pdf" }, accept: "*/*" })
+        : await api.requestBytes("GET", `${BASE}/files/${input.id}`, { query: { alt: "media", supportsAllDrives: "true" }, accept: "*/*" });
+      const name = native && !/\.pdf$/i.test(meta.name ?? "") ? `${meta.name ?? meta.id}.pdf` : meta.name ?? meta.id;
+      return api.saveFile({ name: name.replace(/[/\\\u0000-\u001f\u007f]+/g, " ").slice(0, 200), mimeType: native ? "application/pdf" : meta.mimeType ?? "application/octet-stream", bytes: new Uint8Array(bytes) });
     },
   }),
   tool({

@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { AppName, AppTokenField } from "@axo/protocol";
+import type { AppName, AppTokenField, SavedFile } from "@axo/protocol";
 import type { OAuthProviderName } from "./oauth/provider";
 
 /**
@@ -42,6 +42,12 @@ export type ProviderApi = {
    * without, within the usual timeout.
    */
   fetch: typeof fetch;
+  /**
+   * Stores a file the tool fetched in the account's assets (RFD0030), so its bytes never pass
+   * through the script: the script gets a file it can return, which the Mac fetches, and a link.
+   * At most ASSET_LIMITS.toolSaveBytes; a refusal (quota, too large) throws ProviderError.
+   */
+  saveFile(file: { name: string; mimeType: string; bytes: Uint8Array<ArrayBuffer> }): Promise<SavedFile>;
 };
 
 /** What a Mac app's tool gets instead of an API: commands run on the Mac the call names (its account). */

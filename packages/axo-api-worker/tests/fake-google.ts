@@ -71,6 +71,8 @@ export class FakeGoogle {
   }
 
   /** Requests to Calendar, Drive, Docs, Sheets and People, as `METHOD path?query` with their bodies. */
+  /** The bytes of every message's one attachment, notes.pdf (attachment ID att1): larger than a script result may be. */
+  attachment = new Uint8Array(1_500_000).map((_, i) => (i * 31 + 7) & 0xff);
   readonly workspaceCalls: Array<{ as: string; call: string; query: URLSearchParams; body: string; headers: Headers }> = [];
   readonly files = new Map<string, { name: string; mimeType: string; content: string; parents: string[]; trashed: boolean }>([
     ["doc1", { name: "Plan", mimeType: "application/vnd.google-apps.document", content: "The plan.", parents: ["root"], trashed: false }],
@@ -230,6 +232,11 @@ export class FakeGoogle {
       this.sent.push({ raw: Buffer.from(body.raw, "base64url").toString("utf8"), threadId: body.threadId ?? null });
       return json({ id: `sent${this.sent.length}`, threadId: body.threadId ?? `t-new${this.sent.length}`, labelIds: ["SENT"] });
     }
+    const attachment = /^\/messages\/([^/]+)\/attachments\/([^/]+)$/.exec(path);
+    if (attachment && request.method === "GET") {
+      if (!this.messages.has(attachment[1]!) || attachment[2] !== "att1") return json({ error: { code: 404, message: "Requested entity was not found." } }, 404);
+      return json({ size: this.attachment.byteLength, data: Buffer.from(this.attachment).toString("base64url") });
+    }
     const message = /^\/messages\/([^/]+)(\/modify|\/trash)?$/.exec(path);
     if (message) {
       const found = this.messages.get(message[1]!);
@@ -248,9 +255,13 @@ export class FakeGoogle {
         ? { mimeType: "multipart/alternative", headers, parts: [
           { partId: "0", mimeType: "text/plain", headers: [{ name: "Content-Type", value: "text/plain; charset=UTF-8" }], body: { size: found.text.length, data: Buffer.from(found.text).toString("base64url") } },
           { partId: "1", mimeType: "text/html", headers: [], body: { size: 10, data: Buffer.from(`<p>${found.text || "Hello &amp; welcome"}</p>`).toString("base64url") } },
-          { partId: "2", mimeType: "application/pdf", filename: "notes.pdf", headers: [], body: { size: 1234, attachmentId: "att1" } },
+          { partId: "2", mimeType: "application/pdf", filename: "notes.pdf", headers: [], body: { size: this.attachment.byteLength, attachmentId: "att1" } },
         ] }
         : { mimeType: "multipart/alternative", headers };
+      if (url.searchParams.get("format") === "raw") {
+        const raw = `${Object.entries(found.headers).map(([name, value]) => `${name}: ${value}`).join("\r\n")}\r\n\r\n${found.text}`;
+        return json({ id: message[1], threadId: found.threadId, labelIds: found.labelIds, raw: Buffer.from(raw).toString("base64url") });
+      }
       return json({ id: message[1], threadId: found.threadId, labelIds: found.labelIds, snippet: found.snippet, payload });
     }
     if (request.method === "POST" && path === "/drafts") {
