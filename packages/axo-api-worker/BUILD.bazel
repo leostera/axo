@@ -73,7 +73,7 @@ node_test(
     ],
     tests = glob(
         ["tests/*.test.ts"],
-        exclude = _RELAY_TESTS,
+        exclude = _RELAY_TESTS + ["tests/gemma-e2e.test.ts"],
     ),
     tests_in_data = True,
     # About 4 minutes alone, one file at a time; the default 5 is too close under a full run.
@@ -109,6 +109,22 @@ node_test(
     env = {"AXOD_BINARY": "../../crates/axod/axod"},
     tags = ["no-sandbox"],
     tests = _RELAY_TESTS,
+    tests_in_data = True,
+    tsx = True,
+)
+
+# Explicit opt-in: a real local Gemma call through codemode, without production deployment.
+node_test(
+    name = "gemma_smoke_test",
+    concurrency = 1,
+    data = _DEPS + [
+        ":node_modules/tsx",
+        ":test_files",
+        "//crates/axod",
+    ],
+    env = {"AXOD_BINARY": "../../crates/axod/axod"},
+    tags = ["manual", "no-sandbox"],
+    tests = ["tests/gemma-e2e.test.ts"],
     tests_in_data = True,
     tsx = True,
 )

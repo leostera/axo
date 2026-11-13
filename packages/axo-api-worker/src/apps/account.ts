@@ -389,7 +389,7 @@ export class AccountApps {
     const parsed = aiInputs[tool].safeParse(input);
     if (!parsed.success) throw new Error(`ai.${tool}: ${z.prettifyError(parsed.error)}`);
     const { host, ...args } = parsed.data;
-    if ("prompt" in args && new TextEncoder().encode(args.prompt).length > 32_768)
+    if ("prompt" in args && typeof args.prompt === "string" && new TextEncoder().encode(args.prompt).length > 32_768)
       throw new Error("ai.run: prompt exceeds 32768 UTF-8 bytes");
     const target = await this.resolveHost(host, from);
     const remaining = deadline - Date.now() - BASH_GRACE_MS;

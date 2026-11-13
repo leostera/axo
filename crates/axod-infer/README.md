@@ -58,3 +58,20 @@ return result; // { model, text, finishReason, source: { repo, revision, file, s
 bazel build //crates/axod-infer
 bazel test //crates/axod-infer:axod_infer_tests
 ```
+
+The opt-in real-model integration test runs an isolated local Worker, pairs a temporary daemon,
+and calls `codemode.ai.run`, `unload` and `list`. It verifies the cached weights' checksum first;
+it neither downloads weights nor deploys anything. Use an absolute path to the reviewed GGUF:
+
+```sh
+bazel build @llama_server//:axod-infer
+bazel test //packages/axo-api-worker:gemma_smoke_test \
+  --test_env=AXO_TEST_GEMMA_HELPER="$(bazel info output_base)/external/+llama_server_repository+llama_server/axod-infer" \
+  --test_env=AXO_TEST_GEMMA_MODEL=/absolute/path/to/gemma-3-270m-it-Q8_0.gguf \
+  --test_output=all
+```
+
+Guarded launches map the lifeline and optional lock through standard I/O, so macOS can use
+`posix_spawn` rather than running `fork` alongside notification initialization. Regression
+checks include guarded lifetime/lock ownership, HTTP readiness after the last filesystem event,
+and repeated concurrent starts.
