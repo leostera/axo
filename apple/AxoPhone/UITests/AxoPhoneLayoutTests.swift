@@ -74,7 +74,7 @@ final class AxoPhoneLayoutTests: XCTestCase {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"])
     let message = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "swipe from the left edge")).firstMatch
     XCTAssertTrue(message.waitForExistence(timeout: 10))
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     let elements = [
       "message": message, "composer": composer, "title": app.staticTexts["conversation-title"],
       "expand": app.buttons["Expand message editor"], "jump": app.buttons["Jump to latest"],
@@ -119,7 +119,7 @@ final class AxoPhoneLayoutTests: XCTestCase {
   func testLayoutAfterOpeningAndClosingTheMenu() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"])
     let elements = [
-      "title": app.staticTexts["conversation-title"], "composer": app.textFields["composer"],
+      "title": app.staticTexts["conversation-title"], "composer": app.textViews["composer"],
       "menuButton": app.buttons["Chats menu"],
     ]
     measure(app, "0-rest", elements)

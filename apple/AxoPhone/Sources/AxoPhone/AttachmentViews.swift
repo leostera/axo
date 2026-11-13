@@ -83,6 +83,24 @@ enum AttachmentImport {
     return (jpeg, "photo.jpg", "image/jpeg", thumbnailData(image))
   }
 
+  /// The pictures on the clipboard, each as the first image type its item has: a screenshot is a
+  /// PNG, a picture copied from Photos or Safari is whatever it was.
+  static func pasted(_ items: [[String: Any]]) -> [File] {
+    items.enumerated().compactMap { index, item in
+      let pictures = item.compactMap { key, value -> (UTType, Data)? in
+        guard let type = UTType(key), type.conforms(to: .image) else { return nil }
+        if let data = value as? Data { return (type, data) }
+        if let image = value as? UIImage, let png = image.pngData() { return (.png, png) }
+        return nil
+      }
+      // PNG, JPEG, GIF and WebP before a type a model cannot read.
+      let readable: [UTType] = [.png, .jpeg, .gif, .webP]
+      guard let (type, data) = pictures.min(by: { (readable.firstIndex(of: $0.0) ?? 9) < (readable.firstIndex(of: $1.0) ?? 9) })
+      else { return nil }
+      return picture(data, type: type, base: "pasted-\(index + 1)")
+    }
+  }
+
   static func files(_ urls: [URL]) -> [File] {
     urls.compactMap { url in
       let scoped = url.startAccessingSecurityScopedResource()

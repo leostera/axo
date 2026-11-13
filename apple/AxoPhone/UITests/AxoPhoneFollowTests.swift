@@ -30,7 +30,7 @@ final class AxoPhoneFollowTests: XCTestCase {
   private func inView(_ element: XCUIElement, _ app: XCUIApplication) -> Bool {
     guard element.exists else { return false }
     let frame = element.frame
-    let composer = app.textFields["composer"].frame
+    let composer = app.textViews["composer"].frame
     return frame.maxY > 0 && frame.minY < composer.minY && frame.maxY <= composer.minY + 1
   }
 
@@ -52,7 +52,7 @@ final class AxoPhoneFollowTests: XCTestCase {
         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
     else { return [] }
     context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-    let top = Int(120 * scale), bottom = Int((app.textFields["composer"].frame.minY - 60) * scale)
+    let top = Int(120 * scale), bottom = Int((app.textViews["composer"].frame.minY - 60) * scale)
     var left = Int.max
     for y in stride(from: top, to: bottom, by: 2) {
       for x in 0..<min(width, Int(60 * scale)) {
@@ -121,7 +121,7 @@ final class AxoPhoneFollowTests: XCTestCase {
     let followed = waitUntil(30) { inView(reply(app, 30), app) }
     let trace = app.descendants(matching: .any).matching(identifier: "follow-trace").firstMatch
     print("FOLLOW TRACE:", trace.exists ? trace.label : "none")
-    print("REPLY 30:", reply(app, 30).exists ? "\(reply(app, 30).frame)" : "absent", "composer:", app.textFields["composer"].frame)
+    print("REPLY 30:", reply(app, 30).exists ? "\(reply(app, 30).frame)" : "absent", "composer:", app.textViews["composer"].frame)
     XCTAssertTrue(followed, "followed to the last reply")
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     XCTAssertTrue(inView(reply(app, 30), app))

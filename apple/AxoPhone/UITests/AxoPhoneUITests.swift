@@ -100,7 +100,7 @@ final class AxoPhoneUITests: XCTestCase {
     let app = launch()
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
     XCTAssertTrue(app.staticTexts["What are we working on?"].exists)
-    XCTAssertTrue(app.textFields["composer"].exists)
+    XCTAssertTrue(app.textViews["composer"].exists)
   }
 
   @MainActor
@@ -150,6 +150,32 @@ final class AxoPhoneUITests: XCTestCase {
     app.buttons["Studio"].tapWhereItIs()
     XCTAssertTrue(menuClosed(app))
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
+  }
+
+  @MainActor
+  func testAPicturePastedIntoTheBoxIsAttached() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
+    let size = CGSize(width: 40, height: 30)
+    UIPasteboard.general.image = UIGraphicsImageRenderer(size: size).image { context in
+      UIColor.systemPink.setFill()
+      context.fill(CGRect(origin: .zero, size: size))
+    }
+    let composer = app.textViews["composer"]
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    composer.tap()
+    // A second tap in the focused box offers Paste, for a picture alone on the clipboard too.
+    composer.tap()
+    let paste = app.menuItems["Paste"]
+    XCTAssertTrue(paste.waitForExistence(timeout: 5), "Paste is offered for a picture")
+    paste.tap()
+    XCTAssertTrue(app.buttons["Remove pasted-1.png"].waitForExistence(timeout: 5), "the picture is attached as it was, a PNG")
+    XCTAssertEqual(composer.value as? String ?? "", "", "and nothing is typed")
+    // Words still paste as words.
+    UIPasteboard.general.string = "Pasted words"
+    composer.tap()
+    XCTAssertTrue(paste.waitForExistence(timeout: 5))
+    paste.tap()
+    XCTAssertEqual(composer.value as? String, "Pasted words")
   }
 
   @MainActor
@@ -410,7 +436,7 @@ final class AxoPhoneUITests: XCTestCase {
   @MainActor
   func testTheBoxsPlusOffersPhotosFilesAndPluginsInAMenuAboveIt() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     let add = app.buttons["attach"]
     XCTAssertTrue(add.waitForExistence(timeout: 5))
     XCTAssertLessThan(composer.frame.maxY, add.frame.minY + 1, "the words on top, the + in the bar under them")
@@ -494,7 +520,7 @@ final class AxoPhoneUITests: XCTestCase {
   @MainActor
   func testVisualSnapshotBlankChatLight() {
     let app = launch(appearance: "light")
-    XCTAssertTrue(app.textFields["composer"].exists)
+    XCTAssertTrue(app.textViews["composer"].exists)
     Snapshots.check(app, named: "blank-chat-light", in: self)
   }
 
@@ -508,7 +534,7 @@ final class AxoPhoneUITests: XCTestCase {
   @MainActor
   func testVisualSnapshotComposerWithKeyboard() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"], appearance: "light")
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 10))
     composer.tap()
     composer.typeText("Check the composer while the keyboard is open")
@@ -523,7 +549,7 @@ final class AxoPhoneUITests: XCTestCase {
     app.buttons["Chats menu"].tap()
     XCTAssertTrue(app.buttons["Fix the sidebar spacing"].waitForExistence(timeout: 5))
     app.buttons["Fix the sidebar spacing"].tap()
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     composer.tap()
     composer.typeText("A deterministic interaction recording")
@@ -536,7 +562,7 @@ final class AxoPhoneUITests: XCTestCase {
   @MainActor
   func testReturnStartsANewLineAndOnlySendSends() {
     let app = launch()
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     composer.tap()
     composer.typeText("First line\nSecond line")
@@ -627,7 +653,7 @@ final class AxoPhoneUITests: XCTestCase {
     let card = element(app, "elicitationCard")
     XCTAssertTrue(card.waitForExistence(timeout: 10))
     XCTAssertTrue(app.buttons["elicitationYes"].isHittable, "the question is on screen without scrolling to it")
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertLessThanOrEqual(card.frame.maxY, composer.frame.minY, "above the message box")
     capture(app, named: "phone-elicitation-reading-history")
   }
@@ -635,7 +661,7 @@ final class AxoPhoneUITests: XCTestCase {
   @MainActor
   func testAMessageTheMacRefusesSaysNotSentAndKeepsTheWords() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     composer.tap()
     composer.typeText("Ship it")

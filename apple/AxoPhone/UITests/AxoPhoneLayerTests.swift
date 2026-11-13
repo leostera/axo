@@ -159,7 +159,7 @@ final class AxoPhoneLayerTests: XCTestCase {
   @MainActor
   func testPushingTheConversationAsidePutsTheKeyboardAway() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     composer.tapWhereItIs()
     XCTAssertTrue(hasFocus(composer, true))
     app.buttons["Chats menu"].tapWhereItIs()

@@ -46,7 +46,7 @@ final class AxoPhoneSessionControlsTests: XCTestCase {
 
   @MainActor
   private func type(_ text: String, in app: XCUIApplication) -> XCUIElement {
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     composer.tap()
     composer.typeText(text)

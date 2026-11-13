@@ -15,7 +15,7 @@ final class AxoPhoneVoiceTests: XCTestCase {
     app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_CHAT": "\(chat)"]
     app.launchArguments = ["-appearance", "light"]
     app.launch()
-    XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 15))
+    XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 15))
     return app
   }
 
@@ -52,7 +52,7 @@ final class AxoPhoneVoiceTests: XCTestCase {
     attachment.lifetime = .keepAlways
     add(attachment)
     app.buttons["voice-stop"].tap()
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     XCTAssertTrue(waitUntil(5) { composer.value as? String == said })
     XCTAssertTrue(app.buttons["send-message"].isEnabled, "nothing was sent; it waits to be read")
@@ -63,7 +63,7 @@ final class AxoPhoneVoiceTests: XCTestCase {
     let app = launch(chat: 1)
     XCTAssertTrue(app.buttons["voice-start"].exists)
     XCTAssertFalse(app.buttons["send-message"].isEnabled, "nothing to send yet")
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     composer.tap()
     composer.typeText("Please")
     XCTAssertTrue(waitUntil(5) { app.buttons["send-message"].isEnabled })
@@ -77,7 +77,7 @@ final class AxoPhoneVoiceTests: XCTestCase {
     app.buttons["voice-cancel"].tap()
     XCTAssertTrue(app.buttons["voice-start"].waitForExistence(timeout: 5))
     XCTAssertFalse(element(app, "voice-listening").exists)
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertNotEqual(composer.value as? String, said)
   }
 
@@ -91,6 +91,6 @@ final class AxoPhoneVoiceTests: XCTestCase {
     let failure = element(app, "chat-failure")
     XCTAssertTrue(failure.waitForExistence(timeout: 10))
     XCTAssertTrue(failure.label.hasPrefix("Not sent"), failure.label)
-    XCTAssertEqual(app.textFields["composer"].value as? String, said)
+    XCTAssertEqual(app.textViews["composer"].value as? String, said)
   }
 }

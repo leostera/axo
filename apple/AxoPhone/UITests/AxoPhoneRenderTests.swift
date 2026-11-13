@@ -79,7 +79,7 @@ final class AxoPhoneRenderTests: XCTestCase {
   @MainActor
   func testTypingRedrawsOnlyTheMessageBox() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "2"])
-    let composer = app.textFields["composer"]
+    let composer = app.textViews["composer"]
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     composer.tap()
     let before = counts(app)

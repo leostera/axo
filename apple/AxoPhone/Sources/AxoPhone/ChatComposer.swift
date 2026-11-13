@@ -87,13 +87,12 @@ struct ChatComposer: View {
 
   private var box: some View {
     VStack(alignment: .leading, spacing: 4) {
-      TextField(placeholder, text: $draft, axis: .vertical)
-        .lineLimit(1...8)
+      ComposerTextView(text: $draft, placeholder: placeholder, enabled: canSend) { items in
+        attach(AttachmentImport.pasted(items))
+      }
         .padding(.horizontal, 6).padding(.top, 4).padding(.bottom, 2)
         .frame(minHeight: 30)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
-        .disabled(!canSend)
-        .accessibilityIdentifier("composer")
       // Return starts a new line, as on the web on a touch screen; Send sends.
       HStack(spacing: 8) {
         addButton
