@@ -8,6 +8,7 @@
 - Document Type: Proposal
 - Supersedes: [RFD0038](RFD0038-sessions-without-workspaces-and-session-actors.md) (Part 2, a task per Session)
 - Amends: [RFD0037](RFD0037-axod-reactive-core.md) (what is left of its threads and waits), [RFD0033](RFD0033-session-controls-for-clients.md) (restarting Pi), [RFD0018](RFD0018-session-sync-and-client-delivery.md) (event queues)
+- Amended By: [RFD0045](RFD0045-idle-pis-sleep.md) (a running Pi can become dormant)
 
 ## Summary
 
