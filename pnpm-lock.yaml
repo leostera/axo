@@ -28,8 +28,8 @@ importers:
         specifier: 1.3.0
         version: 1.3.0(@aws-sdk/credential-provider-node@3.972.92)(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.4)(supports-color@10.2.2)(zod@4.6.7))(@smithy/signature-v4@5.7.5)(bufferutil@4.1.0)(supports-color@10.2.2)(utf-8-validate@5.0.10)(ws@8.22.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.7)
       '@leostera/feynman':
-        specifier: ^0.15.0
-        version: 0.15.0(@date-fns/tz@1.5.0)(@types/node@24.19.2)(date-fns@4.4.0)(echarts@6.1.0)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.1(react@19.3.1))(tsx@4.23.15)(yaml@2.9.1)(zod@4.6.7)
+        specifier: ^0.16.0
+        version: 0.16.0(@date-fns/tz@1.5.0)(@types/node@24.19.2)(date-fns@4.4.0)(echarts@6.1.0)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.1(react@19.3.1))(tsx@4.23.15)(yaml@2.9.1)(zod@4.6.7)
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.2
@@ -1467,8 +1467,8 @@ packages:
       fast-check:
         optional: true
 
-  '@leostera/feynman@0.15.0':
-    resolution: {integrity: sha512-xcMXpLvYa6P+OodMMcGLmxJ2IIAxKOTWCuDxh2/Ya4OYk06k+vO/hjmRhmqNwFfX3gXSBPbp8ppw/GgAGbYKWQ==}
+  '@leostera/feynman@0.16.0':
+    resolution: {integrity: sha512-5kdP+2pL+YRVC5L9yKJKxEsvdHazu+iX3XuU9FMsiQJTWQ61gAc7bsB96QL7SBG7sH8a+6CcNbg87rpsw4MWuA==}
     engines: {bun: '>=1.3'}
     hasBin: true
 
@@ -5877,7 +5877,7 @@ snapshots:
     optionalDependencies:
       fast-check: 4.3.0
 
-  '@leostera/feynman@0.15.0(@date-fns/tz@1.5.0)(@types/node@24.19.2)(date-fns@4.4.0)(echarts@6.1.0)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.1(react@19.3.1))(tsx@4.23.15)(yaml@2.9.1)(zod@4.6.7)':
+  '@leostera/feynman@0.16.0(@date-fns/tz@1.5.0)(@types/node@24.19.2)(date-fns@4.4.0)(echarts@6.1.0)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.1(react@19.3.1))(tsx@4.23.15)(yaml@2.9.1)(zod@4.6.7)':
     dependencies:
       '@cloudflare/kumo': 2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
       '@phosphor-icons/react': 2.1.10(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
