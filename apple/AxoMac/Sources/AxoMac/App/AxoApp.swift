@@ -428,7 +428,7 @@ private struct AxoMenuBarLabel: View {
   let opensTerminalWindow: Bool
   let usesSplash: Bool
   @State private var didOpenTerminal = false
-  private var reopenRequests = TerminalReopenRequests.shared
+  private let reopenRequests = TerminalReopenRequests.shared
 
   var body: some View {
     Label {
