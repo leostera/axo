@@ -83,7 +83,7 @@ test("an agent adds a server that needs sign-in, the person signs in, and a scri
   assert.match(logText, /"service":"linear","tool":"list_issues"/);
 });
 
-test("a sign-in link works once, only in a browser signed in to the same account, and only with its flow cookie", async (t) => {
+test("a sign-in link starts only in a browser signed in to the same account, and each start needs its own flow cookie", async (t) => {
   const { server, h, session, call } = await fixture(t);
   const added = result(await call("axo.apps.add", { name: "linear", url: server.url }));
   const path = added.signInUrl.replace("https://axo.leostera.dev/", "");
@@ -91,10 +91,14 @@ test("a sign-in link works once, only in a browser signed in to the same account
   // Not signed in to Axo: nothing happens.
   const anonymous = await fetch(new URL(path, h.url), { redirect: "manual" });
   assert.equal(anonymous.status, 401);
-  // Signed in to another account: the link is not theirs.
+  // Signed in to another account: the link is not theirs, and leads to their own Apps page.
   const stranger = await signIn(h, "a-stranger");
   const theirs = await fetch(new URL(path, h.url), { headers: { Cookie: stranger.headers.Cookie! }, redirect: "manual" });
-  assert.equal(theirs.status, 410);
+  assert.equal(theirs.status, 302);
+  const theirPage = new URL(theirs.headers.get("location")!);
+  assert.equal(theirPage.pathname, "/app/settings/apps");
+  assert.ok(theirPage.searchParams.get("error"));
+  assert.equal(cookiePair(theirs, "__Host-axo_connection"), null);
 
   // The right browser starts; a callback without its flow cookie is refused.
   const start = await fetch(new URL(path, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
@@ -102,10 +106,20 @@ test("a sign-in link works once, only in a browser signed in to the same account
   const back = server.approve(start.headers.get("location")!);
   const noCookie = await fetch(new URL(`${back.pathname.slice(1)}${back.search}`, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
   assert.ok(new URL(noCookie.headers.get("location")!).searchParams.get("error"));
-  // The code was not spent by the refused callback, but the link itself is used up.
-  const again = await fetch(new URL(path, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
-  assert.equal(again.status, 410);
   assert.equal(server.tokenRequests.length, 0);
+
+  // Opened again, the used link starts a fresh sign-in: a new flow, whose cookie the first one's does not replace.
+  const firstCookie = cookiePair(start, "__Host-axo_connection");
+  const again = await fetch(new URL(path, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
+  assert.equal(again.status, 302);
+  const againCookie = cookiePair(again, "__Host-axo_connection");
+  assert.ok(againCookie && againCookie !== firstCookie);
+  const backAgain = server.approve(again.headers.get("location")!);
+  const landed = await fetch(new URL(`${backAgain.pathname.slice(1)}${backAgain.search}`, h.url), {
+    headers: { Cookie: `${session.headers.Cookie}; ${againCookie}` },
+    redirect: "manual",
+  });
+  assert.equal(new URL(landed.headers.get("location")!).searchParams.get("signedIn"), "linear");
 });
 
 test("a grant about to expire is renewed before the call, and the rotated refresh token is used once", async (t) => {

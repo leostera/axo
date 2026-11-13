@@ -441,7 +441,7 @@ export class AxoAccountManager extends DurableObject<Env> {
     return this.requireApps().signInLink(name);
   }
 
-  async openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
+  async openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string; nonce: string } | null> {
     return this.requireApps().openFlow(nonce);
   }
 

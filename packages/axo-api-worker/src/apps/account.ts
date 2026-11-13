@@ -37,7 +37,7 @@ import {
 import { recordApiEvent } from "../observability";
 import { CallLog } from "./call-log";
 import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller } from "./runner";
-import { ThirdPartyApps } from "./third-party";
+import { ThirdPartyApps, type OpenedFlow } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
 import { AppAccountRefused, BuiltinApps, appPage, type DeviceSignIn, type MacSignInCallback } from "./builtin";
@@ -277,7 +277,7 @@ export class AccountApps {
   }
 
   /** Sign-in flows are one-time nonces; an app's and a third-party's never collide. */
-  async openFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
+  async openFlow(nonce: string): Promise<OpenedFlow | null> {
     return (await this.apps.openFlow(nonce)) ?? this.thirdParty.openFlow(nonce);
   }
 

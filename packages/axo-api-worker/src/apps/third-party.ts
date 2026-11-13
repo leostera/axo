@@ -34,6 +34,11 @@ import {
 export const TOOLS_MAX_AGE_MS = 60 * 60 * 1000;
 /** A sign-in link works for this long, once. */
 export const FLOW_LIFETIME_MS = 10 * 60 * 1000;
+/**
+ * A sign-in link is remembered for this long: opened again after it was used or expired, it
+ * starts a fresh sign-in to the same app or server instead of a dead end.
+ */
+export const FLOW_REMEMBERED_MS = 30 * 24 * 60 * 60 * 1000;
 /** An access token this close to expiring is renewed before use. */
 const EXPIRY_MARGIN_MS = 60_000;
 
@@ -57,7 +62,8 @@ type Row = {
 const ICON_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Where to send a browser that opened a sign-in link, and for which connection. */
-export type OpenedFlow = { authorizeUrl: string; name: string };
+/** Where to send the browser, and the flow it is now in: a fresh one when the link opened was used or had expired. */
+export type OpenedFlow = { authorizeUrl: string; name: string; nonce: string };
 
 type StoredTool = { name: string; upstream: string; title: string; description: string; inputSchema: Record<string, unknown> };
 
@@ -192,27 +198,39 @@ export class ThirdPartyApps {
       this.setError(name, new Error("the server does not register clients itself; enter a client ID on the Apps page"));
       return startUrl(null);
     }
+    return startUrl(this.newFlow(name, (await pkce()).verifier));
+  }
+
+  private newFlow(name: string, verifier: string): string {
     const nonce = crypto.randomUUID();
-    const { verifier } = await pkce();
-    this.deps.sql.exec("DELETE FROM connection_flows WHERE created_at < ?", this.now() - FLOW_LIFETIME_MS);
+    this.deps.sql.exec("DELETE FROM connection_flows WHERE created_at < ?", this.now() - FLOW_REMEMBERED_MS);
     this.deps.sql.exec("INSERT INTO connection_flows (nonce, name, verifier, created_at) VALUES (?, ?, ?, ?)", nonce, name, verifier, this.now());
-    return startUrl(nonce);
+    return nonce;
   }
 
   /**
-   * The browser opened a sign-in link: returns where to send it, once. The PKCE verifier stays
-   * here; only its challenge leaves.
+   * The browser opened a sign-in link: returns where to send it. A link works once; opened again
+   * after that, or once it expired, it starts a fresh sign-in to the same server, since whoever
+   * opens it is signed in to this account, as on the Apps page. The PKCE verifier stays here;
+   * only its challenge leaves.
    */
   async openFlow(nonce: string): Promise<OpenedFlow | null> {
-    const flow = this.flow(nonce);
-    if (!flow || flow.opened) return null;
+    const remembered = this.deps.sql.exec<{ name: string }>("SELECT name FROM connection_flows WHERE nonce = ?", nonce).toArray()[0];
+    if (!remembered) return null;
+    const live = this.flow(nonce);
+    if (!live || live.opened) {
+      const row = this.row(remembered.name);
+      if (!row?.client_sealed || !row.discovery_json) return null;
+      return this.openFlow(this.newFlow(remembered.name, (await pkce()).verifier));
+    }
+    const flow = live;
     this.deps.sql.exec("UPDATE connection_flows SET opened = 1 WHERE nonce = ?", nonce);
     const row = this.row(flow.name);
     const client = row?.client_sealed ? await this.unseal<Client>("client", row.client_sealed) : null;
     if (!row?.discovery_json || !client) return null;
     const challenge = await pkceChallenge(flow.verifier);
     const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
-    return { authorizeUrl: authorizationUrl(JSON.parse(row.discovery_json) as Discovery, client, challenge, state), name: flow.name };
+    return { authorizeUrl: authorizationUrl(JSON.parse(row.discovery_json) as Discovery, client, challenge, state), name: flow.name, nonce };
   }
 
   /** The provider sent the browser back with a code: redeems it once and stores a new generation. */

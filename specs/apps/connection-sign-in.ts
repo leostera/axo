@@ -77,7 +77,9 @@ const people = defineZone({ name: "People", description: "an agent in a Session,
 const cloudflare = defineZone({ name: "Cloudflare", description: "the Axo Worker and the account's Durable Object", place: { column: 1, region: true } });
 const service = defineZone({ name: "Third-party service", description: "its OAuth authorization server", place: { column: 2 } });
 
-const limit1 = defineLimit({ name: "A sign-in link stays usable for", value: 30 * MIN });
+const DAY = 24 * 60 * MIN;
+const limit1 = defineLimit({ name: "A sign-in waits for its callback for", value: 10 * MIN });
+const limit3 = defineLimit({ name: "A sign-in link is remembered, and starts a fresh sign-in when opened again, for", value: 30 * DAY });
 const limit2 = defineLimit({ name: "The Durable Object refreshes a grant this long before it expires", value: 5 * MIN });
 
 export const Manager = defineActor({
@@ -89,7 +91,7 @@ export const Manager = defineActor({
     conns: {} as Record<string, Record<string, Conn>>,
     /** Agents waiting to hear how registration went, by connection. */
     adding: {} as Record<string, string>,
-    /** Sign-in links not yet opened, by hash. */
+    /** Sign-in links, by hash: each opening starts its own sign-in, so an old link is never a dead end. */
     links: {} as Record<string, Ref>,
     /** Sign-ins waiting for their callback, by flow. */
     flows: {} as Record<string, Ref & { verifier: string }>,
@@ -181,14 +183,13 @@ export const Manager = defineActor({
     },
     begin: {
       on: Begin,
-      description: "Uses up the link and starts a flow: a PKCE verifier kept here, and a nonce for the browser's flow cookie.",
+      description: "Starts a flow for the link's connection: a PKCE verifier kept here, and a nonce for the browser's flow cookie. A link opened again, used or expired, starts a fresh flow, since only its own account's browser gets here.",
       sources: ["packages/axo-api-worker/src/apps/third-party.ts#ThirdPartyApps.openFlow"],
       sends: [Begun, NoSuchLink],
       run(state, m, ctx) {
         const entry = state.links[ctx.hash(m.link)];
         const conn = entry ? state.conns[entry.account]?.[entry.name] : undefined;
         if (!entry || entry.account !== m.account || !conn?.client) return ctx.reply(NoSuchLink, { browser: m.browser });
-        delete state.links[ctx.hash(m.link)];
         const flow = ctx.fresh("flow");
         const nonce = ctx.fresh("nonce");
         state.flows[flow] = { ...entry, verifier: ctx.fresh("verifier") };
@@ -344,12 +345,12 @@ export const Worker = defineActor({
     },
     noSuchLink: {
       on: NoSuchLink,
-      description: "The link is unknown, used, or another account's.",
+      description: "The link is unknown or another account's: the browser goes to its own Apps page, to sign in from there.",
       sources: ["packages/axo-api-worker/src/http/apps.ts#startConnectionSignIn"],
       sends: [Refused],
       run(_s, m, ctx) {
         const browser = ctx.all(Browser).find((b) => b.id === m.browser);
-        if (browser) ctx.send(browser, Refused, { reason: "this sign-in link is not yours or was used" });
+        if (browser) ctx.send(browser, Refused, { reason: "this sign-in link is not yours" });
       },
     },
     beginFailed: { on: failed(Begin), description: "The account did not answer; the page asks the person to open the link again.", run: () => {} },
@@ -705,7 +706,7 @@ export default defineSpec({
     "How an Axo account gets and keeps a grant for a third-party MCP server: an agent adds the connection, Axo registers as an OAuth client or takes one typed on the Apps page, the person signs in through Axo's one callback, and the account's Durable Object refreshes the grant.",
   actors: [Manager, Worker, AuthServer, Session, Browser],
   groups: [axoCloudGroup],
-  limits: [limit1, limit2],
+  limits: [limit1, limit2, limit3],
   properties: [grantMatchesItsAccount, tokensStayInTheCloud, secretsAreSealed, readyHasAGrant, codesRedeemedOnce],
   scenarios: [addLinearMidTask, aServiceThatDoesNotRegisterClients, mallorySendsAliceHerConsentPage, aliceRevokesAxoAtTheService],
 });

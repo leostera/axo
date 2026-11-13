@@ -49,7 +49,7 @@ import {
 } from "@axo/apps";
 import { seal, unseal } from "../../auth/crypto";
 import { CALLBACK_URL } from "../oauth";
-import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
+import { FLOW_LIFETIME_MS, FLOW_REMEMBERED_MS, startUrl, type OpenedFlow } from "../third-party";
 
 export { APP_DEFINITIONS, macCommand, toolsOf };
 
@@ -287,24 +287,38 @@ export class BuiltinApps {
     // A token app has no provider page to send the browser to: the person pastes a token on the app's page.
     if (definition.signIn !== "oauth") return appPage(app);
     if (!this.hasClient(definition.provider)) throw new Error(notSetUp(definition));
-    const nonce = crypto.randomUUID();
-    const verifier = pkceVerifier();
-    this.deps.sql.exec("DELETE FROM app_flows WHERE created_at < ?", this.now() - FLOW_LIFETIME_MS);
-    this.deps.sql.exec("INSERT INTO app_flows (nonce, app, verifier, created_at) VALUES (?, ?, ?, ?)", nonce, app, verifier, this.now());
-    return startUrl(nonce);
+    return startUrl(this.newFlow(app));
   }
 
-  /** The browser opened an app's sign-in link: where to send it, once. Null if the nonce is not an app's. */
-  async openFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
-    const flow = this.flow(nonce);
-    if (!flow || flow.opened) return null;
+  private newFlow(app: AppName): string {
+    const nonce = crypto.randomUUID();
+    this.deps.sql.exec("DELETE FROM app_flows WHERE created_at < ?", this.now() - FLOW_REMEMBERED_MS);
+    this.deps.sql.exec("INSERT INTO app_flows (nonce, app, verifier, created_at) VALUES (?, ?, ?, ?)", nonce, app, pkceVerifier(), this.now());
+    return nonce;
+  }
+
+  /**
+   * The browser opened an app's sign-in link: where to send it. Null if the nonce is not an app's.
+   * A link works once; opened again after that, or once it expired, it starts a fresh sign-in to
+   * the same app, since whoever opens it is signed in to this account, as on the app's page.
+   */
+  async openFlow(nonce: string): Promise<OpenedFlow | null> {
+    const remembered = this.deps.sql.exec<{ app: string }>("SELECT app FROM app_flows WHERE nonce = ?", nonce).toArray()[0];
+    if (!remembered) return null;
+    const live = this.flow(nonce);
+    if (!live || live.opened) {
+      const definition = APP_DEFINITIONS[remembered.app as AppName];
+      if (definition?.signIn !== "oauth" || !this.hasClient(definition.provider)) return null;
+      return this.openFlow(this.newFlow(remembered.app as AppName));
+    }
+    const flow = live;
     this.deps.sql.exec("UPDATE app_flows SET opened = 1 WHERE nonce = ?", nonce);
     const definition = APP_DEFINITIONS[flow.app as AppName];
     const client = definition?.signIn === "oauth" ? await this.client(definition.provider) : null;
     if (!client || definition?.signIn !== "oauth") return null;
     const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
-    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await pkceChallenge(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}` };
+    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await pkceChallenge(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}`, nonce };
   }
 
   /**

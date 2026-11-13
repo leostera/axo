@@ -162,6 +162,30 @@ test("a GitHub renewal that got no answer may have spent the refresh token: the 
   assert.deepEqual(apps.accounts("github"), [{ account: "ada", state: "needsSignIn", lastError: "renewing the sign-in got no answer" }]);
 });
 
+test("a sign-in link opened again after it was used or expired starts a fresh sign-in to the same app", async () => {
+  const { apps, fake, tick } = await fixture(new FakeGitHub(), "github");
+  const nonce = new URL(await apps.signInLink("github")).searchParams.get("flow")!;
+  const first = (await apps.openFlow(nonce))!;
+  assert.equal(first.nonce, nonce);
+
+  // Used: the same link leads to a new flow, and that one signs in.
+  const reopened = (await apps.openFlow(nonce))!;
+  assert.notEqual(reopened.nonce, nonce);
+  assert.equal(reopened.name, "apps.github");
+  const back = fake.oauth.approve(reopened.authorizeUrl);
+  assert.deepEqual(await apps.completeFlow(reopened.nonce, back.searchParams.get("code")!), { name: "apps.github" });
+
+  // Expired, days later: a new flow again.
+  const stale = new URL(await apps.signInLink("github")).searchParams.get("flow")!;
+  tick(3 * 24 * 60 * 60 * 1000);
+  const late = (await apps.openFlow(stale))!;
+  assert.notEqual(late.nonce, stale);
+  assert.deepEqual(await apps.completeFlow(stale, "any"), { error: "this sign-in link was already used or has expired" });
+
+  // A link the account never made is not opened.
+  assert.equal(await apps.openFlow(crypto.randomUUID()), null);
+});
+
 test("a GitHub code is redeemed once, and signing out deletes Axo's authorization at GitHub", async () => {
   const { apps, fake, settled } = await fixture(new FakeGitHub(), "github");
   const link = new URL(await apps.signInLink("github"));

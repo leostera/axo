@@ -32,7 +32,7 @@ type AppsStub = {
   appPhoneSignIn(name: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
   appLink(name: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
   appSignInLink(name: string): Promise<string>;
-  openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
+  openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string; nonce: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
   appsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }>;
   appsLogIntegrity(): Promise<ChainCheck>;
@@ -155,10 +155,15 @@ export async function startConnectionSignIn(request: Request, env: AuthEnvironme
   const nonce = new URL(request.url).searchParams.get("flow");
   if (!nonce || !z.uuid().safeParse(nonce).success) return page(400, "This sign-in link is not valid.");
   const opened = plain(await account(ctx, caller.accountId).openConnectionFlow(nonce));
-  if (!opened) return page(410, "This sign-in link was already used, has expired, or belongs to another account. Ask for a new one.");
+  // A link this account no longer knows (or another account's) leads to the Apps page, where signing in starts again.
+  if (!opened) {
+    const query = new URLSearchParams({ error: "That sign-in link is no longer valid. Sign in again from here." });
+    return new Response(null, { status: 302, headers: { ...privateHeaders, Location: `${APP}/app/settings/apps?${query}` } });
+  }
+  // The cookie names the flow the browser is now in, which is a fresh one if the link had been used or had expired.
   return new Response(null, {
     status: 302,
-    headers: { ...privateHeaders, Location: opened.authorizeUrl, "Set-Cookie": setCookie(FLOW_COOKIE, nonce, FLOW_LIFETIME_MS / 1000) },
+    headers: { ...privateHeaders, Location: opened.authorizeUrl, "Set-Cookie": setCookie(FLOW_COOKIE, opened.nonce, FLOW_LIFETIME_MS / 1000) },
   });
 }
 
