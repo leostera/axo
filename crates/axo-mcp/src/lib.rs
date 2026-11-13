@@ -44,7 +44,7 @@ const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi convers
 - `session_prompt` sends a message to a Session's agent, including this one ("self"). `delivery`: "followUp" (default; after its current turn), "steer" (after its current tool calls) or "turn" (only if idle). Prompts from an agent are limited: at most 30 a minute, 10 of them to "self".
 - `terminal_write` types text into a pane: end a command with "\r" to run it; "\u0003" is Ctrl-C. `terminal_screen` reads a pane's screen and scrollback as plain text.
 - `session_create` starts a new Session (Pi plus a terminal) in a folder: `folder` (an absolute path), `like` (another Session's folder; "self" for this one's), or with neither the home directory.
-- `apps_*` reach this person's Axo account, if this Mac is linked to one. The account's Macs are reached by name: `codemode.hosts.list()` lists them (name, online, whether computer use works there), `codemode.bash.run({ host, command })` runs a command on one, and `codemode.computer.run({ host, tool, args, confirm? })` drives its apps like the `computer` tool, asking the person when an action needs them; screenshots come back as `{ type: "image", attachment }`, and returning them from the script shows them to you. `host` is a name from `hosts.list()` or "self". `apps_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `apps_run` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.bash.run({ host: "studio", command: "uptime" })).stdout`; `apps_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `apps_list` lists the apps and their accounts; `apps_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. A apps script may run for up to 5 minutes: when calling `apps_run` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
+- `apps_*` reach this person's Axo account, if this Mac is linked to one. The account's Macs are reached by name: `codemode.hosts.list()` lists them (name, online, whether computer use works there), `codemode.bash.run({ host, command })` runs a command on one, and `codemode.computer.run({ host, tool, args, confirm? })` drives its apps like the `computer` tool, asking the person when an action needs them; screenshots come back as `{ type: "image", attachment }`, and returning them from the script shows them to you. Files are kept in the account's assets, never inline: `codemode.apps.gmail.save_attachment({ account, id, partId })` and `save_message`, and `codemode.apps.drive.save_file`, answer `{ type: "file", attachment, url }`; returning that from the script puts the file on this Mac under `~/.axo/assets/<hash>/<name>` and tells you the path, and `codemode.assets.read({ asset, offset, length })` reads any asset in ranges. `host` is a name from `hosts.list()` or "self". `apps_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `apps_run` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.bash.run({ host: "studio", command: "uptime" })).stdout`; `apps_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `apps_list` lists the apps and their accounts; `apps_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. A apps script may run for up to 5 minutes: when calling `apps_run` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
 - `computer` sees and operates this Mac's apps (computer use), in the background where possible: read a window with `get_window_state` (elements plus a screenshot), act with `run_steps` (it can report what changed), or run a JavaScript `run_script` for loops and checks. `computer_tools` gives each tool's schema; `get_guide` explains the approach. Prefer an app's own CLI, MCP server or connection when there is one. It acts as the person in their real apps: an action that may send, post, pay or delete is checked on this Mac, and the person is asked on their own devices before it runs; pass `confirm: true` to have them asked about any call. You cannot approve for them. Read back what you typed. Never ask the person for a password, login or one-time code in the chat, and never type one yourself: call `request_input` ({ pid, window_id, fields: [{ kind, label? }], submit? }), and they fill it in on their own device; it goes into the app without passing through you, and reads show it as •••• (filled by you). `screenshot` captures the whole screen.
 - Every tool here answers JSON in `structuredContent`, typed by its output schema: in a codemode script, `(await tools.mcp__axo__apps_run({ code })).structuredContent.result` is the script's return value as is. `content` repeats it as text for display: never `JSON.parse` it.
 
@@ -221,7 +221,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "apps_run",
         method: Some(method::APPS_RUN),
-        description: "Runs a JavaScript async function in the account's cloud sandbox (no network of its own; at most 5 minutes and 100 tool calls) and returns { result, logs }. `codemode.<service>.<tool>(input)` calls a tool, e.g. await codemode.bash.run({ host: \"studio\", command: \"git -C ~/src/app status\", cwd: \"/Users/me\", timeoutMs: 60000 }) returns { exitCode, stdout, stderr, ... }; codemode.hosts.list() names the account's Macs, and codemode.computer.run({ host, tool, args }) drives one's apps (images it returns are shown to you); an app's tools are `codemode.apps.<app>.<tool>({ account, ... })`, e.g. await codemode.apps.gmail.search_messages({ account: \"me@example.com\", query: \"is:unread\" }). Every call is logged.",
+        description: "Runs a JavaScript async function in the account's cloud sandbox (no network of its own; at most 5 minutes and 100 tool calls) and returns { result, logs }. `codemode.<service>.<tool>(input)` calls a tool, e.g. await codemode.bash.run({ host: \"studio\", command: \"git -C ~/src/app status\", cwd: \"/Users/me\", timeoutMs: 60000 }) returns { exitCode, stdout, stderr, ... }; codemode.hosts.list() names the account's Macs, and codemode.computer.run({ host, tool, args }) drives one's apps (images it returns are shown to you); files come back as { type: \"file\", attachment, url } (codemode.apps.gmail.save_attachment, codemode.assets.*), and returning them saves them on this Mac under ~/.axo/assets and names the path; an app's tools are `codemode.apps.<app>.<tool>({ account, ... })`, e.g. await codemode.apps.gmail.search_messages({ account: \"me@example.com\", query: \"is:unread\" }). Every call is logged.",
         properties: || json!({ "code": { "type": "string", "description": "An async function: async () => { ... }. Return what you need; console.log lines come back as logs." } }),
         required: &["code"],
         output: Some(execute_output),
@@ -556,9 +556,11 @@ impl McpServer {
         match outcome {
             Ok(result) => {
                 let mut content = vec![json!({ "type": "text", "text": result.to_string() })];
-                // A script's screenshots (RFD0028) are shown to the model, not only named.
+                // A script's screenshots (RFD0028) are shown to the model, not only named, and
+                // the files it returned (RFD0030) are put on this Mac, where the agent reads them.
                 if tool.method == Some(method::APPS_RUN) {
                     content.extend(self.images_in(&result).await);
+                    content.extend(self.files_in(&result).await);
                 }
                 json!({ "content": content, "structuredContent": result })
             }
@@ -617,7 +619,7 @@ impl McpServer {
     /// Anything that can't be fetched stays a reference in the text.
     async fn images_in(&self, result: &Value) -> Vec<Value> {
         let mut attachments = Vec::new();
-        collect_image_attachments(result, &mut attachments);
+        collect_attachments(result, Kind::Image, &mut attachments);
         let attachments = within_shown_budget(attachments);
         if attachments.is_empty() {
             return Vec::new();
@@ -647,6 +649,37 @@ impl McpServer {
             }
         }
         images
+    }
+
+    /// The files a script returned as `{ type: "file", attachment }` (a Gmail attachment it
+    /// saved), fetched through axod into `~/.axo/assets/<hash>/<name>`, as one text block naming
+    /// where each one is, or why it is not there. At most `MAX_FETCHED_FILES`, one at a time, so
+    /// one that fails does not keep the others away.
+    async fn files_in(&self, result: &Value) -> Option<Value> {
+        let mut attachments = Vec::new();
+        collect_attachments(result, Kind::File, &mut attachments);
+        if attachments.is_empty() {
+            return None;
+        }
+        let mut lines = vec!["Files the script returned, on this Mac:".to_owned()];
+        for attachment in attachments.iter().take(MAX_FETCHED_FILES) {
+            let fetched = self
+                .call_within(
+                    method::ASSETS_FETCH,
+                    json!({ "attachments": [attachment] }),
+                    FILE_FETCH_TIMEOUT,
+                )
+                .await;
+            lines.push(file_line(
+                attachment,
+                fetched.as_ref().map_err(|ToolError(why)| why.as_str()),
+            ));
+        }
+        if attachments.len() > MAX_FETCHED_FILES {
+            let more = attachments.len() - MAX_FETCHED_FILES;
+            lines.push(format!("- and {more} more, not fetched: return at most {MAX_FETCHED_FILES} files from one script"));
+        }
+        Some(json!({ "type": "text", "text": lines.join("\n") }))
     }
 
     /// What the account reaches now, as one paragraph, or `None` when this Mac is not linked or
@@ -733,14 +766,39 @@ fn within_shown_budget(attachments: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
-fn collect_image_attachments(value: &Value, found: &mut Vec<Value>) {
+/// Files fetched onto this Mac from one script's result, at most.
+const MAX_FETCHED_FILES: usize = 8;
+/// How long one file may take to reach this Mac: a tool saves up to 32 MiB.
+const FILE_FETCH_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+
+/// What a script returns its assets as: `{ type: "image", attachment }`, a screenshot to show,
+/// or `{ type: "file", attachment }`, a file to put on this Mac.
+#[derive(Clone, Copy)]
+enum Kind {
+    Image,
+    File,
+}
+
+impl Kind {
+    fn tag(self) -> &'static str {
+        match self {
+            Kind::Image => "image",
+            Kind::File => "file",
+        }
+    }
+}
+
+/// Every `{ type: <kind>, attachment }` in a script's value, in order, once each. An image is
+/// only one whose type is an image's.
+fn collect_attachments(value: &Value, kind: Kind, found: &mut Vec<Value>) {
     match value {
         Value::Object(object) => {
-            if object.get("type") == Some(&json!("image"))
-                && let Some(attachment) = object.get("attachment").filter(|a| {
-                    a["mimeType"]
+            if object.get("type") == Some(&json!(kind.tag()))
+                && let Some(attachment) = object.get("attachment").filter(|a| match kind {
+                    Kind::Image => a["mimeType"]
                         .as_str()
-                        .is_some_and(|m| m.starts_with("image/"))
+                        .is_some_and(|m| m.starts_with("image/")),
+                    Kind::File => a["asset"].is_string(),
                 })
             {
                 if !found.contains(attachment) {
@@ -750,12 +808,33 @@ fn collect_image_attachments(value: &Value, found: &mut Vec<Value>) {
             }
             object
                 .values()
-                .for_each(|value| collect_image_attachments(value, found));
+                .for_each(|value| collect_attachments(value, kind, found));
         }
         Value::Array(items) => items
             .iter()
-            .for_each(|value| collect_image_attachments(value, found)),
+            .for_each(|value| collect_attachments(value, kind, found)),
         _ => {}
+    }
+}
+
+/// One file's line: where axod put it, or why it is not there.
+fn file_line(attachment: &Value, fetched: Result<&Value, &str>) -> String {
+    let name = attachment["name"].as_str().unwrap_or("a file");
+    let path = fetched
+        .ok()
+        .and_then(|fetched| fetched["files"][0]["path"].as_str());
+    match (path, fetched) {
+        (Some(path), _) => format!(
+            "- {name} ({}, {} bytes): {path}",
+            attachment["mimeType"]
+                .as_str()
+                .unwrap_or("application/octet-stream"),
+            attachment["size"].as_u64().unwrap_or(0),
+        ),
+        (None, Err(why)) => {
+            format!("- {name}: not fetched ({why}); codemode.assets.read reads it in ranges")
+        }
+        (None, Ok(_)) => format!("- {name}: not fetched; codemode.assets.read reads it in ranges"),
     }
 }
 
@@ -1492,8 +1571,39 @@ mod tests {
             "pdf": { "type": "image", "attachment": file },
         } });
         let mut found = Vec::new();
-        collect_image_attachments(&result, &mut found);
+        collect_attachments(&result, Kind::Image, &mut found);
         assert_eq!(found, vec![image]);
+    }
+
+    #[test]
+    fn a_script_s_files_are_found_once_whatever_their_type_and_named_where_they_landed() {
+        let pdf = json!({ "asset": format!("sha256:{}", "b".repeat(64)), "name": "notes.pdf", "mimeType": "application/pdf", "size": 432534 });
+        let png = json!({ "asset": format!("sha256:{}", "c".repeat(64)), "name": "logo.png", "mimeType": "image/png", "size": 9 });
+        let shot = json!({ "asset": format!("sha256:{}", "a".repeat(64)), "name": "click-1.png", "mimeType": "image/png", "size": 3 });
+        let result = json!({ "result": {
+            "saved": [{ "type": "file", "attachment": pdf, "url": "https://axo.leostera.dev/api/v1/account/assets/b" }],
+            "again": { "type": "file", "attachment": pdf },
+            "logo": { "type": "file", "attachment": png },
+            "shot": { "type": "image", "attachment": shot },
+            "notAFile": { "type": "file", "attachment": { "name": "x" } },
+        } });
+        let mut found = Vec::new();
+        collect_attachments(&result, Kind::File, &mut found);
+        assert_eq!(
+            found,
+            vec![pdf.clone(), png],
+            "an image saved as a file is a file; a screenshot is not"
+        );
+
+        let landed = json!({ "files": [{ "path": "/Users/ada/.axo/assets/bbb/notes.pdf" }] });
+        assert_eq!(
+            file_line(&pdf, Ok(&landed)),
+            "- notes.pdf (application/pdf, 432534 bytes): /Users/ada/.axo/assets/bbb/notes.pdf"
+        );
+        assert_eq!(
+            file_line(&pdf, Err("this Mac is not connected to its account")),
+            "- notes.pdf: not fetched (this Mac is not connected to its account); codemode.assets.read reads it in ranges"
+        );
     }
 
     #[test]

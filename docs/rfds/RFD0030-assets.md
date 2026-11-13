@@ -130,7 +130,8 @@ A script in the account's cloud sandbox (RFD0016) returns at most 1 MiB, and app
   - `save({ name, mimeType?, text | base64 })`: stores up to 512 KiB a script made.
 - **A save is an upload the Worker makes:** it hashes the bytes, reserves them in `AxoAssetsDO`, puts them to R2 under their hash with R2's SHA-256 check, and commits, as `PUT` does. The same quota, name rules and type allowlist apply, and the same bytes are one asset. `created_by` is `app:<app>:<tool>` for a tool's save, and `host:<hostId>` for the Mac a script ran from.
 - **Logging:** every `codemode.assets` call is in the apps log, as every other call is. The Worker logs `assets.save` with the account, hash, size and who saved it.
-- **Not in this change:** the Mac's `apps_run` fetching a returned file to `~/.axo/assets/<hash>/<name>` and naming the path, as it shows a returned screenshot; and saving from a stream without holding the whole file.
+- **On the Mac:** `apps_run` (`axod mcp`) finds every `{ type: "file", attachment }` in a script's result, at most 8, and has axod fetch each one to `~/.axo/assets/<hash>/<name>` with the Mac's credential, checking its hash, as a prompt's attachments are. It adds a text block naming where each file is, or why it is not there. Each file is fetched on its own, within 3 minutes, so one that fails does not keep the others away. The agent then reads the file with its own tools.
+- **Not in this change:** saving from a stream without holding the whole file.
 
 ### Lifecycle
 
