@@ -142,7 +142,8 @@ CREATE TABLE storage_pending (singleton INTEGER PRIMARY KEY CHECK (singleton = 1
   kind TEXT NOT NULL, epoch INTEGER NOT NULL, "from" INTEGER, "to" INTEGER, stored INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE storage_cut (epoch INTEGER NOT NULL, cursor INTEGER NOT NULL, line TEXT, atxf TEXT,
   PRIMARY KEY (epoch, cursor));   -- with storage_cut_parts for lines over PART_CHARS
-CREATE TABLE stream_states (cursor INTEGER PRIMARY KEY, state TEXT NOT NULL);
+-- The ATXF stream's saved state, the latest only, in parts: it is about 155 bytes a record.
+CREATE TABLE stream_state (idx INTEGER PRIMARY KEY, cursor INTEGER NOT NULL, epoch INTEGER NOT NULL, data TEXT NOT NULL);
 ```
 
 `records.line` and `records.atxf` become nullable in meaning. `NULL` means "in R2", and `segment` says where. A SessionDO from before gets `storage_epochs` rows from its `cuts`, with `through = dropped = 0`.
@@ -157,7 +158,7 @@ Seven rules keep the properties true. The spec checks that each one is needed: w
 4. **`readBackBeforeDrop`: lines go only after R2 gave them back.** Once a segment is stored, the handler marks `stored = 1`, sets `through`, and records each row's `segment`, `seg_offset` and `seg_length`. The next run GETs the segment, checks its SHA-256, and takes the Pi line out of every record's `native`. If each line is byte for byte the one held, it sets `line = NULL, atxf = NULL`, deletes their parts, and advances `dropped`, all in one transaction. A mismatch stops storing for this Session (`storage.refused`), keeps every line, and logs `session.storage_refused`. In the spec, a bug that stores other bytes than those sent is caught here.
 5. **`cutKeepsUnstored`: a cut keeps every line R2 has not given back.** Before deleting, `truncate` copies into `storage_cut` every record of the current epoch after `dropped`, whether R2 has it or not. Lines stored but not yet read back still need the read-back. The new epoch's row gets `through = keep`. Side-table rows go only when their segment reads back equal.
 6. **`generations`: keys carry the generation.** A random UUID, made when the `storage` table is created. A SessionDO rebuilt from nothing has a new one, so its epoch 1 never lands on the old epoch 1's keys.
-7. **`checkpoints`: the stream's state is saved at each segment's end.** Today a SessionDO evicted from memory rebuilds its ATXF stream by reading every line from cursor 1 (`AxoSessionDO.resume`). Once lines are dropped, that means reading the whole Session back from R2 on the first append after each eviction, up to 118 MB. So after storing a segment, the handler saves the stream's state at its last cursor (`stream_states`), and `resume` starts from the latest saved state at or before `atxf_through`, reading at most one segment. This needs a stream whose state can be saved and resumed, which `@leostera/atxf` does not have yet (Unresolved questions).
+7. **`checkpoints`: the stream's state is saved at each segment's end.** Today a SessionDO evicted from memory rebuilds its ATXF stream by reading every line from cursor 1 (`AxoSessionDO.resume`). Once lines are dropped, that means reading the whole Session back from R2 on the first append after each eviction, up to 118 MB. So after storing a segment, the handler saves the stream's state at its last cursor. It uses `reading.state()` from `@leostera/atxf` 0.4.0 and replaces the one saved before, in parts of `PART_CHARS`, in the transaction that records the segment (`stream_state`). `resume` starts from it with `pi.stream({ resume })` and reads at most one segment. It falls back to reading every line only if the saved state is from another reader version (`state.stream !== PI_STREAM_STATE` throws a `RangeError`) or another epoch. The state holds every record's id, parent, type and hash, so it grows with the Session: 3.1 MB for the largest (121 MB, 20,775 records), 469 KB for a 53 MB one. That is 2–3% of the lines it replaces. A cut keeps the state only if it was saved at or before `keep`.
 
 ### Reading
 
@@ -248,7 +249,6 @@ Reading history costs a Class B operation per range ($0.36 per million), less wh
 
 Before acceptance:
 
-- **`@leostera/atxf` needs a stream whose state can be saved and resumed** (rule 7). What would `TranscriptStream.state()` and `pi.stream({ resume })` hold, and how big is it for a 118 MB Session? It is the ids and hashes the stream keeps to resolve later references (convert.ts: "A stream keeps the ids and hashes it needs"). Asked of the ATXF Session with the fidelity work.
 - **ATXF must accept every line.** Done in `@leostera/atxf` 0.4.0: `pi.stream().push` never throws, and a line that is not JSON becomes a `custom` record (namespace `pi.line`). The SessionDO's `atxf_error` stop stays only for a stream that cannot reproduce a stored translation. Axo upgrades its readers to 0.4.0 before its writers, since 0.3.0 validators reject the new fields.
 - **A bucket lock.** (a) None. (b) 30 days on `accounts/`, so nothing, not a bug and not a leaked token, can delete or overwrite a segment for 30 days. (c) Indefinite. Recommendation: (b), after release 3.
 - **The preview Worker** (`axo-public-app-preview`) shares buckets today. (a) Its own, `axo-sessions-preview`. (b) The same; generations keep keys apart. Recommendation: (a).
@@ -258,6 +258,7 @@ During implementation:
 
 - Whether `cf deploy` creates a bucket that `bindings.r2` names and the account lacks. `axo-sessions` exists already, so this matters only for preview.
 - How many segments one alarm run stores for a large backlog. One per run is simplest.
+- Whether the stream state should shrink to kilobytes, by having the reader look up earlier records in the SessionDO's `records` rows (which already hold each id and hash) instead of carrying them. That needs a new reader interface in `@leostera/atxf`. Worth it only if the 2–3% shows up in storage or resume time.
 
 Out of scope:
 
