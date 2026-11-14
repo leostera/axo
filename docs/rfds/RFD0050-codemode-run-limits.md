@@ -1,7 +1,8 @@
 # RFD0050 - Axo: per-run codemode limits
 
 - Feature Name: `codemode-run-limits`
-- Status: Implemented (unreleased 0.60)
+- Status: Implemented (Axo 0.60)
+- Release: Mac 331 / axod 81, commit `e581e69a0bacceb39b31d2f4e4cd68d78c6a8d26`; Worker deployment `238c1a8b-faae-407d-ae3f-ce652a8d222a`
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14
