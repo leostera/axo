@@ -2,6 +2,21 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.55 (Mac app build 326, axod 78)
+
+### Added
+
+- `codemode.ai.capabilities({ host })` describes the chosen Mac's actual inference backend, recognized architectures, task adapters, modalities and resource limits. The architecture inventory is generated from the pinned llama.cpp source, not a list of model names.
+- `codemode.ai.info({ model, host })` inspects arbitrary Hugging Face references without downloading weights. It resolves compatible GGUF artifacts to immutable revisions and checksums, or explains ambiguous files and unsupported formats/backends, including MLX.
+- `codemode.ai.run({ model, task, input, host })` installs, loads and runs generation, native typed classification or text embeddings. Images can be account attachments; the target Mac fetches and verifies their bytes. Explicit quantizations, split model shards and vision projectors are supported.
+- The real-model integration test exercises Gemma and Qwen generation, EmbeddingGemma embeddings and Clef image classification through codemode and the authenticated relay, rather than bypassing the API.
+
+### Fixed
+
+- Local inference no longer restricts every request to Gemma. Model names are generic `hf:owner/repo[:quant][@revision]` references; actual runtime compatibility determines whether they load. MLX/custom-code models get a backend/adapter explanation instead of a Gemma validation error, and repository Python is never executed automatically.
+- Tool schemas no longer advertise defaulted host/output-limit arguments as required. The earlier `prompt` spelling remains accepted for generation.
+- This inference API needs Axo 0.55 on the target Mac; older hosts receive an update instruction.
+
 ## 0.54 (Mac app build 325, axod 77)
 
 ### Added
