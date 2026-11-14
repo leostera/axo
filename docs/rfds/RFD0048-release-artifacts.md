@@ -1,7 +1,7 @@
 # RFD0048 - Axo: immutable release artifacts
 
 - Feature Name: `release-artifacts`
-- Status: Implemented (not yet deployed)
+- Status: Implemented (Axo 0.58)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14
@@ -50,7 +50,9 @@ Test pointer parsing, unsupported targets, universal fallback, traversal/mismatc
 
 ## Validation evidence
 
-All 79 standard Bazel tests pass. New tests cover strict release parsing, target identity (including x86_64 underscores), universal fallback, immutable/legacy HTTP responses, bootstrap-only fallback, malformed pointer rejection, HEAD/method handling, pinned snapshot URLs and downloaded bundle metadata. Publishing tests mock signing/Git/CDN/upload commands and exercise upload-before-pointer ordering, archive failure, server errors, reuse of matching signed content, conflicting immutable content and deriving the target from the built executable rather than the machine. Installer syntax is checked without running installation. No production upload or app restart was performed for this change.
+All 79 standard Bazel tests pass. New tests cover strict release parsing, target identity (including x86_64 underscores), universal fallback, immutable/legacy HTTP responses, bootstrap-only fallback, malformed pointer rejection, HEAD/method handling, pinned snapshot URLs and downloaded bundle metadata. Publishing tests mock signing/Git/CDN/upload commands and exercise upload-before-pointer ordering, archive failure, server errors, reuse of matching signed content, conflicting immutable content and deriving the target from the built executable rather than the machine. Installer syntax is checked without running installation.
+
+Axo 0.58 (Mac 329 / axod 80, commit `60bc894e2a20d877a6826eddb4e8e51861f22c1a`) was published as `axo-0.58-60bc894e2a20-aarch64-apple-darwin.zip`. The live `latest.json` advertises that immutable archive; the legacy manifest equals its compatibility projection, and the legacy archive downloads byte-for-byte identically. Immutable cache headers, downloaded signing validity and bundle metadata were checked. A probe compiled against the actual native updater source fetched the public pointer, selected the immutable URL and verified the downloaded signature/release identity without invoking installation. Seven-model codemode integration passed again using the downloaded release's helpers/resources. Worker deployment: `7a0ef22d-619e-49d6-ac54-a3e6dbdbe637`. The active app/Session was not restarted.
 
 ## Drawbacks and alternatives
 
