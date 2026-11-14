@@ -1,21 +1,21 @@
 """Builds the pinned llama.cpp `llama-server` that axod runs as its local decision side-car.
 
 axod asks local models such as Clef "is this click destructive?" over `POST /v1/systemone` on a
-Unix socket. The binary is static, uses Metal with its shaders embedded, and has no curl or
-OpenSSL, so it links only system frameworks and ships as `Axo.app/Contents/Helpers/axod-infer`.
-llama.cpp publishes no macOS binaries, so it is built here; CMake and Ninja come from the host.
+Unix socket. The binary links static llama/ggml libraries without curl or OpenSSL. macOS uses
+Metal with embedded shaders; Linux initially uses CPU inference. Install the helper beside
+axod (`Axo.app/Contents/Helpers` on macOS). CMake and Ninja come from the host.
 """
 
 LLAMA_CPP_COMMIT = "8642541b255bfb5dc39cd351a178be09013a55d6"  # llama.cpp 0.8.0, build 11960
 LLAMA_CPP_SHA256 = "1688a167a8edd9499cdd0c19b8bd044f0fa184b466981977bbf2222d884953a4"
 
 def _llama_server_repository_impl(ctx):
-    if ctx.os.name != "mac os x":
-        fail("axod-infer is built for macOS hosts only")
+    if ctx.os.name not in ["mac os x", "linux"]:
+        fail("Unsupported host for axod-infer: %s" % ctx.os.name)
     cmake = ctx.which("cmake")
     ninja = ctx.which("ninja")
     if cmake == None or ninja == None:
-        fail("Building axod-infer needs cmake and ninja on PATH (brew install cmake ninja)")
+        fail("Building axod-infer needs cmake and ninja on PATH")
     ctx.download_and_extract(
         url = "https://github.com/ggml-org/llama.cpp/archive/%s.tar.gz" % LLAMA_CPP_COMMIT,
         sha256 = LLAMA_CPP_SHA256,
@@ -33,10 +33,9 @@ def _llama_server_repository_impl(ctx):
             "Ninja",
             "-DCMAKE_MAKE_PROGRAM=" + str(ninja),
             "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_OSX_DEPLOYMENT_TARGET=" + ctx.attr.macos_min,
             "-DBUILD_SHARED_LIBS=OFF",
-            "-DGGML_METAL=ON",
-            "-DGGML_METAL_EMBED_LIBRARY=ON",
+            "-DGGML_METAL=" + ("ON" if ctx.os.name == "mac os x" else "OFF"),
+            "-DGGML_METAL_EMBED_LIBRARY=" + ("ON" if ctx.os.name == "mac os x" else "OFF"),
             "-DGGML_NATIVE=OFF",
             # Bazel owns caching. Host sccache cannot reliably cache generated Metal assembly.
             "-DGGML_CCACHE=OFF",
@@ -49,12 +48,12 @@ def _llama_server_repository_impl(ctx):
             # The version llama-server reports, without a git checkout to read it from.
             "-DLLAMA_BUILD_COMMIT=" + LLAMA_CPP_COMMIT[:9],
             "-DLLAMA_BUILD_NUMBER=11960",
-        ],
+        ] + (["-DCMAKE_OSX_DEPLOYMENT_TARGET=" + ctx.attr.macos_min] if ctx.os.name == "mac os x" else []),
         timeout = 600,
     )
     if configure.return_code != 0:
         fail("Configuring llama.cpp failed:\n%s\n%s" % (configure.stdout, configure.stderr))
-    build = ctx.execute([str(cmake), "--build", "build", "--target", "llama-server"], timeout = 3600)
+    build = ctx.execute([str(cmake), "--build", "build", "--target", "llama-server", "--parallel", "8"], timeout = 3600)
     if build.return_code != 0:
         fail("Building llama-server failed:\n%s\n%s" % (build.stdout[-4000:], build.stderr[-4000:]))
     ctx.symlink("build/bin/llama-server", "axod-infer")
