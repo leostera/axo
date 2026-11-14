@@ -1441,6 +1441,68 @@ test("off screen nothing waits: a reveal under way shows whole, and what arrives
   assert.ok(feed.items.every(item => item.row.kind === "message" && !item.row.reveal && !item.row.enter));
 });
 
+test("history refresh and a single reconnect record appear whole, while the next incoming reply animates", () => {
+  const transcript = transcriptOf([said(1, "user", "history")]);
+  const feed = feedOf(transcript);
+  transcript.append([said(2, "assistant", "One historical reply that must never be replayed", { timestamp: 7 }), said(3, "user", "already ahead")]);
+  feed.restoreHistory(transcript, []);
+  assert.deepEqual(ids(feed), ["history", "One historical reply that must never be replayed", "already ahead"]);
+  assert.ok(feed.items.every(item => item.row.kind === "message" && !item.row.reveal && !item.row.enter && item.revealed === null));
+  feed.update(transcript, []); // An unrelated render must not reclassify history as incoming.
+  assert.ok(feed.items.every(item => item.row.kind === "message" && !item.row.reveal));
+  transcript.append([said(4, "assistant", "A newly incoming reply with several words", { timestamp: 8 })]);
+  feed.update(transcript, []);
+  assert.ok(feed.items.at(-1)!.row.kind === "message" && feed.items.at(-1)!.row.reveal?.fade);
+});
+
+test("a live snapshot appears whole and subsequent growth never re-fades its historical prefix", () => {
+  const transcript = transcriptOf([said(1, "user", "hi")]);
+  const snapshot = (text: string) => ({ message: { role: "assistant", timestamp: 7, content: [{ type: "text", text }] } });
+  const prefix = "Words already written before opening this chat";
+  transcript.progress("message", snapshot(prefix));
+  const feed = feedOf(transcript);
+  assert.equal(feed.items.at(-1)!.row.kind === "message" && feed.items.at(-1)!.row.reveal, null);
+  transcript.progress("message", snapshot(prefix + " and newly arriving words"));
+  feed.update(transcript, []);
+  const item = feed.items.at(-1)!;
+  assert.equal(item.revealed, prefix.length);
+  assert.ok(item.row.kind === "message" && item.row.reveal && !item.row.reveal.fade);
+  feed.tick(32);
+  assert.ok(item.revealed! > prefix.length);
+});
+
+test("entry animation expires so remounting a past tool cannot replay it", () => {
+  const transcript = transcriptOf([said(1, "user", "hi")]);
+  const feed = feedOf(transcript);
+  transcript.append([said(2, "assistant", [{ type: "toolCall", id: "t", name: "read", arguments: { path: "x" } }])]);
+  feed.update(transcript, []);
+  const item = feed.items.at(-1)!;
+  assert.ok(item.row.kind === "message" && item.row.enter);
+  feed.tick(400);
+  assert.ok(item.row.kind === "message" && !item.row.enter);
+});
+
+test("the workbench treats initial windows, single-record reconnect and pagination as history", async () => {
+  const { workbench, account } = await workbenchWith();
+  const records = Array.from({ length: 60 }, (_, i) => said(i + 1, i % 2 ? "assistant" : "user", `history ${i + 1}`, { timestamp: i + 1 }));
+  account.records.set(sid(1), records);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  const feed = workbench.chat(sid(1)).feed;
+  const staticHistory = () => assert.ok(feed.items.every(item => item.row.kind === "message" && !item.row.reveal && !item.row.enter && item.revealed === null));
+  staticHistory();
+  account.records.set(sid(1), [...records, said(61, "assistant", "single missed reply", { timestamp: 61 })]);
+  await workbench.openChat(sid(1));
+  assert.equal(ids(feed).at(-1), "single missed reply");
+  staticHistory();
+  await workbench.loadOlderHistory(sid(1));
+  assert.equal(feed.items.length, 61);
+  staticHistory();
+  account.push(sid(1), [said(62, "assistant", "a real new incoming reply with several words", { timestamp: 62 })]);
+  assert.ok(feed.items.at(-1)!.row.kind === "message" && feed.items.at(-1)!.row.reveal);
+  workbench.dispose();
+});
+
 test("a cut starts the rows again", () => {
   const transcript = transcriptOf([said(1, "user", "one"), said(2, "user", "two")]);
   const feed = feedOf(transcript);

@@ -857,6 +857,7 @@ export class ChatWorkbench {
         const status = session?.status;
         if (status) transcript.settle(status === "working");
       });
+      chat.feed.restoreHistory(chat.transcript, chat.waiting);
       chat.history = { kind: "loaded", records: chat.transcript!.records.length, hasOlder: chat.older !== null };
     } catch (error) {
       if (this.opened?.sessionId === sessionId) chat.history = { kind: "failed", message: describe(error) };
@@ -878,6 +879,7 @@ export class ChatWorkbench {
       if (page.epoch === chat.epoch) {
         chat.older = page.older;
         this.changeChat(sessionId, transcript => transcript.prepend(page.records));
+        chat.feed.restoreHistory(chat.transcript, chat.waiting);
       }
       chat.history = { kind: "loaded", records: chat.transcript?.records.length ?? 0, hasOlder: chat.older !== null };
     } catch (error) {

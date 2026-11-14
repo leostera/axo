@@ -156,3 +156,37 @@ test("web polish: bracket navigation follows the displayed pinned, held and coll
     assert.equal(await page.getByRole("textbox", { name: "Search chats" }).evaluate(field => field === document.activeElement), true);
   } finally { await app?.close(); }
 });
+
+test("history never animates on load or cache refresh, but incoming replies still do", browserOptions, async () => {
+  const sessionId = sid(1);
+  const cloud = await startCloud(new Map([[sessionId, [record(1, { role: "user", content: "Old question" }), record(2, { role: "assistant", timestamp: 2, content: "Old answer" })]]]), [listed(sessionId, "History", 2)]);
+  let app;
+  try {
+    app = await startApp(cloud);
+    const context = await app.browser.newContext({ viewport: { width: 1100, height: 800 } });
+    await context.addInitScript(() => {
+      window.__historyAnimations = [];
+      new MutationObserver(() => {
+        if (document.querySelector(".word-in, .message-enter")) window.__historyAnimations.push("animated message");
+      }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    });
+    const page = await context.newPage();
+    const url = `${app.appUrl}/__tests__/chat/${hostId}/${sessionId}`;
+    await page.goto(url, { waitUntil: "networkidle" });
+    assert.deepEqual(await page.evaluate(() => window.__historyAnimations), []);
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    await page.close();
+    // Exactly one missed reply defeats the old batch-size heuristic. This is history, not incoming.
+    const missed = "A past reply written while this browser was closed. ".repeat(40);
+    cloud.write(sessionId, { role: "assistant", timestamp: 3, content: missed });
+    const restored = await context.newPage();
+    await restored.goto(url, { waitUntil: "networkidle" });
+    await restored.getByText(missed.trim(), { exact: true }).waitFor();
+    assert.deepEqual(await restored.evaluate(() => window.__historyAnimations), [], "cached-to-live replacement never mounts animated words or entry classes");
+    cloud.status(sessionId, "working");
+    cloud.progress(sessionId, { message: { role: "assistant", timestamp: Date.now(), content: [{ type: "text", text: "An actually incoming reply with new words appearing now" }] } });
+    await restored.waitForFunction(() => window.__historyAnimations.length > 0);
+    assert.ok(await restored.locator(".word-in").count() > 0, "incoming words retain their animation");
+    await context.close();
+  } finally { await app?.close(); }
+});

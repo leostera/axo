@@ -66,7 +66,15 @@ export class ConversationFeed {
   /** The chat came on screen: everything it holds now is history, and just appears. */
   opened(): void {
     this.onScreen = true;
-    this.reveal.forget();
+    this.reveal.captureHistory(this.transcript?.messages ?? [], this.transcript?.live ?? []);
+    this.rebuild();
+  }
+
+  /** Snapshots, reconnect catch-up and older pages are history, never new arrivals. */
+  restoreHistory(transcript: ChatTranscript | null, waiting: readonly WaitingPrompt[]): void {
+    this.transcript = transcript;
+    this.waiting = waiting;
+    this.reveal.captureHistory(transcript?.messages ?? [], transcript?.live ?? []);
     this.rebuild();
   }
 
@@ -78,9 +86,9 @@ export class ConversationFeed {
 
   get isOnScreen(): boolean { return this.onScreen; }
 
-  /** Lets every reply being let out on by `ms`; those all out and final show as they are. */
+  /** Advances incoming word and entry animations by `ms`; completed ones show whole. */
   tick(ms: number): void {
-    let done = false;
+    let done = this.reveal.tickEntries(ms);
     let behind = false;
     for (const item of this.revealing) {
       const row = item.row;
@@ -99,7 +107,7 @@ export class ConversationFeed {
     if (done) this.rebuild();
     // All that has come is out and more is still to come: nothing to do until it does, and the
     // update that brings it starts the clock again.
-    else if (!behind) this.runClock(false);
+    else if (!behind && !this.reveal.hasEntries) this.runClock(false);
   }
 
   private runClock(revealing: boolean): void {
@@ -156,7 +164,7 @@ export class ConversationFeed {
       const out = item.row.kind === "message" && item.row.reveal ? this.reveal.revealed(item.id) : null;
       item.set(item.row, out);
     }
-    this.runClock(this.revealing.length > 0);
+    this.runClock(this.revealing.length > 0 || (presenting && this.reveal.hasEntries));
   }
 
   /**
@@ -213,7 +221,7 @@ function stays(item: FeedItem, transcript: ChatTranscript | null, holding: boole
   return holding && Boolean(transcript?.delivered.has(row.prompt.id));
 }
 
-export type RowReveal = { final: boolean; hurry: boolean };
+export type RowReveal = { final: boolean; hurry: boolean; fade: boolean };
 
 export type FeedRow =
   | {
@@ -270,7 +278,7 @@ function sameRow(a: FeedRow, b: FeedRow): boolean {
   }
   return a.live === b.live && a.enter === b.enter && a.working === b.working
     && a.group?.first === b.group?.first && a.group?.last === b.group?.last && a.group?.title === b.group?.title
-    && a.reveal?.final === b.reveal?.final && a.reveal?.hurry === b.reveal?.hurry && (a.reveal === null) === (b.reveal === null)
+    && a.reveal?.fade === b.reveal?.fade && a.reveal?.final === b.reveal?.final && a.reveal?.hurry === b.reveal?.hurry && (a.reveal === null) === (b.reveal === null)
     && sameMessage(a.message, b.message);
 }
 
@@ -293,7 +301,7 @@ type Shown = { message: ChatMessage; live: boolean; enter: boolean; reveal: RowR
  * How a message written while its chat is on screen comes in, as on the phone (ConversationReveal).
  *
  * What the chat opened with, and older pages read in above, are history and just appear. So does a
- * batch caught up at once, as after a reconnect: it was written while nobody watched. What is written
+ * snapshot or reconnect catch-up, explicitly captured at the history boundary. What is written
  * while the chat is on screen is presented: a reply (and its thinking), seen live or arriving on its
  * own, is let out a word at a time from its first live words through its record, and nothing after
  * it shows until all of it is out; anything else rises in. The person's own messages were on screen
@@ -301,18 +309,43 @@ type Shown = { message: ChatMessage; live: boolean; enter: boolean; reveal: RowR
  */
 class RevealState {
   private known = new Set<string>();
-  private entering = new Set<string>();
+  private entering = new Map<string, number>();
+  private historyLive = new Set<string>();
   private revealingKeys = new Set<string>();
   private done = new Set<string>();
   readonly progress = new Map<string, number>();
 
   /** The chat came on screen again: what it holds is history. */
-  forget(): void {
+  private forget(): void {
     this.known = new Set();
-    this.entering = new Set();
+    this.entering = new Map();
+    this.historyLive = new Set();
     this.revealingKeys = new Set();
     this.done = new Set();
     this.progress.clear();
+  }
+
+  captureHistory(messages: readonly ChatMessage[], live: readonly ChatMessage[]): void {
+    this.forget();
+    for (const message of [...messages, ...live]) this.known.add(message.key);
+    for (const message of live) {
+      if (message.role !== "assistant" && message.role !== "thinking") continue;
+      this.historyLive.add(message.key);
+      this.progress.set(message.key, message.text.length);
+    }
+  }
+
+  get hasEntries(): boolean { return this.entering.size > 0; }
+
+  /** Match the .message-enter duration; later virtual-list remounts must not replay it. */
+  tickEntries(ms: number): boolean {
+    let finished = false;
+    for (const [key, elapsed] of this.entering) {
+      const next = elapsed + Math.max(0, ms);
+      if (next >= 350) { this.entering.delete(key); finished = true; }
+      else this.entering.set(key, next);
+    }
+    return finished;
   }
 
   revealed(key: string): number { return this.progress.get(key) ?? 0; }
@@ -324,20 +357,20 @@ class RevealState {
 
   shown(messages: readonly ChatMessage[], live: readonly ChatMessage[]): Shown[] {
     const all = [...messages.map(message => ({ message, live: false })), ...live.map(message => ({ message, live: true }))];
-    if (this.known.size === 0) {
-      // Just opened, or its history just came in: what is recorded is history.
-      for (const message of messages) this.known.add(message.key);
-    }
     let lastKnown = -1;
     all.forEach(({ message }, index) => { if (this.known.has(message.key)) lastKnown = index; });
     const arrived = all.filter(({ message }, index) => !this.known.has(message.key) && index > lastKnown && message.role !== "user");
-    // Pieces of one record (thinking, words, tool calls) share its id before the `#`.
-    const caughtUp = new Set(arrived.filter(({ live: isLive }) => !isLive).map(({ message }) => message.id.split("#")[0])).size > 1;
+    // A reply already present in a snapshot starts at that snapshot, not at its first word.
+    for (const { message } of all) {
+      if (this.historyLive.has(message.key) && message.text.length > this.revealed(message.key) && !this.done.has(message.key)) {
+        this.revealingKeys.add(message.key);
+      }
+    }
     for (const { message } of all) this.known.add(message.key);
-    for (const { message, live: isLive } of arrived) {
+    for (const { message } of arrived) {
       const text = message.role === "assistant" || message.role === "thinking";
-      if (text && (isLive || !caughtUp)) this.revealingKeys.add(message.key);
-      else if (!caughtUp) this.entering.add(message.key);
+      if (text) this.revealingKeys.add(message.key);
+      else this.entering.set(message.key, 0);
     }
 
     const shown: Shown[] = [];
@@ -346,7 +379,7 @@ class RevealState {
       const more = index < all.length - 1;
       shown.push({
         message, live: isLive, enter: this.entering.has(message.key),
-        reveal: revealing ? { final: !isLive || more, hurry: more } : null,
+        reveal: revealing ? { final: !isLive || more, hurry: more, fade: !this.historyLive.has(message.key) } : null,
       });
       // What comes after a reply waits until all of it is out.
       if (revealing) break;

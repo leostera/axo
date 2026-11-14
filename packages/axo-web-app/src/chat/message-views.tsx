@@ -65,9 +65,9 @@ function Words({ text }: { text: string }) {
  * A reply or its thinking as far as its words are out (the feed lets them out, RFD0040), its new
  * words fading in.
  */
-function RevealedMarkdown({ text, thinking = false }: { text: string; thinking?: boolean }) {
+function RevealedMarkdown({ text, thinking = false, fade }: { text: string; thinking?: boolean; fade: boolean }) {
   const blocks = useMemo(() => parseMarkdown(text), [text]);
-  return <FadeWords.Provider value={true}><Markdown blocks={blocks} thinking={thinking} /></FadeWords.Provider>;
+  return <FadeWords.Provider value={fade}><Markdown blocks={blocks} thinking={thinking} /></FadeWords.Provider>;
 }
 
 /** A reply, drawn where its look changes: prose, headings, lists, quotes, tables, rules and code. */
@@ -178,8 +178,8 @@ function ShareButton({ text }: { text: string }) {
  * One message. `live` is the reply still being written; `enter` is a message that arrived while the
  * chat was on screen, which comes in with a short rise; `reveal` lets a reply's words out evenly.
  */
-export const MessageView = memo(function MessageView({ message, working, live = false, enter = false, revealed = null, group = null }: {
-  message: ChatMessage; working: boolean; live?: boolean; enter?: boolean;
+export const MessageView = memo(function MessageView({ message, working, live = false, enter = false, revealed = null, fade = true, group = null }: {
+  message: ChatMessage; working: boolean; live?: boolean; enter?: boolean; fade?: boolean;
   /** A tool's place among the tools used one after another. */
   group?: ToolGroupPlace | null;
   /** How many characters of its words are out, while they are let out; null when it shows whole. */
@@ -190,7 +190,7 @@ export const MessageView = memo(function MessageView({ message, working, live = 
   noteRender(live || revealed !== null ? "Growing" : "Message");
   const entering = enter ? " message-enter" : "";
   const text = (thinking: boolean) => revealed !== null
-    ? <RevealedMarkdown text={message.text.slice(0, revealed)} thinking={thinking} />
+    ? <RevealedMarkdown text={message.text.slice(0, revealed)} thinking={thinking} fade={fade} />
     : <Markdown blocks={message.blocks} thinking={thinking} />;
   switch (message.role) {
     case "user":
