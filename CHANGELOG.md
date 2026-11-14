@@ -2,6 +2,20 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.56 (Mac app build 327, axod 79)
+
+### Added
+
+- Native MLX inference on Apple Silicon, embedded through an owned C ABI and Rust worker. Compatible dense Qwen2/Qwen3 safetensors bundles run through the same `codemode.ai` tools as GGUF, with automatic backend selection and an optional `backend` override. There is no Python, runtime installer or repository-code execution.
+- Backend-aware HF inspection, immutable multi-file installation and per-backend capabilities. Supported MLX affine quantization runs natively; unsupported architectures, quantization, tokenizers and task heads fail explicitly. Ordinary Git resources are integrity checked and their SHA-256s recorded.
+- Signed, bundled MLX worker and Metal resources, gated in Rust and Bazel so unsupported platforms do not fetch/build Apple-only dependencies.
+- Native ownership/error tests, real-model deadline/restart/residency tests, and codemode integration exercising two MLX architectures alongside existing GGUF models and automatic backend switching.
+
+### Limits
+
+- The first MLX adapter supports text generation only, with a 4096-token context and no KV cache. Vision, embeddings, Clef-Omni's custom decision head and Core ML remain separate work. GGUF generation, embeddings and native classification remain available as before.
+- Native MLX/backend selection needs Axo 0.56 on the target Mac. Inspect `ai.capabilities` and `ai.info` before choosing a model.
+
 ## 0.55 (Mac app build 326, axod 78)
 
 ### Added
