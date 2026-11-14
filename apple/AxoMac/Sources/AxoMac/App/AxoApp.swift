@@ -545,21 +545,21 @@ private struct AxoMenu: View {
 
 }
 
-/// "Upgrade to Axo v0.3" while there is one; "Downloading Build N…" while it downloads and restarts.
+/// A stable action label; the download window shows the captured release version.
 private struct AppUpgradeMenuItem: View {
   var upgrades: AppUpgradeModel
 
   var body: some View {
     switch upgrades.phase {
-    case .downloading(let build):
-      Text("Downloading Build \(build)…").disabled(true)
-    case .restarting(let build):
-      Text("Restarting into Build \(build)…").disabled(true)
+    case .downloading:
+      Text("Downloading Axo…").disabled(true)
+    case .restarting:
+      Text("Restarting Axo…").disabled(true)
     case .checking:
       Text("Checking for Updates…").disabled(true)
     case .idle:
-      if let upgrade = upgrades.available {
-        Button("Upgrade to \(upgrade.title)") { upgrades.upgrade() }
+      if upgrades.available != nil {
+        Button("Upgrade Axo") { upgrades.upgrade() }
       } else {
         Button("Check for Updates…") { upgrades.checkForUpdates() }
       }

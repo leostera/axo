@@ -3,8 +3,9 @@ import AxoClient
 import AxoDaemonManager
 import Observation
 import OSLog
+import SwiftUI
 
-/// The menu bar's "Check for Updates…", "Upgrade to Axo v0.3" once one is known: a newer build installed over this bundle (a `bazel build`
+/// The menu bar's "Check for Updates…", "Upgrade Axo" once one is known: a newer build installed over this bundle (a `bazel build`
 /// at dist/Axo.app) is a restart; otherwise a newer build published at axo.leostera.dev is
 /// downloaded, checked against this app's signature and swapped in first. Either way the new
 /// Axo replaces this one through launchd (`AppLaunchHandover`), so it stays kept alive.
@@ -16,7 +17,7 @@ final class AppUpgradeModel {
   enum Phase: Equatable {
     case idle
     case checking
-    case downloading(build: Int)
+    case downloading(PublishedBuild)
     case restarting(build: Int)
   }
 
@@ -29,6 +30,7 @@ final class AppUpgradeModel {
   @ObservationIgnored private var published: PublishedBuild?
   @ObservationIgnored private var publishedCheckedAt: Date?
   @ObservationIgnored private var timer: Timer?
+  @ObservationIgnored private var downloadPanel: NSPanel?
   /// How stale the published build may be when the menu opens.
   private static let publishedFreshness: TimeInterval = 10 * 60
   private static let backgroundInterval: TimeInterval = 60 * 60
@@ -115,21 +117,44 @@ final class AppUpgradeModel {
       restart(into: build)
     case .published(let published):
       guard let team, let bundleID = Bundle.main.bundleIdentifier else { return }
-      phase = .downloading(build: published.build)
+      phase = .downloading(published)
+      showDownloadProgress(published)
       logger.info("event=upgrade.download_started build=\(published.build, privacy: .public)")
       Task {
         do {
           let build = try await AppUpgradeInstaller.install(
             origin: origin, published: published, over: bundle, bundleIdentifier: bundleID, team: team, running: running)
+          closeDownloadProgress()
           restart(into: build)
         } catch {
           logger.error(
             "event=upgrade.download_failed reason=\(error.localizedDescription, privacy: .public)")
+          closeDownloadProgress()
           phase = .idle
-          fail("Couldn’t upgrade to Axo build \(published.build)", error.localizedDescription)
+          fail("Couldn’t upgrade to Axo \(published.version)", error.localizedDescription)
         }
       }
     }
+  }
+
+  private func showDownloadProgress(_ release: PublishedBuild) {
+    closeDownloadProgress()
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 140),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    panel.title = "Upgrading Axo"
+    panel.isReleasedWhenClosed = false
+    let content = NSHostingController(rootView: AppUpgradeDownloadProgress(release: release))
+    panel.contentViewController = content
+    panel.setContentSize(content.view.fittingSize)
+    panel.center()
+    downloadPanel = panel
+    NSApp.activate(ignoringOtherApps: true)
+    panel.makeKeyAndOrderFront(nil)
+  }
+
+  private func closeDownloadProgress() {
+    downloadPanel?.close()
+    downloadPanel = nil
   }
 
   private func decide() {
