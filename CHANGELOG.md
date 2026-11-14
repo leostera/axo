@@ -2,6 +2,19 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.61 (Mac app build 332, axod 81)
+
+### Added
+
+- User messages render Markdown too, including pending/queued messages: emphasis, links, lists and fenced code use the same safe renderer as replies.
+- ⌘[ and ⌘] (Ctrl on other keyboards) move through sessions in the exact displayed sidebar order, respecting pins, groups, held rows and collapsed/limited Earlier sections without wrapping or triggering browser history.
+
+### Fixed
+
+- The ready-to-send arrow contrasts with its circle in light and dark themes instead of inheriting the same white color in dark mode.
+- Model and thinking level are independent selections in a compact popup. Thinking uses left/right-keyboard-accessible segments; models open a bounded, searchable provider/name/ID catalog instead of pushing thinking below hundreds of rows. Search Enter never submits the message draft, failed choices stay visible, and the popup fits narrow viewports.
+- This release changes the web UI only; axod remains build 81.
+
 ## 0.60 (Mac app build 331, axod 81)
 
 ### Added
