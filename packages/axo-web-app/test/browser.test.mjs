@@ -908,13 +908,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await info.getByRole("button", { name: "Close chat info" }).click();
 
     // The account, its Macs, and pairing another.
-    await chats.getByRole("button", { name: "Account and Macs" }).click();
+    await chats.getByRole("button", { name: "Account and computers" }).click();
     const account = page.getByRole("navigation", { name: "Account" });
     await expect(account.getByText("Browser fixture Mac"));
     await expect(account.getByText("4 chats"));
-    // Each Mac is shown as the kind of Mac it says it is; one that has not said, as a laptop.
+    // Known Macs keep their hardware shape; unknown hardware gets a neutral computer.
     assert.equal(await account.locator(".mac-row-wrap", { hasText: "Mac Studio" }).locator(".mac-icon").getAttribute("data-icon"), "macStudio");
-    assert.equal(await account.locator(".mac-row-wrap", { hasText: "Browser fixture Mac" }).locator(".mac-icon").getAttribute("data-icon"), "laptop");
+    assert.equal(await account.locator(".mac-row-wrap", { hasText: "Browser fixture Mac" }).locator(".mac-icon").getAttribute("data-icon"), "desktop");
     await shot("account");
 
     // A Mac is named by its person: the pencil, a name, Enter.

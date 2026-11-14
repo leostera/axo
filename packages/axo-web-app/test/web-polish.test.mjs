@@ -223,3 +223,36 @@ test("bracket navigation holds the visible order while opening unread sessions m
     await page.waitForFunction(() => document.querySelectorAll(".chat-section").length === 1);
   } finally { await app?.close(); }
 });
+
+test("host icons distinguish platforms and retain them through cached reconnect", browserOptions, async () => {
+  const base = { hostGeneration: sid(100), online: true, lastSeenAt: "2026-11-14T12:00:00.000Z" };
+  const hosts = [
+    { ...base, hostId, label: "Linux server", hostKind: "linux" },
+    { ...base, hostId: sid(101), label: "Windows PC", hostKind: "windows" },
+    { ...base, hostId: sid(102), label: "MacBook", hostKind: "macos", model: { identifier: "MacBookPro18,3" } },
+    { ...base, hostId: sid(103), label: "Unknown computer", hostKind: "macos" },
+  ];
+  const cloud = await startCloud(new Map([[sid(1), [record(1, { role: "user", content: "Hello from Linux" })]]]), [listed(sid(1), "Icons", 1)], { hosts });
+  let app;
+  try {
+    app = await startApp(cloud);
+    const page = await app.browser.newPage({ viewport: { width: 1100, height: 800 } });
+    await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(1)}`, { waitUntil: "networkidle" });
+    await page.locator('.host-picker svg[data-icon="linux"]').waitFor();
+    await page.getByRole("button", { name: "Account and computers", exact: true }).click();
+    for (const [label, icon] of [["Linux server", "linux"], ["Windows PC", "windows"], ["MacBook", "laptop"], ["Unknown computer", "desktop"]]) {
+      assert.equal(await page.locator(".mac-row-wrap", { hasText: label }).locator(".mac-icon").getAttribute("data-icon"), icon);
+    }
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(theme => { document.documentElement.dataset.appearance = theme; }, theme);
+      await page.screenshot({ path: output(`web-host-icons-${theme}.png`) });
+    }
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    cloud.pause();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator('.host-picker svg[data-icon="linux"]').waitFor();
+    await page.locator(".host-picker .mac-dot.offline").waitFor();
+    cloud.resume();
+    await page.locator(".host-picker .mac-dot.online").waitFor();
+  } finally { await app?.close(); }
+});

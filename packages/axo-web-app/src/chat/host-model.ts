@@ -1,7 +1,7 @@
 import type { HostModel } from "@axo/protocol";
 import type { IconName } from "./icons.tsx";
 
-/** The shape of Mac a host is, to show it by. */
+/** A known Mac hardware family, used only after identifying the host platform. */
 export type HostFamily = "laptop" | "studio" | "mini" | "desktop" | "tower";
 
 const byName: Array<[string, HostFamily]> = [
@@ -26,8 +26,11 @@ const icons: Record<HostFamily, IconName> = {
   laptop: "laptop", studio: "macStudio", mini: "macMini", desktop: "desktop", tower: "tower",
 };
 
-/** The icon a Mac is shown by: its shape, or a laptop when it has not said. */
-export function hostIcon(host: { readonly model?: HostModel }): IconName {
+/** Platform comes from registration, never the editable label. Unknown hardware is not a MacBook. */
+export function hostIcon(host: { readonly hostKind: string; readonly model?: HostModel }): IconName {
+  if (host.hostKind === "linux") return "linux";
+  if (host.hostKind === "windows") return "windows";
+  if (host.hostKind !== "macos") return "desktop";
   const family = hostFamily(host.model);
-  return family ? icons[family] : "laptop";
+  return family ? icons[family] : "desktop";
 }

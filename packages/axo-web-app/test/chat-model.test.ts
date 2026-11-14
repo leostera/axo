@@ -205,7 +205,7 @@ function session(n: number, folderName: string | null = "axo", extra: Partial<Se
   };
 }
 function host(sessions: Session[], status: "online" | "offline" = "online") {
-  return { hostId, hostGeneration, label: "Studio", status, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions };
+  return { hostId, hostGeneration, hostKind: "macos", label: "Studio", status, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions };
 }
 
 const at = (iso: string) => Date.parse(iso) / 1000;
@@ -1623,11 +1623,16 @@ test("a Mac is shown by the shape its model's name says, or else its identifier;
   assert.equal(hostFamily({ identifier: "Macmini8,1" }), "mini");
   assert.equal(hostFamily({ identifier: "iMac20,1" }), "desktop");
   assert.equal(hostFamily({ identifier: "MacPro7,1" }), "tower");
-  // An Apple silicon identifier alone, or no model at all, says nothing: a laptop, as before.
+  // An Apple silicon identifier alone, or no model at all, does not establish a hardware family.
   assert.equal(hostFamily({ identifier: "Mac13,2" }), null);
   assert.equal(hostFamily(undefined), null);
-  assert.equal(hostIcon({ model: { identifier: "Mac13,2", name: "Mac Studio" } }), "macStudio");
-  assert.equal(hostIcon({}), "laptop");
+  assert.equal(hostIcon({ hostKind: "macos", model: { identifier: "Mac13,2", name: "Mac Studio" } }), "macStudio");
+  assert.equal(hostIcon({ hostKind: "macos" }), "desktop");
+  assert.equal(hostIcon({ hostKind: "linux" }), "linux");
+  assert.equal(hostIcon({ hostKind: "windows" }), "windows");
+  assert.equal(hostIcon({ hostKind: "unknown" }), "desktop");
+  assert.equal(hostIcon({ hostKind: "linux", model: { identifier: "MacBookPro18,3" } }), "linux", "platform takes precedence over model");
+  assert.equal(hostIcon({ hostKind: "macos", model: { identifier: "MacBookPro18,3" } }), "laptop");
 });
 
 test("the workbench keeps the model each Mac said it is", async () => {

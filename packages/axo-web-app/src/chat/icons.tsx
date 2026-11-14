@@ -4,7 +4,7 @@ export type IconName =
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
   | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud" | "paperclip"
   | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown" | "restart"
-  | "macStudio" | "macMini" | "desktop" | "tower";
+  | "macStudio" | "macMini" | "desktop" | "tower" | "linux" | "windows";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -21,6 +21,9 @@ const paths: Record<IconName, string> = {
   macMini: "M4 10h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Zm13 3h1",
   // A screen on a stand.
   desktop: "M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm8 12v4m-4 0h8",
+  // A compact penguin: rounded body, eyes, beak and feet.
+  linux: "M8 10V7a4 4 0 0 1 8 0v3c2 2 3 5 2 8H6c-1-3 0-6 2-8Zm2-3v.5m4-.5v.5m-4 2 2 1.5 2-1.5M6 18l-3 3h7m8-3 3 3h-7",
+  windows: "M3 5l8-1v8H3V5Zm10-1 8-1v9h-8V4ZM3 14h8v8l-8-1v-7Zm10 0h8v9l-8-1v-8Z",
   // A tall case with holes in its front.
   tower: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm2.5 4h0m3 0h0m-3 3h0m3 0h0m-3 3h0m3 0h0",
   copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1Zm-4 6H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
@@ -71,7 +74,7 @@ const filled: ReadonlySet<IconName> = new Set(["stopFill", "sparkles", "pinFill"
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const solid = filled.has(name);
   return (
-    <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill={solid ? "currentColor" : "none"} stroke="currentColor"
+    <svg className="icon" data-icon={name} width={size} height={size} viewBox="0 0 24 24" fill={solid ? "currentColor" : "none"} stroke="currentColor"
       strokeWidth={solid ? 1 : 1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={paths[name]} />
     </svg>

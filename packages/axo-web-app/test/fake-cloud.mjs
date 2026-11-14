@@ -45,7 +45,8 @@ export async function freePort() {
  * A cloud with one Mac, whose socket the test drives: `transcripts` holds each chat's records, by
  * Session id, and `sessions` what the sidebar lists (see `listed`).
  */
-export async function startCloud(transcripts, sessions, { models = [] } = {}) {
+export async function startCloud(transcripts, sessions, { models = [], hosts } = {}) {
+  const listedHosts = hosts ?? [{ hostId, hostGeneration: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230", label: "Mac", hostKind: "macos", online: true, lastSeenAt: now }];
   const modelSets = [];
   const prompts = [];
   let rejectNextModel = false;
@@ -79,7 +80,7 @@ export async function startCloud(transcripts, sessions, { models = [] } = {}) {
         return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "Invalid params" } }));
       }
       if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
-        return reply({ hosts: [{ hostId, hostGeneration: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230", label: "Mac", hostKind: "macos", online: true, lastSeenAt: now }], sessions });
+        return reply({ hosts: listedHosts, sessions });
       }
       if (call.method === "axo.client.command") {
         const { method, params } = call.params;

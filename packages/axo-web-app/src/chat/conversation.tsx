@@ -648,7 +648,7 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
     <div className={floating ? "host-picker floating" : "host-picker"} ref={root}>
       {choosing ? (
         <button type="button" className="host-picker-button" aria-haspopup="menu" aria-expanded={open}
-          aria-label={`Start on ${host.label}`} title="Choose the Mac to start this chat on" onClick={() => setOpen(!open)}>
+          aria-label={`Start on ${host.label}`} title="Choose the computer to start this chat on" onClick={() => setOpen(!open)}>
           {face}<Icon name="arrowDown" size={11} />
         </button>
       ) : (

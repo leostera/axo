@@ -46,12 +46,13 @@ export interface Session {
   readonly pi?: PiRuntime;
 }
 
-/** A Mac of the account, with its chats. */
+/** A linked computer of the account, with its chats. */
 export interface Host {
   readonly hostId: string;
   readonly hostGeneration: string;
   readonly label: string;
-  /** What kind of Mac it is, once it has said. */
+  readonly hostKind: string;
+  /** Hardware model, when the host reports one. */
   readonly model?: HostModel;
   readonly status: "online" | "offline";
   readonly lastSeenAt: string;
@@ -741,6 +742,7 @@ export class ChatWorkbench {
       hostId: host.hostId,
       hostGeneration: host.hostGeneration,
       label: host.label,
+      hostKind: host.hostKind,
       ...(host.model ? { model: host.model } : {}),
       status: host.online ? "online" : "offline",
       lastSeenAt: host.lastSeenAt,

@@ -300,7 +300,7 @@ function ChatsPanel({ workbench, navigationEnabled, onSelect, onNewChat, onAccou
         <AxoMascot className="header-mascot" loading={workbench.hostsPhase === "loading"} />
         <span className="spacer" />
         <MarkAllRead entries={entries} />
-        <button className="circle-button" onClick={onAccount} aria-label="Account and Macs"><Icon name="person" /></button>
+        <button className="circle-button" onClick={onAccount} aria-label="Account and computers"><Icon name="person" /></button>
         <button className="circle-button" onClick={onSearch} aria-label="Search chats"><Icon name="search" /></button>
       </header>
       <div className="panel-scroll">
@@ -421,7 +421,7 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onAp
             <small>Signed in with Cloudflare</small>
           </span>
         </div>
-        <h2 className="section-title"><span>Macs</span></h2>
+        <h2 className="section-title"><span>Computers</span></h2>
         {workbench.hosts.map(host => (
           <MacRow key={host.hostId} host={host} selected={host.hostId === workbench.openHostId}
             onOpen={() => onOpenMac(host.hostId)} onRename={name => workbench.renameHost(host.hostId, name)} />
