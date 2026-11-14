@@ -80,9 +80,9 @@ final class AppUpgradeModel {
   }
 
   /// Checks the published build now; then upgrades, or says this is the newest.
-  func checkForUpdates() {
+  func checkForUpdates(askFirst: Bool = false) {
     guard phase == .idle else { return }
-    if available != nil { return upgrade() }
+    if available != nil { return askFirst ? offerUpgrade() : upgrade() }
     guard let running else { return }
     phase = .checking
     publishedCheckedAt = Date()
@@ -99,7 +99,7 @@ final class AppUpgradeModel {
       }
       phase = .idle
       decide()
-      if available != nil { return upgrade() }
+      if available != nil { return askFirst ? offerUpgrade() : upgrade() }
       if let failure { return fail("Couldn’t check for updates", failure) }
       inform(
         team == nil ? "This Axo can’t update itself" : "Axo is up to date",
@@ -107,6 +107,18 @@ final class AppUpgradeModel {
           ? "Build \(running) is not signed by a team, so it can’t check that a download is Axo’s. A newer build installed over it is still offered."
           : "\(Self.runningTitle) is the newest.")
     }
+  }
+
+  /// Tapping a banner opens an offer, never an implicit download or app restart.
+  private func offerUpgrade() {
+    guard let available else { return }
+    let alert = NSAlert()
+    alert.messageText = available.version.map { "Axo \($0) is available" } ?? "A new version of Axo is available"
+    alert.informativeText = "Upgrade when you’re ready."
+    alert.addButton(withTitle: "Upgrade Axo")
+    alert.addButton(withTitle: "Not Now")
+    NSApp.activate(ignoringOtherApps: true)
+    if alert.runModal() == .alertFirstButtonReturn { upgrade() }
   }
 
   func upgrade() {
@@ -166,6 +178,9 @@ final class AppUpgradeModel {
       installedVersion: AppUpgradeInstaller.bundleVersion(of: bundle),
       published: published,
       canVerifyDownloads: team != nil)
+    if phase == .idle, let available {
+      Task { await AppUpgradeNotifications.shared.notify(available, running: running) }
+    }
   }
 
   /// Asks only when the upgrade restarts axod, which restarts every terminal.

@@ -108,11 +108,21 @@ export function ChatList({ entries, showHost, asking, openChat, pageVisible, nav
 
   const live = useMemo(() => chatSections(entries, { pins, seen, now: clock, settings, asking }), [entries, pins, seen, clock, settings, asking]);
   const [held, setHeld] = useState<ChatSection[] | null>(null);
-  const sections = shownChatSections(holdingSections(held, live), earlierFolded, showAllEarlier, settings.earlierLimit);
+  // Reading an unread row changes its group. Keep the *displayed* order fixed while navigating,
+  // not just a private keyboard cursor, until another user action ends keyboard navigation.
+  const [keyboardHeld, setKeyboardHeld] = useState<ChatSection[] | null>(null);
+  const ordered = holdingSections(keyboardHeld ?? held, live);
+  const sections = shownChatSections(ordered, earlierFolded, showAllEarlier, settings.earlierLimit);
   const rows = sections.flatMap(section => section.shown);
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const release = () => setKeyboardHeld(null);
+    const pointerMoved = (event: PointerEvent) => {
+      if (event.movementX || event.movementY) release();
+    };
     const move = (event: KeyboardEvent) => {
+      const bracket = event.code === "BracketLeft" || event.code === "BracketRight" || event.key === "[" || event.key === "]";
+      if (!bracket && !["Meta", "Control", "Alt", "Shift"].includes(event.key)) release();
       if (!pageVisible || event.defaultPrevented || event.isComposing
         || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
       const direction = event.code === "BracketLeft" || event.key === "[" ? "previous"
@@ -122,18 +132,27 @@ export function ChatList({ entries, showHost, asking, openChat, pageVisible, nav
       if (!navigationEnabled && !modal) return;
       event.preventDefault(); // Never let session navigation become browser Back/Forward.
       if (!navigationEnabled || modal) return;
+      setKeyboardHeld(ordered);
       const next = adjacentChat(rows, openChat, direction);
       if (next && (!openChat || chatKey(next) !== chatKey(openChat))) onSelect(next.host.hostId, next.session.sessionId);
     };
     window.addEventListener("keydown", move);
-    return () => window.removeEventListener("keydown", move);
-  }, [rows, openChat, navigationEnabled, pageVisible, onSelect]);
+    window.addEventListener("pointerdown", release);
+    window.addEventListener("pointermove", pointerMoved);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keydown", move);
+      window.removeEventListener("pointerdown", release);
+      window.removeEventListener("pointermove", pointerMoved);
+      window.removeEventListener("blur", release);
+    };
+  }, [rows, ordered, openChat, navigationEnabled, pageVisible, onSelect]);
   useEffect(() => {
     list.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: "nearest" });
   }, [openChat?.host.hostId, openChat?.session.sessionId]);
 
   return (
-    <div className="chat-list" ref={list} onPointerEnter={event => { if (event.pointerType === "mouse") setHeld(live); }} onPointerLeave={() => setHeld(null)}>
+    <div className="chat-list" ref={list} onPointerEnter={event => { if (event.pointerType === "mouse") setHeld(ordered); }} onPointerLeave={() => setHeld(null)}>
       {sections.map((section, index) => {
         const earlier = section.group === "earlier";
         const { folded, shown, hidden } = section;

@@ -190,3 +190,36 @@ test("history never animates on load or cache refresh, but incoming replies stil
     await context.close();
   } finally { await app?.close(); }
 });
+
+test("bracket navigation holds the visible order while opening unread sessions marks them read", browserOptions, async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const sessions = ["A", "B", "C", "D"].map((name, index) => {
+    const row = listed(sid(index + 1), name, 1);
+    row.metadata.lastMessageAt = now - 600 - index;
+    return row;
+  });
+  const cloud = await startCloud(new Map(sessions.map(row => [row.sessionId, [record(1, { role: "user", content: row.metadata.name })]])), sessions);
+  let app;
+  try {
+    app = await startApp(cloud);
+    const page = await app.browser.newPage({ viewport: { width: 1100, height: 800 } });
+    await page.addInitScript(() => localStorage.setItem("sidebar.seenSessionsBaseline.v1", "0"));
+    await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(1)}`, { waitUntil: "networkidle" });
+    const names = () => page.locator(".chat-row-name").allTextContents();
+    const order = await names();
+    assert.deepEqual(order, ["B", "C", "D", "A"], "unread old sessions stay Active; the open, read one is Earlier");
+    for (const name of ["D", "C", "B"]) {
+      await page.keyboard.press("Meta+BracketLeft");
+      await page.waitForFunction(name => {
+        const selected = document.querySelector('.chat-row[aria-current="page"] .chat-row-name');
+        return selected?.textContent === name && !selected.classList.contains("unseen");
+      }, name);
+      assert.deepEqual(await names(), order, "reading a session must not move the navigation targets");
+    }
+    await page.keyboard.press("Meta+BracketLeft");
+    assert.equal(await page.locator('.chat-row[aria-current="page"] .chat-row-name').textContent(), "B");
+    // Leaving keyboard navigation releases the hold and normal grouping resumes.
+    await page.getByRole("textbox", { name: "Message", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".chat-section").length === 1);
+  } finally { await app?.close(); }
+});

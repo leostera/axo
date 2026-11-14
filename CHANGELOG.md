@@ -4,11 +4,16 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## 0.62 (Mac app build 333, axod 81)
 
+### Added
+
+- A quiet native macOS banner when the startup/hourly update check finds a newer Axo, once per build across relaunches. “Upgrade Axo” uses the existing verified updater; tapping the banner first shows an offer instead of restarting the app. Notifications respect macOS permission and Focus settings; the menu remains available if permission is denied. Requires this Mac app for future release notices.
+
 ### Fixed
 
 - Past messages appear immediately without animation when loading a conversation, replacing cached history, catching up after reconnect or fetching older pages. History is explicitly marked at the loading boundary rather than guessed from the number of replies received.
 - Only incoming content animates. Opening an in-progress reply shows its existing words whole; later growth starts from that baseline without fading the old prefix again. Entry animations expire, so scrolling back to a past tool does not replay its entrance.
-- This release changes the web UI only; axod remains build 81.
+- Keyboard session navigation holds the visible sidebar order while marking unread sessions read, rather than moving each visited session from Active to Earlier underneath the next keypress. Other user actions release the hold and normal grouping resumes.
+- This release changes the Mac app/web UI only; axod remains build 81.
 
 ## 0.61 (Mac app build 332, axod 81)
 
