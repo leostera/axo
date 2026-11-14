@@ -16,6 +16,7 @@ import {
   type ChatBackend, type Host,
 } from "./workbench.ts";
 import { assetUploader } from "./assets.ts";
+import { ChatCache } from "./cache.ts";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
@@ -70,20 +71,35 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: 
 
   const follow = (route: ChatRoute) => {
     const host = route.kind === "chat" ? workbench.hosts.find(candidate => candidate.hostId === route.hostId) : undefined;
-    if (route.kind === "chat" && host) workbench.selectChat(host.hostId, route.sessionId);
-    else workbench.newChat();
+    if (route.kind === "chat" && host) {
+      if (workbench.openHostId !== host.hostId || workbench.selection?.kind !== "chat"
+        || workbench.selection.sessionId !== route.sessionId) workbench.selectChat(host.hostId, route.sessionId);
+    } else workbench.newChat();
   };
 
   // What is on screen, in the URL. The first listing of the Macs opens the chat the URL names, if
   // it is still there; until then the URL waits to be read.
   const path = routePath(basePath, workbench.openHostId, workbench.selection);
   useEffect(() => {
-    if (workbench.hostsPhase !== "loaded" || settingsOpen) return;
+    if (!["loaded", "cached"].includes(workbench.hostsPhase) || settingsOpen) return;
     const route = initial.current;
+    if (workbench.hostsPhase === "cached") {
+      // A deep link not in the bounded cache must wait for the authoritative listing.
+      if (route?.kind === "chat" && workbench.hosts.some(host => host.hostId === route.hostId
+        && host.sessions.some(session => session.sessionId === route.sessionId))) {
+        follow(route);
+      }
+      return;
+    }
     initial.current = null;
-    if (route?.kind === "chat" && workbench.hosts.some(host =>
-      host.hostId === route.hostId && host.sessions.some(session => session.sessionId === route.sessionId))) {
-      follow(route);
+    if (route?.kind === "chat") {
+      if (workbench.hosts.some(host => host.hostId === route.hostId
+        && host.sessions.some(session => session.sessionId === route.sessionId))) follow(route);
+      else {
+        // An invalid deep link must not silently open an unrelated cached conversation.
+        workbench.newChat();
+        window.history.replaceState(null, "", basePath);
+      }
       return;
     }
     if (window.location.pathname === path) return;
@@ -103,7 +119,9 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: 
 }
 
 /** The signed-in app: chats with Axo on your Macs, as on the phone. */
-export function ChatApp({ profile, backend, onSignOut, pairingUrl, appsUrl, basePath = "/app" }: {
+export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, appsUrl, basePath = "/app" }: {
+  /** Supplied only after authentication. Never infer cache ownership from a profile or URL. */
+  accountId?: string;
   profile?: AccountProfile;
   /** Tests give their own; otherwise the account's API. */
   backend?: ChatBackend;
@@ -115,7 +133,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, appsUrl, base
   /** The app's own path: chats are at `<basePath>/<hostId>/<sessionId>`. */
   basePath?: string;
 }) {
-  const workbench = useMemo(() => new ChatWorkbench(backend ?? new RemoteAxoApi(apiBaseUrl), undefined, undefined, undefined, undefined, assetUploader(apiBaseUrl)), [backend]);
+  const workbench = useMemo(() => new ChatWorkbench(backend ?? new RemoteAxoApi(apiBaseUrl), undefined, undefined, undefined, undefined, assetUploader(apiBaseUrl), accountId ? new ChatCache(accountId) : null), [backend, accountId]);
   useSyncExternalStore(workbench.subscribe, workbench.getVersion);
   const wide = useWide();
   const [layer, setLayer] = useState<Layer>("conversation");
@@ -148,7 +166,12 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, appsUrl, base
 
   useEffect(() => {
     workbench.start();
-    return () => workbench.dispose();
+    const flush = () => workbench.flushCache();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      workbench.dispose();
+    };
   }, [workbench]);
 
   // A hidden tab lets no reply out a word at a time: what arrives shows as it is (RFD0040).
@@ -241,7 +264,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, appsUrl, base
           show("conversation");
         }} />
       ) : null}
-      {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut}
+      {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut ? () => { workbench.forgetCache(); onSignOut(); } : undefined}
         onApps={appsUrl ? () => { setSheet(null); openSettings({ kind: "apps" }); } : undefined} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
       {settings && appsUrl ? (

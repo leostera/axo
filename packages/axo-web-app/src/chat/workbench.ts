@@ -1,4 +1,5 @@
 import { ConversationFeed } from "./feed.ts";
+import { ChatCache, type ChatSnapshot } from "./cache.ts";
 import type {
   AccountEvents,
   ClientHello,
@@ -198,6 +199,8 @@ export type HistoryState =
   | { kind: "failed"; message: string };
 
 export class Chat {
+  /** Cached records are a preview, replaced by a fresh socket snapshot before interaction. */
+  cached = false;
   transcript: ChatTranscript | null = null;
   /** Its conversation's rows, kept while it is on screen (RFD0040). */
   readonly feed = new ConversationFeed();
@@ -363,7 +366,7 @@ export function tabClientIdentity(storage: Storage | null = globalThis.sessionSt
 
 export class ChatWorkbench {
   hosts: Host[] = [];
-  hostsPhase: "loading" | "loaded" | "failed" = "loading";
+  hostsPhase: "loading" | "cached" | "loaded" | "failed" = "loading";
   openHostId: string | null = null;
   link: Link = "idle";
   selection: Selection | null = null;
@@ -401,6 +404,9 @@ export class ChatWorkbench {
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly restartTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly uploadAsset: UploadAsset;
+  private cache: ChatCache | null;
+  private cacheTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopWatchingCache: (() => void) | null = null;
 
   /** This browser's key, which signs every answer (RFD0029). */
   device: AnswerDevice = browserDevice();
@@ -412,6 +418,7 @@ export class ChatWorkbench {
     newId: () => string = () => crypto.randomUUID(),
     retryDelay: number = RETRY_DELAY_MS,
     uploadAsset: UploadAsset = () => Promise.reject(new Error("Attachments are unavailable here.")),
+    cache: ChatCache | null = null,
   ) {
     this.uploadAsset = uploadAsset;
     this.backend = backend;
@@ -419,6 +426,9 @@ export class ChatWorkbench {
     this.reconnectDelays = reconnectDelays;
     this.newId = newId;
     this.retryDelay = retryDelay;
+    this.cache = cache;
+    const saved = cache?.read();
+    if (saved) this.restoreCache(saved);
   }
 
   // MARK: - Observing
@@ -430,10 +440,62 @@ export class ChatWorkbench {
 
   getVersion = (): number => this.version;
 
-  private changed(): void {
+  private changed(persist = true): void {
+    if (persist && this.cache) {
+      if (this.cacheTimer) clearTimeout(this.cacheTimer);
+      this.cacheTimer = setTimeout(() => this.flushCache(), 300);
+    }
     this.keepFeed();
     this.version += 1;
     for (const listener of this.listeners) listener();
+  }
+
+  private restoreCache(saved: ChatSnapshot): void {
+    this.applyListing(saved.listing);
+    this.hostsPhase = "cached";
+    for (const savedChat of saved.chats) {
+      const chat = this.chat(savedChat.sessionId);
+      chat.transcript = new ChatTranscript();
+      chat.transcript.append(savedChat.records);
+      chat.transcript.settle(false);
+      chat.cached = true;
+      // Never use browser data as a trusted epoch/cursor: open a fresh window on reconnect.
+      chat.epoch = null;
+      chat.history = { kind: "loaded", records: savedChat.records.length, hasOlder: false };
+    }
+    for (const [key, text] of saved.drafts) this.drafts.set(key, text);
+    if (saved.selected) {
+      this.openHostId = saved.selected.hostId;
+      this.selection = saved.selected.sessionId ? { kind: "chat", sessionId: saved.selected.sessionId } : { kind: "new" };
+    }
+    this.keepFeed();
+  }
+
+  /** Flush on pagehide as well as the debounce: refreshing must not lose the last update. */
+  flushCache(): void {
+    if (this.cacheTimer) clearTimeout(this.cacheTimer);
+    this.cacheTimer = null;
+    if (!this.cache) return;
+    const sessions: ClientSession[] = [...this.sessions.values()].flatMap(rows => [...rows.values()].map(session => {
+      const { hostId, sessionId, status, ...metadata } = session;
+      return { hostId, sessionId, status: null, epoch: null, head: 0, metadata };
+    }));
+    const chats = [...this.chats.entries()].flatMap(([sessionId, chat]) => {
+      const session = sessions.find(row => row.sessionId === sessionId);
+      return session && chat.transcript ? [{ hostId: session.hostId, sessionId, records: chat.transcript.records }] : [];
+    });
+    this.cache.write({ listing: { hosts: this.listedHosts, sessions }, chats,
+      selected: this.openHostId ? { hostId: this.openHostId, sessionId: this.selection?.kind === "chat" ? this.selection.sessionId : null } : null,
+      drafts: [...this.drafts] });
+  }
+
+  forgetCache(): void {
+    this.stopWatchingCache?.();
+    this.stopWatchingCache = null;
+    if (this.cacheTimer) clearTimeout(this.cacheTimer);
+    this.cacheTimer = null;
+    this.cache?.clear();
+    this.cache = null; // In-flight socket callbacks must not repopulate a signed-out account.
   }
 
   /** Whether the page is seen: a hidden tab lets nothing out, and shows what arrives as it is. */
@@ -489,6 +551,7 @@ export class ChatWorkbench {
   /** Connects, and stays connected until `dispose`. */
   start(): void {
     if (this.link !== "idle") return;
+    this.stopWatchingCache = this.cache?.watchClear(() => this.forgetCache()) ?? null;
     this.connect();
     this.changed();
   }
@@ -572,6 +635,9 @@ export class ChatWorkbench {
   }
 
   dispose(): void {
+    this.stopWatchingCache?.();
+    this.stopWatchingCache = null;
+    this.flushCache();
     this.screenFeed?.dispose();
     this.generation += 1;
     this.clearReconnect();
@@ -680,6 +746,11 @@ export class ChatWorkbench {
       lastSeenAt: host.lastSeenAt,
       sessions: [...(this.sessions.get(host.hostId)?.values() ?? [])].sort(bySessionOrder),
     }));
+    if (this.openHostId && !this.hosts.some(host => host.hostId === this.openHostId)) {
+      this.openHostId = null;
+      this.selection = null;
+      this.closeOpened();
+    }
     const selection = this.selection;
     if (selection?.kind === "chat" && this.openHost && !this.selectedSession && !this.chats.get(selection.sessionId)?.pending.length) {
       // The chat on screen is gone from its Mac.
@@ -718,7 +789,7 @@ export class ChatWorkbench {
     const chat = this.chats.get(sessionId);
     if (!chat?.transcript) return;
     chat.transcript.progress(slot, snapshot);
-    this.changed();
+    this.changed(false);
   }
 
   private receiveReset(sessionId: string, epoch: number, keep: number): void {
@@ -768,7 +839,7 @@ export class ChatWorkbench {
     if (!hostId || !connection?.active) return;
     if (this.opened && this.opened.sessionId !== sessionId) connection.closeSession(this.opened.sessionId);
     this.opened = { hostId, sessionId };
-    const held = chat.transcript && chat.epoch !== null ? { epoch: chat.epoch, cursor: chat.transcript.lastCursor } : null;
+    const held = !chat.cached && chat.transcript && chat.epoch !== null ? { epoch: chat.epoch, cursor: chat.transcript.lastCursor } : null;
     if (!held) chat.history = { kind: "loading" };
     this.changed();
     try {
@@ -779,6 +850,7 @@ export class ChatWorkbench {
         chat.older = result.older;
       }
       chat.epoch = result.epoch;
+      chat.cached = false;
       this.changeChat(sessionId, transcript => {
         transcript.append(result.records);
         for (const { slot, snapshot } of result.progress) transcript.progress(slot, snapshot);
@@ -826,6 +898,9 @@ export class ChatWorkbench {
   selectChat(hostId: string, sessionId: string): void {
     if (hostId !== this.openHostId) this.openMac(hostId);
     this.selection = { kind: "chat", sessionId };
+    const chat = this.chat(sessionId);
+    this.chats.delete(sessionId);
+    this.chats.set(sessionId, chat);
     this.failure = null;
     if (this.opened?.sessionId !== sessionId) void this.openChat(sessionId);
     this.changed();
@@ -874,8 +949,10 @@ export class ChatWorkbench {
   setDraft(text: string, selection: Selection | null = this.selection): void {
     if (!selection) return;
     const key = this.draftKey(selection);
-    if (text) this.drafts.set(key, text);
-    else this.drafts.delete(key);
+    if (text) {
+      this.drafts.delete(key);
+      this.drafts.set(key, text);
+    } else this.drafts.delete(key);
     this.changed();
   }
 
@@ -1003,6 +1080,7 @@ export class ChatWorkbench {
   }
 
   private ready(): boolean {
+    if (this.selection?.kind === "chat" && this.chats.get(this.selection.sessionId)?.cached) return false;
     const host = this.openHost;
     if (!host) return false;
     if (host.status !== "online") {

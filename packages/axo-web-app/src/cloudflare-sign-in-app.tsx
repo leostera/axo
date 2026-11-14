@@ -1,18 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { MascotSignIn } from "./mascot-sign-in";
+import { parseAuthenticatedSession, type AuthenticatedSession } from "./auth-session.ts";
 
 const ChatApp = lazy(async () => {
   const module = await import("./chat/chat-app.tsx");
   return { default: module.ChatApp };
 });
-
-/** `GET /api/auth/me` for a signed-in person; anyone else gets 401. */
-type AuthenticatedSession = {
-  authenticated: true;
-  accountId: string;
-  profile: { email: string | null; name: string | null };
-  expiresAt: string;
-};
 
 const authBaseUrl = import.meta.env.VITE_AXO_AUTH_API_BASE_URL || window.location.origin;
 
@@ -44,7 +37,7 @@ export function CloudflareSignInApp() {
         setError(null);
         return;
       }
-      setSession(await response.json() as AuthenticatedSession);
+      setSession(parseAuthenticatedSession(await response.json()));
       setError(null);
     } catch (cause) {
       if (signal?.aborted) return;
@@ -73,7 +66,7 @@ export function CloudflareSignInApp() {
   if (!loading && session) {
     return (
       <Suspense fallback={<main className="app-loading" role="status">Opening your chats…</main>}>
-        <ChatApp profile={session.profile} pairingUrl={pairingUrl} appsUrl={appsUrl} onSignOut={() => void signOut()} />
+        <ChatApp key={session.accountId} accountId={session.accountId} profile={session.profile} pairingUrl={pairingUrl} appsUrl={appsUrl} onSignOut={() => void signOut()} />
       </Suspense>
     );
   }

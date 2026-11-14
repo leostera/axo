@@ -38,7 +38,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const selection = workbench.selection;
   const chat = session ? workbench.chat(session.sessionId) : null;
   const transcript = chat?.transcript ?? null;
-  const online = host?.status === "online" && workbench.link === "connected";
+  const online = host?.status === "online" && workbench.link === "connected" && !chat?.cached;
   const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
 
   // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
@@ -188,6 +188,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const history = chat?.history ?? { kind: "none" as const };
   const empty = !session || (messageCount === 0 && !transcript?.live.length && !chat?.waiting.length);
   const trouble = !host ? null
+    : workbench.hostsPhase === "cached" ? `Connecting to ${host.label}…`
     : host.status !== "online" ? `${host.label} is offline`
       : chat?.restarting ? "Restarting Pi…"
       : workbench.link === "reconnecting" ? `Reconnecting to ${host.label}…` : null;
@@ -286,7 +287,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           wide={wide}
           voice={voice}
           placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
-          canSend={Boolean(host && host.status === "online")}
+          canSend={online}
           onSend={delivery => void send(delivery)}
           onEscape={stopReply}
           onApps={onApps}
@@ -350,9 +351,17 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
     }
   }, [draft, listening]);
 
+  const previousSelection = useRef(workbench.selection);
   useEffect(() => {
-    if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
-  }, [workbench.selection]);
+    const moved = previousSelection.current !== workbench.selection;
+    previousSelection.current = workbench.selection;
+    if (!canSend || listening) return;
+    // The first render can have a disabled composer. Try again when it becomes ready, without
+    // stealing focus from a dialog, search field or an interaction during reconnect.
+    if (moved || !document.activeElement || document.activeElement === document.body) {
+      field.current?.focus({ preventScroll: true });
+    }
+  }, [workbench.selection, canSend, listening]);
 
   // Words said for one chat never land in another.
   useEffect(() => () => voice?.cancel(), [workbench.selection, voice]);

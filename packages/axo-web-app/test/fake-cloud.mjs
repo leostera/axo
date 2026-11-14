@@ -47,6 +47,8 @@ export async function freePort() {
  */
 export async function startCloud(transcripts, sessions) {
   const sockets = new Set();
+  let paused = false;
+  const pending = [];
   const http = createHttpServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.url?.startsWith("/api/v1/account/apps")) return response.end(JSON.stringify({ apps: [] }));
@@ -66,7 +68,10 @@ export async function startCloud(transcripts, sessions) {
     socket.on("message", (raw) => {
       const call = JSON.parse(raw.toString());
       if (!call.method || call.id === undefined) return;
-      const reply = (result) => socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
+      const reply = (result) => {
+        const send = () => { if (socket.readyState === 1) socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result })); };
+        if (paused) pending.push(send); else send();
+      };
       if (call.method === "axo.client.hello" && call.params.protocolVersion !== 2) {
         return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "Invalid params" } }));
       }
@@ -84,6 +89,8 @@ export async function startCloud(transcripts, sessions) {
   const send = (method, params) => { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params })); };
   return {
     http, wss,
+    pause() { paused = true; },
+    resume() { paused = false; for (const reply of pending.splice(0)) reply(); },
     /** Writes a line of `sessionId`, as Pi would. */
     write(sessionId, message) {
       const lines = transcripts.get(sessionId);

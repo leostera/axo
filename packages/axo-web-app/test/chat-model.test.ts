@@ -13,6 +13,8 @@ import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { appsResults } from "@axo/protocol";
 import { oauthStart, parseRoute, parseSettingsRoute, routePath, settingsPath, signInTarget, type SettingsRoute } from "../src/chat/route.ts";
+import { parseAuthenticatedSession } from "../src/auth-session.ts";
+import { ChatCache } from "../src/chat/cache.ts";
 import { memoryDevice } from "../src/chat/device.ts";
 import { chatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
 import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
@@ -511,7 +513,7 @@ class FakeAccount implements AccountLink {
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, uploadAsset?: UploadAsset) {
+async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, uploadAsset?: UploadAsset, cache?: ChatCache) {
   let connects = 0;
   const backend: ChatBackend = {
     connect: async (_clientId, events) => {
@@ -522,12 +524,165 @@ async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, u
     },
   };
   let id = 0;
-  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay, uploadAsset);
+  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay, uploadAsset, cache);
   workbench.device = memoryDevice();
   workbench.start();
   await tick();
   return { workbench, account, connects: () => connects };
 }
+
+test("cache ownership comes from a parsed authenticated identity, never a malformed profile", () => {
+  const session = { authenticated: true, accountId: hostId, profile: { name: null, email: "fixture@example.test" }, expiresAt: "2026-11-14T12:00:00Z" };
+  assert.deepEqual(parseAuthenticatedSession(session), session);
+  for (const bad of [null, [], { ...session, authenticated: false }, { ...session, accountId: {} },
+    { ...session, accountId: "" }, { ...session, expiresAt: "yesterday" }, { ...session, profile: {} }]) {
+    assert.throws(() => parseAuthenticatedSession(bad), /Invalid Axo sign-in response/);
+  }
+});
+
+function cacheStorage() {
+  const items = new Map<string, string>();
+  return { items, getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => { items.set(key, value); },
+    removeItem: (key: string) => { items.delete(key); } };
+}
+
+test("cached chats, selection and drafts render before connecting, but never resume a cached cursor", async () => {
+  const storage = cacheStorage();
+  const cache = new ChatCache("account-a", storage);
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "cached message")]);
+  const { workbench } = await workbenchWith(account, undefined, undefined, cache);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("unfinished draft");
+  account.events.progress?.(sid(1), "in-flight", { message: { role: "assistant", content: [{ type: "text", text: "not durable" }] } });
+  workbench.dispose(); // Includes a synchronous refresh/unmount flush.
+  assert.ok(cache.read());
+  const fresh = new FakeAccount();
+  fresh.records.set(sid(1), [said(1, "user", "authoritative replacement")]);
+  const restored = new ChatWorkbench({ connect: async (_id, events) => { fresh.events = events; return fresh; } },
+    undefined, undefined, undefined, undefined, undefined, cache);
+  assert.equal(restored.hostsPhase, "cached");
+  assert.equal(restored.openHost?.status, "offline");
+  assert.equal(restored.selectedSession?.sessionId, sid(1));
+  assert.equal(restored.chat(sid(1)).transcript?.messages[0]?.text, "cached message");
+  assert.equal(restored.chat(sid(1)).transcript?.live.length, 0);
+  assert.equal(restored.draft(), "unfinished draft");
+  assert.equal(restored.chat(sid(1)).cached, true);
+  assert.equal(restored.chat(sid(1)).epoch, null);
+  assert.equal((await restored.send()).kind, "failed");
+  assert.equal(fresh.commands.length, 0);
+  // Even an epoch learned from an intervening live reset cannot authenticate cached records.
+  restored.chat(sid(1)).epoch = 99;
+  restored.start();
+  await tick();
+  assert.deepEqual(fresh.opens[0], { hostId, sessionId: sid(1), window: { last: 50 } });
+  assert.equal(restored.chat(sid(1)).cached, false);
+  assert.deepEqual(restored.chat(sid(1)).transcript?.messages.map(message => message.text), ["authoritative replacement"]);
+  assert.equal(restored.draft(), "unfinished draft");
+  restored.dispose();
+});
+
+test("a cache is account-scoped and sign-out cannot be undone by late persistence", async () => {
+  const storage = cacheStorage();
+  const cache = new ChatCache("account-a", storage);
+  const { workbench } = await workbenchWith(undefined, undefined, undefined, cache);
+  workbench.flushCache();
+  assert.ok(cache.read());
+  assert.equal(new ChatCache("account-b", storage).read(), null);
+  workbench.forgetCache();
+  workbench.setDraft("late callback");
+  workbench.flushCache();
+  workbench.dispose();
+  assert.equal(cache.read(), null);
+});
+
+test("cache parsing rejects unknown versions, corrupt records, stale data and foreign host references", async () => {
+  const storage = cacheStorage();
+  const cache = new ChatCache("account-a", storage);
+  const { workbench } = await workbenchWith(undefined, undefined, undefined, cache);
+  workbench.dispose();
+  const key = [...storage.items.keys()][0]!;
+  const good = JSON.parse(storage.items.get(key)!);
+  for (const bad of [
+    { ...good, version: 2 },
+    { ...good, savedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 },
+    { ...good, savedAt: Date.now() + 120_000 },
+    { ...good, chats: [{ hostId, sessionId: sid(1), records: [{ ...said(0, "user", "bad") }] }] },
+    { ...good, selected: { hostId: sid(99), sessionId: sid(1) } },
+    { ...good, listing: { ...good.listing, sessions: [{ ...good.listing.sessions[0], hostId: sid(99) }] } },
+  ]) {
+    storage.items.set(key, JSON.stringify(bad));
+    assert.equal(cache.read(), null);
+  }
+  storage.items.set(key, "{not JSON");
+  assert.equal(cache.read(), null);
+  storage.items.set(key, " ".repeat(2 * 1024 * 1024 + 1));
+  assert.equal(cache.read(), null);
+});
+
+test("cache bounds records and bytes without persisting live presence, approvals or resume state", async () => {
+  const storage = cacheStorage();
+  const cache = new ChatCache("account-a", storage);
+  const { workbench } = await workbenchWith(undefined, undefined, undefined, cache);
+  workbench.dispose();
+  const saved = cache.read()!;
+  cache.write({ ...saved, chats: [{ hostId, sessionId: sid(1), records: Array.from({ length: 1000 }, (_, index) => said(index + 1, "user", "x".repeat(4000))) }] });
+  const kept = cache.read()!;
+  assert.ok(kept.chats[0]!.records.length > 0 && kept.chats[0]!.records.length < 128);
+  assert.equal(kept.chats[0]!.records.at(-1)?.cursor, 1000);
+  assert.equal(kept.listing.hosts[0]!.online, false);
+  assert.equal(kept.listing.sessions[0]!.status, null);
+  assert.equal(kept.listing.sessions[0]!.epoch, null);
+  assert.equal(kept.listing.sessions[0]!.head, 0);
+  assert.ok(new TextEncoder().encode([...storage.items.values()][0]).length <= 2 * 1024 * 1024);
+});
+
+test("bounded metadata keeps the selected old chat and newest chats, and discards foreign drafts", () => {
+  const storage = cacheStorage();
+  const cache = new ChatCache("account-a", storage);
+  const account = new FakeAccount();
+  const sessions = Array.from({ length: 1200 }, (_, index) => {
+    const session = clientSession(index + 1);
+    return { ...session, metadata: { ...session.metadata, lastMessageAt: index + 1 } };
+  });
+  const key = `${hostId}/chat/${sid(1)}`;
+  cache.write({ listing: { ...account.hello, sessions }, selected: { hostId, sessionId: sid(1) },
+    chats: [], drafts: [[key, "keep"], [`${sid(99)}/new`, "foreign"]] });
+  const kept = cache.read()!;
+  assert.equal(kept.listing.sessions.length, 1000);
+  assert.equal(kept.listing.sessions[0]?.sessionId, sid(1));
+  assert.equal(kept.listing.sessions[1]?.sessionId, sid(1200));
+  assert.equal(kept.selected?.sessionId, sid(1));
+  assert.deepEqual(kept.drafts, [[key, "keep"]]);
+});
+
+test("live reconciliation removes a cached Mac and its conversations when no longer listed", async () => {
+  const storage = cacheStorage();
+  const cache = new ChatCache("account-a", storage);
+  const { workbench } = await workbenchWith(undefined, undefined, undefined, cache);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.dispose();
+  const empty = new FakeAccount();
+  empty.hello.hosts = [];
+  empty.hello.sessions = [];
+  const { workbench: restored } = await workbenchWith(empty, undefined, undefined, cache);
+  assert.equal(restored.openHost, null);
+  assert.equal(restored.selectedSession, null);
+  assert.equal(restored.selection, null);
+  restored.dispose();
+  assert.deepEqual(cache.read()?.chats, []);
+});
+
+test("denied storage and quota errors are harmless", async () => {
+  const denied = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("quota"); }, removeItem() { throw new Error("denied"); } };
+  const cache = new ChatCache("account-a", denied);
+  assert.equal(cache.read(), null);
+  const { workbench } = await workbenchWith(undefined, undefined, undefined, cache);
+  assert.doesNotThrow(() => { workbench.flushCache(); workbench.forgetCache(); workbench.dispose(); });
+});
 
 test("hello lists every Mac and chat, and opens a Mac", async () => {
   const { workbench } = await workbenchWith();

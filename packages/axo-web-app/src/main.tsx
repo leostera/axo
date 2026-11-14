@@ -27,7 +27,7 @@ createRoot(document.getElementById("root")!).render(
       : sharedSessionId
         ? <SharedSession shareId={sharedSessionId} />
         : isChatTestPath
-        ? <React.Suspense fallback={null}><ChatApp profile={{ name: "Fixture", email: "fixture@example.test" }} pairingUrl="/api/v1/account/host-pairings" basePath={chatTestPath} /></React.Suspense>
+        ? <React.Suspense fallback={null}><ChatApp accountId="fixture-browser-account" onSignOut={() => {}} profile={{ name: "Fixture", email: "fixture@example.test" }} pairingUrl="/api/v1/account/host-pairings" basePath={chatTestPath} /></React.Suspense>
         : <LandingPage />}
   </React.StrictMode>,
 );
