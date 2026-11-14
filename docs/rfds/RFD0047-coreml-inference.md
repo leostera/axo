@@ -1,7 +1,7 @@
 # RFD0047 - Axo: native Core ML predictions
 
 - Feature Name: `native-coreml-inference`
-- Status: Implemented (0.57 release candidate; publication pending approval)
+- Status: Implemented (Axo 0.57)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14
@@ -80,7 +80,7 @@ Use Core ML's actual feature descriptions to validate names, required inputs, dt
 - Shared native transport and parent containment preserve owner stdin lifelines, inherited stdout locks, deadlines, kill/reap and retirement ownership. Core ML process tests cover selected-image prediction, error recovery, stale-workspace cleanup, stop and Drop reaping. Real MLX lifecycle smoke still passes after the refactor.
 - Real Core ML service smoke verifies HF inspection, pinned package integrity, installation, feature descriptions, reuse, selected outputs, native rejection, retirement cleanup, reload and unload.
 - The seven-model isolated Session/account integration executes actual `codemode.ai` calls through cloud Worker → authenticated relay → daemon → native backend. It tests two GGUF generators, two MLX generators, FastViT prediction with a verified account image attachment, GGUF embeddings and native typed classification, including backend switches and unload.
-- All 77 standard Bazel tests pass; signed bundle tests verify the Core ML helper, signing identifier/team, minimum OS and real device probe. Published-artifact verification remains a release gate, not yet recorded here.
+- All 77 standard Bazel tests pass; signed bundle tests verify the Core ML helper, signing identifier/team, minimum OS and real device probe. Published Axo 0.57 (Mac 328 / axod 80, release commit `84e60642`) was downloaded from the CDN, its deep/strict signature verified, its actual Core ML devices probed, and the seven-model codemode integration passed again using only the downloaded app's helpers/resources. Worker deployment version: `37462bde-dcaf-460f-9e0c-a59bf880fd41`. The person's active Session was not restarted.
 - The full Core ML worker successfully cross-compiles for Intel macOS. Crate-universe now preserves its default targets and additionally supports `x86_64-apple-darwin`; dependency versions are unchanged. This Mac's runtime tests execute on Apple Silicon, not Intel hardware.
 - Linux/Windows native dependencies are Rust/Bazel-gated out. Full Linux Bazel analysis is still blocked by the missing cross C++ allocator toolchain, as before; do not report a successful full cross-platform build. The bounded lifecycle specification passes its three properties over 41 explored states; source locking remains subject to the existing unrelated relay-spec validation failure.
 - The full suite exposed a pre-existing Cloudflare Vite build issue: the plugin rewrote Bazel-owned read-only declarations. Build mode now leaves generation to `cf types`; dev mode retains automatic generation. The full suite passed after that fix and the inference API 4 assertion update.
