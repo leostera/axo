@@ -38,7 +38,8 @@ test("MLX backend selection is explicit or omitted, never injected as a cache-ch
   assert.deepEqual(aiRequest("run", { model: native, backend: "mlx", input: "hello" }).request,
     { op: "run", model: native, backend: "mlx", task: "generate", input: "hello", maxTokens: 512 });
   assert.equal("backend" in aiRequest("info", { model: native }).request, false);
-  assert.equal(aiInputs.info.safeParse({ model: native, backend: "coreml" }).success, false, "Core ML is deferred, not advertised as implemented");
+  assert.equal(aiInputs.info.safeParse({ model: native, backend: "coreml" }).success, true);
+  assert.equal(aiInputs.info.safeParse({ model: native, backend: "onnx" }).success, false, "unimplemented backends are not advertised");
   for (const file of ["../model.safetensors", "a//model.safetensors", "code.py", "/model.safetensors"]) {
     assert.equal(aiInputs.info.safeParse({ model: native, file }).success, false);
   }

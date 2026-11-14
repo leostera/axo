@@ -13,9 +13,11 @@
 
 pub mod api;
 mod catalog;
+mod coreml_catalog;
+mod features;
 mod mlx_catalog;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-mod mlx_process;
+#[cfg(target_os = "macos")]
+mod native_process;
 pub mod service;
 mod transfer;
 

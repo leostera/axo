@@ -1,11 +1,11 @@
 # axod-infer
 
-Local inference for axod: pinned llama.cpp for GGUF and embedded native MLX for compatible
-safetensors bundles on Apple Silicon. The native MLX C++ runtime is bound through an owned C
-ABI and thread-confined Rust types, running in Axo's killable Rust worker—not Python or a
-third-party inference server. Both helpers and Metal resources ship with the signed app.
+Local inference for axod: pinned llama.cpp for GGUF, embedded MLX for compatible safetensors
+on Apple Silicon, and the system Core ML framework for source models/packages on macOS.
+Owned C ABIs and thread-confined Rust bindings run in Axo-owned killable workers—not Python
+or third-party inference servers. Native helpers and MLX Metal resources ship with the signed app.
 The computer-use gate keeps its separate Clef runtime; script backends share one residency
-in `run/ai/`. Neither script backend can unload or reconfigure the safety judge.
+in `run/ai/`. No script backend can unload or reconfigure the safety judge.
 
 ## Discover → inspect → run
 
@@ -61,8 +61,47 @@ await codemode.ai.run({
 
 `hf:mlx-community/clef-omni-4bit` remains a valid but unsupported reference: its backbone and
 custom joint decision head are not implemented by this adapter. Generic generation is not a
-classifier substitute. Vision, MLX embeddings, custom heads and Core ML remain separate work.
+classifier substitute. MLX vision, embeddings and custom heads remain separate work.
 There is no Python, repository-code import, dependency installer or automatic conversion.
+
+## Core ML named-feature prediction
+
+Core ML is **predict**, not another chat/decision adapter. Compatible `.mlmodel` sources or
+data-only `.mlpackage` bundles select it automatically. `backend: "coreml"` disambiguates mixed
+repositories. Native capabilities probe the actual CPU/GPU/Neural Engine devices; the `all`
+compute policy does not guarantee any particular graph runs on the Neural Engine.
+
+```js
+const model = "hf:apple/coreml-FastViT-T8@b42811edaa9f7ca6d79eeada204227704484c881";
+await codemode.ai.info({ model }); // metadata and small package manifest, not weights
+const loaded = await codemode.ai.load({ model, task: "predict" });
+// loaded.description.inputs/outputs name the native features, dtypes and shapes.
+return codemode.ai.run({
+  model, task: "predict",
+  input: { features: { image: { type: "image", image: attachment } }, outputs: ["classLabel"] },
+});
+```
+
+Inputs are tagged `{type:"int"|"float"|"string", value}`,
+`{type:"tensor", dtype:"float32"|"int32", shape:[...], data:[...]}`, or
+`{type:"image", image: attachmentOrDataURL}`. JSON integers must fit JavaScript's exact range.
+Prediction returns `{model,task:"predict",outputs,source}`; output features can also be numeric
+dictionaries. Select complete named features with `input.outputs` when a model's full output
+exceeds the relay budget: nothing is silently truncated or normalized.
+
+The first adapter covers stateless built-in models and reviewed **flat ML Programs**.
+It rejects custom classes/layers/operators, linked models, mutable state, nested control-flow
+programs and downloaded compiled binaries. Source specifications are bounded to 256 MiB.
+ML Program tensor types need fixed dimensions, rank at most 16 and at most 256 MiB per tensor;
+these checks are not a peak-memory guarantee. Public prediction is limited to 32 features and
+4096 aggregate input/output elements in each direction. Images are decoded with a 16-megapixel
+limit and scaled to fill fixed BGRA8/grayscale8 model inputs. Unsupported native feature
+types/dtypes are explained in the feature description or rejected.
+
+Source snapshots and retained compiled assets live in a private worker workspace. After
+kill/reap, the parent removes that workspace; Apple's compiler can also create framework-owned
+temporary files/caches outside it. No source-cache mutation, conversion or repository code
+execution is involved. Core ML/predict requires **Axo 0.57 / inference API 4** on the target Mac.
 
 ## API
 
@@ -71,21 +110,21 @@ Every method takes `host` (a paired online Mac's name; default `self`).
 | Method | Purpose |
 | --- | --- |
 | `capabilities({host})` | Actual backend pin, recognized architectures, adapter tasks/modalities and resource limits. No network or model load. |
-| `info({host,model,backend?,file?,projector?})` | Inspect pinned HF configuration/index metadata; resolve compatible GGUF or MLX data bundles, or explain why not. |
+| `info({host,model,backend?,file?,projector?})` | Inspect pinned HF configuration/index metadata; resolve compatible GGUF, MLX or Core ML source bundles, or explain why not. |
 | `list({host})` | Inventory of managed selections, partial/complete installation and residency. Not a list of allowed models. |
 | `install({host,model,file?,projector?})` | Optional prefetch. `run`/`load` install automatically. |
-| `load({host,model,task?,file?,projector?})` | Optional prewarm; default task is `generate`. |
+| `load({host,model,task?,file?,projector?})` | Optional prewarm; default task is `generate`. Core ML requires `predict` and returns its feature description. |
 | `unload({host,model,file?,projector?})` | Stop only this exact script-managed selection; retain files. |
 | `run({host,model,task,input,...})` | Resolve, install, load and execute the selected task. |
 
 References are `hf:owner/repo[:quant][@revision]`. Without an explicit artifact, selection
 prefers Q4_K_M, Q8_0, Q4_0, F16, BF16, then other variants, and requires a unique choice at the
 best rank. A `:quant` selector matches quantization tokens in artifact names, not a model allowlist.
-`file` selects the first model shard in a bundle. Every weight shard needs metadata
+`file` selects the first model shard, standalone Core ML source or package root. Every weight shard needs metadata
 with its size and SHA-256. A unique projector, or unique Q8_0 projector, is selected automatically;
 otherwise specify `projector`. Projectors and `:quant` selectors apply only to GGUF. MLX
 quantization comes from verified bundle configuration; no model conversion is attempted.
-`backend` is optional (`llama.cpp` or `mlx`); mixed formats or multiple bundles require an
+`backend` is optional (`llama.cpp`, `mlx` or `coreml`); mixed formats or multiple bundles require an
 explicit, unambiguous choice. Selectors never accept local paths, traversal or URLs.
 
 The first install pins the resolved HF commit and exact artifacts in a local manifest. Later
@@ -132,12 +171,13 @@ not inline bytes in a script or relay request. Audio/video inputs are not expose
 - Guarded launches map the lifeline and lock through standard I/O and use `posix_spawn`, avoiding
   the macOS `fork`/notification-initialization race. curl is the guard's direct child. A dropped
   transfer future stops its guard; an interrupted transfer resumes on a later call.
-- Installed helper/resources required. MLX's Rust worker watches its owner's stdin lifeline,
+- Installed helper/resources required. Native Rust workers watch their owner\'s stdin lifeline,
   retains the process lock on stdout, and is killed/reaped before native ownership is released.
-  No pre-exec callbacks or shell descendants are needed for native MLX cancellation.
+  No pre-exec callbacks or shell descendants are needed for native cancellation.
 - Weights/projectors/resources are admitted up to 60% of physical RAM, with
   at most 64 GiB/128 artifacts per selection. Installation needs space for missing artifacts
-  plus a 512 MiB reserve. These are admission budgets, not a guarantee of peak runtime memory.
+  plus a 512 MiB reserve. Core ML conservatively requires three source-bundle sizes of free
+  staging/compilation space plus that reserve. These are admission budgets, not a peak-memory guarantee.
 - Four images maximum, 8 MiB each/16 MiB combined; text/state up to 32768 UTF-8 bytes;
   16 typed questions. Relay requests fit 64 KiB, so use attachment references. The runtime
   context is 8192 tokens for llama.cpp and at most 4096 for the initial MLX adapter; a request
@@ -149,7 +189,7 @@ not inline bytes in a script or relay request. Audio/video inputs are not expose
 - Public ungated HF repositories only. License/gating requirements are not silently accepted,
   and the HF discovery MCP grant is not assumed to be a download token. Model terms still apply.
 - Only supported model data is downloaded: GGUF or verified MLX config/tokenizer/index/safetensors
-  bundles. No `trust_remote_code`, repository Python, arbitrary executables,
+  bundles, or data-only Core ML sources/packages. No `trust_remote_code`, repository Python, arbitrary executables,
   runtime CLI flags, third-party runtime installers or model-invoked tools are exposed.
 - Model inference is local, but requests/results traverse the account's cloud script/relay.
   AI call logs contain selection/task/target/outcome, not text, state, questions, images or outputs.
@@ -166,7 +206,7 @@ bazel test //packages/axo-api:test //packages/axo-api-worker:test //packages/axo
 
 The opt-in real-model test exercises HF inspection, **two distinct generation models**, and
 optional real embedding/classification models through an isolated Worker/account/daemon. It
-can additionally execute native MLX Qwen2/Qwen3 selections and switch backends without unloading
+can additionally execute native MLX Qwen2/Qwen3 and Core ML FastViT selections and switch backends without unloading
 between calls. Unsupported specialized heads still get an actionable explanation. The classifier test saves an image
 asset and passes its attachment through `ai.run`. It does not deploy production code.
 
@@ -174,6 +214,7 @@ asset and passes its attachment through `ai.run`. It does not deploy production 
 bazel build @llama_server//:axod-infer
 bazel test //packages/axo-api-worker:ai_smoke_test \
   --test_env=AXO_TEST_AI_HELPER="$(bazel info output_base)/external/+llama_server_repository+llama_server/axod-infer" \
+  --test_env=AXO_TEST_AI_COREML_HELPER="$PWD/bazel-bin/crates/axod-infer/axod-infer-coreml" \
   --test_env=AXO_TEST_AI_MLX_HELPER="$PWD/bazel-bin/crates/axod-infer/axod-infer-mlx" \
   --test_env=AXO_TEST_AI_MLX_METALLIB="$PWD/bazel-axo/external/+mlx_repository+mlx/mlx.metallib" \
   --test_env=AXO_TEST_AI_EMBEDDING=hf:ggml-org/embeddinggemma-300M-GGUF:Q8_0 \

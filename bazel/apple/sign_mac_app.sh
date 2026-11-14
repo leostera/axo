@@ -41,6 +41,10 @@ sign_all() {
     /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.infer.mlx "$@" \
       "$app/Contents/Helpers/axod-infer-mlx" || return 1
   fi
+  if [[ -f "$app/Contents/Helpers/axod-infer-coreml" ]]; then
+    /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.infer.coreml "$@" \
+      "$app/Contents/Helpers/axod-infer-coreml" || return 1
+  fi
   for framework in "$app"/Contents/Frameworks/*.framework; do
     [[ -e "$framework" ]] || continue
     # Vendor frameworks must use the app's team for hardened-runtime library validation.

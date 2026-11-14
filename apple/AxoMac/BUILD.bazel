@@ -228,6 +228,7 @@ _APP_CONTENTS = {
     ":app_agent_plist": "Library/LaunchAgents",
     "//crates/axod/release": "Helpers",
     "@llama_server//:axod-infer": "Helpers",
+    "//crates/axod-infer/release:coreml": "Helpers",
     ":AxoPi": "Resources/AxoPi",
     "@ghostty//:resources": "Resources",
     "@ghostty//:terminfo": "Resources",

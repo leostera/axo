@@ -1,42 +1,63 @@
-//! Process containment for the native Rust/MLX worker. The runtime is embedded in that
-//! worker, not in the daemon; killing and reaping it establishes native quiescence.
+//! Kill/reap containment shared by Axo's native MLX and Core ML workers.
+//! Native runtimes are embedded in those workers, never dynamically installed servers.
+#[cfg(test)]
+#[path = "coreml_process_tests.rs"]
+mod tests;
+use crate::service::Error;
+use axo_pty::exit::WatchedChild;
+use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::os::fd::BorrowedFd;
 use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
-
-use axo_pty::exit::WatchedChild;
-use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::service::Error;
-
+pub(crate) enum Kind {
+    Mlx { metal: PathBuf },
+    CoreMl,
+}
+impl Kind {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Mlx { .. } => "mlx",
+            Self::CoreMl => "coreml",
+        }
+    }
+    fn request_limit(&self) -> usize {
+        match self {
+            Self::Mlx { .. } => 65536,
+            Self::CoreMl => 24 * 1024 * 1024,
+        }
+    }
+}
 struct OwnedWorker {
     child: WatchedChild,
     _lock: File,
 }
-
 pub(crate) struct Process {
     helper: PathBuf,
-    metal: PathBuf,
-    models: PathBuf,
+    kind: Kind,
+    model: PathBuf,
     run: PathBuf,
     worker: Option<OwnedWorker>,
 }
 impl Process {
-    pub fn new(helper: PathBuf, metal: PathBuf, models: PathBuf, run: PathBuf) -> Self {
+    pub fn new(helper: PathBuf, kind: Kind, model: PathBuf, run: PathBuf) -> Self {
         Self {
             helper,
-            metal,
-            models,
+            kind,
+            model,
             run,
             worker: None,
         }
     }
     fn socket(&self) -> PathBuf {
-        self.run.join("mlx.sock")
+        self.run.join(format!("{}.sock", self.kind.name()))
+    }
+    fn workspace(&self) -> PathBuf {
+        self.socket().with_extension("work")
     }
 
     pub async fn ensure_running(&mut self) -> Result<(), Error> {
@@ -51,6 +72,8 @@ impl Process {
             let _ = previous.child.wait().await;
         }
         let run = self.run.clone();
+        let name = self.kind.name();
+        let workspace = self.workspace();
         let lock = crate::blocking(move || {
             std::fs::create_dir_all(&run)
                 .map_err(|_| Error::failed("could not create native runtime directory"))?;
@@ -60,29 +83,34 @@ impl Process {
                 .write(true)
                 .create(true)
                 .truncate(false)
-                .open(run.join("mlx.lock"))
+                .open(run.join(format!("{name}.lock")))
                 .map_err(|_| Error::failed("could not open native runtime lock"))?;
             if !crate::try_lock(&lock) {
                 return Err(Error::Busy);
             }
-            match std::fs::remove_file(run.join("mlx.sock")) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            match std::fs::remove_file(run.join(format!("{name}.sock"))) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
                 Err(_) => return Err(Error::failed("could not retire stale native socket")),
+            }
+            // Lock acquisition also proves an orphaned worker's inherited stdout has closed.
+            // Only then may source snapshots/compiled assets left by a hard exit be removed.
+            match std::fs::remove_dir_all(workspace) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(_) => return Err(Error::failed("could not retire stale native workspace")),
             }
             Ok(lock)
         })
         .await?;
-        let log = File::create(self.run.join("mlx.log"))
+        let log = File::create(self.run.join(format!("{}.log", self.kind.name())))
             .map_err(|_| Error::failed("could not create native runtime log"))?;
         let lifeline = crate::lifeline()
             .map_err(|_| Error::failed("could not create native runtime lifeline"))?;
-        // SAFETY: the process-global Lifeline owns this descriptor throughout duplication.
+        // SAFETY: the process-global Lifeline retains the source descriptor during duplication.
         let reader = unsafe { BorrowedFd::borrow_raw(lifeline.reader()) }
             .try_clone_to_owned()
             .map_err(|_| Error::failed("could not pass native runtime lifeline"))?;
-        // Standard I/O mappings and process_group use posix_spawn without pre-exec hooks.
-        // This Rust worker watches its own lifeline, so no shell/descendant cancellation race.
         let mut command = Command::new(&self.helper);
         command
             .stdin(Stdio::from(reader))
@@ -90,19 +118,20 @@ impl Process {
                 Error::failed("could not pass native runtime lock")
             })?))
             .env("AXO_INFER_LIFELINE_STDIN", "1")
-            .process_group(0);
-        command
+            .process_group(0)
             .arg("--model")
-            .arg(&self.models)
-            .arg("--metallib")
-            .arg(&self.metal)
+            .arg(&self.model);
+        if let Kind::Mlx { metal } = &self.kind {
+            command.arg("--metallib").arg(metal);
+        }
+        command
             .arg("--socket")
             .arg(self.socket())
             .env("TOKENIZERS_PARALLELISM", "false")
             .stderr(log);
         let child = command.spawn().map_err(|_| {
             Error::unavailable(
-                "native MLX worker missing or not executable; update Axo on this Mac",
+                "native inference worker missing or not executable; update Axo on this Mac",
             )
         })?;
         self.worker = Some(OwnedWorker {
@@ -117,9 +146,11 @@ impl Process {
                 .as_ref()
                 .is_some_and(|worker| worker.child.exit().has_exited())
             {
-                return Err(Error::unsupported(
-                    "Native MLX could not load this architecture, weights or tokenizer; inspect ai/mlx.log. No repository code was executed.",
-                ));
+                return Err(Error::unsupported(format!(
+                    "Native {} could not load this model; inspect ai/{}.log. No repository code was executed.",
+                    self.kind.name(),
+                    self.kind.name()
+                )));
             }
             if self
                 .request(&json!({"op":"health"}), Duration::from_secs(1))
@@ -129,17 +160,16 @@ impl Process {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(Error::failed("native MLX initialization timed out"));
+                return Err(Error::failed("native inference initialization timed out"));
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
-
     pub async fn request(&self, request: &Value, timeout: Duration) -> Result<Value, Error> {
         let bytes =
             serde_json::to_vec(request).map_err(|_| Error::invalid("invalid native request"))?;
-        if bytes.len() > 65536 {
-            return Err(Error::invalid("native request exceeds 64 KiB"));
+        if bytes.len() > self.kind.request_limit() {
+            return Err(Error::invalid("native request exceeds its byte budget"));
         }
         let exchange = async {
             let mut stream = tokio::net::UnixStream::connect(self.socket())
@@ -165,21 +195,21 @@ impl Process {
             let value: Value = serde_json::from_slice(&body)
                 .map_err(|_| Error::failed("invalid native response JSON"))?;
             if value.get("error").is_some() {
+                // Native diagnostics may contain feature values. Do not forward/log them.
                 return Err(Error::unsupported(
-                    "native MLX rejected this input/task/context; inspect ai/mlx.log",
+                    "native inference rejected this input/task/context; check the model feature description and output selection",
                 ));
             }
             Ok(value)
         };
         tokio::time::timeout(timeout, exchange)
             .await
-            .map_err(|_| Error::failed("native MLX request timed out"))?
+            .map_err(|_| Error::failed("native inference request timed out"))?
     }
     #[cfg(test)]
     pub fn pid(&self) -> Option<u32> {
         self.worker.as_ref().map(|worker| worker.child.id())
     }
-
     pub async fn loaded(&self) -> bool {
         self.request(&json!({"op":"health"}), Duration::from_secs(1))
             .await
@@ -188,14 +218,16 @@ impl Process {
     pub async fn stop(mut self) {
         if let Some(mut worker) = self.worker.take() {
             terminate(&worker.child);
-            // Retain ownership/lock until the native process has exited and been reaped.
-            let _ = worker.child.wait().await;
+            // Keep the lock and workspace until native execution has ended and been reaped.
+            if worker.child.wait().await.is_ok() {
+                let _ = std::fs::remove_dir_all(self.workspace());
+            }
         }
     }
 }
 fn terminate(child: &WatchedChild) {
     if !child.exit().has_exited() {
-        // SAFETY: the unreaped PID is our own native worker; do not rely on cooperative GPU cancellation.
+        // SAFETY: this unreaped PID is our own worker, never a recycled PID.
         unsafe {
             libc::kill(child.id() as i32, libc::SIGKILL);
         }
@@ -205,11 +237,15 @@ impl Drop for Process {
     fn drop(&mut self) {
         if let Some(mut worker) = self.worker.take() {
             terminate(&worker.child);
+            let workspace = self.workspace();
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 runtime.spawn(async move {
-                    let _ = worker.child.wait().await;
+                    if worker.child.wait().await.is_ok() {
+                        let _ = std::fs::remove_dir_all(workspace);
+                    }
                 });
             }
+            // Without an executor, leave files for the next locked launch, never remove live data.
         }
     }
 }

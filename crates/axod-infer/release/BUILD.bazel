@@ -1,6 +1,13 @@
 load("//bazel/rust:release.bzl", "release_binary")
 
 release_binary(
+    name = "coreml",
+    binary = "//crates/axod-infer:axod-infer-coreml",
+    visibility = ["//apple:__subpackages__"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+release_binary(
     name = "release",
     binary = "//crates/axod-infer:axod-infer-mlx",
     visibility = ["//apple:__subpackages__"],

@@ -1,0 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "bridge",
+    srcs = ["bridge.cc"],
+    hdrs = ["bridge.h", "spec.h"],
+    copts = ["-xobjective-c++", "-std=c++20", "-fobjc-arc", "-fexceptions"],
+    linkopts = ["-framework", "CoreML", "-framework", "Foundation", "-framework", "ImageIO", "-framework", "CoreGraphics", "-framework", "CoreVideo"],
+    target_compatible_with = ["@platforms//os:macos"],
+)

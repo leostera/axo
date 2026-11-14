@@ -1,16 +1,17 @@
 //! Axo-owned, killable inference worker embedding MLX directly. No runtime installers,
 //! networking, Python, model plugins or shared safety-judge state.
+#[cfg(target_os = "macos")]
+mod native_worker;
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod apple {
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::time::Duration;
 
+    use super::native_worker;
     use axo_mlx::{Model, Runtime};
     use serde::Deserialize;
     use serde_json::{Value, json};
     use tokenizers::Tokenizer;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const MAX_REQUEST: u64 = 65536;
     const MAX_CONTEXT: usize = 4096;
@@ -182,60 +183,8 @@ mod apple {
         Ok((model, metal, socket))
     }
 
-    async fn exchange(
-        stream: &mut tokio::net::UnixStream,
-        generator: &mut Generator<'_>,
-    ) -> Result<(), String> {
-        let mut body = Vec::new();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            (&mut *stream).take(MAX_REQUEST + 1).read_to_end(&mut body),
-        )
-        .await
-        .map_err(|_| "worker request read timed out")?
-        .map_err(|e| e.to_string())?;
-        if body.len() as u64 > MAX_REQUEST {
-            return Err("worker request exceeds 64 KiB".into());
-        }
-        let result = match serde_json::from_slice::<Request>(&body) {
-            Ok(Request::Health) => Ok(json!({"ready":true})),
-            Ok(Request::Generate { text, max_tokens }) => generator.generate(text, max_tokens),
-            Err(_) => Err("invalid native generation request".into()),
-        };
-        let response = match result {
-            Ok(value) => value,
-            Err(error) => json!({"error":error}),
-        };
-        let bytes = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
-        tokio::time::timeout(Duration::from_secs(5), stream.write_all(&bytes))
-            .await
-            .map_err(|_| "worker response write timed out")?
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    fn watch_owner() -> Result<(), String> {
-        if std::env::var_os("AXO_INFER_LIFELINE_STDIN").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-        {
-            std::thread::Builder::new()
-                .name("inference-lifeline".into())
-                .spawn(|| {
-                    use std::io::Read;
-                    let _ = std::io::stdin().read(&mut [0_u8]);
-                    // SAFETY: owner EOF revokes the worker. _exit ends all native/GPU threads without
-                    // running C++ destructors concurrently with their work. Never publish a result.
-                    unsafe {
-                        libc::_exit(0);
-                    }
-                })
-                .map_err(|_| "could not start native owner watch")?;
-        }
-        Ok(())
-    }
-
     pub async fn run() -> Result<(), String> {
-        watch_owner()?;
+        native_worker::watch_owner()?;
         let args: Vec<_> = std::env::args_os().skip(1).collect();
         if args.first().is_some_and(|arg| arg == "--capabilities") {
             let metal = if args.len() == 3 && args[1] == "--metallib" {
@@ -278,23 +227,14 @@ mod apple {
         let (model, metal, socket) = arguments()?;
         let runtime = Runtime::new(&metal)?;
         let mut generator = Generator::load(&runtime, &model)?;
-        // Bind only after all loading/initialization succeeds. The parent owns stale-socket
-        // cleanup while holding its process lock; the worker never unlinks another socket.
-        let listener = tokio::net::UnixListener::bind(&socket).map_err(|e| e.to_string())?;
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-        loop {
-            let (mut stream, _) =
-                match tokio::time::timeout(Duration::from_secs(600), listener.accept()).await {
-                    Ok(result) => result.map_err(|e| e.to_string())?,
-                    Err(_) => return Ok(()),
-                };
-            // Native work stays on this current-thread executor. The parent can kill/reap the
-            // entire worker on a hard deadline; cancelling this future alone would not suffice.
-            if exchange(&mut stream, &mut generator).await.is_err() {
-                eprintln!("event=infer.mlx_protocol_error");
+        native_worker::serve(&socket, MAX_REQUEST, |body| {
+            match serde_json::from_slice::<Request>(body) {
+                Ok(Request::Health) => Ok(json!({"ready": true})),
+                Ok(Request::Generate { text, max_tokens }) => generator.generate(text, max_tokens),
+                Err(_) => Err("invalid native generation request".into()),
             }
-        }
+        })
+        .await
     }
 }
 

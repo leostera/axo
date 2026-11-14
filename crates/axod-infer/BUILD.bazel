@@ -7,6 +7,33 @@ config_setting(
     constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
 )
 
+config_setting(
+    name = "macos_inference",
+    constraint_values = ["@platforms//os:macos"],
+)
+
+rust_library(
+    name = "coreml_binding",
+    crate_name = "axo_coreml",
+    crate_root = "src/coreml_binding.rs",
+    srcs = ["src/coreml_binding.rs", "src/coreml.rs"],
+    edition = "2024",
+    deps = select({
+        ":macos_inference": ["@crates//:serde_json"],
+        "//conditions:default": [],
+    }),
+    link_deps = select({
+        ":macos_inference": ["//crates/axod-infer/coreml:bridge"],
+        "//conditions:default": [],
+    }),
+)
+
+rust_test(
+    name = "coreml_binding_tests",
+    crate = ":coreml_binding",
+    edition = "2024",
+)
+
 # Separate binding target: no native dependency or generated MLX metadata on other targets.
 rust_library(
     name = "mlx_binding",
@@ -53,7 +80,7 @@ rust_test(
 # killable; it is not a separately installed third-party inference server.
 rust_binary(
     name = "axod-infer-mlx",
-    srcs = ["src/mlx_worker.rs"],
+    srcs = ["src/mlx_worker.rs", "src/native_worker.rs"],
     crate_root = "src/mlx_worker.rs",
     edition = "2024",
     deps = [
@@ -68,6 +95,21 @@ rust_binary(
     target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
 )
 
+rust_binary(
+    name = "axod-infer-coreml",
+    srcs = ["src/coreml_worker.rs", "src/native_worker.rs"],
+    crate_root = "src/coreml_worker.rs",
+    edition = "2024",
+    deps = [
+        ":coreml_binding",
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 rust_test(
     name = "mlx_service_smoke_test",
     crate = ":axod_infer",
@@ -80,6 +122,28 @@ rust_test(
         "AXO_TEST_MLX_METALLIB": "$(rootpath @mlx//:mlx.metallib)",
     },
     target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
+rust_test(
+    name = "coreml_process_smoke_test",
+    crate = ":axod_infer",
+    edition = "2024",
+    tags = ["manual"],
+    args = ["--ignored", "real_coreml_process_predicts_and_reaps_before_workspace_cleanup", "--nocapture"],
+    data = [":axod-infer-coreml"],
+    env = {"AXO_TEST_COREML_HELPER": "$(rootpath :axod-infer-coreml)"},
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+rust_test(
+    name = "coreml_service_smoke_test",
+    crate = ":axod_infer",
+    edition = "2024",
+    tags = ["manual"],
+    args = ["--ignored", "real_coreml_service_resolves_installs_describes_predicts_and_retires", "--nocapture"],
+    data = [":axod-infer-coreml"],
+    env = {"AXO_TEST_COREML_HELPER": "$(rootpath :axod-infer-coreml)"},
+    target_compatible_with = ["@platforms//os:macos"],
 )
 
 # axod's local inference side-car and its client; Clef decisions first.

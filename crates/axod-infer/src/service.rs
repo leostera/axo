@@ -1,5 +1,8 @@
 //! Local inference orchestration: inspect HF metadata, pin artifacts, install, load, execute.
 //! Task adapters belong to Axo; model repositories can supply data, never executable code.
+#[cfg(test)]
+#[path = "coreml_service_tests.rs"]
+mod coreml_tests;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -126,7 +129,9 @@ impl Drop for Operation<'_> {
 enum Runtime {
     Llama(Infer),
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    Mlx(crate::mlx_process::Process),
+    Mlx(crate::native_process::Process),
+    #[cfg(target_os = "macos")]
+    CoreMl(crate::native_process::Process),
 }
 impl Runtime {
     async fn stop(self) {
@@ -134,6 +139,8 @@ impl Runtime {
             Self::Llama(infer) => infer.stop().await,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Self::Mlx(process) => process.stop().await,
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(process) => process.stop().await,
         }
     }
     async fn ensure_running(&mut self) -> Result<(), Error> {
@@ -141,6 +148,8 @@ impl Runtime {
             Self::Llama(infer) => infer.ensure_running().await.map_err(|_| Error::unsupported("The pinned llama.cpp runtime could not load this selection; inspect ai/infer.log. No repository code was executed.")),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Self::Mlx(process) => process.ensure_running().await,
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(process) => process.ensure_running().await,
         }
     }
     async fn status(&self) -> &'static str {
@@ -155,6 +164,14 @@ impl Runtime {
                 Some(false) => "loaded",
                 None => "stopped",
             },
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(process) => {
+                if process.loaded().await {
+                    "loaded"
+                } else {
+                    "stopped"
+                }
+            }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Self::Mlx(process) => {
                 if process.loaded().await {
@@ -171,6 +188,8 @@ impl Runtime {
             Self::Llama(infer) => Some(infer),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Self::Mlx(_) => None,
+            #[cfg(target_os = "macos")]
+            Self::CoreMl(_) => None,
         }
     }
 }
@@ -194,6 +213,9 @@ impl Service {
             run,
             state: Mutex::new(State::default()),
         }
+    }
+    fn coreml_helper(&self) -> PathBuf {
+        self.helper.with_file_name("axod-infer-coreml")
     }
     fn mlx_helper(&self) -> PathBuf {
         self.helper.with_file_name("axod-infer-mlx")
@@ -299,9 +321,19 @@ impl Service {
                         .json_request("GET", "/slots", &json!({}), Duration::from_secs(90))
                         .await?;
                 }
-                Ok(
-                    json!({"model":selection.model,"status":"loaded","task":task,"source":active.resolved.source()}),
-                )
+                let mut reply = json!({"model":selection.model,"status":"loaded","task":task,"source":active.resolved.source()});
+                #[cfg(target_os = "macos")]
+                if let Runtime::CoreMl(process) = &active.runtime {
+                    reply["description"] = process
+                        .request(&json!({"op":"describe"}), Duration::from_secs(5))
+                        .await?;
+                }
+                if serde_json::to_vec(&reply).map_or(true, |bytes| bytes.len() > 63 * 1024) {
+                    return Err(Error::unsupported(
+                        "model feature description exceeds the relay budget",
+                    ));
+                }
+                Ok(reply)
             }
             Request::Run(selection, input) => {
                 let resolved = self.resolve(&selection).await?;
@@ -319,6 +351,26 @@ impl Service {
                 let active = state.active.as_ref().unwrap();
                 match &active.runtime {
                     Runtime::Llama(infer) => run(infer, &active.resolved, input).await,
+                    #[cfg(target_os = "macos")]
+                    Runtime::CoreMl(process) => {
+                        let Input::Predict(prediction) = input else {
+                            return Err(Error::unsupported(
+                                "Core ML exposes named-feature predict, not chat or schema-conditioned classification",
+                            ));
+                        };
+                        let outputs = process
+                            .request(&prediction.native_request()?, Duration::from_secs(180))
+                            .await?;
+                        let outputs = prediction.validate_outputs(outputs)?;
+                        let reply = json!({"model":selection.model,"task":"predict","outputs":outputs,"source":active.resolved.source()});
+                        if serde_json::to_vec(&reply).map_or(true, |bytes| bytes.len() > 63 * 1024)
+                        {
+                            return Err(Error::unsupported(
+                                "prediction exceeds the relay response budget; select fewer named features with input.outputs",
+                            ));
+                        }
+                        Ok(reply)
+                    }
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     Runtime::Mlx(process) => {
                         let Input::Generate {
@@ -366,31 +418,32 @@ impl Service {
             (helper.is_file(), physical_memory(), free)
         })
         .await;
-        let mut native = json!({"name":"mlx","available":false,"formats":["safetensors"],"tasks":["generate"],"recognizedArchitectures":[],
+        let mlx_fallback = json!({"name":"mlx","available":false,"formats":["safetensors"],"tasks":["generate"],"recognizedArchitectures":[],
             "reason":"Native MLX needs Apple Silicon, its Axo worker and its packaged Metal resource"});
-        if Backend::Mlx.available() && self.mlx_helper().is_file() && self.mlx_metal().is_file() {
-            let output = tokio::time::timeout(
-                Duration::from_secs(3),
-                tokio::process::Command::new(self.mlx_helper())
-                    .arg("--capabilities")
-                    .arg("--metallib")
-                    .arg(self.mlx_metal())
-                    .env_remove("AXO_INFER_LIFELINE_STDIN")
-                    .kill_on_drop(true)
-                    .output(),
-            )
-            .await;
-            if let Ok(Ok(output)) = output {
-                if output.status.success() && output.stdout.len() <= 65536 {
-                    if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
-                        if value["name"] == "mlx" && value["available"].is_boolean() {
-                            native = value;
-                        }
-                    }
-                }
-            }
-        }
+        let native = if Backend::Mlx.available()
+            && self.mlx_helper().is_file()
+            && self.mlx_metal().is_file()
+        {
+            let mut command = tokio::process::Command::new(self.mlx_helper());
+            command
+                .arg("--capabilities")
+                .arg("--metallib")
+                .arg(self.mlx_metal());
+            probe_native(command, mlx_fallback).await
+        } else {
+            mlx_fallback
+        };
+        let coreml_fallback = json!({"name":"coreml","available":false,"formats":["mlmodel","mlpackage"],"tasks":["predict"],"recognizedArchitectures":[],
+            "reason":"Core ML requires macOS and its embedded Axo worker; update Axo on the target Mac"});
+        let coreml = if Backend::CoreMl.available() && self.coreml_helper().is_file() {
+            let mut command = tokio::process::Command::new(self.coreml_helper());
+            command.arg("--capabilities");
+            probe_native(command, coreml_fallback).await
+        } else {
+            coreml_fallback
+        };
         let mlx_available = native["available"] == true;
+        let coreml_available = coreml["available"] == true;
         let legacy: Value =
             serde_json::from_str(RUNTIME).expect("generated runtime inventory is JSON");
         let llama = json!({
@@ -399,27 +452,27 @@ impl Service {
             "tasks":["generate","classify","embed"], "inputs":["text","image","json"], "contextTokens":8192, "kvCache":true,
             "reason":"Task heads, quantization and projectors are validated by the pinned runtime when loaded."
         });
-        let formats = if mlx_available {
-            vec!["gguf", "safetensors", "mlx"]
-        } else {
-            vec!["gguf"]
-        };
-        let backends = if mlx_available {
-            vec!["llama.cpp", "mlx"]
-        } else {
-            vec!["llama.cpp"]
-        };
+        let mut formats = vec!["gguf"];
+        let mut backends = vec!["llama.cpp"];
+        if mlx_available {
+            formats.extend(["safetensors", "mlx"]);
+            backends.push("mlx");
+        }
+        if coreml_available {
+            formats.extend(["coreml", "mlmodel", "mlpackage"]);
+            backends.push("coreml");
+        }
         Ok(json!({
-            "apiVersion":3,"available":available || mlx_available,"runtime":legacy,
-            "formats":formats,"tasks":["generate","classify","embed"],"runtimes":[llama,native],
-            "inputs":{"generate":["text","image"],"classify":["json","text","image"],"embed":["text"]},
+            "apiVersion":4,"available":available || mlx_available || coreml_available,"runtime":legacy,
+            "formats":formats,"tasks":["generate","classify","embed","predict"],"runtimes":[llama,native,coreml],
+            "inputs":{"generate":["text","image"],"classify":["json","text","image"],"embed":["text"],"predict":["features","image"]},
             "architectureCheck":"recognizedArchitectures comes from the pinned runtime source. Recognition is not a load guarantee: tensor versions, quantization, projectors and task heads are finally checked by the runtime.",
-            "modelSource":"hf:owner/repo[:quant][@revision]","selection":"backend disambiguates runtimes; file selects the first model shard; GGUF projector and quant selectors do not apply to MLX bundles",
+            "modelSource":"hf:owner/repo[:quant][@revision]","selection":"backend disambiguates runtimes; file selects a model shard or Core ML package; GGUF projector/quant selectors do not apply to native bundles",
             "customCode":false,"privateRepositories":false,"backends":backends,
             "limits":{"physicalMemoryBytes":memory,"maxModelBytes":memory.saturating_mul(3)/5,"freeDiskBytes":free,
                 "maxDownloadBytes":catalog::MAX_DOWNLOAD_BYTES,"maxArtifacts":catalog::MAX_FILES,"maxImages":4,"maxImageBytes":8*1024*1024,
                 "maxTotalImageBytes":16*1024*1024,"maxTextBytes":32768,"contextTokens":8192,"maxOutputTokens":4096,"maxOperationMs":MAX_TIMEOUT_MS,"concurrentOperations":1},
-            "unsupported":["MLX currently implements dense Qwen2/Qwen3 text generation, not arbitrary safetensors architectures, embeddings or vision", "custom decision heads need a reviewed task adapter, never automatically imported HF Python", "audio/video inputs are not exposed by these adapters"]
+            "unsupported":["Core ML supports bounded stateless named-feature predict, not generation, mutable state, custom classes/layers/operators, linked models or downloaded compiled binaries", "MLX currently implements dense Qwen2/Qwen3 text generation, not arbitrary safetensors architectures, embeddings or vision", "custom decision heads need a reviewed task adapter, never automatically imported HF Python", "audio/video inputs are not exposed by these adapters"]
         }))
     }
 
@@ -429,7 +482,7 @@ impl Service {
         if let Some(resolved) = blocking(move || catalog::cached(&root, &key)).await? {
             return Ok(Inspection::from_resolved(resolved));
         }
-        crate::mlx_catalog::inspect(
+        catalog::inspect_repository(
             &self.models,
             selection,
             crate::transfer::metadata(&self.models, selection).await?,
@@ -442,17 +495,24 @@ impl Service {
             .ok_or_else(|| Error::unsupported(info.compatibility.reasons.join(" ")))
     }
     async fn check_resources(&self, resolved: &Resolved) -> Result<(), Error> {
-        let helper = if resolved.backend == Backend::Mlx {
-            self.mlx_helper()
-        } else {
-            self.helper.clone()
+        let helper = match resolved.backend {
+            Backend::Mlx => self.mlx_helper(),
+            Backend::CoreMl => self.coreml_helper(),
+            Backend::Llama => self.helper.clone(),
         };
         let metal = self.mlx_metal();
         let backend = resolved.backend;
         let bytes = resolved.download_bytes();
+        let models = self.models.clone();
         blocking(move || {
             if !backend.available() { return Err(Error::unavailable("selected native backend is not compiled for this host platform")); }
             if !helper.is_file() || (backend == Backend::Mlx && !metal.is_file()) { return Err(Error::unavailable("local inference helper or Metal resource missing; update Axo on this Mac")); }
+            if backend == Backend::CoreMl {
+                let disk = models.ancestors().find(|path| path.exists()).unwrap_or(Path::new("/"));
+                if crate::free_disk(disk) < bytes.saturating_mul(3).saturating_add(512 * 1024 * 1024) {
+                    return Err(Error::unavailable("Core ML needs room for verified sources, compilation/staging copies and a 512 MiB disk reserve"));
+                }
+            }
             if bytes > physical_memory().saturating_mul(3)/5 { return Err(Error::unavailable("selected artifacts exceed this host's 60% RAM admission budget; choose a smaller quantization/model or a larger host")); }
             Ok(())
         }).await
@@ -466,6 +526,11 @@ impl Service {
         if resolved.backend == Backend::Mlx && task != Task::Generate {
             return Err(Error::unsupported(
                 "this native MLX architecture adapter implements text generation only; embeddings and decision heads need their own native adapters",
+            ));
+        }
+        if (resolved.backend == Backend::CoreMl) != (task == Task::Predict) {
+            return Err(Error::unsupported(
+                "named-feature predict currently requires Core ML; Core ML requires task: predict rather than a text/decision adapter",
             ));
         }
         self.check_resources(resolved).await?;
@@ -483,6 +548,21 @@ impl Service {
                 .find(|file| file.role == Role::Projector)
                 .map(|file| PathBuf::from(file.path.as_str()));
             let runtime = match resolved.backend {
+                Backend::CoreMl => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        Runtime::CoreMl(crate::native_process::Process::new(
+                            self.coreml_helper(),
+                            crate::native_process::Kind::CoreMl,
+                            resolved.directory(&self.models).join(resolved.entrypoint()),
+                            self.run.clone(),
+                        ))
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        return Err(Error::unavailable("native Core ML requires macOS"));
+                    }
+                }
                 Backend::Llama => Runtime::Llama(Infer::for_model(
                     self.helper.clone(),
                     resolved.directory(&self.models),
@@ -494,9 +574,11 @@ impl Service {
                 Backend::Mlx => {
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     {
-                        Runtime::Mlx(crate::mlx_process::Process::new(
+                        Runtime::Mlx(crate::native_process::Process::new(
                             self.mlx_helper(),
-                            self.mlx_metal(),
+                            crate::native_process::Kind::Mlx {
+                                metal: self.mlx_metal(),
+                            },
                             resolved.directory(&self.models).join(
                                 Path::new(resolved.files[0].path.as_str())
                                     .parent()
@@ -563,10 +645,34 @@ impl Service {
     }
 }
 
+async fn probe_native(mut command: tokio::process::Command, fallback: Value) -> Value {
+    let output = tokio::time::timeout(
+        Duration::from_secs(3),
+        command
+            .env_remove("AXO_INFER_LIFELINE_STDIN")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    if let Ok(Ok(output)) = output {
+        if output.status.success() && output.stdout.len() <= 65536 {
+            if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
+                if value["name"] == fallback["name"] && value["available"].is_boolean() {
+                    return value;
+                }
+            }
+        }
+    }
+    fallback
+}
+
 async fn run(infer: &Infer, resolved: &Resolved, input: Input) -> Result<Value, Error> {
     let model = &resolved.selection.model;
     let source = resolved.source();
     match input {
+        Input::Predict(_) => Err(Error::unsupported(
+            "llama.cpp has no named-feature predict adapter",
+        )),
         Input::Generate {
             text,
             images,

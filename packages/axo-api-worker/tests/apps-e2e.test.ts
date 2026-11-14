@@ -100,7 +100,7 @@ test("a Session's script runs bash and computer use on a Mac through the account
     const capabilities = await localCall(socketPath, "axo.apps.run", { sessionId, code: `async () => codemode.ai.capabilities({})` }) as {
       result: { apiVersion: number; formats: string[]; runtime: { recognizedArchitectures: string[] } };
     };
-    assert.equal(capabilities.result.apiVersion, 3);
+    assert.equal(capabilities.result.apiVersion, 4);
     assert.deepEqual(capabilities.result.formats, ["gguf"]);
     assert.ok(capabilities.result.runtime.recognizedArchitectures.includes("clef"));
 

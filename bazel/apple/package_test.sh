@@ -51,6 +51,23 @@ if [[ "$native" == mlx ]]; then
     failures=$((failures + 1))
   fi
 fi
+coreml="$app/Contents/Helpers/axod-infer-coreml"
+if [[ ! -s "$coreml" ]]; then
+  echo "FAIL: missing native Core ML worker" >&2
+  failures=$((failures + 1))
+else
+  check "minos of axod-infer-coreml" "$(xcrun vtool -show-build "$coreml" | awk '/minos/ { print $2; exit }')" "$macos_min"
+  check "Core ML signing identifier" "$(codesign -dv "$coreml" 2>&1 | awk -F= '/^Identifier=/ { print $2 }')" dev.leostera.axo.infer.coreml
+  if [[ "$team" != - ]]; then
+    check "Core ML worker team" "$(codesign -dv --verbose=4 "$coreml" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
+  fi
+  if capabilities=$("$coreml" --capabilities); then
+    check "packaged native Core ML devices" "$(printf '%s' "$capabilities" | /usr/bin/plutil -extract available raw -o - -)" true
+  else
+    echo "FAIL: packaged native Core ML capability query cannot run" >&2
+    failures=$((failures + 1))
+  fi
+fi
 check "axod --version" "$("$app/Contents/Helpers/axod" --version | sed -n 's/.*(build \([0-9]*\)).*/\1/p')" "$axod_build"
 for agent in dev.leostera.axo.axod dev.leostera.axo.app; do
   if plutil -lint "$app/Contents/Library/LaunchAgents/$agent.plist" >/dev/null; then

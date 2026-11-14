@@ -5,6 +5,7 @@ use axo_protocol::asset::Attachment;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
+pub use crate::features::Prediction;
 use crate::service::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -78,9 +79,18 @@ pub struct ArtifactPath(String);
 impl ArtifactPath {
     pub fn parse(value: String) -> Result<Self, Error> {
         if value.len() > 512
-            || ![".gguf", ".safetensors", ".json", ".model", ".txt"]
-                .iter()
-                .any(|suffix| value.to_ascii_lowercase().ends_with(suffix))
+            || ![
+                ".gguf",
+                ".safetensors",
+                ".json",
+                ".model",
+                ".txt",
+                ".mlmodel",
+                ".mlpackage",
+                ".bin",
+            ]
+            .iter()
+            .any(|suffix| value.to_ascii_lowercase().ends_with(suffix))
             || value.split('/').any(|part| !component(part))
         {
             return Err(Error::invalid(
@@ -106,12 +116,15 @@ pub enum Backend {
     Llama,
     #[serde(rename = "mlx")]
     Mlx,
+    #[serde(rename = "coreml")]
+    CoreMl,
 }
 impl Backend {
     pub fn available(self) -> bool {
         match self {
             Self::Llama => true,
             Self::Mlx => cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            Self::CoreMl => cfg!(target_os = "macos"),
         }
     }
 }
@@ -134,6 +147,7 @@ pub enum Task {
     Generate,
     Classify,
     Embed,
+    Predict,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -161,6 +175,7 @@ pub enum Question {
 
 #[derive(Debug)]
 pub enum Input {
+    Predict(Prediction),
     Generate {
         text: String,
         images: Vec<Image>,
@@ -181,18 +196,25 @@ impl Input {
             Self::Generate { .. } => Task::Generate,
             Self::Classify { .. } => Task::Classify,
             Self::Embed { .. } => Task::Embed,
+            Self::Predict(_) => Task::Predict,
         }
     }
-    pub fn images(&self) -> &[Image] {
+    pub fn images(&self) -> Vec<&Image> {
         match self {
-            Self::Generate { images, .. } | Self::Classify { images, .. } => images,
-            _ => &[],
+            Self::Generate { images, .. } | Self::Classify { images, .. } => {
+                images.iter().collect()
+            }
+            Self::Predict(prediction) => prediction.images().collect(),
+            Self::Embed { .. } => Vec::new(),
         }
     }
     pub fn replace_assets(&mut self, urls: &BTreeMap<String, String>) -> Result<(), Error> {
-        let images = match self {
-            Self::Generate { images, .. } | Self::Classify { images, .. } => images,
-            _ => return Ok(()),
+        let images: Vec<&mut Image> = match self {
+            Self::Generate { images, .. } | Self::Classify { images, .. } => {
+                images.iter_mut().collect()
+            }
+            Self::Predict(prediction) => prediction.images_mut().collect(),
+            Self::Embed { .. } => Vec::new(),
         };
         for image in images {
             if let Image::Asset(attachment) = image {
@@ -207,7 +229,7 @@ impl Input {
     }
     pub fn image_urls(&self) -> Result<Vec<&str>, Error> {
         self.images()
-            .iter()
+            .into_iter()
             .map(|image| match image {
                 Image::Data(data) => Ok(data.as_str()),
                 _ => Err(Error::invalid(
@@ -266,7 +288,7 @@ impl Request {
             .map_err(|error| Error::invalid(format!("invalid model selection: {error}")))?;
         let task: Task =
             serde_json::from_value(value.get("task").cloned().unwrap_or(json!("generate")))
-                .map_err(|_| Error::invalid("task must be generate, classify or embed"))?;
+                .map_err(|_| Error::invalid("task must be generate, classify, embed or predict"))?;
         Ok(match op {
             "info" => Self::Info(selection),
             "install" => Self::Install(selection),
@@ -304,6 +326,12 @@ struct ClassifyInput {
 }
 fn parse_input(task: Task, value: &Value, tokens: Option<&Value>) -> Result<Input, Error> {
     let input = match task {
+        Task::Predict => {
+            if tokens.is_some() {
+                return Err(Error::invalid("predict does not accept maxTokens"));
+            }
+            Input::Predict(Prediction::parse(value)?)
+        }
         Task::Generate | Task::Embed => {
             let value = if value.is_string() {
                 json!({"text":value})

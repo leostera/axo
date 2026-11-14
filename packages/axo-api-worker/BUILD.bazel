@@ -118,6 +118,11 @@ config_setting(
     constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
 )
 
+config_setting(
+    name = "macos_inference",
+    constraint_values = ["@platforms//os:macos"],
+)
+
 # Explicit opt-in: real HF models/tasks through codemode, without production deployment.
 node_test(
     name = "ai_smoke_test",
@@ -129,6 +134,9 @@ node_test(
         "//crates/axod",
     ] + select({
         ":apple_silicon_inference": ["//crates/axod-infer:axod-infer-mlx"],
+        "//conditions:default": [],
+    }) + select({
+        ":macos_inference": ["//crates/axod-infer:axod-infer-coreml"],
         "//conditions:default": [],
     }),
     env = {"AXOD_BINARY": "../../crates/axod/axod"},

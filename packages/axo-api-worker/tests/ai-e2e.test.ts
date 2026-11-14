@@ -17,6 +17,7 @@ test("codemode inspects runtime support and executes multiple real HF selections
   const binary = process.env.AXO_TEST_AI_DAEMON ?? process.env.AXOD_BINARY;
   const helper = process.env.AXO_TEST_AI_HELPER;
   assert.ok(binary && helper, "set AXOD_BINARY and AXO_TEST_AI_HELPER");
+  const coremlHelper = process.env.AXO_TEST_AI_COREML_HELPER;
   const mlxHelper = process.env.AXO_TEST_AI_MLX_HELPER;
   const mlxMetal = process.env.AXO_TEST_AI_MLX_METALLIB;
   assert.equal(Boolean(mlxHelper), Boolean(mlxMetal), "provide both native MLX worker and Metal resource");
@@ -30,6 +31,7 @@ test("codemode inspects runtime support and executes multiple real HF selections
     { model: "hf:mlx-community/Qwen3-0.6B-4bit@73e3e38d981303bc594367cd910ea6eb48349da8", input: "What is 2 + 2? Answer briefly.", maxTokens: 32 },
     { model: "hf:mlx-community/Qwen2.5-0.5B-Instruct-4bit@a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3", backend: "mlx", input: "Write a short greeting.", maxTokens: 24 },
   );
+  if (coremlHelper) cases.push({ model: "hf:apple/coreml-FastViT-T8@b42811edaa9f7ca6d79eeada204227704484c881", task: "predict", input: { features: {}, outputs: ["classLabel"] } });
   if (process.env.AXO_TEST_AI_EMBEDDING) cases.push({ model: process.env.AXO_TEST_AI_EMBEDDING, task: "embed", input: "A small local embedding test." });
   if (process.env.AXO_TEST_AI_CLASSIFIER) cases.push({ model: process.env.AXO_TEST_AI_CLASSIFIER, task: "classify", input: { state: { task: "Inspect this tiny test image" }, questions: {
     image: { type: "noul", instructions: "Is an image present?" },
@@ -49,6 +51,7 @@ test("codemode inspects runtime support and executes multiple real HF selections
     await symlink(cache, models);
     await copyFile(resolve(binary), join(bin, "axod"));
     await copyFile(helper, join(bin, "axod-infer"));
+    if (coremlHelper) await copyFile(resolve(coremlHelper), join(bin, "axod-infer-coreml"), constants.COPYFILE_FICLONE);
     if (mlxHelper && mlxMetal) {
       await copyFile(resolve(mlxHelper), join(bin, "axod-infer-mlx"), constants.COPYFILE_FICLONE);
       await copyFile(resolve(mlxMetal), join(bin, "mlx.metallib"), constants.COPYFILE_FICLONE);
@@ -74,6 +77,11 @@ test("codemode inspects runtime support and executes multiple real HF selections
     if (mlxHelper) {
       assert.ok(capabilities.backends.includes("mlx"));
       assert.equal(capabilities.runtimes?.find(runtime => runtime.name === "mlx")?.available, true);
+    }
+    if (coremlHelper) {
+      assert.equal(capabilities.apiVersion, 4);
+      assert.ok(capabilities.backends.includes("coreml"));
+      assert.equal(capabilities.runtimes?.find(runtime => runtime.name === "coreml")?.available, true);
     }
     const mlx = aiResults.info.parse((await run('async () => codemode.ai.info({model:"hf:mlx-community/clef-omni-4bit"})')).result);
     assert.equal(mlx.info.compatibility.status, "unsupported");
@@ -107,7 +115,16 @@ test("codemode inspects runtime support and executes multiple real HF selections
           break;
         }
       }
-      const code = args.task === "classify" ? `async () => {
+      if (args.task === "predict") {
+        const loaded = aiResults.load.parse((await run(`async () => codemode.ai.load(${JSON.stringify({ ...selection, task: "predict" })})`)).result);
+        assert.equal(loaded.description?.inputs.image.type, "image");
+        assert.equal(loaded.source.backend, "coreml");
+      }
+      const code = args.task === "predict" ? `async () => {
+        const image = await codemode.assets.save({name:"coreml-fixture.png",mimeType:"image/png",base64:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="});
+        const args = ${JSON.stringify(args)}; args.input.features.image = {type:"image",image:image.attachment};
+        return codemode.ai.run(args);
+      }` : args.task === "classify" ? `async () => {
         const image = await codemode.assets.save({name:"fixture.png",mimeType:"image/png",base64:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="});
         const args = ${JSON.stringify(args)}; args.input.images = [image.attachment];
         return codemode.ai.run(args);
@@ -117,8 +134,13 @@ test("codemode inspects runtime support and executes multiple real HF selections
       if (result.task === "generate") assert.ok(result.text.trim());
       if (result.task === "embed") assert.ok(result.embedding.length > 0);
       if (result.task === "classify") assert.ok("image" in result.answers);
+      if (result.task === "predict") {
+        assert.equal(result.outputs.classLabel.type, "string");
+        assert.deepEqual(Object.keys(result.outputs), ["classLabel"]);
+        assert.ok(result.source.files.every(file => file.sha256 !== null));
+      }
       console.log(JSON.stringify({ via: "codemode.ai.run", model: result.model, backend: result.source.backend ?? "llama.cpp", task: result.task, revision: result.source.revision,
-        ...(result.task === "generate" ? { text: result.text } : result.task === "embed" ? { dimensions: result.embedding.length } : { answers: result.answers }) }));
+        ...(result.task === "generate" ? { text: result.text } : result.task === "embed" ? { dimensions: result.embedding.length } : result.task === "predict" ? { outputs: result.outputs } : { answers: result.answers }) }));
       // Leave residency intact: the next case must retire a different model/backend safely.
     }
     // Switch back after the native cases too, then explicitly unload the exact selections.

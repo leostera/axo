@@ -47,7 +47,7 @@ impl Resolved {
             || self.files.is_empty()
             || self.files.len() > MAX_FILES
             || self.files[0].role != Role::Model
-            || self.files[0].sha256.is_none()
+            || (self.backend != Backend::CoreMl && self.files[0].sha256.is_none())
             || self
                 .selection
                 .backend
@@ -59,6 +59,8 @@ impl Resolved {
                     .any(|file| !file.path.as_str().to_ascii_lowercase().ends_with(".gguf")))
             || (self.backend == Backend::Mlx
                 && !self.files[0].path.as_str().ends_with(".safetensors"))
+            || (self.backend == Backend::CoreMl
+                && !self.files[0].path.as_str().ends_with(".mlmodel"))
             || self.files.iter().any(|file| file.validate().is_err())
             || self
                 .files
@@ -78,17 +80,61 @@ impl Resolved {
         {
             return Err(Error::invalid("duplicate artifact path"));
         }
-        if self
-            .selection
-            .file
-            .as_ref()
-            .is_some_and(|file| file != &self.files[0].path)
-        {
+        if self.selection.file.as_ref().is_some_and(|file| {
+            file != &self.files[0].path
+                && !(self.backend == Backend::CoreMl && file.as_str() == self.entrypoint())
+        }) {
             return Err(Error::invalid(
                 "manifest does not match its explicit model artifact",
             ));
         }
         match self.backend {
+            Backend::CoreMl => {
+                if self.selection.projector.is_some()
+                    || self.selection.model.quant().is_some()
+                    || self.files.iter().any(|file| file.role == Role::Projector)
+                    || self.task_hints != [Task::Predict]
+                    || self.files[0].bytes > 256 * 1024 * 1024
+                    || self
+                        .files
+                        .iter()
+                        .filter(|file| file.role == Role::Model)
+                        .count()
+                        != 1
+                    || self
+                        .files
+                        .iter()
+                        .filter(|file| file.path.as_str().ends_with(".mlmodel"))
+                        .count()
+                        != 1
+                {
+                    return Err(Error::invalid(
+                        "Core ML requires one bounded source graph and the predict task",
+                    ));
+                }
+                let entry = self.entrypoint();
+                if entry.ends_with(".mlpackage") {
+                    let prefix = format!("{entry}/");
+                    if self.files.iter().any(|file| {
+                        !file.path.as_str().starts_with(&prefix)
+                            || (file.role == Role::Resource
+                                && ![".json", ".bin"]
+                                    .iter()
+                                    .any(|suffix| file.path.as_str().ends_with(suffix)))
+                    }) || !self.files.iter().any(|file| {
+                        file.path.as_str() == format!("{entry}/Manifest.json")
+                            && file.bytes <= 1024 * 1024
+                    }) {
+                        return Err(Error::invalid(
+                            "Core ML package resources must remain in one verified data-only bundle",
+                        ));
+                    }
+                } else if self.files.len() != 1 {
+                    return Err(Error::invalid(
+                        "standalone Core ML sources cannot reference external resources",
+                    ));
+                }
+            }
             Backend::Llama => {
                 if self.files.iter().any(|file| file.role == Role::Resource) {
                     return Err(Error::invalid(
@@ -137,11 +183,25 @@ impl Resolved {
             .iter()
             .fold(0_u64, |total, file| total.saturating_add(file.bytes))
     }
+    pub fn entrypoint(&self) -> &str {
+        let path = self.files[0].path.as_str();
+        if self.backend == Backend::CoreMl {
+            if let Some(position) = path.find(".mlpackage/") {
+                return &path[..position + ".mlpackage".len()];
+            }
+        }
+        path
+    }
     pub fn vision(&self) -> bool {
-        self.backend == Backend::Llama && self.files.iter().any(|file| file.role == Role::Projector)
+        self.backend == Backend::CoreMl
+            || (self.backend == Backend::Llama
+                && self.files.iter().any(|file| file.role == Role::Projector))
     }
     pub fn source(&self) -> Value {
         let mut source = json!({"backend":self.backend,"repo":self.selection.model.repo(),"revision":self.revision,"file":self.files[0].path,"sha256":self.files[0].sha256,"files":self.files});
+        if self.backend == Backend::CoreMl {
+            source["entrypoint"] = json!(self.entrypoint());
+        }
         if let Some(blob) = &self.files[0].git_blob {
             source["gitBlob"] = json!(blob);
         }
@@ -242,9 +302,52 @@ impl Inspection {
         let format = match resolved.backend {
             Backend::Llama => "gguf",
             Backend::Mlx => "mlx",
+            Backend::CoreMl => "coreml",
         };
         Self { model: resolved.selection.model.as_str().into(), compatibility: Compatibility { status: "candidate", reasons: vec!["Pinned artifacts are available; architecture, task and memory compatibility must still be tested by loading the native runtime".into()] }, formats: vec![format.into()], architecture: resolved.architecture.clone(), task_hints: resolved.task_hints.clone(), candidates: resolved.files.iter().map(|file| file.path.as_str().into()).collect(), resolved: Some(resolved) }
     }
+}
+
+pub async fn inspect_repository(
+    root: &Path,
+    selection: &Selection,
+    value: Value,
+) -> Result<Inspection, Error> {
+    let paths: Vec<_> = value["siblings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file["rfilename"].as_str())
+        .collect();
+    let coreml = paths.iter().any(|path| {
+        path.ends_with(".mlpackage/Manifest.json")
+            || (path.ends_with(".mlmodel") && !path.contains(".mlmodelc/"))
+    });
+    let gguf = paths
+        .iter()
+        .any(|path| path.to_ascii_lowercase().ends_with(".gguf"));
+    let mlx = paths.iter().any(|path| path.ends_with(".safetensors"));
+    let selected = selection.backend.or_else(|| {
+        selection.file.as_ref().and_then(|file| {
+            let path = file.as_str();
+            if path.ends_with(".mlmodel") || path.ends_with(".mlpackage") {
+                Some(Backend::CoreMl)
+            } else if path.to_ascii_lowercase().ends_with(".gguf") {
+                Some(Backend::Llama)
+            } else if path.ends_with(".safetensors") {
+                Some(Backend::Mlx)
+            } else {
+                None
+            }
+        })
+    });
+    if selected == Some(Backend::CoreMl) || (selected.is_none() && coreml && !gguf && !mlx) {
+        return crate::coreml_catalog::inspect(root, selection, value).await;
+    }
+    if selected.is_none() && coreml && (gguf || mlx) {
+        return Ok(Inspection {model: selection.model.as_str().into(), compatibility: Compatibility {status: "ambiguous", reasons: vec!["Multiple native model formats exist; select backend or an explicit model file instead of guessing".into()]}, formats: [gguf.then_some("gguf"), mlx.then_some("safetensors"), Some("coreml")].into_iter().flatten().map(str::to_owned).collect(), architecture: None, task_hints: vec![Task::Generate, Task::Predict], candidates: vec![], resolved: None});
+    }
+    crate::mlx_catalog::inspect(root, selection, value).await
 }
 
 #[derive(Deserialize)]
