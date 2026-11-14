@@ -1,7 +1,7 @@
 # RFD0049 - Axo: browser conversation cache
 
 - Feature Name: `web-conversation-cache`
-- Status: Implemented (not yet deployed)
+- Status: Implemented (Axo 0.59)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14
@@ -37,6 +37,12 @@ A deep link absent from the bounded snapshot waits for the live listing. An inva
 ## Validation
 
 Model tests cover pre-connection hydration, preserved selection/drafts, no transient progress, blocked cached sends, fresh-window replacement including changed content at the same cursor, account isolation, sign-out/late writes, corrupt/expired/oversized snapshots, byte/record limits and unavailable storage. Browser tests hold cloud replies during refresh, verify cached messages/sidebar/draft before release, verify fresh replacement and initial focus, preserve search focus during reconnect, and clear storage across two tabs. Existing invalid-link, conversation rendering/scroll, shared-session and tools browser tests remain regression gates. All 79 standard Bazel test targets pass; native fixture and paused-cloud browser screenshots were reviewed without installing or restarting the active app.
+
+### Publication evidence
+
+Axo 0.59 (Mac 330 / axod 80, release commit `2a3983fc6802f88aa6e3970abcdca7a89cb54758`) was pushed and published as `axo-0.59-2a3983fc6802-aarch64-apple-darwin.zip`. Worker deployment `f675b310-7ce6-4cf4-b4c7-0be6ef6a3efa` serves the new web bundles; downloaded public JavaScript matches the built assets byte-for-byte, and the public HTML references the new entry bundle. All 79 standard Bazel test targets pass.
+
+The public latest/legacy manifests agree. The new archive verifies against the configured signing identity/team and captured version/build/commit; a probe compiled from the actual updater fetched the public manifest and verified the downloaded release without installing it. Manifest and archive cache headers are respectively no-store and immutable. The prior 0.58 immutable archive remains byte-for-byte unchanged. All seven codemode model/task integration cases passed again using the downloaded 0.59 helpers/resources in an isolated test account/daemon. The active app and Session were not restarted or installed over.
 
 ## Drawbacks and alternatives
 
