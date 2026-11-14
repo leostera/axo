@@ -4,7 +4,7 @@ The shared Rust daemon stays in `crates/`; Linux distribution, service and deskt
 
 ## Build
 
-Requirements: Linux 5.11 or newer with `/proc` and devpts, a C/C++ compiler, CMake, Ninja, OpenSSL development headers and pkg-config. Bazelisk selects Bazel from `.bazelversion`; Bazel selects the pinned Rust and Zig toolchains independently of the shell's Rust default.
+Requirements: Linux 5.11 or newer with `/proc` and devpts, a C/C++ compiler, CMake, Ninja, OpenSSL development headers and pkg-config. Computer use also needs X11, Xi, Xtst and xkbcommon runtime/development libraries (Ubuntu: `libx11-dev libxi-dev libxtst-dev libxkbcommon-dev`). No display server is required for terminal-only daemon operation. Bazelisk selects Bazel from `.bazelversion`; Bazel selects the pinned Rust and Zig toolchains independently of the shell's Rust default.
 
 ```sh
 bazel build //linux:axod //linux:runtime
@@ -67,11 +67,32 @@ This checks health RPC, session creation, terminal input/output, session close, 
 
 Logs go into the specified server directory. The daemon defaults to private file-based host credentials on Linux; it does not use or emulate Apple's Keychain.
 
+## Computer use
+
+The daemon embeds the pinned Cua Linux runtime and exposes Axo's 24 allowlisted computer tools. The allowlist is enforced inside the registry, including nested scripts/batches. Every dispatch rechecks desktop lock state; a missing, inactive, ambiguous or unverifiable logind graphical session fails closed. This does not grant a same-UID client permission to answer an Axo confirmation.
+
+Start from the graphical user's session or its systemd user manager so the daemon inherits `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`/`XAUTHORITY` and/or `WAYLAND_DISPLAY`. For native Wayland, explicitly set `CUA_DRIVER_RS_ENABLE_WAYLAND=1` in that daemon's environment. A reachable XWayland display does not prove native Wayland capture/input support. The adapter never starts a nested compositor or installs a GNOME extension implicitly.
+
+**GNOME 50 limitation:** the pinned WinRects helper is deliberately disabled because of session-ending native crashes. Do not bypass that guard or enable an older helper on GNOME 50. An active helper on an unsupported/unverifiable GNOME version is refused before desktop dispatch. Without it, Cua can return an AT-SPI tree with a typed `screenshot_error`; per-window capture and verified focus-bound input remain unavailable. Compositor-specific behavior beyond the tested X11 path needs separate acceptance. Linux capture/input may require portal consent. The `screenRecording` status field is an observed capture capability on Linux, not an Apple TCC grant.
+
+**Secure input:** Linux `request_input` is not advertised and refuses before asking for values. Its native field/origin binding is still macOS-only; never substitute generic typing for this protection.
+
+For an isolated desktop acceptance test, install Xvfb, Openbox, xauth, D-Bus, system Python GI and GTK 4 introspection data (`xvfb openbox xauth dbus-x11 python3-gi gir1.2-gtk-4.0` on Ubuntu). Then:
+
+```sh
+bazel build //crates/axo-computer:linux_desktop_smoke_test
+linux/computer-smoke.sh bazel-bin/crates/axo-computer/linux_desktop_smoke_test
+```
+
+Pass the same CUDA repository options if testing a CUDA build. The launcher owns a private X11/D-Bus session and harmless GTK window; it never unlocks or reads the real desktop. It checks enumeration, accessibility, screenshot capture, edit/readback, a button action, stale-token rejection and lock changes during a script. Its test-only guard models that owned virtual session, not the host's logind session. This is **X11 evidence, not GNOME Wayland parity**. A separate ignored test verifies the actual locked-session refusal without capturing user content.
+
+`linux/check.sh` accepts additional Bazel options and checks the archive plus focused shared suites, including computer-use gates. It does not run interactive desktop/model acceptance or restart/install the paired daemon.
+
 ## Boundaries
 
 - PTY creation uses Linux grantpt/unlockpt/ptsname_r. Child descriptor inheritance uses `close_range(CLOSE_RANGE_CLOEXEC)` and fails closed if unsupported.
 - Process identities include the kernel's start time; a matching PID alone is not sufficient for cleanup after daemon restarts.
-- Computer use is unavailable; the existing non-macOS implementation reports that limitation.
+- Computer use is compositor-dependent as described above. GNOME 50 window capture/focus-bound input and Linux secure form input are not implemented/validated parity.
 - Privileged local IPC calls still fail closed outside macOS. A Linux tray must not bypass those checks or treat a matching Unix UID as equivalent to an Apple code signature. Linux client authorization needs a separate design before enabling question answers or other privileged app actions.
 - Apple model metadata is omitted. Pairing, registration and daemon status identify Linux explicitly on the wire; some account clients may still present a macOS label. General Linux model/OS identification, browser launching, XDG model/cache paths, persistent systemd user-service installation, and Linux CI remain follow-up work.
 - No tray app exists yet. Its implementation belongs under `linux/`, not `apple/`. Prefer a small StatusNotifierItem client of the daemon; GNOME needs an enabled AppIndicator/StatusNotifier host extension.

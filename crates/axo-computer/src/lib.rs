@@ -1,9 +1,9 @@
-//! Computer use on this Mac: seeing and operating its apps, in axod, for this Mac's agents over
-//! MCP and for other Macs' scripts over the relay (RFD0028).
+//! Native computer use in axod, for local agents over MCP and remote scripts over the relay.
 //!
-//! This wraps Cua Driver's macOS runtime (`platform-macos`) in-process, so its Accessibility
-//! and Screen Recording checks are answered with Axo's grants and it never prompts. Actions are
-//! delivered in the background where the app allows it: no focus change, no pointer movement.
+//! Cua's platform runtime is embedded in-process. macOS uses Axo's Accessibility/Screen
+//! Recording grants; Linux uses its desktop session's X11, AT-SPI and Wayland capabilities.
+//! Missing compositor support, a locked desktop or an unverifiable login fails closed.
+//! Linux portal consent is separate from Apple's grants and may require the person.
 //!
 //! Only an allowlist of Cua's tools is exposed. The driver is built on first use, because most
 //! Sessions never touch the screen. It runs on a small tokio runtime of its own, and [`call`]
@@ -65,6 +65,9 @@ fn our_name(tool: &str) -> &str {
 /// The tool axod runs itself, not Cua: asks the person for values the agent must not see and
 /// fills them in (RFD0029). Never reaches `call`.
 pub const REQUEST_INPUT: &str = "request_input";
+
+/// Secure form binding still uses native macOS AX handles; Linux must not advertise parity.
+pub const INPUT_AVAILABLE: bool = cfg!(target_os = "macos");
 
 fn request_input_definition() -> Value {
     json!({
@@ -141,7 +144,7 @@ fn redact_text(text: &str, hidden: &dyn Fn(&str) -> bool) -> Option<String> {
 }
 
 /// Whether this build can do computer use at all.
-pub const AVAILABLE: bool = cfg!(target_os = "macos");
+pub const AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
 /// The allowlisted tools' definitions: `{ name, description, inputSchema }`.
 pub fn tool_definitions() -> Vec<Value> {
@@ -151,7 +154,7 @@ pub fn tool_definitions() -> Vec<Value> {
             tool["name"] = json!(our_name(name));
         }
     }
-    if AVAILABLE {
+    if INPUT_AVAILABLE {
         tools.push(request_input_definition());
     }
     tools
@@ -180,18 +183,22 @@ fn refusal_while(tool: &str, locked: impl Fn() -> bool) -> Option<Value> {
 
 /// What a computer call on a locked Mac answers. Locked, the login window owns the screen:
 /// screenshots show it, and clicks and keys go to it, not to the apps (RFD0028).
+#[cfg(target_os = "linux")]
+pub const LOCKED: &str = "Not done: this Linux desktop is locked, inactive or could not be verified. Computer use requires one active, unlocked graphical login for this user; bash and other tools still work.";
+#[cfg(not(target_os = "linux"))]
 pub const LOCKED: &str = "Not done: this Mac is locked, so its screen and input belong to the login window. Computer use needs the person to unlock it; bash and the other tools still work.";
 
 /// Tools that touch neither the screen nor input, and answer the same locked or not.
 const WORKS_LOCKED: &[&str] = &["check_permissions", "get_guide"];
 
-/// Whether this Mac's screen is locked now; `false` where that can't be known.
+/// Whether desktop use must be refused for lock state. Linux also refuses inactive,
+/// ambiguous or unverifiable graphical sessions instead of treating unknown as unlocked.
 pub fn screen_locked() -> bool {
     imp::screen_locked()
 }
 
-/// Whether this process holds the grants computer use needs: `(accessibility, screen_recording)`,
-/// from Cua's own probe, which its `check_permissions` tool answers with.
+/// Observed `(accessibility, screen_capture)` capability. macOS uses Cua's TCC probe;
+/// Linux does not interpret XWayland or a reachable portal as native capture permission.
 pub fn permissions() -> (bool, bool) {
     imp::permissions()
 }
@@ -200,107 +207,16 @@ fn error(message: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": message }], "isError": true })
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod native;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use native as imp;
 #[cfg(target_os = "macos")]
-mod imp {
-    use std::sync::{Arc, OnceLock};
-
-    use cua_driver_core::tool::ToolRegistry;
-    use serde_json::{Value, json};
-
-    struct Runtime {
-        tokio: tokio::runtime::Runtime,
-        registry: Arc<ToolRegistry>,
-    }
-
-    fn runtime() -> &'static Runtime {
-        static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-        RUNTIME.get_or_init(|| {
-            let tokio = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .thread_name("axo-computer")
-                .build()
-                .expect("the computer-use runtime starts");
-            let cursor = cursor_overlay::CursorConfig {
-                enabled: false,
-                ..Default::default()
-            };
-            // Axo owns the permission UX (the driver never prompts), and is the host it reports.
-            let mut registry = platform_macos::register_tools_with_cursor(
-                cursor,
-                false,
-                true,
-                Some("dev.leostera.axo".into()),
-            );
-            registry.register_script_tool();
-            let registry = Arc::new(registry);
-            registry.init_self_weak();
-            Runtime { tokio, registry }
-        })
-    }
-
-    pub fn tool_definitions() -> Vec<Value> {
-        let list = runtime().registry.tools_list();
-        list["tools"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|tool| {
-                tool["name"]
-                    .as_str()
-                    .is_some_and(|name| super::TOOLS.contains(&super::our_name(name)))
-            })
-            // The script tool is registered twice (by the registry and by register_script_tool).
-            .filter({
-                let mut seen = std::collections::HashSet::new();
-                move |tool| seen.insert(tool["name"].to_string())
-            })
-            .map(|tool| {
-                json!({
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "inputSchema": tool["inputSchema"],
-                })
-            })
-            .collect()
-    }
-
-    pub fn permissions() -> (bool, bool) {
-        let status = platform_macos::permissions::current_status();
-        (status.accessibility, status.screen_recording)
-    }
-
-    /// The login session's `CGSSessionScreenIsLocked`, present and true only while locked.
-    pub fn screen_locked() -> bool {
-        use core_foundation::base::TCFType;
-        use core_foundation::boolean::CFBoolean;
-        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-        use core_foundation::string::CFString;
-
-        #[link(name = "CoreGraphics", kind = "framework")]
-        unsafe extern "C" {
-            fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
-        }
-        // SAFETY: returns a dictionary we own (Copy rule), or null outside a login session.
-        let session = unsafe { CGSessionCopyCurrentDictionary() };
-        if session.is_null() {
-            return false;
-        }
-        // SAFETY: a non-null dictionary we own, released when this drops.
-        let session: CFDictionary<CFString, core_foundation::base::CFType> =
-            unsafe { CFDictionary::wrap_under_create_rule(session) };
-        session
-            .find(CFString::from_static_string("CGSSessionScreenIsLocked"))
-            .and_then(|value| value.downcast::<CFBoolean>())
-            .is_some_and(bool::from)
-    }
-
-    pub fn call(tool: &str, args: Value) -> Value {
-        let runtime = runtime();
-        let result = runtime.tokio.block_on(runtime.registry.invoke(tool, args));
-        serde_json::to_value(result).unwrap_or_else(|error| super::error(&error.to_string()))
-    }
-}
+#[path = "macos.rs"]
+mod platform;
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod platform;
 
 #[cfg(test)]
 mod tests {
@@ -359,6 +275,56 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn advertised_tools_match_the_allowlist_without_duplicates_or_unimplemented_input() {
+        let definitions = tool_definitions();
+        let names: std::collections::HashSet<_> = definitions
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), definitions.len());
+        assert!(TOOLS.iter().all(|tool| names.contains(tool)));
+        assert_eq!(names.contains(REQUEST_INPUT), INPUT_AVAILABLE);
+        assert_eq!(names.len(), TOOLS.len() + usize::from(INPUT_AVAILABLE));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn secure_linux_form_input_refuses_before_collecting_values() {
+        assert!(!INPUT_AVAILABLE);
+        assert!(form::Form::read(std::process::id() as i32, 0).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires the real logind desktop to be locked"]
+    fn real_linux_locked_session_refuses_before_driver_dispatch() {
+        assert_eq!(std::env::var("AXO_TEST_EXPECT_LOCKED").as_deref(), Ok("1"));
+        assert!(
+            screen_locked(),
+            "the real graphical desktop must be locked for this acceptance test"
+        );
+        // Invalid self-owned target and a pure script remain harmless even if the person
+        // unlocks during this test. Do not use an unscoped screenshot or input action here.
+        for (tool, args) in [
+            (
+                "get_window_state",
+                json!({"pid":std::process::id(),"window_id":0}),
+            ),
+            ("run_script", json!({"script":"return 'harmless fixture';"})),
+        ] {
+            let result = call(tool, args);
+            assert_eq!(result["isError"], true);
+            assert!(
+                result["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("locked")
+            );
+        }
+    }
+
+    #[test]
     fn screenshot_is_cua_s_get_desktop_state() {
         assert_eq!(cua_name("screenshot"), "get_desktop_state");
         assert_eq!(our_name("get_desktop_state"), "screenshot");
@@ -366,7 +332,7 @@ mod tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod imp {
     use serde_json::Value;
 

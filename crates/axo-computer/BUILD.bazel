@@ -2,8 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# Computer use on the Mac axod runs on, through Cua Driver's macOS runtime, embedded in-process
-# so its Accessibility and Screen Recording checks use Axo's grants. Empty elsewhere.
+# Native computer use embedded in-process. Platform libraries stay target-gated.
 rust_library(
     name = "axo_computer",
     srcs = glob(["src/**/*.rs"]),
@@ -21,8 +20,26 @@ rust_library(
             "@crates//:platform-macos",
             "@crates//:tokio",
         ],
+        "@platforms//os:linux": [
+            "@crates//:cua-driver-core",
+            "@crates//:libc",
+            "@crates//:platform-linux",
+            "@crates//:tokio",
+            "@crates//:zbus",
+        ],
         "//conditions:default": [],
     }),
+)
+
+# Run through linux/computer-smoke.sh; it owns the fixture's X11/D-Bus session.
+rust_test(
+    name = "linux_desktop_smoke_test",
+    crate = ":axo_computer",
+    edition = "2024",
+    deps = ["@crates//:tokio"],
+    tags = ["manual"],
+    args = ["--ignored", "real_linux_desktop_reads_captures_edits_and_checks_nested_lock_state", "--nocapture"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 rust_test(

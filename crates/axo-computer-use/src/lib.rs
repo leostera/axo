@@ -629,7 +629,7 @@ impl ComputerUse {
         if !axo_computer::AVAILABLE {
             return Err(MethodError::new(
                 error_code::METHOD_NOT_FOUND,
-                "this Mac has no computer use",
+                "this host has no computer use",
             ));
         }
         if request.tool == axo_computer::REQUEST_INPUT {
@@ -638,6 +638,12 @@ impl ComputerUse {
                 return Err(MethodError::new(
                     NOT_ALLOWED,
                     "Not done: no time left to ask the person.",
+                ));
+            }
+            if !axo_computer::INPUT_AVAILABLE {
+                return Err(MethodError::new(
+                    NOT_ALLOWED,
+                    "Secure request_input form binding is not implemented on this platform; no values were requested or filled.",
                 ));
             }
             return Ok(self
@@ -690,6 +696,7 @@ impl ComputerUse {
             "accessibility": accessibility,
             "screenRecording": screen_recording,
             "locked": axo_computer::screen_locked(),
+            "requestInput": axo_computer::INPUT_AVAILABLE,
         })
     }
 }
@@ -985,10 +992,26 @@ mod tests {
                 outcome,
                 Err(MethodError::new(
                     error_code::METHOD_NOT_FOUND,
-                    "this Mac has no computer use"
+                    "this host has no computer use"
                 ))
             );
         }
+        assert!(host.asked().is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn unsupported_linux_secure_input_never_asks_for_values() {
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        let result =
+            block(ComputerUse::default().remote(&host, &call(axo_computer::REQUEST_INPUT, 60_000)));
+        assert_eq!(
+            result,
+            Err(MethodError::new(
+                NOT_ALLOWED,
+                "Secure request_input form binding is not implemented on this platform; no values were requested or filled.",
+            ))
+        );
         assert!(host.asked().is_empty());
     }
 

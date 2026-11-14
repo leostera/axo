@@ -66,9 +66,12 @@ crate.spec(package = "tokio-tungstenite", version = "0.30.0", features = ["nativ
 crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls", "url"])
 crate.spec(package = "url", version = "2.5.8")
 crate.spec(package = "zeroize", version = "1")
-# Cua Driver (MIT), pinned: only its macOS runtime and core are linked into axod (axo-computer);
+# Linux desktop lock state is observed from logind, not guessed from display variables.
+crate.spec(package = "zbus", version = "5", default_features = False, features = ["tokio"])
+# Cua Driver (MIT), pinned: only its native platform runtime and core are linked into axod;
 # its daemon, MCP server, SDK bindings and telemetry are not.
 crate.spec(package = "platform-macos", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
+crate.spec(package = "platform-linux", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128", features = ["portal-input"])
 crate.spec(package = "cua-driver-core", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
 crate.spec(package = "cursor-overlay", git = "https://github.com/trycua/cua", rev = "2b7bd1b9046b63079f684810e8729a84f967a128")
 
@@ -77,7 +80,10 @@ crate.spec(package = "cursor-overlay", git = "https://github.com/trycua/cua", re
 crate.annotation(
     crate = "cua-driver-core",
     patch_args = ["-p1"],
-    patches = ["//third_party/cua:cua-driver-core-skills.patch"],
+    patches = [
+        "//third_party/cua:cua-driver-core-skills.patch",
+        "//third_party/cua:cua-driver-core-host-boundary.patch",
+    ],
     repositories = ["crates"],
 )
 crate.from_specs(

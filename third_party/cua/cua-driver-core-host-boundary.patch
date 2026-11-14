@@ -1,0 +1,59 @@
+--- a/src/tool.rs
++++ b/src/tool.rs
+@@ -1121,8 +1121,17 @@
+     }
+ }
+ 
++/// Trusted embedder guard, applied to every dispatch including nested scripts/batches.
++/// Public tool arguments cannot replace it.
++pub type InvocationGuard = Arc<
++    dyn Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
++        + Send
++        + Sync,
++>;
++
+ /// Thread-safe collection of all registered tools.
+ pub struct ToolRegistry {
++    invocation_guard: Option<InvocationGuard>,
+     tools: HashMap<String, Box<dyn Tool>>,
+     /// Ordered list of tool names for `tools/list`.
+     order: Vec<String>,
+@@ -1201,6 +1210,7 @@
+                 })
+             }));
+         Self {
++            invocation_guard: None,
+             tools: HashMap::new(),
+             order: Vec::new(),
+             recording,
+@@ -1218,6 +1228,18 @@
+         }
+     }
+ 
++    /// Remove tools at the canonical dispatch boundary, not just from advertised schemas.
++    pub fn retain_tools(&mut self, allowed: &[&str]) {
++        self.tools.retain(|name, _| allowed.contains(&name.as_str()));
++        let mut seen = std::collections::HashSet::new();
++        self.order.retain(|name| allowed.contains(&name.as_str()) && seen.insert(name.clone()));
++    }
++
++    /// Install a host-owned guard before publishing the registry in an Arc.
++    pub fn set_invocation_guard(&mut self, guard: InvocationGuard) {
++        self.invocation_guard = Some(guard);
++    }
++
+     /// Return the runtime-owned broker for adapter construction.
+     ///
+     /// This is intentionally not exposed through MCP/CLI arguments. Platform
+@@ -1772,6 +1794,11 @@
+         let Some(tool) = self.tools.get(resolved_name) else {
+             return ToolResult::error(format!("Unknown tool: {name}"));
+         };
++        if let Some(guard) = &self.invocation_guard {
++            if let Some(reason) = guard(resolved_name).await {
++                return ToolResult::error(reason);
++            }
++        }
+ 
+         // MCP types `arguments` as an object and transports substitute `{}`
+         // when it is absent, but a client can still send any JSON value.

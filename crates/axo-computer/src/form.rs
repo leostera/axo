@@ -436,18 +436,20 @@ mod imp {
         pub buttons: Vec<String>,
     }
 
+    const UNAVAILABLE: &str = "Secure request_input form binding is not implemented on this platform; values will not be requested or filled.";
+
     impl Form {
         pub fn read(_pid: i32, _window_id: u32) -> Result<Form, FormError> {
-            fail("computer use is only available on macOS")
+            fail(UNAVAILABLE)
         }
         pub fn check_unchanged(&self, _: &[usize], _: Option<usize>) -> Result<(), FormError> {
-            fail("computer use is only available on macOS")
+            fail(UNAVAILABLE)
         }
         pub fn fill(&self, _: usize, _: &str) -> Result<(), FormError> {
-            fail("computer use is only available on macOS")
+            fail(UNAVAILABLE)
         }
         pub fn press(&self, _: usize) -> Result<(), FormError> {
-            fail("computer use is only available on macOS")
+            fail(UNAVAILABLE)
         }
     }
 }

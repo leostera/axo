@@ -1,16 +1,20 @@
 # axo-computer
 
-Computer use on this Mac, embedded in `axod mcp`: seeing and operating apps through Cua Driver's macOS runtime (`platform-macos`), in-process, so its Accessibility and Screen Recording checks use Axo's grants and never prompt.
+Native computer use embedded in `axod`, for local MCP tools and remote account scripts. Cua's macOS platform uses Axo's Accessibility/Screen Recording grants; its Linux platform uses X11, AT-SPI and compositor-dependent Wayland capabilities.
 
-- `TOOLS` is the allowlist of Cua tools agents may call. Process killing, updates, extensions, configuration, recordings, the clipboard and attaching to the person's browser are left out.
-- `tool_definitions()` returns their MCP definitions; `call(tool, args)` runs one and returns its result as JSON.
-- The runtime is built on first use, since every Pi starts its own `axod mcp` and most never touch the screen.
-- On anything but macOS, `AVAILABLE` is `false` and there are no tools.
+- `TOOLS` is the 24-tool allowlist. Excluded tools are removed from the registry, not just hidden from schemas, so scripts and batches cannot reach them.
+- `tool_definitions()` returns MCP definitions; `call(tool, args)` returns the tool's JSON result.
+- A dedicated two-worker runtime starts lazily and stays off axod's socket/session runtime.
+- Every driver dispatch, including nested script/batch calls, checks the desktop lock. Linux requires one active, explicitly unlocked graphical logind session for the current user; unknown state refuses.
+- Registry initialization never starts a nested compositor, overlay or telemetry. Linux Wayland requires explicit opt-in and the graphical session's environment.
+- Linux `request_input` remains unavailable: secure field/origin attestation is macOS-only. Unsupported platforms have no tools.
 
-`gate` decides which calls need the person's agreement (RFD0029): a word filter first, then Clef through `axod-infer` for what it flags. `axod mcp` and axod's hub-routed computer calls both ask it; it only decides, and the caller asks the person.
+`gate` determines which actions need the person's agreement (RFD0029): a word filter, then Clef through `axod-infer` for flagged actions. The caller asks the person; the agent cannot approve itself. The native lock/allowlist checks are additional boundaries, not a substitute for the gate or authorization.
+
+See [`linux/README.md`](../../linux/README.md) and [RFD0051](../../docs/rfds/RFD0051-linux-computer-use.md) for compositor limitations and acceptance tests. GNOME 50's unsafe WinRects helper is deliberately refused, not patched around.
 
 ## Build
 
 ```sh
-bazel build //crates/axo-computer
+bazel test //crates/axo-computer:axo_computer_tests
 ```
