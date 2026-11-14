@@ -2,6 +2,20 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.60 (Mac app build 331, axod 81)
+
+### Added
+
+- `apps_run` accepts optional `limits: { timeoutMs, maxToolCalls, maxConcurrentCalls, maxOutputBytes }`. Each run can lower the existing five-minute, 100-call, four-concurrent and 1 MiB ceilings; malformed or excessive budgets are rejected before execution.
+- One run deadline bounds queued calls and nested operations. Ending, timing out or violating a budget closes admission and cancels supported in-flight work. Returning with unawaited calls is an uncertain error, not a background-job mechanism.
+- Updated target Macs accept account/session-scoped cancellation. Bash kills/reaps its owned command group; native AI retains admission through model retirement/reaping. Cancelling one script never cancels another script or unloads the independent safety judge.
+
+### Fixed
+
+- Output limits count actual UTF-8 JSON bytes including console logs. The account enforces console budgets; caught violations cannot resume tool dispatch, and results are never silently truncated.
+- Provider and MCP requests retain the run cancellation signal alongside their own timeouts. MCP cancellation stops only the affected HTTP request, not other scripts sharing its session.
+- Already-dispatched writes/actions may have run; cancellation does not promise rollback or make uncertain operations safe to retry. Target cancellation requires Axo 0.60; older Macs retain their capped operation timeout. CPU/memory quotas and durable background jobs are not included.
+
 ## 0.59 (Mac app build 330, axod 80)
 
 ### Added
