@@ -15,6 +15,20 @@ pub enum RelayState {
 pub enum HostKind {
     #[serde(rename = "macos")]
     MacOS,
+    #[serde(rename = "linux")]
+    Linux,
+}
+
+impl HostKind {
+    #[cfg(target_os = "linux")]
+    pub const fn current() -> Self {
+        Self::Linux
+    }
+
+    #[cfg(target_os = "macos")]
+    pub const fn current() -> Self {
+        Self::MacOS
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -26,4 +40,29 @@ pub struct RelayStatus {
     pub host_name: String,
     pub host_kind: HostKind,
     pub last_error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HostKind;
+
+    #[test]
+    fn host_platform_is_explicit_on_the_wire() {
+        assert_eq!(
+            serde_json::to_string(&HostKind::MacOS).unwrap(),
+            "\"macos\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HostKind::Linux).unwrap(),
+            "\"linux\""
+        );
+        assert_eq!(
+            serde_json::from_str::<HostKind>("\"linux\"").unwrap(),
+            HostKind::Linux
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(HostKind::current(), HostKind::Linux);
+        #[cfg(target_os = "macos")]
+        assert_eq!(HostKind::current(), HostKind::MacOS);
+    }
 }

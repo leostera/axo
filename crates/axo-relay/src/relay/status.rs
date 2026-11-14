@@ -115,7 +115,7 @@ pub fn unavailable_status() -> RelayStatus {
         state: RelayState::Disconnected,
         connected_since_unix_millis: None,
         host_name: host_label(),
-        host_kind: HostKind::MacOS,
+        host_kind: HostKind::current(),
         last_error: Some("Remote access is unavailable on this Mac.".to_owned()),
     }
 }

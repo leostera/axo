@@ -134,7 +134,7 @@ impl RelayWorker {
     ) -> io::Result<Self> {
         let observed_host = Arc::downgrade(&dependencies.host);
         let control = Arc::new(
-            RelayControl::new(host_label(), HostKind::MacOS).with_observer(Box::new(
+            RelayControl::new(host_label(), HostKind::current()).with_observer(Box::new(
                 move |status| {
                     if let Some(host) = observed_host.upgrade() {
                         host.publish_relay_status(status);
@@ -373,7 +373,7 @@ async fn connect_and_serve(
         host_id: &identity.host_id,
         host_generation: &identity.host_generation,
         label: &label,
-        host_kind: HostKind::MacOS,
+        host_kind: HostKind::current(),
         model: crate::model::host_model(),
         capabilities: HOST_CAPABILITIES,
         sessions: [],

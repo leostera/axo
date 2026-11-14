@@ -206,7 +206,7 @@ impl Redemption {
                 host_generation: &self.pending.host_generation,
                 credential_id: &self.pending.credential_id,
                 label: &label,
-                host_kind: HostKind::MacOS,
+                host_kind: HostKind::current(),
             },
             credentials,
         )
