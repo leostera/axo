@@ -1,4 +1,4 @@
-# RFD0050 - Axo: Linux CUDA inference
+# RFD0052 - Axo: Linux CUDA inference
 
 - Feature Name: `linux-cuda-inference`
 - Status: Implemented (experimental Linux runtime)

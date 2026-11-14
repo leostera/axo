@@ -1,4 +1,4 @@
-# RFD0051 - Axo: Linux computer use
+# RFD0053 - Axo: Linux computer use
 
 - Feature Name: `linux-computer-use`
 - Status: Implemented (experimental X11 acceptance; native GNOME 50 parity blocked)

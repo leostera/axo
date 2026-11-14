@@ -11,7 +11,7 @@ Native computer use embedded in `axod`, for local MCP tools and remote account s
 
 `gate` determines which actions need the person's agreement (RFD0029): a word filter, then Clef through `axod-infer` for flagged actions. The caller asks the person; the agent cannot approve itself. The native lock/allowlist checks are additional boundaries, not a substitute for the gate or authorization.
 
-See [`linux/README.md`](../../linux/README.md) and [RFD0051](../../docs/rfds/RFD0051-linux-computer-use.md) for compositor limitations and acceptance tests. GNOME 50's unsafe WinRects helper is deliberately refused, not patched around.
+See [`linux/README.md`](../../linux/README.md) and [RFD0053](../../docs/rfds/RFD0053-linux-computer-use.md) for compositor limitations and acceptance tests. GNOME 50's unsafe WinRects helper is deliberately refused, not patched around.
 
 ## Build
 
