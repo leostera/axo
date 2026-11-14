@@ -360,6 +360,7 @@ async fn connect_and_serve(
             protocol_version: axo_protocol::rpc::PROTOCOL_VERSION,
         },
         sessions,
+        control,
     )
     .await?;
     let subscription_id = sessions.subscribe_remote_events()?;
@@ -385,6 +386,7 @@ async fn connect_and_serve(
         "axo.host.register",
         registration,
         sessions,
+        control,
     )
     .await
     {

@@ -23,7 +23,9 @@ pub use host::{
     ClientDelivery, HostFuture, HostIdentity, ModelChoice, ModelName, PiKey, RelayHost,
     RemoteAnswer,
 };
-pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
+pub use link::{
+    AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host, unlink_host,
+};
 pub use model::{HostModel, host_model};
 pub use outbound::{Priority, RelayCallError, RelayChannel, ReplySender, SocketEpoch};
 pub use relay::{

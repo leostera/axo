@@ -1,0 +1,6 @@
+load("//bazel/rust:release.bzl", "release_binary")
+release_binary(
+    name = "release",
+    binary = "//crates/axo-cli:axo",
+    visibility = ["//apple:__subpackages__"],
+)

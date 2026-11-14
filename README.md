@@ -2,7 +2,7 @@
 
 Axo is an agentic workspace for working with coding agents across your Mac, iPhone, and web browser. A Mac host runs agent and terminal sessions; Axo's native Mac app and companion clients let you work with those sessions from different surfaces.
 
-> **Status:** Axo is under active development. Features, setup, and interfaces may change, and this repository does not currently provide a general end-user installation or release channel.
+> **Status:** Axo is under active development. Features, setup, and interfaces may change between releases.
 
 ## What is in this repository?
 
@@ -12,6 +12,21 @@ Axo is an agentic workspace for working with coding agents across your Mac, iPho
 - **Shared protocols and Pi integration** — `packages/axo-api/`, `packages/pi-axo/`, and `schemas/` contain shared API types, the first-party Pi extension, and versioned schemas.
 
 The Mac host owns local agent processes and terminal sessions. Remote clients communicate through the Axo service; they do not directly access the host's local files or terminal sockets.
+
+## Command line
+
+Axo.app ships the `axo` CLI. Install its PATH link once, then control Sessions from your shell:
+
+```sh
+/Applications/Axo.app/Contents/Helpers/axo cli install
+# Add ~/.local/bin to PATH if it is not already there.
+axo session list
+axo session create --folder .
+axo session prompt --sid <session-id> --message "Run the tests"
+axo relay link ABCD-1234
+```
+
+Use `--json` for scripts, `axo capabilities` for the generated command catalog, and `--help` on any group. See [`crates/axo-cli`](crates/axo-cli/README.md) for setup, deadlines, supported operations and safety boundaries.
 
 ## Development
 

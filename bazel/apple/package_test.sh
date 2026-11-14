@@ -28,7 +28,7 @@ check() {
 check CFBundleVersion "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" "$build"
 check AXODBuildNumber "$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$plist")" "$axod_build"
 check LSMinimumSystemVersion "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" "$macos_min"
-for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod" "$app/Contents/Helpers/axod-infer"; do
+for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod" "$app/Contents/Helpers/axo" "$app/Contents/Helpers/axod-infer"; do
   check "minos of ${executable##*/}" "$(xcrun vtool -show-build "$executable" | awk '/minos/ { print $2; exit }')" "$macos_min"
 done
 if [[ "$native" == mlx ]]; then
@@ -69,6 +69,9 @@ else
   fi
 fi
 check "axod --version" "$("$app/Contents/Helpers/axod" --version | sed -n 's/.*(build \([0-9]*\)).*/\1/p')" "$axod_build"
+check "CLI signing identifier" "$(codesign -dv "$app/Contents/Helpers/axo" 2>&1 | awk -F= '/^Identifier=/ { print $2 }')" dev.leostera.axo.cli
+"$app/Contents/Helpers/axo" --help >/dev/null
+"$app/Contents/Helpers/axo" capabilities --json | /usr/bin/plutil -convert xml1 -o /dev/null -
 for agent in dev.leostera.axo.axod dev.leostera.axo.app; do
   if plutil -lint "$app/Contents/Library/LaunchAgents/$agent.plist" >/dev/null; then
     echo "ok: LaunchAgent $agent plist lints"
@@ -92,6 +95,7 @@ fi
 check "axod's signing identifier" "$(codesign -dv "$app/Contents/Helpers/axod" 2>&1 | sed -n 's/^Identifier=//p')" axod
 if [[ "$team" != - ]]; then
   check "app's team" "$(codesign -dv --verbose=4 "$app" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
+  check "CLI team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axo" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
   check "axod's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axod" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
   check "axod-infer's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axod-infer" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
 fi

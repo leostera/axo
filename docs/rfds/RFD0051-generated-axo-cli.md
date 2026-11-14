@@ -1,7 +1,7 @@
 # RFD0051 - Axo: CLI capability inventory
 
 - Feature Name: `generated-axo-cli`
-- Status: Draft — inventory and proposed command names, not implemented
+- Status: Partially implemented (Axo 0.64 first slice; broader inventory remains proposed)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14
@@ -12,7 +12,19 @@
 
 Ship an `axo` client with Axo.app, exposing the same capabilities people and agents already use rather than implementing a second backend. First inventory the real surfaces, their callers and their gaps. Then give operations typed descriptors from which command parsing, help, completion and machine-readable discovery can be generated. Human-friendly names and multi-step operations still need explicit design: a list of RPC names alone is not a usable or safe CLI.
 
-This document is the inventory and proposed command map. **None of the `axo` commands below has shipped.** Backend support is assessed against Axo 0.63, commit `502a1e2917942e54fc9aae9c9912b29e0f321bad`. No running daemon, service registration, permission or session was changed to make this inventory.
+The inventory below assesses backend support at Axo 0.63, commit `502a1e2917942e54fc9aae9c9912b29e0f321bad`; it is not a claim that the entire candidate tree is implemented. Axo 0.64 implements the first slice described here. No running personal daemon, service registration, permission or Session was changed for development or testing.
+
+## Implemented first slice (0.64)
+
+- `crates/axo-cli` is a thin Unix-socket client, bundled and separately signed as `Contents/Helpers/axo`. `cli install` creates a non-overwriting symlink in a chosen bin directory; no shell profile edits.
+- `crates/axo-protocol/src/cli.rs` declares supported command projections, flags, effects and typed RPC request parsers. Clap parsing/help and the compiled `capabilities --json` catalog are generated from it. Every advertised local method must have a projection or explicit exclusion. This is not yet a complete runtime schema/owner/caller descriptor registry.
+- Supported command groups cover Session/catalog/provenance-safe prompts and recovery, shells, terminal reads/writes/input/resize, layouts, settings, peers/hosts, account apps/codemode and agent questions. Adapters provide event watching, explicit raw RPC, and guarded macOS registered-service restart. See the [crate README](../../crates/axo-cli/README.md) and generated help for exact flags.
+- **User decision:** linked means keep trying to connect. The public relay commands are `link <code>`, `status`, `unlink`. There is no CLI connect/disconnect state. The existing connect RPC remains for current app retry compatibility, not as a new user lifecycle axis.
+- New `axo.relay.unlink` clears the durable account and pending redemption before requesting connection reconciliation and deleting unused credentials. Link mutations share one owned coordinator slot and finish even if the requesting CLI disconnects; a cancelled receipt is an uncertain outcome, not rollback. Link/status/unlink expose no credential material.
+- Relay status adds `linked` and nullable `accountId` alongside the existing connection fields. Unlink closes old socket/queued-command admission; in-progress work may already have run. Physical socket closure and job retirement finish asynchronously. Local unlink does not delete account history or claim revocation of copied cloud credentials.
+- Limits, correlated/bounded replies, no automatic write retries, safe stderr, JSON/NDJSON, Ctrl-C and closed-pipe cleanup are tested. Disruptive commands require confirmation; `--yes` cannot answer a human approval or impersonate Axo.app.
+- `specs/relay/link-lifecycle.ts` models the successful durable-unlink path, lost receipts and orphaned unused secrets. It does not model network faults/crashes or rollback of external work; wire tests cover live socket closure, offline/pending cleanup and restart persistence.
+- Remaining inventory items include direct native AI/computer CLI, local stop/model/command parity, message-free continuation, interactive terminal attachment, completions, app upgrade and full schema discovery. They are not stubbed successful commands.
 
 ## Motivation
 
@@ -23,7 +35,7 @@ axo session list
 axo session create --folder .
 axo session prompt --sid <session-id> --message "Run the tests and summarize failures"
 axo daemon restart
-axo pair --code ABCD-1234
+axo relay link ABCD-1234
 ```
 
 Agents should get predictable JSON, real errors, explicit targets and the same safety boundaries as other clients. Contributors should add a capability once, not separately maintain the daemon API, CLI flags, schemas, help and shell completions.
@@ -88,13 +100,13 @@ Sources: [relay methods](../../crates/axo-server/src/lib.rs), [pairing client](.
 
 | Candidate command | Backend today | Contract / missing CLI work |
 |---|---|---|
-| `axo pair --code ABCD-1234` | L: `axo.relay.link {code}` | Redeem an already-issued pairing code, store the host link through the existing credential path, request connection. No tokens in output/logs. |
+| `axo relay link <code>` | L: `axo.relay.link {code}` | Redeem an already-issued pairing code, store the host link through the existing credential path, request connection. No tokens in output/logs. |
 | `axo relay status` | L: `axo.relay.status` | State, connected time, host label/kind and last error. |
-| `axo relay connect` | L: `axo.relay.connect` | Requests a reconnect; receipt is not proof the connection is established. |
-| `axo pair code` | R/G: account-side pairing creation exists, not local RPC | Requires a signed-in account route. Do not confuse creating a code with redeeming one. |
+| Internal app retry | L: `axo.relay.connect` | Existing wire compatibility only; no CLI connect/disconnect. Linked hosts reconnect automatically. |
+| `axo relay pairing-code create` | R/G: account-side pairing creation exists, not local RPC | Requires a signed-in account route. Do not confuse creating a code with redeeming one. |
 | `axo account status` | D: relay link/status, account app discovery | Need a defined non-secret account identity view; never print stored host credentials. |
 | `axo account login` | A/R: existing browser/app sign-in flows | No general daemon login RPC; CLI browser callback/token ownership needs design. |
-| `axo account logout` / `axo unpair` | G: no advertised local unlink method | Explicit credential revocation, relay shutdown and peer cleanup contract required. Not deletion of guessed files. |
+| `axo relay unlink` | G at inventory baseline; L in 0.64: `axo.relay.unlink` | Clear local pairing and pending redemption, close admission and remove unused secrets. Account-client logout/cloud revocation are separate concerns. |
 
 ### Sessions and their agents
 
@@ -306,7 +318,7 @@ Package the executable as **`Axo.app/Contents/Helpers/axo`**, not beside `Conten
 
 A descriptor should identify the operation, its owner, request/result schema, allowed callers, supported routes/platforms, unary/stream/attach behavior, limits/timeouts, mutability and idempotency semantics, secret-bearing inputs, and its optional CLI projection. Register the descriptor with the handler so a method cannot quietly exist without one. A restricted/internal operation can explicitly have **no public CLI projection**.
 
-Generate parsing, help, JSON discovery, completion and reference docs from these definitions. Keep a small deliberate projection for `sessionId → --sid`, `text → --message`, `relay.link → pair`, local/remote selection and human-friendly enum spelling. Keep lifecycle, interactive PTY attachment, redacted sharing and multi-step waits as explicit adapters. Do not make regex source scraping the production generator.
+Generate parsing, help, JSON discovery, completion and reference docs from these definitions. Keep a small deliberate projection for `sessionId → --sid`, `text → --message`, `relay.link → relay link`, local/remote selection and human-friendly enum spelling. Keep lifecycle, interactive PTY attachment, redacted sharing and multi-step waits as explicit adapters. Do not make regex source scraping the production generator.
 
 ### Proposed CLI behavior
 
@@ -321,9 +333,9 @@ Generate parsing, help, JSON discovery, completion and reference docs from these
 
 ## Smallest useful first slice
 
-After the inventory is accepted: a signed packaged client, local connection/version negotiation, generated discovery/help/JSON output, read-only `session list/show`, `session create/rename/prompt`, `pair --code`, relay status and daemon health. Add explicit daemon restart through the correct lifecycle path, with tests that never target the developer's running service.
+After the inventory is accepted: a signed packaged client, local connection/version negotiation, generated discovery/help/JSON output, read-only `session list/show`, `session create/rename/prompt`, `relay link <code>`, relay status and daemon health. Add explicit daemon restart through the correct lifecycle path, with tests that never target the developer's running service.
 
-Before adding new CLI nouns, close the catalog and caller/transport metadata gaps. Existing features that lack public local routes should get deliberate boundaries, not a CLI exception to authentication. This document does not authorize implementing or releasing that client yet.
+Before adding new CLI nouns, close the catalog and caller/transport metadata gaps. Existing features that lack public local routes should get deliberate boundaries, not a CLI exception to authentication. The first slice is now implemented; the remainder still requires explicit design and implementation rather than expanding the CLI around private methods.
 
 ## Validation plan
 

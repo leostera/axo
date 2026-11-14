@@ -38,6 +38,27 @@ fn an_unlinked_mac_says_so_and_connecting_finds_no_account() {
 }
 
 #[test]
+fn unlink_is_idempotent_and_clears_pending_pairing_across_restart() {
+    let mut axod = Axod::start();
+    axod.err("axo.relay.link", json!({"code":"ABCD-EFGH"}));
+    assert_eq!(
+        axod.ok("axo.relay.unlink", json!({})),
+        json!({"unlinked":true})
+    );
+    assert_eq!(axod.ok("axo.relay.status", json!({}))["linked"], false);
+    let credentials = axod.server_directory().join("host-credentials");
+    assert_eq!(
+        std::fs::read_dir(&credentials)
+            .map(|rows| rows.count())
+            .unwrap_or(0),
+        0
+    );
+    axod.restart();
+    assert_eq!(axod.ok("axo.relay.status", json!({}))["linked"], false);
+    assert_eq!(axod.ok("axo.relay.unlink", json!({}))["unlinked"], true);
+}
+
+#[test]
 fn linking_with_a_relay_that_is_not_there_fails_and_leaves_the_mac_unlinked() {
     // A loopback port nothing listens on: linking must fail, quickly, and change nothing.
     let axod = Axod::with(Options {

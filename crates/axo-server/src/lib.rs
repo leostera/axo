@@ -224,6 +224,7 @@ struct RelayContext {
     endpoint: axo_relay::RelayEndpoint,
     host: Arc<relay_host::RelayHostAdapter>,
     credentials: Arc<dyn axo_relay::credential::HostCredentialStore>,
+    link_operations: Arc<tokio::sync::Mutex<()>>,
 }
 
 const ATTACH_SOCKET_FILE: &str = "attach.sock";
@@ -297,6 +298,7 @@ pub fn serve_ipc(
         endpoint: remote_access.endpoint,
         host,
         credentials,
+        link_operations: Arc::new(tokio::sync::Mutex::new(())),
     });
     let host_for_calls = relay.as_ref().map(|relay| Arc::clone(&relay.host));
     let handler = rpc_handler(Arc::clone(&core), daemon_version, relay);
@@ -539,23 +541,34 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
                 let context = context
                     .as_ref()
                     .ok_or_else(|| internal_error("host relay is unavailable"))?;
-                let host_label = axo_relay::link_host(
-                    &context.endpoint,
-                    &request.code,
-                    axo_relay::RelayHost::identity(context.host.as_ref()),
-                    context.host.as_ref(),
-                    context.credentials.clone(),
-                )
-                .await
-                .map_err(|error| {
-                    log::warn!("event=relay.link_failed reason={error}");
-                    internal_error("could not link this Mac")
-                })?;
-                context.control.request_connect();
-                Ok(rpc::HostLinked {
-                    linked: true,
-                    host_label,
+                let context = context.clone();
+                let guard = Arc::clone(&context.link_operations)
+                    .try_lock_owned()
+                    .map_err(|_| internal_error("another link operation is running"))?;
+                // Pairing is daemon-owned once admitted. Losing a CLI receipt must not cancel
+                // between a durable save and notifying the worker or deleting old credentials.
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let host_label = axo_relay::link_host(
+                        &context.endpoint,
+                        &request.code,
+                        axo_relay::RelayHost::identity(context.host.as_ref()),
+                        context.host.as_ref(),
+                        context.credentials.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        log::warn!("event=relay.link_failed reason={error}");
+                        internal_error("could not link this computer")
+                    })?;
+                    context.control.request_connect();
+                    Ok(rpc::HostLinked {
+                        linked: true,
+                        host_label,
+                    })
                 })
+                .await
+                .map_err(|_| internal_error("link operation failed; it may have run"))?
             }
         },
     );
@@ -565,10 +578,52 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
         method::RELAY_STATUS,
         "expected no parameters",
         move |_: rpc::NoParams| {
-            std::future::ready(match &context {
-                Some(context) => Ok(context.control.snapshot()),
-                None => Ok(axo_relay::unavailable_status()),
-            })
+            let context = context.clone();
+            async move {
+                let (connection, account_id) = match context {
+                    Some(context) => {
+                        let link = axo_relay::HostLinkStore::load_link(context.host.as_ref())
+                            .await
+                            .map_err(|_| internal_error("could not read the saved link"))?;
+                        (
+                            context.control.snapshot(),
+                            link.account().map(|a| a.account_id().to_owned()),
+                        )
+                    }
+                    None => (axo_relay::unavailable_status(), None),
+                };
+                Ok(rpc::RelayLinkStatus {
+                    connection,
+                    linked: account_id.is_some(),
+                    account_id,
+                })
+            }
+        },
+    );
+
+    let context = relay.clone();
+    handler.add_typed(
+        method::RELAY_UNLINK,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            let context = context.clone();
+            async move {
+                let context = context.ok_or_else(|| internal_error("host relay is unavailable"))?;
+                let guard = Arc::clone(&context.link_operations)
+                    .try_lock_owned()
+                    .map_err(|_| internal_error("another link operation is running"))?;
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    axo_relay::unlink_host(context.host.as_ref(), &context.credentials, || {
+                        context.control.request_connect()
+                    })
+                    .await
+                    .map_err(|_| internal_error("could not forget the saved link"))?;
+                    Ok(rpc::HostUnlinked { unlinked: true })
+                })
+                .await
+                .map_err(|_| internal_error("unlink operation failed; it may have run"))?
+            }
         },
     );
 

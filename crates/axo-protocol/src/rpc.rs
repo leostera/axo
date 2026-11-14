@@ -92,6 +92,7 @@ pub mod method {
     pub const CLIENT_VIEWPORT_SET: &str = "axo.client.viewport.set";
     pub const RELAY_LINK: &str = "axo.relay.link";
     pub const RELAY_STATUS: &str = "axo.relay.status";
+    pub const RELAY_UNLINK: &str = "axo.relay.unlink";
     pub const RELAY_CONNECT: &str = "axo.relay.connect";
     pub const SESSION_SHARE: &str = "axo.session.share";
     /// Apps (RFD0016): forwarded unchanged to the account over the relay, so their names
@@ -148,6 +149,7 @@ pub mod method {
         CLIENT_VIEWPORT_SET,
         RELAY_LINK,
         RELAY_STATUS,
+        RELAY_UNLINK,
         RELAY_CONNECT,
         SESSION_SHARE,
         APPS_LIST,
@@ -865,6 +867,22 @@ pub struct ShellClosed {
     pub archived_shell_id: ShellId,
     /// Set when this was the session's last pane.
     pub archived_session_id: Option<SessionId>,
+}
+
+/// Durable pairing state and the current connection, without credential material.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayLinkStatus {
+    #[serde(flatten)]
+    pub connection: crate::RelayStatus,
+    pub linked: bool,
+    pub account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUnlinked {
+    pub unlinked: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

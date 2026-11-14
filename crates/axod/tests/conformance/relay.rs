@@ -73,6 +73,35 @@ fn wait_for_status(axod: &Axod, state: &str) -> Value {
 }
 
 #[test]
+fn unlink_closes_the_live_socket_forgets_credentials_and_does_not_reconnect() {
+    let hub = FakeHub::start();
+    let (mut axod, _) = linked(&hub, Pi::Fake);
+    let status = axod.ok("axo.relay.status", json!({}));
+    assert_eq!(status["linked"], true);
+    assert_eq!(status["accountId"], ACCOUNT_ID);
+    assert_eq!(axod.ok("axo.relay.unlink", json!({}))["unlinked"], true);
+    wait_for_status(&axod, "disconnected");
+    assert_eq!(axod.ok("axo.relay.status", json!({}))["linked"], false);
+    let sockets = hub.sockets().len();
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(
+        hub.sockets().len(),
+        sockets,
+        "an unlinked host must not reconnect"
+    );
+    axod.restart();
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(axod.ok("axo.relay.status", json!({}))["linked"], false);
+    assert_eq!(hub.sockets().len(), sockets);
+    assert_eq!(
+        std::fs::read_dir(axod.server_directory().join("host-credentials"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn a_linked_mac_connects_with_its_credential_and_registers() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);

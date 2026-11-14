@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@axo_config//:defs.bzl", "AXO")
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "axo",
+    srcs = glob(["src/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2024",
+    version = AXO["version"] + ".0",
+    rustc_env = {"MACOSX_DEPLOYMENT_TARGET": AXO["apple"]["macos_min"]},
+    deps = [
+        "//crates/axo-protocol:axo_protocol",
+        "@crates//:clap",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(name = "test", crate = ":axo", edition = "2024")
+
+rust_test(
+    name = "e2e_test",
+    srcs = ["tests/e2e.rs", "//crates/axod:conformance_support"],
+    crate_root = "tests/e2e.rs",
+    edition = "2024",
+    data = [":axo", "//crates/axod:axod", "//crates/axod:fake_pi", "//crates/axo-server:pi_extension_fixture"],
+    env = {
+        "AXO_CLI_BINARY": "$(rootpath :axo)",
+        "AXOD_BINARY": "$(rootpath //crates/axod:axod)",
+        "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+    },
+    deps = ["@crates//:serde_json", "@crates//:libc", "@crates//:tungstenite"],
+)

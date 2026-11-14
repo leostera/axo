@@ -161,6 +161,26 @@ pub async fn link_host(
     Ok(redeemed.label)
 }
 
+/// Forget pairing durably before closing its connection or deleting any credential. The caller
+/// serializes this against linking and owns the operation even if its receipt is abandoned.
+/// Failure to delete an unused secret cannot restore the saved link.
+pub async fn unlink_host(
+    links: &dyn HostLinkStore,
+    credentials: &Arc<dyn HostCredentialStore>,
+    after_commit: impl FnOnce(),
+) -> io::Result<()> {
+    let previous = links.load_link().await?;
+    links.save_link(HostLink::default()).await?;
+    after_commit();
+    if let Some(account) = previous.account {
+        forget_credential(credentials, account.credential_id).await;
+    }
+    if let Some(pending) = previous.pending {
+        forget_credential(credentials, pending.credential_id).await;
+    }
+    Ok(())
+}
+
 /// One pairing code's redemption, including the pending identity saved before the request.
 struct Redemption {
     endpoint: RelayEndpoint,
@@ -300,6 +320,56 @@ mod tests {
             Some(PendingRedemption::parse(credential.into(), generation.into()).unwrap()),
         )
         .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unlink_clears_both_credentials_only_after_a_successful_commit() {
+        use crate::credential::{HostCredentialStore, testing::MemoryCredentialStore};
+        use std::{io, sync::Arc};
+        let credentials: Arc<dyn HostCredentialStore> = Arc::new(MemoryCredentialStore::default());
+        credentials.store(CREDENTIAL, &[1; 32]).unwrap();
+        credentials.store(GENERATION, &[2; 32]).unwrap();
+        let original = HostLink::new(
+            linked(ACCOUNT, CREDENTIAL).account().cloned(),
+            pending(GENERATION, GENERATION).pending().cloned(),
+        )
+        .unwrap();
+        struct FailingStore(HostLink);
+        impl HostLinkStore for FailingStore {
+            fn load_link(&self) -> crate::HostFuture<'_, io::Result<HostLink>> {
+                Box::pin(std::future::ready(Ok(self.0.clone())))
+            }
+            fn save_link(&self, _: HostLink) -> crate::HostFuture<'_, io::Result<()>> {
+                Box::pin(std::future::ready(Err(io::Error::other(
+                    "fixture save failure",
+                ))))
+            }
+        }
+        let mut notified = false;
+        assert!(
+            super::unlink_host(&FailingStore(original.clone()), &credentials, || notified =
+                true)
+            .await
+            .is_err()
+        );
+        assert!(!notified);
+        assert!(credentials.load(CREDENTIAL).is_ok());
+        assert!(credentials.load(GENERATION).is_ok());
+        let store = MemoryLinkStore(std::sync::Mutex::new(original));
+        super::unlink_host(&store, &credentials, || {
+            assert!(store.0.lock().unwrap().account().is_none());
+            assert!(
+                credentials.load(CREDENTIAL).is_ok(),
+                "notification precedes credential deletion"
+            );
+            notified = true;
+        })
+        .await
+        .unwrap();
+        assert!(notified);
+        assert!(credentials.load(CREDENTIAL).is_err());
+        assert!(credentials.load(GENERATION).is_err());
+        assert!(store.load_link().await.unwrap().pending().is_none());
     }
 
     #[test]

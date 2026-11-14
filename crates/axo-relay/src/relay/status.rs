@@ -66,7 +66,7 @@ impl RelayControl {
     }
 
     pub fn request_connect(&self) {
-        self.reconnect_requested.store(true, Ordering::Relaxed);
+        self.reconnect_requested.store(true, Ordering::Release);
         self.wake();
         self.update(Self::connecting);
     }

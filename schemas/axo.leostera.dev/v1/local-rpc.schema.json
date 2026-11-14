@@ -17,6 +17,7 @@
         {
           "$ref": "#/$defs/RemoteAccessConnectCall"
         },
+        { "$ref": "#/$defs/RemoteAccessUnlinkCall" },
         {
           "$ref": "#/$defs/ConfigGetCall"
         },
@@ -159,6 +160,13 @@
             }
           }
         }
+      ],
+      "unevaluatedProperties": false
+    },
+    "RemoteAccessUnlinkCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        { "properties": { "method": { "const": "axo.relay.unlink" }, "params": { "type": "object", "maxProperties": 0 } } }
       ],
       "unevaluatedProperties": false
     },
@@ -720,8 +728,14 @@
         "lastError": {
           "type": ["string", "null"],
           "maxLength": 512
-        }
+        },
+        "linked": { "type": "boolean" },
+        "accountId": { "type": ["string", "null"], "pattern": "^[0-9a-f-]{36}$" }
       }
+    },
+    "RemoteAccessUnlinkResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unlinked"], "properties": { "unlinked": { "const": true } }
     },
     "RemoteAccessConnectResult": {
       "type": "object",

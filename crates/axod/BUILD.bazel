@@ -6,6 +6,8 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files(["testdata/pi-fixture.sh"])
 
+filegroup(name = "conformance_support", srcs = glob(["tests/support/*.rs"]))
+
 rust_binary(
     name = "axod",
     srcs = ["src/main.rs"],

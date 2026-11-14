@@ -128,6 +128,10 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("remote-access control of this Mac"),
     ),
     row(
+        method::RELAY_UNLINK,
+        Remote::LocalOnly("only a local user may forget this computer's pairing"),
+    ),
+    row(
         method::RELAY_CONNECT,
         Remote::LocalOnly("remote-access control of this Mac"),
     ),

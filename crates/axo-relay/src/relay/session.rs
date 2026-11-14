@@ -50,6 +50,7 @@ pub(super) async fn rpc_call(
     method: &str,
     params: impl Serialize,
     sessions: &Arc<dyn RelayHost>,
+    control: &RelayControl,
 ) -> io::Result<()> {
     *request_number = request_number.saturating_add(1);
     let id = format!("axod-{}", *request_number);
@@ -65,7 +66,22 @@ pub(super) async fn rpc_call(
     .await?;
     let answered = async {
         loop {
-            let message = stream.next().await;
+            if control.reconnect_requested.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "host link changed",
+                ));
+            }
+            let message = tokio::select! {
+                message = stream.next() => message,
+                () = control.woken() => continue,
+            };
+            if control.reconnect_requested.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "host link changed",
+                ));
+            }
             let Some(raw) = receive(sink, message, reassembler).await? else {
                 continue;
             };
@@ -219,6 +235,10 @@ fn take_message(
     context: &RelaySessionContext,
     requests: &UnboundedSender<HostRequest>,
 ) -> io::Result<()> {
+    // A committed link change closes admission immediately, even if a socket frame races its wake.
+    if context.control.reconnect_requested.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let value: Value = serde_json::from_str(raw)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
     // A reply to a request another task sent.
@@ -293,6 +313,9 @@ pub(super) async fn answer_requests(
     context: Arc<RelaySessionContext>,
 ) {
     while let Some(request) = requests.recv().await {
+        if context.control.reconnect_requested.load(Ordering::Acquire) {
+            break;
+        }
         answer(request, &context).await;
     }
 }

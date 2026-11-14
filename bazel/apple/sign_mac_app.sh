@@ -35,6 +35,8 @@ sign_all() {
   shift
   /usr/bin/codesign --force --sign "$id" --identifier "$axod_identifier" "$@" \
     "$app/Contents/Helpers/axod" || return 1
+  /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.cli "$@" \
+    "$app/Contents/Helpers/axo" || return 1
   /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.infer "$@" \
     "$app/Contents/Helpers/axod-infer" || return 1
   if [[ -f "$app/Contents/Helpers/axod-infer-mlx" ]]; then
