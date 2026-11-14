@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.63 (Mac app build 334, axod 81)
+
+### Added
+
+- Platform-aware web host icons: a penguin for hosts reporting Linux, Windows panes for Windows, and the existing MacBook/Studio/mini/iMac/Pro shapes for identified Macs. Platform metadata is preserved through live listings and browser cache restoration.
+
+### Fixed
+
+- Unknown hardware uses a neutral computer, never an assumed MacBook. Registration metadata, not editable machine names, chooses the platform; hosts incorrectly reporting macOS need corrected host metadata for a Linux icon, but no longer look like laptops when their model is unknown.
+- The account lists “Computers” rather than calling Linux and Windows hosts Macs. This release changes the web UI only; axod remains build 81.
+
 ## 0.62 (Mac app build 333, axod 81)
 
 ### Added
