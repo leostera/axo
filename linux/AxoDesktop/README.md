@@ -54,6 +54,6 @@ The PNG, diagnostics and logs are retained in the reported private temporary dir
 
 ## Next boundary, before feature replication
 
-Inventory the current Mac app only after the embedding prototype is accepted. The first real-client integration must attach this surface to **daemon-owned PTYs**, preserving `axod` as the sole output reader and using its existing replay/input/resize transport. The current Apple external-I/O patch does not automatically wire those descriptors through the GTK widget. Do not build a second session backend around this prototype's standalone PTY.
+The current Mac feature map and shared-core/serial implementation contract are in [RFD0054](../../docs/rfds/RFD0054-linux-desktop.md). The first real-client integration must attach this surface to **daemon-owned PTYs**, preserving `axod` as the sole output reader and using its existing replay/input/resize transport. The current Apple external-I/O patch does not automatically wire those descriptors through the GTK widget. Do not build a second session backend around this prototype's standalone PTY.
 
 Settings, session/workbench UI, pairing, tray, privileged local IPC, release/install lifecycle, accessibility acceptance and multi-window/multi-monitor behavior are not implemented by this spike. Native Wayland and real GNOME behavior require their own tests; the computer-use helper's GNOME 50 restriction is not bypassed here.

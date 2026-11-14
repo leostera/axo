@@ -88,6 +88,12 @@ Pass the same CUDA repository options if testing a CUDA build. The launcher owns
 
 `linux/check.sh` accepts additional Bazel options and checks the archive plus focused shared suites, including computer-use gates. It does not run interactive desktop/model acceptance or restart/install the paired daemon.
 
+## Native desktop prototype
+
+[`AxoDesktop/`](AxoDesktop/README.md) contains the Rust/GTK4 window hosting the pinned Ghostty GTK renderer. Build/run it with `bazel run //linux/AxoDesktop:run` on a Linux development host with its native dependencies. Its isolated fixture tests real rendering, PTY keyboard input, resize and widget teardown without driving the real desktop.
+
+This is still a **standalone terminal prototype**, not a daemon Session client, installer or tray. The [Mac feature map and shared-core contract](../docs/rfds/RFD0054-linux-desktop.md) define the serial path to daemon attachment and a full workbench; session/account/storage logic stays in shared Rust rather than becoming a separate Linux backend. The generated CLI source is also available at `//crates/axo-cli:axo`; the runtime archive above does not yet bundle/install it.
+
 ## Boundaries
 
 - PTY creation uses Linux grantpt/unlockpt/ptsname_r. Child descriptor inheritance uses `close_range(CLOSE_RANGE_CLOEXEC)` and fails closed if unsupported.
@@ -95,6 +101,6 @@ Pass the same CUDA repository options if testing a CUDA build. The launcher owns
 - Computer use is compositor-dependent as described above. GNOME 50 window capture/focus-bound input and Linux secure form input are not implemented/validated parity.
 - Privileged local IPC calls still fail closed outside macOS. A Linux tray must not bypass those checks or treat a matching Unix UID as equivalent to an Apple code signature. Linux client authorization needs a separate design before enabling question answers or other privileged app actions.
 - Apple model metadata is omitted. Pairing, registration and daemon status identify Linux explicitly on the wire; some account clients may still present a macOS label. General Linux model/OS identification, browser launching, XDG model/cache paths, persistent systemd user-service installation, and Linux CI remain follow-up work.
-- No tray app exists yet. Its implementation belongs under `linux/`, not `apple/`. Prefer a small StatusNotifierItem client of the daemon; GNOME needs an enabled AppIndicator/StatusNotifier host extension.
+- No tray integration exists yet. Desktop/tray adapters belong under `linux/`, not `apple/`. Optional StatusNotifierItem support must not make the GTK workbench depend on a GNOME tray extension.
 
 The original Apple targets remain under `apple/`. Building `//...` is not the Linux support contract: use Linux targets and the shared Rust test suites.
