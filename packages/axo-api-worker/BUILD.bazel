@@ -86,7 +86,7 @@ node_test(
     name = "run_limits_test",
     concurrency = 1,
     data = _DEPS + [":node_modules/tsx", ":test_files"],
-    tests = ["tests/gateway.test.ts", "tests/run-scope.test.ts", "tests/mcp-client.test.ts"],
+    tests = ["tests/gateway.test.ts", "tests/run-scope.test.ts", "tests/mcp-client.test.ts", "tests/third-party.test.ts"],
     tests_in_data = True,
     tsx = True,
 )

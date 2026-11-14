@@ -157,7 +157,7 @@ export async function runScript(
     evaluation = entrypoint.evaluate(dispatcher, JSON.stringify(tools), limits.maxOutputBytes);
     let outcome = await Promise.race([
       evaluation.then(plain).catch((error: unknown): ScriptOutcome => ({ ok: false,
-        error: `the script's Worker failed: ${error instanceof Error ? error.message : String(error)}`, logs: [] })),
+        error: `the script's Worker failed: ${error instanceof Error ? error.message : String(error)}`, uncertain: dispatcher.dispatched > 0, logs: [] })),
       aborted,
     ]);
     outcome.logs = [...dispatcher.logs];
@@ -166,7 +166,9 @@ export async function runScript(
       outcome = { ok: false, error: `limits.maxOutputBytes exceeded (${limits.maxOutputBytes} UTF-8 JSON bytes including logs)`, limit: "maxOutputBytes", logs: [] };
     if (outcome.ok && dispatcher.pending)
       outcome = { ok: false, error: "the script returned with unawaited tool calls", uncertain: true, logs: outcome.logs };
-    if (!outcome.ok && dispatcher.dispatched) outcome.error = `dispatched actions may have run; check before retrying. ${outcome.error}`;
+    if (!outcome.ok && dispatcher.pending) outcome.uncertain = true;
+    if (!outcome.ok && dispatcher.dispatched && (outcome.limit || outcome.uncertain))
+      outcome.error = `dispatched actions may have run; check before retrying. ${outcome.error}`;
     return outcome;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

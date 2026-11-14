@@ -64,7 +64,7 @@ test("run limits reject malformed budgets before execution and count the full UT
 });
 
 test("a caught call-budget violation remains terminal and a timeout prevents later calls", async t => {
-  const { call } = await fixture(t);
+  const { call, laptopDaemon } = await fixture(t);
   const caught = error(await call("axo.apps.run", { code: "async () => { for(let n=0;n<3;n++) { try { await codemode.bash.run({host:'missing',command:'true'}) } catch {} } return 'swallowed' }", limits: { maxToolCalls: 1 } }));
   assert.equal(caught.code, APPS_ERRORS.limitExceeded);
   assert.match(caught.message, /maxToolCalls/);
@@ -74,7 +74,15 @@ test("a caught call-budget violation remains terminal and a timeout prevents lat
   await new Promise(r => setTimeout(r, 600));
   const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
   assert.deepEqual(log.records, []);
-  const longFailure = error(await call("axo.apps.run", { code: "async () => { try { await codemode.bash.run({host:\'missing\',command:\'true\'}) } catch {} throw Error(\'x\'.repeat(2000)) }" }));
+  const failedWithPending = call("axo.apps.run", { code: "async () => { codemode.bash.run({host:'self',command:'sleep 10'}).catch(() => {}); await new Promise(r => setTimeout(r, 100)); throw Error('x'.repeat(2000)) }" });
+  const sent = await laptopDaemon.next() as Sent;
+  assert.equal(sent.method, BASH_METHOD);
+  const cancel = await laptopDaemon.next() as Sent;
+  assert.equal(cancel.method, "axo.apps.cancel");
+  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, error: { code: APPS_ERRORS.outcomeUnknown, message: "cancelled; may have run" } });
+  laptopDaemon.send({ jsonrpc: "2.0", id: cancel.id, result: { cancelRequested: true } });
+  const longFailure = error(await failedWithPending);
+  assert.equal(longFailure.code, APPS_ERRORS.outcomeUnknown);
   assert.match(longFailure.message, /^dispatched actions may have run/);
   assert.equal(longFailure.message.length, 256, "uncertainty survives wire error truncation");
 });
