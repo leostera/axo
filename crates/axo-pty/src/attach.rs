@@ -268,19 +268,60 @@ pub fn connect(socket_path: &Path, shell_id: i64) -> io::Result<Attachment> {
 /// Opens one attachment: request, header and PTY descriptor. Replay and live output follow on
 /// `Attachment::control`.
 pub fn open(socket_path: &Path, shell_id: i64) -> io::Result<Attachment> {
+    if shell_id <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shell ID must be positive",
+        ));
+    }
     let mut control = UnixStream::connect(socket_path)?;
     control.set_read_timeout(Some(Duration::from_secs(5)))?;
+    control
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("set attachment write timeout: {error}"),
+            )
+        })?;
     writeln!(control, "{shell_id}")?;
     let replay_bytes = receive_header(&mut control).map_err(|error| {
         io::Error::new(error.kind(), format!("read attachment header: {error}"))
     })?;
     let pty = receive_pty_master(&control)
         .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
+    // The handshake deadline must not turn an idle live terminal into a read failure.
+    clear_handshake_timeouts(&control)?;
     Ok(Attachment {
         control,
         pty,
         replay_bytes,
     })
+}
+
+fn clear_handshake_timeouts(control: &UnixStream) -> io::Result<()> {
+    let cleared = control
+        .set_read_timeout(None)
+        .and_then(|()| control.set_write_timeout(None));
+    #[cfg(target_os = "macos")]
+    if let Err(error) = &cleared {
+        // Darwin refuses socket options after the peer disconnects, even with replay
+        // still buffered. That stream can only drain to EOF; it cannot wait on a timeout.
+        if error.raw_os_error() == Some(libc::EINVAL) {
+            let mut descriptor = libc::pollfd {
+                fd: control.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: descriptor borrows this live socket for a nonblocking readiness check.
+            if unsafe { libc::poll(&mut descriptor, 1, 0) } > 0
+                && descriptor.revents & libc::POLLHUP != 0
+            {
+                return Ok(());
+            }
+        }
+    }
+    cleared
 }
 
 /// Returns the replay length; the replay itself follows the PTY descriptor on the stream.
@@ -347,12 +388,24 @@ fn read_exact_with_progress(
 }
 
 fn receive_pty_master(control: &UnixStream) -> io::Result<OwnedFd> {
+    // XNU unp_externalize installs every descriptor before recvmsg copies control
+    // data to userspace; a one-fd receive buffer can lose unreported descriptors.
+    // Match XNU's UIPC_MAX_CMSG_FD (512), also above Linux's SCM_MAX_FD (253).
+    // Source: xnu/bsd/kern/uipc_usrreq.c. Accept one, but own/close every extra.
+    receive_pty_master_with_capacity(control, 512)
+}
+
+fn receive_pty_master_with_capacity(
+    control: &UnixStream,
+    descriptor_capacity: u32,
+) -> io::Result<OwnedFd> {
     let mut payload = [0_u8; 1];
     let mut vector = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
         iov_len: payload.len(),
     };
-    let control_size = unsafe { libc::CMSG_SPACE(size_of::<libc::c_int>() as u32) } as usize;
+    let control_size =
+        unsafe { libc::CMSG_SPACE(descriptor_capacity * size_of::<libc::c_int>() as u32) } as usize;
     let mut ancillary = vec![0_usize; control_size.div_ceil(size_of::<usize>())];
     // SAFETY: zeroed msghdr is a valid starting point before its fields are initialized.
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -361,48 +414,110 @@ fn receive_pty_master(control: &UnixStream) -> io::Result<OwnedFd> {
     message.msg_control = ancillary.as_mut_ptr().cast();
     message.msg_controllen = control_size as _;
 
-    // SAFETY: message points to initialized payload and ancillary storage.
-    let received = unsafe { libc::recvmsg(control.as_raw_fd(), &mut message, 0) };
-    if received == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    if received != 1 || payload[0] != b'1' || message.msg_flags & libc::MSG_CTRUNC != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon did not provide a PTY descriptor",
-        ));
-    }
+    // Linux must set CLOEXEC atomically: the renderer can coexist with spawning threads.
+    #[cfg(target_os = "linux")]
+    let flags = libc::MSG_CMSG_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let flags = 0;
+    let received = loop {
+        message.msg_controllen = control_size as _;
+        message.msg_flags = 0;
+        // SAFETY: message borrows initialized payload and aligned ancillary storage.
+        let received = unsafe { libc::recvmsg(control.as_raw_fd(), &mut message, flags) };
+        if received >= 0 {
+            break received;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    };
 
-    // SAFETY: message's control storage was sized for one descriptor.
-    let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
-    if header.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon response did not contain a control message",
-        ));
-    }
-    let minimum_length = unsafe { libc::CMSG_LEN(size_of::<libc::c_int>() as u32) } as usize;
-    // SAFETY: header points to the control data supplied by recvmsg.
-    if unsafe { (*header).cmsg_level != libc::SOL_SOCKET }
-        || unsafe { (*header).cmsg_type != libc::SCM_RIGHTS }
-        || unsafe { (*header).cmsg_len as usize } < minimum_length
+    // Adopt *all* delivered descriptors before checking the payload/truncation. Even a
+    // rejected packet transfers ownership; do not leak the unexpected descriptors.
+    // Bound all declared control/header lengths by our actual receive buffer.
+    message.msg_controllen = message.msg_controllen.min(control_size as _);
+    // SAFETY: recvmsg just filled this live buffer and installed its descriptors;
+    // no descriptor has yet been adopted or closed by another owner.
+    let mut descriptors = unsafe { received_descriptors(&message) }?;
+    if received != 1
+        || payload[0] != b'1'
+        || message.msg_flags & libc::MSG_CTRUNC != 0
+        || descriptors.len() != 1
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "daemon response contained an unexpected control message",
+            "daemon did not provide exactly one PTY descriptor",
         ));
     }
+    let descriptor = descriptors.remove(0);
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Darwin has no MSG_CMSG_CLOEXEC. Never return an inheritable descriptor.
+        // SAFETY: descriptor is owned and live until after this checked call.
+        if unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(descriptor)
+}
 
-    // SAFETY: the header is SCM_RIGHTS and contains at least one descriptor.
-    let descriptor = unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(header).cast()) };
-    if descriptor < 0 {
+/// Own every delivered descriptor, even when another control entry is unexpected.
+///
+/// # Safety
+/// `message` must borrow a live, initialized recvmsg receive buffer, with its extent
+/// clamped to that allocation. Its SCM_RIGHTS numbers must be fresh kernel-delivered
+/// descriptors, not already owned or closed elsewhere.
+unsafe fn received_descriptors(message: &libc::msghdr) -> io::Result<Vec<OwnedFd>> {
+    let mut descriptors = Vec::new();
+    let mut only_rights = true;
+    // SAFETY: message still borrows recvmsg's initialized ancillary storage.
+    let mut header = unsafe { libc::CMSG_FIRSTHDR(message) };
+    while !header.is_null() {
+        // SAFETY: FIRSTHDR/NXTHDR only return headers within the clamped buffer.
+        let entry = unsafe { &*header };
+        let base = unsafe { libc::CMSG_LEN(0) } as usize;
+        // SAFETY: header and msg_control point into the same live receive buffer.
+        let offset = unsafe {
+            header
+                .cast::<u8>()
+                .offset_from(message.msg_control.cast::<u8>())
+        } as usize;
+        let remaining = message.msg_controllen as usize - offset;
+        let length = entry.cmsg_len as usize;
+        if length < base {
+            only_rights = false;
+            break;
+        }
+        let complete = length <= remaining;
+        only_rights &= complete;
+        if entry.cmsg_level == libc::SOL_SOCKET && entry.cmsg_type == libc::SCM_RIGHTS {
+            let bytes = length.min(remaining).saturating_sub(base);
+            only_rights &= bytes > 0 && bytes.is_multiple_of(size_of::<RawFd>());
+            for index in 0..bytes / size_of::<RawFd>() {
+                // SAFETY: the kernel's SCM_RIGHTS payload contains these descriptor values.
+                let raw = unsafe {
+                    std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<RawFd>().add(index))
+                };
+                // SAFETY: successful recvmsg transferred ownership of this descriptor.
+                descriptors.push(unsafe { OwnedFd::from_raw_fd(raw) });
+            }
+        } else {
+            only_rights = false;
+        }
+        if !complete {
+            break;
+        }
+        // SAFETY: both pointers refer to the same live recvmsg control buffer.
+        header = unsafe { libc::CMSG_NXTHDR(message, header) };
+    }
+    if !only_rights {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "daemon supplied an invalid PTY descriptor",
+            "daemon response contained unexpected control data",
         ));
     }
-    // SAFETY: recvmsg installed this descriptor in the current process.
-    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
+    Ok(descriptors)
 }
 
 #[cfg(test)]
@@ -544,18 +659,26 @@ mod tests {
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
             unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
         };
+        let (release, released) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             assert_eq!(read_request(&mut stream).unwrap(), 42);
             write_acceptance(&mut stream, 5, &pipe_write).unwrap();
             stream.write_all(b"hello").unwrap();
+            released.recv().unwrap();
         });
         let mut attachment = open(&path, 42).unwrap();
-        server.join().unwrap();
         assert_eq!(attachment.replay_bytes, 5);
+        assert_eq!(attachment.control.read_timeout().unwrap(), None);
+        assert_eq!(attachment.control.write_timeout().unwrap(), None);
+        // SAFETY: the attachment owns this live received descriptor.
+        let flags = unsafe { libc::fcntl(attachment.pty.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
         let mut replay = [0_u8; 5];
         attachment.control.read_exact(&mut replay).unwrap();
         assert_eq!(&replay, b"hello");
+        release.send(()).unwrap();
+        server.join().unwrap();
         // The received descriptor is the pipe's write end.
         let mut written = std::fs::File::from(attachment.pty);
         written.write_all(b"x").unwrap();
@@ -565,6 +688,122 @@ mod tests {
             .unwrap();
         assert_eq!(&byte, b"x");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_peer_that_exits_during_handshake_can_still_deliver_buffered_output() {
+        let (mut control, mut peer) = UnixStream::pair().unwrap();
+        control
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        control
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        peer.write_all(b"last").unwrap();
+        drop(peer);
+        clear_handshake_timeouts(&control).unwrap();
+        let mut bytes = [0; 4];
+        control.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"last");
+        assert_eq!(control.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn invalid_shell_ids_are_rejected_before_connecting() {
+        for id in [0, -1, i64::MIN] {
+            let error = open(Path::new("/no-such-axo-attach.sock"), id).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn rejected_descriptor_packets_close_every_delivered_descriptor() {
+        for (count, payload) in [(1, b'X'), (2, b'1'), (8, b'1')] {
+            let (client, server) = UnixStream::pair().unwrap();
+            let (passed, observers): (Vec<_>, Vec<_>) =
+                (0..count).map(|_| UnixStream::pair().unwrap()).unzip();
+            for observer in &observers {
+                // Set this before peer closure: Darwin refuses socket options afterwards.
+                observer
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+            }
+            let descriptors: Vec<_> = passed.iter().map(AsRawFd::as_raw_fd).collect();
+            send_descriptor_packet(&server, &descriptors, payload);
+            drop(passed);
+            assert_eq!(
+                receive_pty_master(&client).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            for mut observer in observers {
+                let observed = observer.read(&mut [0]);
+                assert!(
+                    matches!(observed, Ok(0)),
+                    "leaked descriptor: count={count} payload={payload} observed={observed:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn truncated_descriptor_packets_close_delivered_descriptors() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let (passed, mut observer) = UnixStream::pair().unwrap();
+        observer
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        // Linux closes undisclosed descriptors on truncation; we must close those
+        // it delivered. Do not run the deliberately undersized receive on Darwin.
+        send_descriptor_packet(&server, &[passed.as_raw_fd(); 8], b'1');
+        drop(passed);
+        assert_eq!(
+            receive_pty_master_with_capacity(&client, 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(observer.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_descriptor_marker_without_a_descriptor_is_refused() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        server.write_all(b"1").unwrap();
+        assert_eq!(
+            receive_pty_master(&client).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    fn send_descriptor_packet(socket: &UnixStream, descriptors: &[RawFd], mut payload: u8) {
+        let bytes = std::mem::size_of_val(descriptors);
+        // SAFETY: calculate native ancillary capacity for this test's descriptor slice.
+        let capacity = unsafe { libc::CMSG_SPACE(bytes as u32) } as usize;
+        let mut control = vec![0_usize; capacity.div_ceil(size_of::<usize>())];
+        let mut vector = libc::iovec {
+            iov_base: (&mut payload as *mut u8).cast(),
+            iov_len: 1,
+        };
+        // SAFETY: zero initializes the unused pointer/count fields.
+        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+        message.msg_iov = &mut vector;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = capacity as _;
+        // SAFETY: control is aligned and has room for this header and all descriptors.
+        unsafe {
+            let header = libc::CMSG_FIRSTHDR(&message);
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(bytes as u32) as _;
+            std::ptr::copy_nonoverlapping(
+                descriptors.as_ptr().cast::<u8>(),
+                libc::CMSG_DATA(header),
+                bytes,
+            );
+            assert_eq!(libc::sendmsg(socket.as_raw_fd(), &message, 0), 1);
+        }
     }
 
     #[test]
