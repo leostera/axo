@@ -49,6 +49,10 @@ pub(super) fn start_ai(id: Value, params: &Value, context: &RelaySessionContext)
         Ok(params) => params,
         Err(error) => return context.replies.reply(&id, Err(error)),
     };
+    let mut job = match context.jobs.start(&params.call_id) {
+        Ok(job) => job,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
     let place = match AI_JOBS.admit() {
         Ok(place) => place,
         Err(error) => return context.replies.reply(&id, Err(error)),
@@ -56,7 +60,18 @@ pub(super) fn start_ai(id: Value, params: &Value, context: &RelaySessionContext)
     let replies = context.replies.clone();
     let sessions = Arc::clone(&context.sessions);
     tokio::spawn(async move {
-        let outcome = sessions.remote_ai(params).await;
+        let cancel = axo_ipc::Stop::default();
+        let operation = sessions.remote_ai(params, cancel.clone());
+        tokio::pin!(operation);
+        let outcome = tokio::select! {
+            biased;
+            _ = job.cancelled() => {
+                cancel.stop();
+                // Keep the future, admission slot and job until native retirement/reaping ends.
+                operation.await
+            },
+            outcome = &mut operation => outcome,
+        };
         drop(place);
         replies.reply(&id, outcome);
     });
@@ -68,6 +83,10 @@ pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContex
         Ok(params) => params,
         Err(error) => return context.replies.reply(&id, Err(error)),
     };
+    let mut job = match context.jobs.start(&params.call_id) {
+        Ok(job) => job,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
     let place = match BASH_JOBS.admit() {
         Ok(place) => place,
         Err(error) => return context.replies.reply(&id, Err(error)),
@@ -75,7 +94,7 @@ pub(super) fn start_bash(id: Value, params: &Value, context: &RelaySessionContex
     let replies = context.replies.clone();
     tokio::spawn(async move {
         log::info!("event=apps.bash_started call={}", params.call_id);
-        let outcome = crate::bash::run(&params)
+        let outcome = crate::bash::run_cancellable(&params, job.cancelled())
             .await
             .map(|result| serde_json::to_value(result).expect("a bash result serializes"));
         drop(place);
@@ -95,6 +114,10 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
         Ok(params) => params,
         Err(error) => return context.replies.reply(&id, Err(error)),
     };
+    let mut job = match context.jobs.start(&params.call_id) {
+        Ok(job) => job,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
     let place = match COMPUTER_JOBS.admit() {
         Ok(place) => place,
         Err(error) => return context.replies.reply(&id, Err(error)),
@@ -106,9 +129,16 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
         let call_id = params.call_id.clone();
         let tool = params.tool.clone();
         log::info!("event=apps.computer_started call={call_id} tool={tool}");
-        let outcome = match sessions.remote_computer(params).await {
-            Ok(result) => Ok(crate::computer::to_account(result, assets.as_ref(), &tool).await),
-            Err(error) => Err(error),
+        let action = async {
+            match sessions.remote_computer(params).await {
+                Ok(result) => Ok(crate::computer::to_account(result, assets.as_ref(), &tool).await),
+                Err(error) => Err(error),
+            }
+        };
+        let outcome = tokio::select! {
+            biased;
+            _ = job.cancelled() => Err(MethodError::new(-32004, "Computer call cancelled; the action may have run")),
+            outcome = action => outcome,
         };
         drop(place);
         log::info!(
@@ -116,6 +146,43 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
             if outcome.is_ok() { "ok" } else { "error" }
         );
         replies.reply(&id, outcome);
+    });
+}
+
+/// A cancellation is scoped to the linked account and this relay session's own call IDs.
+/// Bash/AI retain ownership through cleanup. A receipt never proves rollback of an action;
+/// non-interruptible computer work may already have been dispatched.
+pub(super) fn start_cancel(id: Value, params: &Value, context: &RelaySessionContext) {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Cancel {
+        account_id: String,
+        call_id: String,
+    }
+    let parsed = serde_json::from_value::<Cancel>(params.clone());
+    let request = match parsed {
+        Ok(p)
+            if p.account_id == context.account_id
+                && !p.call_id.is_empty()
+                && p.call_id.len() <= 64 =>
+        {
+            p
+        }
+        _ => {
+            return context.replies.reply(
+                &id,
+                Err(MethodError::new(
+                    -32602,
+                    "invalid account or cancellation call ID",
+                )),
+            );
+        }
+    };
+    let jobs = Arc::clone(&context.jobs);
+    let replies = context.replies.clone();
+    tokio::spawn(async move {
+        let requested = jobs.cancel(&request.call_id).await;
+        replies.reply(&id, Ok(serde_json::json!({ "cancelRequested": requested })));
     });
 }
 

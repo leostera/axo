@@ -11,7 +11,7 @@ import { callTool, initialize, listTools, McpAuthRequired, McpError, McpOutcomeU
 const URL_ = "https://mcp.example.com/mcp";
 type Seen = { method: string; headers: Headers; body: { id?: number; method?: string; params?: unknown } | null };
 
-function server(answer: (message: { id?: number; method?: string; params?: unknown }) => Response | null = () => null) {
+function server(answer: (message: { id?: number; method?: string; params?: unknown }, request: Request) => Response | Promise<Response> | null = () => null) {
   const seen: Seen[] = [];
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -19,7 +19,7 @@ function server(answer: (message: { id?: number; method?: string; params?: unkno
     const body = text ? (JSON.parse(text) as { id?: number; method?: string; params?: unknown }) : null;
     seen.push({ method: request.method, headers: request.headers, body });
     if (request.method !== "POST" || !body) return new Response(null, { status: 405 });
-    const custom = answer(body);
+    const custom = await answer(body, request);
     if (custom) return custom;
     if (body.id === undefined) return new Response(null, { status: 202 });
     const json = (result: unknown, headers: Record<string, string> = {}) =>
@@ -48,6 +48,35 @@ test("a session negotiates the version, keeps the server's session and token on 
   assert.ok(posts.slice(1).every((s) => s.headers.get("Mcp-Session-Id") === "s-1" && s.headers.get("MCP-Protocol-Version") === "2025-06-18"));
   // The SDK's GET for server notifications never leaves the Worker.
   assert.equal(seen.some((s) => s.method === "GET"), false);
+});
+
+test("cancelling one MCP request aborts its HTTP fetch, not a different run on the shared session", async () => {
+  let ready!: () => void;
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  let aborted = false;
+  const fake = server((message, request) => {
+    if (message.method !== "tools/call" || (message.params as { name?: string }).name !== "slow") return null;
+    return new Promise<Response>((_resolve, reject) => {
+      request.signal.addEventListener("abort", () => { aborted = true; reject(request.signal.reason); }, { once: true });
+      ready();
+    });
+  });
+  const session = await initialize(URL_, "token", fake.fetcher);
+  const first = new AbortController();
+  const second = new AbortController();
+  const pending = assert.rejects(callTool(session, "slow", {}, undefined, first.signal), McpOutcomeUnknown);
+  await started;
+  const independent = callTool(session, "search", {}, undefined, second.signal);
+  first.abort(new Error("run ended"));
+  await pending;
+  assert.equal(aborted, true, "the transport's fetch, not just the SDK response wait, was cancelled");
+  assert.deepEqual(await independent, { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] });
+  assert.equal(second.signal.aborted, false);
+  assert.equal(session.requests.size, 0);
+  for (const sent of fake.seen.filter(item => item.body?.method === "tools/call")) {
+    assert.equal((sent.body?.params as { _meta?: unknown })._meta, undefined, "private scope IDs never reach the provider");
+  }
+  await session.client.close();
 });
 
 test("a 401 asks for sign-in with the server's challenge, a redirect is refused, and a JSON-RPC error is the server's", async () => {

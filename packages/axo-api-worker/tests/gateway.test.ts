@@ -39,6 +39,91 @@ function error(reply: Reply): { code: number; message: string } {
   return reply.error;
 }
 
+test("run limits reject malformed budgets before execution and count the full UTF-8 envelope", async t => {
+  const { call } = await fixture(t);
+  for (const limits of [{ timeoutMs: 0 }, { timeoutMs: 300001 }, { maxToolCalls: 1.5 }, { maxConcurrentCalls: 5 }, { maxOutputBytes: 1048577 }, { typo: 1 }]) {
+    assert.equal(error(await call("axo.apps.run", { code: "async () => { throw Error('executed') }", limits })).code, -32602);
+  }
+  const tiny = error(await call("axo.apps.run", { code: "async () => { await new Promise(r => setTimeout(r, 1000)); return 1 }" + " ".repeat(64000), limits: { timeoutMs: 1 } }));
+  assert.equal(tiny.code, APPS_ERRORS.limitExceeded, "expiry during preparation is a budget failure, not an internal error");
+  assert.match(tiny.message, /timeoutMs/);
+  const expected = { result: "é", logs: ["🦄"] };
+  const size = Buffer.byteLength(JSON.stringify(expected), "utf8");
+  const code = "async () => { console.log('🦄'); return 'é' }";
+  assert.deepEqual(result(await call("axo.apps.run", { code, limits: { maxOutputBytes: size } })), expected);
+  const tooBig = error(await call("axo.apps.run", { code, limits: { maxOutputBytes: size - 1 } }));
+  assert.equal(tooBig.code, APPS_ERRORS.limitExceeded);
+  assert.match(tooBig.message, /maxOutputBytes/);
+  const caught = error(await call("axo.apps.run", { code: "async () => { try { console.log('a'.repeat(100)) } catch {} return 1 }", limits: { maxOutputBytes: 30 } }));
+  assert.equal(caught.code, APPS_ERRORS.limitExceeded);
+  const cannotContinue = error(await call("axo.apps.run", { code: "async () => { try { console.log(\'x\'.repeat(100)) } catch {} try { await codemode.bash.run({host:\'self\',command:\'echo must-not-run\'}) } catch {} return 1 }", limits: { maxOutputBytes: 30 } }));
+  assert.equal(cannotContinue.code, APPS_ERRORS.limitExceeded);
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.deepEqual(log.records, [], "caught console overflow cannot dispatch another action");
+  assert.deepEqual(result(await call("axo.apps.run", { code: "async () => { logs.push(\'forged\'); return 7 }" })), { result: 7, logs: [] });
+});
+
+test("a caught call-budget violation remains terminal and a timeout prevents later calls", async t => {
+  const { call } = await fixture(t);
+  const caught = error(await call("axo.apps.run", { code: "async () => { for(let n=0;n<3;n++) { try { await codemode.bash.run({host:'missing',command:'true'}) } catch {} } return 'swallowed' }", limits: { maxToolCalls: 1 } }));
+  assert.equal(caught.code, APPS_ERRORS.limitExceeded);
+  assert.match(caught.message, /maxToolCalls/);
+  const timedOut = error(await call("axo.apps.run", { code: "async () => { await new Promise(r => setTimeout(r, 500)); return codemode.bash.run({host:'self',command:'echo late'}) }", limits: { timeoutMs: 50 } }));
+  assert.equal(timedOut.code, APPS_ERRORS.limitExceeded);
+  assert.match(timedOut.message, /timeoutMs/);
+  await new Promise(r => setTimeout(r, 600));
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.deepEqual(log.records, []);
+  const longFailure = error(await call("axo.apps.run", { code: "async () => { try { await codemode.bash.run({host:\'missing\',command:\'true\'}) } catch {} throw Error(\'x\'.repeat(2000)) }" }));
+  assert.match(longFailure.message, /^dispatched actions may have run/);
+  assert.equal(longFailure.message.length, 256, "uncertainty survives wire error truncation");
+});
+
+test("a run timeout rejects queued calls and requests cancellation only for its dispatched host call", async t => {
+  const { call, laptopDaemon } = await fixture(t);
+  const running = call("axo.apps.run", { limits: { timeoutMs: 500, maxConcurrentCalls: 1 },
+    code: "async () => Promise.all([1,2,3].map(n => codemode.bash.run({host:'self', command:'sleep 10', timeoutMs:10000})))" });
+  const first = await laptopDaemon.next() as Sent;
+  assert.equal(first.method, BASH_METHOD);
+  assert.ok(Number(first.params.timeoutMs) <= 500);
+  const cancellation = await laptopDaemon.next() as Sent;
+  assert.equal(cancellation.method, "axo.apps.cancel");
+  assert.equal(cancellation.params.callId, first.params.callId);
+  laptopDaemon.send({ jsonrpc: "2.0", id: first.id, error: { code: APPS_ERRORS.outcomeUnknown, message: "cancelled; may have run" } });
+  laptopDaemon.send({ jsonrpc: "2.0", id: cancellation.id, result: { cancelRequested: true } });
+  const failed = error(await running);
+  assert.equal(failed.code, APPS_ERRORS.limitExceeded);
+  assert.match(failed.message, /timeoutMs/);
+  assert.match(failed.message, /may have run/);
+  const log = appsResults["axo.apps.log"].parse(result(await call("axo.apps.log")));
+  assert.equal(log.records.length, 1, "queued calls were never dispatched/logged");
+  assert.equal(log.records[0]!.outcome, "unknown");
+  assert.deepEqual(result(await call("axo.apps.run", { code: "async () => 42" })), { result: 42, logs: [] });
+});
+
+test("a requested concurrency limit serializes tool dispatch", async t => {
+  const { call, laptopDaemon } = await fixture(t);
+  const running = call("axo.apps.run", { limits: { maxConcurrentCalls: 1, maxToolCalls: 3 },
+    code: "async () => Promise.all([1,2,3].map(n => codemode.bash.run({host:'self',command:String(n)})))" });
+  const reply = (sent: Sent) => laptopDaemon.send({ jsonrpc: "2.0", id: sent.id,
+    result: { exitCode: 0, signal: null, stdout: String(sent.params.command), stderr: "", stdoutTruncated: false, stderrTruncated: false, timedOut: false, durationMs: 1 } });
+  const first = await laptopDaemon.next() as Sent;
+  assert.equal(first.params.command, "1");
+  let secondArrived = false;
+  const secondPending = laptopDaemon.next().then(value => { secondArrived = true; return value as Sent; });
+  await new Promise(r => setTimeout(r, 60));
+  assert.equal(secondArrived, false);
+  reply(first);
+  const second = await secondPending;
+  assert.equal(second.params.command, "2");
+  reply(second);
+  const third = await laptopDaemon.next() as Sent;
+  assert.equal(third.params.command, "3");
+  reply(third);
+  const out = result(await running) as { result: Array<{ stdout: string }> };
+  assert.deepEqual(out.result.map(r => r.stdout), ["1", "2", "3"]);
+});
+
 test("every paired Mac is a host connection, named after its label, online while connected", async (t) => {
   const { laptop, studio, call } = await fixture(t);
   const listed = appsResults["axo.apps.list"].parse(result(await call("axo.apps.list")));

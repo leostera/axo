@@ -128,6 +128,7 @@ pub trait RelayHost: Send + Sync {
     fn remote_ai(
         &self,
         _request: crate::ai::AiParams,
+        _cancel: axo_ipc::Stop,
     ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
         Box::pin(std::future::ready(Err(MethodError::method_not_found())))
     }

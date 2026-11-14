@@ -17,6 +17,7 @@
 mod elicitation;
 mod forward;
 mod jobs;
+mod owned_jobs;
 mod session;
 mod socket;
 mod status;
@@ -430,8 +431,9 @@ async fn connect_and_serve(
         socket_id: format!("axod-{}-{}", std::process::id(), socket.epoch),
         account_id: account.account_id().to_owned(),
         assets,
+        jobs: Arc::new(owned_jobs::OwnedJobs::default()),
     });
-    // The host's answers, in order, beside the loop, so a slow one never holds up the socket.
+    // The host\'s answers, in order, beside the loop, so a slow one never holds up the socket.
     let (requests, waiting) = tokio::sync::mpsc::unbounded_channel();
     let answering = tokio::spawn(answer_requests(waiting, Arc::clone(&context)));
     let result = relay_session(
@@ -444,6 +446,7 @@ async fn connect_and_serve(
         requests,
     )
     .await;
+    context.jobs.close();
     let _ = answering.await;
     channel.detach(socket.epoch);
     sessions.set_asset_source(None);

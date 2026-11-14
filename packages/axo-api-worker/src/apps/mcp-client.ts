@@ -44,20 +44,23 @@ export class McpError extends Error {
 }
 
 /** `icons` are the srcs of the icons the server named for itself in `initialize`, if any. */
-export type McpSession = { url: string; token: string | null; client: Client; icons?: string[] };
+export type McpSession = { url: string; token: string | null; client: Client; icons?: string[]; requests: Map<string, AbortSignal> };
+const SCOPE_META = "dev.leostera.axo.scope";
 
 /** Any JSON-RPC result, as the server sent it. */
 const anyResult = z.looseObject({});
 
 export async function initialize(url: string, token: string | null, fetcher: typeof fetch = fetch): Promise<McpSession> {
   const client = new Client({ name: "Axo", version: "1" }, { capabilities: {}, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() });
-  const transport = new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(token, fetcher) });
+  const requests = new Map<string, AbortSignal>();
+  const transport = new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(token, fetcher, requests) });
   await sdk("initialize", () => client.connect(transport, { timeout: REQUEST_TIMEOUT_MS }));
   const icons = (client.getServerVersion() as { icons?: Array<{ src?: unknown }> } | undefined)?.icons;
   return {
     url,
     token,
     client,
+    requests,
     icons: Array.isArray(icons) ? icons.flatMap((icon) => (typeof icon?.src === "string" ? [icon.src] : [])).slice(0, 8) : [],
   };
 }
@@ -74,12 +77,18 @@ export async function listTools(session: McpSession, _fetcher?: typeof fetch): P
   return tools;
 }
 
-export async function callTool(session: McpSession, name: string, input: unknown, _fetcher?: typeof fetch): Promise<unknown> {
-  return request(session, "tools/call", { name, arguments: input ?? {} });
+export async function callTool(session: McpSession, name: string, input: unknown, _fetcher?: typeof fetch, signal?: AbortSignal): Promise<unknown> {
+  signal?.throwIfAborted();
+  if (!signal) return request(session, "tools/call", { name, arguments: input ?? {} });
+  const id = crypto.randomUUID();
+  session.requests.set(id, signal);
+  try {
+    return await request(session, "tools/call", { name, arguments: input ?? {}, _meta: { [SCOPE_META]: id } }, signal);
+  } finally { session.requests.delete(id); }
 }
 
-function request(session: McpSession, method: string, params: Record<string, unknown>): Promise<unknown> {
-  return sdk(method, () => session.client.request({ method, params } as never, anyResult, { timeout: REQUEST_TIMEOUT_MS }));
+function request(session: McpSession, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  return sdk(method, () => session.client.request({ method, params } as never, anyResult, { timeout: REQUEST_TIMEOUT_MS, signal }));
 }
 
 /**
@@ -101,7 +110,7 @@ async function sdk<T>(method: string, call: () => Promise<T>): Promise<T> {
 }
 
 /** The SDK's fetch: Axo's credential, limits and outcomes on every request it makes. */
-function guarded(token: string | null, fetcher: typeof fetch): typeof fetch {
+function guarded(token: string | null, fetcher: typeof fetch, requests: Map<string, AbortSignal>): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = (init?.method ?? "GET").toUpperCase();
     // No stream of server notifications is held open (see above).
@@ -111,9 +120,21 @@ function guarded(token: string | null, fetcher: typeof fetch): typeof fetch {
     const message = method === "POST" && typeof init?.body === "string" ? parseMessage(init.body) : null;
     const label = message?.method ?? method;
     const sent = message?.id !== undefined;
+    // SDK 1.32's request signal sends notifications/cancelled but its HTTP transport uses one
+    // shared signal. Bind the run signal to this request, never abort another script's transport.
+    const scopeId = message?.params?._meta?.[SCOPE_META];
+    const scope = typeof scopeId === "string" ? requests.get(scopeId) : undefined;
+    if (typeof scopeId === "string" && !scope) throw new McpError(-32603, "the script has ended; MCP request not sent");
+    scope?.throwIfAborted();
+    let body = init?.body;
+    if (typeof scopeId === "string" && message?.params?._meta) {
+      delete message.params._meta[SCOPE_META];
+      if (!Object.keys(message.params._meta).length) delete message.params._meta;
+      body = JSON.stringify(message); // The private correlation ID never reaches the provider.
+    }
     let response: Response;
     try {
-      response = await fetcher(input, { ...init, headers, redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      response = await fetcher(input, { ...init, body, headers, redirect: "manual", signal: AbortSignal.any([...(scope ? [scope] : []), ...(init?.signal ? [init.signal] : []), AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) });
     } catch (error) {
       // Ending a session, or a notification, that failed changes nothing the caller relies on.
       if (!sent) throw new McpError(-32603, `${label}: ${error instanceof Error ? error.message : "the request failed"}`);
@@ -142,9 +163,10 @@ function guarded(token: string | null, fetcher: typeof fetch): typeof fetch {
   }) as typeof fetch;
 }
 
-function parseMessage(body: string): { id?: number | string; method?: string } | null {
+type WireMessage = { id?: number | string; method?: string; params?: { _meta?: Record<string, unknown> } };
+function parseMessage(body: string): WireMessage | null {
   try {
-    const message = JSON.parse(body) as { id?: number | string; method?: string };
+    const message = JSON.parse(body) as WireMessage;
     return typeof message === "object" && message ? message : null;
   } catch {
     return null;

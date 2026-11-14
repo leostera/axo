@@ -59,6 +59,18 @@ export const APPS_LIMITS = {
   logPage: 100,
 } as const;
 
+/** Optional per-run budgets. Defaults preserve code-only callers; requests cannot raise ceilings. */
+export const appsRunLimitsSchema = z.object({
+  timeoutMs: z.number().int().min(1).max(APPS_LIMITS.scriptWallMs).default(APPS_LIMITS.scriptWallMs),
+  maxToolCalls: z.number().int().min(1).max(APPS_LIMITS.callsPerScript).default(APPS_LIMITS.callsPerScript),
+  maxConcurrentCalls: z.number().int().min(1).max(APPS_LIMITS.concurrentCallsPerScript).default(APPS_LIMITS.concurrentCallsPerScript),
+  maxOutputBytes: z.number().int().min(1).max(APPS_LIMITS.resultBytes).default(APPS_LIMITS.resultBytes),
+}).strict();
+export type AppsRunLimits = z.infer<typeof appsRunLimitsSchema>;
+export const DEFAULT_APPS_RUN_LIMITS: Readonly<AppsRunLimits> = Object.freeze(appsRunLimitsSchema.parse({}));
+/** Account-authenticated cancellation of one owned host operation, scoped to its relay session. */
+export const APPS_CANCEL_METHOD = "axo.apps.cancel";
+
 /** Errors a apps call may end with, beyond JSON-RPC's own. */
 export const APPS_ERRORS = {
   /** The call went out and no answer came back: it may have run. */
@@ -350,7 +362,7 @@ export type CallRecord = z.infer<typeof callRecordSchema>;
 export const appsParams = {
   [APPS_METHODS.list]: z.object({ sessionId }).strict(),
   [APPS_METHODS.search]: z.object({ sessionId, code: script }).strict(),
-  [APPS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
+  [APPS_METHODS.execute]: z.object({ sessionId, code: script, limits: appsRunLimitsSchema.optional() }).strict(),
   /** `name` is what to call it, any text; the connection's name is its slug (appSlug). */
   [APPS_METHODS.add]: z.object({ sessionId, name: appTitleSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
   /** Removes a third-party connection, or signs out of an app (`apps.<app>`). */

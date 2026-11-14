@@ -245,6 +245,17 @@ impl Service {
     }
 
     pub async fn execute(&self, request: Request, timeout_ms: u64) -> Result<Value, Error> {
+        self.execute_cancellable(request, timeout_ms, std::future::pending())
+            .await
+    }
+
+    /// Cancellation owns the operation until runtime retirement/reaping completes.
+    pub async fn execute_cancellable(
+        &self,
+        request: Request,
+        timeout_ms: u64,
+        cancel: impl std::future::Future<Output = ()>,
+    ) -> Result<Value, Error> {
         if !(1..=MAX_TIMEOUT_MS).contains(&timeout_ms) {
             return Err(Error::invalid("invalid AI deadline"));
         }
@@ -252,13 +263,13 @@ impl Service {
             state: self.state.try_lock().map_err(|_| Error::Busy)?,
             runtime: tokio::runtime::Handle::current(),
         };
-        let result = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            self.perform(request, &mut state),
-        )
-        .await;
+        let result = tokio::select! {
+            biased;
+            _ = cancel => None,
+            result = tokio::time::timeout(Duration::from_millis(timeout_ms), self.perform(request, &mut state)) => Some(result),
+        };
         match result {
-            Ok(Ok(value)) => {
+            Some(Ok(Ok(value))) => {
                 state.runtime_busy = false;
                 Ok(value)
             }
@@ -269,7 +280,10 @@ impl Service {
                     state.retire().await?;
                 }
                 match result {
-                    Ok(Err(error)) => Err(error),
+                    Some(Ok(Err(error))) => Err(error),
+                    None => Err(Error::failed(
+                        "AI operation cancelled; the operation may have run",
+                    )),
                     _ => Err(Error::failed(
                         "AI operation timed out; partial model downloads will resume on another call",
                     )),
@@ -1019,6 +1033,43 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cooperative_cancellation_keeps_admission_closed_until_retirement_completes() {
+        let root = crate::tests::run_directory();
+        let service = Service::new(root.join("helper"), root.join("models"), root.join("run"));
+        let (release, cleanup) = tokio::sync::oneshot::channel::<()>();
+        {
+            let mut state = service.state.lock().await;
+            state.runtime_busy = true;
+            state.retiring = Some(Retirement::Running(tokio::spawn(async move {
+                let _ = cleanup.await;
+            })));
+        }
+        let operation = service.execute_cancellable(Request::List, 10000, std::future::ready(()));
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => panic!("cancellation returned before cleanup: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+        assert!(
+            service.state.try_lock().is_err(),
+            "the operation still owns admission"
+        );
+        release.send(()).unwrap();
+        assert!(
+            operation
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        let state = service.state.lock().await;
+        assert!(!state.runtime_busy);
+        assert!(state.retiring.is_none());
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 

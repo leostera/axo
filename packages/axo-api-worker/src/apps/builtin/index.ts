@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RunScope } from "../run-scope";
 import { APP_ACCOUNTS_MAX, APPS, ASSET_LIMITS, type AppAccount, type AppLink, type AppLinkRequest, type AppMacSignIn, type AppName, type AppPhoneSignIn, type AppPhoneSignInRequest, type AppSignIn, type AccountApp, type ToolDefinition } from "@axo/protocol";
 import {
   allowedUrl,
@@ -132,7 +133,7 @@ export type AppsDeps = {
    * Throws ProviderError when nothing was sent (the Mac is offline) and ProviderOutcomeUnknown
    * when it may have run.
    */
-  runOnMac?: (mac: string, command: string, timeoutMs: number) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
+  runOnMac?: (mac: string, command: string, timeoutMs: number, run?: RunScope) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
   /**
    * Has a Mac open a sign-in page in the person's browser and wait on a localhost redirect port
    * (axod's loopback sign-in), for a token app's sign-in on a Mac. Throws ProviderError when the
@@ -636,7 +637,8 @@ export class BuiltinApps {
    * renews the grant once and the call is sent again, since it did not run. A call to a tool
    * that is not idempotent and got no answer fails as may-have-run.
    */
-  async call(app: AppName, toolName: string, input: unknown): Promise<unknown> {
+  async call(app: AppName, toolName: string, input: unknown, run?: RunScope): Promise<unknown> {
+    run?.check();
     const definition = APP_DEFINITIONS[app];
     const tool = toolsOf(app).find((t) => t.name === toolName);
     if (!tool) throw new Error(`apps.${app} has no tool named ${toolName}; it has ${toolsOf(app).map((t) => t.name).join(", ")}`);
@@ -644,7 +646,7 @@ export class BuiltinApps {
     const parsed = inputOf(tool).safeParse(input ?? {});
     if (!parsed.success) throw new Error(invalidInput(inputOf(tool), parsed.error));
     const { account: named, ...rest } = parsed.data as { account: string } & Record<string, unknown>;
-    if (definition.signIn === "mac") return this.callOnMac(definition, tool as AppTool<any, MacShell>, named, rest);
+    if (definition.signIn === "mac") return this.callOnMac(definition, tool as AppTool<any, MacShell>, named, rest, run);
     const account = named.toLowerCase();
     // Errors reach the Session in at most 256 characters, so a sign-in link comes first.
     if (!this.row(app, account)) {
@@ -653,15 +655,16 @@ export class BuiltinApps {
       if (!accounts.length) throw new Error(`needs sign-in: ${await this.signInLink(app)} (open in a browser signed in to Axo)`);
       throw new Error(`no ${definition.title} account ${account.slice(0, 64)}; signed in: ${accounts.join(", ")}`);
     }
-    if (definition.signIn === "token") return this.callWithToken(definition, tool, account, rest);
-    if (definition.signIn === "phone") return this.callWithPhone(definition, tool, account, rest);
-    if (definition.signIn === "linked") return this.callLinked(definition, tool, account, rest);
+    if (definition.signIn === "token") return this.callWithToken(definition, tool, account, rest, run);
+    if (definition.signIn === "phone") return this.callWithPhone(definition, tool, account, rest, run);
+    if (definition.signIn === "linked") return this.callLinked(definition, tool, account, rest, run);
     for (let attempt = 0; ; attempt++) {
+      run?.check();
       const grant = await this.grant(app, account, attempt > 0);
       if (!grant || !grantFits(definition, grant))
         throw new Error(`${account} needs sign-in: ${await this.signInLink(app)}`);
       try {
-        return await runTool(definition, tool, this.api(definition, tool, () => ({ headers: authorization(grant) }), account), rest);
+        return await runTool(definition, tool, this.api(definition, tool, () => ({ headers: authorization(grant) }), account, run), rest);
       } catch (error) {
         if (!(error instanceof Unauthorized)) throw error;
         if (attempt > 0) {
@@ -673,13 +676,13 @@ export class BuiltinApps {
   }
 
   /** A Mac app's call: the tool's commands run on the Mac its account names, and nowhere else. */
-  private async callOnMac(definition: MacApp, tool: AppTool<any, MacShell>, mac: string, input: Record<string, unknown>): Promise<unknown> {
+  private async callOnMac(definition: MacApp, tool: AppTool<any, MacShell>, mac: string, input: Record<string, unknown>, scope?: RunScope): Promise<unknown> {
     const macs = this.macs();
     if (!macs.includes(mac)) throw new Error(`no Mac named ${mac.slice(0, 64)}; the account's Macs: ${macs.join(", ") || "none is paired"}`);
     const run = this.deps.runOnMac!;
     const shell: MacShell = {
       mac,
-      run: (args, options = {}) => run(mac, macCommand(args, options.stdin), Math.min(options.timeoutMs ?? 60_000, MAX_REQUEST_TIMEOUT_MS)).catch((error: unknown) => {
+      run: (args, options = {}) => run(mac, macCommand(args, options.stdin), Math.min(options.timeoutMs ?? 60_000, MAX_REQUEST_TIMEOUT_MS, scope?.remainingMs() ?? Infinity), scope).catch((error: unknown) => {
         // A command that is safe to repeat and may have run is only a failed call.
         if (error instanceof ProviderOutcomeUnknown && tool.idempotent) throw new ProviderError(0, error.message);
         throw error;
@@ -689,7 +692,7 @@ export class BuiltinApps {
   }
 
   /** A token app's call: a refused token is dropped, since only the person can issue a new one. */
-  private async callWithToken(definition: TokenApp, tool: AppTool, account: string, input: Record<string, unknown>): Promise<unknown> {
+  private async callWithToken(definition: TokenApp, tool: AppTool, account: string, input: Record<string, unknown>, run?: RunScope): Promise<unknown> {
     const row = this.row(definition.name, account);
     const credential = row?.grant_sealed ? await this.unsealToken(row.grant_sealed) : null;
     if (!row || !credential) throw new Error(`${account}'s token needs adding again at ${appPage(definition.name)}`);
@@ -697,7 +700,7 @@ export class BuiltinApps {
       throw new Error(`${account}'s ${definition.providerTitle} key expired on ${new Date(credential.expiresAt).toISOString().slice(0, 10)}; sign in again at ${appPage(definition.name)}`);
     }
     try {
-      return await runTool(definition, tool, this.api(definition, tool, (request) => definition.token.authorize(credential.fields, request), account), input);
+      return await runTool(definition, tool, this.api(definition, tool, (request) => definition.token.authorize(credential.fields, request), account, run), input);
     } catch (error) {
       if (!(error instanceof Unauthorized)) throw error;
       this.dropGrant(definition.name, account, row.grant_generation, `${definition.title} refused the token`);
@@ -814,7 +817,7 @@ export class BuiltinApps {
    * A phone app's call: the session is opened for it and closed after, within the timeout. A
    * session the service ended (on another device) is dropped, since only signing in again helps.
    */
-  private async callWithPhone(definition: PhoneApp, tool: AppTool<any, any>, account: string, input: Record<string, unknown>): Promise<unknown> {
+  private async callWithPhone(definition: PhoneApp, tool: AppTool<any, any>, account: string, input: Record<string, unknown>, run?: RunScope): Promise<unknown> {
     const row = this.row(definition.name, account);
     const credential = row?.grant_sealed ? await this.unsealPhone(row.grant_sealed) : null;
     if (!row || !credential) throw new Error(`${account} needs signing in again at ${appPage(definition.name)}`);
@@ -834,20 +837,32 @@ export class BuiltinApps {
       throw new ProviderOutcomeUnknown(`${definition.providerTitle} did not answer; it may have run`);
     };
     let opened: Awaited<ReturnType<PhoneSignIn["open"]>>;
+    let abandoned = false;
     try {
-      opened = await withTimeout(phone.open(client, credential.session), REQUEST_TIMEOUT_MS);
+      run?.check();
+      const opening = phone.open(client, credential.session).then(connection => {
+        let closing: ReturnType<typeof connection.close> | null = null;
+        const owned = { ...connection, close: () => closing ??= connection.close() };
+        // A connection arriving after its wait timed out must not become an orphan.
+        if (abandoned || run?.closed) void owned.close().catch(() => undefined);
+        return owned;
+      });
+      opened = await withTimeout(opening, Math.min(REQUEST_TIMEOUT_MS, run?.remainingMs() ?? Infinity));
     } catch (error) {
+      abandoned = true;
       // Nothing was sent yet: opening the session only connects.
       if (phone.failure(error).kind === "unknown") throw new ProviderError(0, `${definition.providerTitle} could not be reached`);
       return fail(error);
     }
+    try { run?.check(); } catch (error) { await opened.close().catch(() => undefined); throw error; }
+    const release = run?.onCancel(() => opened.close());
     let result: unknown;
     try {
-      result = await withTimeout(Promise.resolve(tool.run(opened.api, input)), REQUEST_TIMEOUT_MS);
+      result = await withTimeout(Promise.resolve(tool.run(opened.api, input)), Math.min(REQUEST_TIMEOUT_MS, run?.remainingMs() ?? Infinity));
     } catch (error) {
       await opened.close().catch(() => undefined);
       return fail(error);
-    }
+    } finally { release?.(); }
     // The service may move the session (another data centre): the newer one is kept.
     const session = await opened.close().catch(() => credential.session);
     if (session && session !== credential.session) {
@@ -928,15 +943,17 @@ export class BuiltinApps {
    * A linked app's call: its device runs the tool against what it cached. A device WhatsApp
    * unlinked (from the phone) leaves the account needing to be linked again.
    */
-  private async callLinked(definition: LinkedApp, tool: AppTool<any, any>, account: string, input: Record<string, unknown>): Promise<unknown> {
+  private async callLinked(definition: LinkedApp, tool: AppTool<any, any>, account: string, input: Record<string, unknown>, run?: RunScope): Promise<unknown> {
     const row = this.row(definition.name, account);
     const credential = row?.grant_sealed ? await this.unsealLinked(row.grant_sealed) : null;
     if (!row || !credential || !this.deps.linked) throw new Error(`${account} needs linking again at ${appPage(definition.name)}`);
     let outcome;
     try {
-      outcome = await withTimeout(this.deps.linked(definition.name, credential.device).run(tool.name, input), REQUEST_TIMEOUT_MS);
+      run?.check();
+      outcome = await withTimeout(this.deps.linked(definition.name, credential.device).run(tool.name, input), Math.min(REQUEST_TIMEOUT_MS, run?.remainingMs() ?? Infinity));
     } catch {
-      throw new ProviderError(0, `Axo's ${definition.providerTitle} device did not answer`);
+      if (!tool.idempotent) throw new ProviderOutcomeUnknown(`Axo\'s ${definition.providerTitle} device did not answer; it may have run`);
+      throw new ProviderError(0, `Axo\'s ${definition.providerTitle} device did not answer`);
     }
     if ("unlinked" in outcome) {
       this.dropGrant(definition.name, account, row.grant_generation, `${definition.providerTitle} unlinked this device`);
@@ -969,7 +986,7 @@ export class BuiltinApps {
   }
 
   /** The provider's API, with `authorize` putting the credential on every request. */
-  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, authorize: (request: OutgoingRequest) => Authorized | Promise<Authorized>, account: string): ProviderApi {
+  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, authorize: (request: OutgoingRequest) => Authorized | Promise<Authorized>, account: string, run?: RunScope): ProviderApi {
     const fetcher = this.deps.fetcher;
     const refused = () => new ProviderError(0, `${definition.title} calls only reach ${definition.hosts.join(", ")}`);
     /**
@@ -978,7 +995,8 @@ export class BuiltinApps {
      * or a server error may have run. Any other answer is returned as it came.
      */
     const transmit = async (method: string, url: URL, headers: Record<string, string>, body: { contentType: string; data: string | Uint8Array<ArrayBuffer> } | undefined, timeout: number | AbortSignal | undefined): Promise<Response> => {
-      // The grant goes only to the app's own API.
+      run?.check();
+      // The grant goes only to the app\'s own API.
       if (!allowedUrl(definition, url)) throw refused();
       // Only a write that is not safe to repeat can leave its outcome unknown; a failed read ran nothing that matters.
       const risky = method !== "GET" && method !== "HEAD" && !tool.idempotent;
@@ -986,6 +1004,7 @@ export class BuiltinApps {
       // The credential's URL must still be the app's own; no header of a call's own may stand in for the credential's.
       const target = auth.url ?? url;
       if (!allowedUrl(definition, target)) throw refused();
+      run?.check();
       const authNames = new Set(Object.keys(auth.headers).map((name) => name.toLowerCase()));
       let response: Response;
       try {
@@ -1002,9 +1021,11 @@ export class BuiltinApps {
           body: auth.body ?? body?.data,
           redirect: "manual",
           // An SDK's own signal (grammY's long poll) is followed, never past the longest a call may take.
-          signal: timeout instanceof AbortSignal
-            ? AbortSignal.any([timeout, AbortSignal.timeout(MAX_REQUEST_TIMEOUT_MS)])
-            : AbortSignal.timeout(Math.min(timeout ?? REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS)),
+          signal: AbortSignal.any([
+            ...(run ? [run.signal] : []),
+            ...(timeout instanceof AbortSignal ? [timeout] : []),
+            AbortSignal.timeout(timeout instanceof AbortSignal ? MAX_REQUEST_TIMEOUT_MS : Math.min(timeout ?? REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS)),
+          ]),
         });
       } catch {
         if (risky) throw new ProviderOutcomeUnknown(`${definition.title} did not answer; it may have run`);

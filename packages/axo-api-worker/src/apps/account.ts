@@ -25,6 +25,7 @@ import {
   signInResultSchema,
   APPS_ERRORS,
   APPS_LIMITS,
+  APPS_CANCEL_METHOD,
   APPS_METHODS,
   appSlug,
   bashResultSchema,
@@ -48,6 +49,7 @@ import { CallLog } from "./call-log";
 import { assetToolDefinitions, callAssetTool, isAssetTool } from "./assets-tools";
 import type { AccountAssets } from "../assets/store";
 import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller } from "./runner";
+import type { RunScope } from "./run-scope";
 import { ThirdPartyApps, type OpenedFlow } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
@@ -148,7 +150,7 @@ export class AccountApps {
       assets: deps.assets,
       // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
       macs: () => this.named().map((entry) => entry.name),
-      runOnMac: (mac, command, timeoutMs) => this.runOnMac(mac, command, timeoutMs),
+      runOnMac: (mac, command, timeoutMs, run) => this.runOnMac(mac, command, timeoutMs, run),
       signInOnMac: (mac, request) => this.signInOnMac(mac, request),
       linked: deps.linked,
     });
@@ -186,9 +188,8 @@ export class AccountApps {
         return scriptOutcome(await runScript(this.deps.loader, code, this.tools(), null), (o) => ({ result: o.result }));
       }
       case APPS_METHODS.execute: {
-        const { code } = params as AppsParams<typeof APPS_METHODS.execute>;
-        const deadline = Date.now() + APPS_LIMITS.scriptWallMs;
-        const outcome = await runScript(this.deps.loader, code, this.tools(), this.caller(caller, deadline));
+        const { code, limits } = params as AppsParams<typeof APPS_METHODS.execute>;
+        const outcome = await runScript(this.deps.loader, code, this.tools(), this.caller(caller), limits);
         return scriptOutcome(outcome, (o) => ({ result: o.result, logs: o.logs }));
       }
       case APPS_METHODS.log: {
@@ -387,12 +388,12 @@ export class AccountApps {
   }
 
   /** One model operation, logged without its prompt/output. Every target is resolved anew. */
-  private async runAi(from: Caller, name: string, input: unknown, deadline: number): Promise<unknown> {
+  private async runAi(from: Caller, name: string, input: unknown, run: RunScope): Promise<unknown> {
     const tool = aiToolSchema.parse(name);
     const { host, request } = aiRequest(tool, input);
     const target = await this.resolveHost(host, from);
-    const remaining = deadline - Date.now() - BASH_GRACE_MS;
-    if (remaining < 1_000) throw new LimitError("scriptWallMs", "the script has no time left for an ai operation");
+    const remaining = run.remainingMs();
+    if (remaining < 1_000) throw new LimitError("timeoutMs", "limits.timeoutMs leaves no time for an ai operation");
     const timeoutMs = Math.min(AI_MAX_TIMEOUT_MS, remaining);
     const callId = crypto.randomUUID();
     await this.log.start({
@@ -402,7 +403,7 @@ export class AccountApps {
     });
     let outcome: CallOutcome;
     try {
-      outcome = await this.deps.callHost(target.host.hostId, {
+      outcome = await this.callOwnedHost(run, target.host.hostId, {
         method: AI_METHOD,
         params: { accountId: this.deps.accountId, callId, request, timeoutMs },
         deadlineMs: timeoutMs + BASH_GRACE_MS,
@@ -411,8 +412,8 @@ export class AccountApps {
       outcome = failure(APPS_ERRORS.outcomeUnknown, "did not answer; the AI operation may have run");
     }
     if ("error" in outcome) {
-      const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
-      await this.log.finish(callId, unknown ? "unknown" : "error", unknown ? "the Mac did not answer" : "the Mac refused the AI operation");
+      const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown || run.closed;
+      await this.log.finish(callId, unknown ? "unknown" : "error", unknown ? "AI operation cancelled or unanswered; may have run" : "the Mac refused the AI operation");
       const old = outcome.error.code === -32601 || (outcome.error.code === -32602 && /invalid ai request fields|unknown ai request field|unknown field.*backend|unknown variant.*(?:coreml|predict)|task must be generate, classify or embed|unsupported model; call ai.list/.test(outcome.error.message));
       const requirement = request.task === "predict" || request.backend === "coreml" ? "native Core ML/predict requires inference API version 4" : "native MLX/backend selection requires inference API version 3";
       const message = old ? `update Axo on that Mac: ${requirement}; inspect ai.capabilities on the target Mac` : outcome.error.message;
@@ -453,22 +454,23 @@ export class AccountApps {
    * unpaired mid-script runs nothing after it. Each call is logged before it is sent and never
    * retried: a call that got no answer may have run.
    */
-  private caller(from: Caller, deadline: number): ToolCaller {
-    return async (service, tool, input) => {
+  private caller(from: Caller): ToolCaller {
+    return async (service, tool, input, run) => {
+      run.check();
       const app = BuiltinApps.appOf(service);
-      if (app) return this.callApp(from, app, tool, input);
+      if (app) return this.callApp(from, app, tool, input, run);
       if (service === HOSTS_NAMESPACE) {
         if (tool !== "list") throw new Error(`hosts has no tool named ${tool}; it has list`);
-        return this.hostsList(from);
+        return this.hostsList(from, run);
       }
-      if (service === AI_NAMESPACE) return this.runAi(from, tool, input, deadline);
+      if (service === AI_NAMESPACE) return this.runAi(from, tool, input, run);
       if (service === COMPUTER_NAMESPACE) {
         if (tool !== "run") throw new Error(`computer has no tool named ${tool}; call computer.run({ host, tool, args })`);
-        return this.runComputer(from, input, deadline);
+        return this.runComputer(from, input, run);
       }
-      if (service === ASSETS_NAMESPACE) return this.callAssets(from, tool, input);
+      if (service === ASSETS_NAMESPACE) return this.callAssets(from, tool, input, run);
       if (service !== BASH_NAMESPACE) {
-        if (this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input);
+        if (this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input, run);
         if (this.named().some((entry) => entry.name === service))
           throw new Error(`${service} is a Mac: call codemode.bash.run({ host: "${service}", command }) or codemode.computer.run({ host: "${service}", tool, args })`);
         throw new Error(`no app named ${service}`);
@@ -477,8 +479,7 @@ export class AccountApps {
       const parsed = bashInputSchema.safeParse(input);
       if (!parsed.success) throw new Error(`bash.run: ${z.prettifyError(parsed.error)}`);
       const target = await this.resolveHost(parsed.data.host, from);
-      const remaining = deadline - Date.now();
-      if (remaining <= 1_000) throw new LimitError("scriptWallMs", "the script has no time left for another command");
+      const remaining = run.remainingMs();
       const timeoutMs = Math.min(parsed.data.timeoutMs ?? APPS_LIMITS.bashDefaultTimeoutMs, remaining);
       const callId = crypto.randomUUID();
       await this.log.start({
@@ -490,9 +491,9 @@ export class AccountApps {
         targetHostId: target.host.hostId,
         input: { host: target.name, command: parsed.data.command, cwd: parsed.data.cwd ?? null, timeoutMs },
       });
-      const outcome = await this.sendBash(target.host, target.name, callId, parsed.data.command, parsed.data.cwd, timeoutMs);
+      const outcome = await this.sendBash(target.host, target.name, callId, parsed.data.command, parsed.data.cwd, timeoutMs, run);
       if ("error" in outcome) {
-        const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
+        const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown || run.closed;
         await this.log.finish(callId, unknown ? "unknown" : "error", outcome.error.message);
         throw new Error(`bash.run on ${target.name}: ${outcome.error.message}`);
       }
@@ -527,20 +528,21 @@ export class AccountApps {
   }
 
   /** Every Mac with whether it is online and, if it is, whether it can do computer use now. */
-  private async hostsList(from: Caller): Promise<HostEntry[]> {
+  private async hostsList(from: Caller, run: RunScope): Promise<HostEntry[]> {
     return Promise.all(this.named().map(async ({ name, host }): Promise<HostEntry> => {
       const online = await this.isOnline(host);
-      return { name, label: host.label, online, kind: "macos", self: host.hostId === from.hostId, computerUse: online ? await this.computerStatus(host) : null };
+      run.check();
+      return { name, label: host.label, online, kind: "macos", self: host.hostId === from.hostId, computerUse: online ? await this.computerStatus(host, run) : null };
     }));
   }
 
   /** A Mac's computer-use grants; null when it did not say (an older Axo, or no answer in time). */
-  private async computerStatus(host: HostLink): Promise<ComputerStatus | null> {
+  private async computerStatus(host: HostLink, run: RunScope): Promise<ComputerStatus | null> {
     try {
       const outcome = await this.deps.callHost(host.hostId, {
         method: COMPUTER_STATUS_METHOD,
         params: { accountId: this.deps.accountId },
-        deadlineMs: STATUS_DEADLINE_MS,
+        deadlineMs: Math.min(STATUS_DEADLINE_MS, run.remainingMs()),
       });
       if ("error" in outcome) return null;
       const status = computerStatusSchema.safeParse(outcome.result);
@@ -554,12 +556,12 @@ export class AccountApps {
    * One computer-use tool on a Mac. The Mac's gate decides whether to ask the person, and asks in
    * the calling Session; logged before it is sent and never retried: it may have run.
    */
-  private async runComputer(from: Caller, input: unknown, deadline: number): Promise<ComputerResult> {
+  private async runComputer(from: Caller, input: unknown, run: RunScope): Promise<ComputerResult> {
     const parsed = computerInputSchema.safeParse(input);
     if (!parsed.success) throw new Error(`computer.run: ${z.prettifyError(parsed.error)}`);
     const target = await this.resolveHost(parsed.data.host, from);
-    const remaining = deadline - Date.now() - BASH_GRACE_MS;
-    if (remaining < COMPUTER_MIN_MS) throw new LimitError("scriptWallMs", "the script has no time left for a computer call");
+    const remaining = run.remainingMs();
+    if (remaining < COMPUTER_MIN_MS) throw new LimitError("timeoutMs", "limits.timeoutMs leaves no time for a computer call");
     const timeoutMs = Math.min(COMPUTER_MAX_MS, remaining);
     const callId = crypto.randomUUID();
     const { tool, args = {}, confirm = false } = parsed.data;
@@ -570,7 +572,7 @@ export class AccountApps {
     const caller = this.deps.hosts().find((host) => host.hostId === from.hostId);
     let outcome: CallOutcome;
     try {
-      outcome = await this.deps.callHost(target.host.hostId, {
+      outcome = await this.callOwnedHost(run, target.host.hostId, {
         method: COMPUTER_METHOD,
         params: { accountId: this.deps.accountId, callId, tool, args, confirm, sessionId: from.sessionId, from: caller?.label ?? "another Mac", timeoutMs },
         deadlineMs: timeoutMs + BASH_GRACE_MS,
@@ -580,7 +582,7 @@ export class AccountApps {
     }
     if ("error" in outcome) {
       const old = outcome.error.code === -32601;
-      const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
+      const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown || run.closed;
       const message = old ? "runs an Axo too old for computer use from other Macs; update Axo there" : outcome.error.message;
       await this.log.finish(callId, unknown ? "unknown" : "error", message);
       throw new Error(`computer.run on ${target.name}: ${message}`);
@@ -594,14 +596,34 @@ export class AccountApps {
     return result.data;
   }
 
-  /** Sends one command down a Mac's socket and waits for its answer. Never retried: it may have run. */
-  private async sendBash(host: HostLink, service: string, callId: string, command: string, cwd: string | undefined, timeoutMs: number): Promise<CallOutcome> {
+  /** A run owns only the call IDs it allocated; cleanup never cancels another script. */
+  private async callOwnedHost(run: RunScope, hostId: string, request: {
+    method: string; params: { accountId: string; callId: string; timeoutMs: number; [key: string]: unknown }; deadlineMs: number;
+  }): Promise<CallOutcome> {
+    run.check();
+    const release = run.onCancel(async () => this.deps.callHost(hostId, {
+      method: APPS_CANCEL_METHOD,
+      params: { accountId: this.deps.accountId, callId: request.params.callId },
+      deadlineMs: 8_000,
+    }));
     try {
-      return await this.deps.callHost(host.hostId, {
+      const remaining = run.remainingMs();
+      return await this.deps.callHost(hostId, { ...request,
+        params: { ...request.params, timeoutMs: Math.min(request.params.timeoutMs, remaining) },
+        deadlineMs: Math.min(request.deadlineMs, remaining + BASH_GRACE_MS),
+      });
+    } finally { release(); }
+  }
+
+  /** Sends one command down a Mac's socket and waits for its answer. Never retried: it may have run. */
+  private async sendBash(host: HostLink, service: string, callId: string, command: string, cwd: string | undefined, timeoutMs: number, run?: RunScope): Promise<CallOutcome> {
+    try {
+      const request = {
         method: BASH_METHOD,
         params: { accountId: this.deps.accountId, callId, command, ...(cwd ? { cwd } : {}), timeoutMs },
         deadlineMs: timeoutMs + BASH_GRACE_MS,
-      });
+      };
+      return await (run ? this.callOwnedHost(run, host.hostId, request) : this.deps.callHost(host.hostId, request));
     } catch {
       return failure(APPS_ERRORS.outcomeUnknown, `${service} did not answer; the command may have run`);
     }
@@ -611,10 +633,10 @@ export class AccountApps {
    * A Mac app's command, logged as the app's call (callApp), not as `bash`. The Mac is looked up
    * again, so one unpaired mid-script runs nothing.
    */
-  private async runOnMac(mac: string, command: string, timeoutMs: number): Promise<BashResult> {
+  private async runOnMac(mac: string, command: string, timeoutMs: number, run?: RunScope): Promise<BashResult> {
     const target = this.named().find((entry) => entry.name === mac);
     if (!target) throw new ProviderError(0, `no Mac named ${mac}`);
-    const outcome = await this.sendBash(target.host, mac, crypto.randomUUID(), command, undefined, timeoutMs);
+    const outcome = await this.sendBash(target.host, mac, crypto.randomUUID(), command, undefined, timeoutMs, run);
     if ("error" in outcome) {
       if (outcome.error.code === APPS_ERRORS.outcomeUnknown) throw new ProviderOutcomeUnknown(`${mac}: ${outcome.error.message}`);
       throw new ProviderError(0, `${mac}: ${outcome.error.message}`);
@@ -695,29 +717,31 @@ export class AccountApps {
   }
 
   /** Calls an app's tool from here, with the account's grant; logged before it is sent. */
-  private async callApp(from: Caller, app: NonNullable<ReturnType<typeof BuiltinApps.appOf>>, tool: string, input: unknown): Promise<unknown> {
+  private async callApp(from: Caller, app: NonNullable<ReturnType<typeof BuiltinApps.appOf>>, tool: string, input: unknown, run: RunScope): Promise<unknown> {
     const service = `${APPS_NAMESPACE}.${app}`;
     const callId = crypto.randomUUID();
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
     try {
-      const output = await this.apps.call(app, tool, input);
+      run.check();
+      const output = await this.apps.call(app, tool, input, run);
       await this.log.finish(callId, "ok", null);
       return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.log.finish(callId, error instanceof ProviderOutcomeUnknown ? "unknown" : "error", message);
+      await this.log.finish(callId, error instanceof ProviderOutcomeUnknown || run.closed ? "unknown" : "error", message);
       throw new Error(`${service}.${tool}: ${message}`);
     }
   }
 
   /** A `codemode.assets` call, logged as the others are. Saves are made as the calling Mac. */
-  private async callAssets(from: Caller, tool: string, input: unknown): Promise<unknown> {
+  private async callAssets(from: Caller, tool: string, input: unknown, run: RunScope): Promise<unknown> {
     const assets = this.deps.assets;
     if (!assets) throw new Error("this Axo deployment keeps no assets");
     if (!isAssetTool(tool)) throw new Error(`assets has no tool named ${tool}; it has list, get, read and save`);
     const callId = crypto.randomUUID();
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service: ASSETS_NAMESPACE, tool, targetHostId: null, input });
     try {
+      run.check();
       const output = await callAssetTool(assets, tool, input, `host:${from.hostId}`);
       await this.log.finish(callId, "ok", null);
       return output;
@@ -729,16 +753,17 @@ export class AccountApps {
   }
 
   /** Calls a third-party tool from here, with the account's grant; logged before it is sent. */
-  private async callThirdParty(from: Caller, service: string, tool: string, input: unknown): Promise<unknown> {
+  private async callThirdParty(from: Caller, service: string, tool: string, input: unknown, run: RunScope): Promise<unknown> {
     const callId = crypto.randomUUID();
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
     try {
-      const output = await this.thirdParty.call(service, tool, input);
+      run.check();
+      const output = await this.thirdParty.call(service, tool, input, run);
       await this.log.finish(callId, "ok", null);
       return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.log.finish(callId, error instanceof McpOutcomeUnknown ? "unknown" : "error", message);
+      await this.log.finish(callId, error instanceof McpOutcomeUnknown || run.closed ? "unknown" : "error", message);
       throw new Error(`${service}.${tool}: ${message}`);
     }
   }
@@ -758,6 +783,6 @@ function failure(code: number, message: string): CallOutcome {
 function scriptOutcome(outcome: ScriptOutcome, result: (ok: Extract<ScriptOutcome, { ok: true }>) => unknown): CallOutcome {
   if (outcome.ok) return { result: result(outcome) };
   const logs = outcome.logs.length ? `\n\nconsole output:\n${outcome.logs.join("\n")}` : "";
-  const code = outcome.limit ? APPS_ERRORS.limitExceeded : APPS_ERRORS.scriptFailed;
+  const code = outcome.limit ? APPS_ERRORS.limitExceeded : outcome.uncertain ? APPS_ERRORS.outcomeUnknown : APPS_ERRORS.scriptFailed;
   return failure(code, `${outcome.error}${logs}`.slice(0, 16_384));
 }

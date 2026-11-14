@@ -24,6 +24,19 @@ Hosts never sign in: they pair. `/api/v1/host-pairings/redeem` and `/api/v1/acco
 
 The public site at `axo.leostera.dev` serves the landing page and app from the same origin as `/api/auth/me` and the new `/api/v1/account/*` APIs. Other `/api/*` paths remain unavailable. The legacy `app.axo.leostera.dev` and `api.axo.leostera.dev` Workers and Access applications have been removed, and their site-shim code is deleted. No legacy host records have been migrated; this change did not issue Durable Object namespace tombstones.
 
+## Codemode run budgets
+
+`apps_run` accepts optional per-invocation limits:
+
+```js
+{ code: "async () => (await codemode.bash.run({host: 'self', command: 'echo hello'})).stdout",
+  limits: { timeoutMs: 10000, maxToolCalls: 2, maxConcurrentCalls: 1, maxOutputBytes: 65536 } }
+```
+
+Defaults and hard ceilings are five minutes, 100 tool calls, four concurrent calls and 1 MiB of UTF-8 JSON output **including console logs**. All fields are optional positive integers; invalid/unknown/above-ceiling values are rejected, not clamped. A call budget counts tool invocations, not a provider tool's individual HTTP requests. Smaller budgets cannot increase any host/provider limit. There is up to ten seconds of owned cleanup beyond execution time; an outer agent harness still needs its own sufficiently long timeout.
+
+Await every tool call. Returning with unfinished calls is an uncertain error, not a way to launch background jobs. Ending/timing out closes admission, rejects queued calls and cancels supported in-flight work. Target-Mac cancellation requires Axo 0.60; older hosts retain their capped per-operation timeout. Bash cancellation kills/reaps its command group, and native AI keeps its slot through retirement. Already-dispatched external writes or computer actions **may have run**: cancellation is not rollback and uncertain actions are never retried automatically. CPU/memory quotas and durable background jobs are separate features. See [RFD0050](../../docs/rfds/RFD0050-codemode-run-limits.md).
+
 ## Local AI tools
 
 `codemode.ai.capabilities/info/list/install/load/unload/run` routes a script's request to a

@@ -92,6 +92,14 @@ pub fn parse(params: &Value, account_id: &str) -> Result<BashParams, MethodError
 
 /// Runs the command to its end or its timeout. `Err` only when it could not start.
 pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
+    run_cancellable(params, std::future::pending()).await
+}
+
+/// Cancellation follows the same kill/reap/drain path as a deadline, never a dropped wait.
+pub(crate) async fn run_cancellable(
+    params: &BashParams,
+    cancel: impl std::future::Future<Output = ()>,
+) -> Result<BashResult, MethodError> {
     let started = Instant::now();
     let timeout = params
         .timeout_ms
@@ -109,7 +117,8 @@ pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Its own process group, so a timeout ends everything it started.
-        .process_group(0);
+        .process_group(0)
+        .kill_on_drop(true);
     if let Some(cwd) = &params.cwd {
         command.current_dir(cwd);
     } else if let Some(home) = std::env::var_os("HOME") {
@@ -123,16 +132,29 @@ pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
     })?;
     // The child leads its own group (process_group(0)), so its pid is the group's id.
     let group = child.id();
+    let mut owner = GroupOwner {
+        group,
+        reaped: false,
+        finished: false,
+    };
     let stdout = tokio::spawn(capture(child.stdout.take().expect("piped")));
     let stderr = tokio::spawn(capture(child.stderr.take().expect("piped")));
 
-    let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => (status.ok(), false),
-        Err(_) => {
+    let (status, timed_out) = tokio::select! {
+        biased;
+        _ = cancel => {
             kill_shell_and_group(group);
             (child.wait().await.ok(), true)
         }
+        status = tokio::time::timeout(timeout, child.wait()) => match status {
+            Ok(status) => (status.ok(), false),
+            Err(_) => {
+                kill_shell_and_group(group);
+                (child.wait().await.ok(), true)
+            }
+        },
     };
+    owner.reaped = true;
     // Background children may hold the output open; give them a moment, then end the group,
     // which closes the pipes and so ends both readers.
     let (mut stdout, mut stderr) = (stdout, stderr);
@@ -159,7 +181,27 @@ pub async fn run(params: &BashParams) -> Result<BashResult, MethodError> {
         duration_ms: started.elapsed().as_millis() as u64,
     };
     fit_in_one_message(&mut result);
+    owner.finished = true;
     Ok(result)
+}
+
+/// A cancelled task must not leave a shell/group behind. Tokio still owns child reaping.
+struct GroupOwner {
+    group: Option<u32>,
+    reaped: bool,
+    finished: bool,
+}
+impl Drop for GroupOwner {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if self.reaped {
+            kill_group_left(self.group);
+        } else {
+            kill_shell_and_group(self.group);
+        }
+    }
 }
 
 /// Kills the shell, then everything in its group. The shell goes first: under load, macOS's
@@ -287,6 +329,22 @@ mod tests {
         assert!(
             took >= DRAIN_GRACE && took < Duration::from_secs(5),
             "{took:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_kills_and_reaps_the_owned_command_group() {
+        let p = params("sleep 30 & sleep 30; echo never");
+        let started = Instant::now();
+        let result = run_cancellable(&p, tokio::time::sleep(Duration::from_millis(50)))
+            .await
+            .unwrap();
+        assert!(result.timed_out);
+        assert_eq!(result.signal, Some(libc::SIGKILL));
+        assert!(!result.stdout.contains("never"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancellation must beat the five-second command deadline"
         );
     }
 

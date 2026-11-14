@@ -20,7 +20,9 @@ use super::elicitation::{
     ELICITATION_REQUESTED, ELICITATION_RESOLVE, ELICITATION_RESOLVED, resolve_elicitation,
 };
 use super::forward;
-use super::jobs::{start_ai, start_bash, start_computer, start_prompt, start_sign_in};
+use super::jobs::{
+    start_ai, start_bash, start_cancel, start_computer, start_prompt, start_sign_in,
+};
 use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
 use super::wire::{JSONRPC, OutgoingRequest};
@@ -94,6 +96,7 @@ pub(super) async fn rpc_call(
 
 /// What one connected socket's loop, its answers and its jobs share.
 pub(super) struct RelaySessionContext {
+    pub(super) jobs: Arc<super::owned_jobs::OwnedJobs>,
     pub(super) sessions: Arc<dyn RelayHost>,
     pub(super) identity: HostIdentity,
     pub(super) subscription_id: String,
@@ -226,6 +229,12 @@ fn take_message(
     let id = value.get("id").filter(|id| !id.is_null()).cloned();
     let params = &value["params"];
     let request = match method {
+        Some("axo.apps.cancel") => {
+            if let Some(id) = id {
+                start_cancel(id, params, context);
+            }
+            return Ok(());
+        }
         Some(crate::ai::METHOD) => {
             if let Some(id) = id {
                 start_ai(id, params, context);

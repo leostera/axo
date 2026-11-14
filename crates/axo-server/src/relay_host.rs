@@ -175,8 +175,9 @@ impl axo_relay::RelayHost for RelayHostAdapter {
     fn remote_ai(
         &self,
         request: axo_relay::ai::AiParams,
+        cancel: axo_ipc::Stop,
     ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
-        Box::pin(crate::ai::execute(&self.core, request))
+        Box::pin(crate::ai::execute(&self.core, request, cancel))
     }
 
     fn computer_status(&self) -> HostFuture<'_, serde_json::Value> {

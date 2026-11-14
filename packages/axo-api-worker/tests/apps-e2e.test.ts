@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -124,8 +124,47 @@ test("a Session's script runs bash and computer use on a Mac through the account
     } finally {
       phone.close();
     }
+    // Real ownership: timeout/cancel goes back down the relay and kills/reaps the shell group.
+    // The first marker proves the command actually started; the delayed marker must never run.
+    const startedMarker = join(root, "limited-started");
+    const lateMarker = join(root, "limited-late");
+    const limited = localCall(socketPath, "axo.apps.run", {
+      sessionId, limits: { timeoutMs: 2000, maxConcurrentCalls: 1, maxToolCalls: 3 },
+      code: `async () => Promise.all([1,2,3].map(n => codemode.bash.run({host:"self",timeoutMs:30000,command:${JSON.stringify(`echo started > '${startedMarker}'; sleep 4; echo late > '${lateMarker}'`)}})))`,
+    });
+    // Install the rejection handler immediately, before waiting for the marker.
+    const limitedOutcome = limited.then(() => { throw new Error("limited command unexpectedly succeeded"); }, error => error);
+    await waitFor("the limited command to actually start", 1500, async () => existsSync(startedMarker) || undefined, daemon);
+    const limitedError = await limitedOutcome;
+    assert.match(String(limitedError), /timeoutMs|may have run/);
+    await new Promise(resolve => setTimeout(resolve, 4500));
+    assert.equal(existsSync(lateMarker), false, "no delayed write survived the script deadline");
+    const recovered = await localCall(socketPath, "axo.apps.run", { sessionId, limits: { timeoutMs: 5000 },
+      code: 'async () => (await codemode.bash.run({host:"self",command:"echo recovered"})).stdout' }) as { result: string };
+    assert.equal(recovered.result, "recovered\n");
+    // Ending early must cancel too: this command's own deadline is ten seconds, not two.
+    const earlyStarted = join(root, "early-started");
+    const earlyLate = join(root, "early-late");
+    const early = localCall(socketPath, "axo.apps.run", { sessionId, limits: { timeoutMs: 10000 },
+      code: `async () => { codemode.bash.run({host:"self",command:${JSON.stringify(`echo started > '${earlyStarted}'; sleep 3; echo late > '${earlyLate}'`)}}).catch(() => {}); await new Promise(r => setTimeout(r, 1000)); return "detached"; }` });
+    const earlyOutcome = early.then(() => { throw new Error("unawaited work unexpectedly succeeded"); }, error => error);
+    await waitFor("early-return command to actually start", 900, async () => existsSync(earlyStarted) || undefined, daemon);
+    assert.match(String(await earlyOutcome), /unawaited|may have run/);
+    await new Promise(resolve => setTimeout(resolve, 3500));
+    assert.equal(existsSync(earlyLate), false, "early return cancelled before the command's own deadline");
+
+    // Independent scripts keep independent cancellation scopes, even on the same Mac.
+    const longStarted = join(root, "independent-started");
+    const independent = localCall(socketPath, "axo.apps.run", { sessionId, limits: { timeoutMs: 5000 },
+      code: `async () => (await codemode.bash.run({host:"self",command:${JSON.stringify(`echo started > '${longStarted}'; sleep 2; echo independent`)}})).stdout` });
+    await waitFor("the independent command to start", 2000, async () => existsSync(longStarted) || undefined, daemon);
+    await assert.rejects(localCall(socketPath, "axo.apps.run", { sessionId, limits: { timeoutMs: 300 },
+      code: 'async () => codemode.bash.run({host:"self",command:"sleep 5"})' }), /timeoutMs/);
+    assert.equal((await independent as { result: string }).result, "independent\n");
+    assert.equal((await readFile(startedMarker, "utf8")).trim(), "started");
+
     const after = (await localCall(socketPath, "axo.apps.log", { sessionId })) as { records: Array<{ service: string; tool: string; outcome: string }> };
-    assert.deepEqual(after.records.map((r) => [r.service, r.tool, r.outcome])[0], ["computer", "click", "error"]);
+    assert.deepEqual(after.records.filter(r => r.service === "computer").map(r => [r.service, r.tool, r.outcome])[0], ["computer", "click", "error"]);
   } finally {
     if (daemon) await terminate(daemon);
     await api.close();

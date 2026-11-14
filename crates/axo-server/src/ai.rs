@@ -16,8 +16,14 @@ use crate::core::Core;
 pub(crate) async fn execute(
     core: &Core,
     request: axo_relay::ai::AiParams,
+    cancel: axo_ipc::Stop,
 ) -> Result<Value, MethodError> {
     let mut operation = Request::parse(request.request).map_err(error)?;
+    if cancel.is_stopped() {
+        return Err(error(Error::failed(
+            "AI operation cancelled; the operation may have run",
+        )));
+    }
     let started = Instant::now();
     if let Some(input) = operation.input_mut() {
         let attachments = Attachments::parse(
@@ -42,11 +48,13 @@ pub(crate) async fn execute(
                     "this Mac changed accounts while preparing image assets; retry from its current account",
                 )));
             }
-            let fetched = tokio::time::timeout(
-                Duration::from_millis(request.timeout_ms),
-                axo_relay::assets::fetch_all(&source, &attachments),
-            )
-            .await
+            let fetched = tokio::select! {
+                _ = cancel.stopped() => return Err(error(Error::failed("AI input preparation cancelled"))),
+                fetched = tokio::time::timeout(
+                    Duration::from_millis(request.timeout_ms),
+                    axo_relay::assets::fetch_all(&source, &attachments),
+                ) => fetched,
+            }
             .map_err(|_| error(Error::failed("image asset fetch timed out")))?
             .map_err(|_| {
                 error(Error::failed(
@@ -94,7 +102,10 @@ pub(crate) async fn execute(
             "AI deadline expired preparing image inputs",
         )));
     }
-    core.ai.execute(operation, remaining).await.map_err(error)
+    core.ai
+        .execute_cancellable(operation, remaining, cancel.stopped())
+        .await
+        .map_err(error)
 }
 fn error(error: Error) -> MethodError {
     let code = match &error {

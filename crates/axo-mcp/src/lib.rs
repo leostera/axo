@@ -44,7 +44,7 @@ const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi convers
 - `session_prompt` sends a message to a Session's agent, including this one ("self"). `delivery`: "followUp" (default; after its current turn), "steer" (after its current tool calls) or "turn" (only if idle). Prompts from an agent are limited: at most 30 a minute, 10 of them to "self".
 - `terminal_write` types text into a pane: end a command with "\r" to run it; "\u0003" is Ctrl-C. `terminal_screen` reads a pane's screen and scrollback as plain text.
 - `session_create` starts a new Session (Pi plus a terminal) in a folder: `folder` (an absolute path), `like` (another Session's folder; "self" for this one's), or with neither the home directory.
-- `apps_*` reach this person's Axo account, if this Mac is linked to one. The account's Macs are reached by name: `codemode.hosts.list()` lists them (name, online, whether computer use works there), `codemode.bash.run({ host, command })` runs a command on one, and `codemode.computer.run({ host, tool, args, confirm? })` drives its apps like the `computer` tool, asking the person when an action needs them; screenshots come back as `{ type: "image", attachment }`, and returning them from the script shows them to you. Files are kept in the account's assets, never inline: `codemode.apps.gmail.save_attachment({ account, id, partId })` and `save_message`, and `codemode.apps.drive.save_file`, answer `{ type: "file", attachment, url }`; returning that from the script puts the file on this Mac under `~/.axo/assets/<hash>/<name>` and tells you the path, and `codemode.assets.read({ asset, offset, length })` reads any asset in ranges. `host` is a name from `hosts.list()` or "self". `codemode.ai.capabilities({ host? })` describes the Mac\'s actual inference backend, recognized architectures, tasks and limits. Use the account\'s Hugging Face connection to search for models, then `ai.info({ model: "hf:owner/repo[:quant][@revision]", host? })` to inspect compatibility without downloading weights. `ai.run({ model, task: "generate"|"classify"|"embed"|"predict", input, host? })` resolves, verifies, installs, loads and runs compatible GGUF, native MLX or Core ML source models; classification takes state/questions/images, generation takes text and optional images, embeddings take text. Core ML uses predict with input {features:{name:typedValue},outputs?:[names]}; ai.load with task predict returns native feature names/dtypes/shapes. Images can be account attachments, including {type:image,image:attachment} feature bindings. Select complete output names to fit the relay budget; results are never silently truncated. Core ML/predict needs Axo 0.57 / inference API 4 and does not implement chat, mutable state or custom operators. `ai.list` is the installed/cache inventory; `ai.install/load/unload` manage residency. Native MLX on Apple Silicon currently supports dense Qwen2/Qwen3 text generation, not arbitrary safetensors/custom heads. No Python or repository code runs. Backend selection is automatic; the optional backend field can select MLX explicitly. `apps_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `apps_run` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.bash.run({ host: "studio", command: "uptime" })).stdout`; `apps_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `apps_list` lists the apps and their accounts; `apps_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. A apps script may run for up to 5 minutes: when calling `apps_run` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
+- `apps_*` reach this person's Axo account, if this Mac is linked to one. The account's Macs are reached by name: `codemode.hosts.list()` lists them (name, online, whether computer use works there), `codemode.bash.run({ host, command })` runs a command on one, and `codemode.computer.run({ host, tool, args, confirm? })` drives its apps like the `computer` tool, asking the person when an action needs them; screenshots come back as `{ type: "image", attachment }`, and returning them from the script shows them to you. Files are kept in the account's assets, never inline: `codemode.apps.gmail.save_attachment({ account, id, partId })` and `save_message`, and `codemode.apps.drive.save_file`, answer `{ type: "file", attachment, url }`; returning that from the script puts the file on this Mac under `~/.axo/assets/<hash>/<name>` and tells you the path, and `codemode.assets.read({ asset, offset, length })` reads any asset in ranges. `host` is a name from `hosts.list()` or "self". `codemode.ai.capabilities({ host? })` describes the Mac\'s actual inference backend, recognized architectures, tasks and limits. Use the account\'s Hugging Face connection to search for models, then `ai.info({ model: "hf:owner/repo[:quant][@revision]", host? })` to inspect compatibility without downloading weights. `ai.run({ model, task: "generate"|"classify"|"embed"|"predict", input, host? })` resolves, verifies, installs, loads and runs compatible GGUF, native MLX or Core ML source models; classification takes state/questions/images, generation takes text and optional images, embeddings take text. Core ML uses predict with input {features:{name:typedValue},outputs?:[names]}; ai.load with task predict returns native feature names/dtypes/shapes. Images can be account attachments, including {type:image,image:attachment} feature bindings. Select complete output names to fit the relay budget; results are never silently truncated. Core ML/predict needs Axo 0.57 / inference API 4 and does not implement chat, mutable state or custom operators. `ai.list` is the installed/cache inventory; `ai.install/load/unload` manage residency. Native MLX on Apple Silicon currently supports dense Qwen2/Qwen3 text generation, not arbitrary safetensors/custom heads. No Python or repository code runs. Backend selection is automatic; the optional backend field can select MLX explicitly. `apps_add` adds a remote MCP server (give the person its `signInUrl` if it needs sign-in). Apps Axo provides, such as Gmail, are reached as `codemode.apps.<app>.<tool>({ account, ... })`: every call names the account to act as, one of the app's signed-in accounts, e.g. `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call to an app with no account signed in fails with a sign-in link to give the person; they add accounts in the Axo app under Apps. `apps_run` runs a JavaScript async function in the cloud where `codemode.<service>.<tool>(input)` calls a tool, e.g. `async () => (await codemode.bash.run({ host: "studio", command: "uptime" })).stdout`; `apps_search` finds tools by `query` (e.g. "wise balance") with their inputs and answers, or runs a function over `codemode.tools()`; `apps_list` lists the apps and their accounts; `apps_log` shows recent calls. Inside a script, tools answer plain values: never `JSON.parse` them. A call that fails with "may have run" is not retried for you: check before running it again. apps_run accepts optional limits {timeoutMs,maxToolCalls,maxConcurrentCalls,maxOutputBytes} within server ceilings; await every tool call, since unawaited work is cancelled where supported and already-dispatched actions may have run. A script may run for up to 5 minutes: when calling `apps_run` from a codemode script, raise that script's timeout (first line `// @options: {"timeout_ms": 330000}`) if the work is slow.
 - `computer` sees and operates this Mac's apps (computer use), in the background where possible: read a window with `get_window_state` (elements plus a screenshot), act with `run_steps` (it can report what changed), or run a JavaScript `run_script` for loops and checks. `computer_tools` gives each tool's schema; `get_guide` explains the approach. Prefer an app's own CLI, MCP server or connection when there is one. It acts as the person in their real apps: an action that may send, post, pay or delete is checked on this Mac, and the person is asked on their own devices before it runs; pass `confirm: true` to have them asked about any call. You cannot approve for them. Read back what you typed. Never ask the person for a password, login or one-time code in the chat, and never type one yourself: call `request_input` ({ pid, window_id, fields: [{ kind, label? }], submit? }), and they fill it in on their own device; it goes into the app without passing through you, and reads show it as •••• (filled by you). `screenshot` captures the whole screen.
 - Every tool here answers JSON in `structuredContent`, typed by its output schema: in a codemode script, `(await tools.mcp__axo__apps_run({ code })).structuredContent.result` is the script's return value as is. `content` repeats it as text for display: never `JSON.parse` it.
 
@@ -221,8 +221,22 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "apps_run",
         method: Some(method::APPS_RUN),
-        description: "Runs a JavaScript async function in the account's cloud sandbox (no network of its own; at most 5 minutes and 100 tool calls) and returns { result, logs }. `codemode.<service>.<tool>(input)` calls a tool, e.g. await codemode.bash.run({ host: \"studio\", command: \"git -C ~/src/app status\", cwd: \"/Users/me\", timeoutMs: 60000 }) returns { exitCode, stdout, stderr, ... }; codemode.hosts.list() names the account's Macs, and codemode.computer.run({ host, tool, args }) drives one's apps (images it returns are shown to you); codemode.ai.capabilities({host?}) describes local runtime support, ai.info({model,host?}) inspects arbitrary HF candidates, and ai.run({model,task,input,host?}) installs/loads/runs compatible GGUF, native MLX generation or Core ML named-feature predict (ai.load with task predict describes features; use the HF connection for discovery; ai.list is the local inventory); files come back as { type: \"file\", attachment, url } (codemode.apps.gmail.save_attachment, codemode.assets.*), and returning them saves them on this Mac under ~/.axo/assets and names the path; an app's tools are `codemode.apps.<app>.<tool>({ account, ... })`, e.g. await codemode.apps.gmail.search_messages({ account: \"me@example.com\", query: \"is:unread\" }). Every call is logged.",
-        properties: || json!({ "code": { "type": "string", "description": "An async function: async () => { ... }. Return what you need; console.log lines come back as logs." } }),
+        description: "Runs a JavaScript async function in the account's cloud sandbox (no network of its own; at most 5 minutes and 100 tool calls) and returns { result, logs }. Optional limits set timeoutMs, maxToolCalls, maxConcurrentCalls and maxOutputBytes within server ceilings. Await every tool call. Cancellation needs updated target Macs (Axo 0.60); older hosts may continue until their capped timeout, and dispatched actions may have run. `codemode.<service>.<tool>(input)` calls a tool, e.g. await codemode.bash.run({ host: \"studio\", command: \"git -C ~/src/app status\", cwd: \"/Users/me\", timeoutMs: 60000 }) returns { exitCode, stdout, stderr, ... }; codemode.hosts.list() names the account's Macs, and codemode.computer.run({ host, tool, args }) drives one's apps (images it returns are shown to you); codemode.ai.capabilities({host?}) describes local runtime support, ai.info({model,host?}) inspects arbitrary HF candidates, and ai.run({model,task,input,host?}) installs/loads/runs compatible GGUF, native MLX generation or Core ML named-feature predict (ai.load with task predict describes features; use the HF connection for discovery; ai.list is the local inventory); files come back as { type: \"file\", attachment, url } (codemode.apps.gmail.save_attachment, codemode.assets.*), and returning them saves them on this Mac under ~/.axo/assets and names the path; an app's tools are `codemode.apps.<app>.<tool>({ account, ... })`, e.g. await codemode.apps.gmail.search_messages({ account: \"me@example.com\", query: \"is:unread\" }). Every call is logged.",
+        properties: || {
+            json!({
+                "code": { "type": "string", "description": "An async function: async () => { ... }. Await every tool call; console.log lines come back as logs." },
+                "limits": {
+                    "type": "object", "additionalProperties": false,
+                    "description": "Optional per-run budgets within server ceilings. Defaults: 300000 ms, 100 calls, 4 concurrent, 1048576 UTF-8 JSON bytes including logs. Timeout cancels owned work but cannot undo dispatched actions. Allow cleanup/transport grace in the outer caller's timeout.",
+                    "properties": {
+                        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 300000 },
+                        "maxToolCalls": { "type": "integer", "minimum": 1, "maximum": 100 },
+                        "maxConcurrentCalls": { "type": "integer", "minimum": 1, "maximum": 4 },
+                        "maxOutputBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+                    }
+                }
+            })
+        },
         required: &["code"],
         output: Some(execute_output),
         read_only: false,
@@ -1721,6 +1735,29 @@ mod tests {
     }
 
     #[test]
+    fn run_limits_reach_axod_without_being_stripped_or_defaulted_by_mcp() {
+        let mut axod = IoHandler::new();
+        axod.add_typed(
+            method::APPS_RUN,
+            "expected run params",
+            |params: Map<String, Value>| async move {
+                assert!(params.contains_key("sessionId"));
+                Ok(json!({ "result": params["limits"], "logs": [] }))
+            },
+        );
+        let server = serving(axod);
+        let limits = json!({ "timeoutMs": 1000, "maxToolCalls": 2, "maxConcurrentCalls": 1, "maxOutputBytes": 4096 });
+        let reply = server
+            .handle(
+                &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "apps_run", "arguments": { "code": "async () => 42", "limits": limits }
+        } }),
+            )
+            .unwrap();
+        assert_eq!(reply["result"]["structuredContent"]["result"], limits);
+    }
+
+    #[test]
     fn requests_without_axod_still_get_protocol_answers() {
         let server = serving(IoHandler::new());
         let initialized = server
@@ -1814,6 +1851,19 @@ mod tests {
             .find(|t| t["name"] == "apps_run")
             .unwrap()
             .clone();
+        assert_eq!(execute["inputSchema"]["required"], json!(["code"]));
+        let limits = &execute["inputSchema"]["properties"]["limits"];
+        assert_eq!(limits["additionalProperties"], false);
+        for (name, maximum) in [
+            ("timeoutMs", 300000),
+            ("maxToolCalls", 100),
+            ("maxConcurrentCalls", 4),
+            ("maxOutputBytes", 1048576),
+        ] {
+            assert_eq!(limits["properties"][name]["type"], "integer");
+            assert_eq!(limits["properties"][name]["minimum"], 1);
+            assert_eq!(limits["properties"][name]["maximum"], maximum);
+        }
         assert!(
             !execute["description"]
                 .as_str()
