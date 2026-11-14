@@ -1,1 +1,19 @@
-exports_files(["publish.sh"])
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+exports_files(["publish.sh", "release.sh"])
+
+sh_test(
+    name = "publish_test",
+    srcs = ["publish_test.sh"],
+    args = ["$(rootpath :publish.sh)", "$(rootpath :release.sh)"],
+    data = [":publish.sh", ":release.sh"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+sh_test(
+    name = "release_test",
+    srcs = ["release_test.sh"],
+    args = ["$(rootpath :release.sh)"],
+    data = [":release.sh"],
+    target_compatible_with = ["@platforms//os:macos"],
+)

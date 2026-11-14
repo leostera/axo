@@ -2,27 +2,60 @@ import Darwin
 import Foundation
 import Security
 
-/// The build `//:publish` serves at `/cdn/Axo.app.zip`, as `/cdn/Axo.app.json` describes it.
+/// One captured latest.json snapshot. Artifact names bind version, commit and target.
 public struct PublishedBuild: Decodable, Equatable, Sendable {
-  public var build: Int
-  public var axodBuild: Int?
-  public var commit: String?
-  /// The semantic version (major.minor), which every publish raises.
-  public var version: String?
+  public let build: Int
+  public let axodBuild: Int
+  public let commit: String
+  public let version: String
+  public let artifacts: [String: String]
 
-  public init(build: Int, axodBuild: Int? = nil, commit: String? = nil, version: String? = nil) {
+  public init(build: Int, axodBuild: Int, commit: String, version: String, artifacts: [String: String]) throws {
+    func matches(_ value: String, _ pattern: String) -> Bool {
+      value.range(of: pattern, options: .regularExpression) == value.startIndex..<value.endIndex
+    }
+    guard build > 0, axodBuild > 0,
+      matches(version, #"^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$"#),
+      matches(commit, "^[a-f0-9]{40}$"), !artifacts.isEmpty, artifacts.count <= 32
+    else { throw AppUpgradeError.download("invalid latest.json release identity") }
+    let prefix = "axo-\(version)-\(commit.prefix(12))-"
+    for (target, file) in artifacts {
+      guard matches(target, "^[a-z0-9_]+(-[a-z0-9]+){2,4}$"),
+        file == "\(prefix)\(target).zip" || (!target.hasSuffix("apple-darwin") && file == "\(prefix)\(target).tar.gz")
+      else { throw AppUpgradeError.download("artifact does not match its release/target") }
+    }
     self.build = build
     self.axodBuild = axodBuild
     self.commit = commit
     self.version = version
+    self.artifacts = artifacts
   }
-
+  private enum CodingKeys: String, CodingKey { case build, axodBuild, commit, version, artifacts }
+  public init(from decoder: Decoder) throws {
+    let value = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(build: value.decode(Int.self, forKey: .build),
+      axodBuild: value.decode(Int.self, forKey: .axodBuild),
+      commit: value.decode(String.self, forKey: .commit),
+      version: value.decode(String.self, forKey: .version),
+      artifacts: value.decode([String: String].self, forKey: .artifacts))
+  }
+  public static var targetTriplet: String {
+    #if arch(arm64)
+    "aarch64-apple-darwin"
+    #elseif arch(x86_64)
+    "x86_64-apple-darwin"
+    #else
+    #error("Unsupported Mac update architecture")
+    #endif
+  }
   public static func manifestURL(origin: URL) -> URL {
-    origin.appendingPathComponent("cdn/Axo.app.json")
+    origin.appendingPathComponent("cdn/latest.json")
   }
-
-  public static func archiveURL(origin: URL) -> URL {
-    origin.appendingPathComponent("cdn/Axo.app.zip")
+  public func archiveURL(origin: URL, target: String = Self.targetTriplet) throws -> URL {
+    guard let file = artifacts[target] ?? artifacts["universal-apple-darwin"] else {
+      throw AppUpgradeError.download("this release has no artifact for \(target)")
+    }
+    return origin.appendingPathComponent("cdn").appendingPathComponent(file)
   }
 }
 
@@ -131,16 +164,20 @@ public enum AppUpgradeInstaller {
       throw AppUpgradeError.download(
         "\(request.url?.absoluteString ?? "manifest") answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
     }
-    return try JSONDecoder().decode(PublishedBuild.self, from: data)
+    guard data.count <= 65536 else { throw AppUpgradeError.download("latest.json exceeds 64 KiB") }
+    let published = try JSONDecoder().decode(PublishedBuild.self, from: data)
+    _ = try published.archiveURL(origin: origin) // Do not offer an unsupported target.
+    return published
   }
 
   /// Puts the published build at `bundle` and returns its build number. Throws, leaving `bundle`
   /// as it was, unless the download is this app (`bundleIdentifier`), signed by `team` and newer
   /// than `running`.
   public static func install(
-    origin: URL, over bundle: URL, bundleIdentifier: String, team: String, running: Int,
+    origin: URL, published: PublishedBuild, over bundle: URL, bundleIdentifier: String, team: String, running: Int,
     session: URLSession = .shared
   ) async throws -> Int {
+    let archiveURL = try published.archiveURL(origin: origin)
     let work = try FileManager.default.url(
       for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: bundle, create: true)
     defer { try? FileManager.default.removeItem(at: work) }
@@ -148,7 +185,7 @@ public enum AppUpgradeInstaller {
     let archive = work.appendingPathComponent("Axo.app.zip")
     do {
       let (downloaded, response) = try await session.download(
-        from: PublishedBuild.archiveURL(origin: origin))
+        from: archiveURL)
       guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
         throw AppUpgradeError.download("the server answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
       }
@@ -175,8 +212,17 @@ public enum AppUpgradeInstaller {
     guard let found, found > running else {
       throw AppUpgradeError.notNewer(found: found, running: running)
     }
+    try verifyReleaseMetadata(app, published: published)
     try swapIn(app, over: bundle)
     return found
+  }
+
+  static func verifyReleaseMetadata(_ app: URL, published: PublishedBuild) throws {
+    guard bundleBuild(of: app) == published.build, bundleVersion(of: app) == published.version,
+      bundleBuild(of: app, key: "AXODBuildNumber") == published.axodBuild,
+      let embedded = bundleInfo(of: app)?["AXOGitCommit"] as? String,
+      embedded.count >= 7, published.commit.hasPrefix(embedded)
+    else { throw AppUpgradeError.badArchive("bundle metadata does not match the selected release") }
   }
 
   /// The whole bundle, nested code (axod, frameworks) included, is intact and signed as

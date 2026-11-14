@@ -120,7 +120,7 @@ final class AppUpgradeModel {
       Task {
         do {
           let build = try await AppUpgradeInstaller.install(
-            origin: origin, over: bundle, bundleIdentifier: bundleID, team: team, running: running)
+            origin: origin, published: published, over: bundle, bundleIdentifier: bundleID, team: team, running: running)
           restart(into: build)
         } catch {
           logger.error(

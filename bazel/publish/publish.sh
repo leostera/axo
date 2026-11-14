@@ -1,87 +1,73 @@
 #!/usr/bin/env bash
-# bazel run //:publish: uploads the Mac app this build signed for https://axo.leostera.dev/cdn/Axo.app,
-# which `curl -fsSL https://axo.leostera.dev/install | sh` installs (RFD0021).
-#
-# Every build is kept at mac/builds/<CFBundleVersion>/Axo.app.zip; mac/Axo.app.zip is the one served,
-# and mac/Axo.app.json says which build it is.
-# It refuses an app not signed by the team, and a checkout with changes: what is published must be
-# a commit. Every publish raises the semantic version's minor (0.1, 0.2, …) and the build number:
-# it refuses an app whose version or build is not above the one published.
+# Publish immutable target-qualified archives, then advance the single latest.json pointer.
+# Single writer: version/build must increase. Existing clients use Worker-derived legacy views.
 set -euo pipefail
-
 app=$1 zip=$2 cf=$3 team=$4 bucket=$5 url=$6
-
+source "$7"
+cdn=${url%/*}
 root=${BUILD_WORKSPACE_DIRECTORY:?run me with bazel run //:publish}
-changes=$(git -C "$root" status --porcelain)
-if [[ -n "$changes" ]]; then
-  echo "The checkout has changes; commit them first, so the published app is a commit:" >&2
-  git -C "$root" status --short >&2
+if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
+  echo "Commit checkout changes before publishing." >&2
   exit 1
 fi
-
 codesign --verify --deep --strict "$app"
 signed_by=$(codesign -dv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-if [[ "$signed_by" != "$team" ]]; then
-  echo "The app is signed by team '${signed_by:-none}', not $team; this Mac cannot sign for it (see bazel-bin/report.txt)" >&2
-  exit 1
-fi
-
-# What is uploaded is the zip: it must unpack to the same signed app.
+[[ "$signed_by" == "$team" ]] || { echo "App is not signed by the configured team" >&2; exit 1; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/axo-publish.XXXXXX")
-# The app keeps Bazel's read-only modes through the zip.
 trap 'chmod -R u+w "$work"; rm -rf "$work"' EXIT
-ditto -x -k "$zip" "$work"
-codesign --verify --deep --strict "$work/$(basename "$app")"
 cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
-[[ "$(cdhash "$app")" == "$(cdhash "$work/$(basename "$app")")" ]] || { echo "The zip does not unpack to the signed app" >&2; exit 1; }
-
-# The zip people download carries writable modes: an installer moves the app into /Applications,
-# and macOS moves a folder only if it may write it. Modes are not part of the signature.
-chmod -R u+w "$work/$(basename "$app")"
-ditto -c -k --keepParent "$work/$(basename "$app")" "$work/Axo.app.zip"
-check=$work/check
-ditto -x -k "$work/Axo.app.zip" "$check"
-[[ "$(cdhash "$app")" == "$(cdhash "$check/$(basename "$app")")" ]] || { echo "The writable zip does not unpack to the signed app" >&2; exit 1; }
-[[ -z "$(find "$check" ! -perm -u+w -print -quit)" ]] || { echo "The writable zip still has read-only files" >&2; exit 1; }
-zip=$work/Axo.app.zip
-
+# Published copies are writable so macOS can move/install them. Modes are not signed.
+ditto -x -k "$zip" "$work"
+codesign --verify --deep --strict "$work/Axo.app"
+[[ "$(cdhash "$app")" == "$(cdhash "$work/Axo.app")" ]] || { echo "Archive signature differs from build" >&2; exit 1; }
+chmod -R u+w "$work/Axo.app"
+ditto -c -k --keepParent "$work/Axo.app" "$work/archive.zip"
+ditto -x -k "$work/archive.zip" "$work/check"
+codesign --verify --deep --strict "$work/check/Axo.app"
+[[ "$(cdhash "$app")" == "$(cdhash "$work/check/Axo.app")" ]] || exit 1
+[[ -z "$(find "$work/check" ! -perm -u+w -print -quit)" ]] || { echo "Archive has read-only files" >&2; exit 1; }
+zip=$work/archive.zip
 plist=$app/Contents/Info.plist
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
 axod_build=$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$plist")
-commit=$(/usr/libexec/PlistBuddy -c 'Print :AXOGitCommit' "$plist")
+embedded_commit=$(/usr/libexec/PlistBuddy -c 'Print :AXOGitCommit' "$plist")
+[[ "$embedded_commit" =~ ^[a-f0-9]{7,40}$ ]] || { echo "Invalid embedded Git commit" >&2; exit 1; }
+commit=$(git -C "$root" rev-parse --verify "$embedded_commit^{commit}")
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
-
-# What is live now. A manifest without a version is from before versions were raised: 0.1.
-published=$(curl -fsS "$url.json" 2>/dev/null || echo '{}')
-published_build=$(printf '%s' "$published" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("build", 0))')
-published_version=$(printf '%s' "$published" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version", "0.1" if "build" in d else "0.0"))')
-newer_version=$(/usr/bin/python3 -c 'import sys; a, b = (tuple(map(int, v.split("."))) for v in sys.argv[1:]); print("yes" if a > b else "no")' "$version" "$published_version")
-if [[ "$newer_version" != yes ]]; then
-  echo "Axo $version is not above the published $published_version: raise the minor in config.json's version (e.g. 0.$(( ${published_version#*.} + 1 ))) and commit it" >&2
-  exit 1
+target=$(release_target "$(lipo -archs "$app/Contents/MacOS/Axo")")
+filename=$(release_filename "$version" "$commit" "$target")
+manifest=$work/latest.json
+release_manifest "$manifest" "$version" "$build" "$axod_build" "$commit" "$target"
+# Only a missing pointer is a bootstrap case. Network/server/malformed-data errors fail closed.
+status=$(curl -sS -o "$work/current.json" -w '%{http_code}' "$cdn/latest.json")
+if [[ "$status" == 404 ]]; then
+  status=$(curl -sS -o "$work/current.json" -w '%{http_code}' "$cdn/Axo.app.json")
 fi
-if (( build <= published_build )); then
-  echo "Build $build is not above the published build $published_build: raise builds.mac in config.json and commit it" >&2
-  exit 1
+if [[ "$status" == 200 ]]; then
+  published_version=$(/usr/bin/plutil -extract version raw -o - "$work/current.json")
+  published_build=$(/usr/bin/plutil -extract build raw -o - "$work/current.json")
+  [[ "$published_build" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "Invalid published build" >&2; exit 1; }
+  release_newer "$version" "$published_version" || { echo "Raise the release version above $published_version" >&2; exit 1; }
+  (( build > published_build )) || { echo "Raise builds.mac above $published_build" >&2; exit 1; }
+elif [[ "$status" != 404 ]]; then
+  echo "Could not inspect published release (HTTP $status)" >&2; exit 1
 fi
-size=$(stat -L -f %z "$zip")
-
-upload() {
-  "$cf" r2 objects put "$1" --bucket-name "$bucket" --file "$zip" \
-    --content-type application/zip --content-length "$size" --quiet >/dev/null
-}
-
-# What Axo.app reads to offer "Upgrade to Build N"; uploaded after the zip it describes.
-manifest=$work/Axo.app.json
-printf '{"version":"%s","build":%s,"axodBuild":%s,"commit":"%s"}\n' "$version" "$build" "$axod_build" "$commit" > "$manifest"
-upload_manifest() {
-  "$cf" r2 objects put mac/Axo.app.json --bucket-name "$bucket" --file "$manifest" \
-    --content-type application/json --content-length "$(stat -f %z "$manifest")" --quiet >/dev/null
-}
-
-echo "Uploading Axo $version, build $build (axod $axod_build, $commit, $((size / 1024 / 1024)) MiB)"
-upload "mac/builds/$build/Axo.app.zip"
-upload "mac/Axo.app.zip"
-upload_manifest
-echo "Published: $url"
-echo "Install:   curl -fsSL https://axo.leostera.dev/install | sh"
+# A failed prior publication may already have uploaded this name. Reuse identical signed
+# content, never overwrite an immutable URL. The Worker routes must be deployed first.
+status=$(curl -sS -o "$work/existing.zip" -w '%{http_code}' "$cdn/$filename")
+if [[ "$status" == 200 ]]; then
+  ditto -x -k "$work/existing.zip" "$work/existing"
+  codesign --verify --deep --strict "$work/existing/Axo.app"
+  [[ "$(cdhash "$app")" == "$(cdhash "$work/existing/Axo.app")" ]] || { echo "Immutable artifact already exists with different content" >&2; exit 1; }
+  echo "Reusing verified immutable archive: $filename"
+elif [[ "$status" == 404 ]]; then
+  "$cf" r2 objects put "releases/$filename" --bucket-name "$bucket" --file "$zip" \
+    --content-type application/zip --content-length "$(stat -L -f %z "$zip")" --quiet >/dev/null
+else
+  echo "Could not inspect immutable artifact (HTTP $status)" >&2; exit 1
+fi
+# Last write: a failed archive upload cannot make latest point to absent data.
+"$cf" r2 objects put latest.json --bucket-name "$bucket" --file "$manifest" \
+  --content-type application/json --content-length "$(stat -f %z "$manifest")" --quiet >/dev/null
+echo "Published Axo $version ($target, build $build, axod $axod_build): $cdn/$filename"
+echo "Latest: $cdn/latest.json"

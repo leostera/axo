@@ -31,6 +31,6 @@
   },
   "publish": {
     "bucket": "axo-cdn",
-    "url": "https://axo.leostera.dev/cdn/Axo.app"
+    "url": "https://axo.leostera.dev/cdn/latest.json"
   }
 }

@@ -1,20 +1,18 @@
 /**
- * `curl -fsSL https://axo.leostera.dev/install | sh` installs the Mac app from `/cdn/Axo.app`,
+ * `curl -fsSL https://axo.leostera.dev/install | sh` selects an immutable Mac archive from latest.json,
  * starts it, and, given `?code=ABCD-EFGH`, hands the pairing code to the app.
  *
- * The download is the signed bundle `scripts/publish-mac.sh` uploads. curl leaves no quarantine
+ * The download is the signed bundle `bazel run //:publish` uploads. curl leaves no quarantine
  * attribute, so macOS runs the app from where it is installed instead of translocating it; a
  * translocated app cannot register its axod LaunchAgent.
  */
 
-/** The R2 key `scripts/publish-mac.sh` writes the latest Mac app to. */
+import { ARTIFACT, ARTIFACT_PREFIX, LATEST_RELEASE_KEY, macArtifact, parseRelease, type Release } from "./releases.ts";
+
+/** Bootstrap-only archive retained for pre-latest.json releases. Never written by the new publisher. */
 export const MAC_APP_KEY = "mac/Axo.app.zip";
 
-/**
- * The R2 key `//:publish` writes the served build's description to, after its zip, so it never
- * names a build that is not there yet: `{ "build": 260, "axodBuild": 23, "commit": "…" }`.
- * Axo.app reads it to offer "Upgrade to Build N" from its menu.
- */
+/** Bootstrap-only manifest until the first latest.json is published. */
 export const MAC_APP_MANIFEST_KEY = "mac/Axo.app.json";
 
 /** The team that signs Axo.app and its axod helper; the script refuses any other signature. */
@@ -54,38 +52,67 @@ export function installScriptResponse(request: Request): Response {
   });
 }
 
-export async function macAppResponse(request: Request, bucket: R2Bucket): Promise<Response> {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
-  }
-  const object = request.method === "HEAD" ? await bucket.head(MAC_APP_KEY) : await bucket.get(MAC_APP_KEY);
-  if (!object) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
-  const headers = new Headers({
-    "Content-Type": "application/zip",
-    "Content-Disposition": 'attachment; filename="Axo.app.zip"',
-    "Content-Length": String(object.size),
-    // Short, so a new build reaches installers within minutes.
-    "Cache-Control": "public, max-age=60",
-    ETag: object.httpEtag,
-    "X-Content-Type-Options": "nosniff",
-  });
-  return new Response("body" in object ? (object as R2ObjectBody).body : null, { headers });
+const noStore = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
+function methodError(request: Request): Response | undefined {
+  if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405, headers: { ...noStore, Allow: "GET, HEAD" } });
 }
-
-export async function macAppManifestResponse(request: Request, bucket: R2Bucket): Promise<Response> {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
-  }
-  const object = await bucket.get(MAC_APP_MANIFEST_KEY);
-  if (!object) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
-  const headers = new Headers({
-    "Content-Type": "application/json; charset=utf-8",
-    // As short as the zip's, so the two agree within a minute.
-    "Cache-Control": "public, max-age=60",
-    ETag: object.httpEtag,
+async function latest(bucket: R2Bucket): Promise<Release | null> {
+  const object = await bucket.get(LATEST_RELEASE_KEY);
+  if (!object) return null;
+  if (object.size > 65536) throw new Error("oversized release pointer");
+  return parseRelease(JSON.parse(await object.text()));
+}
+function jsonResponse(request: Request, value: unknown): Response {
+  return new Response(request.method === "HEAD" ? null : JSON.stringify(value), { headers: { ...noStore, "Content-Type": "application/json; charset=utf-8" } });
+}
+async function archiveResponse(request: Request, bucket: R2Bucket, key: string, filename: string, immutable: boolean): Promise<Response> {
+  const object = request.method === "HEAD" ? await bucket.head(key) : await bucket.get(key);
+  if (!object) return new Response("Not found", { status: 404, headers: noStore });
+  return new Response("body" in object ? (object as R2ObjectBody).body : null, { headers: {
+    "Content-Type": filename.endsWith(".zip") ? "application/zip" : "application/gzip",
+    "Content-Disposition": 'attachment; filename="' + filename + '"',
+    "Content-Length": String(object.size), ETag: object.httpEtag,
+    "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
     "X-Content-Type-Options": "nosniff",
-  });
-  return new Response(request.method === "HEAD" ? null : object.body, { headers });
+  } });
+}
+export async function latestReleaseResponse(request: Request, bucket: R2Bucket): Promise<Response> {
+  const invalid = methodError(request); if (invalid) return invalid;
+  try {
+    const release = await latest(bucket);
+    return release ? jsonResponse(request, release) : new Response("Not found", { status: 404, headers: noStore });
+  } catch { return new Response("Invalid release manifest", { status: 503, headers: noStore }); }
+}
+export async function releaseArtifactResponse(request: Request, bucket: R2Bucket, filename: string): Promise<Response> {
+  const invalid = methodError(request); if (invalid) return invalid;
+  if (!ARTIFACT.test(filename)) return new Response("Not found", { status: 404, headers: noStore });
+  return archiveResponse(request, bucket, ARTIFACT_PREFIX + filename, filename, true);
+}
+/** Compatibility views for already-installed clients. Only bootstrap from legacy objects
+ * while latest.json is absent; never mask a malformed or unsupported new release. */
+export async function macAppResponse(request: Request, bucket: R2Bucket): Promise<Response> {
+  const invalid = methodError(request); if (invalid) return invalid;
+  try {
+    const release = await latest(bucket);
+    if (!release) return archiveResponse(request, bucket, MAC_APP_KEY, "Axo.app.zip", false);
+    const filename = macArtifact(release);
+    if (!filename) return new Response("No compatible Mac artifact", { status: 404, headers: noStore });
+    return archiveResponse(request, bucket, ARTIFACT_PREFIX + filename, filename, false);
+  } catch { return new Response("Invalid release manifest", { status: 503, headers: noStore }); }
+}
+export async function macAppManifestResponse(request: Request, bucket: R2Bucket): Promise<Response> {
+  const invalid = methodError(request); if (invalid) return invalid;
+  try {
+    const release = await latest(bucket);
+    if (release) {
+      if (!macArtifact(release)) return new Response("No compatible Mac artifact", { status: 404, headers: noStore });
+      const { version, build, axodBuild, commit } = release;
+      return jsonResponse(request, { version, build, axodBuild, commit });
+    }
+    const object = await bucket.get(MAC_APP_MANIFEST_KEY);
+    if (!object) return new Response("Not found", { status: 404, headers: noStore });
+    return new Response(request.method === "HEAD" ? null : object.body, { headers: { ...noStore, "Content-Type": "application/json; charset=utf-8" } });
+  } catch { return new Response("Invalid release manifest", { status: 503, headers: noStore }); }
 }
 
 /** Single-quotes `value` for POSIX sh. The inputs are an origin and a parsed code, but be safe. */
@@ -116,7 +143,11 @@ fail() { printf '\\033[31maxo install:\\033[0m %s\\n' "$*" >&2; exit 1; }
 # nothing, and no command can read the rest of the script from the pipe as its input.
 main() {
 [ "$(uname -s)" = Darwin ] || fail "Axo runs on macOS only."
-[ "$(uname -m)" = arm64 ] || fail "Axo needs a Mac with Apple silicon."
+case "$(uname -m)" in
+  arm64) target=aarch64-apple-darwin ;;
+  x86_64) target=x86_64-apple-darwin ;;
+  *) fail "Unsupported Mac architecture" ;;
+esac
 macos_major=$(sw_vers -productVersion | cut -d. -f1)
 [ "$macos_major" -ge 14 ] || fail "Axo needs macOS 14 or later (this Mac has $(sw_vers -productVersion))."
 [ "$(id -u)" -ne 0 ] || fail "run this as yourself, not with sudo: axod runs as your user."
@@ -137,9 +168,29 @@ stage=$(mktemp -d "$install_dir/.axo-install.XXXXXX")
 trap 'chmod -R u+w "$stage" 2>/dev/null; rm -rf "$stage"' EXIT
 trap 'exit 130' INT TERM
 
-say "Downloading Axo from $AXO_ORIGIN"
-curl -fL --progress-bar -o "$stage/Axo.app.zip" "$AXO_ORIGIN/cdn/Axo.app.zip" \\
-  || fail "could not download $AXO_ORIGIN/cdn/Axo.app.zip"
+say "Checking the latest Axo release"
+status=$(curl -sSL -o "$stage/latest.json" -w '%{http_code}' "$AXO_ORIGIN/cdn/latest.json") || fail "could not fetch latest.json"
+case "$status" in
+  200)
+    artifact=$(/usr/bin/plutil -extract "artifacts.$target" raw -o - "$stage/latest.json" 2>/dev/null) \\
+      || artifact=$(/usr/bin/plutil -extract artifacts.universal-apple-darwin raw -o - "$stage/latest.json" 2>/dev/null) \\
+      || fail "This release has no artifact for $target"
+    case "$artifact" in *[!a-zA-Z0-9._-]*|*..*) fail "Invalid release artifact filename" ;; esac
+    case "$artifact" in axo-*.zip) ;; *) fail "Invalid Mac archive" ;; esac
+    expected_build=$(/usr/bin/plutil -extract build raw -o - "$stage/latest.json") || fail "Missing release build"
+    ;;
+  404)
+    # Bootstrap only: the Worker can deploy before the first new-format publication.
+    # Pre-cutover archives were ARM-only. Never give one to an Intel Mac.
+    [ "$target" = aarch64-apple-darwin ] || fail "No release for $target yet"
+    artifact=Axo.app.zip
+    expected_build=
+    ;;
+  *) fail "Could not inspect latest release (HTTP $status)" ;;
+esac
+say "Downloading $artifact"
+curl -fL --progress-bar -o "$stage/Axo.app.zip" "$AXO_ORIGIN/cdn/$artifact" \\
+  || fail "could not download $artifact"
 ditto -x -k "$stage/Axo.app.zip" "$stage/unpacked" || fail "the download is not a readable zip"
 new_app=$stage/unpacked/Axo.app
 [ -d "$new_app" ] || fail "the download has no Axo.app in it"
@@ -153,6 +204,7 @@ team=$(codesign -dv "$new_app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
 bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$new_app/Contents/Info.plist")
 [ "$bundle_id" = "$AXO_BUNDLE_ID" ] || fail "the download is $bundle_id, not Axo"
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$new_app/Contents/Info.plist")
+[ -z "$expected_build" ] || [ "$build" = "$expected_build" ] || fail "Downloaded build does not match the selected release"
 # A quarantined app is translocated to a read-only copy that cannot register axod.
 xattr -dr com.apple.quarantine "$new_app" 2>/dev/null || true
 

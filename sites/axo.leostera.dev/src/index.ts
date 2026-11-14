@@ -1,5 +1,5 @@
 import api from "@axo/api-worker";
-import { installScriptResponse, macAppManifestResponse, macAppResponse } from "./install.ts";
+import { installScriptResponse, macAppManifestResponse, macAppResponse, latestReleaseResponse, releaseArtifactResponse } from "./install.ts";
 import { readSnapshot, sharePageHtml, shareRoute, transcriptResponse, type ShareRoute } from "./share-page.ts";
 
 export {
@@ -91,6 +91,8 @@ export default {
     if (pathname === "/cdn/Axo.app" || pathname === "/cdn/Axo.app.zip")
       return await macAppResponse(request, env.CDN);
     if (pathname === "/cdn/Axo.app.json") return await macAppManifestResponse(request, env.CDN);
+    if (pathname === "/cdn/latest.json") return await latestReleaseResponse(request, env.CDN);
+    if (pathname.startsWith("/cdn/")) return await releaseArtifactResponse(request, env.CDN, pathname.slice("/cdn/".length));
     const share = shareRoute(pathname);
     if (share) return await sharePage(request, env, share);
     if (pathname.startsWith("/api/public-sessions/")) {

@@ -51,10 +51,12 @@ sh_binary(
         AXO["apple"]["team"],
         AXO["publish"]["bucket"],
         AXO["publish"]["url"],
+        "$(rootpath //bazel/publish:release.sh)",
     ],
     data = [
         "//apple/AxoMac:Axo",
         "//apple/AxoMac:Axo_zip",
         "//sites/axo.leostera.dev:cf",
+        "//bazel/publish:release.sh",
     ],
 )
