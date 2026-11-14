@@ -15,9 +15,10 @@ function webBuild(): string {
   }
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   // WhatsApp's Baileys, bundled for Workers (packages/axo-apps/bundling.mjs).
-  plugins: [whatsappVite(), react(), cloudflare()],
+  // `cf types` owns Bazel's read-only generated declaration; only dev may rewrite it.
+  plugins: [whatsappVite(), react(), cloudflare({ types: { generate: command !== "build" } })],
   define: { __AXO_WEB_BUILD__: JSON.stringify(webBuild()) },
   build: {
     target: "es2022",
@@ -29,4 +30,4 @@ export default defineConfig({
     // The wordmark's font is shared with the apps, in the repository's assets/.
     fs: { allow: ["../.."] },
   },
-});
+}));
