@@ -2,6 +2,19 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.59 (Mac app build 330, axod 80)
+
+### Added
+
+- The web restores recent conversations, the chat list, last selection and text drafts from a bounded, account-scoped local cache while reconnecting. Cached conversations remain read-only until fresh server history arrives. Sign-out clears the cache and stops writers in other open tabs.
+- A visible Mac upgrade progress window shows the version, build and commit of the exact release being downloaded and verified. The menu action is simply “Upgrade Axo”.
+
+### Fixed
+
+- The web message field receives initial focus when it becomes ready, without taking focus from search or another control during reconnect.
+- Invalid deep links never silently open an unrelated cached conversation; live listings remove disappeared Macs and conversations.
+- This release changes the Mac app/web UI only; axod build remains 80. Configurable codemode limits and session handoff are not included.
+
 ## 0.58 (Mac app build 329, axod 80)
 
 ### Added
