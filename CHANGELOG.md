@@ -2,6 +2,19 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.58 (Mac app build 329, axod 80)
+
+### Added
+
+- `latest.json` is the single release pointer, mapping target triplets to immutable `axo-<version>-<commit>-<triplet>.zip` archives. Targets come from the built executable, not the publishing machine; archives are uploaded before the pointer advances.
+- The Mac updater and installer pin a selected archive instead of following a mutable download URL. The updater verifies the downloaded bundle against the captured release identity before swapping it in. Missing targets fail explicitly, with universal Mac fallback when available.
+- Existing `Axo.app.json` and `Axo.app[.zip]` URLs remain compatibility views derived from the new manifest, with bootstrap support until the first new-format publication.
+
+### Fixed
+
+- Interrupted publication cannot advance latest to a missing archive or overwrite a conflicting immutable artifact. Tests cover target selection, compatibility routes, manifest validation and publishing failure order.
+- This release changes the Mac app/publishing path only; axod build remains 80.
+
 ## 0.57 (Mac app build 328, axod 80)
 
 ### Added
