@@ -12,6 +12,7 @@ build=$2
 axod_build=$3
 macos_min=$4
 team=$5
+native=${6:-}
 plist="$app/Contents/Info.plist"
 failures=0
 
@@ -30,6 +31,26 @@ check LSMinimumSystemVersion "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSyst
 for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod" "$app/Contents/Helpers/axod-infer"; do
   check "minos of ${executable##*/}" "$(xcrun vtool -show-build "$executable" | awk '/minos/ { print $2; exit }')" "$macos_min"
 done
+if [[ "$native" == mlx ]]; then
+  helper="$app/Contents/Helpers/axod-infer-mlx"
+  for resource in "$helper" "$app/Contents/Resources/MLX/mlx.metallib" "$app/Contents/Resources/ThirdParty/MLX-third-party-notices.txt"; do
+    if [[ ! -s "$resource" ]]; then
+      echo "FAIL: missing native MLX component: $resource" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  check "minos of axod-infer-mlx" "$(xcrun vtool -show-build "$helper" | awk '/minos/ { print $2; exit }')" "$macos_min"
+  check "MLX signing identifier" "$(codesign -dv "$helper" 2>&1 | awk -F= '/^Identifier=/ { print $2 }')" dev.leostera.axo.infer.mlx
+  if [[ "$team" != - ]]; then
+    check "MLX worker team" "$(codesign -dv --verbose=4 "$helper" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
+  fi
+  if capabilities=$("$helper" --capabilities); then
+    check "packaged native MLX device" "$(printf '%s' "$capabilities" | /usr/bin/plutil -extract available raw -o - -)" true
+  else
+    echo "FAIL: packaged native MLX capability query cannot run" >&2
+    failures=$((failures + 1))
+  fi
+fi
 check "axod --version" "$("$app/Contents/Helpers/axod" --version | sed -n 's/.*(build \([0-9]*\)).*/\1/p')" "$axod_build"
 for agent in dev.leostera.axo.axod dev.leostera.axo.app; do
   if plutil -lint "$app/Contents/Library/LaunchAgents/$agent.plist" >/dev/null; then

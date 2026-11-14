@@ -370,13 +370,13 @@ export class AccountApps {
 
   private aiTools(): ToolDefinition[] {
     const descriptions: Record<AiTool, string> = {
-      capabilities: "Describe this Mac's actual pinned inference backend, recognized GGUF architectures (generated from its runtime source), supported tasks/modalities and memory/download/input limits. Not a model-name allowlist. Use this first, then the account's Hugging Face connection to search for compatible model artifacts. Recognition is not a guarantee that every tensor layout, quantization, projector or task head will load. Currently llama.cpp, not MLX or arbitrary repository Python.",
+      capabilities: "Describe this Mac's actual pinned inference backend, recognized GGUF architectures (generated from its runtime source), supported tasks/modalities and memory/download/input limits. Not a model-name allowlist. Use this first, then the account's Hugging Face connection to search for compatible model artifacts. Recognition is not a guarantee that every tensor layout, quantization, projector or task head will load. Reports llama.cpp and, on updated Apple Silicon Macs, native MLX. Each backend has its own architecture/task limits; arbitrary repository code is never executed.",
       list: "List this Mac's managed/cached model selections, pinned provenance, installed state and loaded/sleeping/stopped status. This is an inventory, not the list of models allowed to run. Use ai.capabilities for runtime support, the HF app for discovery and ai.info to inspect a candidate.",
-      info: "Inspect an arbitrary hf:owner/repo[:quant][@revision] candidate using HF metadata, without downloading weights or loading a model. Reports formats, architecture, task hints, candidate artifact paths and compatibility: candidate, unsupported or ambiguous, with reasons. Resolves a unique GGUF selection to immutable revision and artifact SHA-256s; file/projector disambiguate. MLX/custom-head repositories get an actionable backend/adapter explanation, not a model-name rejection.",
-      install: "Resolve and prefetch a compatible HF GGUF selection onto a Mac without loading it. Resumes partial downloads, verifies every artifact's size/SHA-256 and pins the revision. Optional: run/load install automatically. Public ungated repositories only; no repository code execution. Use file/projector when info reports ambiguous artifacts.",
-      load: "Resolve, install if absent and prewarm a HF GGUF selection for task generate, classify or embed. run does this automatically. Task adapters are provided by Axo; the runtime makes the final compatibility check. A different selection/task retires the script-managed process; the safety judge is separate. Sleeps after ten idle minutes.",
+      info: "Inspect an arbitrary hf:owner/repo[:quant][@revision] candidate using HF metadata, without downloading weights or loading a model. Reports formats, architecture, task hints, candidate artifact paths and compatibility: candidate, unsupported or ambiguous, with reasons. Resolves GGUF or compatible MLX data bundles to immutable revisions and artifact integrity. backend disambiguates runtimes; file selects the first shard, projector is GGUF-only. Native MLX currently supports dense Qwen2/Qwen3 text generation, not every safetensors architecture or custom head.",
+      install: "Resolve and prefetch a compatible HF GGUF or native MLX selection onto a Mac without loading it. Resumes partial downloads, verifies pinned artifact integrity, records SHA-256s and pins the revision. Optional: run/load install automatically. Public ungated repositories only; no repository code execution. Use file/projector when info reports ambiguous artifacts.",
+      load: "Resolve, install if absent and prewarm a HF GGUF or compatible native MLX selection for task generate, classify or embed. run does this automatically. Task adapters are provided by Axo; the runtime makes the final compatibility check. A different selection/task retires the script-managed process; the safety judge is separate. After ten idle minutes llama.cpp sleeps; the MLX worker exits and reloads on demand. Native MLX currently implements text generation only.",
       unload: "Stop this selection's script-managed runtime and release RAM; keep downloaded files. Never touches the computer-use judge. Refused while another AI operation is running.",
-      run: "Run a HF GGUF model on a paired Mac: resolve/pin artifacts, install if absent, load and execute. task=generate takes input text or {text,images?}; task=classify takes input {state,questions,images?} with typed noul/choice/score questions for native decision models; task=embed takes input text or {text}. Images are account attachments (preferred) or small base64 data URLs, not local paths or arbitrary URLs. Returns task-specific text/answers/embedding and exact source provenance. prompt remains a generate-only spelling for 0.54 scripts. No model-name allowlist, automatic remote-code execution, MLX backend, tool execution, cloud fallback or implicit retries. Inputs/results traverse the cloud script/relay, but are not stored in the AI call log. Inspect capabilities/info before choosing a model; unsupported architectures and specialized heads fail explicitly.",
+      run: "Run a compatible HF GGUF or native MLX model on a paired Mac: resolve/pin artifacts, install if absent, load and execute. task=generate takes input text or {text,images?}; task=classify takes input {state,questions,images?} with typed noul/choice/score questions for native decision models; task=embed takes input text or {text}. Images are account attachments (preferred) or small base64 data URLs, not local paths or arbitrary URLs. Returns task-specific text/answers/embedding and exact source provenance. prompt remains a generate-only spelling for 0.54 scripts. Backend selection is automatic unless backend is specified. Native MLX supports dense Qwen2/Qwen3 text generation with supported affine quantization, not vision/embeddings/decision heads. No model-name allowlist, Python, automatic remote-code execution, tool execution, cloud fallback or implicit retries. Inputs/results traverse the cloud script/relay, but are not stored in the AI call log. Inspect capabilities/info before choosing a model; unsupported architectures and specialized heads fail explicitly.",
     };
     return aiToolSchema.options.map((name) => ({
       service: AI_NAMESPACE, name, title: `Local AI: ${name}`,
@@ -398,7 +398,7 @@ export class AccountApps {
     await this.log.start({
       callId, sessionId: from.sessionId, hostId: from.hostId, service: AI_NAMESPACE, tool,
       targetHostId: target.host.hostId,
-      input: { host: target.name, ...Object.fromEntries(["model", "file", "projector", "task"].filter(key => key in request).map(key => [key, request[key]])) },
+      input: { host: target.name, ...Object.fromEntries(["model", "backend", "file", "projector", "task"].filter(key => key in request).map(key => [key, request[key]])) },
     });
     let outcome: CallOutcome;
     try {
@@ -413,8 +413,8 @@ export class AccountApps {
     if ("error" in outcome) {
       const unknown = outcome.error.code === APPS_ERRORS.outcomeUnknown;
       await this.log.finish(callId, unknown ? "unknown" : "error", unknown ? "the Mac did not answer" : "the Mac refused the AI operation");
-      const old = outcome.error.code === -32601 || (outcome.error.code === -32602 && /invalid ai request fields|unsupported model; call ai.list/.test(outcome.error.message));
-      const message = old ? "update Axo on that Mac: this model-discovery and task API requires inference API version 2 (ai.capabilities)" : outcome.error.message;
+      const old = outcome.error.code === -32601 || (outcome.error.code === -32602 && /invalid ai request fields|unknown ai request field|unknown field.*backend|unsupported model; call ai.list/.test(outcome.error.message));
+      const message = old ? "update Axo on that Mac: native MLX/backend selection requires inference API version 3; inspect ai.capabilities on the target Mac" : outcome.error.message;
       throw new Error(`ai.${tool} on ${target.name}: ${message}`);
     }
     const result = aiResults[tool].safeParse(outcome.result);
@@ -422,6 +422,8 @@ export class AccountApps {
     if (!result.success || ("model" in result.data && result.data.model !== request.model)
       || ("task" in result.data && result.data.task !== request.task)
       || ("source" in result.data && result.data.source.repo !== repo)
+      || ("source" in result.data && request.backend !== undefined && (result.data.source.backend ?? "llama.cpp") !== request.backend)
+      || ("info" in result.data && result.data.info.resolved !== null && request.backend !== undefined && (result.data.info.resolved.backend ?? "llama.cpp") !== request.backend)
       || ("info" in result.data && result.data.info.model !== request.model)) {
       await this.log.finish(callId, "unknown", "the Mac returned an invalid AI result");
       throw new Error(`ai.${tool} on ${target.name}: invalid AI result; the operation may have run`);

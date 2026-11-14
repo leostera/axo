@@ -13,6 +13,9 @@
 
 pub mod api;
 mod catalog;
+mod mlx_catalog;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod mlx_process;
 pub mod service;
 mod transfer;
 

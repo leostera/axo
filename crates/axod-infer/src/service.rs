@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 pub use crate::api::Request;
-use crate::api::{Input, Question, Selection, Task};
+use crate::api::{Backend, Input, Question, Selection, Task};
 use crate::catalog::{self, Inspection, Resolved, Role};
 use crate::{Infer, blocking, http, physical_memory};
 
@@ -56,9 +56,126 @@ impl std::fmt::Display for Error {
 struct State {
     active: Option<Active>,
     runtime_busy: bool,
+    retiring: Option<Retirement>,
+    #[cfg(test)]
+    started: Option<std::sync::Arc<tokio::sync::Notify>>,
+}
+enum Retirement {
+    Running(tokio::task::JoinHandle<()>),
+    Failed,
+}
+impl State {
+    fn start_retiring(&mut self, runtime: &tokio::runtime::Handle) {
+        if self.retiring.is_none() {
+            if let Some(active) = self.active.take() {
+                self.runtime_busy = true;
+                self.retiring = Some(Retirement::Running(runtime.spawn(active.runtime.stop())));
+            }
+        }
+    }
+    async fn retire(&mut self) -> Result<(), Error> {
+        self.start_retiring(&tokio::runtime::Handle::current());
+        let result = match self.retiring.as_mut() {
+            Some(Retirement::Running(task)) => task.await,
+            Some(Retirement::Failed) => {
+                return Err(Error::unavailable(
+                    "runtime retirement failed; restart Axo before another inference operation",
+                ));
+            }
+            None => {
+                self.runtime_busy = false;
+                return Ok(());
+            }
+        };
+        self.runtime_busy = false;
+        if result.is_err() {
+            self.retiring = Some(Retirement::Failed);
+            return Err(Error::unavailable(
+                "could not establish runtime quiescence; restart Axo",
+            ));
+        }
+        self.retiring = None;
+        Ok(())
+    }
+}
+
+/// Dropping the caller's future revokes runtime ownership too. Store retirement in State so
+/// cancellation cannot discard the only child handle or admit work while reaping is pending.
+struct Operation<'a> {
+    state: tokio::sync::MutexGuard<'a, State>,
+    runtime: tokio::runtime::Handle,
+}
+impl std::ops::Deref for Operation<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for Operation<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+}
+impl Drop for Operation<'_> {
+    fn drop(&mut self) {
+        if self.state.runtime_busy {
+            self.state.start_retiring(&self.runtime);
+        }
+    }
+}
+enum Runtime {
+    Llama(Infer),
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Mlx(crate::mlx_process::Process),
+}
+impl Runtime {
+    async fn stop(self) {
+        match self {
+            Self::Llama(infer) => infer.stop().await,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Mlx(process) => process.stop().await,
+        }
+    }
+    async fn ensure_running(&mut self) -> Result<(), Error> {
+        match self {
+            Self::Llama(infer) => infer.ensure_running().await.map_err(|_| Error::unsupported("The pinned llama.cpp runtime could not load this selection; inspect ai/infer.log. No repository code was executed.")),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Mlx(process) => process.ensure_running().await,
+        }
+    }
+    async fn status(&self) -> &'static str {
+        match self {
+            Self::Llama(infer) => match infer
+                .json_request("GET", "/props", &json!({}), Duration::from_secs(2))
+                .await
+                .ok()
+                .and_then(|p| p["is_sleeping"].as_bool())
+            {
+                Some(true) => "sleeping",
+                Some(false) => "loaded",
+                None => "stopped",
+            },
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Mlx(process) => {
+                if process.loaded().await {
+                    "loaded"
+                } else {
+                    "stopped"
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    fn llama(&self) -> Option<&Infer> {
+        match self {
+            Self::Llama(infer) => Some(infer),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Mlx(_) => None,
+        }
+    }
 }
 struct Active {
-    infer: Infer,
+    runtime: Runtime,
     resolved: Resolved,
     task: Task,
 }
@@ -78,6 +195,21 @@ impl Service {
             state: Mutex::new(State::default()),
         }
     }
+    fn mlx_helper(&self) -> PathBuf {
+        self.helper.with_file_name("axod-infer-mlx")
+    }
+    fn mlx_metal(&self) -> PathBuf {
+        let directory = self.helper.parent().unwrap_or(Path::new(""));
+        if directory.file_name().is_some_and(|name| name == "Helpers") {
+            directory
+                .parent()
+                .unwrap()
+                .join("Resources/MLX/mlx.metallib")
+        } else {
+            directory.join("mlx.metallib")
+        }
+    }
+
     pub fn beside_current_exe(home: &Path, run: &Path) -> Self {
         let helper = std::env::current_exe()
             .ok()
@@ -94,7 +226,10 @@ impl Service {
         if !(1..=MAX_TIMEOUT_MS).contains(&timeout_ms) {
             return Err(Error::invalid("invalid AI deadline"));
         }
-        let mut state = self.state.try_lock().map_err(|_| Error::Busy)?;
+        let mut state = Operation {
+            state: self.state.try_lock().map_err(|_| Error::Busy)?,
+            runtime: tokio::runtime::Handle::current(),
+        };
         let result = tokio::time::timeout(
             Duration::from_millis(timeout_ms),
             self.perform(request, &mut state),
@@ -109,10 +244,7 @@ impl Service {
                 // Dropping a client HTTP socket does not prove the backend stopped computing.
                 // Retire only a process we actually started using, never another model's judge.
                 if state.runtime_busy {
-                    if let Some(active) = state.active.take() {
-                        active.infer.stop().await;
-                    }
-                    state.runtime_busy = false;
+                    state.retire().await?;
                 }
                 match result {
                     Ok(Err(error)) => Err(error),
@@ -125,6 +257,9 @@ impl Service {
     }
 
     async fn perform(&self, request: Request, state: &mut State) -> Result<Value, Error> {
+        if state.retiring.is_some() || state.runtime_busy {
+            state.retire().await?;
+        }
         match request {
             Request::Capabilities => self.capabilities().await,
             Request::List => self.list(state).await,
@@ -145,43 +280,74 @@ impl Service {
                     .as_ref()
                     .is_some_and(|active| active.resolved.selection == selection)
                 {
-                    if let Some(active) = state.active.take() {
-                        active.infer.stop().await;
-                    }
+                    state.retire().await?;
                 }
                 Ok(json!({"model":selection.model,"status":"stopped"}))
             }
             Request::Install(selection) => {
                 let resolved = self.resolve(&selection).await?;
                 self.check_resources(&resolved).await?;
-                crate::transfer::install(&self.models, &resolved).await?;
+                let resolved = crate::transfer::install(&self.models, &resolved).await?;
                 Ok(json!({"model":selection.model,"installed":true,"source":resolved.source()}))
             }
             Request::Load(selection, task) => {
                 let resolved = self.resolve(&selection).await?;
                 self.prepare(&resolved, task, state).await?;
-                state
-                    .active
-                    .as_ref()
-                    .unwrap()
-                    .infer
-                    .json_request("GET", "/slots", &json!({}), Duration::from_secs(90))
-                    .await?;
+                let active = state.active.as_ref().unwrap();
+                if let Runtime::Llama(infer) = &active.runtime {
+                    infer
+                        .json_request("GET", "/slots", &json!({}), Duration::from_secs(90))
+                        .await?;
+                }
                 Ok(
-                    json!({"model":selection.model,"status":"loaded","task":task,"source":resolved.source()}),
+                    json!({"model":selection.model,"status":"loaded","task":task,"source":active.resolved.source()}),
                 )
             }
             Request::Run(selection, input) => {
                 let resolved = self.resolve(&selection).await?;
                 if !input.images().is_empty() && !resolved.vision() {
                     return Err(Error::unsupported(
-                        "This selection has no vision projector. Inspect the repository with ai.info and select a compatible GGUF projector; no image was sent to a text-only model.",
+                        "This backend/selection has no supported image adapter. GGUF vision needs a compatible projector; the initial MLX adapter is text-only. No image was sent to a text-only model.",
                     ));
                 }
                 input.image_urls()?;
                 self.prepare(&resolved, input.task(), state).await?;
-                let infer = &state.active.as_ref().unwrap().infer;
-                run(infer, &resolved, input).await
+                #[cfg(test)]
+                if let Some(started) = &state.started {
+                    started.notify_one();
+                }
+                let active = state.active.as_ref().unwrap();
+                match &active.runtime {
+                    Runtime::Llama(infer) => run(infer, &active.resolved, input).await,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    Runtime::Mlx(process) => {
+                        let Input::Generate {
+                            text, max_tokens, ..
+                        } = input
+                        else {
+                            return Err(Error::unsupported(
+                                "this MLX adapter supports native text generation only",
+                            ));
+                        };
+                        let result = process
+                            .request(
+                                &json!({"op":"generate","text":text,"maxTokens":max_tokens}),
+                                Duration::from_secs(180),
+                            )
+                            .await?;
+                        let text = result["text"]
+                            .as_str()
+                            .filter(|text| text.len() <= 1024 * 1024)
+                            .ok_or_else(|| Error::failed("invalid native generated text"))?;
+                        let finish = result["finishReason"]
+                            .as_str()
+                            .filter(|reason| matches!(*reason, "stop" | "length"))
+                            .ok_or_else(|| Error::failed("invalid native finish reason"))?;
+                        Ok(
+                            json!({"model":selection.model,"task":"generate","text":text,"finishReason":finish,"source":active.resolved.source()}),
+                        )
+                    }
+                }
             }
         }
     }
@@ -200,17 +366,60 @@ impl Service {
             (helper.is_file(), physical_memory(), free)
         })
         .await;
+        let mut native = json!({"name":"mlx","available":false,"formats":["safetensors"],"tasks":["generate"],"recognizedArchitectures":[],
+            "reason":"Native MLX needs Apple Silicon, its Axo worker and its packaged Metal resource"});
+        if Backend::Mlx.available() && self.mlx_helper().is_file() && self.mlx_metal().is_file() {
+            let output = tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::process::Command::new(self.mlx_helper())
+                    .arg("--capabilities")
+                    .arg("--metallib")
+                    .arg(self.mlx_metal())
+                    .env_remove("AXO_INFER_LIFELINE_STDIN")
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await;
+            if let Ok(Ok(output)) = output {
+                if output.status.success() && output.stdout.len() <= 65536 {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
+                        if value["name"] == "mlx" && value["available"].is_boolean() {
+                            native = value;
+                        }
+                    }
+                }
+            }
+        }
+        let mlx_available = native["available"] == true;
+        let legacy: Value =
+            serde_json::from_str(RUNTIME).expect("generated runtime inventory is JSON");
+        let llama = json!({
+            "name":"llama.cpp", "available":available, "commit":legacy["commit"], "build":legacy["build"],
+            "recognizedArchitectures":legacy["recognizedArchitectures"], "formats":["gguf"],
+            "tasks":["generate","classify","embed"], "inputs":["text","image","json"], "contextTokens":8192, "kvCache":true,
+            "reason":"Task heads, quantization and projectors are validated by the pinned runtime when loaded."
+        });
+        let formats = if mlx_available {
+            vec!["gguf", "safetensors", "mlx"]
+        } else {
+            vec!["gguf"]
+        };
+        let backends = if mlx_available {
+            vec!["llama.cpp", "mlx"]
+        } else {
+            vec!["llama.cpp"]
+        };
         Ok(json!({
-            "apiVersion":2,"available":available,"runtime":serde_json::from_str::<Value>(RUNTIME).expect("generated runtime inventory is JSON"),
-            "formats":["gguf"],"tasks":["generate","classify","embed"],
+            "apiVersion":3,"available":available || mlx_available,"runtime":legacy,
+            "formats":formats,"tasks":["generate","classify","embed"],"runtimes":[llama,native],
             "inputs":{"generate":["text","image"],"classify":["json","text","image"],"embed":["text"]},
             "architectureCheck":"recognizedArchitectures comes from the pinned runtime source. Recognition is not a load guarantee: tensor versions, quantization, projectors and task heads are finally checked by the runtime.",
-            "modelSource":"hf:owner/repo[:quant][@revision]","selection":"file and projector select exact GGUF artifacts when metadata is ambiguous; split models need every checksummed shard",
-            "customCode":false,"privateRepositories":false,"backends":["llama.cpp"],
+            "modelSource":"hf:owner/repo[:quant][@revision]","selection":"backend disambiguates runtimes; file selects the first model shard; GGUF projector and quant selectors do not apply to MLX bundles",
+            "customCode":false,"privateRepositories":false,"backends":backends,
             "limits":{"physicalMemoryBytes":memory,"maxModelBytes":memory.saturating_mul(3)/5,"freeDiskBytes":free,
                 "maxDownloadBytes":catalog::MAX_DOWNLOAD_BYTES,"maxArtifacts":catalog::MAX_FILES,"maxImages":4,"maxImageBytes":8*1024*1024,
                 "maxTotalImageBytes":16*1024*1024,"maxTextBytes":32768,"contextTokens":8192,"maxOutputTokens":4096,"maxOperationMs":MAX_TIMEOUT_MS,"concurrentOperations":1},
-            "unsupported":["MLX and raw safetensors/PyTorch weights need another backend", "custom decision heads need a reviewed task adapter, never automatically imported HF Python", "audio/video inputs are not exposed by these adapters"]
+            "unsupported":["MLX currently implements dense Qwen2/Qwen3 text generation, not arbitrary safetensors architectures, embeddings or vision", "custom decision heads need a reviewed task adapter, never automatically imported HF Python", "audio/video inputs are not exposed by these adapters"]
         }))
     }
 
@@ -220,10 +429,12 @@ impl Service {
         if let Some(resolved) = blocking(move || catalog::cached(&root, &key)).await? {
             return Ok(Inspection::from_resolved(resolved));
         }
-        catalog::inspect(
+        crate::mlx_catalog::inspect(
+            &self.models,
             selection,
             crate::transfer::metadata(&self.models, selection).await?,
         )
+        .await
     }
     async fn resolve(&self, selection: &Selection) -> Result<Resolved, Error> {
         let info = self.inspect(selection).await?;
@@ -231,10 +442,17 @@ impl Service {
             .ok_or_else(|| Error::unsupported(info.compatibility.reasons.join(" ")))
     }
     async fn check_resources(&self, resolved: &Resolved) -> Result<(), Error> {
-        let helper = self.helper.clone();
+        let helper = if resolved.backend == Backend::Mlx {
+            self.mlx_helper()
+        } else {
+            self.helper.clone()
+        };
+        let metal = self.mlx_metal();
+        let backend = resolved.backend;
         let bytes = resolved.download_bytes();
         blocking(move || {
-            if !helper.is_file() { return Err(Error::unavailable("local inference helper missing; update Axo on this Mac")); }
+            if !backend.available() { return Err(Error::unavailable("selected native backend is not compiled for this host platform")); }
+            if !helper.is_file() || (backend == Backend::Mlx && !metal.is_file()) { return Err(Error::unavailable("local inference helper or Metal resource missing; update Axo on this Mac")); }
             if bytes > physical_memory().saturating_mul(3)/5 { return Err(Error::unavailable("selected artifacts exceed this host's 60% RAM admission budget; choose a smaller quantization/model or a larger host")); }
             Ok(())
         }).await
@@ -245,37 +463,70 @@ impl Service {
         task: Task,
         state: &mut State,
     ) -> Result<(), Error> {
+        if resolved.backend == Backend::Mlx && task != Task::Generate {
+            return Err(Error::unsupported(
+                "this native MLX architecture adapter implements text generation only; embeddings and decision heads need their own native adapters",
+            ));
+        }
         self.check_resources(resolved).await?;
-        crate::transfer::install(&self.models, resolved).await?;
+        let installed = crate::transfer::install(&self.models, resolved).await?;
+        let resolved = &installed;
         if state
             .active
             .as_ref()
             .is_none_or(|active| active.resolved != *resolved || active.task != task)
         {
-            if let Some(active) = state.active.take() {
-                active.infer.stop().await;
-            }
+            state.retire().await?;
             let projector = resolved
                 .files
                 .iter()
                 .find(|file| file.role == Role::Projector)
                 .map(|file| PathBuf::from(file.path.as_str()));
-            let infer = Infer::for_model(
-                self.helper.clone(),
-                resolved.directory(&self.models),
-                self.run.clone(),
-                resolved.files[0].path.as_str().into(),
-                projector,
-                task == Task::Embed,
-            );
+            let runtime = match resolved.backend {
+                Backend::Llama => Runtime::Llama(Infer::for_model(
+                    self.helper.clone(),
+                    resolved.directory(&self.models),
+                    self.run.clone(),
+                    resolved.files[0].path.as_str().into(),
+                    projector,
+                    task == Task::Embed,
+                )),
+                Backend::Mlx => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    {
+                        Runtime::Mlx(crate::mlx_process::Process::new(
+                            self.mlx_helper(),
+                            self.mlx_metal(),
+                            resolved.directory(&self.models).join(
+                                Path::new(resolved.files[0].path.as_str())
+                                    .parent()
+                                    .unwrap_or(Path::new("")),
+                            ),
+                            self.run.clone(),
+                        ))
+                    }
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    {
+                        return Err(Error::unavailable(
+                            "native MLX is not compiled for this platform",
+                        ));
+                    }
+                }
+            };
             state.active = Some(Active {
-                infer,
+                runtime,
                 resolved: resolved.clone(),
                 task,
             });
         }
         state.runtime_busy = true;
-        state.active.as_ref().unwrap().infer.ensure_running().await.map_err(|_| Error::unsupported(format!("The pinned llama.cpp runtime could not load this selection (architecture: {}). Artifact metadata does not guarantee a supported tensor layout/task head; inspect this Mac's ai/infer.log. No repository code was executed.",resolved.architecture.as_deref().unwrap_or("unknown"))))
+        state
+            .active
+            .as_mut()
+            .unwrap()
+            .runtime
+            .ensure_running()
+            .await
     }
     async fn list(&self, state: &State) -> Result<Value, Error> {
         let root = self.models.clone();
@@ -300,17 +551,7 @@ impl Service {
             Ok::<_, Error>(entries)
         }).await?;
         if let Some(active) = &state.active {
-            let status = match active
-                .infer
-                .json_request("GET", "/props", &json!({}), Duration::from_secs(2))
-                .await
-                .ok()
-                .and_then(|p| p["is_sleeping"].as_bool())
-            {
-                Some(true) => "sleeping",
-                Some(false) => "loaded",
-                None => "stopped",
-            };
+            let status = active.runtime.status().await;
             for entry in &mut entries {
                 if entry["selection"] == serde_json::to_value(&active.resolved.selection).unwrap() {
                     entry["status"] = json!(status);
@@ -511,6 +752,187 @@ mod tests {
         ));
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[tokio::test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "requires public HF access and the packaged native MLX worker"]
+    async fn real_mlx_service_installs_runs_reuses_retires_and_recovers() {
+        use std::os::unix::fs::symlink;
+        let root = crate::tests::run_directory();
+        let helper = std::fs::canonicalize(std::env::var("AXO_TEST_MLX_HELPER").unwrap()).unwrap();
+        let metal = std::fs::canonicalize(std::env::var("AXO_TEST_MLX_METALLIB").unwrap()).unwrap();
+        symlink(helper, root.join("axod-infer-mlx")).unwrap();
+        symlink(metal, root.join("mlx.metallib")).unwrap();
+        let models = PathBuf::from(
+            std::env::var("AXO_TEST_MLX_CACHE")
+                .unwrap_or_else(|_| "/tmp/axo-native-mlx-models".into()),
+        );
+        let service = Service::new(root.join("axod-infer"), models, root.join("run"));
+        let model = "hf:mlx-community/Qwen3-0.6B-4bit@73e3e38d981303bc594367cd910ea6eb48349da8";
+        let request = |value| Request::parse(value).unwrap();
+        let info = service
+            .execute(request(json!({"op":"info","model":model})), 240000)
+            .await
+            .unwrap();
+        assert_eq!(info["info"]["compatibility"]["status"], "candidate");
+        assert_eq!(info["info"]["resolved"]["backend"], "mlx");
+        let first = service.execute(request(json!({"op":"run","model":model,"input":"What is 2 + 2? Answer briefly.","maxTokens":32})), 240000).await.unwrap();
+        assert_eq!(first["source"]["backend"], "mlx");
+        assert!(first["text"].as_str().is_some_and(|text| !text.is_empty()));
+        assert!(
+            first["source"]["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|file| file["sha256"].as_str().is_some_and(|hash| hash.len() == 64))
+        );
+        let native_pid = |state: &State| match &state.active.as_ref().unwrap().runtime {
+            Runtime::Mlx(process) => process.pid().unwrap(),
+            _ => panic!("expected native residency"),
+        };
+        let pid = native_pid(&*service.state.lock().await);
+        service
+            .execute(
+                request(json!({"op":"run","model":model,"input":"Say hello.","maxTokens":8})),
+                240000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(native_pid(&*service.state.lock().await), pid);
+        assert!(
+            service
+                .execute(
+                    request(json!({"op":"load","model":model,"task":"embed"})),
+                    240000
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            native_pid(&*service.state.lock().await),
+            pid,
+            "unsupported task must not unload the resident"
+        );
+        let expired = service.execute(request(json!({"op":"run","model":model,"input":"Count every integer from 1 to 1000, writing every number individually.","maxTokens":4096})), 100).await;
+        assert!(
+            expired.is_err(),
+            "long native generation should hit this short deadline"
+        );
+        assert!(
+            service.state.lock().await.active.is_none(),
+            "native worker must be reaped before admission reopens"
+        );
+        let recovered = service
+            .execute(
+                request(json!({"op":"run","model":model,"input":"Say hello.","maxTokens":8})),
+                240000,
+            )
+            .await
+            .unwrap();
+        assert!(!recovered["text"].as_str().unwrap().is_empty());
+        assert_ne!(native_pid(&*service.state.lock().await), pid);
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        service.state.lock().await.started = Some(started.clone());
+        let mut pending = Box::pin(service.execute(request(json!({"op":"run","model":model,"input":"Count every integer from 1 to 1000 individually.","maxTokens":4096})), 240000));
+        tokio::select! {
+            biased;
+            _ = started.notified() => {},
+            outcome = &mut pending => panic!("request completed before cancellation boundary: {outcome:?}"),
+        }
+        drop(pending);
+        assert!(
+            service.state.lock().await.retiring.is_some(),
+            "dropping a future must retain cleanup ownership"
+        );
+        service.execute(Request::List, 10000).await.unwrap();
+        assert!(service.state.lock().await.active.is_none());
+        service.state.lock().await.started = None;
+        service
+            .execute(
+                request(json!({"op":"run","model":model,"input":"Say hello.","maxTokens":8})),
+                240000,
+            )
+            .await
+            .unwrap();
+        service
+            .execute(request(json!({"op":"unload","model":model})), 240000)
+            .await
+            .unwrap();
+        assert!(service.state.lock().await.active.is_none());
+        // Owner disappearance must end a fully initialized native worker without cooperative
+        // model cancellation or a shell descendant. Closing this pipe models owner death.
+        let selection: Selection = serde_json::from_value(json!({"model":model})).unwrap();
+        let resolved = catalog::cached(&service.models, &selection)
+            .unwrap()
+            .unwrap();
+        let socket = root.join("run/owner-eof.sock");
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = ChildGuard(
+            std::process::Command::new(root.join("axod-infer-mlx"))
+                .arg("--model")
+                .arg(resolved.directory(&service.models))
+                .arg("--metallib")
+                .arg(root.join("mlx.metallib"))
+                .arg("--socket")
+                .arg(&socket)
+                .env("AXO_INFER_LIFELINE_STDIN", "1")
+                .env("TOKENIZERS_PARALLELISM", "false")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        while !socket.exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "owner-watch worker failed before initialization"
+            );
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "owner-watch worker startup timed out"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        drop(child.0.stdin.take());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "native worker outlived its owner"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_retirement_never_reopens_inference_admission() {
+        let root = crate::tests::run_directory();
+        let service = Service::new(root.join("helper"), root.join("models"), root.join("run"));
+        service.state.lock().await.retiring = Some(Retirement::Running(tokio::spawn(async {
+            panic!("injected cleanup failure")
+        })));
+        for _ in 0..2 {
+            assert!(service.execute(Request::List, 10000).await.is_err());
+            assert!(matches!(
+                service.state.lock().await.retiring,
+                Some(Retirement::Failed)
+            ));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     const FAKE: &str = r#"#!/usr/bin/python3
 import json, socket, sys
 server = socket.socket(socket.AF_UNIX)
@@ -559,6 +981,7 @@ while True:
         let service = Service::new(helper, root.join("models"), root.join("run"));
         for model in ["hf:any/one", "hf:another/two"] {
             let selection = Selection {
+                backend: None,
                 model: ModelRef::parse(model.into()).unwrap(),
                 file: None,
                 projector: None,
@@ -598,7 +1021,9 @@ while True:
             .active
             .as_ref()
             .unwrap()
-            .infer
+            .runtime
+            .llama()
+            .unwrap()
             .lock_children()
             .side_car
             .as_ref()
@@ -620,7 +1045,9 @@ while True:
                 .active
                 .as_ref()
                 .unwrap()
-                .infer
+                .runtime
+                .llama()
+                .unwrap()
                 .lock_children()
                 .side_car
                 .as_ref()

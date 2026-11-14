@@ -34,16 +34,19 @@ sign_all() {
   local id=$1
   shift
   /usr/bin/codesign --force --sign "$id" --identifier "$axod_identifier" "$@" \
-    "$app/Contents/Helpers/axod" &&
-    /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.infer "$@" \
-      "$app/Contents/Helpers/axod-infer" &&
-    for framework in "$app"/Contents/Frameworks/*.framework; do
-      [[ -e "$framework" ]] || continue
-      # Vendor frameworks (RiveRuntime) come signed by their vendor; the hardened runtime's
-      # library validation only loads code signed by the app's own team.
-      /usr/bin/codesign --force --sign "$id" "$@" "$framework" || return 1
-    done &&
-    /usr/bin/codesign --force --sign "$id" "$@" "$app"
+    "$app/Contents/Helpers/axod" || return 1
+  /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.infer "$@" \
+    "$app/Contents/Helpers/axod-infer" || return 1
+  if [[ -f "$app/Contents/Helpers/axod-infer-mlx" ]]; then
+    /usr/bin/codesign --force --sign "$id" --identifier dev.leostera.axo.infer.mlx "$@" \
+      "$app/Contents/Helpers/axod-infer-mlx" || return 1
+  fi
+  for framework in "$app"/Contents/Frameworks/*.framework; do
+    [[ -e "$framework" ]] || continue
+    # Vendor frameworks must use the app's team for hardened-runtime library validation.
+    /usr/bin/codesign --force --sign "$id" "$@" "$framework" || return 1
+  done
+  /usr/bin/codesign --force --sign "$id" "$@" "$app"
 }
 
 how=""

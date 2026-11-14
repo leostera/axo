@@ -7,9 +7,11 @@ export const AI_MAX_TIMEOUT_MS = 240_000;
 
 export const aiModelSchema = z.string().max(259).regex(/^hf:[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?(?:@[A-Za-z0-9][A-Za-z0-9_.-]*)?$/)
   .describe("Hugging Face reference: hf:owner/repo[:quant][@revision]. Not a model-name allowlist. Use the HF app to search, ai.capabilities for this host's runtime and ai.info to inspect compatibility before downloading weights.");
-const artifact = z.string().max(512).regex(/^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9_.\/-]+\.gguf$/i);
+const artifact = z.string().max(512).regex(/^(?!\/)(?!.*\/\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9_.\/-]+\.(?:gguf|safetensors|json|model|txt)$/i);
+const gguf = artifact.refine(path => path.toLowerCase().endsWith(".gguf"), "projector must be GGUF");
+const backend = z.enum(["llama.cpp", "mlx"]);
 const host = z.string().min(1).max(64).default("self").describe('A paired online Mac from hosts.list(), or "self" (the default).');
-const selectionFields = { model: aiModelSchema, file: artifact.optional(), projector: artifact.optional() };
+const selectionFields = { model: aiModelSchema, backend: backend.optional(), file: artifact.optional(), projector: gguf.optional() };
 const selection = z.object(selectionFields).strict();
 const task = z.enum(["generate", "classify", "embed"]);
 const image = z.union([
@@ -71,13 +73,20 @@ export function aiRequest(tool: AiTool, input: unknown): { host: string; request
 }
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-const file = z.object({ path: artifact, bytes: z.number().int().positive(), sha256: hash, role: z.enum(["model", "projector"]) }).strict();
+const gitBlob = z.string().regex(/^[a-f0-9]{40}$/);
+const file = z.object({ path: artifact, bytes: z.number().int().positive(), sha256: hash.nullable(), gitBlob: gitBlob.optional(), role: z.enum(["model", "projector", "resource"]) }).strict()
+  .refine(file => file.sha256 !== null || file.gitBlob !== undefined, "artifact needs SHA-256 or immutable Git-object integrity");
 export const aiSourceSchema = z.object({
+  backend: backend.optional(), gitBlob: gitBlob.optional(),
   repo: z.string().max(256), revision: z.string().regex(/^[a-f0-9]{40}$/),
   file: artifact, sha256: hash, files: z.array(file).min(1).max(128),
 }).strict().refine(source => source.files[0]?.role === "model" && source.files[0].path === source.file && source.files[0].sha256 === source.sha256,
-  "source must identify the first model artifact consistently");
-const resolved = z.object({ selection, revision: z.string().regex(/^[a-f0-9]{40}$/), architecture: z.string().max(128).nullable(), taskHints: z.array(task), files: z.array(file).min(1).max(128) }).strict();
+  "source must identify the first model artifact consistently")
+  .refine(source => (source.backend ?? "llama.cpp") === "mlx"
+    ? source.files.every(file => file.role === "resource" ? file.path.endsWith(".json") : file.role === "model" && file.path.endsWith(".safetensors"))
+    : source.files.every(file => file.role !== "resource" && file.path.toLowerCase().endsWith(".gguf")),
+  "source artifacts must match the selected backend");
+const resolved = z.object({ selection, backend: backend.optional(), revision: z.string().regex(/^[a-f0-9]{40}$/), architecture: z.string().max(128).nullable(), taskHints: z.array(task), files: z.array(file).min(1).max(128) }).strict();
 const compatibility = z.object({ status: z.enum(["candidate", "unsupported", "ambiguous"]), reasons: z.array(z.string().max(4096)).max(32) }).strict();
 const receipt = { model: aiModelSchema, source: aiSourceSchema };
 const probability = z.number().min(0).max(1);
@@ -88,10 +97,16 @@ const answer = z.union([
 ]);
 export const aiResults = {
   capabilities: z.object({
-    apiVersion: z.literal(2), available: z.boolean(),
+    apiVersion: z.union([z.literal(2), z.literal(3)]), available: z.boolean(),
     runtime: z.object({ name: z.literal("llama.cpp"), commit: z.string().regex(/^[a-f0-9]{40}$/), build: z.number().int(), recognizedArchitectures: z.array(z.string()).min(1) }).strict(),
-    formats: z.array(z.literal("gguf")), tasks: z.array(task), inputs: z.object({ generate: z.array(z.string()), classify: z.array(z.string()), embed: z.array(z.string()) }).strict(),
-    architectureCheck: z.string(), modelSource: z.string(), selection: z.string(), customCode: z.literal(false), privateRepositories: z.literal(false), backends: z.array(z.literal("llama.cpp")),
+    runtimes: z.array(z.object({
+      name: backend, available: z.boolean(), version: z.string().optional(), commit: gitBlob.optional(), build: z.number().int().optional(),
+      formats: z.array(z.enum(["gguf", "safetensors"])), tasks: z.array(task),
+      recognizedArchitectures: z.array(z.string().max(128)).max(512), inputs: z.array(z.enum(["text", "image", "json"])).optional(),
+      contextTokens: z.number().int().positive().optional(), kvCache: z.boolean().optional(), reason: z.string().max(4096).optional(),
+    }).strict()).max(8).optional(),
+    formats: z.array(z.enum(["gguf", "mlx", "safetensors"])), tasks: z.array(task), inputs: z.object({ generate: z.array(z.string()), classify: z.array(z.string()), embed: z.array(z.string()) }).strict(),
+    architectureCheck: z.string(), modelSource: z.string(), selection: z.string(), customCode: z.literal(false), privateRepositories: z.literal(false), backends: z.array(backend),
     limits: z.object({ physicalMemoryBytes: z.number(), maxModelBytes: z.number(), freeDiskBytes: z.number(), maxDownloadBytes: z.number(), maxArtifacts: z.number(), maxImages: z.number(), maxImageBytes: z.number(), maxTotalImageBytes: z.number(), maxTextBytes: z.number(), contextTokens: z.number(), maxOutputTokens: z.number(), maxOperationMs: z.number(), concurrentOperations: z.number() }).strict(),
     unsupported: z.array(z.string()),
   }).strict(),

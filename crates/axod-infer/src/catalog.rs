@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::api::{ArtifactPath, Selection, Task};
+use crate::api::{ArtifactPath, Backend, Selection, Task};
 use crate::service::Error;
 
 pub const MAX_FILES: usize = 128;
@@ -18,19 +18,24 @@ pub const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 pub enum Role {
     Model,
     Projector,
+    Resource,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Artifact {
     pub path: ArtifactPath,
     pub bytes: u64,
-    pub sha256: String,
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_blob: Option<String>,
     pub role: Role,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Resolved {
     pub selection: Selection,
+    #[serde(default)]
+    pub backend: Backend,
     pub revision: String,
     pub architecture: Option<String>,
     pub task_hints: Vec<Task>,
@@ -42,10 +47,19 @@ impl Resolved {
             || self.files.is_empty()
             || self.files.len() > MAX_FILES
             || self.files[0].role != Role::Model
+            || self.files[0].sha256.is_none()
             || self
-                .files
-                .iter()
-                .any(|file| !hex(&file.sha256, 64) || file.bytes == 0)
+                .selection
+                .backend
+                .is_some_and(|backend| backend != self.backend)
+            || (self.backend == Backend::Llama
+                && self
+                    .files
+                    .iter()
+                    .any(|file| !file.path.as_str().to_ascii_lowercase().ends_with(".gguf")))
+            || (self.backend == Backend::Mlx
+                && !self.files[0].path.as_str().ends_with(".safetensors"))
+            || self.files.iter().any(|file| file.validate().is_err())
             || self
                 .files
                 .iter()
@@ -64,6 +78,58 @@ impl Resolved {
         {
             return Err(Error::invalid("duplicate artifact path"));
         }
+        if self
+            .selection
+            .file
+            .as_ref()
+            .is_some_and(|file| file != &self.files[0].path)
+        {
+            return Err(Error::invalid(
+                "manifest does not match its explicit model artifact",
+            ));
+        }
+        match self.backend {
+            Backend::Llama => {
+                if self.files.iter().any(|file| file.role == Role::Resource) {
+                    return Err(Error::invalid(
+                        "GGUF manifests cannot contain native MLX resources",
+                    ));
+                }
+            }
+            Backend::Mlx => {
+                let prefix = Path::new(self.files[0].path.as_str())
+                    .parent()
+                    .unwrap_or(Path::new(""));
+                if self.selection.projector.is_some()
+                    || self.selection.model.quant().is_some()
+                    || self.task_hints != [Task::Generate]
+                    || self.files.iter().any(|file| {
+                        Path::new(file.path.as_str())
+                            .parent()
+                            .unwrap_or(Path::new(""))
+                            != prefix
+                            || match file.role {
+                                Role::Model => {
+                                    !file.path.as_str().ends_with(".safetensors")
+                                        || file.sha256.is_none()
+                                }
+                                Role::Resource => !file.path.as_str().ends_with(".json"),
+                                Role::Projector => true,
+                            }
+                    })
+                    || ["config.json", "tokenizer.json"].iter().any(|name| {
+                        !self.files.iter().any(|file| {
+                            file.role == Role::Resource
+                                && Path::new(file.path.as_str()) == prefix.join(name)
+                        })
+                    })
+                {
+                    return Err(Error::invalid(
+                        "MLX manifests require one local weight/config/tokenizer bundle, without GGUF projectors or quantization selectors",
+                    ));
+                }
+            }
+        }
         Ok(())
     }
     pub fn download_bytes(&self) -> u64 {
@@ -72,10 +138,14 @@ impl Resolved {
             .fold(0_u64, |total, file| total.saturating_add(file.bytes))
     }
     pub fn vision(&self) -> bool {
-        self.files.iter().any(|file| file.role == Role::Projector)
+        self.backend == Backend::Llama && self.files.iter().any(|file| file.role == Role::Projector)
     }
     pub fn source(&self) -> Value {
-        json!({"repo":self.selection.model.repo(),"revision":self.revision,"file":self.files[0].path,"sha256":self.files[0].sha256,"files":self.files})
+        let mut source = json!({"backend":self.backend,"repo":self.selection.model.repo(),"revision":self.revision,"file":self.files[0].path,"sha256":self.files[0].sha256,"files":self.files});
+        if let Some(blob) = &self.files[0].git_blob {
+            source["gitBlob"] = json!(blob);
+        }
+        source
     }
     pub fn directory(&self, root: &Path) -> PathBuf {
         root.join("hf")
@@ -95,7 +165,21 @@ impl Resolved {
             .join("resolved.json")
     }
 }
-fn hex(value: &str, len: usize) -> bool {
+impl Artifact {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.bytes == 0
+            || (self.sha256.is_none() && self.git_blob.is_none())
+            || self.sha256.as_ref().is_some_and(|hash| !hex(hash, 64))
+            || self.git_blob.as_ref().is_some_and(|hash| !hex(hash, 40))
+        {
+            return Err(Error::invalid(
+                "artifact requires a size and valid SHA-256 or Git blob SHA-1",
+            ));
+        }
+        Ok(())
+    }
+}
+pub(crate) fn hex(value: &str, len: usize) -> bool {
     value.len() == len
         && value
             .bytes()
@@ -155,7 +239,11 @@ pub struct Compatibility {
 }
 impl Inspection {
     pub fn from_resolved(resolved: Resolved) -> Self {
-        Self { model: resolved.selection.model.as_str().into(), compatibility: Compatibility { status: "candidate", reasons: vec!["GGUF artifacts are available; architecture, task and memory compatibility must still be tested by loading the pinned runtime".into()] }, formats: vec!["gguf".into()], architecture: resolved.architecture.clone(), task_hints: resolved.task_hints.clone(), candidates: resolved.files.iter().map(|file| file.path.as_str().into()).collect(), resolved: Some(resolved) }
+        let format = match resolved.backend {
+            Backend::Llama => "gguf",
+            Backend::Mlx => "mlx",
+        };
+        Self { model: resolved.selection.model.as_str().into(), compatibility: Compatibility { status: "candidate", reasons: vec!["Pinned artifacts are available; architecture, task and memory compatibility must still be tested by loading the native runtime".into()] }, formats: vec![format.into()], architecture: resolved.architecture.clone(), task_hints: resolved.task_hints.clone(), candidates: resolved.files.iter().map(|file| file.path.as_str().into()).collect(), resolved: Some(resolved) }
     }
 }
 
@@ -259,7 +347,8 @@ pub fn inspect(selection: &Selection, metadata: Value) -> Result<Inspection, Err
                 Artifact {
                     path,
                     bytes: lfs.size,
-                    sha256: lfs.sha256,
+                    sha256: Some(lfs.sha256),
+                    git_blob: None,
                     role,
                 },
             );
@@ -389,6 +478,7 @@ pub fn inspect(selection: &Selection, metadata: Value) -> Result<Inspection, Err
     }
     let resolved = Resolved {
         selection: selection.clone(),
+        backend: Backend::Llama,
         revision: metadata.sha,
         architecture,
         task_hints,
@@ -458,6 +548,7 @@ mod tests {
     use crate::api::ModelRef;
     fn selection(model: &str) -> Selection {
         Selection {
+            backend: None,
             model: ModelRef::parse(model.into()).unwrap(),
             file: None,
             projector: None,

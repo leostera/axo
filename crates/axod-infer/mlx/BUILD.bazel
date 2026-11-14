@@ -1,0 +1,22 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "bridge",
+    srcs = ["bridge.cc"],
+    hdrs = ["bridge.h"],
+    copts = ["-std=c++20"],
+    deps = ["@mlx//:mlx", "@mlx//:json"],
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
+cc_test(
+    name = "native_test",
+    srcs = ["native_test.cc"],
+    deps = [":bridge", "@mlx//:mlx", "@mlx//:json"],
+    copts = ["-std=c++20"],
+    data = ["@mlx//:mlx.metallib"],
+    env = {"AXO_TEST_MLX_METALLIB": "$(rootpath @mlx//:mlx.metallib)"},
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)

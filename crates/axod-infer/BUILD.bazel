@@ -1,6 +1,86 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "apple_silicon",
+    constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
+# Separate binding target: no native dependency or generated MLX metadata on other targets.
+rust_library(
+    name = "mlx_binding",
+    crate_name = "axo_mlx",
+    crate_root = "src/mlx_binding.rs",
+    srcs = ["src/mlx_binding.rs", "src/mlx.rs"],
+    edition = "2024",
+    deps = select({
+        ":apple_silicon": ["@crates//:serde_json"],
+        "//conditions:default": [],
+    }),
+    link_deps = select({
+        ":apple_silicon": ["//crates/axod-infer/mlx:bridge"],
+        "//conditions:default": [],
+    }),
+    compile_data = select({
+        ":apple_silicon": ["@mlx//:capabilities.json"],
+        "//conditions:default": [],
+    }),
+    rustc_env = select({
+        ":apple_silicon": {"AXO_MLX_CAPABILITIES": "$(execpath @mlx//:capabilities.json)"},
+        "//conditions:default": {},
+    }),
+)
+
+rust_test(
+    name = "mlx_binding_tests",
+    crate = ":mlx_binding",
+    edition = "2024",
+    data = select({
+        ":apple_silicon": ["@mlx//:mlx.metallib", "//crates/axod-infer/mlx:native_test"],
+        "//conditions:default": [],
+    }),
+    env = select({
+        ":apple_silicon": {
+            "AXO_TEST_MLX_METALLIB": "$(rootpath @mlx//:mlx.metallib)",
+            "AXO_TEST_MLX_FIXTURE_BUILDER": "$(rootpath //crates/axod-infer/mlx:native_test)",
+        },
+        "//conditions:default": {},
+    }),
+)
+
+# An Axo-owned Rust worker embeds MLX. Process isolation makes native deadlines/crashes
+# killable; it is not a separately installed third-party inference server.
+rust_binary(
+    name = "axod-infer-mlx",
+    srcs = ["src/mlx_worker.rs"],
+    crate_root = "src/mlx_worker.rs",
+    edition = "2024",
+    deps = [
+        ":mlx_binding",
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tokenizers",
+        "@crates//:tokio",
+    ],
+    data = ["@mlx//:mlx.metallib"],
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
+rust_test(
+    name = "mlx_service_smoke_test",
+    crate = ":axod_infer",
+    edition = "2024",
+    tags = ["manual"],
+    args = ["--ignored", "real_mlx_service_installs_runs_reuses_retires_and_recovers", "--nocapture"],
+    data = [":axod-infer-mlx", "@mlx//:mlx.metallib"],
+    env = {
+        "AXO_TEST_MLX_HELPER": "$(rootpath :axod-infer-mlx)",
+        "AXO_TEST_MLX_METALLIB": "$(rootpath @mlx//:mlx.metallib)",
+    },
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
 
 # axod's local inference side-car and its client; Clef decisions first.
 rust_library(
@@ -17,6 +97,7 @@ rust_library(
         "@crates//:log",
         "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:sha1",
         "@crates//:sha2",
         "@crates//:tokio",
     ],

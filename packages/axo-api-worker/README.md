@@ -30,9 +30,13 @@ The public site at `axo.leostera.dev` serves the landing page and app from the s
 paired Mac (`host`, default `self`). Model references are generic `hf:owner/repo[:quant][@revision]`,
 not a name allowlist. `capabilities` describes the pinned runtime's actual architecture inventory,
 tasks, modalities and limits; the HF connection handles search. `info` inspects candidate metadata
-without downloading weights and explains ambiguity or unsupported backends such as MLX.
-`run` resolves/pins/verifies/installs/loads GGUF artifacts and executes generation, native typed
-classification (with optional images), or text embeddings. `list` is the managed-model inventory.
+without downloading weight tensors and explains ambiguous bundles or unsupported architectures/heads.
+`run` resolves/pins/verifies/installs/loads GGUF artifacts for generation, native typed classification
+(with optional images), or text embeddings. On updated Apple Silicon Macs it also selects embedded
+native MLX for compatible dense Qwen2/Qwen3 text generation; `backend` can disambiguate formats.
+MLX is Python-free, uses an Axo-owned Rust worker, and currently has a 4096-token context with
+no KV cache. MLX vision/embeddings, Clef-Omni's custom head and Core ML are not implemented.
+`list` is the managed-model inventory.
 Image attachments are fetched and verified on the target Mac, not passed as arbitrary file paths.
 No repository code is executed.
 
@@ -46,7 +50,10 @@ the AI call log; call failures and disconnected outcomes are recorded without re
 The model runs locally, but inputs and outputs still traverse the cloud script/relay.
 
 See [the inference service](../../crates/axod-infer/README.md) for examples, limits and testing.
-Both the Worker and target Mac need this version; an older Mac returns an update instruction.
+Native MLX/backend selection requires inference API 3 (Axo 0.56) on the target Mac. The Worker
+continues accepting API 2 GGUF receipts; new backend fields sent to an old host produce an update
+instruction. Completed native receipts include the backend and computed SHA-256s; metadata-only
+inspection may identify ordinary resources with immutable Git-object integrity instead.
 
 ## Development and validation
 

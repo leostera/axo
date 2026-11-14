@@ -243,6 +243,34 @@ test("ai accepts arbitrary HF model names and forwards real image attachments fo
   assert.doesNotMatch(log, /private photo|Is this a portrait|photo.png|bbbbbbbb/);
 });
 
+test("ai routes native MLX explicitly, validates the returned backend and logs no prompt/output", async (t) => {
+  const { laptopDaemon, call } = await fixture(t);
+  const model = "hf:any-owner/a-new-model";
+  const sha256 = "a".repeat(64);
+  const source = { backend: "mlx", repo: "any-owner/a-new-model", revision: "b".repeat(40), file: "model.safetensors", sha256,
+    files: [{ path: "model.safetensors", bytes: 1024, sha256, role: "model" }] };
+  for (const backend of ["mlx", "llama.cpp"]) {
+    const running = call("axo.apps.run", { code: `async () => codemode.ai.run({model:${JSON.stringify(model)},backend:"mlx",input:"private native input"})` });
+    const sent = await laptopDaemon.next() as Sent;
+    assert.deepEqual(sent.params.request, { op: "run", model, backend: "mlx", task: "generate", input: "private native input", maxTokens: 512 });
+    laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, result: { model, task: "generate", text: "private native output", finishReason: "stop", source: { ...source, backend } } });
+    const response = await running;
+    if (backend === "mlx") assert.ok("result" in response);
+    else assert.match(error(response).message, /invalid AI result/);
+  }
+  const log = JSON.stringify(result(await call("axo.apps.log")));
+  assert.match(log, /"backend":"mlx"/);
+  assert.doesNotMatch(log, /private native input|private native output/);
+});
+
+test("a native backend request to an old host gives an API 3 update instruction", async (t) => {
+  const { laptopDaemon, call } = await fixture(t);
+  const running = call("axo.apps.run", { code: `async () => codemode.ai.info({model:"hf:any-owner/a-new-model",backend:"mlx"})` });
+  const sent = await laptopDaemon.next() as Sent;
+  laptopDaemon.send({ jsonrpc: "2.0", id: sent.id, error: { code: -32602, message: "unknown ai request field" } });
+  assert.match(error(await running).message, /update Axo.*version 3/);
+});
+
 test("ai.info explains an MLX candidate instead of rejecting its model name", async (t) => {
   const { laptopDaemon, call } = await fixture(t);
   const model = "hf:mlx-community/clef-omni-4bit";

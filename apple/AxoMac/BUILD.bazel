@@ -218,6 +218,21 @@ copy_to_directory(
     root_paths = ["packages/pi-axo/dist"],
 )
 
+config_setting(
+    name = "apple_silicon_inference",
+    constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
+_APP_CONTENTS = {
+    ":launch_agent_plist": "Library/LaunchAgents",
+    ":app_agent_plist": "Library/LaunchAgents",
+    "//crates/axod/release": "Helpers",
+    "@llama_server//:axod-infer": "Helpers",
+    ":AxoPi": "Resources/AxoPi",
+    "@ghostty//:resources": "Resources",
+    "@ghostty//:terminfo": "Resources",
+}
+
 macos_application(
     name = "AxoApp",
     app_icons = ["//assets:macos_app_icon"],
@@ -228,17 +243,14 @@ macos_application(
     infoplists = ["Info.plist", "@axo_config//:mac.plist"],
     minimum_os_version = AXO["apple"]["macos_min"],
     version = ":build_version",
-    additional_contents = {
-        ":launch_agent_plist": "Library/LaunchAgents",
-        ":app_agent_plist": "Library/LaunchAgents",
-        # Optimized and stripped, as it ships; tests run the development build.
-        "//crates/axod/release": "Helpers",
-        # The local decision side-car axod starts on demand (crates/axod-infer).
-        "@llama_server//:axod-infer": "Helpers",
-        ":AxoPi": "Resources/AxoPi",
-        "@ghostty//:resources": "Resources",
-        "@ghostty//:terminfo": "Resources",
-    },
+    additional_contents = select({
+        ":apple_silicon_inference": _APP_CONTENTS | {
+            "//crates/axod-infer/release": "Helpers",
+            "@mlx//:mlx.metallib": "Resources/MLX",
+            "@mlx//:MLX-third-party-notices.txt": "Resources/ThirdParty",
+        },
+        "//conditions:default": _APP_CONTENTS,
+    }),
     deps = [":AxoMacMain"],
 )
 
@@ -277,7 +289,10 @@ sh_test(
         str(AXO["builds"]["axod"]),
         AXO["apple"]["macos_min"],
         AXO["apple"]["team"] if CAN.sign else "-",
-    ],
+    ] + select({
+        ":apple_silicon_inference": ["mlx"],
+        "//conditions:default": [],
+    }),
     data = [":Axo"],
     # codesign must see the bundle itself, not the sandbox's per-file symlinks to it.
     tags = ["no-sandbox"],

@@ -78,11 +78,13 @@ pub struct ArtifactPath(String);
 impl ArtifactPath {
     pub fn parse(value: String) -> Result<Self, Error> {
         if value.len() > 512
-            || !value.to_ascii_lowercase().ends_with(".gguf")
+            || ![".gguf", ".safetensors", ".json", ".model", ".txt"]
+                .iter()
+                .any(|suffix| value.to_ascii_lowercase().ends_with(suffix))
             || value.split('/').any(|part| !component(part))
         {
             return Err(Error::invalid(
-                "artifact paths must be relative GGUF paths without traversal",
+                "artifact paths must be relative, supported model-data paths without traversal",
             ));
         }
         Ok(Self(value))
@@ -97,9 +99,28 @@ impl<'de> Deserialize<'de> for ArtifactPath {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    #[serde(rename = "llama.cpp")]
+    Llama,
+    #[serde(rename = "mlx")]
+    Mlx,
+}
+impl Backend {
+    pub fn available(self) -> bool {
+        match self {
+            Self::Llama => true,
+            Self::Mlx => cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<Backend>,
     pub model: ModelRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<ArtifactPath>,
@@ -218,10 +239,11 @@ impl Request {
             .ok_or_else(|| Error::invalid("ai request needs an operation"))?;
         let allowed: &[&str] = match op {
             "capabilities" | "list" => &["op"],
-            "info" | "install" | "unload" => &["op", "model", "file", "projector"],
-            "load" => &["op", "model", "file", "projector", "task"],
+            "info" | "install" | "unload" => &["op", "model", "file", "projector", "backend"],
+            "load" => &["op", "model", "file", "projector", "task", "backend"],
             "run" => &[
                 "op",
+                "backend",
                 "model",
                 "file",
                 "projector",
@@ -240,7 +262,7 @@ impl Request {
         if op == "list" {
             return Ok(Self::List);
         }
-        let selection: Selection = serde_json::from_value(json!({"model":value["model"], "file":value.get("file"), "projector":value.get("projector")}))
+        let selection: Selection = serde_json::from_value(json!({"model":value["model"], "file":value.get("file"), "projector":value.get("projector"), "backend":value.get("backend")}))
             .map_err(|error| Error::invalid(format!("invalid model selection: {error}")))?;
         let task: Task =
             serde_json::from_value(value.get("task").cloned().unwrap_or(json!("generate")))

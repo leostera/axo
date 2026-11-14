@@ -113,6 +113,11 @@ node_test(
     tsx = True,
 )
 
+config_setting(
+    name = "apple_silicon_inference",
+    constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
 # Explicit opt-in: real HF models/tasks through codemode, without production deployment.
 node_test(
     name = "ai_smoke_test",
@@ -122,7 +127,10 @@ node_test(
         ":node_modules/tsx",
         ":test_files",
         "//crates/axod",
-    ],
+    ] + select({
+        ":apple_silicon_inference": ["//crates/axod-infer:axod-infer-mlx"],
+        "//conditions:default": [],
+    }),
     env = {"AXOD_BINARY": "../../crates/axod/axod"},
     tags = ["manual", "no-sandbox"],
     tests = ["tests/ai-e2e.test.ts"],

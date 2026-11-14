@@ -32,3 +32,27 @@ test("results require immutable artifact provenance and validated task-specific 
   assert.equal(aiResults.load.safeParse({ model, status: "loaded", task: "generate" }).success, false);
   assert.equal(aiResults.run.safeParse({ model, task: "embed", embedding: [Infinity] }).success, false);
 });
+
+test("MLX backend selection is explicit or omitted, never injected as a cache-changing default", () => {
+  const native = "hf:any-owner/a-new-model";
+  assert.deepEqual(aiRequest("run", { model: native, backend: "mlx", input: "hello" }).request,
+    { op: "run", model: native, backend: "mlx", task: "generate", input: "hello", maxTokens: 512 });
+  assert.equal("backend" in aiRequest("info", { model: native }).request, false);
+  assert.equal(aiInputs.info.safeParse({ model: native, backend: "coreml" }).success, false, "Core ML is deferred, not advertised as implemented");
+  for (const file of ["../model.safetensors", "a//model.safetensors", "code.py", "/model.safetensors"]) {
+    assert.equal(aiInputs.info.safeParse({ model: native, file }).success, false);
+  }
+  assert.equal(aiInputs.info.safeParse({ model: native, file: "bundle/model.safetensors" }).success, true);
+  assert.equal(aiInputs.info.safeParse({ model: native, projector: "model.safetensors" }).success, false);
+});
+
+test("native source resources distinguish Git integrity from a known SHA-256", () => {
+  const sha256 = "a".repeat(64);
+  const source = { backend: "mlx", repo: "any-owner/a-new-model", revision: "b".repeat(40), file: "model.safetensors", sha256,
+    files: [{ path: "model.safetensors", bytes: 1024, sha256, role: "model" },
+      { path: "config.json", bytes: 100, sha256: null, gitBlob: "c".repeat(40), role: "resource" }] };
+  const result = { model: "hf:any-owner/a-new-model", task: "generate", text: "hello", finishReason: "stop", source };
+  assert.equal(aiResults.run.safeParse(result).success, true);
+  delete (source.files[1] as { gitBlob?: string }).gitBlob;
+  assert.equal(aiResults.run.safeParse(result).success, false, "unknown SHA-256 without Git integrity is not provenance");
+});
