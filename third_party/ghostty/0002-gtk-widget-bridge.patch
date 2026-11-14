@@ -1,0 +1,54 @@
+diff --git a/source/src/apprt.zig b/source/src/apprt.zig
+--- a/source/src/apprt.zig
++++ b/source/src/apprt.zig
+@@ -45,7 +45,7 @@
+         .none => none,
+         .gtk => gtk,
+     },
+-    .lib => embedded,
++    .lib => if (build_config.app_runtime == .gtk) gtk else embedded,
+     .wasm_module => browser,
+ };
+ 
+diff --git a/source/src/build/SharedDeps.zig b/source/src/build/SharedDeps.zig
+--- a/source/src/build/SharedDeps.zig
++++ b/source/src/build/SharedDeps.zig
+@@ -653,8 +653,8 @@
+         }
+     }
+ 
+-    // If we're building an exe then we have additional dependencies.
+-    if (step.kind != .lib) {
++    // Native GTK widgets need the same renderer/runtime deps when embedded in a library.
++    if (step.kind != .lib or self.config.app_runtime == .gtk) {
+         // We always statically compile glad
+         step.root_module.addIncludePath(b.path("vendor/glad/include/"));
+         step.root_module.addCSourceFile(.{
+diff --git a/source/src/apprt/gtk/class/application.zig b/source/src/apprt/gtk/class/application.zig
+--- a/source/src/apprt/gtk/class/application.zig
++++ b/source/src/apprt/gtk/class/application.zig
+@@ -262,6 +262,14 @@
+         rt_app: *ApprtApp,
+         core_app: *CoreApp,
+     ) Allocator.Error!*Self {
++        return newWithConfig(rt_app, core_app, null);
++    }
++
++    pub fn newWithConfig(
++        rt_app: *ApprtApp,
++        core_app: *CoreApp,
++        supplied_config: ?*const CoreConfig,
++    ) Allocator.Error!*Self {
+         const alloc = core_app.alloc;
+ 
+         // Capture GLib/GObject/GTK log messages and funnel them through Zig's
+@@ -274,6 +282,8 @@
+ 
+         // Load our configuration.
+-        var config = CoreConfig.load(alloc) catch |err| err: {
++        var config = if (supplied_config) |value|
++            try value.clone(alloc)
++        else CoreConfig.load(alloc) catch |err| err: {
+             // If we fail to load the configuration, then we should log
+             // the error in the diagnostics so it can be shown to the user.
+             // We can still load a default which only fails for OOM, allowing

@@ -1,0 +1,33 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+package(default_visibility = ["//visibility:public"])
+exports_files(["native/build.zig", "native/bridge.zig"])
+
+rust_binary(
+    name = "AxoDesktop",
+    crate_name = "axo_desktop",
+    srcs = ["src/main.rs", "src/ghostty.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = ["@crates//:gtk4", "@crates//:serde_json", "@crates//:clap"],
+    link_deps = ["@ghostty_gtk//:bridge"],
+    data = ["@ghostty_gtk//:runtime"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+sh_binary(
+    name = "run",
+    srcs = ["run.sh"],
+    args = ["$(rlocationpath :AxoDesktop)", "$(rlocationpath @ghostty_gtk//:runtime.marker)"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+    data = [":AxoDesktop", "@ghostty_gtk//:runtime", "@ghostty_gtk//:runtime.marker"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+rust_test(
+    name = "unit_tests",
+    crate = ":AxoDesktop",
+    edition = "2024",
+    target_compatible_with = ["@platforms//os:linux"],
+)

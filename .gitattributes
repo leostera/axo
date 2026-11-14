@@ -1,2 +1,3 @@
 # Unified-diff blank context lines contain a required leading space.
 third_party/cua/*.patch whitespace=-blank-at-eol
+third_party/ghostty/*.patch whitespace=-blank-at-eol

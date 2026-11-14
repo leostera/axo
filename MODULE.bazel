@@ -41,6 +41,8 @@ crate.spec(package = "futures-util", version = "0.3", default_features = False, 
 # Input sealed to this Mac (RFD0029): HPKE, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM.
 crate.spec(package = "hpke", version = "0.13", default_features = False, features = ["alloc", "p256"])
 crate.spec(package = "httparse", version = "1.10.1")
+# Linux native desktop prototype; linked only by //linux/AxoDesktop.
+crate.spec(package = "gtk4", version = "0.10", features = ["v4_12"])
 crate.spec(package = "jsonrpc-core", version = "18.0.0")
 crate.spec(package = "libc", version = "0.2")
 crate.spec(package = "log", version = "0.4")
@@ -131,6 +133,10 @@ ghostty_repository(name = "ghostty")
 
 ghostty_vt_repository = use_repo_rule("//:ghostty_vt_repository.bzl", "ghostty_vt_repository")
 ghostty_vt_repository(name = "ghostty_vt")
+
+# Linux GTK widget bridge is separate from the unchanged Apple XCFramework.
+ghostty_gtk_repository = use_repo_rule("//linux/AxoDesktop:ghostty_gtk_repository.bzl", "ghostty_gtk_repository")
+ghostty_gtk_repository(name = "ghostty_gtk")
 
 # JavaScript and TypeScript: one pnpm workspace (pnpm-workspace.yaml, pnpm-lock.yaml), built and
 # tested by aspect_rules_js and aspect_rules_ts (RFD0021).
