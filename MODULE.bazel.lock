@@ -692,7 +692,7 @@
           "ENV:CARGO_BAZEL_GENERATOR_SHA256 \\0",
           "ENV:CARGO_BAZEL_GENERATOR_URL \\0",
           "ENV:CARGO_BAZEL_ISOLATED \\0",
-          "ENV:CARGO_BAZEL_REPIN 1",
+          "ENV:CARGO_BAZEL_REPIN \\0",
           "ENV:CARGO_BAZEL_REPIN_ONLY \\0",
           "ENV:CARGO_BAZEL_TIMEOUT \\0",
           "ENV:REPIN \\0",
@@ -709,7 +709,7 @@
           "REPO_MAPPING:rules_rust+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
-          "FILE:@@//bazel/rust/Cargo.lock 1555fae3fae97d4bf2df20b6871a3787e255a3da7426f98e41d80704abff53da"
+          "FILE:@@//bazel/rust/Cargo.lock fc43c8f4b52d6b6e3a48316b925f6e31e356bd90a1e1e0b4a36c89c733d87516"
         ],
         "generatedRepoSpecs": {
           "crates": {
