@@ -2,6 +2,14 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.62 (Mac app build 333, axod 81)
+
+### Fixed
+
+- Past messages appear immediately without animation when loading a conversation, replacing cached history, catching up after reconnect or fetching older pages. History is explicitly marked at the loading boundary rather than guessed from the number of replies received.
+- Only incoming content animates. Opening an in-progress reply shows its existing words whole; later growth starts from that baseline without fading the old prefix again. Entry animations expire, so scrolling back to a past tool does not replay its entrance.
+- This release changes the web UI only; axod remains build 81.
+
 ## 0.61 (Mac app build 332, axod 81)
 
 ### Added
