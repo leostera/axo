@@ -227,6 +227,7 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
         </div>
         <div className="layer layer-chats" inert={wide ? sidebar !== "chats" : layer !== "chats"}>
           <ChatsPanel
+            navigationEnabled={!settings && !sheet}
             workbench={workbench}
             onSelect={(hostId, sessionId) => {
               workbench.selectChat(hostId, sessionId);
@@ -276,7 +277,8 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
 
 // MARK: - Chats
 
-function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSettings }: {
+function ChatsPanel({ workbench, navigationEnabled, onSelect, onNewChat, onAccount, onSearch, onSettings }: {
+  navigationEnabled: boolean;
   workbench: ChatWorkbench;
   onSelect: (hostId: string, sessionId: string) => void;
   onNewChat: () => void;
@@ -304,7 +306,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
         {entries.length > 0 ? (
-          <ChatList showHost={manyHosts}
+          <ChatList showHost={manyHosts} navigationEnabled={navigationEnabled}
             entries={entries}
             asking={asking}
             openChat={openChat}

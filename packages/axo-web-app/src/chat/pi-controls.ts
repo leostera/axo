@@ -27,6 +27,15 @@ export function modelsByProvider(models: readonly PiModel[]): Array<{ provider: 
   return [...groups].map(([provider, list]) => ({ provider, models: list }));
 }
 
+/** Search a large provider catalog without changing the provider/model display order. */
+export function matchingModels(models: readonly PiModel[], query: string): PiModel[] {
+  const words = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+  return models.filter(model => {
+    const text = [model.provider, model.name, model.id].join(" ").toLocaleLowerCase();
+    return words.every(word => text.includes(word));
+  });
+}
+
 /** The thinking levels the model Pi runs supports, from what Pi listed of it. */
 export function levelsOf(models: readonly PiModel[], pi: PiRuntime | undefined): ThinkingLevel[] {
   const current = pi?.model;

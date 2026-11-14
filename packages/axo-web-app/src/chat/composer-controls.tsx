@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { PiCommand } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
-import { levelName, levelsOf, modelsByProvider, runtimeLabel } from "./pi-controls.ts";
 import type { Delivery } from "./transcript.ts";
-import type { ChatWorkbench, Loadable, Session } from "./workbench.ts";
+import type { Loadable } from "./workbench.ts";
 
 /** Closes a popover on a press outside `root`, or on Escape. */
 function useDismiss(open: boolean, root: React.RefObject<HTMLElement | null>, close: () => void): void {
@@ -19,77 +18,6 @@ function useDismiss(open: boolean, root: React.RefObject<HTMLElement | null>, cl
     window.addEventListener("keydown", escape);
     return () => { window.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", escape); };
   }, [open]);
-}
-
-/**
- * "Opus 4.1 · High" in the box: what the chat's Pi runs, as Pi last said. It opens a menu of the
- * models Pi has credentials for, by provider, and the thinking levels of the one it runs. Nothing
- * shows until Pi has said what it runs.
- */
-export function ModelPicker({ workbench, session, disabled }: { workbench: ChatWorkbench; session: Session; disabled: boolean }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  useDismiss(open, root, () => setOpen(false));
-  const label = runtimeLabel(session.pi);
-  if (!label) return null;
-  const chat = workbench.chat(session.sessionId);
-  const models = chat.models;
-  const pick = (change: Parameters<ChatWorkbench["setModel"]>[1]) => {
-    setOpen(false);
-    void workbench.setModel(session.sessionId, change);
-  };
-  const current = session.pi?.model;
-  return (
-    <div className="model-picker" ref={root}>
-      <button type="button" className="model-picker-button" disabled={disabled} aria-haspopup="menu" aria-expanded={open}
-        aria-label={`Model: ${label}`} title="Choose the model and how hard it thinks" onClick={() => {
-          if (!open) void workbench.loadModels(session.sessionId);
-          setOpen(!open);
-        }}>
-        <span className="model-picker-label">{label}</span>
-        <Icon name="chevronDown" size={11} />
-      </button>
-      {open ? (
-        <div className="host-menu model-menu" role="menu" aria-label="Model">
-          <LoadableNote state={models} what="models" />
-          {models?.kind === "loaded" ? (
-            <>
-              {modelsByProvider(models.items).map(group => (
-                <div key={group.provider} role="group" aria-label={group.provider}>
-                  <p className="menu-section">{group.provider}</p>
-                  {group.models.map(model => {
-                    const chosen = current?.provider === model.provider && current.id === model.id;
-                    return (
-                      <button key={model.id} type="button" role="menuitemradio" aria-checked={chosen} className="host-menu-item"
-                        onClick={() => chosen ? setOpen(false) : pick({ model: { provider: model.provider, id: model.id } })}>
-                        <span className="menu-check">{chosen ? <Icon name="check" size={14} /> : null}</span>
-                        <span className="host-picker-label">{model.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-              {levelsOf(models.items, session.pi).length > 1 ? (
-                <div role="group" aria-label="Thinking">
-                  <p className="menu-section">Thinking</p>
-                  {levelsOf(models.items, session.pi).map(level => {
-                    const chosen = session.pi?.thinkingLevel === level;
-                    return (
-                      <button key={level} type="button" role="menuitemradio" aria-checked={chosen} className="host-menu-item"
-                        onClick={() => chosen ? setOpen(false) : pick({ thinkingLevel: level })}>
-                        <span className="menu-check">{chosen ? <Icon name="check" size={14} /> : null}</span>
-                        {levelName(level)}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function LoadableNote({ state, what }: { state: Loadable<unknown> | null; what: string }) {

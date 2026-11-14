@@ -221,6 +221,10 @@ button:disabled { cursor: default; }
 
 .markdown { display: flex; min-width: 0; flex-direction: column; gap: 14px; font-size: 16.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .markdown.thinking { color: var(--secondary); font-size: 14px; }
+.user-bubble .markdown { gap: 9px; font-size: inherit; line-height: inherit; }
+.user-bubble .markdown a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.user-bubble .md-code { min-width: 0; max-width: 100%; }
+.user-bubble .md-table { max-width: 100%; overflow-x: auto; }
 .markdown p, .markdown h2, .markdown h3, .markdown h4 { margin: 0; }
 .markdown h2 { font-size: 1.35em; font-weight: 600; }
 .markdown h3 { font-size: 1.15em; font-weight: 600; }
@@ -447,7 +451,7 @@ button:disabled { cursor: default; }
 .composer .add-button:hover:not(:disabled), .composer .composer-mic:hover:not(:disabled) { color: var(--text); background: var(--fill); }
 .composer .add-button[aria-expanded="true"] { color: var(--text); background: var(--fill); }
 .composer .send-button { width: 36px !important; height: 36px; color: var(--tertiary); background: var(--fill); }
-.composer .send-button.ready { color: var(--background); background: var(--text); }
+.composer .send-button.ready { color: var(--bg); background: var(--text); }
 /* The + menu: frosted, rounded, above the +, with big rows: an icon in a round well, a label. */
 .add-menu-anchor { position: relative; }
 .add-menu {
@@ -467,7 +471,29 @@ button:disabled { cursor: default; }
 }
 .model-picker-button:hover:not(:disabled), .model-picker-button[aria-expanded="true"] { color: var(--text); background: var(--fill); }
 .model-picker-label { overflow: hidden; text-overflow: ellipsis; }
-.model-menu { right: 0; left: auto; max-height: min(60vh, 460px); overflow-y: auto; min-width: 240px; }
+.host-menu.model-menu { right: 0; left: auto; width: min(340px, calc(100vw - 24px)); min-width: 0; max-height: min(480px, 70dvh); overflow: hidden; padding: 8px; }
+.model-setting-row { display: flex; width: 100%; align-items: center; gap: 12px; padding: 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; }
+.model-setting-row:hover, .model-setting-row:focus-visible { background: var(--fill); }
+.model-setting-name, .model-setting-heading { color: var(--secondary); font-size: 12px; }
+.model-setting-value { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; text-align: right; }
+.model-setting-value strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+.model-setting-value small { color: var(--secondary); font-size: 10px; }
+.thinking-setting { padding: 8px 6px 6px; border-top: 0.5px solid var(--separator); }
+.model-setting-heading { margin: 0 4px 8px; }
+.thinking-options { display: flex; padding: 3px; border-radius: 9px; background: var(--fill); }
+.thinking-option { position: relative; display: flex; flex: 1; min-width: 0; cursor: pointer; }
+.thinking-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.thinking-option span { display: flex; flex: 1; min-height: 30px; align-items: center; justify-content: center; padding: 5px 4px; border-radius: 6px; font-size: 11px; line-height: 1.15; text-align: center; }
+.thinking-option input:checked + span { color: var(--bg); background: var(--text); }
+.thinking-option input:focus-visible + span { outline: 2px solid var(--blue); outline-offset: 2px; }
+.model-search-header { display: flex; flex: none; align-items: center; gap: 6px; padding: 3px 2px 8px; }
+.model-search-header input { width: 100%; min-width: 0; padding: 7px 8px; border: 0; border-radius: 8px; outline: none; background: var(--fill); color: var(--text); font-size: 13px; }
+.model-search-header input:focus-visible { box-shadow: 0 0 0 2px var(--blue); }
+.model-results { min-height: 0; max-height: min(320px, 45dvh); overflow-y: auto; overscroll-behavior: contain; }
+.model-results .host-menu-item { width: 100%; min-height: 39px; font-size: 13px; }
+.model-results .host-menu-item.highlighted { background: var(--fill); }
+.model-results .model-id { display: block; margin-top: 2px; color: var(--secondary); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+.model-result-count { flex: none; margin: 6px 8px 2px; color: var(--secondary); font-size: 10px; }
 .menu-section { margin: 6px 10px 2px; color: var(--tertiary); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .menu-check { display: inline-grid; width: 14px; flex: none; }
 .menu-note { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; color: var(--secondary); font-size: 13px; }

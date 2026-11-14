@@ -206,7 +206,7 @@ export const MessageView = memo(function MessageView({ message, working, live = 
               ))}
             </div>
           ) : null}
-          {message.text ? <div className="user-bubble">{message.text}</div> : null}
+          {message.text ? <div className="user-bubble"><Markdown blocks={message.blocks} /></div> : null}
           {message.timestamp ? <Timestamp milliseconds={message.timestamp} /> : null}
         </div>
       );
@@ -237,6 +237,7 @@ export const MessageView = memo(function MessageView({ message, working, live = 
 
 /** A message the agent has not recorded yet: sent from here, or queued in the log. */
 export function PendingView({ prompt, onDismiss }: { prompt: WaitingPrompt; onDismiss: () => void }) {
+  const blocks = useMemo(() => parseMarkdown(prompt.text), [prompt.text]);
   return (
     <div className={`message user-message pending pending-${prompt.state}`} data-testid="pending-prompt">
       {prompt.files.length ? (
@@ -244,7 +245,7 @@ export function PendingView({ prompt, onDismiss }: { prompt: WaitingPrompt; onDi
           {prompt.files.map((name, index) => <span key={`${index}:${name}`} className="pending-file"><Icon name="paperclip" size={13} />{name}</span>)}
         </div>
       ) : null}
-      {prompt.text ? <div className="user-bubble">{prompt.text}</div> : null}
+      {prompt.text ? <div className="user-bubble"><Markdown blocks={blocks} /></div> : null}
       <div className="pending-label">
         {prompt.state === "uncertain" ? <Icon name="warning" size={14} /> : null}
         {pendingLabel(prompt)}

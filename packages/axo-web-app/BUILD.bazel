@@ -78,6 +78,7 @@ node_test(
         "test/browser.test.mjs",
         "test/chat-list.test.mjs",
         "test/cache.test.mjs",
+        "test/web-polish.test.mjs",
         "test/conversation.test.mjs",
         "test/shared-session.test.mjs",
         "test/tools.test.mjs",

@@ -426,7 +426,7 @@ function replyKey(timestamp: unknown, index: number): string | null {
 }
 
 function blocksFor(piece: Piece): MarkdownBlock[] {
-  return piece.role === "assistant" || piece.role === "thinking" ? parseMarkdown(piece.text) : [];
+  return piece.role === "assistant" || piece.role === "thinking" || piece.role === "user" ? parseMarkdown(piece.text) : [];
 }
 
 function pieces(message: Record<string, unknown>, role: string): Piece[] {

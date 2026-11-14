@@ -4,7 +4,7 @@
  * reach the Mac, the cloud or another device. The defaults are the Mac's, so every client lists
  * chats the same way until someone changes their own.
  */
-import { chatTitle, lastActivity, type ChatMenuEntry } from "./workbench.ts";
+import { chatKey, chatTitle, lastActivity, type ChatMenuEntry } from "./workbench.ts";
 
 // MARK: - Pins
 
@@ -284,6 +284,25 @@ export function holdingSections(held: readonly ChatSection[] | null, live: reado
     }
     return members.length ? [{ group, entries: members }] : [];
   });
+}
+
+/** One projection for rendering and keyboard navigation, including collapsed/limited Earlier. */
+export function shownChatSections(sections: readonly ChatSection[], earlierFolded: boolean, showAllEarlier: boolean, earlierLimit: number | null) {
+  return sections.map(section => {
+    const earlier = section.group === "earlier";
+    const folded = earlier && earlierFolded;
+    const limit = earlier && !showAllEarlier ? earlierLimit : null;
+    const shown = folded ? [] : limit === null ? section.entries : section.entries.slice(0, limit);
+    return { ...section, folded, shown, hidden: section.entries.length - shown.length };
+  });
+}
+
+/** Neighbor in the actual displayed order. Boundaries do not wrap into another part of the list. */
+export function adjacentChat(rows: readonly ChatMenuEntry[], selected: ChatMenuEntry | null, direction: "previous" | "next"): ChatMenuEntry | null {
+  if (!rows.length) return null;
+  const index = selected ? rows.findIndex(row => chatKey(row) === chatKey(selected)) : -1;
+  if (index < 0) return (direction === "next" ? rows[0] : rows.at(-1)) ?? null;
+  return rows[Math.max(0, Math.min(rows.length - 1, index + (direction === "next" ? 1 : -1)))] ?? null;
 }
 
 // MARK: - Storage

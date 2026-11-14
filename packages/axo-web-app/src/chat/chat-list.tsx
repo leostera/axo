@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { Icon } from "./icons.tsx";
 import {
-  activeWindowChoices, chatSections, earlierLimitChoices, groupOrders, groupTitles, holdingSections, pinnedOrders,
+  activeWindowChoices, adjacentChat, chatSections, shownChatSections, earlierLimitChoices, groupOrders, groupTitles, holdingSections, pinnedOrders,
   regroupIntervalChoices, rowOrderTitles, saveGrouping, savePins, saveSeen, storedGrouping, storedPins, storedSeen, unseenMarkerTitles,
   type ChatSection, type GroupingSettings, type RowOrder, type SessionPins, type SessionSeen,
 } from "./sidebar.ts";
@@ -80,7 +80,7 @@ export function useChatListStore(): ChatListStore {
  * just active, or not yet seen), then Earlier. Groups are worked out on a slow tick, so chats leave
  * Active a few at a time rather than one by one; rows hold still while the pointer is over the list.
  */
-export function ChatList({ entries, showHost, asking, openChat, pageVisible, isSelected, onSelect }: {
+export function ChatList({ entries, showHost, asking, openChat, pageVisible, navigationEnabled, isSelected, onSelect }: {
   entries: ChatMenuEntry[];
   /** The chats whose agent waits for the person's answer (RFD0029). */
   asking: ReadonlySet<string>;
@@ -88,6 +88,7 @@ export function ChatList({ entries, showHost, asking, openChat, pageVisible, isS
   /** The chat on screen, marked seen while the page shows it. */
   openChat: ChatMenuEntry | null;
   pageVisible: boolean;
+  navigationEnabled: boolean;
   isSelected: (hostId: string, sessionId: string) => boolean;
   onSelect: (hostId: string, sessionId: string) => void;
 }) {
@@ -107,16 +108,35 @@ export function ChatList({ entries, showHost, asking, openChat, pageVisible, isS
 
   const live = useMemo(() => chatSections(entries, { pins, seen, now: clock, settings, asking }), [entries, pins, seen, clock, settings, asking]);
   const [held, setHeld] = useState<ChatSection[] | null>(null);
-  const sections = holdingSections(held, live);
+  const sections = shownChatSections(holdingSections(held, live), earlierFolded, showAllEarlier, settings.earlierLimit);
+  const rows = sections.flatMap(section => section.shown);
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const move = (event: KeyboardEvent) => {
+      if (!pageVisible || event.defaultPrevented || event.isComposing
+        || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      const direction = event.code === "BracketLeft" || event.key === "[" ? "previous"
+        : event.code === "BracketRight" || event.key === "]" ? "next" : null;
+      if (!direction) return;
+      const modal = document.querySelector('[role="dialog"], [role="alertdialog"]');
+      if (!navigationEnabled && !modal) return;
+      event.preventDefault(); // Never let session navigation become browser Back/Forward.
+      if (!navigationEnabled || modal) return;
+      const next = adjacentChat(rows, openChat, direction);
+      if (next && (!openChat || chatKey(next) !== chatKey(openChat))) onSelect(next.host.hostId, next.session.sessionId);
+    };
+    window.addEventListener("keydown", move);
+    return () => window.removeEventListener("keydown", move);
+  }, [rows, openChat, navigationEnabled, pageVisible, onSelect]);
+  useEffect(() => {
+    list.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: "nearest" });
+  }, [openChat?.host.hostId, openChat?.session.sessionId]);
 
   return (
-    <div className="chat-list" onPointerEnter={event => { if (event.pointerType === "mouse") setHeld(live); }} onPointerLeave={() => setHeld(null)}>
+    <div className="chat-list" ref={list} onPointerEnter={event => { if (event.pointerType === "mouse") setHeld(live); }} onPointerLeave={() => setHeld(null)}>
       {sections.map((section, index) => {
         const earlier = section.group === "earlier";
-        const folded = earlier && earlierFolded;
-        const limit = earlier && !showAllEarlier ? settings.earlierLimit : null;
-        const shown = folded ? [] : limit === null ? section.entries : section.entries.slice(0, limit);
-        const hidden = section.entries.length - shown.length;
+        const { folded, shown, hidden } = section;
         return (
           <section key={section.group} className={index === 0 ? "chat-section first" : "chat-section"} aria-label={groupTitles[section.group]}>
             {settings.showsGroupTitles ? (

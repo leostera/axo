@@ -7,16 +7,16 @@ import { attachmentsIn, ChatTranscript, toolInput, type ToolActivity } from "../
 import { toolGroupTitle } from "../src/chat/tool-groups.ts";
 import { hostFamily, hostIcon } from "../src/chat/host-model.ts";
 import { ConversationFeed } from "../src/chat/feed.ts";
-import { conversationRows, levelsOf, matchingCommands, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
+import { conversationRows, levelsOf, matchingCommands, matchingModels, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
-import { appsResults } from "@axo/protocol";
+import { appsResults, type PiModel } from "@axo/protocol";
 import { oauthStart, parseRoute, parseSettingsRoute, routePath, settingsPath, signInTarget, type SettingsRoute } from "../src/chat/route.ts";
 import { parseAuthenticatedSession } from "../src/auth-session.ts";
 import { ChatCache } from "../src/chat/cache.ts";
 import { memoryDevice } from "../src/chat/device.ts";
-import { chatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
+import { adjacentChat, chatSections, shownChatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
 import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -187,6 +187,13 @@ test("a line the format does not know, or a format it does not know, shows nothi
   assert.deepEqual(transcript.messages.map(message => message.text), ["here"]);
 });
 
+test("user messages use the same safe Markdown blocks as assistant messages", () => {
+  const text = "**bold** and `code`\n\n- list item\n\n```ts\nconst n = 1;\n```";
+  const message = transcriptOf([said(1, "user", text)]).messages[0]!;
+  assert.deepEqual(message.blocks, parseMarkdown(text));
+  assert.deepEqual(message.blocks.map(block => block.kind), ["paragraph", "listItem", "code"]);
+});
+
 // MARK: - Menu
 
 /** A Session ID for fixture `n`; they sort like the numbers they come from. */
@@ -284,6 +291,33 @@ test("chats group as on the Mac: pinned, then working, asking, unseen or just ac
   assert.equal(groupOf(older, { ...state, seen: unseen }), "active");
   assert.equal(groupOf(older, { ...state, seen: unseen.marked(older, now) }), "earlier");
   assert.equal(groupOf(older, { ...state, seen: unseen, settings: { ...defaultGrouping, unseenStayActive: false } }), "earlier");
+});
+
+test("keyboard neighbors use rendered sections, not recency, and skip folded or limited rows", () => {
+  const entries = recentChatList([host([session(1), session(2), session(3), session(4)])]);
+  const row = (n: number) => entries.find(entry => entry.session.sessionId === sid(n))!;
+  const sections = [{ group: "pinned" as const, entries: [row(3)] }, { group: "active" as const, entries: [row(1)] },
+    { group: "earlier" as const, entries: [row(4), row(2)] }];
+  const shown = shownChatSections(sections, false, false, 1).flatMap(section => section.shown);
+  assert.deepEqual(shown.map(entry => entry.session.sessionId), [3, 1, 4].map(sid));
+  assert.equal(adjacentChat(shown, row(3), "next"), row(1));
+  assert.equal(adjacentChat(shown, row(3), "previous"), row(3));
+  assert.equal(adjacentChat(shown, row(4), "next"), row(4));
+  assert.equal(adjacentChat(shown, null, "next"), row(3));
+  assert.equal(adjacentChat(shown, null, "previous"), row(4));
+  assert.equal(adjacentChat([], null, "next"), null);
+  assert.deepEqual(shownChatSections(sections, true, false, 1).flatMap(section => section.shown).map(entry => entry.session.sessionId), [3, 1].map(sid));
+  assert.deepEqual(shownChatSections(sections, false, true, 1).flatMap(section => section.shown).map(entry => entry.session.sessionId), [3, 1, 4, 2].map(sid));
+});
+
+test("model search scales to a large catalog and preserves source order across name, ID and provider queries", () => {
+  const models: PiModel[] = Array.from({ length: 300 }, (_, n) => ({
+    provider: n < 150 ? "provider-a" : "provider-b", id: `model-${n}`, name: `Model ${n}`, thinkingLevels: ["off", "high"],
+  }));
+  assert.deepEqual(matchingModels(models, "  "), models);
+  assert.deepEqual(matchingModels(models, "PROVIDER-B model-242").map(model => model.id), ["model-242"]);
+  assert.equal(matchingModels(models, "provider-b").length, 150);
+  assert.deepEqual(matchingModels(models, "unavailable"), []);
 });
 
 test("rows hold still under the pointer: held chats keep their group and place, new ones lead, pins apply at once", () => {

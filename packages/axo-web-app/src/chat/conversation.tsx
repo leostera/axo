@@ -7,7 +7,8 @@ import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from 
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
 import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
-import { ModelPicker, SendButton, SlashMenu } from "./composer-controls.tsx";
+import { SendButton, SlashMenu } from "./composer-controls.tsx";
+import { ModelPicker } from "./model-picker.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
 import type { Delivery } from "./transcript.ts";
 import { noteRender } from "./render-count.ts";

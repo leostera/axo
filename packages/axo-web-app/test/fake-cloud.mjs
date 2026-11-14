@@ -45,7 +45,10 @@ export async function freePort() {
  * A cloud with one Mac, whose socket the test drives: `transcripts` holds each chat's records, by
  * Session id, and `sessions` what the sidebar lists (see `listed`).
  */
-export async function startCloud(transcripts, sessions) {
+export async function startCloud(transcripts, sessions, { models = [] } = {}) {
+  const modelSets = [];
+  const prompts = [];
+  let rejectNextModel = false;
   const sockets = new Set();
   let paused = false;
   const pending = [];
@@ -78,6 +81,33 @@ export async function startCloud(transcripts, sessions) {
       if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
         return reply({ hosts: [{ hostId, hostGeneration: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230", label: "Mac", hostKind: "macos", online: true, lastSeenAt: now }], sessions });
       }
+      if (call.method === "axo.client.command") {
+        const { method, params } = call.params;
+        call.method = method;
+        call.params = params;
+      }
+      if (call.method === "axo.remote.session.models") return reply({ models });
+      if (call.method === "axo.remote.session.model.set") {
+        modelSets.push(call.params);
+        if (rejectNextModel) {
+          rejectNextModel = false;
+          return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32007, message: "provider needs sign-in" } }));
+        }
+        const index = sessions.findIndex(session => session.sessionId === call.params.sessionId);
+        const pi = sessions[index].metadata.pi;
+        const selected = call.params.model ? models.find(model => model.provider === call.params.model.provider && model.id === call.params.model.id) : null;
+        const model = selected ? { provider: selected.provider, id: selected.id, name: selected.name } : pi.model;
+        const levels = selected?.thinkingLevels ?? models.find(item => item.provider === model.provider && item.id === model.id)?.thinkingLevels ?? [];
+        const thinkingLevel = call.params.thinkingLevel ?? (levels.includes(pi.thinkingLevel) ? pi.thinkingLevel : levels[0] ?? "off");
+        sessions[index] = { ...sessions[index], metadata: { ...sessions[index].metadata, pi: { model, thinkingLevel } } };
+        reply({ saved: true });
+        send("axo.client.sessions", { hostId, sessions: [sessions[index]] });
+        return;
+      }
+      if (call.method === "axo.remote.session.prompt") {
+        prompts.push(call.params);
+        return reply({ accepted: true });
+      }
       if (call.method === "axo.client.session.open") {
         const lines = transcripts.get(call.params.sessionId) ?? [];
         const records = call.params.have ? lines.filter((line) => line.cursor > call.params.have.cursor) : lines.slice(-call.params.window.last);
@@ -88,7 +118,13 @@ export async function startCloud(transcripts, sessions) {
   });
   const send = (method, params) => { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params })); };
   return {
-    http, wss,
+    http, wss, modelSets, prompts,
+    rejectNextModelChange() { rejectNextModel = true; },
+    activity(sessionId, lastMessageAt) {
+      const index = sessions.findIndex(session => session.sessionId === sessionId);
+      sessions[index] = { ...sessions[index], metadata: { ...sessions[index].metadata, lastMessageAt } };
+      send("axo.client.sessions", { hostId, sessions: [sessions[index]] });
+    },
     pause() { paused = true; },
     resume() { paused = false; for (const reply of pending.splice(0)) reply(); },
     /** Writes a line of `sessionId`, as Pi would. */
