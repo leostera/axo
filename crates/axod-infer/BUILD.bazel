@@ -146,6 +146,39 @@ rust_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
+rust_test(
+    name = "gguf_service_smoke_test",
+    crate = ":axod_infer",
+    edition = "2024",
+    tags = ["manual", "external"],
+    args = ["--ignored", "real_gguf_service_installs_runs_reuses_and_retires", "--nocapture"],
+    data = ["@llama_server//:axod-infer"],
+    env = {
+        "AXO_TEST_GGUF_HELPER": "$(rootpath @llama_server//:axod-infer)",
+        # The pinned runtime's offload inventory is trace-level. Only fixed test prompts run here.
+        "LLAMA_ARG_LOG_VERBOSITY": "4",
+    },
+    target_compatible_with = ["@platforms//os:linux"],
+    timeout = "long",
+)
+
+rust_test(
+    name = "gguf_cpu_smoke_test",
+    crate = ":axod_infer",
+    edition = "2024",
+    tags = ["manual", "external"],
+    args = ["--ignored", "real_gguf_service_installs_runs_reuses_and_retires", "--nocapture"],
+    data = ["@llama_server//:axod-infer"],
+    env = {
+        "AXO_TEST_GGUF_HELPER": "$(rootpath @llama_server//:axod-infer)",
+        "AXO_TEST_GGUF_CPU_ONLY": "1",
+        "LLAMA_ARG_N_GPU_LAYERS": "0",
+        "LLAMA_ARG_LOG_VERBOSITY": "4",
+    },
+    target_compatible_with = ["@platforms//os:linux"],
+    timeout = "long",
+)
+
 # axod's local inference side-car and its client; Clef decisions first.
 rust_library(
     name = "axod_infer",

@@ -3,6 +3,9 @@
 #[cfg(test)]
 #[path = "coreml_service_tests.rs"]
 mod coreml_tests;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "gguf_service_tests.rs"]
+mod gguf_tests;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -462,6 +465,7 @@ impl Service {
             serde_json::from_str(RUNTIME).expect("generated runtime inventory is JSON");
         let llama = json!({
             "name":"llama.cpp", "available":available, "commit":legacy["commit"], "build":legacy["build"],
+            "compiledAccelerator":legacy["compiledAccelerator"],
             "recognizedArchitectures":legacy["recognizedArchitectures"], "formats":["gguf"],
             "tasks":["generate","classify","embed"], "inputs":["text","image","json"], "contextTokens":8192, "kvCache":true,
             "reason":"Task heads, quantization and projectors are validated by the pinned runtime when loaded."
@@ -854,6 +858,10 @@ mod tests {
         let service = Service::new(root.join("absent"), root.join("models"), root.join("run"));
         let capabilities = service.execute(Request::Capabilities, 1000).await.unwrap();
         assert_eq!(capabilities["formats"], json!(["gguf"]));
+        let accelerator = capabilities["runtime"]["compiledAccelerator"].as_str().unwrap();
+        assert!(["cpu", "metal", "cuda"].contains(&accelerator));
+        #[cfg(target_os = "linux")]
+        assert_ne!(accelerator, "metal");
         assert!(
             capabilities["runtime"]["recognizedArchitectures"]
                 .as_array()

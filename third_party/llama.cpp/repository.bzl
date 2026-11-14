@@ -2,16 +2,53 @@
 
 axod asks local models such as Clef "is this click destructive?" over `POST /v1/systemone` on a
 Unix socket. The binary links static llama/ggml libraries without curl or OpenSSL. macOS uses
-Metal with embedded shaders; Linux initially uses CPU inference. Install the helper beside
+Metal with embedded shaders; Linux defaults to CPU inference, with explicit CUDA builds. Install the helper beside
 axod (`Axo.app/Contents/Helpers` on macOS). CMake and Ninja come from the host.
 """
 
 LLAMA_CPP_COMMIT = "8642541b255bfb5dc39cd351a178be09013a55d6"  # llama.cpp 0.8.0, build 11960
 LLAMA_CPP_SHA256 = "1688a167a8edd9499cdd0c19b8bd044f0fa184b466981977bbf2222d884953a4"
 
+def _accelerator_config(ctx):
+    backend = ctx.getenv("AXO_LLAMA_BACKEND", "metal" if ctx.os.name == "mac os x" else "cpu")
+    if backend not in ["cpu", "metal", "cuda"]:
+        fail("AXO_LLAMA_BACKEND must be cpu, metal or cuda")
+    if backend == "metal" and ctx.os.name != "mac os x":
+        fail("Metal inference requires macOS")
+    if backend == "cuda" and ctx.os.name != "linux":
+        fail("Axo CUDA inference is currently supported only on Linux")
+    options = [
+        "-DGGML_METAL=" + ("ON" if backend == "metal" else "OFF"),
+        "-DGGML_METAL_EMBED_LIBRARY=" + ("ON" if backend == "metal" else "OFF"),
+        "-DGGML_CUDA=" + ("ON" if backend == "cuda" else "OFF"),
+    ]
+    if backend == "cuda":
+        architectures = ctx.getenv("AXO_CUDA_ARCHITECTURES", "")
+        if not architectures:
+            fail("CUDA builds require AXO_CUDA_ARCHITECTURES (e.g. 75 for RTX 2080 Ti)")
+        for arch in architectures.split(";"):
+            # Explicit architecture numbers, never host-dependent 'native' or CMake expressions.
+            digits = arch[:-1] if arch.endswith("a") or arch.endswith("f") else arch
+            if not digits.isdigit():
+                fail("AXO_CUDA_ARCHITECTURES must be semicolon-separated CUDA architecture numbers")
+        toolkit = ctx.getenv("CUDA_PATH", "")
+        if not toolkit or not toolkit.startswith("/"):
+            fail("CUDA builds require an absolute CUDA_PATH containing bin/nvcc and static CUDA libraries")
+        options += [
+            "-DCUDAToolkit_ROOT=" + toolkit,
+            "-DCMAKE_CUDA_COMPILER=" + toolkit + "/bin/nvcc",
+            "-DCMAKE_CUDA_ARCHITECTURES=" + architectures,
+            # Bundle the user-space runtime statically, not a build-host toolkit RUNPATH.
+            # libcuda.so.1 still comes from the target machine's NVIDIA driver.
+            "-DGGML_STATIC=ON",
+            "-DCMAKE_SKIP_RPATH=ON",
+        ]
+    return backend, options
+
 def _llama_server_repository_impl(ctx):
     if ctx.os.name not in ["mac os x", "linux"]:
         fail("Unsupported host for axod-infer: %s" % ctx.os.name)
+    backend, accelerator_options = _accelerator_config(ctx)
     cmake = ctx.which("cmake")
     ninja = ctx.which("ninja")
     if cmake == None or ninja == None:
@@ -34,8 +71,7 @@ def _llama_server_repository_impl(ctx):
             "-DCMAKE_MAKE_PROGRAM=" + str(ninja),
             "-DCMAKE_BUILD_TYPE=Release",
             "-DBUILD_SHARED_LIBS=OFF",
-            "-DGGML_METAL=" + ("ON" if ctx.os.name == "mac os x" else "OFF"),
-            "-DGGML_METAL_EMBED_LIBRARY=" + ("ON" if ctx.os.name == "mac os x" else "OFF"),
+
             "-DGGML_NATIVE=OFF",
             # Bazel owns caching. Host sccache cannot reliably cache generated Metal assembly.
             "-DGGML_CCACHE=OFF",
@@ -48,7 +84,7 @@ def _llama_server_repository_impl(ctx):
             # The version llama-server reports, without a git checkout to read it from.
             "-DLLAMA_BUILD_COMMIT=" + LLAMA_CPP_COMMIT[:9],
             "-DLLAMA_BUILD_NUMBER=11960",
-        ] + (["-DCMAKE_OSX_DEPLOYMENT_TARGET=" + ctx.attr.macos_min] if ctx.os.name == "mac os x" else []),
+        ] + accelerator_options + (["-DCMAKE_OSX_DEPLOYMENT_TARGET=" + ctx.attr.macos_min] if ctx.os.name == "mac os x" else []),
         timeout = 600,
     )
     if configure.return_code != 0:
@@ -71,6 +107,8 @@ def _llama_server_repository_impl(ctx):
         "name": "llama.cpp",
         "commit": LLAMA_CPP_COMMIT,
         "build": 11960,
+        # Build capability, not a claim that a GPU is present or available at runtime.
+        "compiledAccelerator": backend,
         "recognizedArchitectures": sorted(architectures),
     }))
     ctx.delete("source")
@@ -82,5 +120,5 @@ exports_files(["axod-infer", "capabilities.json"])
 llama_server_repository = repository_rule(
     implementation = _llama_server_repository_impl,
     attrs = {"macos_min": attr.string(default = "14.0")},
-    environ = ["PATH"],
+    environ = ["PATH", "AXO_LLAMA_BACKEND", "AXO_CUDA_ARCHITECTURES", "CUDA_PATH"],
 )
