@@ -8,6 +8,8 @@ pub mod lifeline;
 pub mod output;
 pub mod process;
 mod runtime;
+#[cfg(target_os = "linux")]
+mod linux;
 
 pub use command::CommandLine;
 pub use output::{NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink};

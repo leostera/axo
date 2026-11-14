@@ -163,7 +163,12 @@ fn has_exited(pid: libc::id_t) -> bool {
         if result == 0 {
             // macOS reports a stopped or continued child here too, despite `WEXITED`; only
             // these codes mean it is gone.
-            return info.si_pid != 0
+            #[cfg(target_os = "linux")]
+            // SAFETY: successful waitid initialized siginfo's SIGCHLD variant.
+            let child_pid = unsafe { info.si_pid() };
+            #[cfg(not(target_os = "linux"))]
+            let child_pid = info.si_pid;
+            return child_pid != 0
                 && matches!(
                     info.si_code,
                     libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED

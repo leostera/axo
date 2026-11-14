@@ -70,7 +70,59 @@ fn start_time(pid: u32) -> Option<u64> {
     (filled == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(target_os = "linux")]
+fn start_time(pid: u32) -> Option<u64> {
+    linux::start_time(pid)
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::sync::OnceLock;
+
+    pub(super) fn start_time(pid: u32) -> Option<u64> {
+        static BOOT_SECONDS: OnceLock<Option<u64>> = OnceLock::new();
+        let boot = (*BOOT_SECONDS.get_or_init(|| {
+            std::fs::read_to_string("/proc/stat")
+                .ok()?
+                .lines()
+                .find_map(|line| line.strip_prefix("btime "))?
+                .parse::<u64>()
+                .ok()
+        }))?;
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let started = start_ticks(&stat)?;
+        // SAFETY: sysconf takes no pointers; non-positive results are rejected.
+        let ticks = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
+        boot.checked_mul(1_000_000)?
+            .checked_add(started.checked_mul(1_000_000)?.checked_div(ticks)?)
+    }
+
+    fn start_ticks(stat: &str) -> Option<u64> {
+        // comm (field 2) may contain spaces and parentheses. Field 22 is the 20th after it.
+        stat.rsplit_once(") ")?
+            .1
+            .split_whitespace()
+            .nth(19)?
+            .parse()
+            .ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn command_names_cannot_shift_the_start_time_field() {
+            let mut fields = vec!["S"];
+            fields.extend(std::iter::repeat_n("0", 18));
+            fields.push("1234");
+            let stat = format!("42 (name with ) parentheses) {}", fields.join(" "));
+            assert_eq!(super::start_ticks(&stat), Some(1234));
+            assert_eq!(super::start_ticks("42 (truncated) S"), None);
+            assert_eq!(super::start_ticks("invalid"), None);
+        }
+    }
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
 fn start_time(_pid: u32) -> Option<u64> {
     None
 }

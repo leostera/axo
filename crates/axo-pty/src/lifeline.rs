@@ -23,8 +23,13 @@ pub struct Lifeline {
 impl Lifeline {
     pub fn new() -> io::Result<Self> {
         let mut ends = [0; 2];
-        // SAFETY: `ends` is writable storage for the two descriptors pipe returns.
-        if unsafe { libc::pipe(ends.as_mut_ptr()) } == -1 {
+        // SAFETY: `ends` holds two descriptors. Linux marks both CLOEXEC atomically so a
+        // concurrent helper spawn cannot inherit a writer between pipe and fcntl.
+        #[cfg(target_os = "linux")]
+        let result = unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) };
+        #[cfg(not(target_os = "linux"))]
+        let result = unsafe { libc::pipe(ends.as_mut_ptr()) };
+        if result == -1 {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: pipe returned two new descriptors, owned from here on.
@@ -75,15 +80,18 @@ impl Lifeline {
 /// child: a signal interrupts the outer `wait` before that wait necessarily saw the exit.
 const GUARD: &str = r#"mode=$1
 shift
+# POSIX shells may replace stdin with /dev/null for background jobs. Preserve it first.
+exec 3<&0
 if [ "$mode" = locked ]; then
-  "$@" </dev/null >&2 &
+  "$@" </dev/null 3<&- >&2 &
 else
-  "$@" </dev/null &
+  "$@" </dev/null 3<&- &
 fi
 child=$!
 trap 'kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null' HUP INT TERM
-{ read -r _; kill -KILL "$child" 2>/dev/null; } <&0 >/dev/null &
+{ read -r _; kill -KILL "$child" 2>/dev/null; } <&3 3<&- >/dev/null &
 watcher=$!
+exec 3<&-
 wait "$child"
 status=$?
 kill "$watcher" 2>/dev/null
@@ -100,21 +108,12 @@ mod tests {
     #[test]
     fn a_child_reading_the_lifeline_sees_its_end_when_the_lifeline_is_dropped() {
         let lifeline = Lifeline::new().unwrap();
-        let fd = lifeline.reader();
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
-            .arg(format!("cat <&{fd} >/dev/null; echo ended"))
+            .arg("cat >/dev/null; echo ended")
+            .stdin(Stdio::from(lifeline.read.try_clone().unwrap()))
             .stdout(Stdio::piped());
-        // SAFETY: the closure only clears close-on-exec on one open descriptor.
-        unsafe {
-            std::os::unix::process::CommandExt::pre_exec(&mut command, move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
         let mut child = command.spawn().unwrap();
         drop(lifeline);
         let mut output = String::new();

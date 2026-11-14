@@ -1,0 +1,25 @@
+package(default_visibility = ["//visibility:public"])
+
+alias(
+    name = "axod",
+    actual = "//crates/axod:axod",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# Both executables must be installed together: axod locates its helper beside itself.
+genrule(
+    name = "runtime",
+    srcs = [":axod", "@llama_server//:axod-infer", "//packages/pi-axo:extension_js"],
+    outs = ["axo-linux.tar.gz"],
+    cmd = """
+        staging=$$(mktemp -d)
+        trap 'rm -rf "$$staging"' EXIT
+        cp $(location :axod) "$$staging/axod"
+        cp $(location @llama_server//:axod-infer) "$$staging/axod-infer"
+        chmod 755 "$$staging/axod" "$$staging/axod-infer"
+        mkdir -p "$$staging/AxoPi"
+        cp $(locations //packages/pi-axo:extension_js) "$$staging/AxoPi/"
+        tar -czf "$@" -C "$$staging" axod axod-infer AxoPi
+    """,
+    target_compatible_with = ["@platforms//os:linux"],
+)

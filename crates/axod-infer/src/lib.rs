@@ -552,6 +552,7 @@ impl StartWatch {
 }
 
 /// The process at the other end of a connected Unix socket.
+#[cfg(target_os = "macos")]
 fn peer_pid(stream: &UnixStream) -> Option<i32> {
     let mut pid: libc::pid_t = 0;
     let mut size = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
@@ -568,6 +569,36 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
     (result == 0 && pid > 0).then_some(pid)
 }
 
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &UnixStream) -> Option<i32> {
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let expected = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let mut size = expected;
+    // SAFETY: SO_PEERCRED writes a ucred into the correctly sized initialized buffer.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut size,
+        )
+    };
+    (result == 0 && size == expected && credentials.pid > 0).then_some(credentials.pid)
+}
+
+#[cfg(target_os = "linux")]
+fn physical_memory() -> u64 {
+    // SAFETY: these sysconf queries take no pointers and return positive values or -1.
+    let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    match (u64::try_from(pages), u64::try_from(page_size)) {
+        (Ok(pages), Ok(size)) => pages.checked_mul(size).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn physical_memory() -> u64 {
     let mut bytes: u64 = 0;
     let mut size = std::mem::size_of::<u64>();
@@ -870,6 +901,7 @@ while True:
         let pid = serving_pid(&infer);
         let guard = infer.lock_children().side_car.as_ref().unwrap().child.id() as i32;
         // SAFETY: getppid-like lookup of a process this test started.
+        #[cfg(target_os = "macos")]
         let parent = {
             let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
             let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
@@ -885,6 +917,17 @@ while True:
             assert_eq!(filled, size);
             info.pbi_ppid as i32
         };
+        #[cfg(target_os = "linux")]
+        let parent: i32 = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap()
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_eq!(
             parent, guard,
             "the side-car runs under this process's guard"
@@ -961,7 +1004,13 @@ while True:
     }
 
     #[test]
-    fn reads_this_macs_memory_and_disk() {
+    fn the_kernel_identifies_a_connected_socket_peer() {
+        let (left, _right) = UnixStream::pair().unwrap();
+        assert_eq!(peer_pid(&left), Some(std::process::id() as i32));
+    }
+
+    #[test]
+    fn reads_this_hosts_memory_and_disk() {
         assert!(physical_memory() > 1 << 30);
         assert!(free_disk(&std::env::temp_dir()) > 0);
     }

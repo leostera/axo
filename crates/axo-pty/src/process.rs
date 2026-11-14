@@ -8,9 +8,14 @@
 //!   descriptors listed in `SpawnOptions::inherit`.
 //! - Output is drained from the moment of spawn by the process's `TerminalOutput` pump.
 
+#[cfg(target_os = "linux")]
+pub(crate) use crate::linux::open_pty;
+#[cfg(target_vendor = "apple")]
 use std::ffi::CStr;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(target_vendor = "apple")]
+use std::os::fd::FromRawFd;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
@@ -50,7 +55,7 @@ impl WindowSize {
         self.columns
     }
 
-    fn to_winsize(self) -> libc::winsize {
+    pub(crate) fn to_winsize(self) -> libc::winsize {
         libc::winsize {
             ws_row: self.rows,
             ws_col: self.columns,
@@ -78,6 +83,7 @@ pub struct PtyProcess {
 /// kernel lists them, plus room for a few opened before the fork. Descriptors opened meanwhile
 /// take the lowest free numbers, so the child marks the whole range up to it. Looping up to the
 /// open-files limit instead took over a second where that limit is high.
+#[cfg(target_vendor = "apple")]
 fn highest_open_descriptor() -> RawFd {
     const ROOM: RawFd = 64;
     let size = std::mem::size_of::<libc::proc_fdinfo>();
@@ -129,6 +135,7 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
     } = open_pty(size)?;
     let slave_fd = slave.as_raw_fd();
     let inherit = inherit.to_vec();
+    #[cfg(target_vendor = "apple")]
     let highest = highest_open_descriptor();
     command
         .stdin(Stdio::null())
@@ -155,6 +162,9 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
             // macOS has no atomic SOCK_CLOEXEC: a socket another thread is opening as this fork
             // happens is not close-on-exec yet. Inherited, it would keep that socket alive in the
             // shell, such as axod's listener after axod stopped. So nothing passes but `inherit`.
+            #[cfg(target_os = "linux")]
+            crate::linux::cloexec_descriptors()?;
+            #[cfg(target_vendor = "apple")]
             for descriptor in 3..=highest {
                 if !inherit.contains(&descriptor) {
                     libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC);
@@ -192,7 +202,7 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
 pub(crate) struct OpenedPty {
     pub(crate) master: OwnedFd,
     pub(crate) slave: OwnedFd,
-    device: String,
+    pub(crate) device: String,
 }
 
 /// Opens a PTY pair of `size`, both ends close-on-exec.
@@ -201,6 +211,7 @@ pub(crate) struct OpenedPty {
 /// device number, and under many concurrent PTY launches the lookup intermittently failed
 /// (`ERANGE` from `ttyname_r`, a negative errno from `openpty`), failing the shell or Pi launch.
 /// The master reports its slave's name directly (`TIOCPTYGNAME`), so nothing is looked up.
+#[cfg(target_vendor = "apple")]
 pub(crate) fn open_pty(size: WindowSize) -> io::Result<OpenedPty> {
     let master = open_master()?;
     set_cloexec(master.as_raw_fd())?;
@@ -265,12 +276,15 @@ pub(crate) fn open_pty(size: WindowSize) -> io::Result<OpenedPty> {
 
 /// XNU's "redrive open" (`sys/errno.h`): the kernel lost a race allocating the PTY and gave up
 /// after its own retries (`vn_open_auth`). Seen under many concurrent PTY launches.
+#[cfg(any(test, target_vendor = "apple"))]
 const EREDRIVEOPEN: i32 = -6;
 
 /// How often to retry a lost allocation race, backing off 1 ms more each time (at most ~0.2 s).
+#[cfg(any(test, target_vendor = "apple"))]
 const MASTER_OPEN_ATTEMPTS: u64 = 20;
 
 /// Opens a new PTY master, retrying only the kernel's allocation race.
+#[cfg(target_vendor = "apple")]
 fn open_master() -> io::Result<OwnedFd> {
     retrying_lost_allocation_races(
         || {
@@ -288,6 +302,7 @@ fn open_master() -> io::Result<OwnedFd> {
 
 /// Calls `open` until it succeeds, fails with anything but `EREDRIVEOPEN`, or has been tried
 /// `MASTER_OPEN_ATTEMPTS` times, pausing 1 ms longer before each retry.
+#[cfg(any(test, target_vendor = "apple"))]
 fn retrying_lost_allocation_races<T>(
     mut open: impl FnMut() -> io::Result<T>,
     mut pause: impl FnMut(Duration),
@@ -308,17 +323,20 @@ fn retrying_lost_allocation_races<T>(
 }
 
 /// The C name buffer as bytes.
+#[cfg(target_vendor = "apple")]
 fn name_bytes(name: &[libc::c_char; 128]) -> &[u8] {
     // SAFETY: c_char and u8 have the same size and alignment; the slice covers the same memory.
     unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len()) }
 }
 
 /// The last OS error, naming the PTY step that failed.
+#[cfg(target_vendor = "apple")]
 fn step_error(step: &str) -> io::Error {
     with_step(step, io::Error::last_os_error())
 }
 
 /// `error` with the PTY step that failed, keeping its kind.
+#[cfg(any(test, target_vendor = "apple"))]
 fn with_step(step: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{step}: {error}"))
 }
@@ -644,7 +662,11 @@ mod tests {
                         )
                         .unwrap();
                         assert!(
-                            process.device.starts_with("/dev/ttys"),
+                            process.device.starts_with(if cfg!(target_os = "linux") {
+                                "/dev/pts/"
+                            } else {
+                                "/dev/ttys"
+                            }),
                             "{}",
                             process.device
                         );

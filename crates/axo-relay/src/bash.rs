@@ -107,7 +107,14 @@ pub(crate) async fn run_cancellable(
         .unwrap_or(DEFAULT_TIMEOUT);
     let shell = std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".into());
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "/bin/zsh"
+            } else {
+                "/bin/sh"
+            }
+            .into()
+        });
     let mut command = Command::new(shell);
     command
         .arg("-l")

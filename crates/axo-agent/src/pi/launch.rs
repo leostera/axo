@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use axo_pty::process::{self, PtyProcess, WindowSize};
 
-use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 use crate::pi::{BridgeSocketPath, SocketCleanup};
 use crate::process::ProcessIdentity;
 use crate::{AgentCommand, WriterLock};
+use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 
 /// How long a stopped Pi gets before SIGKILL. On SIGTERM/SIGHUP Pi disposes its runtime (the
 /// pi-axo extension closes and unlinks its bridge socket), then drains terminal input for up to
@@ -160,6 +160,13 @@ fn resolve_extension_path() -> io::Result<PathBuf> {
     if let Some(resources) = std::env::var_os("AXO_RESOURCES_DIR") {
         candidates.push(PathBuf::from(resources).join("AxoPi/index.js"));
     }
+    #[cfg(target_os = "linux")]
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        candidates.push(directory.join("AxoPi/index.js"));
+    }
+    #[cfg(target_os = "macos")]
     if let Ok(executable) = std::env::current_exe()
         && let Some(contents_directory) = executable.parent().and_then(Path::parent)
     {

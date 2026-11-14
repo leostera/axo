@@ -36,7 +36,7 @@ pub(crate) fn shared() -> io::Result<&'static tokio::runtime::Runtime> {
 }
 
 /// This process's thread count, as the kernel reports it.
-#[cfg(test)]
+#[cfg(all(test, target_vendor = "apple"))]
 pub(crate) fn thread_count() -> i32 {
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
@@ -52,4 +52,14 @@ pub(crate) fn thread_count() -> i32 {
     };
     assert_eq!(filled, size);
     info.pti_threadnum
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn thread_count() -> i32 {
+    std::fs::read_dir("/proc/self/task")
+        .expect("the kernel exposes this process's threads")
+        .map(|entry| entry.expect("thread directory is readable"))
+        .count()
+        .try_into()
+        .expect("thread count fits i32")
 }

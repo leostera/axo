@@ -59,6 +59,8 @@ bazel build //...   # everything; the signed app lands at dist/Axo.app, the repo
 bazel test //...    # every test that needs no desktop, phone or browser of its own
 ```
 
+Experimental x86-64 Linux daemon builds use `bazel build //linux:runtime`; see [`linux/README.md`](linux/README.md) for requirements, isolated smoke tests, and remaining limitations. The native Apple UI is not part of the Linux build.
+
 The native visual UI tests require an unlocked macOS desktop and Xcode UI Automation permission. See the contributor guide before running them.
 
 ## Project notes

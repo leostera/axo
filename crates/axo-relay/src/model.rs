@@ -1,5 +1,6 @@
 //! What kind of Mac this is, for the account to show it by: a Mac Studio is not a MacBook.
 
+#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
 use serde::Serialize;
@@ -16,6 +17,7 @@ pub struct HostModel {
 
 /// This Mac's model, read once: it does not change while axod runs. None when macOS does not
 /// say, and the account then shows a Mac.
+#[cfg(target_os = "macos")]
 pub fn host_model() -> Option<HostModel> {
     static MODEL: OnceLock<Option<HostModel>> = OnceLock::new();
     MODEL
@@ -39,6 +41,13 @@ fn is_identifier(identifier: &str) -> bool {
         && characters.all(|c| c.is_ascii_alphanumeric() || c == ',')
 }
 
+/// The wire model currently describes Apple identifiers only; do not invent one for Linux.
+#[cfg(not(target_os = "macos"))]
+pub fn host_model() -> Option<HostModel> {
+    None
+}
+
+#[cfg(target_os = "macos")]
 fn sysctl_string(name: &std::ffi::CStr) -> Option<String> {
     let mut bytes = [0_u8; 128];
     let mut length = bytes.len();
@@ -62,6 +71,7 @@ fn sysctl_string(name: &std::ffi::CStr) -> Option<String> {
 }
 
 /// The model's name, as the device tree has it; Apple silicon Macs have one, Intel ones do not.
+#[cfg(target_os = "macos")]
 fn product_name() -> Option<String> {
     let output = std::process::Command::new("/usr/sbin/ioreg")
         .args(["-rd1", "-k", "product-name", "-p", "IODeviceTree"])
@@ -135,6 +145,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn this_mac_knows_its_model() {
         let model = host_model().expect("macOS says what this Mac is");

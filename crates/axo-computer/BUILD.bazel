@@ -29,4 +29,5 @@ rust_test(
     name = "axo_computer_tests",
     crate = ":axo_computer",
     edition = "2024",
+    deps = ["@crates//:tokio"],
 )
