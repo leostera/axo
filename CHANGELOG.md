@@ -2,6 +2,16 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.64 (Mac app build 335, axod 82)
+
+### Added
+
+- A signed `axo` CLI in `Axo.app/Contents/Helpers/axo`, implemented in `crates/axo-cli`. `cli install` safely links it into a chosen bin directory without overwriting another executable or editing shell profiles.
+- A declarative typed command catalog generates parsing, help and JSON capability discovery for supported Session, shell, terminal, layout, settings, peer/host, apps/codemode, question and relay operations. Every advertised local method has a projection or an explicit exclusion; private human-approval and input methods remain protected.
+- `axo session list`, `create`, `prompt --sid … --message …`, bounded JSON/file inputs, `--json`, NDJSON event watches, explicit deadlines, Ctrl-C/closed-pipe cleanup and guarded registered-daemon restart. Read-only listings do not consume app focus; uncertain writes are never retried automatically.
+- `axo relay link <code>`, `status`, and `unlink`. Linking means automatic connection/reconnection, not a separate public connect/disconnect state. Unlink forgets the durable account and pending redemption before closing relay admission and deleting unused credentials, survives restarts, and completes admitted mutation cleanup even when its CLI receipt is lost. Existing dispatched actions may have run; local unlink is not cloud account/data deletion or remote credential revocation.
+- This is the first CLI slice, not the entire RFD0051 inventory: direct native AI/computer CLI, local agent stop/model parity, message-free continuation, interactive terminal attachment, completions and app-upgrade CLI remain follow-up work. Upgrading to axod 82 restarts terminals through the existing confirmation path.
+
 ## 0.63 (Mac app build 334, axod 81)
 
 ### Added
