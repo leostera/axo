@@ -1,7 +1,7 @@
 # RFD0047 - Axo: native Core ML predictions
 
 - Feature Name: `native-coreml-inference`
-- Status: Implemented (release verification pending)
+- Status: Implemented (0.57 release candidate; publication pending approval)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14

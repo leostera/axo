@@ -2,6 +2,24 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.57 (Mac app build 328, axod 80)
+
+### Added
+
+- Native Core ML prediction on macOS through an owned Objective-C++/C ABI and thread-confined Rust worker. Compatible source `.mlmodel` and `.mlpackage` bundles resolve, verify, install and load automatically; `backend: "coreml"` disambiguates mixed repositories. No Python, conversion, arbitrary repository code or downloaded compiled binaries.
+- `codemode.ai.run({model,task:"predict",input:{features,outputs?}})` binds explicit named scalar, float32/int32 tensor or verified image features and returns typed native outputs with immutable provenance. `ai.load` with task `predict` describes feature names, types and shapes; selected outputs are complete, never silently truncated.
+- Actual Core ML compute-device capabilities, bounded built-in graph/flat ML Program verification, private compiled-asset ownership, signed helper packaging, and Core ML process/service tests. The seven-model codemode integration exercises account image attachments and switches between GGUF, MLX and Core ML.
+
+### Fixed
+
+- Native workers share containment transport and kill/reap cleanup without changing the independent safety judge.
+- Vite build mode no longer rewrites Bazel-owned read-only Worker declarations; dev mode retains automatic type generation.
+
+### Limits
+
+- Core ML/predict needs Axo 0.57 / inference API 4 on the target Mac. It does not provide chat generation, mutable state, custom classes/layers/operators or linked models. Raw prediction supports 32 features and 4096 aggregate elements per direction; model/operator/feature compatibility is checked before execution.
+- MLX retains its 0.56 scope: dense Qwen2/Qwen3 text generation on Apple Silicon, 4096-token context and no KV cache.
+
 ## 0.56 (Mac app build 327, axod 79)
 
 ### Added
