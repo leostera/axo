@@ -4,15 +4,20 @@ Control Axo Sessions from a shell. `axo` is a thin local client of axod, shipped
 
 ## Install the command
 
-After installing/upgrading Axo.app:
+The shell installer automatically installs `/usr/local/bin/axo` after the verified app reaches its stable location. macOS requests administrator approval only if that directory is not writable. Downloading the app directly offers the same setup once on first launch; **Axo → Install “axo” Command…** and **Settings → General → Command Line** remain available as fallbacks. Normal app upgrades preserve the link and replace the CLI with the app.
+
+For manual setup or a different bin directory:
 
 ```sh
+/Applications/Axo.app/Contents/Helpers/axo cli install --system
+# No administrator authorization; defaults to ~/.local/bin, which must be in PATH:
 /Applications/Axo.app/Contents/Helpers/axo cli install
-# Ensure ~/.local/bin is in your PATH, or choose an existing PATH directory:
 /Applications/Axo.app/Contents/Helpers/axo cli install --dir "$HOME/bin"
 ```
 
-Installation creates a symlink to this executable, not a copied binary or wrapper. Repeating it is harmless; it refuses to replace any different symlink/file. Shell profiles are never edited. Run it from the installed app for a stable link across app upgrades, not a temporary downloaded/test bundle.
+`--system` and `--dir` are mutually exclusive. System installation is macOS-only; any authorization runs a fixed OS filesystem script, never the bundled executable as root. Installer users can opt out with `curl -fsSL https://axo.leostera.dev/install | AXO_INSTALL_CLI=0 sh`. Failed/cancelled installation does not undo app installation or immediately trigger another first-launch prompt; retry from Settings.
+
+Installation creates a symlink, not a copied binary or wrapper. Repeating it is harmless; different regular files, directories and even dangling links are never replaced. Conflicting links, including links to a different/moved app, must be moved aside explicitly before setup. Shell profiles are never edited. Your shell must include the chosen directory in PATH (`/usr/local/bin` is the normal macOS system-bin location). Run setup from the installed app, not a temporary downloaded/test bundle; translocated copies must be moved first.
 
 For development:
 

@@ -19,10 +19,12 @@ enum AxoPreferenceKey {
   static let sidebarGrouping = "sidebar.grouping.v1"
   /// The person asked not to be offered Developer Tools again.
   static let developerToolsPromptDeclined = "permissions.developerToolsDeclined.v1"
+  /// Shared with the shell installer: setup was offered/attempted or explicitly declined.
+  static let cliCommandSetupOffered = "cli.commandSetupOffered.v1"
 
   static let all = [
     sidebarIsCollapsed, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
     preventSystemSleep, sidebarMacs, pinnedSessions, seenSessions, seenSessionsBaseline,
-    sidebarGrouping, developerToolsPromptDeclined,
+    sidebarGrouping, developerToolsPromptDeclined, cliCommandSetupOffered,
   ]
 }

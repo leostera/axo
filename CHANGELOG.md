@@ -2,6 +2,14 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.65 (Mac app build 336, axod 82)
+
+### Added
+
+- The installer sets up `/usr/local/bin/axo` automatically after installing the verified app, requesting macOS administrator approval only if needed. `AXO_INSTALL_CLI=0` opts out; cancellation/failure leaves the app installed and does not immediately ask again.
+- Direct app downloads offer command-line setup once on first launch. **Axo → Install “axo” Command…** and **Settings → General → Command Line** show actual installation status and provide the fallback action. The shared `cli install --system` backend never runs the bundled CLI as root, overwrites an existing file/link/directory, or edits shell profiles. Stable links follow app upgrades automatically.
+- This release changes the Mac app, CLI and installer only; axod remains build 82.
+
 ## 0.64 (Mac app build 335, axod 82)
 
 ### Added

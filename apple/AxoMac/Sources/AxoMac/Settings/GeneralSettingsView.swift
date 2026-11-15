@@ -27,6 +27,8 @@ struct GeneralSettingsView: View {
 
   var body: some View {
     Form {
+      CLICommandSettingsSection(installation: CLICommandInstallation.shared)
+
       Section("Terminal") {
         VStack(alignment: .leading, spacing: 8) {
           Slider(value: scrollSensitivityPosition, in: 0...1) {

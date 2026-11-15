@@ -1,4 +1,5 @@
 //! A thin, same-user axod client. No daemon/runtime startup, credential reads, or cloud retries.
+mod installation;
 mod transport;
 use axo_protocol::cli::{Effect, OPERATIONS, Operation, Parameter, Projection, ValueKind};
 use axo_protocol::rpc::{self, method};
@@ -199,7 +200,14 @@ fn command() -> Command {
             .arg(
                 Arg::new("dir")
                     .long("dir")
-                    .help("Existing bin directory; defaults to ~/.local/bin"),
+                    .help("Bin directory; defaults to ~/.local/bin")
+                    .conflicts_with("system"),
+            )
+            .arg(
+                Arg::new("system")
+                    .long("system")
+                    .action(ArgAction::SetTrue)
+                    .help("Install in /usr/local/bin; macOS asks for administrator approval only if needed"),
             ),
     );
     root
@@ -468,7 +476,7 @@ fn run(matches: &ArgMatches) -> Result<(), Failure> {
         );
     }
     if path == ["cli", "install"] {
-        return install(leaf);
+        return installation::install(leaf);
     }
     let socket = socket(matches)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -591,35 +599,6 @@ async fn bounded<T>(
         result = tokio::time::timeout(timeout, work) => result.map_err(|_| Failure::transport("deadline exceeded; dispatched actions may have run. Do not blindly retry"))?,
         _ = tokio::signal::ctrl_c() => Err(Failure { code:130, message:"interrupted; dispatched actions may have run".into() }),
     }
-}
-fn install(matches: &ArgMatches) -> Result<(), Failure> {
-    let directory = match matches.get_one::<String>("dir") {
-        Some(dir) => PathBuf::from(dir),
-        None => home()?.join(".local/bin"),
-    };
-    if !directory.is_absolute() {
-        return Err(Failure::input("--dir must be absolute"));
-    }
-    let executable = std::env::current_exe()?.canonicalize()?;
-    // A stable link into the app bundle follows immutable app replacement without copying code.
-    std::fs::create_dir_all(&directory)?;
-    let link = directory.join("axo");
-    match std::os::unix::fs::symlink(&executable, &link) {
-        Ok(()) => {}
-        Err(e)
-            if e.kind() == io::ErrorKind::AlreadyExists
-                && std::fs::read_link(&link).ok().as_ref() == Some(&executable) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(Failure::input(
-                "axo already exists in that directory; it was not replaced",
-            ));
-        }
-        Err(e) => return Err(e.into()),
-    }
-    output(
-        &json!({"installed":true,"path":link,"target":executable,"note":"Ensure this bin directory is in PATH; shell profiles were not changed"}),
-        true,
-    )
 }
 async fn restart(matches: &ArgMatches) -> Result<(), Failure> {
     if !cfg!(target_os = "macos") {

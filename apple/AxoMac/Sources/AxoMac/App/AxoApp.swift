@@ -46,6 +46,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       if startsDaemon {
         daemon.startIfNeeded()
         DeveloperToolsPrompt.offerWhenReady(daemon: daemon)
+        CLICommandSetup.schedule()
       }
     }
     if !usesSplash { LaunchBoot.run() }
@@ -584,6 +585,14 @@ private struct AxoApplicationCommands: Commands {
         showSettings(section: .general)
       }
       .keyboardShortcut(",")
+    }
+
+    CommandGroup(after: .appSettings) {
+      Button("Install “axo” Command…") {
+        showSettings(section: .general)
+        Task { await CLICommandInstallation.shared.install() }
+      }
+      .disabled(CLICommandInstallation.shared.isInstalling)
     }
 
     // ⌘Q leaves Axo in the menu bar; only Quit Axo quits it, and then it stays quit.

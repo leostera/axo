@@ -120,12 +120,36 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+/** Run only after the verified app reaches its stable installation path, never in staging. */
+export function cliSetupScript(): string {
+  return `install_cli() {
+  cli="$app/Contents/Helpers/axo"
+  [ -x "$cli" ] || { warn "This Axo release has no bundled CLI."; return; }
+  case "\${AXO_INSTALL_CLI:-1}" in
+    0) say "Skipping axo command (AXO_INSTALL_CLI=0)" ;;
+    1)
+      say "Installing the axo command in /usr/local/bin (macOS may ask for approval)"
+      if "$cli" cli install --system >/dev/null; then
+        say "axo command installed"
+      else
+        warn "The axo command was not installed. The app is still installed; retry in Axo Settings > General > Command Line."
+      fi
+      ;;
+    *) warn "AXO_INSTALL_CLI must be 0 or 1; skipping command setup"; return ;;
+  esac
+  # A failed/cancelled attempt or opt-out must not immediately produce a second app prompt.
+  /usr/bin/defaults write dev.leostera.axo cli.commandSetupOffered.v1 -bool true \\
+    || warn "Could not save the CLI setup choice; Axo may offer it again."
+}`;
+}
+
 export function installScript(origin: string, code: PairingCode | null): string {
   return `#!/bin/sh
 # Installs Axo, the Mac app at ${origin}, and starts it.
 #   curl -fsSL ${origin}/install | sh
 #   curl -fsSL '${origin}/install?code=ABCD-EFGH' | sh   # and pair this Mac
 # AXO_INSTALL_DIR picks the folder (default: /Applications, or ~/Applications when that is not writable).
+# AXO_INSTALL_CLI=0 skips command installation; existing commands and shell profiles are never replaced.
 set -eu
 
 AXO_ORIGIN=${shellQuote(origin)}
@@ -138,6 +162,8 @@ AXO_APP_LABEL='dev.leostera.axo.app'
 say() { printf '\\033[1m==>\\033[0m %s\\n' "$*"; }
 warn() { printf '\\033[33mwarning:\\033[0m %s\\n' "$*" >&2; }
 fail() { printf '\\033[31maxo install:\\033[0m %s\\n' "$*" >&2; exit 1; }
+
+${cliSetupScript()}
 
 # One function, so sh reads the whole script before running any of it: a cut-off download runs
 # nothing, and no command can read the rest of the script from the pipe as its input.
@@ -247,6 +273,8 @@ if ! mv "$new_app" "$app"; then
   [ -e "$stage/previous.app" ] && mv "$stage/previous.app" "$app"
   fail "could not move Axo.app into $install_dir"
 fi
+install_cli
+
 # Make axo:// links (pairing) open this copy.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
 

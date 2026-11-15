@@ -1,7 +1,7 @@
 # RFD0051 - Axo: CLI capability inventory
 
 - Feature Name: `generated-axo-cli`
-- Status: Partially implemented (Axo 0.64 first slice; broader inventory remains proposed)
+- Status: Partially implemented (0.64 first slice, 0.65 CLI setup; broader inventory remains proposed)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-14
@@ -25,6 +25,16 @@ The inventory below assesses backend support at Axo 0.63, commit `502a1e2917942e
 - Limits, correlated/bounded replies, no automatic write retries, safe stderr, JSON/NDJSON, Ctrl-C and closed-pipe cleanup are tested. Disruptive commands require confirmation; `--yes` cannot answer a human approval or impersonate Axo.app.
 - `specs/relay/link-lifecycle.ts` models the successful durable-unlink path, lost receipts and orphaned unused secrets. It does not model network faults/crashes or rollback of external work; wire tests cover live socket closure, offline/pending cleanup and restart persistence.
 - Remaining inventory items include direct native AI/computer CLI, local stop/model/command parity, message-free continuation, interactive terminal attachment, completions, app upgrade and full schema discovery. They are not stubbed successful commands.
+
+## CLI setup follow-up (0.65)
+
+**User decision:** setup belongs in installation, not an extra manual terminal command. The shell installer invokes the signed helper’s `cli install --system` only after signature verification and moving the bundle to its stable destination. It automatically creates `/usr/local/bin/axo` if possible and uses macOS authorization only on permission denial. `AXO_INSTALL_CLI=0` opts out. Failure/cancellation warns but does not fail or roll back the app installation.
+
+Direct downloads get a one-time first-launch offer. Both app and installer use `cli.commandSetupOffered.v1` in the app preferences: attempted, declined or opted-out setup does not immediately prompt again. Installed/conflicting entries stay quiet; unavailable/translocated/read-only copies do not consume the offer until they can be moved. Native fixture/test launches do not schedule this UI. Settings → General → Command Line displays actual link status and an explicit install action; the Axo menu exposes the same action.
+
+The CLI owns both user-directory and system installation. Authorization is restricted to a fixed OS filesystem script at `/usr/local/bin/axo`; the user-writable app executable is never run as administrator. Source paths cross JSON, POSIX shell and AppleScript quoting boundaries as literals. The OS Foundation symlink API preserves atomic no-clobber behavior even if a directory appears at the destination (BSD `ln` can instead create an unexpected nested link). No script is written to a temporary executable file. Existing regular files, directories and dangling/different links are preserved; no automatic relocation repair, profile editing or forced replacement. A stable symlink follows ordinary in-place app replacement without another setup step. Custom shell PATH configuration remains the user’s choice.
+
+Tests cover read-only inspection, explicit/once-only setup, declined/failed retry and lost-receipt reconciliation, one authorization in flight, unavailable copies, foreign entries, installer opt-out/continuation and real unprivileged execution of the privileged filesystem body against temporary fixtures. No tests authorize a root operation, alter the person’s PATH/preferences or launch/replace their active app.
 
 ## Motivation
 

@@ -15,11 +15,9 @@ The Mac host owns local agent processes and terminal sessions. Remote clients co
 
 ## Command line
 
-Axo.app ships the `axo` CLI. Install its PATH link once, then control Sessions from your shell:
+Axo.app ships the `axo` CLI. The installer sets up `/usr/local/bin/axo`; a downloaded app offers setup once on first launch. macOS asks for administrator approval only if needed. You can also use **Axo → Install “axo” Command…** or **Settings → General → Command Line**. Existing commands and shell profiles are never replaced. Once installed, app upgrades update the command too.
 
 ```sh
-/Applications/Axo.app/Contents/Helpers/axo cli install
-# Add ~/.local/bin to PATH if it is not already there.
 axo session list
 axo session create --folder .
 axo session prompt --sid <session-id> --message "Run the tests"
