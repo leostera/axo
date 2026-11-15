@@ -39,7 +39,7 @@ The initial standalone prototype owns a local command/PTY through Ghostty. This 
 
 ### Feature inventory and cutover map
 
-Inventory reference: Mac source at Axo 0.64, commit `24e8a85056222c809f8ba43fe50f13b4faa86529`. The Linux branch has since been rebased onto 0.66 (`4c9f11d6`), preserving guided setup/CLI changes without porting their whole UI. This inventory is not an interactive Mac conformance run.
+Inventory reference: Mac source at Axo 0.64, commit `24e8a85056222c809f8ba43fe50f13b4faa86529`. The Linux branch has since been rebased onto 0.66 (`4c9f11d6`) and current main's 0.68 (`5c97b1b3`), preserving guided setup/CLI and Mac window fixes without porting their whole UI. This inventory is not an interactive Mac conformance run.
 
 | User-visible behavior | Current reference | Linux implementation boundary |
 | --- | --- | --- |

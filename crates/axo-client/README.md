@@ -11,6 +11,9 @@ new daemon, session store, account manager or application-authentication scheme.
   discard the connection so a late reply cannot become another request's result.
   Ordinary RPC rejections preserve an aligned connection. Callers own operation
   deadlines; connect/negotiation/stream-opening also have five-second bounds.
+- Settings reads/writes check that replies name the requested key. Commands/ranges
+  remain daemon-validated and persisted; a lost write acknowledgement is unknown,
+  not failure proof. The GTK caller requires reload before offering a retry.
 - Opens event streams as the first request on their own connection; parses batches
   into shared protocol events and ends lagged/cancelled/invalid subscriptions.
   Consumers must relist and resubscribe, not display stale state as live.
