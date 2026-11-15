@@ -9,7 +9,7 @@ impl LocalCatalog {
         let wire: rpc::SessionCatalog = client
             .call_typed(rpc::method::SESSION_CATALOG, serde_json::json!({}))
             .await?;
-        Self::try_from(wire)
+        Self::try_from(wire).map_err(|error| client.invalid_response(error.to_string()))
     }
     pub fn sessions(&self) -> &[SessionRecord] {
         &self.0.sessions
@@ -57,6 +57,14 @@ impl TryFrom<rpc::SessionCatalog> for LocalCatalog {
         }
         Ok(Self(wire))
     }
+}
+/// Reuse catalog ownership/path validation without cloning a mutation's record.
+pub(crate) fn validated_record(record: SessionRecord) -> Result<SessionRecord, Error> {
+    let mut catalog = LocalCatalog::try_from(rpc::SessionCatalog {
+        sessions: vec![record],
+        archived: Vec::new(),
+    })?;
+    Ok(catalog.0.sessions.pop().expect("one validated record"))
 }
 fn invalid(reason: &str) -> Error {
     Error::Transport(format!("invalid local daemon catalog: {reason}"))

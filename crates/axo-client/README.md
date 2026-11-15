@@ -36,6 +36,16 @@ new daemon, session store, account manager or application-authentication scheme.
   subscribes and reads catalog/health; it never retries actions, starts Pi or
   supplies privileged local identity.
 
+Typed `create_session` and `wake_pi` calls validate returned Session/pane ownership,
+absolute paths and wake target/availability. Wake uses only the independently
+advertised automatic unavailable-only endpoint; it never falls back to force.
+These calls do not infer foreground state, retry or select a Session. UI/action
+owners must gate intent, own deadlines and reconcile uncertain mutations. A
+well-framed RPC rejection does not prove a multi-step action rolled back. Creation
+may wait up to 30 seconds for Pi in the daemon, so its UI deadline must account for
+that rather than reuse a five-second catalog-read deadline. Malformed typed or
+semantically invalid replies poison the connection, just like framing errors.
+
 `ViewportReporter` is a separate, explicitly mutating UI owner. It publishes only
 validated native metrics through the independently advertised viewport v2 method,
 with 100 ms trailing debounce, one in-flight write, latest-value coalescing and a

@@ -1,4 +1,5 @@
 use super::*;
+mod session_actions;
 
 fn pair() -> (Client, BufReader<UnixStream>) {
     let (client, server) = UnixStream::pair().unwrap();

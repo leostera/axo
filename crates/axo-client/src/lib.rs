@@ -2,6 +2,7 @@
 //! runtime startup, credential reads, or privileged caller impersonation.
 mod catalog;
 mod catalog_watch;
+mod session_actions;
 mod settings;
 mod viewport_reporter;
 pub use catalog::LocalCatalog;
@@ -104,8 +105,15 @@ impl Client {
         method: &str,
         params: Value,
     ) -> Result<T, Error> {
-        serde_json::from_value(self.call(method, params).await?)
-            .map_err(|_| transport(format!("daemon returned an invalid response for {method}")))
+        let response = self.call(method, params).await?;
+        serde_json::from_value(response).map_err(|_| {
+            self.invalid_response(format!("daemon returned an invalid response for {method}"))
+        })
+    }
+
+    fn invalid_response(&mut self, reason: impl Into<String>) -> Error {
+        self.stream.take();
+        transport(reason)
     }
 
     async fn exchange(&mut self, method: &str, params: Value) -> Result<Value, Error> {
