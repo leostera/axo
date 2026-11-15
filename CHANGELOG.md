@@ -2,7 +2,7 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
-## Unreleased
+## 0.68 (Mac app build 339, axod 83)
 
 ### Improved
 
