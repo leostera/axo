@@ -10,6 +10,7 @@ use axo_protocol::{
     ShellId,
 };
 use gtk4::{glib, prelude::*};
+mod actions;
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -50,7 +51,17 @@ pub fn create_window(
     heading.set_margin_end(8);
     heading.set_margin_top(8);
     heading.set_margin_bottom(2);
-    sidebar.append(&heading);
+    let session_heading = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+    heading.set_hexpand(true);
+    session_heading.append(&heading);
+    let new_session = gtk4::MenuButton::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("New Session")
+        .build();
+    new_session.update_property(&[gtk4::accessible::Property::Label("New Session")]);
+    new_session.set_margin_end(4);
+    session_heading.append(&new_session);
+    sidebar.append(&session_heading);
     let list = gtk4::ListBox::new();
     list.set_selection_mode(gtk4::SelectionMode::Single);
     list.add_css_class("axo-session-list");
@@ -83,7 +94,13 @@ pub fn create_window(
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     content.set_hexpand(true);
     content.set_vexpand(true);
-    root.append(&content);
+    let creation = actions::Creation::new();
+    let detail = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    detail.set_hexpand(true);
+    detail.set_vexpand(true);
+    detail.append(creation.widget());
+    detail.append(&content);
+    root.append(&detail);
     window.set_child(Some(&root));
     let model = Rc::new(Workbench {
         window: window.downgrade(),
@@ -107,6 +124,8 @@ pub fn create_window(
         retry_timer: RefCell::new(None),
         retry_delay: Cell::new(Duration::from_millis(500)),
         selected: Cell::new(None),
+        selection_revision: Cell::new(0),
+        creation,
         view: RefCell::new(None),
         updating: Cell::new(false),
         closing: Cell::new(false),
@@ -115,6 +134,7 @@ pub fn create_window(
         tray_available: Cell::new(false),
         daemon_status: RefCell::new("Daemon connecting…".into()),
     });
+    model.bind_creation(&new_session);
     let settings_action = gtk4::gio::SimpleAction::new("settings", None);
     settings_action.connect_activate({
         let model = Rc::downgrade(&model);
@@ -217,6 +237,8 @@ struct Workbench {
     retry_timer: RefCell<Option<glib::SourceId>>,
     retry_delay: Cell<Duration>,
     selected: Cell<Option<SessionId>>,
+    selection_revision: Cell<u64>,
+    creation: actions::Creation,
     view: RefCell<Option<Rc<SessionView>>>,
     updating: Cell<bool>,
     closing: Cell<bool>,
@@ -366,6 +388,8 @@ impl Workbench {
                 );
             }
         }
+        self.creation
+            .update_controls(self.online.get() && !self.closing.get());
         self.publish_daemon_status();
     }
     fn start_viewport(self: &Rc<Self>) {
@@ -542,6 +566,7 @@ impl Workbench {
             window.destroy();
         }
         self.cancel_retry();
+        self.creation.shutdown();
         self.viewport_task.borrow_mut().take();
         self.tray.borrow_mut().take();
         self.tray_available.set(false);
@@ -556,6 +581,7 @@ impl Workbench {
             return;
         }
         self.online.set(false);
+        self.creation.update_controls(false);
         self.list.set_sensitive(false);
         self.epoch.set(None);
         self.suspend_viewport();
@@ -593,9 +619,13 @@ impl Workbench {
     }
     fn install_catalog(self: &Rc<Self>, catalog: Arc<LocalCatalog>) {
         let selected = self
-            .selected
-            .get()
-            .filter(|id| catalog.session(*id).is_some())
+            .creation
+            .preferred_selection(&catalog, self.selection_revision.get())
+            .or_else(|| {
+                self.selected
+                    .get()
+                    .filter(|id| catalog.session(*id).is_some())
+            })
             .or_else(|| catalog.sessions().first().map(|session| session.id));
         self.updating.set(true);
         while let Some(row) = self.list.first_child() {
@@ -640,6 +670,12 @@ impl Workbench {
             return;
         };
         if self.selected.replace(Some(id)) != Some(id) {
+            self.selection_revision.set(
+                self.selection_revision
+                    .get()
+                    .checked_add(1)
+                    .expect("selection revision exhausted"),
+            );
             self.retry_delay.set(Duration::from_millis(500));
         }
         if let Some(window) = self.window.upgrade() {

@@ -7,7 +7,7 @@ exports_files(["native/build.zig", "native/bridge.zig"])
 rust_binary(
     name = "AxoDesktop",
     crate_name = "axo_desktop",
-    srcs = ["src/main.rs", "src/ghostty.rs", "src/attachment.rs", "src/catalog_task.rs", "src/task.rs", "src/settings.rs", "src/style.rs", "src/tray.rs", "src/workbench.rs", "src/viewport_task.rs", "src/options_tests.rs"],
+    srcs = ["src/main.rs", "src/ghostty.rs", "src/attachment.rs", "src/catalog_task.rs", "src/task.rs", "src/settings.rs", "src/style.rs", "src/tray.rs", "src/workbench.rs", "src/workbench/actions.rs", "src/viewport_task.rs", "src/options_tests.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
     deps = ["//crates/axo-client:axo_client", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "@crates//:gtk4", "@crates//:serde_json", "@crates//:tokio", "@crates//:clap"],

@@ -19,6 +19,11 @@ run=$(mktemp -d /tmp/axo-gtk-prototype.XXXXXX)
 chmod 700 "$run"
 mkdir -p "$run"/{home,runtime,config,cache,data,state}
 chmod 700 "$run/runtime"
+# GNOME's headless backend deliberately exposes no FileChooser interface. Route only
+# the fixture's native chooser to GTK on this private bus; no real portal settings
+# or capture/input/approval guards are changed.
+mkdir -p "$run/config/xdg-desktop-portal"
+printf '[preferred]\norg.freedesktop.impl.portal.FileChooser=gtk\n' > "$run/config/xdg-desktop-portal/portals.conf"
 set +e
 env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u XDG_SESSION_ID -u NOTIFY_SOCKET \
     HOME="$run/home" XDG_RUNTIME_DIR="$run/runtime" XDG_CONFIG_HOME="$run/config" \

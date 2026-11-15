@@ -11,7 +11,7 @@ import os
 
 
 class OwnedProxy:
-    def __init__(self, run, upstream):
+    def __init__(self, run, upstream, *, allow_actions=()):
         if os.environ.get('AXO_DESKTOP_ISOLATED') != '1':
             raise RuntimeError('owned desktop fixture required')
         self.rpc_path = pathlib.Path(run) / 'proxy-rpc.sock'
@@ -24,6 +24,11 @@ class OwnedProxy:
         self.errors = []
         self.available = True
         self.lose_viewport_ack = False
+        self.allow_actions = set(allow_actions)
+        assert self.allow_actions <= {'axo.session.create', 'axo.session.pi.restart.auto.v1'}
+        self.lose_create_ack = False
+        self.create_gate = threading.Event()
+        self.create_gate.set()
         self.stopping = False
         self.attach_gate = threading.Event()
         self.attach_gate.set()
@@ -100,9 +105,15 @@ class OwnedProxy:
                         self.methods.append(method)
                     assert method in ['axo.protocol.negotiate', 'axo.session.catalog',
                                       'axo.daemon.health', 'axo.session.events.stream',
-                                      'axo.client.viewport.set.v2'], method
+                                      'axo.client.viewport.set.v2'] or method in self.allow_actions, method
                     server.sendall(request)
                     response = self._rewrite(json.loads(self._line(server)))
+                    if method == 'axo.session.create':
+                        while not self.create_gate.wait(.05):
+                            if self.stopping:
+                                return
+                        if self.lose_create_ack:
+                            return  # Admission/real creation completed; only the reply is lost.
                     if method == 'axo.client.viewport.set.v2' and self.lose_viewport_ack:
                         return  # The real fixture daemon committed; only its acknowledgement is lost.
                     client.sendall(json.dumps(response).encode() + b'\n')
@@ -176,6 +187,7 @@ class OwnedProxy:
     def close(self):
         self.stopping = True
         self.attach_gate.set()
+        self.create_gate.set()
         for listener in self.listeners:
             listener.close()
         for kind in self.connections:

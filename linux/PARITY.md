@@ -15,7 +15,8 @@ main integration, push or publication without approval. One installed Axo only.
 ## Ordered implementation
 
 - [x] Native viewport publication: actual metrics, coalescing, reconnect and unattached panes (RFD0058); source-only, no guessed metrics in an empty cold workbench.
-- [ ] Session creation/home/folder UI, explicit uncertain-write recovery, foreground-only dormant Pi wake.
+- [x] Session creation in current context/Home/native folder, one pending intent and explicit uncertain-write review (isolated source acceptance).
+- [ ] Foreground-only dormant Pi wake; no background resource wake or force fallback.
 - [ ] Layout editing and ordered persistence; pane focus/navigation and split/close availability.
 - [ ] Busy-aware archive/close/reopen, captured IDs and unknown-busy refusal.
 - [ ] Grouping/order/seen policy, palette, peer hosts and remote-view/session distinctions.
