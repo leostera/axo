@@ -180,11 +180,13 @@ swift_test(
     copts = ["-swift-version", "5"],
     data = [
         ":AxoUITestApp",
+        "//bazel/apple:strip_mac_app.sh",
         "//crates/axo-server:pi_extension_fixture",
         "//crates/axod:testdata/pi-fixture.sh",
     ],
     env = {
         "AXO_APP_BUNDLE_ZIP": "$(rootpath :AxoUITestApp)",
+        "AXO_TEST_STRIP_SCRIPT": "$(rootpath //bazel/apple:strip_mac_app.sh)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
         "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
     },
@@ -295,10 +297,13 @@ sh_test(
         AXO["apple"]["macos_min"],
         AXO["apple"]["team"] if CAN.sign else "-",
     ] + select({
-        ":apple_silicon_inference": ["mlx"],
+        ":apple_silicon_inference": ["mlx", "$(rootpath @mlx//:mlx.metallib)"],
         "//conditions:default": [],
     }),
-    data = [":Axo"],
+    data = [":Axo"] + select({
+        ":apple_silicon_inference": ["@mlx//:mlx.metallib"],
+        "//conditions:default": [],
+    }),
     # codesign must see the bundle itself, not the sandbox's per-file symlinks to it.
     tags = ["no-sandbox"],
 )

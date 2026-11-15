@@ -18,8 +18,8 @@ def _signed_mac_app_impl(ctx):
     status = ctx.actions.declare_file(ctx.attr.name + ".status")
     ctx.actions.run(
         executable = ctx.executable._sign,
-        arguments = [ctx.file.app.path, app.path, status.path, ctx.attr.identity],
-        inputs = [ctx.file.app],
+        arguments = [ctx.file.app.path, app.path, status.path, ctx.attr.identity, ctx.file._strip.path],
+        inputs = [ctx.file.app, ctx.file._strip],
         outputs = [app, status],
         execution_requirements = _LOCAL | {"requires-network": "1"},
         mnemonic = "SignMacApp",
@@ -28,6 +28,7 @@ def _signed_mac_app_impl(ctx):
     return [
         DefaultInfo(files = depset([app]), runfiles = ctx.runfiles([app])),
         StatusInfo(files = depset([status])),
+        OutputGroupInfo(unstripped = depset([ctx.file.app])),
     ]
 
 signed_mac_app = rule(
@@ -37,6 +38,7 @@ signed_mac_app = rule(
         "app": attr.label(allow_single_file = [".zip"], mandatory = True, doc = "The macos_application."),
         "identity": attr.string(doc = "A signing identity's SHA-1, or empty for ad hoc."),
         "_sign": attr.label(default = ":sign_mac_app.sh", executable = True, cfg = "exec", allow_single_file = True),
+        "_strip": attr.label(default = ":strip_mac_app.sh", allow_single_file = True),
     },
 )
 

@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## Unreleased
+
+### Improved
+
+- Strip local/debug native symbols from the Swift app and embedded frameworks, and maximally strip standalone helper executables before signing. Required dynamic exports remain intact; unstripped build outputs remain available separately. MLX’s full Metal kernel library remains byte-for-byte unchanged.
+
 ## 0.69 (Mac app build 340, axod 84)
 
 ### Added

@@ -2,7 +2,7 @@
 # Unpacks the Mac app rules_apple built and signs it for launchd: helper, embedded frameworks,
 # then the app, with the hardened runtime and a secure timestamp (RFD0021).
 #
-#   sign_mac_app.sh <app.zip> <out/Axo.app> <status-out> <identity or "">
+#   sign_mac_app.sh <app.zip> <out/Axo.app> <status-out> <identity or ""> <strip-script>
 #
 # It never fails the build over signing: without an identity, or when codesign cannot use it, the
 # app is signed ad hoc and the status says why. launchd will not run an ad hoc signed axod.
@@ -12,6 +12,7 @@ archive=$1
 app=$2
 status=$3
 identity=$4
+strip_script=$5
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
@@ -20,6 +21,8 @@ rm -rf "$app"
 mkdir -p "$(dirname "$app")"
 /usr/bin/ditto "$stage/Axo.app" "$app"
 chmod -R u+w "$app"
+# Removing symbols invalidates existing signatures, so it must precede all nested signing.
+/bin/bash "$strip_script" "$app"
 # rules_apple's zip dates every entry 1980 for reproducible archives, and ditto keeps that, so
 # Finder would show the app's files as decades old. Date them now, when this app is built; times
 # are not part of the signature.

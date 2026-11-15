@@ -4,6 +4,16 @@ import XCTest
 
 final class TerminalAppE2ETests: XCTestCase {
   func testBundledAppSelfTestAttachesToDaemonOwnedPTY() throws {
+    try runBundledSelfTest(packaging: .original)
+  }
+
+  func testStrippedAppSelfTestAttachesToDaemonOwnedPTY() throws {
+    try runBundledSelfTest(packaging: .stripped)
+  }
+
+  private enum Packaging { case original, stripped }
+
+  private func runBundledSelfTest(packaging: Packaging) throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
       .appendingPathComponent("axo-app-e2e-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(
@@ -16,6 +26,17 @@ final class TerminalAppE2ETests: XCTestCase {
     try extractApp(at: archive, into: root)
 
     let appURL = root.appendingPathComponent("Axo.app", isDirectory: true)
+    if packaging == .stripped {
+      try prepareFixture("/bin/chmod", ["-R", "u+w", appURL.path])
+      try prepareFixture("/bin/bash", [try runfile(named: "AXO_TEST_STRIP_SCRIPT").path, appURL.path])
+      // The same strip-before-sign order as production, but ad hoc and only in this fixture.
+      try prepareFixture("/usr/bin/codesign", [
+        "--force", "--sign", "-",
+        appURL.appendingPathComponent("Contents/Helpers/axod").path,
+      ])
+      try prepareFixture("/usr/bin/codesign", ["--force", "--sign", "-", appURL.path])
+      try prepareFixture("/usr/bin/codesign", ["--verify", "--deep", "--strict", appURL.path])
+    }
     let appExecutable = appURL.appendingPathComponent("Contents/MacOS/Axo")
     let axod = appURL.appendingPathComponent("Contents/Helpers/axod")
     let resources = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
@@ -75,6 +96,18 @@ final class TerminalAppE2ETests: XCTestCase {
     XCTAssertTrue(exited, "Axo --self-test timed out. Output: \(message)")
     XCTAssertEqual(app.terminationStatus, 0, "Axo --self-test failed: \(message)")
     XCTAssertTrue(message.contains("AXO_SELF_TEST_OK"), "Missing success marker: \(message)")
+  }
+
+  private func prepareFixture(_ executable: String, _ arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    guard waitForExit(process, timeout: 30), process.terminationStatus == 0 else {
+      throw TerminalAppE2EError.fixturePreparationFailed(executable)
+    }
   }
 
   private func extractApp(at archive: URL, into directory: URL) throws {
@@ -158,6 +191,7 @@ private enum TerminalAppE2EError: Error, LocalizedError {
   case runfileNotFound(String)
   case daemonExitedEarly
   case daemonTimedOut
+  case fixturePreparationFailed(String)
 
   var errorDescription: String? {
     switch self {
@@ -169,6 +203,8 @@ private enum TerminalAppE2EError: Error, LocalizedError {
       "The test daemon exited before creating its socket."
     case .daemonTimedOut:
       "The test daemon did not create its socket within five seconds."
+    case .fixturePreparationFailed(let executable):
+      "Private strip/sign fixture preparation failed: \(executable)"
     }
   }
 }

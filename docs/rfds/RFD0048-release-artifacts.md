@@ -43,6 +43,12 @@ Artifact filenames resolve relative to `latest.json`. Use the artifact's target,
 - The available-update menu action is simply “Upgrade Axo”. On download, a separate visible progress window names the version/build/commit from the captured manifest passed to the installer, not a later background check or a build number presented as a version. It closes on failure or before restart. This UI amendment shipped in Axo 0.59 (Mac build 330, axod 80).
 - Malformed pointers fail closed rather than selecting a different target or falling back to old data. Filenames are basenames, not paths, arbitrary URLs or traversal. Native signing remains the authenticity boundary.
 
+## Release symbol policy (unreleased)
+
+The signing action strips only its staged bundle copy, before re-signing nested code and the app. Standalone helpers use `strip -u -r`; the Swift app host, dynamic frameworks and bundles use `strip -S -x`, preserving exported interfaces needed by runtime-loaded code. Maximum executable stripping can break an unmarked, dynamically looked-up host callback, so it is not applied to the Swift host. Existing Rust helper release rules retain their separate unstripped outputs; the signing rule exposes its original input ZIP in the `unstripped` output group. This is not a promise of archived dSYMs or source-line symbolication.
+
+The strip action never traverses symlink targets or touches resource directories, MLX kernel inventories or model compatibility. The package gate checks for remaining local/debug symbol entries in native files and compares the packaged MLX metallib byte-for-byte with its build input. Real Mach-O fixtures check exports and callbacks after strip/sign, standalone helpers, repeated stripping, untouched resources/symlinks and explicit refusal of unexpected Mach-O kinds. MLX is not a macOS-supplied framework; using another installation’s metallib is not a supported substitute for the pinned runtime’s resource. Runtime Metal kernel JIT is a separate possible change, not enabled here.
+
 ## Rollout and validation
 
 Deploy the Worker routes first: existing clients continue using legacy objects while no pointer exists. Publish the next version's immutable archive and pointer, then distribute the updated app. Do not publish or restart the active app as part of implementation testing.

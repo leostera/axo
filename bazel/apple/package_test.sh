@@ -32,6 +32,12 @@ for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod" "$app/C
   check "minos of ${executable##*/}" "$(xcrun vtool -show-build "$executable" | awk '/minos/ { print $2; exit }')" "$macos_min"
 done
 if [[ "$native" == mlx ]]; then
+  if cmp "${7:?expected original MLX Metal resource}" "$app/Contents/Resources/MLX/mlx.metallib"; then
+    echo "ok: MLX Metal resource unchanged by release packaging"
+  else
+    echo "FAIL: MLX Metal resource was modified" >&2
+    failures=$((failures + 1))
+  fi
   helper="$app/Contents/Helpers/axod-infer-mlx"
   for resource in "$helper" "$app/Contents/Resources/MLX/mlx.metallib" "$app/Contents/Resources/ThirdParty/MLX-third-party-notices.txt"; do
     if [[ ! -s "$resource" ]]; then
@@ -99,4 +105,27 @@ if [[ "$team" != - ]]; then
   check "axod's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axod" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
   check "axod-infer's team" "$(codesign -dv --verbose=4 "$app/Contents/Helpers/axod-infer" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2 }')" "$team"
 fi
+# Audit every shipped native file, not just today’s known helper names. Resources are not
+# native symbol tables; dynamic exports/Swift reflection data are intentionally retained.
+for directory in MacOS Helpers Frameworks; do
+  while IFS= read -r -d '' binary; do
+    case "$(/usr/bin/file -b "$binary")" in
+      *Mach-O*)
+        # LLVM nm otherwise synthesizes ObjC/method names from dyld metadata, even when
+        # they are absent from LC_SYMTAB. Audit the real nlist, not reconstructed names.
+        symbols=$(xcrun nm --no-dyldinfo -a "$binary")
+        # codesign re-inserts this N_OPT marker after stripping; it is not debug info.
+        if printf '%s\n' "$symbols" | awk '
+          $2 == "-" && $5 == "OPT" && $6 == "radr://5614542" { next }
+          $2 ~ /^[a-z]$/ || $2 == "-" { bad = 1 }
+          END { exit bad }
+        '; then
+          echo "ok: no local/debug symbol entries in ${binary#"$app/"}"
+        else
+          echo "FAIL: local/debug symbols remain in $binary" >&2
+          failures=$((failures + 1))
+        fi ;;
+    esac
+  done < <(find "$app/Contents/$directory" -type f -print0)
+done
 exit "$failures"

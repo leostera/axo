@@ -1,4 +1,5 @@
 load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -7,7 +8,17 @@ exports_files([
     "install_xcodeproj.sh",
     "package_test.sh",
     "sign_mac_app.sh",
+    "strip_mac_app.sh",
 ])
+
+sh_test(
+    name = "strip_mac_app_test",
+    srcs = ["strip_mac_app_test.sh"],
+    args = ["$(rootpath :strip_mac_app.sh)"],
+    data = [":strip_mac_app.sh"],
+    tags = ["no-sandbox"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
 
 swift_binary(
     name = "install_app",
