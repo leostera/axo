@@ -4,8 +4,10 @@ use gtk4::{
     prelude::*,
 };
 use std::{
+    cell::Cell,
     ffi::{CString, c_char, c_int, c_void},
     marker::PhantomData,
+    os::fd::AsRawFd,
     ptr::NonNull,
     rc::Rc,
 };
@@ -20,7 +22,21 @@ pub struct SurfaceStats {
     pub height: u32,
 }
 
+#[repr(C)]
+struct ExternalTerminal {
+    output_fd: c_int,
+    pty_fd: c_int,
+    columns: u16,
+    rows: u16,
+    replay: *const u8,
+    replay_len: usize,
+}
+
 unsafe extern "C" {
+    fn axo_gtk_surface_attach(
+        engine: *mut c_void,
+        external: *const ExternalTerminal,
+    ) -> *mut gtk4::ffi::GtkWidget;
     fn axo_gtk_engine_new() -> *mut c_void;
     fn axo_gtk_application(engine: *mut c_void) -> *mut gtk4::ffi::GtkApplication;
     fn axo_gtk_surface_new(
@@ -105,6 +121,51 @@ impl Engine {
                 command.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             )
         };
+        self.own_surface(pointer)
+    }
+
+    pub fn attached_surface(
+        self: &Rc<Self>,
+        prepared: axo_pty::attach::PreparedAttachment,
+    ) -> Result<Surface, String> {
+        let prepared = Rc::new(prepared);
+        let attachment = prepared.attachment();
+        let external = ExternalTerminal {
+            output_fd: attachment.control.as_raw_fd(),
+            pty_fd: attachment.pty.as_raw_fd(),
+            columns: prepared.size().columns(),
+            rows: prepared.size().rows(),
+            replay: prepared.replay().as_ptr(),
+            replay_len: prepared.replay().len(),
+        };
+        // SAFETY: descriptors/replay stay owned until GObject finalization through qdata.
+        // Native construction does not realize the unparented widget or start its reader.
+        let pointer = unsafe { axo_gtk_surface_attach(self.pointer(), &external) };
+        let surface = self.own_surface(pointer)?;
+        // SAFETY: a private key written once, never accessed with a mismatched type.
+        unsafe {
+            surface
+                .widget
+                .set_data("axo-desktop-private-attachment-owner", prepared.clone())
+        };
+        let previous = Cell::new(None);
+        surface.on_frame(move |stats, _| {
+            if stats.ready != 1 {
+                return;
+            }
+            let Some(size) = axo_pty::process::WindowSize::new(stats.rows, stats.columns) else {
+                return;
+            };
+            if previous.replace(Some(size)) != Some(size) {
+                if let Err(error) = prepared.attachment().resize(size) {
+                    eprintln!("AxoDesktop: terminal resize failed: {error}");
+                }
+            }
+        });
+        Ok(surface)
+    }
+
+    fn own_surface(self: &Rc<Self>, pointer: *mut gtk4::ffi::GtkWidget) -> Result<Surface, String> {
         if pointer.is_null() {
             return Err("could not create Ghostty's GTK widget".into());
         }
@@ -159,5 +220,7 @@ mod tests {
     fn surface_stats_matches_the_private_c_abi() {
         assert_eq!(std::mem::size_of::<super::SurfaceStats>(), 20);
         assert_eq!(std::mem::align_of::<super::SurfaceStats>(), 4);
+        assert_eq!(std::mem::size_of::<super::ExternalTerminal>(), 32);
+        assert_eq!(std::mem::align_of::<super::ExternalTerminal>(), 8);
     }
 }

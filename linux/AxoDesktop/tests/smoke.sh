@@ -23,9 +23,9 @@ set +e
 env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u XDG_SESSION_ID -u NOTIFY_SOCKET \
     HOME="$run/home" XDG_RUNTIME_DIR="$run/runtime" XDG_CONFIG_HOME="$run/config" \
     XDG_CACHE_HOME="$run/cache" XDG_DATA_HOME="$run/data" XDG_STATE_HOME="$run/state" \
-    GDK_BACKEND=x11 GSK_RENDERER=gl LIBGL_ALWAYS_SOFTWARE=1 GSETTINGS_BACKEND=memory \
+    AXO_DESKTOP_ISOLATED=1 GDK_BACKEND=x11 GSK_RENDERER=gl LIBGL_ALWAYS_SOFTWARE=1 GSETTINGS_BACKEND=memory \
     xvfb-run -a -s '-screen 0 1440x1000x24 -nolisten tcp' \
-    dbus-run-session -- /usr/bin/python3 "$here/drive.py" "$binary" "$run"
+    dbus-run-session -- /usr/bin/python3 "${AXO_DESKTOP_SMOKE_DRIVER:-$here/drive.py}" "$binary" "$run"
 status=$?
 set -e
 echo "Prototype artifacts: $run"

@@ -33,7 +33,11 @@ ghostty_gtk_repository = repository_rule(
     attrs = {
         "build_file": attr.label(default = "//linux/AxoDesktop:native/build.zig"),
         "bridge_file": attr.label(default = "//linux/AxoDesktop:native/bridge.zig"),
-        "patches": attr.label_list(default = ["//third_party/ghostty:0002-gtk-widget-bridge.patch"]),
+        "patches": attr.label_list(default = [
+            "//third_party/ghostty:0001-external-terminal-io.patch",
+            "//third_party/ghostty:0002-gtk-widget-bridge.patch",
+            "//third_party/ghostty:0003-gtk-external-terminal.patch",
+        ]),
     },
     environ = ["PATH", "HOME", "SSL_CERT_FILE", "ZIG_GLOBAL_CACHE_DIR", "PKG_CONFIG_PATH", "XDG_DATA_DIRS", "PYTHONPATH", "LD_LIBRARY_PATH"],
 )

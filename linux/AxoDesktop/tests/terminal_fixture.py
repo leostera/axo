@@ -24,6 +24,8 @@ def publish(*_):
 signal.signal(signal.SIGWINCH, publish)
 print('\033[2J\033[H\033[32mGHOSTTY_RENDER_PROBE\033[0m')
 print('\033[42m                         \033[0m  Rust + GTK4 + Ghostty')
+if '--replay-probe' in sys.argv[2:]:
+    print('REPLAY_LONG_BEGIN' + '0123456789' * 16 + 'REPLAY_LONG_END')
 print('Unicode: λ café 日本語 👻')
 print('Type into this real PTY:')
 sys.stdout.flush()

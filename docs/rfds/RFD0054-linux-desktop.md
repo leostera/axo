@@ -1,10 +1,10 @@
 # RFD0054 - Axo: native Linux desktop
 
 - Feature Name: `linux-desktop`
-- Status: Proposed (standalone GTK/Ghostty embedding prototype implemented)
+- Status: Proposed (Ghostty GTK rendering and v3 daemon-attached slice implemented; workbench pending)
 - Author: leostera
 - Start Date: 2026-11-14
-- Updated: 2026-11-14
+- Updated: 2026-11-15
 - Document Type: Proposal
 - Amends: [RFD0021](RFD0021-bazel-only-build.md) (Linux desktop target)
 
@@ -24,7 +24,7 @@ For example, opening shell 105 connects to `attach.sock`, sends `105\n`, reads t
 
 The product UI target is the Mac workbench's compact Session sidebar and full-height terminal/pane area, with the same selection, splitting and keyboard workflows adapted to native Linux conventions. The prototype's GTK title/header bar is scaffolding, not the final design. Matching the terminal engine does not by itself match fonts, padding, selection/copy policy, shortcuts, find, scrollbars, IME or accessibility; these require explicit comparisons with the Mac adapters.
 
-The initial prototype deliberately does something narrower: it owns a local command/PTY through Ghostty and never connects to the paired daemon. Its standalone status is visible in the window and command help. This remains a development mode, not an alternative Session backend.
+The initial standalone prototype owns a local command/PTY through Ghostty. This remains an explicit development mode, not an alternative Session backend. The attached slice now accepts an explicit candidate daemon socket and shell ID, using [v3 captured-grid metadata](RFD0055-terminal-snapshot-grid.md); it never implicitly connects to or upgrades the paired daemon. It is still not a catalog-backed workbench.
 
 ## Reference-level explanation
 
@@ -66,8 +66,8 @@ Paths in this table are relative to `apple/AxoMac/Sources/AxoMac`, except `AxoCl
 1. Axod is the sole reader of a shell's PTY master. Ghostty reads only its attachment output socket. Never change shared PTY file-status flags.
 2. All received/duplicated descriptors are close-on-exec; reject malformed/truncated/multiple descriptor messages without leaking any delivered descriptors. Reset handshake-only socket timeouts before streaming.
 3. Closing/destroying an attached widget cannot send a signal to or terminate its daemon-owned shell. Native Ghostty standalone close behavior is not automatically correct for an attachment.
-4. Replay must initially meet its original grid. A placeholder GTK size must not reflow history before the real layout is known. Do not reuse the Apple initial-size solution without implementing its GTK equivalent.
-5. Attach work runs off the GTK main thread. Cancelled/superseded generations close their resources and cannot install a stale surface. Capability negotiation precedes unsupported operations; reconnect never blindly repeats writes.
+4. Replay must initially meet its original grid. A placeholder GTK size must not reflow history before bootstrap. V3 carries the actual VT grid captured under the same lock as the replay, eliminating the later-ioctl inference race without assuming a requested VT resize succeeded. The GTK bridge parses that bounded replay before live-reader startup and actual viewport application; v2 stays unchanged for existing clients.
+5. Socket connect/handshake/replay reads run off the GTK main thread. Bounded canonical VT bootstrap is part of native surface creation; no network/socket I/O runs there, and large-replay initialization latency remains to be characterized. Cancelled/superseded tasks close their resources and cannot install a stale surface. Unsupported snapshot metadata is refused, never guessed; reconnect never blindly repeats writes.
 6. Widgets retain their engine through native finalization, including before realize. Destroy widgets and disconnect callbacks before global renderer teardown. GTK access is main-thread-only.
 7. Unknown busy state asks; closing a remote view is not archiving a remote Session. One layout writer per Session prevents older writes landing after newer ones.
 8. Same UID, a private path, a familiar executable name or a self-asserted role is not privileged client authentication. `Signer::AxoApp` continues to fail closed outside macOS. Never route local calls as `Peer::Relay`.

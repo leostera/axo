@@ -26,11 +26,19 @@ var arguments = [_][*:0]u8{
     @constCast("axo-desktop"),
     @constCast("--config-default-files=false"),
     @constCast("--keybind=clear"),
+    @constCast("--keybind=ctrl+shift+a=select_all"),
     @constCast("--keybind=ctrl+shift+c=copy_to_clipboard"),
     @constCast("--keybind=ctrl+shift+v=paste_from_clipboard"),
     @constCast("--class=dev.leostera.AxoDesktop.Prototype"),
     @constCast("--gtk-single-instance=false"),
     @constCast("--shell-integration=none"),
+    // Output-driven clipboard/URL behavior stays disabled until Axo's policy adapter exists.
+    @constCast("--clipboard-read=deny"),
+    @constCast("--clipboard-write=deny"),
+    @constCast("--link-url=false"),
+    @constCast("--link-osc8=false"),
+    @constCast("--right-click-action=ignore"),
+    @constCast("--copy-on-select=none"),
     @constCast("--font-size=14"),
     @constCast("--background=10141e"),
     @constCast("--foreground=e6edf3"),
@@ -79,6 +87,34 @@ pub export fn axo_gtk_application(engine: *Engine) *gtk.Application {
 pub export fn axo_gtk_surface_new(engine: *Engine, command: ?[*:0]const u8) ?*gtk.Widget {
     var overrides: @import("apprt/gtk/class/Overrides.zig") = .none;
     if (command) |value| overrides.command = .{ .shell = std.mem.span(value) };
+    return newSurface(engine, overrides);
+}
+
+pub const ExternalTerminal = extern struct {
+    output_fd: c_int,
+    pty_fd: c_int,
+    columns: u16,
+    rows: u16,
+    replay: [*]const u8,
+    replay_len: usize,
+};
+
+/// Borrows descriptors and replay until widget finalization; the Rust host retains their owner.
+pub export fn axo_gtk_surface_attach(engine: *Engine, external: *const ExternalTerminal) ?*gtk.Widget {
+    if (external.output_fd < 0 or external.pty_fd < 0 or external.columns == 0 or external.rows == 0 or external.replay_len > 8 * 1024 * 1024) return null;
+    const widget = newSurface(engine, .none);
+    const surface: *Surface = @ptrCast(widget);
+    surface.setExternalIo(.{
+        .output_fd = external.output_fd,
+        .pty_fd = external.pty_fd,
+        .initial_grid = .{ .columns = external.columns, .rows = external.rows },
+        .initial_replay = external.replay[0..external.replay_len],
+        .host_resizes = true,
+    });
+    return widget;
+}
+
+fn newSurface(engine: *Engine, overrides: @import("apprt/gtk/class/Overrides.zig")) *gtk.Widget {
     const surface = Surface.new(overrides);
     // CoreApp only counts realized surfaces. Track the GObject from creation too.
     engine.widgets += 1;

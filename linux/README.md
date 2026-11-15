@@ -92,7 +92,7 @@ Pass the same CUDA repository options if testing a CUDA build. The launcher owns
 
 [`AxoDesktop/`](AxoDesktop/README.md) contains the Rust/GTK4 window hosting the pinned Ghostty GTK renderer. Build/run it with `bazel run //linux/AxoDesktop:run` on a Linux development host with its native dependencies. Its isolated fixture tests real rendering, PTY keyboard input, resize and widget teardown without driving the real desktop.
 
-This is still a **standalone terminal prototype**, not a daemon Session client, installer or tray. The [Mac feature map and shared-core contract](../docs/rfds/RFD0054-linux-desktop.md) define the serial path to daemon attachment and a full workbench; session/account/storage logic stays in shared Rust rather than becoming a separate Linux backend. The generated CLI source is also available at `//crates/axo-cli:axo`; the runtime archive above does not yet bundle/install it.
+The candidate supports explicit attachment to an existing daemon shell, plus a separate standalone development mode. It is **not yet a Session/pane workbench**, installer or tray. Attachment requires the candidate's captured-grid v3 protocol; the server keeps v2 compatible for existing Mac clients. It never upgrades/restarts the paired daemon implicitly. The [Mac feature map and shared-core contract](../docs/rfds/RFD0054-linux-desktop.md) define the path to the full workbench; session/account/storage logic stays in shared Rust rather than becoming a separate Linux backend. The generated CLI source is also available at `//crates/axo-cli:axo`; the runtime archive above does not yet bundle/install it.
 
 ## Boundaries
 

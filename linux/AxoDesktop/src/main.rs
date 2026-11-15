@@ -1,5 +1,8 @@
 //! Native Rust/GTK4 shell around Ghostty's actual GTK terminal widget.
+mod attachment;
 mod ghostty;
+#[cfg(test)]
+mod options_tests;
 
 use clap::Parser;
 use ghostty::{Engine, Surface, SurfaceStats};
@@ -10,21 +13,49 @@ use std::{
     rc::Rc,
 };
 
-#[derive(Parser)]
+#[derive(Clone, Parser)]
 #[command(
     name = "AxoDesktop",
-    about = "Isolated GTK4/Ghostty embedding prototype; not an Axo session client"
+    about = "GTK4/Ghostty terminal prototype: standalone command or explicit axod attachment"
 )]
 struct Options {
-    /// Optional local shell command. This prototype does not connect to axod.
-    #[arg(long)]
+    /// Local command in standalone mode; never used as an attachment fallback.
+    #[arg(long, conflicts_with_all = ["attach_socket", "shell"])]
     command: Option<String>,
+    /// Explicit snapshot-v3 daemon attach.sock; no implicit paired-host connection.
+    #[arg(long, requires = "shell")]
+    attach_socket: Option<PathBuf>,
+    /// Existing daemon-owned shell ID.
+    #[arg(long, requires = "attach_socket", value_parser = clap::value_parser!(i64).range(1..))]
+    shell: Option<i64>,
     /// Development-only renderer readback of this window, refreshed while mapped.
     #[arg(long)]
     snapshot: Option<PathBuf>,
     /// Development-only JSON with the native terminal's current grid/pixel dimensions.
     #[arg(long)]
     diagnostics: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+enum TerminalSource {
+    Standalone(Option<String>),
+    Attached { socket: PathBuf, shell: i64 },
+}
+
+impl Options {
+    fn source(&self) -> Result<TerminalSource, String> {
+        match (&self.attach_socket, self.shell, &self.command) {
+            (Some(socket), Some(shell), None) if shell > 0 => Ok(TerminalSource::Attached {
+                socket: socket.clone(),
+                shell,
+            }),
+            (None, None, command) => Ok(TerminalSource::Standalone(command.clone())),
+            _ => Err(
+                "attachment requires --attach-socket and a positive --shell, without --command"
+                    .into(),
+            ),
+        }
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -38,6 +69,7 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(options: Options) -> Result<(), String> {
+    let source = options.source()?;
     let engine = Rc::new(Engine::new()?);
     // Native Ghostty initializes GTK first; this also establishes gtk-rs's main-thread guard.
     gtk4::init().map_err(|error| error.to_string())?;
@@ -49,7 +81,7 @@ fn run(options: Options) -> Result<(), String> {
         move |app| {
             // Rust owns the window. Suppress Ghostty's default "new Ghostty window" handler.
             app.stop_signal_emission_by_name("activate");
-            if let Err(error) = create_window(app, &engine, &options) {
+            if let Err(error) = create_window(app, &engine, &options, &source) {
                 *failure.borrow_mut() = Some(error);
                 // activate runs before Ghostty marks its run loop live.
                 let engine = engine.clone();
@@ -83,8 +115,8 @@ fn create_window(
     app: &gtk4::Application,
     engine: &Rc<Engine>,
     options: &Options,
+    source: &TerminalSource,
 ) -> Result<(), String> {
-    let surface = engine.surface(options.command.as_deref())?;
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
         .title("AxoDesktop · GTK4 prototype")
@@ -96,6 +128,66 @@ fn create_window(
     title.set_tooltip_text(Some("Local Ghostty terminal; not connected to axod"));
     header.set_title_widget(Some(&title));
     window.set_titlebar(Some(&header));
+    let pending = Rc::new(RefCell::new(None::<attachment::AttachmentTask>));
+    let closing = Rc::new(Cell::new(false));
+    window.connect_close_request({
+        let engine = engine.clone();
+        let pending = pending.clone();
+        let closing = closing.clone();
+        move |_| {
+            closing.set(true);
+            drop(pending.borrow_mut().take());
+            // External surfaces detach without confirmation or killing their shell.
+            // Standalone surfaces retain Ghostty's busy-child confirmation.
+            engine.request_quit();
+            glib::Propagation::Stop
+        }
+    });
+    match source {
+        TerminalSource::Standalone(command) => {
+            let surface = engine.surface(command.as_deref())?;
+            install_surface(&window, &surface, options);
+        }
+        TerminalSource::Attached { socket, shell } => {
+            title.set_text(&format!("Shell {shell} · connecting to axod…"));
+            title.set_tooltip_text(Some(
+                "Closing this window detaches; the daemon keeps the shell running",
+            ));
+            let weak_window = window.downgrade();
+            let engine = engine.clone();
+            let options = options.clone();
+            let shell = *shell;
+            *pending.borrow_mut() = Some(
+                attachment::AttachmentTask::start(socket.clone(), shell, move |result| {
+                    if closing.get() {
+                        return;
+                    }
+                    if let Some(window) = weak_window.upgrade() {
+                        match result
+                            .map_err(|error| error.to_string())
+                            .and_then(|prepared| engine.attached_surface(prepared))
+                        {
+                            Ok(surface) => {
+                                install_surface(&window, &surface, &options);
+                                title.set_text(&format!("Shell {shell} · axod"));
+                            }
+                            Err(error) => {
+                                title.set_text(&format!("Cannot attach shell {shell}"));
+                                window.set_child(Some(&gtk4::Label::new(Some(&error))));
+                                eprintln!("AxoDesktop: attachment failed: {error}");
+                            }
+                        }
+                    }
+                })
+                .map_err(|error| format!("cannot start attachment worker: {error}"))?,
+            );
+        }
+    }
+    window.present();
+    Ok(())
+}
+
+fn install_surface(window: &gtk4::ApplicationWindow, surface: &Surface, options: &Options) {
     window.set_child(Some(surface.widget()));
     surface.widget().connect_notify_local(Some("title"), {
         let window = window.downgrade();
@@ -108,14 +200,6 @@ fn create_window(
             }
         }
     });
-    window.connect_close_request({
-        let engine = engine.clone();
-        move |_| {
-            // Retain Ghostty's existing busy-child confirmation rather than bypassing it.
-            engine.request_quit();
-            glib::Propagation::Stop
-        }
-    });
     if options.snapshot.is_some() || options.diagnostics.is_some() {
         observe_window(
             &window,
@@ -124,9 +208,7 @@ fn create_window(
             options.diagnostics.clone(),
         );
     }
-    window.present();
     surface.focus();
-    Ok(())
 }
 
 fn observe_window(

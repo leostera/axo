@@ -1,0 +1,146 @@
+diff --git a/source/src/apprt/surface.zig b/source/src/apprt/surface.zig
+--- a/source/src/apprt/surface.zig
++++ b/source/src/apprt/surface.zig
+@@ -210,6 +210,10 @@
+ /// Axo patch: a surface whose terminal I/O is owned by another process.
+ /// See `ghostty_surface_config_s.external_io`.
+ pub const ExternalIo = struct {
++    pub const Grid = struct { columns: u16, rows: u16 };
++    initial_grid: ?Grid = null,
++    initial_replay: []const u8 = &.{},
++    host_resizes: bool = false,
+     /// Read until end of file; never written.
+     output_fd: std.posix.fd_t,
+     /// A PTY master used for input, resizing and termios/foreground queries.
+diff --git a/source/src/apprt/gtk/Surface.zig b/source/src/apprt/gtk/Surface.zig
+--- a/source/src/apprt/gtk/Surface.zig
++++ b/source/src/apprt/gtk/Surface.zig
+@@ -48,6 +48,18 @@
+ 
+ pub fn getContentScale(self: *const Self) !apprt.ContentScale {
+     return self.surface.getContentScale();
++}
++
++pub fn externalIo(self: *const Self) ?apprt.surface.ExternalIo {
++    return self.surface.externalIo();
++}
++
++pub fn initialGrid(self: *const Self) ?apprt.surface.ExternalIo.Grid {
++    return if (self.externalIo()) |io| io.initial_grid else null;
++}
++
++pub fn initialReplay(self: *const Self) []const u8 {
++    return if (self.externalIo()) |io| io.initial_replay else &.{};
+ }
+ 
+ pub fn getSize(self: *const Self) !apprt.SurfaceSize {
+diff --git a/source/src/apprt/gtk/class/surface.zig b/source/src/apprt/gtk/class/surface.zig
+--- a/source/src/apprt/gtk/class/surface.zig
++++ b/source/src/apprt/gtk/class/surface.zig
+@@ -651,6 +651,9 @@
+         /// then be realized when the widget itself is realized.
+         core_surface: ?*CoreSurface = null,
+ 
++        // Borrowed from the host; it retains the attachment until GObject finalization.
++        external_io: ?apprt.surface.ExternalIo = null,
++
+         /// Cached metrics for libghostty callbacks
+         size: apprt.SurfaceSize,
+         cursor_pos: apprt.CursorPos,
+@@ -744,6 +747,15 @@
+ 
+         pub var offset: c_int = 0;
+     };
++
++    pub fn setExternalIo(self: *Self, io: apprt.surface.ExternalIo) void {
++        assert(self.private().core_surface == null);
++        self.private().external_io = io;
++    }
++
++    pub fn externalIo(self: *Self) ?apprt.surface.ExternalIo {
++        return self.private().external_io;
++    }
+ 
+     pub fn new(overrides: Overrides) *Self {
+         const self = gobject.ext.newInstance(Self, .{
+@@ -3528,6 +3540,12 @@
+             return error.SurfaceError;
+         };
+         errdefer surface.deinit();
++
++        // Initial replay has been parsed at its original grid, before live I/O.
++        // Only now apply GTK's allocated viewport; never parse history at a placeholder.
++        if (priv.external_io != null) {
++            surface.sizeCallback(priv.size) catch return error.SurfaceError;
++        }
+ 
+         // Store it!
+         priv.core_surface = surface;
+diff --git a/source/src/Surface.zig b/source/src/Surface.zig
+--- a/source/src/Surface.zig
++++ b/source/src/Surface.zig
+@@ -549,6 +549,15 @@
+             x_dpi,
+             y_dpi,
+         );
++        // A host-provided snapshot must meet its original grid, not GTK's viewport.
++        if (comptime @hasDecl(apprt.runtime.Surface, "initialGrid")) {
++            if (rt_surface.initialGrid()) |grid| {
++                size.screen = .{
++                    .width = @as(u32, grid.columns) * size.cell.width + explicit.left + explicit.right,
++                    .height = @as(u32, grid.rows) * size.cell.height + explicit.top + explicit.bottom,
++                };
++            }
++        }
+         if (derived_config.window_padding_balance != .false) {
+             size.balancePadding(explicit, derived_config.window_padding_balance);
+         } else {
+@@ -733,6 +742,13 @@
+     // sizeCallback does retina-aware stuff we don't do here and don't want
+     // to duplicate.
+     try self.resize(self.size.screen);
++
++    // Bootstrap the bounded canonical replay before worker threads can consume live
++    // bytes or a viewport resize can reflow it. Socket I/O happens in the host worker.
++    if (comptime @hasDecl(apprt.runtime.Surface, "initialReplay")) {
++        const replay = rt_surface.initialReplay();
++        if (replay.len > 0) self.io.processOutput(replay);
++    }
+ 
+     // Start our renderer thread
+     self.renderer_thr = try std.Thread.spawn(
+@@ -977,6 +993,10 @@
+ /// True if the surface requires confirmation to quit. This should be called
+ /// by apprt to determine if the surface should confirm before quitting.
+ pub fn needsConfirmQuit(self: *Surface) bool {
++    // Closing an externally owned terminal is detach, never process termination.
++    if (comptime @hasDecl(apprt.runtime.Surface, "externalIo")) {
++        if (self.rt_surface.externalIo() != null) return false;
++    }
+     // If the surface is in read-only mode, always require confirmation
+     if (self.readonly) return true;
+ 
+diff --git a/source/src/termio/Exec.zig b/source/src/termio/Exec.zig
+--- a/source/src/termio/Exec.zig
++++ b/source/src/termio/Exec.zig
+@@ -652,7 +652,7 @@
+             const output_fd = try dupCloexec(external.output_fd);
+             errdefer _ = posix.system.close(output_fd);
+             const pty_fd = try dupCloexec(external.pty_fd);
+-            break :external .{ .output_fd = output_fd, .pty_fd = pty_fd };
++            break :external .{ .output_fd = output_fd, .pty_fd = pty_fd, .host_resizes = external.host_resizes };
+         } else null;
+         errdefer if (external_io) |external| {
+             _ = posix.system.close(external.output_fd);
+@@ -1193,6 +1193,11 @@
+         self.grid_size = grid_size;
+         self.screen_size = screen_size;
+ 
++        // GTK's host asserts the actual viewport on the master. Avoid an older
++        // queued/provisional resize racing that assertion. Apple keeps its path.
++        if (self.external_io) |external| {
++            if (external.host_resizes) return;
++        }
+         if (self.skip_provisional_resize) {
+             self.skip_provisional_resize = false;
+             return;
