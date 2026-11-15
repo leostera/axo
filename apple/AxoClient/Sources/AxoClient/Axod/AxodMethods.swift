@@ -106,6 +106,8 @@ struct AxodMethod<Params: Encodable & Sendable, Result: Decodable & Sendable>: S
 enum AxodMethods {
   static let negotiate = AxodMethod<ProtocolNegotiationRequest, ProtocolNegotiation>(.negotiate)
   static let health = AxodMethod<NoParams, DaemonHealth>(.health, timeout: .seconds(2))
+  static let permissions = AxodMethod<NoParams, DaemonPermissions>(.permissions)
+  static let permissionRequest = AxodMethod<RequestAutomationPermission, PermissionAccess>(.permissionRequest, timeout: .seconds(330))
   static let relayStatus = AxodMethod<NoParams, RemoteAccessStatus>(.relayStatus)
   static let relayConnect = AxodMethod<NoParams, RemoteAccessConnectResponse>(.relayConnect)
   static let relayLink = AxodMethod<HostPairingRequest, HostPairingResult>(.relayLink)

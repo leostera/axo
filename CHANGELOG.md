@@ -2,6 +2,15 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.66 (Mac app build 337, axod 83)
+
+### Added
+
+- Guided Axo setup: Welcome → Setup → Try Axo → Ready, with Axo’s own artwork, native appearance and quieter success colors. Existing users can open a focused repair checklist from the Axo menu or Settings → Setup & Permissions. Optional access never blocks terminal-only use.
+- Live background-service, Accessibility/input-control, screen recording, Developer Tools, protected-file, Finder/System Events Automation, notification and CLI checks. A floating file-backed guide opens beside System Settings for dragging the actual axod helper into the correct list. Unknown or quiet delivery is never shown as fully allowed; no privacy resets, captures or implicit daemon restarts.
+- One explicit setup flow replaces independent startup permission/CLI offers. Notifications inspect existing authorization rather than producing another first-use prompt. OS requests are explicit; only signed Axo.app may ask the daemon for the fixed Automation grants. `axo daemon permissions` is read-only.
+- Check for Updates opens a primary-display-centered review window with versions, pinned release notes, Skip This Version, Remind Me Later and Install Update. It never installs implicitly; daemon-changing upgrades keep their terminal-restart warning and confirmation. Upgrading to axod 83 restarts terminals through that existing confirmation path.
+
 ## 0.65 (Mac app build 336, axod 82)
 
 ### Added

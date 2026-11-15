@@ -42,6 +42,7 @@ axo relay link ABCD-1234
 axo relay status
 axo relay unlink --yes
 axo daemon status
+axo daemon permissions       # Live OS observations; never prompts
 axo daemon restart --yes
 ```
 

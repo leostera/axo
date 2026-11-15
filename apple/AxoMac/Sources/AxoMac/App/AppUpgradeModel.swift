@@ -31,6 +31,12 @@ final class AppUpgradeModel {
   @ObservationIgnored private var publishedCheckedAt: Date?
   @ObservationIgnored private var timer: Timer?
   @ObservationIgnored private var downloadPanel: NSPanel?
+  @ObservationIgnored private var updateWindow: AppUpdateWindowController?
+  @ObservationIgnored private var notesTask: Task<Void, Never>?
+  @ObservationIgnored private var publishedGeneration = 0
+  private let updatePresentation = AppUpdatePresentation(
+    runningVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?",
+    runningAxod: (Bundle.main.infoDictionary?["AXODBuildNumber"] as? String).flatMap(Int.init))
   /// How stale the published build may be when the menu opens.
   private static let publishedFreshness: TimeInterval = 10 * 60
   private static let backgroundInterval: TimeInterval = 60 * 60
@@ -66,64 +72,131 @@ final class AppUpgradeModel {
   func refresh(force: Bool = false) {
     decide()
     let stale = publishedCheckedAt.map { Date().timeIntervalSince($0) > Self.publishedFreshness } ?? true
-    guard team != nil, force || stale else { return }
+    guard phase == .idle, team != nil, force || stale else { return }
     publishedCheckedAt = Date()
+    publishedGeneration += 1
+    let generation = publishedGeneration
     Task {
       do {
-        published = try await AppUpgradeInstaller.fetchPublished(origin: origin)
+        let release = try await AppUpgradeInstaller.fetchPublished(origin: origin)
+        guard generation == publishedGeneration else { return }
+        published = release
       } catch {
-        logger.info(
-          "event=upgrade.published_check_failed reason=\(error.localizedDescription, privacy: .public)")
+        guard generation == publishedGeneration else { return }
+        logger.info("event=upgrade.published_check_failed reason=\(error.localizedDescription, privacy: .public)")
       }
       decide()
     }
   }
 
-  /// Checks the published build now; then upgrades, or says this is the newest.
-  func checkForUpdates(askFirst: Bool = false) {
-    guard phase == .idle else { return }
-    if available != nil { return askFirst ? offerUpgrade() : upgrade() }
-    guard let running else { return }
+  /// A manual check always presents the update window, never implicitly installs. Only the
+  /// notification's explicitly named Upgrade action opts into askFirst: false.
+  func checkForUpdates(askFirst: Bool = true) {
+    guard phase == .idle else {
+      if askFirst && phase == .checking { showUpdateWindow() }
+      return
+    }
+    guard let running else {
+      updatePresentation.state = .failed("This copy has no valid build number. Install a signed Axo release.")
+      if askFirst { showUpdateWindow() }
+      return
+    }
     phase = .checking
+    if askFirst {
+      updatePresentation.state = .checking
+      showUpdateWindow()
+    }
     publishedCheckedAt = Date()
+    publishedGeneration += 1
+    let generation = publishedGeneration
     Task {
       var failure: String?
       if team != nil {
         do {
-          published = try await AppUpgradeInstaller.fetchPublished(origin: origin)
+          let release = try await AppUpgradeInstaller.fetchPublished(origin: origin)
+          guard generation == publishedGeneration else { return }
+          published = release
         } catch {
+          guard generation == publishedGeneration else { return }
           failure = error.localizedDescription
-          logger.info(
-            "event=upgrade.published_check_failed reason=\(error.localizedDescription, privacy: .public)")
         }
       }
       phase = .idle
       decide()
-      if available != nil { return askFirst ? offerUpgrade() : upgrade() }
-      if let failure { return fail("Couldn’t check for updates", failure) }
-      inform(
-        team == nil ? "This Axo can’t update itself" : "Axo is up to date",
-        team == nil
-          ? "Build \(running) is not signed by a team, so it can’t check that a download is Axo’s. A newer build installed over it is still offered."
-          : "\(Self.runningTitle) is the newest.")
+      // A network failure must not turn a stale cached publication into a fresh-check result.
+      let installed: Bool = if case .installed = available { true } else { false }
+      if let failure, !installed {
+        if askFirst { updatePresentation.state = .failed(failure) }
+        else { fail("Couldn’t check for updates", failure) }
+        return
+      }
+      if let available {
+        if askFirst { showOffer(available) } else { upgrade() }
+      } else if askFirst {
+        updatePresentation.state = team == nil ? .unverifiable : .current
+      } else {
+        inform(team == nil ? "This Axo can’t update itself" : "Axo is up to date",
+          "\(Self.runningTitle) has no newer verified update available (build \(running)).")
+      }
     }
   }
 
-  /// Tapping a banner opens an offer, never an implicit download or app restart.
-  private func offerUpgrade() {
-    guard let available else { return }
-    let alert = NSAlert()
-    alert.messageText = available.version.map { "Axo \($0) is available" } ?? "A new version of Axo is available"
-    alert.informativeText = "Upgrade when you’re ready."
-    alert.addButton(withTitle: "Upgrade Axo")
-    alert.addButton(withTitle: "Not Now")
-    NSApp.activate(ignoringOtherApps: true)
-    if alert.runModal() == .alertFirstButtonReturn { upgrade() }
+  private func showOffer(_ update: AppUpgrade) {
+    notesTask?.cancel()
+    updatePresentation.state = .available(update)
+    updatePresentation.notes = .loading
+    guard updateWindow != nil, case .published(let release) = update else { return }
+    notesTask = Task {
+      let notes = try? await AppUpdateReleaseNotes.fetch(release)
+      guard !Task.isCancelled, updatePresentation.state == .available(update) else { return }
+      updatePresentation.notes = notes.map(AppUpdatePresentation.Notes.loaded) ?? .unavailable
+    }
+  }
+
+  private func showUpdateWindow() {
+    if updateWindow == nil {
+      let view = AppUpdateOfferView(presentation: updatePresentation,
+        install: { [weak self] in self?.installPresentedUpdate() },
+        skip: { [weak self] in self?.skipPresentedUpdate() },
+        remind: { [weak self] in self?.remindPresentedUpdate() },
+        checkAgain: { [weak self] in self?.checkForUpdates() },
+        close: { [weak self] in self?.closeUpdateWindow() })
+      updateWindow = AppUpdateWindowController(content: view) { [weak self] in
+        self?.notesTask?.cancel()
+        self?.updateWindow = nil
+      }
+    }
+    updateWindow?.present()
+  }
+
+  private func installPresentedUpdate() {
+    guard case .available(let shown) = updatePresentation.state else { return }
+    // Background refreshes may discover a different candidate. Re-present it for review,
+    // rather than install anything other than the version the person was looking at.
+    guard available == shown else { checkForUpdates(); return }
+    upgrade()
+  }
+  private func skipPresentedUpdate() {
+    guard case .available(let shown) = updatePresentation.state else { return }
+    AppUpdateReminder.skip(build: shown.build, defaults: .standard)
+    closeUpdateWindow()
+  }
+  private func remindPresentedUpdate() {
+    guard case .available(let shown) = updatePresentation.state else { return }
+    AppUpdateReminder.remind(build: shown.build, defaults: .standard, now: Date())
+    closeUpdateWindow()
+  }
+  private func closeUpdateWindow() {
+    notesTask?.cancel()
+    updateWindow?.close()
+    updateWindow = nil
   }
 
   func upgrade() {
     guard phase == .idle, let upgrade = available, let running else { return }
     guard confirm(upgrade, running: running) else { return }
+    closeUpdateWindow()
+    publishedGeneration += 1
     switch upgrade {
     case .installed(let build, _, _):
       restart(into: build)
@@ -158,7 +231,7 @@ final class AppUpgradeModel {
     let content = NSHostingController(rootView: AppUpgradeDownloadProgress(release: release))
     panel.contentViewController = content
     panel.setContentSize(content.view.fittingSize)
-    panel.center()
+    AppWindowPlacement.centerOnPrimaryScreen(panel)
     downloadPanel = panel
     NSApp.activate(ignoringOtherApps: true)
     panel.makeKeyAndOrderFront(nil)
@@ -178,7 +251,7 @@ final class AppUpgradeModel {
       installedVersion: AppUpgradeInstaller.bundleVersion(of: bundle),
       published: published,
       canVerifyDownloads: team != nil)
-    if phase == .idle, let available {
+    if phase == .idle, updateWindow == nil, let available {
       Task { await AppUpgradeNotifications.shared.notify(available, running: running) }
     }
   }

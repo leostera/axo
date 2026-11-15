@@ -30,6 +30,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
 enum SettingsSection: String, CaseIterable, Identifiable {
   case general
   case appearance
+  case permissions
   case sessions
   case agent
   case remoteAccess
@@ -41,6 +42,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .general: "General"
     case .appearance: "Appearance"
+    case .permissions: "Setup & Permissions"
     case .sessions: "Sessions"
     case .agent: "Agent"
     case .remoteAccess: "Remote Access"
@@ -52,6 +54,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .general: "gearshape"
     case .appearance: "paintbrush"
+    case .permissions: "checkmark.shield"
     case .sessions: "sidebar.left"
     case .agent: "terminal"
     case .remoteAccess: "network"
@@ -100,6 +103,16 @@ struct SettingsView: View {
           )
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
+        case .permissions:
+          VStack(alignment: .leading, spacing: 16) {
+            HStack {
+              Text("Setup & Permissions").font(.title2.bold())
+              Spacer()
+              Button("Run Setup Again…") { AppSetupModel.shared.show(tour: true) }
+            }
+            SetupPermissionsPane(model: AppSetupModel.shared)
+          }
+          .onChange(of: daemon.status) { _, _ in Task { await AppSetupModel.shared.refresh(force: true) } }
         case .sessions:
           SessionsSettingsView(sessions: sessions, daemon: daemon, settingsClient: settingsClient)
         case .agent:

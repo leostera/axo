@@ -11,6 +11,8 @@
         {
           "$ref": "#/$defs/HealthCall"
         },
+        { "$ref": "#/$defs/PermissionsCall" },
+        { "$ref": "#/$defs/PermissionRequestCall" },
         {
           "$ref": "#/$defs/RemoteAccessStatusCall"
         },
@@ -113,6 +115,12 @@
           "type": "object"
         }
       }
+    },
+    "PermissionsCall": {
+      "allOf": [ {"$ref":"#/$defs/BaseCall"}, {"properties":{"method":{"const":"axo.daemon.permissions"},"params":{"type":"object","maxProperties":0}}} ]
+    },
+    "PermissionRequestCall": {
+      "allOf": [ {"$ref":"#/$defs/BaseCall"}, {"required":["params"],"properties":{"method":{"const":"axo.daemon.permissions.request"},"params":{"type":"object","required":["target"],"additionalProperties":false,"properties":{"target":{"enum":["finder","systemEvents"]}}}}} ]
     },
     "HealthCall": {
       "allOf": [

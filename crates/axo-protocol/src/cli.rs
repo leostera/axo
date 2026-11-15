@@ -138,6 +138,15 @@ pub static OPERATIONS: &[Operation] = &[
         []
     ),
     op!(
+        &["daemon", "permissions"],
+        method::DAEMON_PERMISSIONS,
+        "Inspect live permissions held by the running daemon; never prompts",
+        Read,
+        Empty,
+        Identity,
+        []
+    ),
+    op!(
         &["relay", "status"],
         method::RELAY_STATUS,
         "Read the saved account link and connection state",
@@ -700,6 +709,10 @@ pub static OPERATIONS: &[Operation] = &[
 
 /// Deliberate exclusions, not forgotten commands. Raw RPC still enforces the daemon's caller policy.
 pub const EXCLUDED: &[(&str, &str)] = &[
+    (
+        method::DAEMON_PERMISSION_REQUEST,
+        "Only signed Axo.app may request OS permission from an explicit setup action",
+    ),
     (
         method::SESSION_LIST,
         "Consumes pending UI resume focus; CLI listings use session.catalog",

@@ -27,7 +27,8 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
   static let shared = AppUpgradeNotifications(
     defaults: .standard,
     authorize: {
-      (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
+      let state = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+      return state == .authorized || state == .provisional
     },
     deliver: { request in try await UNUserNotificationCenter.current().add(request) },
     isCurrent: { build in
@@ -39,15 +40,17 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
   private let deliver: (UNNotificationRequest) async throws -> Void
   private let isCurrent: (Int) -> Bool
   private var sending = false
+  private let now: () -> Date
 
   init(defaults: UserDefaults, authorize: @escaping () async -> Bool,
     deliver: @escaping (UNNotificationRequest) async throws -> Void,
-    isCurrent: @escaping (Int) -> Bool)
+    isCurrent: @escaping (Int) -> Bool, now: @escaping () -> Date = Date.init)
   {
     self.defaults = defaults
     self.authorize = authorize
     self.deliver = deliver
     self.isCurrent = isCurrent
+    self.now = now
   }
 
   func install() {
@@ -61,11 +64,12 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
   }
 
   func notify(_ upgrade: AppUpgrade, running: Int) async {
-    let key = AppUpgradeNotificationRoute.lastNotifiedKey
-    guard upgrade.build > running, upgrade.build > defaults.integer(forKey: key), !sending else { return }
+    guard upgrade.build > running, !sending,
+      AppUpdateReminder.mayNotify(build: upgrade.build, defaults: defaults, now: now()) else { return }
     sending = true
     defer { sending = false }
-    guard await authorize(), isCurrent(upgrade.build), upgrade.build > defaults.integer(forKey: key) else { return }
+    guard await authorize(), isCurrent(upgrade.build),
+      AppUpdateReminder.mayNotify(build: upgrade.build, defaults: defaults, now: now()) else { return }
     let content = UNMutableNotificationContent()
     content.title = upgrade.version.map { "Axo \($0) is available" } ?? "A new version of Axo is available"
     content.body = "Upgrade when you’re ready from the Axo menu."
@@ -74,7 +78,7 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
     let request = UNNotificationRequest(identifier: AppUpgradeNotificationRoute.category, content: content, trigger: nil)
     do {
       try await deliver(request)
-      defaults.set(max(upgrade.build, defaults.integer(forKey: key)), forKey: key)
+      AppUpdateReminder.delivered(build: upgrade.build, defaults: defaults)
     } catch {
       // The next ordinary check may retry; notification failure never blocks the menu's updater.
     }
@@ -97,7 +101,7 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
       switch action {
       case .ignore: break
       case .offer: AppUpgradeModel.shared.checkForUpdates(askFirst: true)
-      case .upgrade: AppUpgradeModel.shared.checkForUpdates()
+      case .upgrade: AppUpgradeModel.shared.checkForUpdates(askFirst: false)
       }
     }
     completionHandler()

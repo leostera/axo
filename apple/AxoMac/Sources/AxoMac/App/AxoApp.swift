@@ -45,8 +45,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       mascot.start(animatesDockIcon: true)
       if startsDaemon {
         daemon.startIfNeeded()
-        DeveloperToolsPrompt.offerWhenReady(daemon: daemon)
-        CLICommandSetup.schedule()
+        AppSetupModel.shared.start(daemon: daemon)
       }
     }
     if !usesSplash { LaunchBoot.run() }
@@ -559,11 +558,7 @@ private struct AppUpgradeMenuItem: View {
     case .checking:
       Text("Checking for Updates…").disabled(true)
     case .idle:
-      if upgrades.available != nil {
-        Button("Upgrade Axo") { upgrades.upgrade() }
-      } else {
-        Button("Check for Updates…") { upgrades.checkForUpdates() }
-      }
+      Button("Check for Updates…") { upgrades.checkForUpdates() }
     }
   }
 }
@@ -588,6 +583,7 @@ private struct AxoApplicationCommands: Commands {
     }
 
     CommandGroup(after: .appSettings) {
+      Button("Setup & Permissions…") { AppSetupModel.shared.show() }
       Button("Install “axo” Command…") {
         showSettings(section: .general)
         Task { await CLICommandInstallation.shared.install() }

@@ -63,6 +63,16 @@ public final class AxodConnection: Sendable {
     return health
   }
 
+  public func permissions() async throws -> DaemonPermissions {
+    let value = try await call(AxodMethods.permissions)
+    guard value.processId > 0 else { throw AxoClientError.invalidResponse("permission report has no process identity") }
+    return value
+  }
+
+  public func requestAutomationPermission(_ target: AutomationPermissionTarget) async throws -> PermissionAccess {
+    try await call(AxodMethods.permissionRequest, RequestAutomationPermission(target: target))
+  }
+
   public func configValue(for key: AxoConfigKey) async throws -> AxoConfigValue {
     let value = try await call(AxodMethods.configGet, ConfigGetRequest(key: key))
     guard value.key == key else {

@@ -70,6 +70,8 @@ pub mod error_code {
 pub mod method {
     pub const PROTOCOL_NEGOTIATE: &str = "axo.protocol.negotiate";
     pub const DAEMON_HEALTH: &str = "axo.daemon.health";
+    pub const DAEMON_PERMISSIONS: &str = "axo.daemon.permissions";
+    pub const DAEMON_PERMISSION_REQUEST: &str = "axo.daemon.permissions.request";
     pub const CONFIG_GET: &str = "axo.config.get";
     pub const CONFIG_SET: &str = "axo.config.set";
     pub const SESSION_LIST: &str = "axo.session.list";
@@ -127,6 +129,8 @@ pub mod method {
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
         DAEMON_HEALTH,
+        DAEMON_PERMISSIONS,
+        DAEMON_PERMISSION_REQUEST,
         CONFIG_GET,
         CONFIG_SET,
         SESSION_LIST,
@@ -623,6 +627,43 @@ pub struct DaemonHealth {
     /// scan before their first run; absent where macOS cannot say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub developer_tools: Option<PermissionState>,
+}
+
+/// A live observation, not a cached authorization. Unknown is never permission to act.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionAccess {
+    Granted,
+    NotGranted,
+    NotAsked,
+    NotRunning,
+    Unknown,
+    Unsupported,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonPermissions {
+    pub process_id: u32,
+    pub supported: bool,
+    pub accessibility: PermissionAccess,
+    pub input_control: PermissionAccess,
+    pub screen_recording: PermissionAccess,
+    pub developer_tools: PermissionAccess,
+    pub full_disk_access: PermissionAccess,
+    pub automation_finder: PermissionAccess,
+    pub automation_system_events: PermissionAccess,
+    pub locked: bool,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutomationPermissionTarget {
+    Finder,
+    SystemEvents,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestAutomationPermission {
+    pub target: AutomationPermissionTarget,
 }
 
 fn answered_means_ready() -> bool {

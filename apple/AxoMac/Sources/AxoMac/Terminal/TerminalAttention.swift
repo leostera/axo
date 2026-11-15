@@ -114,15 +114,15 @@ enum TerminalAttentionPolicy {
   }
 }
 
-/// Delivers native macOS notifications. Authorization is requested lazily on first use, as in
-/// Ghostty.app; denial silently drops notifications.
+/// Delivery never starts a privacy prompt. The setup checklist owns notification requests.
 @MainActor
 enum TerminalNotifications {
   static func post(title: String, body: String) {
     // Notification content comes from terminal output; never log it.
     Task {
       let center = UNUserNotificationCenter.current()
-      guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
+      let state = await center.notificationSettings().authorizationStatus
+      guard state == .authorized || state == .provisional else { return }
       let content = UNMutableNotificationContent()
       content.title = title
       content.body = body

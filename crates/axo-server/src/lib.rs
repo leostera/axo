@@ -510,6 +510,7 @@ impl Extension for Daemon {
 
     fn register(&self, methods: &mut IoHandler) {
         add_protocol_negotiate_method(methods);
+        permissions::register(methods);
         let core = Arc::clone(&self.core);
         add_health_method(methods, self.version, move || {
             core.ready.load(std::sync::atomic::Ordering::Acquire)

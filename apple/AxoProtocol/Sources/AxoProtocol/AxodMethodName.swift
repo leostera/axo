@@ -3,6 +3,8 @@
 public enum AxodMethodName: String, CaseIterable, Sendable {
   case negotiate = "axo.protocol.negotiate"
   case health = "axo.daemon.health"
+  case permissions = "axo.daemon.permissions"
+  case permissionRequest = "axo.daemon.permissions.request"
   case relayStatus = "axo.relay.status"
   case relayConnect = "axo.relay.connect"
   case relayLink = "axo.relay.link"

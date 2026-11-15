@@ -41,6 +41,14 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("the relay reports a host's presence instead"),
     ),
     row(
+        method::DAEMON_PERMISSIONS,
+        Remote::LocalOnly("live grants belong to the local responsible process"),
+    ),
+    row(
+        method::DAEMON_PERMISSION_REQUEST,
+        Remote::LocalOnly("only signed Axo.app may request local OS permission"),
+    ),
+    row(
         method::CONFIG_GET,
         Remote::LocalOnly("settings choose what this Mac runs; change them on the Mac"),
     ),

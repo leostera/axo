@@ -22,9 +22,14 @@ enum AxoPreferenceKey {
   /// Shared with the shell installer: setup was offered/attempted or explicitly declined.
   static let cliCommandSetupOffered = "cli.commandSetupOffered.v1"
 
+  static let setupPresented = "setup.presented.v1"
+  static let setupCompleted = "setup.completed.v1"
+  static let setupAcknowledgedIssues = "setup.acknowledgedIssues.v1"
+
   static let all = [
     sidebarIsCollapsed, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
     preventSystemSleep, sidebarMacs, pinnedSessions, seenSessions, seenSessionsBaseline,
     sidebarGrouping, developerToolsPromptDeclined, cliCommandSetupOffered,
+    setupPresented, setupCompleted, setupAcknowledgedIssues,
   ]
 }

@@ -76,8 +76,11 @@ swift_test(
         ],
     ),
     copts = ["-swift-version", "5"],
-    data = ["Resources/dev.leostera.axo.axod.plist"],
-    env = {"AXO_LAUNCH_AGENT_PLIST": "$(rootpath Resources/dev.leostera.axo.axod.plist)"},
+    data = ["Resources/dev.leostera.axo.axod.plist", "//assets:macos_icon_file"],
+    env = {
+        "AXO_LAUNCH_AGENT_PLIST": "$(rootpath Resources/dev.leostera.axo.axod.plist)",
+        "AXO_TEST_APP_ICON": "$(rootpath //assets:macos_icon_file)",
+    },
     deps = [":AxoMac"],
 )
 

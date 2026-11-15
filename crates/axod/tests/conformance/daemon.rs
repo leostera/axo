@@ -69,6 +69,47 @@ fn health_says_running_and_ready_with_this_build() {
 }
 
 #[test]
+fn permissions_are_live_observations_and_only_the_signed_app_can_request_them() {
+    let axod = Axod::start();
+    let report = axod.ok("axo.daemon.permissions", json!({}));
+    assert!(report["processId"].as_u64().is_some_and(|pid| pid > 0));
+    assert!(report["supported"].is_boolean());
+    assert!(report["locked"].is_boolean());
+    for key in [
+        "accessibility",
+        "inputControl",
+        "screenRecording",
+        "developerTools",
+        "fullDiskAccess",
+        "automationFinder",
+        "automationSystemEvents",
+    ] {
+        assert!(
+            matches!(
+                report[key].as_str(),
+                Some(
+                    "granted"
+                        | "notGranted"
+                        | "notAsked"
+                        | "notRunning"
+                        | "unknown"
+                        | "unsupported"
+                )
+            ),
+            "{report}"
+        );
+    }
+    // Real wire admission: neither a same-user client nor malformed input may raise an OS prompt.
+    let refused = axod.err("axo.daemon.permissions.request", json!({"target":"finder"}));
+    assert_eq!(refused.code, -32099);
+    let refused = axod.err(
+        "axo.daemon.permissions.request",
+        json!({"target":"arbitrary","script":"never execute"}),
+    );
+    assert_eq!(refused.code, -32099);
+}
+
+#[test]
 fn settings_are_read_changed_and_kept_across_a_restart() {
     let mut axod = Axod::start();
     let agent = axod.ok("axo.config.get", json!({ "key": "agent.command" }));

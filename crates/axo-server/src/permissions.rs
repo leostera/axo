@@ -1,90 +1,259 @@
-//! The macOS privacy permissions (TCC) what Sessions run needs.
-//!
-//! macOS charges everything axod's shells, Pi and their commands do to axod, the process
-//! responsible for them, not to Axo.app: axod is the one that must hold these grants, and the
-//! one whose prompts the person answers.
-//!
-//! - Automation: scripting other apps (`osascript`, Shortcuts). axod asks for the apps Sessions
-//!   script most when launchd starts it, so the prompts come up once, while the person is there,
-//!   rather than in the middle of a Session's work, where a command would hang on them.
-//! - Developer Tools: a developer tool's children skip the scan macOS gives every new program
-//!   before it first runs, which makes builds and test runs much faster. macOS has no prompt for
-//!   it; the person adds axod in System Settings. axod reports whether it is allowed in
-//!   `axo.daemon.health`, and Axo offers to open that pane.
+//! Read-only startup observations from axod, the responsible process for Session tools.
+//! Only an explicit signed-app request may ask for a grant. Never prompt on daemon boot.
+use axo_ipc::{
+    ErrorCode, IoHandler, Only, RpcError, TypedMethods,
+    peer::{Caller, Signer},
+};
+use axo_protocol::rpc::{
+    self, AutomationPermissionTarget as Target, PermissionAccess as Access, PermissionState,
+};
+use std::sync::Mutex;
 
-use axo_protocol::rpc::PermissionState;
-
-/// launchd's label for the axod Axo.app runs; set in `XPC_SERVICE_NAME` for its agents.
-const LAUNCH_AGENT_LABEL: &str = "dev.leostera.axo.axod";
-
-/// The apps Sessions script most, by bundle ID, with an Apple Event each answers, so asking
-/// for permission changes nothing.
-const AUTOMATION_TARGETS: &[(&str, &str)] = &[
-    ("com.apple.systemevents", "count every process"),
-    ("com.apple.finder", "count every Finder window"),
-];
-
-/// Whether axod is allowed as a developer tool; `None` off macOS or when TCC cannot say.
 pub fn developer_tools() -> Option<PermissionState> {
     tcc::preflight("kTCCServiceDeveloperTool")
 }
-
-/// Asks for Automation of [`AUTOMATION_TARGETS`] on a thread of its own, when this is the axod
-/// launchd runs for Axo.app. Tests and a hand-started axod never put prompts up.
-pub fn request_automation_if_launch_agent() {
-    if std::env::var("XPC_SERVICE_NAME").as_deref() != Ok(LAUNCH_AGENT_LABEL) {
-        return;
+fn access(state: Option<PermissionState>) -> Access {
+    match state {
+        Some(PermissionState::Granted) => Access::Granted,
+        Some(PermissionState::Denied) => Access::NotGranted,
+        Some(PermissionState::NotAsked) => Access::NotAsked,
+        None => Access::Unknown,
     }
-    let spawned = std::thread::Builder::new()
-        .name("axod-permissions".to_owned())
-        .spawn(|| {
-            for (target, event) in AUTOMATION_TARGETS {
-                request_automation(target, event);
-            }
-            match developer_tools() {
-                Some(state) => log::info!("event=permissions.developer_tools state={state:?}"),
-                None => log::info!("event=permissions.developer_tools state=unknown"),
-            }
-        });
-    if let Err(error) = spawned {
-        log::warn!(
-            "event=permissions.request_failed error_kind={:?}",
-            error.kind()
-        );
+}
+fn granted(value: bool) -> Access {
+    if value {
+        Access::Granted
+    } else {
+        Access::NotGranted
     }
 }
 
-/// Sends `target` one Apple Event through `osascript`, as a Session would: TCC asks the person
-/// the first time, and answers at once after.
-fn request_automation(target: &str, event: &str) {
-    let output = std::process::Command::new("/usr/bin/osascript")
+pub fn snapshot() -> rpc::DaemonPermissions {
+    let supported = axo_computer::AVAILABLE;
+    let (ax, screen) = axo_computer::permissions();
+    rpc::DaemonPermissions {
+        process_id: std::process::id(),
+        supported,
+        accessibility: if supported {
+            granted(ax)
+        } else {
+            Access::Unsupported
+        },
+        screen_recording: if supported {
+            granted(screen)
+        } else {
+            Access::Unsupported
+        },
+        input_control: platform::input_control(),
+        developer_tools: if supported {
+            access(developer_tools())
+        } else {
+            Access::Unsupported
+        },
+        full_disk_access: if supported {
+            access(tcc::preflight("kTCCServiceSystemPolicyAllFiles"))
+        } else {
+            Access::Unsupported
+        },
+        automation_finder: platform::automation(Target::Finder),
+        automation_system_events: platform::automation(Target::SystemEvents),
+        locked: axo_computer::screen_locked(),
+    }
+}
+fn error(code: i64, message: &str) -> RpcError {
+    RpcError {
+        code: ErrorCode::ServerError(code),
+        message: message.into(),
+        data: None,
+    }
+}
+pub fn register(handler: &mut IoHandler) {
+    handler.add_typed(
+        rpc::method::DAEMON_PERMISSIONS,
+        "expected no parameters",
+        |_: rpc::NoParams| async {
+            tokio::task::spawn_blocking(snapshot)
+                .await
+                .map_err(|_| error(-32000, "permission check failed"))
+        },
+    );
+    handler.add_typed_only(
+        Only {
+            caller: Caller::Signed(Signer::AxoApp),
+            code: -32099,
+            message: "only Axo.app may request OS permission from an explicit setup action",
+        },
+        rpc::method::DAEMON_PERMISSION_REQUEST,
+        "expected {target: finder|systemEvents}",
+        |request: rpc::RequestAutomationPermission| async move {
+            tokio::task::spawn_blocking(move || request_automation(request.target))
+                .await
+                .map_err(|_| error(-32000, "permission request failed; recheck before retrying"))?
+        },
+    );
+}
+fn target(target: Target) -> (&'static str, &'static str) {
+    match target {
+        Target::Finder => ("com.apple.finder", "count every Finder window"),
+        Target::SystemEvents => ("com.apple.systemevents", "count every process"),
+    }
+}
+fn request_automation(request: Target) -> Result<Access, RpcError> {
+    if !cfg!(target_os = "macos") {
+        return Err(error(
+            -32000,
+            "Automation permission is supported on macOS only",
+        ));
+    }
+    static REQUEST: Mutex<()> = Mutex::new(());
+    // The blocking worker owns the slot through OS completion, even after a lost receipt.
+    let _slot = match REQUEST.try_lock() {
+        Ok(slot) => slot,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(error(
+                -32006,
+                "another permission request is still in progress",
+            ));
+        }
+    };
+    let (bundle, event) = target(request);
+    let child = std::process::Command::new("/usr/bin/osascript")
         .args([
             "-e",
-            &format!("tell application id \"{target}\" to {event}"),
+            &format!("tell application id \"{bundle}\" to {event}"),
         ])
         .stdin(std::process::Stdio::null())
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            log::info!("event=permissions.automation target={target} state=granted");
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| error(-32000, "could not ask macOS for Automation permission"))?;
+    let mut owned = OwnedPrompt(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        match owned.0.try_wait() {
+            Ok(Some(status)) => {
+                return Ok(if status.success() {
+                    Access::Granted
+                } else {
+                    platform::automation(request)
+                });
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100))
+            }
+            _ => {
+                return Err(error(
+                    -32008,
+                    "permission request did not finish; recheck before trying again",
+                ));
+            }
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // errAEEventNotPermitted: the person said no, now or before.
-            let state = if stderr.contains("-1743") {
-                "denied"
-            } else {
-                "failed"
-            };
-            log::info!(
-                "event=permissions.automation target={target} state={state} detail={:?}",
-                stderr.trim()
+    }
+}
+/// Receipt loss cannot orphan the prompt process. On deadline/unwind kill and reap before
+/// releasing the request slot; successful/failed exits are already reaped by try_wait.
+struct OwnedPrompt(std::process::Child);
+impl Drop for OwnedPrompt {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use std::ffi::c_void;
+    // Apple AEDataModel.h uses #pragma pack(push, 2), including on LP64.
+    #[repr(C, packed(2))]
+    struct Descriptor {
+        kind: u32,
+        data: *mut c_void,
+    }
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AECreateDesc(
+            kind: u32,
+            data: *const c_void,
+            length: libc::c_long,
+            result: *mut Descriptor,
+        ) -> i16;
+        fn AEDisposeDesc(desc: *mut Descriptor) -> i16;
+        fn AEDeterminePermissionToAutomateTarget(
+            desc: *const Descriptor,
+            class: u32,
+            event: u32,
+            ask: u8,
+        ) -> i32;
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightPostEventAccess() -> bool;
+    }
+    pub fn input_control() -> Access {
+        // SAFETY: public, argument-free, read-only preflight on supported macOS versions.
+        granted(unsafe { CGPreflightPostEventAccess() })
+    }
+    pub fn automation(request: Target) -> Access {
+        let bundle = target(request).0.as_bytes();
+        let mut desc = Descriptor {
+            kind: 0,
+            data: std::ptr::null_mut(),
+        };
+        // SAFETY: the packed descriptor matches Apple's ABI; bytes live through creation,
+        // the successful descriptor is disposed exactly once. ask=0 never prompts or launches.
+        unsafe {
+            if AECreateDesc(
+                u32::from_be_bytes(*b"bund"),
+                bundle.as_ptr().cast(),
+                bundle.len() as libc::c_long,
+                &mut desc,
+            ) != 0
+            {
+                return Access::Unknown;
+            }
+            let result = AEDeterminePermissionToAutomateTarget(
+                &desc,
+                u32::from_be_bytes(*b"****"),
+                u32::from_be_bytes(*b"****"),
+                0,
             );
+            AEDisposeDesc(&mut desc);
+            classify(result)
         }
-        Err(error) => log::warn!(
-            "event=permissions.automation target={target} state=failed error_kind={:?}",
-            error.kind()
-        ),
+    }
+    fn classify(code: i32) -> Access {
+        match code {
+            0 => Access::Granted,
+            -1743 => Access::NotGranted,
+            -1744 => Access::NotAsked,
+            -600 => Access::NotRunning,
+            _ => Access::Unknown,
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn apple_event_abi_and_unknown_results_are_explicit() {
+            assert_eq!(std::mem::size_of::<Descriptor>(), 12);
+            assert_eq!(std::mem::align_of::<Descriptor>(), 2);
+            assert_eq!(classify(-600), Access::NotRunning);
+            assert_eq!(classify(-1744), Access::NotAsked);
+            assert_eq!(classify(1234), Access::Unknown);
+        }
+    }
+}
+#[cfg(not(target_os = "macos"))]
+mod platform {
+    use super::*;
+    pub fn input_control() -> Access {
+        Access::Unsupported
+    }
+    pub fn automation(_: Target) -> Access {
+        Access::Unsupported
     }
 }
 
@@ -144,15 +313,52 @@ mod tcc {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
+#[cfg(test)]
+mod wire_tests {
     use super::*;
-
-    #[test]
-    fn tcc_answers_for_developer_tools_on_a_mac() {
-        assert!(
-            developer_tools().is_some(),
-            "TCCAccessPreflight is found and answers one of its three states"
-        );
+    #[tokio::test]
+    async fn report_is_live_and_unsigned_callers_cannot_request_any_permission() {
+        let mut methods = IoHandler::new();
+        register(&mut methods);
+        let report = methods
+            .handle_request(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.permissions"}"#)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["result"]["processId"], std::process::id());
+        assert!(value["result"]["supported"].is_boolean());
+        for key in [
+            "accessibility",
+            "inputControl",
+            "screenRecording",
+            "developerTools",
+            "fullDiskAccess",
+            "automationFinder",
+            "automationSystemEvents",
+        ] {
+            assert!(matches!(
+                value["result"][key].as_str(),
+                Some(
+                    "granted"
+                        | "notGranted"
+                        | "notAsked"
+                        | "notRunning"
+                        | "unknown"
+                        | "unsupported"
+                )
+            ));
+        }
+        // Admission precedes parsing/effects. Even malformed input must not open a prompt.
+        for params in [
+            r#"{"target":"finder"}"#,
+            r#"{"target":"anything","script":"never execute"}"#,
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"axo.daemon.permissions.request","params":{params}}}"#
+            );
+            let response = methods.handle_request(&request).await.unwrap();
+            let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(value["error"]["code"], -32099);
+        }
     }
 }
