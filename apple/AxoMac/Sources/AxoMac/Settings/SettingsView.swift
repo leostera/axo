@@ -127,7 +127,7 @@ struct SettingsView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .padding(20)
     }
-    .frame(minWidth: 700, minHeight: 440)
+    .frame(minWidth: 860, minHeight: 560)
   }
 }
 

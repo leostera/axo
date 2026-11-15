@@ -149,7 +149,12 @@ final class AppUpdateWindowController: NSWindowController, NSWindowDelegate {
       styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
     window.title = "Axo Update"
     window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(rootView: content)
+    let hosting = NSHostingController(rootView: content)
+    hosting.sizingOptions = []
+    window.contentViewController = hosting
+    window.setContentSize(NSSize(width: 620, height: 440))
+    window.contentMinSize = NSSize(width: 580, height: 360)
+    window.contentMaxSize = NSSize(width: 900, height: 760)
     super.init(window: window)
     window.delegate = self
   }

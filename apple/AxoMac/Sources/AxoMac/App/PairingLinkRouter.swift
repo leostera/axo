@@ -10,6 +10,8 @@ final class PairingLinkRouter {
   var pendingCode: HostPairingCode?
   private(set) var routeRevision = 0
 
+  func showSettings() { routeRevision &+= 1 }
+
   func receive(_ url: URL) -> Bool {
     guard let code = HostPairingCode.fromPairingURL(url) else { return false }
     pendingCode = code

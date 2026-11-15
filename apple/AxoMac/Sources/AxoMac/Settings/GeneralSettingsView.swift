@@ -101,5 +101,7 @@ struct GeneralSettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .scrollIndicators(.visible)
+    .scrollIndicatorsFlash(onAppear: true)
   }
 }

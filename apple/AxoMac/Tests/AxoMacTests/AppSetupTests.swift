@@ -22,7 +22,7 @@ final class AppSetupTests: XCTestCase {
   @MainActor
   private func effects(check: @escaping () async -> SetupSnapshot) -> AppSetupEffects {
     AppSetupEffects(check: check, fix: { _ in XCTFail("No repair expected") },
-      testConnection: { "Connection verified; no commands ran." },
+      connectionStatus: { SetupConnectionStatus(health: Self.snapshot().health!, account: .unlinked) },
       guide: { _, _, _ in XCTFail("No settings window expected") },
       openTerminal: { XCTFail("No terminal open expected") }, restartDaemon: { XCTFail("No restart expected") })
   }
@@ -106,7 +106,7 @@ final class AppSetupTests: XCTestCase {
     let e = AppSetupEffects(check: { Self.snapshot() }, fix: { _ in
       calls += 1
       await withCheckedContinuation { pending = $0 }
-    }, testConnection: { "ok" }, guide: { _, _, _ in XCTFail("Unexpected guide") },
+    }, connectionStatus: { SetupConnectionStatus(health: Self.snapshot().health!, account: .unlinked) }, guide: { _, _, _ in XCTFail("Unexpected guide") },
       openTerminal: {}, restartDaemon: { XCTFail("Unexpected restart") })
     let model = AppSetupModel(defaults: store(), effects: e)
     let first = Task { await model.fix(.finder) }
@@ -123,29 +123,36 @@ final class AppSetupTests: XCTestCase {
   }
 
   @MainActor
-  func testTryStepRequiresActualResultOrExplicitSkipAndFixtureStartupCannotRunLiveChecks() async {
-    var testCalls = 0
-    let defaults = store()
-    let e = AppSetupEffects(check: { Self.snapshot(.unknown) }, fix: { _ in XCTFail("No repair") },
-      testConnection: { testCalls += 1; return "Axo → axod verified" }, guide: { _, _, _ in XCTFail("No guide") },
-      openTerminal: {}, restartDaemon: {})
-    let model = AppSetupModel(defaults: defaults, effects: e)
+  func testConnectionsAreReadOnlyAndPairingIsOptional() async {
+    var checks = 0
+    var pairingOpens = 0
+    let e = AppSetupEffects(check: { Self.snapshot() }, fix: { _ in XCTFail("No repair") },
+      connectionStatus: {
+        checks += 1
+        return SetupConnectionStatus(health: Self.snapshot().health!, account: .unlinked)
+      }, guide: { _, _, _ in XCTFail("No guide") },
+      openTerminal: {}, restartDaemon: {}, openPairing: { pairingOpens += 1 })
+    let model = AppSetupModel(defaults: store(), effects: e)
     model.next(); model.next()
     XCTAssertEqual(model.step, .tryIt)
+    await model.refreshConnection()
+    XCTAssertEqual(checks, 1)
+    XCTAssertEqual(model.connection?.account, .unlinked)
+    XCTAssertTrue(model.connection?.health.ready == true)
+    XCTAssertEqual(pairingOpens, 0, "Observing status never starts pairing")
+    model.openPairing()
+    XCTAssertEqual(pairingOpens, 1)
     model.next()
-    XCTAssertEqual(model.step, .tryIt, "Opening the test screen is not a passing test")
-    await model.testConnection()
-    XCTAssertEqual(testCalls, 1)
-    model.next()
-    XCTAssertEqual(model.step, .ready)
-    let inactive = AppSetupModel(defaults: defaults, effects: e, requiresStart: true)
-    await inactive.refresh()
-    await inactive.fix(.finder)
-    XCTAssertNil(inactive.snapshot, "A fixture without normal startup never probes the person's Mac")
+    XCTAssertEqual(model.step, .ready, "No account is required for local use")
+    let inactive = AppSetupModel(defaults: store(), effects: e, requiresStart: true)
+    inactive.next(); inactive.next()
+    await inactive.refreshConnection()
+    XCTAssertNil(inactive.connection, "Inactive fixtures cannot probe the person's Mac")
+    XCTAssertEqual(checks, 1)
     let skipped = AppSetupModel(defaults: store(), effects: e)
-    skipped.next(); skipped.next(); skipped.skipTest()
+    skipped.next(); skipped.next(); skipped.next()
     XCTAssertEqual(skipped.step, .ready)
-    XCTAssertNil(skipped.testResult, "Skipping never forges a successful test")
+    XCTAssertNil(skipped.connection, "Continuing without a result must not forge a connection")
   }
 
   @MainActor
@@ -185,7 +192,7 @@ final class AppSetupTests: XCTestCase {
       if checks == 2 { return await withCheckedContinuation { oldReply = $0 } }
       return checks == 1 ? initial : Self.snapshot(.notGranted)
     }, fix: { _ in await withCheckedContinuation { prompt = $0 } },
-      testConnection: { "fixture" }, guide: { _, _, _ in XCTFail("No guide") },
+      connectionStatus: { SetupConnectionStatus(health: Self.snapshot().health!, account: .unlinked) }, guide: { _, _, _ in XCTFail("No guide") },
       openTerminal: {}, restartDaemon: {})
     let model = AppSetupModel(defaults: store(), effects: e)
     await model.refresh()
@@ -234,16 +241,80 @@ final class AppSetupTests: XCTestCase {
     let content = try XCTUnwrap(window.contentViewController?.view)
     for step in 0..<4 {
       content.layoutSubtreeIfNeeded()
+      // An offscreen NSHostingController only evaluates its changed graph when drawn.
+      try renderWindowContent(content, name: "axo-setup-step-\(step)")
       try await Task.sleep(for: .milliseconds(30))
       content.layoutSubtreeIfNeeded()
       XCTAssertEqual(window.contentLayoutRect.width, 820, accuracy: 1)
-      XCTAssertEqual(content.bounds.height, 720, accuracy: 1, "SwiftUI must not enlarge the window to its ideal height")
+      XCTAssertEqual(content.bounds.height, AppSetupWindowController.preferredSize(for: model.step).height,
+        accuracy: 1, "Only the explicit step size may change the window")
       XCTAssertFalse(window.isVisible, "Fixture must never steal the person's focus")
       if step == 1 {
         try renderWindowContent(content, name: "axo-setup-real-window")
       }
-      if step == 2 { model.skipTest() } else if step < 3 { model.next() }
+      if step == 2 {
+        try renderWindowContent(content, name: "axo-setup-connections")
+        XCTAssertNotNil(model.connection, "Entering Connections must check automatically, without a button press")
+      }
+      if step < 3 { model.next() }
     }
+  }
+
+  @MainActor
+  func testLateConnectionReplyCannotOverwriteAReenteredStep() async throws {
+    var pending: CheckedContinuation<SetupConnectionStatus, Never>?
+    var reads = 0
+    let e = AppSetupEffects(check: { Self.snapshot() }, fix: { _ in XCTFail("No repair") },
+      connectionStatus: {
+        reads += 1
+        if reads == 1 { return await withCheckedContinuation { pending = $0 } }
+        return SetupConnectionStatus(health: Self.snapshot().health!, account: .unlinked)
+      }, guide: { _, _, _ in XCTFail("No guide") }, openTerminal: {}, restartDaemon: {})
+    let model = AppSetupModel(defaults: store(), effects: e)
+    model.next(); model.next()
+    let stale = Task { await model.refreshConnection() }
+    for _ in 0..<100 { if pending != nil { break }; await Task.yield() }
+    let reply = try XCTUnwrap(pending)
+    model.back(); model.next()
+    await model.refreshConnection()
+    reply.resume(returning: SetupConnectionStatus(health: Self.snapshot().health!, account: .connected))
+    await stale.value
+    XCTAssertEqual(model.connection?.account, .unlinked)
+    XCTAssertFalse(model.isCheckingConnection)
+  }
+
+  @MainActor
+  func testOneUnverifiedCheckIsNamedAboveTheFullHeightList() async throws {
+    var source = Self.snapshot()
+    source.permissions = DaemonPermissions(processId: 42, accessibility: .granted, inputControl: .granted,
+      screenRecording: .granted, developerTools: .granted, fullDiskAccess: .granted,
+      automationFinder: .granted, automationSystemEvents: .notRunning)
+    let model = AppSetupModel(defaults: store(), effects: effects(check: { source }))
+    await model.refresh()
+    model.next()
+    XCTAssertEqual(model.readyCount, 8)
+    XCTAssertEqual(model.status(.systemEvents), .notRunning, "Unverified must never be described as a denied grant")
+    let controller = AppSetupWindowController(model: model, appIcon: try AppFixtureArtwork.icon(), onClose: {})
+    let window = try XCTUnwrap(controller.window)
+    defer { window.close() }
+    let content = try XCTUnwrap(window.contentViewController?.view)
+    content.layoutSubtreeIfNeeded()
+    try renderWindowContent(content, name: "axo-setup-one-unverified")
+    XCTAssertEqual(content.bounds.height, 1000, accuracy: 1)
+    XCTAssertFalse(window.isVisible)
+  }
+
+  func testAccountStatusNeverConfusesOfflineOrUnknownWithUnlinked() {
+    func remote(_ state: RemoteAccessConnectionState, linked: Bool?) -> RemoteAccessStatus {
+      RemoteAccessStatus(state: state, connectedSinceUnixMillis: nil, hostName: "fixture",
+        hostKind: "macos", lastError: nil, linked: linked)
+    }
+    XCTAssertEqual(SetupAccountStatus(remote(.disconnected, linked: false)), .unlinked)
+    XCTAssertEqual(SetupAccountStatus(remote(.disconnected, linked: true)), .offline)
+    XCTAssertEqual(SetupAccountStatus(remote(.disconnected, linked: nil)), .unknown)
+    XCTAssertEqual(SetupAccountStatus(remote(.connecting, linked: true)), .connecting)
+    XCTAssertEqual(SetupAccountStatus(remote(.connected, linked: true)), .connected)
+    XCTAssertEqual(SetupAccountStatus(nil), .unknown)
   }
 
   @MainActor

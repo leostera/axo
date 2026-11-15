@@ -116,12 +116,39 @@ struct SetupSnapshot {
   }
 }
 
+enum SetupAccountStatus: Equatable {
+  case connected, connecting, offline, unlinked, unknown
+  init(_ status: RemoteAccessStatus?) {
+    guard let status else { self = .unknown; return }
+    switch status.state {
+    case .connected: self = .connected
+    case .connecting: self = .connecting
+    case .disconnected: self = status.linked == true ? .offline : status.linked == false ? .unlinked : .unknown
+    }
+  }
+  var title: String {
+    switch self {
+    case .connected: "Connected to your Axo account"
+    case .connecting: "Connecting to your Axo account…"
+    case .offline: "Account linked · reconnecting when available"
+    case .unlinked: "This Mac isn’t linked to an account"
+    case .unknown: "Account status couldn’t be verified"
+    }
+  }
+}
+
+struct SetupConnectionStatus {
+  let health: DaemonHealth
+  let account: SetupAccountStatus
+}
+
 @MainActor
 struct AppSetupEffects {
   let check: () async -> SetupSnapshot
   let fix: (SetupItem) async throws -> Void
-  let testConnection: () async throws -> String
+  let connectionStatus: () async throws -> SetupConnectionStatus
   let guide: (SetupItem, @escaping () -> Void, @escaping () -> Bool) throws -> Void
   let openTerminal: () -> Void
   let restartDaemon: () -> Void
+  var openPairing: () -> Void = {}
 }

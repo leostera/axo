@@ -15,7 +15,7 @@ The Mac host owns local agent processes and terminal sessions. Remote clients co
 
 ## Setup and permissions
 
-Axo guides you through Welcome → Setup → Try Axo → Ready. Setup checks this Mac’s actual permissions and explains what each enables; **Axo → Setup & Permissions…** and **Settings → Setup & Permissions** reopen the same checks. A small draggable-helper guide helps you add `axod` to the right System Settings list. Optional permissions can be skipped, unknown states are not marked allowed, and restarts always require confirmation. The first-pass connection test verifies app-to-daemon RPC without running commands or changing Sessions.
+Axo guides you through Welcome → Setup → Connections → Ready. Setup checks this Mac’s actual permissions and explains what each enables; **Axo → Setup & Permissions…** and **Settings → Setup & Permissions** reopen the same checks. A small draggable-helper guide helps you add `axod` to the right System Settings list. Optional permissions can be skipped, unknown states are not marked allowed, and restarts always require confirmation. Connections automatically shows the local daemon and account-link status without running commands or changing Sessions. Linking an account is optional.
 
 **Check for Updates…** opens a review window on the primary display with version details and release notes before you choose to install.
 

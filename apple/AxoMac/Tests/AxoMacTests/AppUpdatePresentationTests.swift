@@ -46,6 +46,36 @@ final class AppUpdatePresentationTests: XCTestCase {
   }
 
   @MainActor
+  func testRealUpdateWindowKeepsItsSizeAcrossEveryState() async throws {
+    _ = NSApplication.shared
+    let model = AppUpdatePresentation(runningVersion: "0.67", runningAxod: 83)
+    let noAction = { XCTFail("Window layout must never install or invoke an action") }
+    let controller = AppUpdateWindowController(content: AppUpdateOfferView(presentation: model,
+      appIcon: try AppFixtureArtwork.icon(), install: noAction, skip: noAction, remind: noAction,
+      checkAgain: noAction, close: noAction), onClose: {})
+    let window = try XCTUnwrap(controller.window)
+    defer { window.close() }
+    let content = try XCTUnwrap(window.contentViewController?.view)
+    let release = try PublishedBuild(build: 339, axodBuild: 83, commit: String(repeating: "b", count: 40),
+      version: "0.68", artifacts: ["aarch64-apple-darwin": "axo-0.68-bbbbbbbbbbbb-aarch64-apple-darwin.zip"])
+    for state in [AppUpdatePresentation.State.checking, .current, .failed("Offline"), .unverifiable, .available(.published(release))] {
+      model.state = state
+      model.notes = .loaded("### Fixed\n\n" + String(repeating: "- Window content wraps within its width, never drives native window geometry.\n", count: 80))
+      content.layoutSubtreeIfNeeded()
+      try await Task.sleep(for: .milliseconds(30))
+      content.layoutSubtreeIfNeeded()
+      XCTAssertEqual(content.bounds.width, 620, accuracy: 1)
+      XCTAssertEqual(content.bounds.height, 440, accuracy: 1)
+      XCTAssertFalse(window.isVisible)
+    }
+    let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+    content.cacheDisplay(in: content.bounds, to: bitmap)
+    let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+    let directory = ProcessInfo.processInfo.environment["TEST_UNDECLARED_OUTPUTS_DIR"] ?? FileManager.default.temporaryDirectory.path
+    try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("axo-update-real-window.png"))
+  }
+
+  @MainActor
   func testUpdateWindowLightAndDarkFixturesNeverInstallOrOpenARealWindow() throws {
     _ = NSApplication.shared
     let release = try PublishedBuild(build: 342, axodBuild: 83, commit: String(repeating: "a", count: 40),

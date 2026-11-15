@@ -9,11 +9,13 @@ struct CLICommandSettingsSection: View {
       HStack {
         LabeledContent("axo command", value: installation.isInstalling ? "Installing…" : installation.status.title)
         if installation.isInstalling { ProgressView().controlSize(.small) }
-        Button("Install “axo” Command…") {
-          Task { await installation.install() }
+        if installation.status != .installed {
+          Button("Install “axo” Command…") {
+            Task { await installation.install() }
+          }
+          .disabled(installation.isInstalling || !installation.status.canInstall)
+          .accessibilityIdentifier("install-axo-command")
         }
-        .disabled(installation.isInstalling || !installation.status.canInstall)
-        .accessibilityIdentifier("install-axo-command")
       }
       Text(installation.destination.path)
         .font(.caption.monospaced())

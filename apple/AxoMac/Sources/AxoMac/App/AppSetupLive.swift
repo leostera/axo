@@ -10,16 +10,17 @@ import UserNotifications
 enum AppSetupLive {
   static weak var daemon: DaemonController?
   static var effects: AppSetupEffects {
-    AppSetupEffects(check: check, fix: fix, testConnection: {
-      let health = try await AxodConnection.withFreshConnection(to: DaemonController.socketPath()) { try await $0.health() }
-      guard health.ready else { throw failure("axod is still restoring Sessions. Try again shortly.") }
-      return "Connected to axod build \(health.buildNumber). No commands were run."
+    AppSetupEffects(check: check, fix: fix, connectionStatus: {
+      let socket = try DaemonController.socketPath()
+      let health = try await AxodConnection.withFreshConnection(to: socket) { try await $0.health() }
+      let account = try? await AxodConnection.withFreshConnection(to: socket) { try await $0.remoteAccessStatus() }
+      return SetupConnectionStatus(health: health, account: SetupAccountStatus(account))
     }, guide: { item, recheck, granted in
       try AppPermissionGuide.shared.show(item: item,
         executable: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod"),
         recheck: recheck, granted: granted)
     }, openTerminal: { TerminalReopenRequests.shared.request() },
-      restartDaemon: { daemon?.restartDaemon() })
+      restartDaemon: { daemon?.restartDaemon() }, openPairing: { PairingLinkRouter.shared.showSettings() })
   }
 
   static func check() async -> SetupSnapshot {

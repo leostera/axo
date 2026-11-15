@@ -12,18 +12,21 @@ public struct RemoteAccessStatus: Decodable, Equatable, Sendable {
   public let hostName: String
   public let hostKind: String
   public let lastError: String?
+  /// Nil means an older daemon did not report durable account linking; never infer unlinked.
+  public let linked: Bool?
 
   public var isConnected: Bool { state == .connected }
 
   public init(
     state: RemoteAccessConnectionState, connectedSinceUnixMillis: UInt64?, hostName: String,
-    hostKind: String, lastError: String?
+    hostKind: String, lastError: String?, linked: Bool? = nil
   ) {
     self.state = state
     self.connectedSinceUnixMillis = connectedSinceUnixMillis
     self.hostName = hostName
     self.hostKind = hostKind
     self.lastError = lastError
+    self.linked = linked
   }
 }
 

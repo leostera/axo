@@ -13,14 +13,15 @@ final class AppSetupModel {
   private(set) var snapshot: SetupSnapshot?
   private(set) var isChecking = false
   private(set) var fixing: SetupItem?
-  private(set) var isTesting = false
-  private(set) var testResult: String?
+  private(set) var isCheckingConnection = false
+  private(set) var connection: SetupConnectionStatus?
+  private(set) var connectionFailure: String?
   private(set) var failure: String?
   @ObservationIgnored private let logger = Logger(subsystem: "dev.leostera.axo", category: "setup")
   @ObservationIgnored private let defaults: UserDefaults
   @ObservationIgnored private let effects: AppSetupEffects
   @ObservationIgnored private var generation = 0
-  @ObservationIgnored private var testGeneration = 0
+  @ObservationIgnored private var connectionGeneration = 0
   @ObservationIgnored private var observer: NSObjectProtocol?
   @ObservationIgnored private var window: AppSetupWindowController?
   @ObservationIgnored private var automaticConsidered = false
@@ -136,29 +137,42 @@ final class AppSetupModel {
     switch step {
     case .welcome: step = .permissions
     case .permissions: step = .tryIt
-    case .tryIt: if testResult != nil { step = .ready }
+    case .tryIt: leaveConnectionStep(); step = .ready
     case .ready: finish()
     }
   }
   func back() {
-    if step == .tryIt { testGeneration += 1; isTesting = false }
+    if step == .tryIt { leaveConnectionStep() }
     if let previous = Step(rawValue: step.rawValue - 1) { step = previous }
   }
-  func skipTest() { testGeneration += 1; isTesting = false; step = .ready }
-  func testConnection() async {
-    guard !isTesting else { return }
-    isTesting = true; failure = nil; testResult = nil
-    testGeneration += 1
-    let current = testGeneration
+  func leaveConnectionStep() { connectionGeneration += 1; isCheckingConnection = false }
+  func observeConnection() async {
+    repeat {
+      guard !Task.isCancelled, step == .tryIt else { return }
+      await refreshConnection()
+      do { try await Task.sleep(for: .seconds(5)) } catch { return }
+    } while !Task.isCancelled
+  }
+  func refreshConnection() async {
+    guard (!requiresStart || started), !isCheckingConnection else { return }
+    isCheckingConnection = true
+    connectionGeneration += 1
+    let current = connectionGeneration
     do {
-      let result = try await effects.testConnection()
-      guard current == testGeneration, step == .tryIt else { return }
-      testResult = result
+      let result = try await effects.connectionStatus()
+      guard current == connectionGeneration, step == .tryIt else { return }
+      connection = result
+      connectionFailure = nil
     } catch {
-      guard current == testGeneration, step == .tryIt else { return }
-      failure = error.localizedDescription
+      guard current == connectionGeneration, step == .tryIt else { return }
+      connection = nil
+      connectionFailure = "Couldn’t reach the local Axo service. Check Login Items in Setup & Permissions."
     }
-    if current == testGeneration { isTesting = false }
+    if current == connectionGeneration { isCheckingConnection = false }
+  }
+  func openPairing() {
+    guard !requiresStart || started else { return }
+    effects.openPairing()
   }
   /// Invoked only after the view confirms terminal/process interruption.
   func restartDaemon() {
@@ -189,11 +203,12 @@ final class AppSetupModel {
   func show(tour: Bool = false) {
     guard !requiresStart || started else { return }
     automaticConsidered = true
-    if tour { step = .welcome; testGeneration += 1; testResult = nil; isTesting = false }
+    if tour { step = .welcome; leaveConnectionStep(); connection = nil }
     if window == nil {
       step = tour ? .welcome : .permissions
-      testResult = nil
+      connection = nil
       window = AppSetupWindowController(model: self) { [weak self] in
+        self?.leaveConnectionStep()
         self?.acknowledge()
         self?.window = nil
       }

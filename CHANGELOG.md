@@ -2,6 +2,18 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## Unreleased
+
+### Improved
+
+- Setup prefers a taller window for the complete permission checklist and a compact window for other steps. Smaller displays retain scrolling with a visible hint, intact rounded viewport corners and a named summary that jumps to unchecked items.
+- Connections automatically checks the local daemon and account status. Account pairing is optional and opens the existing Remote Access settings; there is no manual connection-test button or pairing prerequisite for local Sessions.
+- Settings defaults to a wider, taller resizable window. Command-install buttons disappear when the command is installed.
+
+### Fixed
+
+- The native update window keeps its intended width and height across checking, current, failure and available-update states, rather than adopting SwiftUI’s unconstrained ideal size.
+
 ## 0.67 (Mac app build 338, axod 83)
 
 ### Fixed

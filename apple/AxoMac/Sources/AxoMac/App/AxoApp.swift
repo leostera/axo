@@ -284,7 +284,9 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       )
       .preferredColorScheme(appearanceTheme.colorScheme)
     }
-    .windowResizability(.contentSize)
+    .windowResizability(.contentMinSize)
+    .defaultSize(width: 1020, height: 960)
+    .defaultPosition(.center)
   }
 }
 
@@ -584,11 +586,13 @@ private struct AxoApplicationCommands: Commands {
 
     CommandGroup(after: .appSettings) {
       Button("Setup & Permissions…") { AppSetupModel.shared.show() }
-      Button("Install “axo” Command…") {
-        showSettings(section: .general)
-        Task { await CLICommandInstallation.shared.install() }
+      if CLICommandInstallation.shared.status != .installed {
+        Button("Install “axo” Command…") {
+          showSettings(section: .general)
+          Task { await CLICommandInstallation.shared.install() }
+        }
+        .disabled(CLICommandInstallation.shared.isInstalling)
       }
-      .disabled(CLICommandInstallation.shared.isInstalling)
     }
 
     // ⌘Q leaves Axo in the menu bar; only Quit Axo quits it, and then it stays quit.
