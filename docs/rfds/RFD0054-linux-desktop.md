@@ -173,9 +173,12 @@ The spike is tested with Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and s
 ## Unresolved questions
 
 Before Linux release, resolve the blocked-input server regression
-`a_pane_that_takes_no_input_holds_up_only_its_own_writers` (the full suite and an
-isolated run time out). The other server cases pass with that case explicitly
-excluded, but this is not full-suite acceptance. Preserve shared-master flags and
-descriptor ownership when designing a bounded input/teardown fix.
+`a_pane_that_takes_no_input_holds_up_only_its_own_writers`. Its isolated worker now
+has a 25-second parent watchdog; the full server run completes with 88 passing
+cases and this one failure, rather than hanging at runtime teardown. The runtime
+fix remains open: a poll-only preflight failed repeated acceptance and was discarded.
+See [the investigation](../../linux/README.md#blocked-input-hardening-gate).
+Preserve shared-master flags and descriptor ownership when designing active-write
+cancellation; bounded test isolation is not full-suite acceptance.
 
 Before privileged UI: choose a Linux application-authentication and approval trust design; this RFD deliberately does not grant authority. Before release: declare the supported distribution/library/CPU matrix, verify native Wayland/GPU/accessibility behavior, and settle artifact authenticity plus install/update lifecycle. Continue reducing pin-specific GTK glue without changing the Mac embedding contract; characterize bounded replay bootstrap latency before making responsiveness claims. The original Apple external-I/O patch shares the read-fd termios-poll assumption corrected in GTK-only 0003; assess that source finding with focused Mac-native acceptance separately. No Mac terminal-control parity claim follows from the Linux fix.

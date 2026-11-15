@@ -13,6 +13,53 @@ use axo_store::{Connection, DATABASE_FILE, initialize_database};
 
 use crate::core::Core;
 
+/// Runs one libtest case in an owned worker, returning true only inside that worker.
+/// Async timeouts cannot bound runtime teardown when a spawn_blocking write is stuck. The
+/// parent therefore enforces a wall-clock deadline and kills/reaps only its own test process.
+/// A failing worker remains a failure; this is isolation, not a retry or an ignored regression.
+pub(crate) fn in_bounded_test_process(name: &str, budget: Duration) -> bool {
+    const WORKER: &str = "AXO_SERVER_TEST_WORKER";
+    if std::env::var(WORKER).as_deref() == Ok(name) {
+        return true;
+    }
+
+    struct Worker(std::process::Child);
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            // Child retains its unreaped identity; never signal an arbitrary PID/group.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut worker = Worker(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(WORKER, name)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("start the isolated scenario worker"),
+    );
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(status) = worker.0.try_wait().expect("query the scenario worker") {
+            assert!(status.success(), "scenario worker {name} failed: {status}");
+            return false;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "scenario worker {name} exceeded {budget:?}; terminating its stuck runtime"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_bounded_test_process_reports_success() {
+    let name = concat!(module_path!(), "::a_bounded_test_process_reports_success");
+    in_bounded_test_process(name.split_once("::").unwrap().1, Duration::from_secs(5));
+}
+
 /// A fresh directory under `/tmp` for one test, with a short name: socket paths are limited to
 /// 104 bytes.
 pub(crate) fn test_directory(prefix: &str) -> PathBuf {

@@ -138,10 +138,12 @@ top-edge geometry, actual native Close, semantic AT-SPI sidebar selection A/B/A,
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 
-The previous broader Linux server regression run timed out in
-`scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`,
-also reproduced in isolation. That backpressure/teardown gate is not cleared here:
-this styling pass did not rerun or fix the full server suite. Its writer/test code
-is unchanged by this slice; no shared-master flag workaround is introduced.
+The Linux server backpressure/teardown regression
+`scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`
+remains a red gate. It now runs in an isolated worker with a 25-second watchdog,
+so its stuck blocking-pool teardown cannot hang the whole suite. The current
+server run finishes with 88 passing cases and this one failure; all 51 PTY cases
+pass. No runtime workaround is retained. See [the investigation](../README.md#blocked-input-hardening-gate)
+for the partial-write evidence and rejected poll-only approach.
 
 Current acceptance uses Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and software OpenGL under Xvfb. It is not a portable release floor, native Wayland/hardware-GPU acceptance, exhaustive terminal/IME/accessibility parity, a persistent installation, or a completed Linux privileged-client trust design.

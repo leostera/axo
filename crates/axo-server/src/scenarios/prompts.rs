@@ -226,8 +226,25 @@ async fn a_remote_key_press_reaches_pi_as_that_key() {
 
 /// A pane whose program never reads holds up only its own writers: the rest of axod answers, more
 /// input for it gives up, and closing it ends the stuck write.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
+#[test]
+fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
+    const NAME: &str = concat!(
+        module_path!(),
+        "::a_pane_that_takes_no_input_holds_up_only_its_own_writers"
+    );
+    // libtest names omit the crate prefix from module_path!().
+    let name = NAME.split_once("::").unwrap().1;
+    if crate::test_support::in_bounded_test_process(name, Duration::from_secs(25)) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(blocked_input_scenario());
+    }
+}
+
+async fn blocked_input_scenario() {
     let fixture = Fixture::new().await;
     let record = fixture.new_session().await;
     let terminal = pane(&record, PaneRole::Terminal);
@@ -247,27 +264,49 @@ async fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
     );
 
     let other = fixture.new_session().await;
-    ops::rename(&fixture.core, other.id, "still answering".into())
+    tokio::time::timeout(Duration::from_secs(2), async {
+        ops::rename(&fixture.core, other.id, "still answering".into()).await?;
+        ops::write_input(
+            &fixture.core,
+            other.id,
+            pane(&other, PaneRole::Terminal),
+            0,
+            TerminalBytes::from_base64(&axo_protocol::base64::encode(b"z")).unwrap(),
+        )
         .await
-        .unwrap();
+    })
+    .await
+    .expect("another pane and its Session must remain responsive")
+    .unwrap();
 
     let started = Instant::now();
-    let refused = ops::write_input(
-        &fixture.core,
-        record.id,
-        terminal,
-        1,
-        TerminalBytes::from_base64(&axo_protocol::base64::encode(b"y")).unwrap(),
+    let refused = tokio::time::timeout(
+        TERMINAL_INPUT_WRITE_TIMEOUT + Duration::from_secs(2),
+        ops::write_input(
+            &fixture.core,
+            record.id,
+            terminal,
+            1,
+            TerminalBytes::from_base64(&axo_protocol::base64::encode(b"y")).unwrap(),
+        ),
     )
     .await
+    .expect("the waiting writer must respect its turn deadline")
     .unwrap_err();
     assert_eq!(refused.kind(), io::ErrorKind::TimedOut, "{refused}");
     assert!(started.elapsed() >= TERMINAL_INPUT_WRITE_TIMEOUT);
 
-    sessions::close(&fixture.core, record.id).await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        sessions::close(&fixture.core, record.id),
+    )
+    .await
+    .expect("closing must not wait for the blocked writer")
+    .unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(10), stuck)
         .await
         .expect("the stuck write ended with its pane")
         .unwrap();
     assert!(ended.is_err());
+    sessions::stop(&fixture.core).await;
 }

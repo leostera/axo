@@ -94,6 +94,39 @@ Pass the same CUDA repository options if testing a CUDA build. The launcher owns
 
 The candidate now has a first local Session sidebar and persisted split-pane workbench through an explicitly selected daemon, plus single-shell attachment and separate standalone development modes. It also has native daemon settings and optional StatusNotifierItem/DBusMenu integration. It is **not yet Mac feature parity** or an installer; creation/wake, live subscriptions/reconnect, close/archive, layout writes and remaining controls are pending. Attachment requires the candidate's captured-grid v3 protocol; the server keeps v2 compatible for existing Mac clients. It never upgrades/restarts the paired daemon implicitly. The [Mac feature map and shared-core contract](../docs/rfds/RFD0054-linux-desktop.md) define the path to the full workbench; session/account/storage logic stays in shared Rust rather than becoming a separate Linux backend. The generated CLI source is also available at `//crates/axo-cli:axo`; the runtime archive above does not yet bundle/install it.
 
+## Blocked-input hardening gate
+
+`scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`
+is still a failing Linux release gate. It now runs in an owned subprocess with a
+25-second parent watchdog: a stranded Tokio blocking-pool thread becomes a named
+test failure rather than hanging the entire server suite. The parent kills/reaps
+only its own worker; the fixture uses its own database, directory and PTYs.
+Run with a larger outer Bazel timeout (and the same dependency options as your build):
+
+```sh
+bazel test //crates/axo-server:axo_server_tests \
+  --test_arg=scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers \
+  --test_arg=--exact --test_timeout=40 --test_output=all
+```
+
+Investigation on starbase2 found a blocking 48,000-byte master write returning
+15,872 bytes as the fixture pane closed, then blocking again on the remaining
+32,128 bytes. The per-pane Condvar deadline works for a waiting writer; it cannot
+interrupt the active libc write. An async timeout likewise cannot stop that
+blocking task, so runtime destruction can hang after the scenario panics.
+
+A zero-time `poll` hangup check before each write was tried and **discarded**:
+it passed one complete server/PTY run but still timed out in one of ten isolated
+reruns. A separate raw-writer probe could remain in its first write after child
+exit. Polling before a blocking syscall does not establish a deadline/cancellation
+contract. Do not change shared master `O_NONBLOCK`, add blind write retries, or
+claim the runtime regression is fixed. The next step is a reviewed active-write
+cancellation/teardown design preserving descriptor ownership and Mac behavior.
+
+With only the test isolation retained, the server run completes in about 25 seconds:
+88 cases pass and this one fails; all 51 PTY tests pass. This is a bounded red gate,
+not full-suite acceptance. No installed daemon or real Session was used as a fixture.
+
 ## Boundaries
 
 - PTY creation uses Linux grantpt/unlockpt/ptsname_r. Child descriptor inheritance uses `close_range(CLOSE_RANGE_CLOEXEC)` and fails closed if unsupported.
