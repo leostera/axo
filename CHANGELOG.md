@@ -2,7 +2,7 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
-## Unreleased
+## 0.69 (Mac app build 340, axod 84)
 
 ### Added
 
@@ -17,6 +17,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Tests
 
+- Added 15 Session-timer tests covering protocol parsing, ownership, capacity, attributed delivery, shared rate limits, recurring cancellation, restart loss and retained ownership after uncertain receipts. All 82 Bazel test targets pass.
 - Added 12 setup regressions covering actual control/viewport bounds at small and full-height sizes, hidden installed-command buttons, connection failure/recovery and coalescing, daemon restoration, account-link decoding, notification callback/deadline arbitration and acknowledgement recovery.
 - Layout assertions use an opt-in fixture observer and hidden native windows; no OS privacy grants, visible-window automation or live app restarts are needed.
 

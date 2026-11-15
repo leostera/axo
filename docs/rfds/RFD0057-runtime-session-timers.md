@@ -1,7 +1,7 @@
 # RFD0057 - Axo: runtime Session timers
 
 - Feature Name: `runtime-session-timers`
-- Status: Implemented (unreleased; axod 84)
+- Status: Implemented (0.69; axod 84)
 - Author: leostera
 - Start Date: 2026-11-15
 - Updated: 2026-11-15
