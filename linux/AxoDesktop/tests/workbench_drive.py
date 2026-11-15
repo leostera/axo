@@ -63,7 +63,7 @@ def find_label(app, text):
     while pending:
         node = pending.pop()
         name = node.get_name()
-        if node.get_role() in [Atspi.Role.LABEL, Atspi.Role.PUSH_BUTTON] and (name == text or name.endswith(' ' + text) or node.get_description() == text):
+        if (node.get_role() in [Atspi.Role.LABEL, Atspi.Role.PUSH_BUTTON] or name in ['Pi pane', 'Terminal pane']) and (name == text or name.endswith(' ' + text) or node.get_description() == text):
             return node
         pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
 
@@ -72,6 +72,14 @@ def click_label(app, window, text, below=0):
     node = wait(f'accessible label {text}', lambda: find_label(app, text), app)
     rect = node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
     xdo('mousemove', '--window', window, rect.x + max(5, rect.width // 2), rect.y + rect.height // 2 + below)
+    xdo('click', '1')
+
+
+def click_pane(app, window, name):
+    node = wait(f'accessible pane {name}', lambda: find_label(app, name), app)
+    rect = node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+    assert rect.width > 100 and rect.height > 100
+    xdo('mousemove', '--window', window, rect.x + rect.width // 2, rect.y + 80)
     xdo('click', '1')
 
 
@@ -86,7 +94,7 @@ def rendered_text(app, window):
 
 def stop(app, window):
     xdo('windowactivate', '--sync', window)
-    xdo('key', '--clearmodifiers', 'alt+F4')
+    click_label(app, window, 'Close')  # Real native window control, not just a shortcut.
     assert app.wait(timeout=5) == 0
     log = (run/'workbench.log').read_text()
     assert 'clean shutdown; terminal widgets released' in log
@@ -143,11 +151,19 @@ try:
                 grids = {pane['shellId']:pane for pane in read(diagnostics)['panes']}
                 return grids[pi_id]['columns'] == grids[terminal_id]['columns'] and grids[pi_id]['rows'] < grids[terminal_id]['rows']
             wait('persisted down-split ratio applied', down_layout, app)
-        heading = wait('full-height pane caption', lambda: find_label(app, 'Pi'), app)
-        assert heading.get_component_iface().get_extents(Atspi.CoordType.WINDOW).y < 24, 'terminal pushed down by a full-width toolbar'
-        click_label(app, window, 'Pi', below=80)
+        pane = wait('named full-height pane', lambda: find_label(app, 'Pi pane'), app)
+        assert pane.get_component_iface().get_extents(Atspi.CoordType.WINDOW).y <= 2, 'terminal pushed down by a full-width toolbar'
+        assert find_label(app, 'Pi') is None and find_label(app, 'Terminal') is None, 'visible pane captions waste terminal space'
+        row = wait('dense Session row', lambda: find_label(app, tag), app)
+        for _ in range(6):
+            if row.get_role() == Atspi.Role.LIST_ITEM:
+                break
+            row = row.get_parent()
+        assert row.get_role() == Atspi.Role.LIST_ITEM
+        assert 0 < row.get_component_iface().get_extents(Atspi.CoordType.WINDOW).height <= 22
+        click_pane(app, window, 'Pi pane')
         assert 'PI_WORKBENCH_READY' in rendered_text(app, window), 'Pi pane is not the real daemon PTY'
-        click_label(app, window, 'Terminal', below=80)
+        click_pane(app, window, 'Terminal pane')
         copied = rendered_text(app, window)
         assert 'GHOSTTY_RENDER_PROBE' in copied
         assert 'REPLAY_LONG_END' in copied.replace('\n','').replace('\r','')
@@ -181,7 +197,7 @@ try:
         for shell in session['shells']:
             os.kill(shell['processId'], 0)
     assert daemon.poll() is None
-    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar and full-height panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'native catalog refresh preserves selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
+    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar, 22px rows and caption-free accessible panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'native catalog refresh preserves selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
 finally:
     for process in reversed(processes):
         if process.poll() is None:

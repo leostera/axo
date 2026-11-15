@@ -3,7 +3,8 @@
 use crate::{Options, attachment::AttachmentTask, ghostty::Engine, task::MainThreadTask};
 use axo_client::LocalCatalog;
 use axo_protocol::{
-    Availability, LayoutDirection, LayoutNode, PaneRole, SessionId, SessionRecord, ShellId,
+    Availability, LayoutDirection, LayoutNode, PaneRole, SessionId, SessionRecord, SessionStatus,
+    ShellId,
 };
 use gtk4::{glib, prelude::*};
 use std::{
@@ -30,22 +31,27 @@ pub fn create_window(
     let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     sidebar.add_css_class("axo-sidebar");
-    sidebar.append(&crate::style::sidebar_titlebar(&window));
+    sidebar.append(&crate::style::sidebar_titlebar(&window, None));
     sidebar.set_width_request(220);
     sidebar.set_hexpand(false);
+    let host = gtk4::Label::new(Some("This Computer"));
+    host.set_xalign(0.0);
+    host.add_css_class("axo-host-caption");
+    crate::style::inset(&host, 5, 8);
+    sidebar.append(&host);
     let heading = gtk4::Label::new(Some("Sessions"));
     heading.set_xalign(0.0);
     heading.add_css_class("axo-section-caption");
-    heading.set_margin_start(12);
-    heading.set_margin_end(12);
-    heading.set_margin_top(12);
-    heading.set_margin_bottom(6);
+    heading.set_margin_start(8);
+    heading.set_margin_end(8);
+    heading.set_margin_top(8);
+    heading.set_margin_bottom(2);
     sidebar.append(&heading);
     let list = gtk4::ListBox::new();
     list.set_selection_mode(gtk4::SelectionMode::Single);
     list.add_css_class("axo-session-list");
-    list.set_margin_start(6);
-    list.set_margin_end(6);
+    list.set_margin_start(2);
+    list.set_margin_end(2);
     let scroll = gtk4::ScrolledWindow::builder()
         .child(&list)
         .vexpand(true)
@@ -59,7 +65,7 @@ pub fn create_window(
     status.add_css_class("axo-status");
     let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
     footer.add_css_class("axo-sidebar-footer");
-    crate::style::inset(&footer, 8, 8);
+    crate::style::inset(&footer, 4, 4);
     status.set_hexpand(true);
     footer.append(&status);
     let refresh = crate::style::icon_button("view-refresh-symbolic", "Refresh Sessions");
@@ -385,24 +391,10 @@ impl Workbench {
             self.list.remove(&row);
         }
         for session in catalog.sessions() {
-            let title = session.manual_name.as_ref().unwrap_or(&session.name);
-            let text = format!("{} {}", session.emoji.as_deref().unwrap_or("◦"), title);
-            let label = gtk4::Label::new(Some(&text));
-            label.set_xalign(0.0);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            label.set_max_width_chars(24);
-            label.set_margin_top(3);
-            label.set_margin_bottom(3);
-            label.set_margin_start(6);
-            label.set_margin_end(6);
-            label.set_tooltip_text(Some(&session.folder.to_string_lossy()));
-            self.list.append(&label);
+            self.list.append(&session_row(session));
         }
-        self.status.set_text(&format!(
-            "{} open · {} archived",
-            catalog.sessions().len(),
-            catalog.archived().len()
-        ));
+        // Keep normal chrome quiet; connection failures still appear here.
+        self.status.set_text("");
         let index = selected.and_then(|id| {
             catalog
                 .sessions()
@@ -484,6 +476,108 @@ impl Workbench {
     }
 }
 
+fn session_row(session: &SessionRecord) -> gtk4::Box {
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+    crate::style::inset(&row, 0, 4);
+    let sleeping = session
+        .shells
+        .iter()
+        .any(|shell| shell.role == PaneRole::Pi && shell.availability == Availability::Dormant);
+    let (class, status) = session_status_style(session.status, sleeping);
+    let indicator = gtk4::Label::new(Some("●"));
+    indicator.add_css_class("axo-session-status");
+    indicator.add_css_class(class);
+    indicator.update_property(&[gtk4::accessible::Property::Label(status)]);
+    row.append(&indicator);
+    if let Some(emoji) = &session.emoji {
+        let glyph = gtk4::Label::new(Some(emoji));
+        glyph.set_width_request(14);
+        row.append(&glyph);
+    } else {
+        let glyph = gtk4::Image::from_icon_name(if session.has_agent() {
+            "starred-symbolic"
+        } else {
+            "utilities-terminal-symbolic"
+        });
+        glyph.set_pixel_size(12);
+        glyph.set_width_request(14);
+        glyph.add_css_class("dim-label");
+        row.append(&glyph);
+    }
+    let title = session.manual_name.as_ref().unwrap_or(&session.name);
+    let label = gtk4::Label::new(Some(title));
+    label.set_xalign(0.0);
+    label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    label.set_max_width_chars(24);
+    label.set_hexpand(true);
+    row.append(&label);
+    row.set_tooltip_text(Some(&format!(
+        "{title} · {status}\n{}",
+        session.folder.display()
+    )));
+    row
+}
+
+fn session_status_style(status: SessionStatus, sleeping: bool) -> (&'static str, &'static str) {
+    match status {
+        SessionStatus::NeedsAttention => ("axo-attention", "Needs attention"),
+        SessionStatus::Unavailable => ("axo-unavailable", "Unavailable"),
+        _ if sleeping => ("axo-unavailable", "Pi asleep"),
+        SessionStatus::Ready => ("axo-ready", "Ready"),
+        SessionStatus::Working => ("axo-working", "Working"),
+        SessionStatus::Starting => ("axo-unavailable", "Starting"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sleeping_pi_is_not_presented_as_ready_or_working() {
+        for status in [
+            SessionStatus::Starting,
+            SessionStatus::Ready,
+            SessionStatus::Working,
+        ] {
+            assert_eq!(
+                session_status_style(status, true),
+                ("axo-unavailable", "Pi asleep")
+            );
+        }
+    }
+
+    #[test]
+    fn attention_and_failure_take_precedence_over_sleep() {
+        for sleeping in [false, true] {
+            assert_eq!(
+                session_status_style(SessionStatus::NeedsAttention, sleeping),
+                ("axo-attention", "Needs attention")
+            );
+            assert_eq!(
+                session_status_style(SessionStatus::Unavailable, sleeping),
+                ("axo-unavailable", "Unavailable")
+            );
+        }
+    }
+
+    #[test]
+    fn live_statuses_follow_the_catalog() {
+        assert_eq!(
+            session_status_style(SessionStatus::Ready, false),
+            ("axo-ready", "Ready")
+        );
+        assert_eq!(
+            session_status_style(SessionStatus::Working, false),
+            ("axo-working", "Working")
+        );
+        assert_eq!(
+            session_status_style(SessionStatus::Starting, false),
+            ("axo-unavailable", "Starting")
+        );
+    }
+}
+
 fn load_catalog(socket: PathBuf) -> io::Result<LocalCatalog> {
     crate::task::daemon_request(&socket, |mut client| async move {
         LocalCatalog::load(&mut client).await
@@ -542,7 +636,10 @@ impl SessionView {
         }
     }
     fn pane(self: &Rc<Self>, id: ShellId) -> gtk4::Box {
-        let pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let pane = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .accessible_role(gtk4::AccessibleRole::Group)
+            .build();
         pane.set_hexpand(true);
         pane.set_vexpand(true);
         pane.add_css_class("axo-pane");
@@ -552,14 +649,11 @@ impl SessionView {
             )));
             return pane;
         };
-        let heading = gtk4::Label::new(Some(match shell.role {
-            PaneRole::Pi => "Pi",
-            PaneRole::Terminal => "Terminal",
-        }));
-        heading.set_xalign(0.0);
-        heading.add_css_class("axo-pane-heading");
-        crate::style::inset(&heading, 3, 8);
-        pane.append(&heading);
+        // Name the group for accessibility without spending terminal rows on a caption.
+        pane.update_property(&[gtk4::accessible::Property::Label(match shell.role {
+            PaneRole::Pi => "Pi pane",
+            PaneRole::Terminal => "Terminal pane",
+        })]);
         match &shell.availability {
             Availability::Unavailable { reason } => {
                 pane.append(&notice(reason));

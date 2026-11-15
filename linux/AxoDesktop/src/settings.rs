@@ -29,6 +29,7 @@ struct Settings {
     socket: PathBuf,
     fields: Vec<Field>,
     status: gtk4::Label,
+    daemon: gtk4::Label,
     reload: gtk4::Button,
     phase: Cell<Phase>,
     task: RefCell<Option<MainThreadTask>>,
@@ -48,80 +49,92 @@ pub fn show(parent: &gtk4::ApplicationWindow, socket: PathBuf) -> gtk4::Window {
         .title("Axo Settings")
         .transient_for(parent)
         .destroy_with_parent(true)
-        .default_width(820)
-        .default_height(510)
+        .default_width(860)
+        .default_height(580)
         .build();
     window.add_css_class("axo-window");
     window.add_css_class("axo-settings");
     window.set_size_request(720, 480);
     window.set_application(parent.application().as_ref());
-    let header = gtk4::HeaderBar::new();
-    header.set_title_widget(Some(&gtk4::Label::new(Some("Settings"))));
-    window.set_titlebar(Some(&header));
     let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     content.add_css_class("axo-settings-body");
     content.set_hexpand(true);
     let tabs = gtk4::Stack::new();
     tabs.set_vexpand(true);
-    let general = page("Shell", "Choose how new terminal processes start.");
-    let sessions = page(
-        "Idle sessions",
-        "Keep memory available without losing your conversations.",
+    let general = page();
+    let sessions = page();
+    let agent = page();
+    let shell = command_field(
+        &general,
+        ConfigKey::ShellCommand,
+        "Shell",
+        "Shell command",
+        "Axod runs this command in its own terminal session. Use an absolute executable path or a command on axod's PATH; arguments support shell-style quoting. Changes apply to new or restarted shell processes.",
     );
-    let agent = page(
-        "Default agent",
-        "Configure the command used for new Agent processes.",
+    let daemon_group = section(&general, "axod");
+    let daemon = text("Connecting…");
+    daemon.set_xalign(1.0);
+    daemon.set_hexpand(true);
+    daemon.update_property(&[gtk4::accessible::Property::Label("Daemon status")]);
+    daemon_group.append(&value_row("Daemon status", &daemon));
+    let limits = section(&sessions, "Limits");
+    let minutes = count_field(
+        &limits,
+        ConfigKey::IdleMinutes,
+        "Put idle Pis to sleep after",
+        "Idle timeout (minutes)",
+        "min",
     );
-    let fields = vec![
-        field(
-            &general,
-            ConfigKey::ShellCommand,
-            "Shell command",
-            "Full command line for new or restarted shells. Arguments support quoting; commands run on the daemon's PATH.",
-        ),
-        field(
-            &sessions,
-            ConfigKey::IdleMinutes,
-            "Idle timeout (minutes)",
-            "0 means never. Working Pis are never stopped. Idle changes apply without restarting the daemon.",
-        ),
-        field(
-            &sessions,
-            ConfigKey::IdleLimit,
-            "Maximum idle Pis awake",
-            "0 means none. Sleeping preserves the Session; other clients can wake its Pi.",
-        ),
-        field(
-            &agent,
-            ConfigKey::AgentCommand,
-            "Agent command",
-            "Full command for new Agent processes. Axo appends its managed session and extension arguments. Existing processes are not restarted.",
-        ),
-    ];
+    limits.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+    let count = count_field(
+        &limits,
+        ConfigKey::IdleLimit,
+        "Keep idle Pis awake, at most",
+        "Maximum idle Pis awake",
+        "Pis",
+    );
+    let help = text(
+        "A Pi that isn't working or asking you anything is idle. Axod stops idle Pis to save memory; the Session stays where it is. Working Pis are never stopped. Use 0 minutes for never, or 0 Pis to keep none awake. Other clients can wake a sleeping Pi.",
+    );
+    help.add_css_class("axo-field-help");
+    crate::style::inset(&help, 10, 10);
+    sessions.append(&help);
+    let agent_command = command_field(
+        &agent,
+        ConfigKey::AgentCommand,
+        "Default Agent",
+        "Agent command",
+        "Enter the full command line. Use an absolute executable path or a command on axod's PATH. Arguments support shell-style quoting; Axod launches it directly without a shell and appends its managed Pi session and extension arguments. Changes apply to new Agent processes.",
+    );
+    let fields = vec![shell, minutes, count, agent_command];
     for (name, page) in [
         ("General", general),
         ("Sessions", sessions),
         ("Agent", agent),
     ] {
-        tabs.add_titled(&page, Some(name), name);
+        let scroll = gtk4::ScrolledWindow::builder()
+            .child(&page)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .build();
+        tabs.add_titled(&scroll, Some(name), name);
     }
-    let navigation = gtk4::StackSidebar::builder()
-        .stack(&tabs)
-        .width_request(160)
-        .build();
-    navigation.set_vexpand(true);
     let navigation_background = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     navigation_background.add_css_class("axo-settings-nav");
-    crate::style::inset(&navigation, 12, 8);
-    navigation_background.append(&navigation);
+    navigation_background.set_width_request(180);
+    navigation_background.set_hexpand(false);
+    navigation_background.append(&crate::style::sidebar_titlebar(
+        &window,
+        Some("Axo Settings"),
+    ));
+    navigation_background.append(&navigation(&tabs));
     root.append(&navigation_background);
     root.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
     content.append(&tabs);
     let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     let footer_background = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     footer_background.add_css_class("axo-settings-footer");
-    crate::style::inset(&footer, 12, 22);
+    crate::style::inset(&footer, 8, 36);
     let status = text("Loading daemon settings…");
     status.add_css_class("axo-feedback");
     status.set_hexpand(true);
@@ -145,6 +158,7 @@ pub fn show(parent: &gtk4::ApplicationWindow, socket: PathBuf) -> gtk4::Window {
         socket,
         fields,
         status,
+        daemon,
         reload,
         phase: Cell::new(Phase::Unavailable),
         task: RefCell::new(None),
@@ -200,18 +214,68 @@ pub fn show(parent: &gtk4::ApplicationWindow, socket: PathBuf) -> gtk4::Window {
     model.load();
     window
 }
-fn page(title: &str, description: &str) -> gtk4::Box {
-    let page = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+fn navigation(tabs: &gtk4::Stack) -> gtk4::ListBox {
+    let navigation = gtk4::ListBox::new();
+    navigation.set_vexpand(true);
+    navigation.set_selection_mode(gtk4::SelectionMode::Single);
+    crate::style::inset(&navigation, 8, 8);
+    for (name, icon) in [
+        ("General", "emblem-system-symbolic"),
+        ("Sessions", "view-dual-symbolic"),
+        ("Agent", "utilities-terminal-symbolic"),
+    ] {
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+        crate::style::inset(&row, 4, 10);
+        let image = gtk4::Image::from_icon_name(icon);
+        image.set_pixel_size(16);
+        row.append(&image);
+        row.append(&gtk4::Label::new(Some(name)));
+        navigation.append(&row);
+    }
+    navigation.connect_row_selected({
+        let tabs = tabs.downgrade();
+        move |_, row| {
+            let (Some(tabs), Some(row)) = (tabs.upgrade(), row) else {
+                return;
+            };
+            if let Some(name) = ["General", "Sessions", "Agent"].get(row.index() as usize) {
+                tabs.set_visible_child_name(name);
+            }
+        }
+    });
+    navigation.select_row(navigation.row_at_index(0).as_ref());
+    navigation
+}
+fn page() -> gtk4::Box {
+    let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     page.add_css_class("axo-settings-page");
-    crate::style::inset(&page, 22, 22);
-    let heading = text(title);
-    heading.add_css_class("axo-page-title");
-    page.append(&heading);
-    let description = text(description);
-    description.add_css_class("axo-page-description");
-    description.set_margin_bottom(12);
-    page.append(&description);
+    crate::style::inset(&page, 20, 36);
+    page.set_margin_top(68);
     page
+}
+fn section(page: &gtk4::Box, title: &str) -> gtk4::Box {
+    let heading = text(title);
+    heading.add_css_class("axo-section-title");
+    heading.set_margin_start(10);
+    heading.set_margin_bottom(10);
+    if page.first_child().is_some() {
+        heading.set_margin_top(28);
+    }
+    page.append(&heading);
+    let card = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    card.add_css_class("axo-setting-card");
+    page.append(&card);
+    card
+}
+fn value_row(caption: &str, value: &impl IsA<gtk4::Widget>) -> gtk4::Box {
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    crate::style::inset(&row, 3, 10);
+    row.set_height_request(30);
+    let caption = text(caption);
+    caption.set_wrap(false);
+    row.append(&caption);
+    row.append(value);
+    row
 }
 fn text(value: &str) -> gtk4::Label {
     let label = gtk4::Label::new(Some(value));
@@ -220,42 +284,60 @@ fn text(value: &str) -> gtk4::Label {
     label.set_xalign(0.0);
     label
 }
-fn field(page: &gtk4::Box, key: ConfigKey, title: &str, help: &str) -> Field {
-    let group = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    crate::style::inset(&group, 14, 14);
-    let card = gtk4::Frame::new(None);
-    card.add_css_class("axo-setting-card");
-    card.set_child(Some(&group));
+fn field(key: ConfigKey, title: &str) -> Field {
     let entry = gtk4::Entry::new();
     entry.set_hexpand(true);
+    gtk4::prelude::EntryExt::set_alignment(&entry, 1.0);
+    entry.set_width_chars(8);
     entry.update_property(&[gtk4::accessible::Property::Label(title)]);
-    if matches!(key, ConfigKey::IdleMinutes | ConfigKey::IdleLimit) {
-        entry.set_input_purpose(gtk4::InputPurpose::Digits);
-    }
-    if matches!(key, ConfigKey::ShellCommand | ConfigKey::AgentCommand) {
-        entry.add_css_class("axo-command");
-    }
-    let caption = text(title);
-    caption.add_css_class("axo-field-title");
-    group.append(&caption);
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     let save = gtk4::Button::with_label("Save");
     save.update_property(&[gtk4::accessible::Property::Description(&format!(
         "Save {title}"
     ))]);
-    row.append(&entry);
-    row.append(&save);
-    group.append(&row);
-    let help = text(help);
-    help.add_css_class("axo-field-help");
-    group.append(&help);
-    page.append(&card);
     Field {
         key,
         entry,
         save,
         saved: RefCell::new(None),
     }
+}
+fn command_field(
+    page: &gtk4::Box,
+    key: ConfigKey,
+    section_title: &str,
+    title: &str,
+    help: &str,
+) -> Field {
+    let field = field(key, title);
+    let card = section(page, section_title);
+    card.append(&value_row("Command", &field.entry));
+    card.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+    let help = text(help);
+    help.add_css_class("axo-field-help");
+    crate::style::inset(&help, 10, 10);
+    card.append(&help);
+    card.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+    let actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    actions.set_halign(gtk4::Align::End);
+    crate::style::inset(&actions, 8, 10);
+    actions.append(&field.save);
+    card.append(&actions);
+    field
+}
+fn count_field(card: &gtk4::Box, key: ConfigKey, caption: &str, title: &str, unit: &str) -> Field {
+    let field = field(key, title);
+    field.entry.set_input_purpose(gtk4::InputPurpose::Digits);
+    field.entry.set_hexpand(false);
+    field.entry.set_width_chars(4);
+    field.entry.set_max_width_chars(6);
+    let controls = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    controls.set_hexpand(true);
+    controls.set_halign(gtk4::Align::End);
+    controls.append(&field.entry);
+    controls.append(&text(unit));
+    controls.append(&field.save);
+    card.append(&value_row(caption, &controls));
+    field
 }
 impl Settings {
     fn close(&self) {
@@ -328,14 +410,14 @@ impl Settings {
                         model.phase.set(Phase::Ready {
                             writable: loaded.writable,
                         });
-                        model.status.set_text(&format!(
-                            "{}{}",
-                            loaded.daemon,
-                            if loaded.writable { "" } else { " · Read only" }
-                        ));
+                        model.daemon.set_text(&loaded.daemon);
+                        model
+                            .status
+                            .set_text(if loaded.writable { "" } else { "Read only" });
                     }
                     Err(error) => {
                         model.phase.set(Phase::Unavailable);
+                        model.daemon.set_text("Unavailable");
                         model.status.set_text(&format!(
                             "Cannot load settings: {error}. Check the daemon, then reload."
                         ));

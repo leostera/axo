@@ -106,6 +106,19 @@ def window(app):
     return wait('workbench window',lambda:xdo('search','--all','--onlyvisible','--pid',app.pid,'--name','^Axo').splitlines()[0],app)
 
 
+def assert_inline_field(app, name, caption):
+    entry = find(app, name).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+    caption_node = find(app, caption)
+    label = caption_node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+    assert entry.width >= 32 and entry.x > label.x
+    # A single-line GtkLabel can fill a taller row. Check glyph lines, not the
+    # allocated widget height, to catch unwanted wrapping without false failures.
+    first = Atspi.Text.get_character_extents(caption_node, 0, Atspi.CoordType.WINDOW)
+    last = Atspi.Text.get_character_extents(caption_node, len(caption)-1, Atspi.CoordType.WINDOW)
+    assert first.y == last.y, 'form caption wrapped despite available horizontal space'
+    assert abs((entry.y + entry.height / 2) - (label.y + label.height / 2)) <= 3, 'setting is not an inline form row'
+
+
 def owned_snapshot(name):
     # Only the private Xvfb fixture; never the person's desktop.
     gi.require_version('Gdk','3.0')
@@ -139,6 +152,10 @@ try:
     settings=open_settings(app,main)
     wait('loaded shell',lambda:text(app,'Shell command') == '/bin/sh',app)
     assert {key:value(key) for key in keys} == before, 'opening settings wrote configuration'
+    assert_inline_field(app, 'Shell command', 'Command')
+    shell_bounds = find(app, 'Shell command').get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+    assert shell_bounds.y < 120, 'extra header/page hero pushed settings down'
+    assert find(app, 'Daemon status') is not None
     owned_snapshot('settings-general.png')
     # Reopening presents the same window and preserves its draft.
     edit(app,settings,'Shell command','/bin/sh -l')
@@ -148,6 +165,8 @@ try:
     wait('shell saved',lambda:value('shell.command') == '/bin/sh -l',app)
     click(app,settings,'Sessions')
     wait('loaded idle value',lambda:text(app,'Idle timeout (minutes)') == before['sessions.idleMinutes'],app)
+    assert_inline_field(app, 'Idle timeout (minutes)', 'Put idle Pis to sleep after')
+    assert_inline_field(app, 'Maximum idle Pis awake', 'Keep idle Pis awake, at most')
     edit(app,settings,'Idle timeout (minutes)','NaN')
     click(app,settings,'Save Idle timeout (minutes)')
     wait('invalid count reported',lambda:any('Not saved:' in node.get_name() for node in children(app)),app)
@@ -160,6 +179,7 @@ try:
     wait('idle count saved',lambda:value('sessions.idleLimit') == '31',app)
     owned_snapshot('settings-sessions.png')
     click(app,settings,'Agent')
+    assert_inline_field(app, 'Agent command', 'Command')
     edit(app,settings,'Agent command','pi --model fixture')
     click(app,settings,'Save Agent command')
     wait('agent command saved',lambda:value('agent.command') == 'pi --model fixture',app)
@@ -170,7 +190,7 @@ try:
     click(app,settings,'Reload values')
     wait('explicit reload discards invalid draft',lambda:text(app,'Agent command') == 'pi --model fixture',app)
     owned_snapshot('settings.png')
-    close_window(settings)
+    click(app,settings,'Close')  # Actual native CSD button inside the settings sidebar.
     settings=open_settings(app,main)
     wait('settings reopen',lambda:text(app,'Shell command') == '/bin/sh -l',app)
     close_window(main) # Also releases the open settings model/tasks.
@@ -212,7 +232,7 @@ try:
     wait('reconciliation reads actual saved value',lambda:text(app,'Shell command') == '/bin/sh -l' and find(app,'Shell command').get_state_set().contains(Atspi.StateType.SENSITIVE),app)
     assert len(writes)==1
     close_window(main); stopped(app,'uncertain'); listener.close()
-    print(json.dumps({'status':'passed','checks':['Ctrl+, settings singleton and draft preservation','loads do not write','daemon command/count persistence','server validation and canonical values','no process restart','close with settings open','lost acknowledgement requires reload, no retry']}))
+    print(json.dumps({'status':'passed','checks':['Mac-referenced grouped inline forms and sidebar-only titlebar','Ctrl+, settings singleton and draft preservation','loads do not write','daemon command/count persistence','server validation and canonical values','no process restart','close with settings open','lost acknowledgement requires reload, no retry']}))
 finally:
     for process in reversed(processes):
         if process.poll() is None:

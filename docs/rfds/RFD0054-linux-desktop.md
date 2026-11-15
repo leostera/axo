@@ -76,18 +76,31 @@ Paths in this table are relative to `apple/AxoMac/Sources/AxoMac`, except `AxoCl
 
 ### Native presentation
 
-The first styling pass follows the Mac workbench's 220-point sidebar/full-height
-pane organization, while retaining GTK widgets and platform window controls.
-`style.rs` is scoped to Axo windows: neutral charcoal surfaces, quiet focus/selection,
-compact footer actions and sidebar-based settings replace the spike's default
-header/notebook chrome. GTK WindowHandle/WindowControls supply move, resize and
-window actions; there is no drawn imitation of macOS traffic lights.
+The presentation follows the running Mac app's workbench and General/Sessions/Agent
+screenshots, not just a source interpretation. It keeps the 220-point sidebar,
+22-point Session rows and full-height panes while retaining GTK widgets and native
+platform window controls. The wordmark and visible pane captions are removed;
+Pi/terminal pane groups remain accessible by name. Status/glyphs come from the last
+catalog read, with dormant Pis gray; no unseen/grouping/live-update behavior is
+invented. `style.rs` is scoped to Axo windows, with neutral surfaces and quiet
+selection. GTK WindowHandle/WindowControls supply move, resize and window actions;
+there is no drawn imitation of macOS traffic lights.
+
+Settings use a 180-point icon sidebar with native title/close controls contained
+there, rather than a full-width header. Section headings sit outside grouped cards;
+labels and values share rows, numeric controls stay compact, and command Save sits
+at the card's bottom trailing edge. Daemon status is a real General row; scrollable
+pages and stable feedback/reload controls preserve draft/uncertain-save behavior.
+Only implemented settings categories are shown. Terminal ANSI colors from the Mac
+screenshots are not copied into application chrome or treated as a shared theme.
 
 Native widget margins own container layout so AT-SPI bounds match rendered
 controls; CSS owns appearance. Tests bind settings actions to its own window,
 ignore hidden stack pages, assert the sidebar cannot expand with its controls and
-check terminal captions reach the top edge. Invalid CSS fails startup. Renderer
-font/padding defaults move to 13pt and Mac's 2/10-point insets, without loading
+check caption-free pane groups reach the top edge and Session rows remain 22px.
+Settings tests check inline geometry and actual caption glyph lines, not allocated
+label height; native Close buttons are clicked in both windows. Invalid CSS fails
+startup. Renderer font/padding defaults remain 13pt and Mac's 2/10-point insets, without loading
 user config or changing VT/descriptor/lifecycle contracts. Pending attachments
 must not steal focus from Settings. This does not prove full visual, theme,
 high-contrast, scale, Wayland, IME or accessibility equivalence with Mac.

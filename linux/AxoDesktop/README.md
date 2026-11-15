@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The first styling pass uses Axo-scoped charcoal chrome, a fixed 220px sidebar with native drag/window controls, full-height panes and sidebar-based settings. This is not a complete Mac visual/behavioral conformance claim.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
 
 ## Build and run
 
@@ -29,8 +29,19 @@ The `run` target resolves process-local resources/libraries from Bazel runfiles.
 `src/style.rs` styles only Axo-owned windows, not the desktop theme or Ghostty's
 renderer. The workbench keeps GTK CSD move/resize behavior and the platform's
 window-control order inside the sidebar; the terminal has no full-width titlebar.
-Footer actions retain accessible names/tooltips and keyboard access. Settings use
-native sidebar/stack navigation, compact cards and a stable feedback footer.
+The unneeded wordmark and visible pane captions are removed; Pi/terminal groups
+retain accessible names. Session rows have the daemon's last-read status, emoji or
+native fallback glyph; sleeping Pis stay gray rather than appearing ready. Manual
+refresh still controls freshness; there is no fabricated unseen/activity state or
+live subscription. Footer actions retain accessible names/tooltips and keyboard
+access.
+
+Settings use a 180px icon sidebar with its own native title/close controls, not a
+full-width header. Section headings sit outside neutral grouped cards; labels and
+values share a row, numeric controls stay compact, and command saves sit at the
+card's trailing bottom edge. General has an actual daemon-status row. Scrollable
+pages preserve access at smaller sizes; the stable feedback/reload area retains
+explicit uncertain-write recovery. Only implemented categories are listed.
 
 Container spacing uses GTK widget margins, not CSS padding, so AT-SPI control
 bounds agree with the rendered layout. Stylesheet parse failures fail startup
@@ -118,17 +129,19 @@ and surviving daemon children. This is not a real desktop-panel visual conforman
 The `settings_drive.py` driver checks Ctrl+, singleton/draft preservation, no writes
 on load, all four persisted settings, server rejection/canonical values, no process
 restart, close with settings open, and lost-acknowledgement reload without retry.
-It uses an owned daemon plus a local protocol fixture; add GDK3 introspection for
-its owned-desktop screenshot.
+It also checks inline label/value geometry, unwrapped caption glyphs and the actual
+native sidebar Close button. It uses an owned daemon plus a local protocol fixture;
+add GDK3 introspection for its owned-desktop screenshot.
 
-The workbench driver checks semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, catalog refresh discovering a new Session without changing selection, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
+The workbench driver checks 22px row bounds, named caption-free pane groups,
+top-edge geometry, actual native Close, semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, catalog refresh discovering a new Session without changing selection, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 
-A broader Linux server regression run currently times out in
+The previous broader Linux server regression run timed out in
 `scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`,
-also reproduced in isolation. This is an unresolved backpressure/teardown gate,
-not a passing full-server suite. Its writer/test code is unchanged by this slice;
-no shared-master flag workaround is introduced here.
+also reproduced in isolation. That backpressure/teardown gate is not cleared here:
+this styling pass did not rerun or fix the full server suite. Its writer/test code
+is unchanged by this slice; no shared-master flag workaround is introduced.
 
 Current acceptance uses Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and software OpenGL under Xvfb. It is not a portable release floor, native Wayland/hardware-GPU acceptance, exhaustive terminal/IME/accessibility parity, a persistent installation, or a completed Linux privileged-client trust design.
