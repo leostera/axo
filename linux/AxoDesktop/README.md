@@ -138,12 +138,13 @@ top-edge geometry, actual native Close, semantic AT-SPI sidebar selection A/B/A,
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 
-The Linux server backpressure/teardown regression
-`scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`
-remains a red gate. It now runs in an isolated worker with a 25-second watchdog,
-so its stuck blocking-pool teardown cannot hang the whole suite. The current
-server run finishes with 88 passing cases and this one failure; all 51 PTY cases
-pass. No runtime workaround is retained. See [the investigation](../README.md#blocked-input-hardening-gate)
-for the partial-write evidence and rejected poll-only approach.
+The Linux server blocked-input teardown regression now passes on this branch:
+all 90 server and 54 PTY cases pass in ten complete repeated runs, with no skipped
+case. After confirmed child exit, the pane owner retires the Linux master using
+`N_NULL`; this never runs on widget detach or a live terminal and never changes
+shared file-status flags. The regression retains its isolated 25-second watchdog.
+See [the investigation and limits](../README.md#blocked-input-hardening-gate),
+including the rejected poll-only approach. This is not a live-write deadline,
+native Mac acceptance, or an update to the installed immutable runtime.
 
 Current acceptance uses Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and software OpenGL under Xvfb. It is not a portable release floor, native Wayland/hardware-GPU acceptance, exhaustive terminal/IME/accessibility parity, a persistent installation, or a completed Linux privileged-client trust design.

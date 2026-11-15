@@ -446,6 +446,33 @@ pub async fn stop_async(child: &mut WatchedChild, grace: Duration) {
     }
 }
 
+/// Irreversibly retires an owned Linux terminal after its child has exited.
+///
+/// Slave hangup alone need not end a blocked master write on Linux, and a partial write
+/// followed by a retry can block again. N_NULL switches the master to the kernel's error-handling
+/// line discipline: the switch wakes existing I/O, then subsequent reads/writes are refused.
+/// This does not change shared file-status flags; surviving attachment copies are retired too.
+///
+/// The owner must stop its output pump before calling this, off the async/UI thread. This is
+/// terminal destruction, never an attachment detach, a live-write timeout, or a way to stop a
+/// child. Reject an unconfirmed exit rather than changing a running program's terminal.
+#[cfg(target_os = "linux")]
+pub fn retire_exited_terminal(master: &OwnedFd, child: &mut WatchedChild) -> io::Result<()> {
+    if child.try_wait()?.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "cannot retire a terminal before its child has exited",
+        ));
+    }
+    // Linux UAPI linux/tty.h: N_NULL, the built-in fallback/error-handling line discipline.
+    let discipline: libc::c_int = 27;
+    // SAFETY: master remains owned and open; TIOCSETD reads one initialized c_int.
+    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSETD, &discipline) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// How long a stopped shell gets to exit after SIGHUP/SIGTERM before SIGKILL.
 pub const SHELL_STOP_GRACE: Duration = Duration::from_millis(500);
 
@@ -463,6 +490,9 @@ pub fn signal(child: &WatchedChild, signal: libc::c_int) {
     }
 }
 
+/// Writes input without changing the descriptor's shared flags. `timeout` bounds a readiness
+/// wait on an already-nonblocking descriptor, not an active blocking libc write. Pane owners
+/// must retire an exited Linux terminal to release such a write during teardown.
 pub fn write_all(fd: RawFd, mut bytes: &[u8], timeout: Duration) -> io::Result<()> {
     while !bytes.is_empty() {
         // SAFETY: bytes points to initialized memory and fd remains open for this call.
@@ -473,6 +503,20 @@ pub fn write_all(fd: RawFd, mut bytes: &[u8], timeout: Duration) -> io::Result<(
                 io::ErrorKind::Interrupted => continue,
                 // An attached client may have set O_NONBLOCK on the shared PTY file description.
                 io::ErrorKind::WouldBlock => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        // A line-discipline switch wakes a blocking write with EAGAIN too.
+                        // That is not nonblocking backpressure: do not wait on a terminal
+                        // being retired, whose new discipline may never report POLLOUT.
+                        // SAFETY: fd stays open; F_GETFL only queries shared status flags.
+                        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+                        if flags == -1 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        if flags & libc::O_NONBLOCK == 0 {
+                            return Err(error);
+                        }
+                    }
                     wait_writable(fd, timeout)?;
                     continue;
                 }
@@ -523,6 +567,108 @@ mod tests {
 
     fn stop(child: &mut WatchedChild, grace: Duration) {
         block(stop_async(child, grace));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn descriptor_flags(master: &OwnedFd) -> (libc::c_int, libc::c_int) {
+        // SAFETY: both calls only query a descriptor owned by the caller.
+        let status = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+        let descriptor = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFD) };
+        assert!(status >= 0 && descriptor >= 0);
+        (status, descriptor)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn already_nonblocking_input_keeps_its_readiness_timeout() {
+        use std::os::fd::FromRawFd;
+        let mut fds = [0; 2];
+        // SAFETY: pipe2 initializes two fresh descriptors; no shared PTY flags are changed.
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+            0
+        );
+        // SAFETY: pipe2 returned two fresh descriptors, each owned exactly once here.
+        let (_reader, writer) =
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let before = descriptor_flags(&writer);
+        // SAFETY: F_GETPIPE_SZ queries the capacity of our owned pipe.
+        let capacity = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETPIPE_SZ) };
+        assert!((1..=16 * 1024 * 1024).contains(&capacity));
+        let started = Instant::now();
+        let refused = write_all(
+            writer.as_raw_fd(),
+            &vec![b'x'; capacity as usize + 1],
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert_eq!(descriptor_flags(&writer), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retiring_a_live_terminal_is_refused_without_changing_it() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("3600");
+        let mut process = spawn(command, WindowSize::DEFAULT, &[]).unwrap();
+        let before = descriptor_flags(&process.master);
+        let refused = retire_exited_terminal(&process.master, &mut process.child).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        write_all(
+            process.master.as_raw_fd(),
+            b"still live",
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(descriptor_flags(&process.master), before);
+        stop(&mut process.child, SHELL_STOP_GRACE);
+        process.output.stop();
+        retire_exited_terminal(&process.master, &mut process.child).unwrap();
+    }
+
+    /// Cover both a stuck first syscall and partial-write retries, with an attachment still
+    /// retaining its own master. A plain thread and channel deadline also bound a regression:
+    /// unlike Tokio's blocking pool, libtest does not wait forever for that thread on teardown.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retiring_an_exited_terminal_ends_blocked_input_and_rejects_late_writes() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("3600");
+        let mut process = spawn(command, WindowSize::DEFAULT, &[]).unwrap();
+        let writer_master = process.master.try_clone().unwrap();
+        let attachment = process.master.try_clone().unwrap();
+        let before = descriptor_flags(&process.master);
+        assert_eq!(before.0 & libc::O_NONBLOCK, 0);
+        assert_ne!(before.1 & libc::FD_CLOEXEC, 0);
+        assert_eq!(descriptor_flags(&writer_master), before);
+        assert_eq!(descriptor_flags(&attachment), before);
+        let (done, result) = std::sync::mpsc::channel();
+        let writer = thread::spawn(move || {
+            let paste = [b"x".repeat(99), b"\n".to_vec()].concat().repeat(480);
+            let written = write_all(writer_master.as_raw_fd(), &paste, Duration::from_secs(1));
+            done.send((written, descriptor_flags(&writer_master)))
+                .unwrap();
+        });
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(300)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        stop(&mut process.child, SHELL_STOP_GRACE);
+        process.output.stop();
+        retire_exited_terminal(&process.master, &mut process.child).unwrap();
+        let (written, writer_flags) = result
+            .recv_timeout(Duration::from_secs(3))
+            .expect("retirement must end the blocked writer");
+        assert!(written.is_err());
+        assert_eq!(writer_flags, before);
+        writer.join().unwrap();
+        assert!(write_all(attachment.as_raw_fd(), b"late", Duration::from_secs(1)).is_err());
+        assert_eq!(descriptor_flags(&attachment), before);
+        assert_eq!(descriptor_flags(&process.master), before);
+        // Repeated retirement is harmless, but never restores an input-capable discipline.
+        retire_exited_terminal(&process.master, &mut process.child).unwrap();
     }
 
     /// Stops every child at once, each in its own task, as axod stops a Session's panes.

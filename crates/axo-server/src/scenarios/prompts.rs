@@ -232,16 +232,59 @@ fn a_pane_that_takes_no_input_holds_up_only_its_own_writers() {
         module_path!(),
         "::a_pane_that_takes_no_input_holds_up_only_its_own_writers"
     );
+    run_bounded_input_scenario(NAME, blocked_input_scenario());
+}
+
+#[test]
+fn stopping_axod_ends_a_blocked_input_writer() {
+    const NAME: &str = concat!(
+        module_path!(),
+        "::stopping_axod_ends_a_blocked_input_writer"
+    );
+    run_bounded_input_scenario(NAME, async {
+        let fixture = Fixture::new().await;
+        let record = fixture.new_session().await;
+        let terminal = pane(&record, PaneRole::Terminal);
+        let stuck = {
+            let core = std::sync::Arc::clone(&fixture.core);
+            tokio::spawn(async move {
+                ops::write_input(&core, record.id, terminal, 0, large_terminal_paste()).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !stuck.is_finished(),
+            "the pane must have input backpressure"
+        );
+        tokio::time::timeout(Duration::from_secs(10), sessions::stop(&fixture.core))
+            .await
+            .expect("daemon shutdown must finish retiring its panes");
+        let ended = tokio::time::timeout(Duration::from_secs(2), stuck)
+            .await
+            .expect("daemon shutdown must end the blocked writer")
+            .unwrap();
+        assert!(ended.is_err());
+    });
+}
+
+fn run_bounded_input_scenario(name: &str, scenario: impl std::future::Future<Output = ()>) {
     // libtest names omit the crate prefix from module_path!().
-    let name = NAME.split_once("::").unwrap().1;
+    let name = name.split_once("::").unwrap().1;
     if crate::test_support::in_bounded_test_process(name, Duration::from_secs(25)) {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap()
-            .block_on(blocked_input_scenario());
+            .block_on(scenario);
     }
+}
+
+fn large_terminal_paste() -> TerminalBytes {
+    TerminalBytes::from_base64(&axo_protocol::base64::encode(
+        &[b"x".repeat(99), b"\n".to_vec()].concat().repeat(480),
+    ))
+    .unwrap()
 }
 
 async fn blocked_input_scenario() {
@@ -249,10 +292,7 @@ async fn blocked_input_scenario() {
     let record = fixture.new_session().await;
     let terminal = pane(&record, PaneRole::Terminal);
     // A paste larger than a PTY holds for a program that doesn't read it.
-    let paste = TerminalBytes::from_base64(&axo_protocol::base64::encode(
-        &[b"x".repeat(99), b"\n".to_vec()].concat().repeat(480),
-    ))
-    .unwrap();
+    let paste = large_terminal_paste();
     let stuck = {
         let core = std::sync::Arc::clone(&fixture.core);
         tokio::spawn(async move { ops::write_input(&core, record.id, terminal, 0, paste).await })

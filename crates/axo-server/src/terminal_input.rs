@@ -5,7 +5,8 @@
 //! `poll` on a macOS PTY says writable when a write would still block. So input is written
 //! on the blocking pool, outside any task, one write at a time per pane. A pane that takes no input
 //! holds up only its own writers, and they give up after a time; closing the pane ends the
-//! stuck write (the PTY hangs up).
+//! stuck write. On Linux the pane owner explicitly retires the master after child exit;
+//! slave hangup alone need not release a blocking master write.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};

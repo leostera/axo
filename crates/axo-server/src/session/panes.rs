@@ -137,6 +137,30 @@ impl Running {
         let grace = self.stop_grace();
         process::stop_async(&mut self.child, grace).await;
         self.output.stop();
+        #[cfg(target_os = "linux")]
+        {
+            let runtime_id = self.runtime_id;
+            let pid = self.child.id();
+            // The kernel waits for existing line-discipline users during retirement. Keep that
+            // work off the Session task; the closure owns the pane/descriptors until it ends.
+            let retired = tokio::task::spawn_blocking(move || {
+                process::retire_exited_terminal(&self.master, &mut self.child)
+            })
+            .await;
+            match retired {
+                Ok(Ok(())) => {
+                    log::info!("event=terminal.retired runtime_id={runtime_id} pid={pid}")
+                }
+                Ok(Err(error)) => log::error!(
+                    "event=terminal.retirement_failed runtime_id={runtime_id} pid={pid} error_kind={:?} errno={:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ),
+                Err(error) => log::error!(
+                    "event=terminal.retirement_worker_failed runtime_id={runtime_id} pid={pid} error={error}"
+                ),
+            }
+        }
     }
 }
 

@@ -97,10 +97,11 @@ The candidate now has a first local Session sidebar and persisted split-pane wor
 ## Blocked-input hardening gate
 
 `scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`
-is still a failing Linux release gate. It now runs in an owned subprocess with a
-25-second parent watchdog: a stranded Tokio blocking-pool thread becomes a named
-test failure rather than hanging the entire server suite. The parent kills/reaps
-only its own worker; the fixture uses its own database, directory and PTYs.
+now passes on this branch, together with `stopping_axod_ends_a_blocked_input_writer`.
+Both run in owned subprocesses with 25-second parent watchdogs: a stranded Tokio
+blocking-pool thread becomes a named test failure rather than hanging the suite.
+The parent kills/reaps only its own worker; each fixture owns its database,
+directory and PTYs. This fix has **not** replaced/restarted the installed runtime.
 Run with a larger outer Bazel timeout (and the same dependency options as your build):
 
 ```sh
@@ -118,14 +119,34 @@ blocking task, so runtime destruction can hang after the scenario panics.
 A zero-time `poll` hangup check before each write was tried and **discarded**:
 it passed one complete server/PTY run but still timed out in one of ten isolated
 reruns. A separate raw-writer probe could remain in its first write after child
-exit. Polling before a blocking syscall does not establish a deadline/cancellation
-contract. Do not change shared master `O_NONBLOCK`, add blind write retries, or
-claim the runtime regression is fixed. The next step is a reviewed active-write
-cancellation/teardown design preserving descriptor ownership and Mac behavior.
+exit. Polling before a blocking syscall does not establish a cancellation contract.
+Input flushing likewise did not release a first blocked write in an owned probe.
 
-With only the test isolation retained, the server run completes in about 25 seconds:
-88 cases pass and this one fails; all 51 PTY tests pass. This is a bounded red gate,
-not full-suite acceptance. No installed daemon or real Session was used as a fixture.
+The Linux pane owner now stops its child, stops the output pump and retires the
+**exited** terminal using `TIOCSETD(N_NULL)`, off the async thread. This irreversible
+kernel error-handling line discipline wakes existing I/O and refuses subsequent
+reads/writes, including through retained attachment copies. The helper verifies
+child exit and refuses a live/unconfirmed child. It never runs on widget detach,
+selection change, resize or live input. The worker owns the pane/descriptors until
+retirement completes, with correlated failure logs and no unsafe fallback.
+
+Linux can report `EAGAIN` on a blocking master while its line discipline changes.
+The writer now returns that error rather than polling a retired terminal for
+`POLLOUT`. Readiness waiting remains supported for already-nonblocking descriptors;
+production never sets shared master `O_NONBLOCK`. CLOEXEC/ownership, v2/v3 framing,
+normal live input and Mac's existing runtime path are unchanged. This does **not**
+make an active write to a live, non-reading child deadline-bound; the fix is for
+pane/daemon teardown, not arbitrary request cancellation or automatic write retry.
+
+On starbase2/Linux 7.0, all 90 server and 54 PTY cases pass in ten complete repeated
+runs, with no skipped regression. Tests cover daemon shutdown, another pane staying
+responsive, live-retirement refusal, retained master copies/late writes and unchanged
+status/CLOEXEC flags. Native Mac tests and a broader Linux kernel/distribution matrix
+have not been rerun. All eight focused Bazel suites (server, PTY, IPC, protocol,
+client, CLI unit/e2e and desktop units) pass, as do all five isolated GTK drivers.
+Those drivers validate real Ghostty rendering/detach behavior under Xvfb and a
+simulated tray host, not native GNOME/Wayland or hardware-panel acceptance.
+No installed daemon or real Session was used as a fixture.
 
 ## Boundaries
 
