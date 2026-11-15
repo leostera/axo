@@ -1,7 +1,10 @@
 #!/usr/bin/python3
 """Owned axod/catalog -> two real Ghostty panes; private Xvfb/D-Bus/HOME only."""
 import json
+import math
 import os
+import sqlite3
+import struct
 import pathlib
 import runpy
 import shlex
@@ -43,7 +46,7 @@ def wait(description, check, process, timeout=25):
             value = check()
             if value:
                 return value
-        except (OSError, ValueError, KeyError, IndexError, GLib.Error, subprocess.CalledProcessError):
+        except (OSError, ValueError, KeyError, IndexError, GLib.Error, sqlite3.Error, subprocess.CalledProcessError):
             pass
         time.sleep(0.05)
     raise RuntimeError(f'timed out: {description}; {run}')
@@ -51,6 +54,35 @@ def wait(description, check, process, timeout=25):
 
 def read(path):
     return json.loads(path.read_text())
+
+
+def native_grids(viewport, layout):
+    scale = viewport['backingScale']
+    native = viewport['rasterization']
+    padding = native['paddingPixels']
+    cell = viewport['cell']
+    divider = viewport['dividerThickness']
+    rounded = lambda n: math.floor(n + .5) if n >= 0 else math.ceil(n - .5)
+    f32 = lambda n: struct.unpack('f', struct.pack('f', n))[0]
+    result = {}
+    def visit(node, width, height, x, y):
+        if node['kind'] == 'pane':
+            pixels_w = rounded((x + width) * scale) - rounded(x * scale)
+            pixels_h = rounded((y + height) * scale) - rounded(y * scale)
+            columns = int(f32(f32(max(0, pixels_w - padding['left'] - padding['right'])) / f32(cell['width'])))
+            rows = int(f32(f32(max(0, pixels_h - padding['top'] - padding['bottom'])) / f32(cell['height'])))
+            result[node['shellId']] = (max(1, min(65535, rows)), max(1, min(65535, columns)))
+        else:
+            horizontal = node['direction'] == 'right'
+            available = max(0, (width if horizontal else height) - divider)
+            first = math.floor(available * min(.99, max(.01, node['ratio'])))
+            second = available - first
+            visit(node['first'], first if horizontal else width, height if horizontal else first, x, y)
+            visit(node['second'], second if horizontal else width, height if horizontal else second,
+                  x + first + divider if horizontal else x, y if horizontal else y + first + divider)
+    visit(layout, viewport['terminalArea']['width'], viewport['terminalArea']['height'],
+          native['origin']['x'], native['origin']['y'])
+    return result
 
 
 def xdo(*args):
@@ -149,6 +181,7 @@ try:
                 'first':{'kind':'pane','shellId':pi_shell['id']}, 'second':{'kind':'pane','shellId':terminal['id']}}})
         state = folder/'fixture.json'
         wait(f'{tag} fixture', lambda: read(state), daemon)
+        session = next(record for record in rpc(ipc, 'axo.session.catalog', {})['sessions'] if record['id'] == session['id'])
         sessions.append((tag, session, state))
     diagnostics, picture = run/'workbench.json', run/'workbench.png'
     frontend_socket = ipc
@@ -230,6 +263,7 @@ try:
     if proxy:
         counts = {tag: read(state)['inputCount'] for tag, _, state in sessions}
         before = read(diagnostics)
+        viewport_sends = proxy.methods.count('axo.client.viewport.set.v2')
         proxy.available = False
         proxy.cut('rpc')
         wait('offline view is detached', lambda: find_label(app, 'Daemon disconnected. Reconnecting…'), app)
@@ -239,6 +273,8 @@ try:
         wait('catalog reconnect installs fresh epoch and selected view', lambda:
              selected(sessions[0][1]) and read(diagnostics)['catalogEpoch'] > before['catalogEpoch']
              and read(diagnostics)['viewGeneration'] > before['viewGeneration'], app)
+        if os.environ.get('AXO_DESKTOP_VIEWPORT_TEST') == '1':
+            wait('viewport republished after reconnect epoch', lambda: proxy.methods.count('axo.client.viewport.set.v2') > viewport_sends, app)
         before = read(diagnostics)
         proxy.cut('attach')
         wait('Ghostty EOF reconnects output without resetting catalog', lambda:
@@ -270,6 +306,51 @@ try:
     # Review settled chrome, not Ghostty's transient native resize indicator.
     settled = time.time() + 0.8
     wait('settled workbench snapshot', lambda: picture.stat().st_mtime > settled, app)
+    if os.environ.get('AXO_DESKTOP_VIEWPORT_TEST') == '1':
+        def stored_native():
+            with sqlite3.connect('file:' + str(run/'server/axo.db') + '?mode=ro', uri=True) as database:
+                rows = database.execute("SELECT key,value FROM daemon_metadata WHERE key IN ('client_viewport','client_viewport_native_v2')").fetchall()
+            values = {key:json.loads(value) for key,value in rows}
+            assert 'rasterization' not in values['client_viewport'], 'old-reader key contains new fields'
+            return values['client_viewport_native_v2']
+        viewport = wait('actual native metrics persisted', lambda: (value if (value := stored_native()) == read(diagnostics)['viewport'] else None), app)
+        hidden = sessions[1]
+        expected = native_grids(viewport, hidden[1]['layout'])
+        terminal = next(shell for shell in hidden[1]['shells'] if shell['role'] == 'terminal')
+        wait('unattached terminal pre-sized from actual renderer metrics', lambda:
+             (read(hidden[2])['rows'], read(hidden[2])['columns']) == expected[terminal['id']], app)
+        click_label(app, window, hidden[0])
+        def projected_visible():
+            visible = selected(hidden[1])
+            return visible if visible and {pane['shellId']:(pane['rows'],pane['columns']) for pane in visible['panes']} == expected else None
+        # Core-ready precedes GTK's persisted split allocation. Wait for the exact final
+        # grids, not just the first frame at the Paned widget's provisional 50/50 position.
+        visible = wait('hidden Session settles at its exact projected grids', projected_visible, app)
+        click_label(app, window, 'workbench-A')
+        wait('selected Session restored for new-pane test', lambda: selected(sessions[0][1]), app)
+        viewport = wait('native metrics settled after selection', lambda: (value if (value := stored_native()) == read(diagnostics)['viewport'] else None), app)
+        folder = run/'home'/'viewport-new'
+        folder.mkdir()
+        created = rpc(ipc, 'axo.session.create', {'folder':str(folder)})
+        expected_new = native_grids(viewport, created['layout'])
+        terminal = next(shell for shell in created['shells'] if shell['role'] == 'terminal')
+        wait('new unattached Session terminal has the projected grid', lambda:
+             (read(folder/'fixture.json')['rows'],read(folder/'fixture.json')['columns']) == expected_new[terminal['id']], app)
+        # Lose an admitted geometry write's reply without touching the catalog stream.
+        proxy.lose_viewport_ack = True
+        sends = proxy.methods.count('axo.client.viewport.set.v2')
+        xdo('windowsize', '--sync', window, '1390', '870')
+        wait('uncertain viewport shown honestly', lambda: find_label(app, 'Viewport unconfirmed; Refresh to retry'), app)
+        assert proxy.methods.count('axo.client.viewport.set.v2') == sends + 1
+        xdo('windowsize', '--sync', window, '1420', '890')
+        time.sleep(.35)
+        assert proxy.methods.count('axo.client.viewport.set.v2') == sends + 1, 'geometry change retried an uncertain write'
+        proxy.lose_viewport_ack = False
+        click_label(app, window, 'Refresh Sessions')
+        wait('explicit viewport retry writes the newest geometry', lambda:
+             proxy.methods.count('axo.client.viewport.set.v2') == sends + 2 and stored_native() == read(diagnostics)['viewport'], app)
+        wait('uncertainty cleared only after acknowledgement', lambda: find_label(app, 'Viewport unconfirmed; Refresh to retry') is None, app)
+        assert not proxy.errors, proxy.errors
     stop(app, window)
     if proxy:
         wait('catalog/attachment connections released on quit', lambda: proxy.count('rpc') == 0 and proxy.count('attach') == 0, daemon)
@@ -279,7 +360,7 @@ try:
         for shell in session['shells']:
             os.kill(shell['processId'], 0)
     assert daemon.poll() is None
-    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar, 22px rows and caption-free accessible panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'live catalog create/rename/remove without replacing selected panes', 'explicit refresh preserves selection', 'isolated RPC and attachment EOF recovery, stale attach cancellation and no input replay' if proxy else 'detach-only selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
+    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar, 22px rows and caption-free accessible panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'live catalog create/rename/remove without replacing selected panes', 'explicit refresh preserves selection', 'isolated RPC and attachment EOF recovery, stale attach cancellation and no input replay' if proxy else 'detach-only selection', 'master-fd termios polling', 'native viewport persistence, hidden/new panes and uncertain-write fence' if os.environ.get('AXO_DESKTOP_VIEWPORT_TEST') == '1' else 'actual attached-surface resize', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
 finally:
     if proxy:
         proxy.close()

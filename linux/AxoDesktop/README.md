@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, live catalog updates, reconnect, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, app-wide viewport coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, live catalog updates, reconnect, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
 
 ## Build and run
 
@@ -113,9 +113,26 @@ never queues or replays input or settings writes. Tray daemon status uses this s
 owner instead of another health poller. A failed worker is shown as stopped with
 explicit Refresh recovery, never a fabricated reconnect loop.
 
-This does not create/wake Sessions, follow focus intents, write layouts or publish
-an app-wide viewport. Existing actual-surface master resizes still apply after v3
-bootstrap. Those coordination/product slices remain separate.
+This does not create/wake Sessions, follow focus intents or write layouts.
+Those product slices remain separate.
+
+## Native viewport publication
+
+The separate shared `ViewportReporter` coalesces actual rendered metrics and
+serially sends the newest viewport through advertised `axo.client.viewport.set.v2`.
+The GTK bridge exports actual cell/padding pixels and framebuffer scale, keeping
+font-DPI scaling separate. Root origin and snapped device spans match Ghostty GTK;
+integer split allocation is shared with the daemon. Unattached and new panes get
+projected grids while attached surfaces retain actual master resize after v3
+bootstrap. Origin-only/activation changes are observed, without socket I/O on GTK.
+
+Native data is persisted atomically beside a legacy-only projection, leaving the
+old reader's key/schema unchanged. v1 rejects native fields; v2 requires them. Missing
+v2 support is shown explicitly, without guessing a v1 geometry. Uncertain replies
+block further automatic viewport writes in that epoch, even on resize, until
+explicit Refresh or reconnect. No input/settings action is retried. Metrics require
+an actual coherent surface; an empty cold workbench does not launch a metrics shell
+or invent font dimensions. See [RFD0058](../../docs/rfds/RFD0058-native-viewport-metrics.md).
 
 ## Controls and parity limits
 
@@ -168,12 +185,14 @@ handshake across a selection change, checks new epochs/fresh replay, exactly two
 native pane groups, unchanged child PIDs/input counts, no replay of keys typed
 while offline, and released connections on quit. The proxy forwards v3 descriptor
 markers with CLOEXEC and never changes shared master flags. Run it with the same
-isolated launcher as the other drivers; no live service is restarted. The current candidate passes all six GTK drivers,
-with additional reconnect repeats, and all eight focused Bazel suites. The 18
+isolated launcher as the other drivers; no live service is restarted. The current candidate passes all seven GTK drivers,
+with additional reconnect/viewport repeats, and all ten focused Bazel suites. The 23
 shared client tests pass ten complete runs. Some unchanged server/PTY/IPC/protocol
 checks are cached in this slice; native Mac and real Wayland/GPU acceptance were
-not rerun. App-wide viewport publication and cold daemon-restart acceptance remain
-separate from these transport-cut tests.
+not rerun. Cold daemon-restart acceptance remains separate from these transport-cut
+tests. `viewport_drive.py` also checks actual native metrics against hidden/new
+kernel grids, exact settled visible grids, old-reader persistence, reconnect resend
+and admitted-write/lost-acknowledgement recovery with no resize-triggered retry.
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 

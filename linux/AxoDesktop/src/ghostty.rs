@@ -13,13 +13,38 @@ use std::{
 };
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SurfaceStats {
     pub ready: u32,
     pub columns: u32,
     pub rows: u32,
     pub width: u32,
     pub height: u32,
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub padding_top: u32,
+    pub padding_bottom: u32,
+    pub padding_left: u32,
+    pub padding_right: u32,
+    pub scale_x: f64,
+    pub scale_y: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WidgetGeometry {
+    pub width: f64,
+    pub height: f64,
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub scale: f64,
+}
+
+pub fn widget_geometry(widget: &gtk4::Widget) -> WidgetGeometry {
+    let mut geometry = WidgetGeometry::default();
+    // SAFETY: widget is owned by GTK on this thread; native code only reads allocation/scale.
+    unsafe { axo_gtk_widget_geometry(widget.to_glib_none().0, &mut geometry) };
+    geometry
 }
 
 #[repr(C)]
@@ -33,6 +58,7 @@ struct ExternalTerminal {
 }
 
 unsafe extern "C" {
+    fn axo_gtk_widget_geometry(widget: *mut gtk4::ffi::GtkWidget, out: *mut WidgetGeometry);
     fn axo_gtk_surface_attach(
         engine: *mut c_void,
         external: *const ExternalTerminal,
@@ -230,8 +256,12 @@ impl Drop for Engine {
 mod tests {
     #[test]
     fn surface_stats_matches_the_private_c_abi() {
-        assert_eq!(std::mem::size_of::<super::SurfaceStats>(), 20);
-        assert_eq!(std::mem::align_of::<super::SurfaceStats>(), 4);
+        assert_eq!(std::mem::size_of::<super::SurfaceStats>(), 64);
+        assert_eq!(std::mem::align_of::<super::SurfaceStats>(), 8);
+        assert_eq!(std::mem::offset_of!(super::SurfaceStats, scale_x), 48);
+        assert_eq!(std::mem::offset_of!(super::SurfaceStats, scale_y), 56);
+        assert_eq!(std::mem::size_of::<super::WidgetGeometry>(), 40);
+        assert_eq!(std::mem::offset_of!(super::WidgetGeometry, scale), 32);
         assert_eq!(std::mem::size_of::<super::ExternalTerminal>(), 32);
         assert_eq!(std::mem::align_of::<super::ExternalTerminal>(), 8);
     }

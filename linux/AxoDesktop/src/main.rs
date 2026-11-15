@@ -8,6 +8,7 @@ mod settings;
 mod style;
 mod task;
 mod tray;
+mod viewport_task;
 mod workbench;
 
 use clap::Parser;

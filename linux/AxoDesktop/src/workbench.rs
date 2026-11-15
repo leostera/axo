@@ -1,7 +1,10 @@
 //! Live local catalog workbench. Daemon owns sessions/layout/processes; this view
 //! owns selection and cancellable, detach-only Ghostty widgets. No CLI subprocess.
-use crate::{Options, attachment::AttachmentTask, catalog_task::CatalogTask, ghostty::Engine};
-use axo_client::{CatalogState, LocalCatalog};
+use crate::{
+    Options, attachment::AttachmentTask, catalog_task::CatalogTask, ghostty::Engine,
+    viewport_task::ViewportTask,
+};
+use axo_client::{CatalogState, LocalCatalog, ViewportPhase};
 use axo_protocol::{
     Availability, LayoutDirection, LayoutNode, PaneRole, SessionId, SessionRecord, SessionStatus,
     ShellId,
@@ -94,6 +97,11 @@ pub fn create_window(
         catalog: RefCell::new(None),
         task: RefCell::new(None),
         epoch: Cell::new(None),
+        viewport_epoch: Cell::new(0),
+        viewport_task: RefCell::new(None),
+        viewport_warning: RefCell::new(None),
+        latest_viewport: Cell::new(None),
+        last_divider: Cell::new(None),
         view_generation: Cell::new(0),
         online: Cell::new(false),
         retry_timer: RefCell::new(None),
@@ -146,6 +154,19 @@ pub fn create_window(
             }
         }
     });
+    window.connect_is_active_notify({
+        let model = Rc::downgrade(&model);
+        move |window| {
+            if window.is_active() {
+                if let Some(model) = model.upgrade() {
+                    let view = model.view.borrow().clone();
+                    if let Some(view) = view {
+                        model.publish_viewport(&view);
+                    }
+                }
+            }
+        }
+    });
     // The window owns the model; model only has a weak window. Widget callbacks
     // use Weak<Model/View>, avoiding GTK signal -> model -> widget reference cycles.
     window.connect_close_request({
@@ -168,6 +189,7 @@ pub fn create_window(
         move |_| model.shutdown()
     });
     window.present();
+    model.start_viewport();
     model.reload();
     model.start_tray();
     Ok(())
@@ -185,6 +207,11 @@ struct Workbench {
     catalog: RefCell<Option<Arc<LocalCatalog>>>,
     task: RefCell<Option<CatalogTask>>,
     epoch: Cell<Option<u64>>,
+    viewport_epoch: Cell<u64>,
+    viewport_task: RefCell<Option<ViewportTask>>,
+    viewport_warning: RefCell<Option<String>>,
+    latest_viewport: Cell<Option<axo_protocol::Viewport>>,
+    last_divider: Cell<Option<f64>>,
     view_generation: Cell<u64>,
     online: Cell<bool>,
     retry_timer: RefCell<Option<glib::SourceId>>,
@@ -284,6 +311,8 @@ impl Workbench {
         }
         match state.as_ref() {
             CatalogState::Connecting => {
+                self.epoch.set(None);
+                self.suspend_viewport();
                 self.online.set(false);
                 self.list.set_sensitive(false);
                 self.detach_view("Connecting to daemon…");
@@ -291,6 +320,7 @@ impl Workbench {
                 *self.daemon_status.borrow_mut() = "Daemon connecting…".into();
             }
             CatalogState::Reconnecting { reason } => {
+                self.suspend_viewport();
                 self.online.set(false);
                 self.list.set_sensitive(false);
                 self.detach_view("Daemon disconnected. Reconnecting…");
@@ -300,9 +330,18 @@ impl Workbench {
             CatalogState::Live(snapshot) => {
                 // Latest-state delivery may coalesce an entire outage. Epoch changes still
                 // force fresh attachments even when IDs, PIDs and advertised paths match.
-                if self.epoch.replace(Some(snapshot.epoch)) != Some(snapshot.epoch)
-                    || !snapshot.health.ready
-                {
+                let changed = self.epoch.replace(Some(snapshot.epoch)) != Some(snapshot.epoch);
+                if changed {
+                    self.viewport_epoch.set(
+                        self.viewport_epoch
+                            .get()
+                            .checked_add(1)
+                            .expect("viewport epoch exhausted"),
+                    );
+                    self.viewport_warning.borrow_mut().take();
+                }
+                if changed || !snapshot.health.ready {
+                    self.suspend_viewport();
                     self.detach_view("Waiting for daemon readiness…");
                 }
                 self.online.set(snapshot.health.ready);
@@ -315,6 +354,7 @@ impl Workbench {
                 } else {
                     ""
                 });
+                self.update_viewport_status();
                 *self.daemon_status.borrow_mut() = format!(
                     "Daemon {} · Axo {}",
                     if snapshot.health.ready {
@@ -327,6 +367,86 @@ impl Workbench {
             }
         }
         self.publish_daemon_status();
+    }
+    fn start_viewport(self: &Rc<Self>) {
+        self.viewport_task.borrow_mut().take();
+        let weak = Rc::downgrade(self);
+        match ViewportTask::start(self.socket.clone(), move |result| {
+            let Some(model) = weak.upgrade().filter(|model| !model.closing.get()) else {
+                return;
+            };
+            match result {
+                Ok(status) if status.epoch == model.viewport_epoch.get() => match status.phase {
+                    ViewportPhase::Published | ViewportPhase::Idle => {
+                        model.viewport_warning.borrow_mut().take();
+                    }
+                    ViewportPhase::Unsupported => {
+                        *model.viewport_warning.borrow_mut() =
+                            Some("Viewport pre-sizing unavailable".into())
+                    }
+                    ViewportPhase::Uncertain { .. } => {
+                        *model.viewport_warning.borrow_mut() =
+                            Some("Viewport unconfirmed; Refresh to retry".into())
+                    }
+                    ViewportPhase::Sending => {}
+                },
+                Ok(_) => return,
+                Err(_) => {
+                    *model.viewport_warning.borrow_mut() =
+                        Some("Viewport reporter stopped; Refresh to retry".into())
+                }
+            }
+            model.update_viewport_status();
+        }) {
+            Ok(task) => {
+                if let Some(viewport) = self.latest_viewport.get().filter(|_| self.online.get()) {
+                    task.report(self.viewport_epoch.get(), viewport);
+                }
+                *self.viewport_task.borrow_mut() = Some(task);
+            }
+            Err(_) => {
+                *self.viewport_warning.borrow_mut() =
+                    Some("Viewport unavailable; Refresh to retry".into());
+                self.update_viewport_status();
+            }
+        }
+    }
+    fn update_viewport_status(&self) {
+        if !self.online.get() || self.retry_timer.borrow().is_some() {
+            return;
+        }
+        self.status
+            .set_text(self.viewport_warning.borrow().as_deref().unwrap_or(""));
+    }
+    fn suspend_viewport(&self) {
+        self.latest_viewport.set(None);
+        if let Some(task) = self.viewport_task.borrow().as_ref() {
+            task.suspend();
+        }
+    }
+    fn publish_viewport(&self, view: &SessionView) {
+        if !self.online.get()
+            || self.closing.get()
+            || view.needs_retry.get()
+            || !self
+                .window
+                .upgrade()
+                .is_some_and(|window| window.is_active() && window.is_visible())
+            || !self
+                .view
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| current.generation == view.generation)
+        {
+            return;
+        }
+        if let Some((viewport, divider)) = view.native_viewport(self.last_divider.get()) {
+            self.last_divider.set(Some(divider));
+            self.latest_viewport.set(Some(viewport));
+            if let Some(task) = self.viewport_task.borrow().as_ref() {
+                task.report(self.viewport_epoch.get(), viewport);
+            }
+        }
     }
     fn cancel_retry(&self) {
         if let Some(timer) = self.retry_timer.borrow_mut().take() {
@@ -344,6 +464,16 @@ impl Workbench {
     fn refresh_selected(self: &Rc<Self>) {
         if self.closing.get() {
             return;
+        }
+        if self.online.get() && self.viewport_warning.borrow().is_some() {
+            let retry = self
+                .viewport_task
+                .borrow()
+                .as_ref()
+                .is_some_and(ViewportTask::retry);
+            if !retry {
+                self.start_viewport();
+            }
         }
         let retry = self
             .view
@@ -412,6 +542,7 @@ impl Workbench {
             window.destroy();
         }
         self.cancel_retry();
+        self.viewport_task.borrow_mut().take();
         self.tray.borrow_mut().take();
         self.tray_available.set(false);
         self.task.borrow_mut().take();
@@ -426,6 +557,8 @@ impl Workbench {
         }
         self.online.set(false);
         self.list.set_sensitive(false);
+        self.epoch.set(None);
+        self.suspend_viewport();
         self.detach_view("Catalog observer stopped. Refresh Sessions to retry.");
         self.status.set_text(&format!("Observer stopped: {reason}"));
         *self.daemon_status.borrow_mut() = "Daemon status unavailable".into();
@@ -547,6 +680,8 @@ impl Workbench {
             pending: RefCell::new(Vec::new()),
             focused: Cell::new(None),
             grids: RefCell::new(std::collections::BTreeMap::new()),
+            splits: RefCell::new(Vec::new()),
+            geometry: Cell::new(None),
             snapshot_observed: Cell::new(false),
         });
         self.content.append(&view.root);
@@ -689,6 +824,8 @@ struct SessionView {
     focused: Cell<Option<ShellId>>,
     grids: RefCell<std::collections::BTreeMap<ShellId, crate::ghostty::SurfaceStats>>,
     snapshot_observed: Cell<bool>,
+    splits: RefCell<Vec<gtk4::Paned>>,
+    geometry: Cell<Option<crate::ghostty::WidgetGeometry>>,
 }
 impl SessionView {
     fn retry(self: &Rc<Self>) {
@@ -719,6 +856,9 @@ impl SessionView {
                 split.set_end_child(Some(&self.node(second)));
                 split.set_resize_start_child(true);
                 split.set_resize_end_child(true);
+                split.set_shrink_start_child(true);
+                split.set_shrink_end_child(true);
+                self.splits.borrow_mut().push(split.clone());
                 let ratio = *ratio;
                 split.add_tick_callback(move |split, _| {
                     let size = if horizontal {
@@ -729,7 +869,18 @@ impl SessionView {
                     if size <= 0 {
                         return glib::ControlFlow::Continue;
                     }
-                    split.set_position((size as f64 * ratio).round() as i32);
+                    let (Some(start), Some(end)) = (split.start_child(), split.end_child()) else {
+                        return glib::ControlFlow::Continue;
+                    };
+                    let available = if horizontal {
+                        start.width() + end.width()
+                    } else {
+                        start.height() + end.height()
+                    };
+                    if available <= 0 {
+                        return glib::ControlFlow::Continue;
+                    }
+                    split.set_position((available as f64 * ratio.clamp(0.01, 0.99)).floor() as i32);
                     glib::ControlFlow::Break
                 });
                 split.upcast()
@@ -859,18 +1010,20 @@ impl SessionView {
     }
 
     fn observe_surface(self: &Rc<Self>, id: ShellId, surface: &crate::ghostty::Surface) {
-        if self.options.diagnostics.is_some() {
-            let weak = Rc::downgrade(self);
-            let previous = Cell::new(crate::ghostty::SurfaceStats::default());
-            surface.on_frame(move |stats, _| {
-                if stats == previous.replace(stats) {
-                    return;
-                }
-                if let Some(view) = weak.upgrade() {
+        let weak = Rc::downgrade(self);
+        let previous = Cell::new(crate::ghostty::SurfaceStats::default());
+        surface.on_frame(move |stats, _| {
+            let changed = stats != previous.replace(stats);
+            if let Some(view) = weak.upgrade() {
+                let geometry = crate::ghostty::widget_geometry(view.root.upcast_ref());
+                // Fractional pixel spans also change with the native origin, not just rows
+                // and columns. Capture origin-only changes without consuming any socket I/O.
+                let moved = view.geometry.replace(Some(geometry)) != Some(geometry);
+                if changed || moved {
                     view.record_grid(id, stats);
                 }
-            });
-        }
+            }
+        });
         // Readback follows the first installed surface, not focus timing. A slow
         // Pi attachment or a user clicking another pane must not suppress it.
         if self.options.snapshot.is_some() && !self.snapshot_observed.replace(true) {
@@ -880,15 +1033,106 @@ impl SessionView {
         }
     }
 
+    fn native_viewport(&self, last_divider: Option<f64>) -> Option<(axo_protocol::Viewport, f64)> {
+        let grids = self.grids.borrow();
+        let layout = self.session.layout.as_ref()?;
+        let expected = self
+            .session
+            .shells
+            .iter()
+            .filter(|shell| {
+                shell.availability == Availability::Available
+                    && layout.shell_ids().contains(&shell.id)
+            })
+            .count();
+        if expected == 0 || grids.len() != expected {
+            return None;
+        }
+        let first = grids.values().next()?;
+        let signature = |stats: &crate::ghostty::SurfaceStats| {
+            (
+                stats.cell_width,
+                stats.cell_height,
+                stats.padding_top,
+                stats.padding_bottom,
+                stats.padding_left,
+                stats.padding_right,
+                stats.scale_x,
+                stats.scale_y,
+            )
+        };
+        if grids
+            .values()
+            .any(|stats| stats.ready != 1 || signature(stats) != signature(first))
+            || first.scale_x != first.scale_y
+        {
+            return None;
+        }
+        let splits = self.splits.borrow();
+        let mut divider = None;
+        for split in splits.iter() {
+            let (start, end) = (split.start_child()?, split.end_child()?);
+            let gap = if split.orientation() == gtk4::Orientation::Horizontal {
+                split.width() - start.width() - end.width()
+            } else {
+                split.height() - start.height() - end.height()
+            };
+            if !(0..=100).contains(&gap) || divider.is_some_and(|previous| previous != gap as f64) {
+                return None;
+            }
+            divider = Some(gap as f64);
+        }
+        // A single pane cannot measure a nonexistent handle. Reuse only an actually observed
+        // divider from this same workbench/style, never a guessed theme size.
+        let divider = divider.or(last_divider)?;
+        let geometry = crate::ghostty::widget_geometry(self.root.upcast_ref());
+        if geometry.scale != first.scale_x {
+            return None;
+        }
+        let viewport = axo_protocol::Viewport::from_native_metrics(
+            axo_protocol::Size {
+                width: geometry.width,
+                height: geometry.height,
+            },
+            geometry.scale,
+            axo_protocol::PixelSize {
+                width: first.cell_width,
+                height: first.cell_height,
+            },
+            axo_protocol::Padding {
+                top: first.padding_top,
+                bottom: first.padding_bottom,
+                left: first.padding_left,
+                right: first.padding_right,
+            },
+            divider,
+            axo_protocol::ViewportOrigin {
+                x: geometry.origin_x,
+                y: geometry.origin_y,
+            },
+        )
+        .ok()?;
+        Some((viewport, divider))
+    }
+
     fn record_grid(&self, id: ShellId, stats: crate::ghostty::SurfaceStats) {
-        let mut grids = self.grids.borrow_mut();
-        grids.insert(id, stats);
-        let panes: Vec<_> = grids.iter().map(|(id, stats)| serde_json::json!({
-            "shellId":id, "ready":stats.ready == 1, "columns":stats.columns, "rows":stats.rows
-        })).collect();
-        let data = serde_json::json!({"sessionId":self.session.id,"panes":panes,
-            "catalogEpoch":self.epoch,"viewGeneration":self.generation});
+        self.grids.borrow_mut().insert(id, stats);
+        if let Some(owner) = self.owner.upgrade() {
+            owner.publish_viewport(self);
+        }
         if let Some(path) = &self.options.diagnostics {
+            let grids = self.grids.borrow();
+            let panes: Vec<_> = grids.iter().map(|(id, stats)| serde_json::json!({
+                "shellId":id, "ready":stats.ready == 1, "columns":stats.columns, "rows":stats.rows,
+                "cell":{"width":stats.cell_width,"height":stats.cell_height},
+                "scale":stats.scale_x
+            })).collect();
+            let viewport = self
+                .owner
+                .upgrade()
+                .and_then(|owner| self.native_viewport(owner.last_divider.get()).map(|v| v.0));
+            let data = serde_json::json!({"sessionId":self.session.id,"panes":panes,
+                "catalogEpoch":self.epoch,"viewGeneration":self.generation,"viewport":viewport});
             if let Err(error) = std::fs::write(path, data.to_string()) {
                 eprintln!("diagnostics: {error}");
             }

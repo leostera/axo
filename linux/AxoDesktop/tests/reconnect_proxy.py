@@ -23,6 +23,7 @@ class OwnedProxy:
         self.methods = []
         self.errors = []
         self.available = True
+        self.lose_viewport_ack = False
         self.stopping = False
         self.attach_gate = threading.Event()
         self.attach_gate.set()
@@ -98,9 +99,12 @@ class OwnedProxy:
                     with self.lock:
                         self.methods.append(method)
                     assert method in ['axo.protocol.negotiate', 'axo.session.catalog',
-                                      'axo.daemon.health', 'axo.session.events.stream'], method
+                                      'axo.daemon.health', 'axo.session.events.stream',
+                                      'axo.client.viewport.set.v2'], method
                     server.sendall(request)
                     response = self._rewrite(json.loads(self._line(server)))
+                    if method == 'axo.client.viewport.set.v2' and self.lose_viewport_ack:
+                        return  # The real fixture daemon committed; only its acknowledgement is lost.
                     client.sendall(json.dumps(response).encode() + b'\n')
                     if method == 'axo.session.events.stream':
                         self._output(server, client, lines=True)

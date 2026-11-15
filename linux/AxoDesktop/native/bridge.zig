@@ -6,6 +6,7 @@ const CoreApp = @import("App.zig");
 const Config = @import("config.zig").Config;
 const gtk = @import("gtk");
 const Surface = apprt.gtk.class.Surface;
+const scale_util = @import("apprt/gtk/scale.zig");
 const main = @import("main_ghostty.zig");
 pub const std_options = main.std_options;
 
@@ -142,15 +143,57 @@ pub export fn axo_gtk_request_quit(engine: *Engine) void {
     engine.runtime.app.quit();
 }
 
-pub const SurfaceStats = extern struct { ready: u32, columns: u32, rows: u32, width: u32, height: u32 };
+pub const SurfaceStats = extern struct {
+    ready: u32 = 0,
+    columns: u32 = 0,
+    rows: u32 = 0,
+    width: u32 = 0,
+    height: u32 = 0,
+    cell_width: u32 = 0,
+    cell_height: u32 = 0,
+    padding_top: u32 = 0,
+    padding_bottom: u32 = 0,
+    padding_left: u32 = 0,
+    padding_right: u32 = 0,
+    scale_x: f64 = 0,
+    scale_y: f64 = 0,
+};
 
 pub export fn axo_gtk_surface_stats(widget: *Surface, out: *SurfaceStats) void {
-    out.* = .{ .ready = 0, .columns = 0, .rows = 0, .width = 0, .height = 0 };
+    out.* = .{};
     if (widget.core()) |core| {
         const grid = core.size.grid();
         const screen = core.size.screen;
-        out.* = .{ .ready = 1, .columns = grid.columns, .rows = grid.rows, .width = screen.width, .height = screen.height };
+        const scale = scale_util.widgetSurfaceScale(widget.as(gtk.Widget));
+        out.* = .{
+            .ready = 1,
+            .columns = grid.columns,
+            .rows = grid.rows,
+            .width = screen.width,
+            .height = screen.height,
+            .cell_width = core.size.cell.width,
+            .cell_height = core.size.cell.height,
+            .padding_top = core.size.padding.top,
+            .padding_bottom = core.size.padding.bottom,
+            .padding_left = core.size.padding.left,
+            .padding_right = core.size.padding.right,
+            .scale_x = scale,
+            .scale_y = scale,
+        };
     }
+}
+
+pub const WidgetGeometry = extern struct { width: f64, height: f64, origin_x: f64, origin_y: f64, scale: f64 };
+comptime {
+    std.debug.assert(@sizeOf(SurfaceStats) == 64);
+    std.debug.assert(@offsetOf(SurfaceStats, "scale_x") == 48);
+    std.debug.assert(@offsetOf(SurfaceStats, "scale_y") == 56);
+    std.debug.assert(@sizeOf(WidgetGeometry) == 40);
+    std.debug.assert(@offsetOf(WidgetGeometry, "scale") == 32);
+}
+pub export fn axo_gtk_widget_geometry(widget: *gtk.Widget, out: *WidgetGeometry) void {
+    const layout = scale_util.widgetLayout(widget);
+    out.* = .{ .width = @floatFromInt(widget.getWidth()), .height = @floatFromInt(widget.getHeight()), .origin_x = layout.origin.x, .origin_y = layout.origin.y, .scale = layout.scale };
 }
 
 /// The host must first destroy/unref its widgets and disconnect callbacks. Refuse
