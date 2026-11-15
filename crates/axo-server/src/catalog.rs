@@ -33,7 +33,8 @@ impl PiPhase {
 pub(crate) struct Entry {
     pub(crate) record: SessionRecord,
     pub(crate) pi: PiPhase,
-    /// Whether its Pi is in the middle of a turn.
+    /// Test observation; production shutdown reads `recoverable`, not raw working state.
+    #[cfg(test)]
     pub(crate) working: bool,
     /// Known working or captured pending recovery, unless explicitly stopped.
     pub(crate) recoverable: bool,

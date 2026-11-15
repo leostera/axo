@@ -61,8 +61,9 @@ impl Fixture {
                 executable(
                     &directory.join("fake-pi"),
                     &format!(
-                        "#!/bin/sh\nAXO_FAKE_PI_LOG='{}' AXO_FAKE_PI_STARTUP_MS=$(cat '{}') AXO_FAKE_PI_TURN_MS=$(cat '{}') exec '{}' \"$@\"\n",
+                        "#!/bin/sh\nAXO_FAKE_PI_LOG='{}' AXO_FAKE_PI_STARTUP_GATE='{}' AXO_FAKE_PI_STARTUP_MS=$(cat '{}') AXO_FAKE_PI_TURN_MS=$(cat '{}') exec '{}' \"$@\"\n",
                         directory.join("pi.log").display(),
+                        directory.join("startup-gate").display(),
                         directory.join("startup-ms").display(),
                         directory.join("turn-ms").display(),
                         fake.display()

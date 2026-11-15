@@ -483,6 +483,11 @@ fn main() {
         .and_then(|ms| ms.parse().ok())
         .unwrap_or(100u64);
     thread::sleep(Duration::from_millis(startup));
+    if let Some(gate) = env("AXO_FAKE_PI_STARTUP_GATE") {
+        while fs::read_to_string(&gate).is_ok_and(|state| state.trim() == "hold") {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
     let Some(path) = env("AXO_PI_BRIDGE_SOCKET") else {
         // Not launched by axod: wait like the sleeping fixture does.
         loop {

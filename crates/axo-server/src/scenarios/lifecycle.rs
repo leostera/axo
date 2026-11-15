@@ -598,7 +598,8 @@ async fn recovery_survives_another_graceful_stop_before_the_replacement_is_ready
     let mut fixture = Fixture::with(Pi::Fake { turn_ms: 30_000 }).await;
     let record = working_session(&fixture).await;
     fixture.set_turn_ms(0);
-    fixture.set_startup_ms(1500);
+    let gate = fixture.directory.join("startup-gate");
+    fs::write(&gate, "hold").unwrap();
     fixture.restart().await;
     fixture
         .until("captured recovery in the startup catalog", || {
@@ -611,8 +612,12 @@ async fn recovery_survives_another_graceful_stop_before_the_replacement_is_ready
                 .is_some_and(|e| e.recoverable)
         })
         .await;
-    fixture.set_startup_ms(20);
+    assert!(
+        !fixture.pi_log().contains("RESUME_TURN"),
+        "The first replacement must remain behind the gate"
+    );
     fixture.restart().await;
+    fs::write(&gate, "open").unwrap();
     fixture
         .until("one recovered turn after the second boot", || {
             fixture.pi_log().matches("RESUME_TURN").count() == 1
