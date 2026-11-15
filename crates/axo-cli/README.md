@@ -72,7 +72,7 @@ Native AI, direct computer commands, local agent stop/model/command APIs, messag
 
 ## Automation contracts
 
-- `--socket PATH`, then `AXO_SOCKET`, then the app's normal per-user socket. Never silently route to another host. `--sid self` requires a valid `AXO_SESSION_ID`; it is convenience context, not authenticated identity. Prompts sent inside an Axo Session retain that sender's provenance.
+- `--socket PATH`, then `AXO_SOCKET`, then the platform's per-user socket: `~/.axo/server/axod.sock` on Linux, `~/Library/Application Support/Axo/run/axod.sock` on macOS. Linux installations must configure the daemon with that explicit socket; this does not change the daemon's own default. Never silently route to another host. `--sid self` requires a valid `AXO_SESSION_ID`; it is convenience context, not authenticated identity. Prompts sent inside an Axo Session retain that sender's provenance.
 - Session lists are tables in a TTY. `--json` and redirected output are JSON; watches are NDJSON batches. Errors/confirmations go to stderr. A closed output pipe exits successfully and releases its watch.
 - Prompts use literal `--message` or bounded UTF-8 `--message-file` (`-` for stdin); no command execution or newline injection. Creation accepts a normalized existing folder or `--like`, never both.
 - Disruptive operations ask in a TTY; automation must pass `--yes`. That flag **never** authorizes answering the person's approval/input requests. The signed CLI has its own identity, not Axo.app's or axod's.

@@ -27,6 +27,34 @@ fn ok(daemon: &Axod, args: &[&str]) -> Value {
     serde_json::from_slice(&result.stdout).unwrap()
 }
 #[test]
+fn default_socket_reaches_the_platform_installation_without_environment_or_flags() {
+    let daemon = Axod::start();
+    let relative = if cfg!(target_os = "linux") {
+        ".axo/server/axod.sock"
+    } else {
+        "Library/Application Support/Axo/run/axod.sock"
+    };
+    let path = daemon.home().join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(daemon.socket(), &path).unwrap();
+    let result = Command::new(runfile("AXO_CLI_BINARY"))
+        .args(["daemon", "status", "--json"])
+        .env("HOME", daemon.home())
+        .env_remove("AXO_SOCKET")
+        .env_remove("AXO_SESSION_ID")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let health: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(health["ready"], true);
+}
+
+#[test]
 fn sessions_and_settings_use_the_real_protocol_without_consuming_focus_or_hiding_errors() {
     let daemon = Axod::start();
     assert!(ok(&daemon, &["session", "list"]).is_array());

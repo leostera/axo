@@ -229,8 +229,13 @@ fn home() -> Result<PathBuf, Failure> {
         Failure::input("HOME must be an absolute directory; otherwise pass --socket")
     })
 }
+const DEFAULT_SOCKET_RELATIVE: &str = if cfg!(target_os = "linux") {
+    ".axo/server/axod.sock"
+} else {
+    "Library/Application Support/Axo/run/axod.sock"
+};
 fn default_socket() -> Result<PathBuf, Failure> {
-    Ok(home()?.join("Library/Application Support/Axo/run/axod.sock"))
+    Ok(home()?.join(DEFAULT_SOCKET_RELATIVE))
 }
 fn socket(matches: &ArgMatches) -> Result<PathBuf, Failure> {
     let path = matches
