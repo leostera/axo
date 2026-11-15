@@ -11,6 +11,7 @@ use axo_protocol::{
 };
 use gtk4::{glib, prelude::*};
 mod actions;
+mod wake;
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -126,6 +127,7 @@ pub fn create_window(
         selected: Cell::new(None),
         selection_revision: Cell::new(0),
         creation,
+        wake: wake::Wake::default(),
         view: RefCell::new(None),
         updating: Cell::new(false),
         closing: Cell::new(false),
@@ -183,6 +185,7 @@ pub fn create_window(
                     if let Some(view) = view {
                         model.publish_viewport(&view);
                     }
+                    model.wake_selected_pi();
                 }
             }
         }
@@ -239,6 +242,7 @@ struct Workbench {
     selected: Cell<Option<SessionId>>,
     selection_revision: Cell<u64>,
     creation: actions::Creation,
+    wake: wake::Wake,
     view: RefCell<Option<Rc<SessionView>>>,
     updating: Cell<bool>,
     closing: Cell<bool>,
@@ -567,6 +571,7 @@ impl Workbench {
         }
         self.cancel_retry();
         self.creation.shutdown();
+        self.wake.shutdown();
         self.viewport_task.borrow_mut().take();
         self.tray.borrow_mut().take();
         self.tray_available.set(false);
@@ -618,6 +623,7 @@ impl Workbench {
         }
     }
     fn install_catalog(self: &Rc<Self>, catalog: Arc<LocalCatalog>) {
+        self.wake.reconcile(&catalog);
         let selected = self
             .creation
             .preferred_selection(&catalog, self.selection_revision.get())
@@ -689,8 +695,15 @@ impl Workbench {
                 && view.session.shells == session.shells
                 && view.session.layout == session.layout
         }) {
+            self.wake_selected_pi();
             return;
         }
+        let previous_focus = self
+            .view
+            .borrow()
+            .as_ref()
+            .filter(|view| view.session.id == id)
+            .and_then(|view| view.focused.get());
         self.cancel_retry();
         self.view.borrow_mut().take(); // Cancels pending attachments before replacing widgets.
         while let Some(child) = self.content.first_child() {
@@ -724,22 +737,33 @@ impl Workbench {
         *self.view.borrow_mut() = Some(view.clone());
         if let Some(layout) = &view.session.layout {
             view.focused.set(
-                view.session
-                    .shells
-                    .iter()
-                    .filter(|shell| {
-                        shell.availability == Availability::Available
-                            && layout.shell_ids().contains(&shell.id)
+                previous_focus
+                    .filter(|id| {
+                        session.shells.iter().any(|shell| {
+                            shell.id == *id
+                                && shell.availability == Availability::Available
+                                && layout.shell_ids().contains(id)
+                        })
                     })
-                    .min_by_key(|shell| if shell.role == PaneRole::Pi { 0 } else { 1 })
-                    .map(|shell| shell.id)
-                    .or_else(|| Some(first_pane(layout.root()))),
+                    .or_else(|| {
+                        view.session
+                            .shells
+                            .iter()
+                            .filter(|shell| {
+                                shell.availability == Availability::Available
+                                    && layout.shell_ids().contains(&shell.id)
+                            })
+                            .min_by_key(|shell| if shell.role == PaneRole::Pi { 0 } else { 1 })
+                            .map(|shell| shell.id)
+                            .or_else(|| Some(first_pane(layout.root())))
+                    }),
             );
             view.root.append(&view.node(layout.root()));
         } else {
             view.root
                 .append(&gtk4::Label::new(Some("Session layout is not ready")));
         }
+        self.wake_selected_pi();
     }
 }
 
@@ -948,9 +972,9 @@ impl SessionView {
                 return pane;
             }
             Availability::Dormant => {
-                pane.append(&notice(
-                    "Pi is asleep; automatic wake is not implemented yet",
-                ));
+                if let Some(owner) = self.owner.upgrade() {
+                    owner.dormant_pi(self.session.id, id, &pane);
+                }
                 return pane;
             }
             Availability::Available => {}

@@ -10,7 +10,7 @@ enum Phase {
     Pending,
     Unconfirmed,
 }
-enum Failure {
+pub(super) enum Failure {
     NotSent(String),
     Unconfirmed(String),
 }
@@ -312,7 +312,7 @@ impl Workbench {
 
 // A worker/channel failure is not proof that creation was never admitted. Only
 // failures explicitly classified before dispatch may enable another intent directly.
-fn resolve_worker(
+pub(super) fn resolve_worker(
     result: io::Result<Result<SessionRecord, Failure>>,
 ) -> Result<SessionRecord, Failure> {
     result.unwrap_or_else(|error| Err(Failure::Unconfirmed(error.to_string())))
@@ -338,6 +338,22 @@ fn execute_creation(
     socket: &std::path::Path,
     request: CreateSession,
 ) -> io::Result<Result<SessionRecord, Failure>> {
+    execute_action(
+        socket,
+        rpc::method::SESSION_CREATE,
+        |mut client| async move { client.create_session(request).await },
+    )
+}
+
+pub(super) fn execute_action<F, Fut>(
+    socket: &std::path::Path,
+    method: &'static str,
+    operation: F,
+) -> io::Result<Result<SessionRecord, Failure>>
+where
+    F: FnOnce(axo_client::Client) -> Fut,
+    Fut: std::future::Future<Output = Result<SessionRecord, axo_client::Error>>,
+{
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -355,20 +371,17 @@ fn execute_creation(
                 .negotiate()
                 .await
                 .map_err(|error| Failure::NotSent(error.to_string()))?;
-            if !client.supports(rpc::method::SESSION_CREATE) {
-                return Err(Failure::NotSent(
-                    "the running daemon does not support Session creation".into(),
-                ));
+            if !client.supports(method) {
+                return Err(Failure::NotSent(format!(
+                    "the running daemon does not support {method}"
+                )));
             }
             dispatched = true;
-            client
-                .create_session(request)
-                .await
-                .map_err(|error| match error {
-                    axo_client::Error::Input(message) => Failure::NotSent(message),
-                    // Even an RPC rejection may follow partial multi-step creation.
-                    error => Failure::Unconfirmed(error.to_string()),
-                })
+            operation(client).await.map_err(|error| match error {
+                axo_client::Error::Input(message) => Failure::NotSent(message),
+                // Even an RPC rejection may follow a partial multi-step action.
+                error => Failure::Unconfirmed(error.to_string()),
+            })
         })
         .await
     });

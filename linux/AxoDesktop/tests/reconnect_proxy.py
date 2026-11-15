@@ -27,6 +27,13 @@ class OwnedProxy:
         self.allow_actions = set(allow_actions)
         assert self.allow_actions <= {'axo.session.create', 'axo.session.pi.restart.auto.v1'}
         self.lose_create_ack = False
+        self.lose_wake_ack = False
+        self.hidden_methods = set()
+        self.catalog_gate = threading.Event()
+        self.catalog_gate.set()
+        self.wake_requests = []
+        self.wake_gate = threading.Event()
+        self.wake_gate.set()
         self.create_gate = threading.Event()
         self.create_gate.set()
         self.stopping = False
@@ -103,11 +110,25 @@ class OwnedProxy:
                     method = json.loads(request)['method']
                     with self.lock:
                         self.methods.append(method)
+                        if method == 'axo.session.pi.restart.auto.v1':
+                            self.wake_requests.append(json.loads(request)['params'])
                     assert method in ['axo.protocol.negotiate', 'axo.session.catalog',
-                                      'axo.daemon.health', 'axo.session.events.stream',
+                                      'axo.daemon.health', 'axo.session.events.stream', 'axo.config.get',
                                       'axo.client.viewport.set.v2'] or method in self.allow_actions, method
                     server.sendall(request)
                     response = self._rewrite(json.loads(self._line(server)))
+                    if method == 'axo.session.catalog':
+                        while not self.catalog_gate.wait(.05):
+                            if self.stopping:
+                                return
+                    if method == 'axo.protocol.negotiate' and self.hidden_methods:
+                        response['result']['methods'] = [name for name in response['result']['methods'] if name not in self.hidden_methods]
+                    if method == 'axo.session.pi.restart.auto.v1':
+                        while not self.wake_gate.wait(.05):
+                            if self.stopping:
+                                return
+                        if self.lose_wake_ack:
+                            return
                     if method == 'axo.session.create':
                         while not self.create_gate.wait(.05):
                             if self.stopping:
@@ -188,6 +209,8 @@ class OwnedProxy:
         self.stopping = True
         self.attach_gate.set()
         self.create_gate.set()
+        self.wake_gate.set()
+        self.catalog_gate.set()
         for listener in self.listeners:
             listener.close()
         for kind in self.connections:

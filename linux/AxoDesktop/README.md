@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, live catalog updates, reconnect, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: dormant Pi wake, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, live catalog updates, reconnect, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: exited-Pi recovery, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
 
 ## Build and run
 
@@ -114,8 +114,8 @@ owner instead of another health poller. A failed worker is shown as stopped with
 explicit Refresh recovery, never a fabricated reconnect loop.
 
 The read-only observer never creates/wakes Sessions or writes layouts; explicit
-creation has a separate mutation owner. Focus intents, dormant wake and layout
-writes remain separate product slices.
+creation and foreground dormant wake have separate mutation owners. Cross-client
+focus intents and layout writes remain separate product slices.
 
 ## Explicit Session creation
 
@@ -130,8 +130,25 @@ creation across refresh, resize and reconnect until the person reviews the catal
 and explicitly acknowledges the notice. That acknowledgement does not resend;
 a subsequent action is a new intent. Preflight failures are explicitly not sent.
 Success selects only an authoritative catalog record and cannot override a newer
-selection. Closing cancels delivery, not an already admitted action. Dormant-Pi wake,
+selection. Closing cancels delivery, not an already admitted action. Exited-Pi recovery,
 recent-folder suggestions and clone/import controls are not implemented by this slice.
+
+## Foreground dormant-Pi wake
+
+Like Mac's `wakeSelectedPi`, the native selection owner asks once for a selected
+Dormant Pi when this main window is visible, active and online. Background catalog
+projection or Settings focus cannot start it. It uses only advertised automatic
+unavailable-only restart; unavailable/exited panes are not implicitly force-recovered.
+One bounded worker runs at a time. Uncertain/unsupported attempts are not replayed
+by refresh, selection changes or reconnect. Authoritative available/gone state
+reconciles them; the Wake Pi button is a distinct explicit unavailable-only intent.
+An admitted request can finish after leaving the view, but its reply cannot select
+its old target. A newer current selection can wake after that worker finishes.
+
+Same-Session availability updates preserve the available focused pane, so a new Pi
+does not take terminal typing focus. Availability changes still rebuild this Scene;
+incremental per-pane native-widget reuse is part of the next layout slice. Daemon
+children, PTYs and canonical replay remain authoritative throughout.
 
 ## Native viewport publication
 
@@ -202,8 +219,8 @@ handshake across a selection change, checks new epochs/fresh replay, exactly two
 native pane groups, unchanged child PIDs/input counts, no replay of keys typed
 while offline, and released connections on quit. The proxy forwards v3 descriptor
 markers with CLOEXEC and never changes shared master flags. Run it with the same
-isolated launcher as the other drivers; no live service is restarted. The current candidate passes all eight GTK drivers,
-with additional reconnect/viewport/creation repeats, and all ten focused Bazel suites. The 30
+isolated launcher as the other drivers; no live service is restarted. The current candidate passes all nine GTK drivers,
+with additional reconnect/viewport/creation/wake repeats, and all ten focused Bazel suites. The 30
 shared client tests pass ten complete runs. Some unchanged server/PTY/IPC/protocol
 checks are cached in this slice; native Mac and real Wayland/GPU acceptance were
 not rerun. Cold daemon-restart acceptance remains separate from these transport-cut
@@ -221,6 +238,14 @@ portal preferences or capture/input/approval guards are modified. Named native
 buttons are exercised through AT-SPI activation and folder selection through the
 actual portal dialog's keyboard interface; this is not full real-panel/mouse/Wayland
 accessibility acceptance.
+
+`wake_drive.py` uses a clean restart of its owned daemon and Bazel's wire-level
+`//crates/axod:fake_pi` fixture (build it first). It verifies old Pis restored dormant,
+background selection behind Settings, foreground-only wake, preserved terminal
+focus/input/PIDs, held/lost acknowledgements, no wake replay across epoch changes,
+missing auto capability without force fallback, explicit new intent and detach-only
+quit. This fixture's cold-restore scenario is not the full installation/runtime
+failure matrix, real Pi model behavior or real paired-data restart acceptance.
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 
