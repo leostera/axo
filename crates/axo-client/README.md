@@ -21,6 +21,20 @@ new daemon, session store, account manager or application-authentication scheme.
   unique Session/pane identities, layout references within their owning Session,
   absolute advertised attach sockets. Missing layouts remain a readiness state;
   unshown panes are allowed. It does not invent a competing layout or database.
+- `CatalogWatch::channel()` supplies a bounded latest-state receiver and a single
+  `CatalogWatcher` to run on the caller's runtime. The watcher establishes its RPC
+  connection, subscribes **before** catalog/health reads, and treats catalog events
+  as invalidations, never stale snapshot patches. Reads have a five-second deadline;
+  bursts coalesce for 100 ms; EOF/lag/invalid frames reconnect with 250 ms–5 s backoff.
+  Idle catalogs are not polled. Manual refresh preserves the pending event-read
+  future, because cancelling `EventStream::next` deliberately poisons that stream.
+- Every new subscription gets a new epoch even if IDs/PIDs/paths are unchanged.
+  Native consumers must invalidate old attachments on an epoch change, including
+  when latest-state delivery coalesced the intermediate disconnect. Daemon readiness
+  comes from health/`daemon.ready`, not receipt of a catalog alone. Dropping the
+  receiver cancels bootstrap, idle reads and backoff. This owner only negotiates,
+  subscribes and reads catalog/health; it never retries actions, starts Pi or
+  supplies privileged local identity.
 
 A private socket/same UID does **not** grant privileged-app identity. This client
 never impersonates `Peer::Relay`, launches/upgrades axod, reads credentials or

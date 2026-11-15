@@ -4,7 +4,7 @@ package(default_visibility = ["//visibility:public"])
 
 rust_library(
     name = "axo_client",
-    srcs = ["src/lib.rs", "src/catalog.rs", "src/settings.rs", "src/tests.rs"],
+    srcs = ["src/lib.rs", "src/catalog.rs", "src/catalog_watch.rs", "src/catalog_watch/tests.rs", "src/settings.rs", "src/tests.rs"],
     edition = "2024",
     deps = [
         "//crates/axo-protocol:axo_protocol",

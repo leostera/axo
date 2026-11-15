@@ -1,8 +1,10 @@
 //! Shared local axod client: bounded JSON-RPC, negotiated methods, no implicit retries,
 //! runtime startup, credential reads, or privileged caller impersonation.
 mod catalog;
+mod catalog_watch;
 mod settings;
 pub use catalog::LocalCatalog;
+pub use catalog_watch::{CatalogSnapshot, CatalogState, CatalogWatch, CatalogWatcher};
 
 use axo_protocol::rpc::{self, method};
 use serde::de::DeserializeOwned;
@@ -212,6 +214,11 @@ impl EventStream {
         )
         .await
         .map_err(|_| transport("event subscription timed out"))??;
+        let subscribed: rpc::Subscribed = serde_json::from_value(acknowledgement.clone())
+            .map_err(|_| transport("invalid event subscription acknowledgement"))?;
+        if subscribed.subscription_id.is_empty() {
+            return Err(transport("empty event subscription identity"));
+        }
         Ok(Self {
             stream: client.stream.take(),
             acknowledgement,
