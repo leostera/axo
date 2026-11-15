@@ -1,6 +1,7 @@
 //! Shared local axod client: bounded JSON-RPC, negotiated methods, no implicit retries,
 //! runtime startup, credential reads, or privileged caller impersonation.
 mod catalog;
+mod settings;
 pub use catalog::LocalCatalog;
 
 use axo_protocol::rpc::{self, method};

@@ -1,7 +1,7 @@
 //! First local catalog workbench. Daemon owns sessions/layout/processes; this view
 //! owns selection and cancellable, detach-only Ghostty widgets. No CLI subprocess.
 use crate::{Options, attachment::AttachmentTask, ghostty::Engine, task::MainThreadTask};
-use axo_client::{Client, LocalCatalog};
+use axo_client::LocalCatalog;
 use axo_protocol::{
     Availability, LayoutDirection, LayoutNode, PaneRole, SessionId, SessionRecord, ShellId,
 };
@@ -11,7 +11,6 @@ use std::{
     io,
     path::PathBuf,
     rc::Rc,
-    time::Duration,
 };
 
 pub fn create_window(
@@ -56,6 +55,10 @@ pub fn create_window(
     let refresh = gtk4::Button::with_label("Refresh Sessions");
     refresh.add_css_class("flat");
     sidebar.append(&refresh);
+    let settings = gtk4::Button::with_label("Settings…");
+    settings.add_css_class("flat");
+    settings.set_action_name(Some("win.settings"));
+    sidebar.append(&settings);
     root.append(&sidebar);
     root.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -78,7 +81,19 @@ pub fn create_window(
         view: RefCell::new(None),
         updating: Cell::new(false),
         closing: Cell::new(false),
+        settings_window: glib::WeakRef::new(),
     });
+    let settings_action = gtk4::gio::SimpleAction::new("settings", None);
+    settings_action.connect_activate({
+        let model = Rc::downgrade(&model);
+        move |_, _| {
+            if let Some(model) = model.upgrade() {
+                model.open_settings();
+            }
+        }
+    });
+    window.add_action(&settings_action);
+    app.set_accels_for_action("win.settings", &["<Primary>comma"]);
     model.refresh.connect_clicked({
         let model = Rc::downgrade(&model);
         move |_| {
@@ -142,11 +157,28 @@ struct Workbench {
     view: RefCell<Option<Rc<SessionView>>>,
     updating: Cell<bool>,
     closing: Cell<bool>,
+    settings_window: glib::WeakRef<gtk4::Window>,
 }
 impl Workbench {
+    fn open_settings(&self) {
+        if self.closing.get() {
+            return;
+        }
+        if let Some(window) = self.settings_window.upgrade() {
+            window.present();
+            return;
+        }
+        if let Some(parent) = self.window.upgrade() {
+            let window = crate::settings::show(&parent, self.socket.clone());
+            self.settings_window.set(Some(&window));
+        }
+    }
     fn shutdown(&self) {
         if self.closing.replace(true) {
             return;
+        }
+        if let Some(window) = self.settings_window.upgrade() {
+            window.destroy();
         }
         self.task.borrow_mut().take();
         self.view.borrow_mut().take();
@@ -298,19 +330,9 @@ impl Workbench {
 }
 
 fn load_catalog(socket: PathBuf) -> io::Result<LocalCatalog> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                let mut client = Client::connect(&socket).await?;
-                client.negotiate().await?;
-                LocalCatalog::load(&mut client).await
-            })
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "catalog request timed out"))?
-            .map_err(io::Error::other)
-        })
+    crate::task::daemon_request(&socket, |mut client| async move {
+        LocalCatalog::load(&mut client).await
+    })
 }
 
 struct SessionView {

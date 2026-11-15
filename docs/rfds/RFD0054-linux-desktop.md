@@ -74,6 +74,21 @@ Paths in this table are relative to `apple/AxoMac/Sources/AxoMac`, except `AxoCl
 9. Keep computer-use GNOME guards and Linux secure-input refusal. A native GTK client does not make focus/origin-bound secret entry safe by itself.
 10. Treat terminal output/links as untrusted. Custom-scheme/executable-file handling and clipboard/paste policy need an Axo-equivalent audit before enabling a real-client surface; do not assume upstream GTK defaults match the Mac adapter.
 
+### Settings slice
+
+A native singleton settings window now follows General / Sessions / Agent from the
+Mac organization. It exposes full shell/agent commands and idle Pi timeout/count
+through shared `axo-client::config_value` / `set_config_value`, checking reply keys.
+Validation and durable state remain daemon-owned; no duplicate settings file or
+command execution lives in GTK. Ctrl+, and the sidebar open the same draft.
+
+Loads never write. Saves are explicit and serialized; only authoritative invalid-input
+rejections permit immediate correction. Lost replies/timeouts require an explicit
+reload before further saves, because a dispatched write may already have committed.
+Callbacks are cancelled when windows close; that cannot undo a dispatched write.
+No daemon/process restart accompanies edits. Appearance, power, grouping, remote
+access and tray integration remain separate pending slices.
+
 ### Implementation sequence
 
 Implement serially:

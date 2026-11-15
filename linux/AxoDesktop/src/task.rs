@@ -2,6 +2,32 @@
 use gtk4::glib;
 use std::{cell::RefCell, io, rc::Rc, sync::mpsc, time::Duration};
 
+/// Run only in a worker. The deadline covers negotiation and the operation.
+/// A timeout can occur after a write was dispatched: never automatically retry.
+pub fn daemon_request<T, F: std::future::Future<Output = Result<T, axo_client::Error>>>(
+    socket: &std::path::Path,
+    operation: impl FnOnce(axo_client::Client) -> F,
+) -> io::Result<T> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut client = axo_client::Client::connect(socket).await?;
+                client.negotiate().await?;
+                operation(client).await
+            })
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "daemon request timed out; a dispatched change may have completed",
+                )
+            })?
+            .map_err(io::Error::other)
+        })
+}
+
 #[must_use]
 pub struct MainThreadTask {
     source: Rc<RefCell<Option<glib::SourceId>>>,

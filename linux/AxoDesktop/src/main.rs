@@ -3,6 +3,7 @@ mod attachment;
 mod ghostty;
 #[cfg(test)]
 mod options_tests;
+mod settings;
 mod task;
 mod workbench;
 

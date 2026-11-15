@@ -196,6 +196,41 @@ async fn request_ids_do_not_wrap_and_dispatch_again() {
     );
 }
 
+#[tokio::test]
+async fn settings_validate_reply_identity_and_never_accept_another_fields_value() {
+    use axo_protocol::ConfigKey;
+    let (mut client, mut server) = pair();
+    client.methods = vec![
+        rpc::method::CONFIG_GET.into(),
+        rpc::method::CONFIG_SET.into(),
+    ];
+    let task = tokio::spawn(async move {
+        let first = request(&mut server).await;
+        assert_eq!(first["params"]["key"], "shell.command");
+        reply(&mut server, json!({"jsonrpc":"2.0","id":first["id"],"result":{"key":"shell.command","value":"/bin/sh"}})).await;
+        let second = request(&mut server).await;
+        assert_eq!(second["method"], rpc::method::CONFIG_SET);
+        assert_eq!(second["params"]["value"], "37");
+        reply(&mut server, json!({"jsonrpc":"2.0","id":second["id"],"result":{"key":"sessions.idleLimit","value":"37"}})).await;
+    });
+    assert_eq!(
+        client
+            .config_value(ConfigKey::ShellCommand)
+            .await
+            .unwrap()
+            .value,
+        "/bin/sh"
+    );
+    assert!(
+        client
+            .set_config_value(ConfigKey::IdleMinutes, "37")
+            .await
+            .is_err()
+    );
+    assert!(client.stream.is_none());
+    task.await.unwrap();
+}
+
 #[test]
 fn catalog_binds_layout_panes_to_their_own_session_and_absolute_socket() {
     fn session(id: u128, shell: i64) -> Value {

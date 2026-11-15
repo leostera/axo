@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or closing the window detaches; children keep running. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping, palette and settings remain pending. Native title/pane chrome and fixed terminal defaults are still provisional.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or closing the window detaches; children keep running. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. Native title/pane chrome and fixed terminal defaults are still provisional.
 
 ## Build and run
 
@@ -23,6 +23,20 @@ bazel test //linux/AxoDesktop:unit_tests //crates/axo-client:test //crates/axo-p
 **Attachment requires snapshot-capable protocol v3**, implemented by the candidate daemon ([RFD0055](../../docs/rfds/RFD0055-terminal-snapshot-grid.md)). An older daemon's refusal is shown; no guessed-grid downgrade or local-shell fallback occurs. The candidate server keeps v2 unchanged for shipped Mac/peer clients. Do not install/restart a paired daemon just to try this UI: use an isolated daemon first; deployment is a separate approved operation.
 
 The `run` target resolves process-local resources/libraries from Bazel runfiles. This is not an installer or service. The prototype uses `dev.leostera.AxoDesktop.Prototype` and does not join a running Ghostty app. Rootless development prefixes can be supplied through `PKG_CONFIG_PATH`, `PATH`, `PYTHONPATH` and `XDG_DATA_DIRS` in repository-rule/build-script environments; project files contain no machine-specific prefix.
+
+## Settings
+
+Open **Settings…** from the sidebar or press **Ctrl+,**. General shows daemon status
+and the full shell command; Sessions exposes idle timeout/count; Agent exposes the
+full agent command. Changes go through shared `axo-client` configuration methods,
+with daemon-side parsing and persistence. Commands affect new/restarted processes;
+settings never restart the daemon or existing shells/Pi.
+
+Each field has explicit Save. Opening settings never writes, reopening presents the
+same window without losing drafts, and Reload values explicitly discards drafts.
+Invalid input stays editable. An unconfirmed write disables further saves until a
+read reconciles the real value; writes are never automatically retried. Closing
+settings or the app cancels UI delivery, not an already-dispatched daemon write.
 
 ## Terminal ownership
 
@@ -62,6 +76,12 @@ linux/AxoDesktop/tests/smoke.sh bazel-bin/linux/AxoDesktop/AxoDesktop
 The standalone test checks actual terminal-color pixels, PTY input, grid/child SIGWINCH, child exit, clean shutdown, unrealized widget lifetime, no Ghostty config creation and no open/read of an existing config canary (inotify).
 
 The attached test starts a real **isolated daemon** and an owned PTY fixture. It checks unchanged v2 framing, v3 replay generated before the view exists, copied long-line text surviving initial grid changes, actual pixels before/after reopening, input, matching resize/SIGWINCH, child/output-pump survival while detached, refusal without fallback and pending-handshake cancellation. Shared Rust tests separately simulate a PTY resize between snapshot capture and client receipt.
+
+The `settings_drive.py` driver checks Ctrl+, singleton/draft preservation, no writes
+on load, all four persisted settings, server rejection/canonical values, no process
+restart, close with settings open, and lost-acknowledgement reload without retry.
+It uses an owned daemon plus a local protocol fixture; add GDK3 introspection for
+its owned-desktop screenshot.
 
 The workbench driver checks semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, catalog refresh discovering a new Session without changing selection, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
 
