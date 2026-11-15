@@ -130,10 +130,14 @@ struct SessionSidebarRow: View {
 
 func sidebarStatus(
   for session: TerminalSession, attention: Set<ShellID>
-) -> TerminalSessionStatus {
+) -> SidebarSessionStatus {
   // A local terminal bell or finished command marks the session until one of its panes is focused.
   if session.shells.contains(where: { attention.contains($0.id) }) { return .needsAttention }
-  return session.status ?? (session.shells.contains(where: { $0.isPi }) ? .starting : .ready)
+  if session.status == .needsAttention { return .needsAttention }
+  if session.status != .unavailable, session.shells.contains(where: { $0.isPi && $0.isDormant }) {
+    return .sleeping
+  }
+  return SidebarSessionStatus(session.status ?? (session.shells.contains(where: { $0.isPi }) ? .starting : .ready))
 }
 
 /// A Session's emoji or icon is one size in the sidebar, expanded or collapsed.
@@ -151,11 +155,24 @@ func sessionGlyph(for session: TerminalSession, size: CGFloat) -> some View {
   }
 }
 
-private extension TerminalSessionStatus {
+/// Presentation state keeps sleeping distinct without changing the wire's ready-for-prompts status.
+enum SidebarSessionStatus: Equatable {
+  case starting, ready, working, needsAttention, unavailable, sleeping
+
+  init(_ status: TerminalSessionStatus) {
+    switch status {
+    case .starting: self = .starting
+    case .ready: self = .ready
+    case .working: self = .working
+    case .needsAttention: self = .needsAttention
+    case .unavailable: self = .unavailable
+    }
+  }
+
   var symbolName: String {
     switch self {
     case .starting, .unavailable: "circle.dotted"
-    case .ready: "circle.fill"
+    case .ready, .sleeping: "circle.fill"
     case .working: "hammer.fill"
     case .needsAttention: "exclamationmark.triangle.fill"
     }
@@ -165,6 +182,7 @@ private extension TerminalSessionStatus {
     switch self {
     case .starting, .unavailable: .secondary
     case .ready: .green
+    case .sleeping: Color(nsColor: .tertiaryLabelColor)
     case .working: .accentColor
     case .needsAttention: .yellow
     }
@@ -177,6 +195,7 @@ private extension TerminalSessionStatus {
     case .working: "working"
     case .needsAttention: "needs attention"
     case .unavailable: "unavailable"
+    case .sleeping: "sleeping"
     }
   }
 }

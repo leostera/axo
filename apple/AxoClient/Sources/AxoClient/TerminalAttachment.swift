@@ -195,8 +195,23 @@ public enum TerminalAttachmentError: Error, Equatable, CustomStringConvertible {
   case missingDescriptor
   case system(String, Int32)
 
-  public var description: String {
+  /// Reopening an attach socket is read-only with respect to the pane's process and input.
+  /// Permission failures and malformed/rejected protocol replies require explicit attention.
+  public var isRetryable: Bool {
     switch self {
+    case .closed, .rejected(.daemonBusy): true
+    case .system(_, let code):
+      [EAGAIN, EWOULDBLOCK, ETIMEDOUT, ECONNRESET, ECONNREFUSED, EPIPE, ENOENT].contains(code)
+    default: false
+    }
+  }
+
+  public var description: String {
+    if case .system(let call, let code) = self,
+      ["read", "recvmsg", "write"].contains(call), [EAGAIN, EWOULDBLOCK, ETIMEDOUT].contains(code) {
+      return "Timed out waiting for axod’s terminal attachment."
+    }
+    return switch self {
     case .rejected(.shellNotOpen): "The shell is no longer open."
     case .rejected(.daemonBusy): "axod is busy attaching terminals."
     case .rejected(.other(let code)): "axod rejected the terminal attachment (code \(code))."

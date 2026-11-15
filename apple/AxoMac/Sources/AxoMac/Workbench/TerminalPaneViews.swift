@@ -101,7 +101,7 @@ struct TerminalPaneView: View {
   let shell: TerminalShell
   let sessions: TerminalSessionsModel
   @Environment(GhosttyRuntime.self) private var ghostty
-  @State private var terminalError: String?
+  @State private var terminalConnection = TerminalSurfaceConnection.starting
   @State private var piRestartError: String?
   @State private var isRestartingPi = false
 
@@ -189,7 +189,7 @@ struct TerminalPaneView: View {
           isFocused: sessions.focusedShellID == shell.id,
           onFocus: { sessions.focus(shell.id) },
           onStatusChange: { connection in
-            terminalError = connection.failureMessage
+            terminalConnection = connection
           },
           onSplit: { direction in Task { await sessions.split(direction) } },
           onClose: { Task { await sessions.closeShell(shell.id) } }
@@ -198,11 +198,19 @@ struct TerminalPaneView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(Color(nsColor: .textBackgroundColor))
       .overlay(alignment: .topLeading) {
-        if let terminalError {
-          Text(terminalError)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(8)
+        switch terminalConnection {
+        case .failed(let message):
+          HStack {
+            Text(message).textSelection(.enabled)
+            Button("Retry Terminal") { ghostty.surfaces.retryAttachment(shellID: shell.id) }
+          }
+          .font(.caption).foregroundStyle(.secondary).padding(8)
+        case .reconnecting:
+          ProgressView("Reconnecting to terminal…").controlSize(.small).padding(8)
+        case .ended:
+          Text("Terminal ended").font(.caption).foregroundStyle(.secondary).padding(8)
+        case .starting, .connected:
+          EmptyView()
         }
       }
     }

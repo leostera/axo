@@ -23,6 +23,9 @@ final class TerminalSurfaceRegistry {
   // userdata pointer back to the clipboard callbacks, even after SwiftUI pane identities change.
   private var entries: [ShellID: Entry] = [:]
   private var reattachThrottle = ReattachThrottle()
+  private var attachRetry = TerminalAttachRetry()
+  /// Tokens prevent an old incarnation's completion from releasing a replacement's slot.
+  private var openingAttachments: [ShellID: UUID] = [:]
   /// Reattaches deferred by `reattachThrottle`, at most one per shell.
   private var pendingReattaches: [ShellID: Task<Void, Never>] = [:]
   /// Where every open pane would be if its Session were shown; see `sizeOffscreenSurfaces`.
@@ -98,6 +101,8 @@ final class TerminalSurfaceRegistry {
 
   private func destroySurface(shellID: ShellID) {
     reattachThrottle.forget(shellID)
+    attachRetry.forget(shellID)
+    openingAttachments[shellID] = nil
     pendingReattaches.removeValue(forKey: shellID)?.cancel()
     guard let entry = entries.removeValue(forKey: shellID) else { return }
     entry.view.removeFromSuperview()
@@ -113,6 +118,7 @@ final class TerminalSurfaceRegistry {
   /// Axod owns the PTY and is its only reader: the surface reads the attach stream and uses the
   /// PTY descriptor only for input, resizing and termios queries (Ghostty external I/O patch).
   private func createSurface(in view: GhosttySurfaceNSView, shell: TerminalShell) {
+    guard openingAttachments[shell.id] == nil else { return }
     guard runtime?.app != nil else {
       view.connection = .failed(runtime?.errorMessage ?? "libghostty is unavailable.")
       return
@@ -124,6 +130,8 @@ final class TerminalSurfaceRegistry {
       view.connection = .failed("axod reported an invalid terminal socket path.")
       return
     }
+    let attempt = UUID()
+    openingAttachments[shell.id] = attempt
     view.attachGeneration += 1
     let generation = view.attachGeneration
     let shellID = shell.id
@@ -132,7 +140,8 @@ final class TerminalSurfaceRegistry {
       let result = Result { try TerminalAttachment.open(socketPath: socketPath, shellID: shellID) }
       AxoTrace.surfaces.notice(
         "event=surface.attach_opened shell_id=\(shellID.rawValue) ok=\((try? result.get()) != nil) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
-      await MainActor.run {
+      await MainActor.run { [weak self, weak view] in
+        if self?.openingAttachments[shellID] == attempt { self?.openingAttachments[shellID] = nil }
         AxoTrace.surfaces.notice(
           "event=surface.attach_on_main shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
         guard let self, let view else {
@@ -155,11 +164,23 @@ final class TerminalSurfaceRegistry {
     case .success(let opened):
       attachment = opened
     case .failure(let error):
-      guard view.attachGeneration == generation else { return }
+      guard view.attachGeneration == generation, isCurrentSurface(view) else { return }
       // A replacement attempt for an exited shell keeps the final screen; the catalog
       // removes the pane.
-      if view.surface != nil, case TerminalAttachmentError.rejected(.shellNotOpen) = error { return }
-      view.connection = .failed("Could not attach to the terminal: \(error)")
+      if view.surface != nil, case TerminalAttachmentError.rejected(.shellNotOpen) = error {
+        view.connection = .ended
+        return
+      }
+      let errorCode: Int32
+      if case .system(_, let code) = error as? TerminalAttachmentError { errorCode = code } else { errorCode = 0 }
+      if let delay = attachRetry.delay(after: error, for: shell.id) {
+        view.connection = .reconnecting
+        AxoTrace.surfaces.notice("event=surface.attach_retry shell_id=\(shell.id.rawValue) errno=\(errorCode) delay_seconds=\(delay.components.seconds)")
+        scheduleReattach(view, after: delay)
+      } else {
+        view.connection = .failed("Could not attach to the terminal: \(error)")
+        AxoTrace.surfaces.error("event=surface.attach_failed shell_id=\(shell.id.rawValue) errno=\(errorCode) retrying=false")
+      }
       return
     }
     // Ghostty duplicates both descriptors, so ours close whatever happens below.
@@ -204,6 +225,7 @@ final class TerminalSurfaceRegistry {
       ghostty_surface_free(previous)
     }
     view.attach(createdSurface, ptyDescriptor: attachment.ptyDescriptor)
+    attachRetry.forget(shell.id)
     view.connection = .connected
     updateSize(of: view, contentSize: view.bounds.size)
     view.reportPTYSize()
@@ -223,18 +245,40 @@ final class TerminalSurfaceRegistry {
   /// axod restarted the attachment) reattach; if it exited, the reattach is rejected and the
   /// catalog closes the pane. See `ReattachThrottle` for the rate limit.
   func outputEnded(_ view: GhosttySurfaceNSView) {
-    guard isCurrentSurface(view), pendingReattaches[view.shellID] == nil else { return }
+    switch view.connection {
+    case .failed, .ended: return // Exhausted retries require the button; exited shells await the catalog.
+    default: break
+    }
+    guard isCurrentSurface(view), openingAttachments[view.shellID] == nil,
+      pendingReattaches[view.shellID] == nil else { return }
     switch reattachThrottle.decide(for: view.shellID, at: .now) {
     case .now:
       reattach(view)
     case .after(let delay):
-      let shellID = view.shellID
-      pendingReattaches[shellID] = Task { @MainActor [weak self, weak view] in
-        guard (try? await Task.sleep(for: delay)) != nil, let self else { return }
-        self.pendingReattaches[shellID] = nil
-        if let view { self.reattach(view) }
-      }
+      scheduleReattach(view, after: delay)
     }
+  }
+
+  private func scheduleReattach(_ view: GhosttySurfaceNSView, after delay: Duration) {
+    guard isCurrentSurface(view), pendingReattaches[view.shellID] == nil else { return }
+    let shellID = view.shellID
+    let generation = view.attachGeneration
+    pendingReattaches[shellID] = Task { @MainActor [weak self, weak view] in
+      guard (try? await Task.sleep(for: delay)) != nil, !Task.isCancelled,
+        let self, let view, self.isCurrentSurface(view), view.attachGeneration == generation else { return }
+      self.pendingReattaches[shellID] = nil
+      self.reattach(view)
+    }
+  }
+
+  /// Reopens only the attach stream, never the PTY process or its input.
+  func retryAttachment(shellID: ShellID) {
+    guard let entry = entries[shellID], case .failed = entry.view.connection,
+      openingAttachments[shellID] == nil else { return }
+    pendingReattaches.removeValue(forKey: shellID)?.cancel()
+    attachRetry.forget(shellID)
+    entry.view.connection = .reconnecting
+    createSurface(in: entry.view, shell: entry.shell)
   }
 
   private func isCurrentSurface(_ view: GhosttySurfaceNSView) -> Bool {

@@ -7,6 +7,8 @@ What changed in each published version of Axo. Every publish raises the minor ve
 ### Fixed
 
 - Temporarily unknown permission results no longer erase acknowledgements of existing limitations. Only a confirmed recovered check can become a newly revoked issue later.
+- Transient terminal-attachment timeouts and busy/disconnected transports retry with a finite backoff instead of leaving a live Pi’s pane permanently unattached. A Retry Terminal action reopens only the transport, never restarts Pi or replays input; retired panes cannot adopt late attachments. Handshake timeouts are described as timeouts rather than raw “resource temporarily unavailable” errors.
+- Sleeping Pi Sessions show a quiet gray sidebar dot and a sleeping accessibility label, rather than sharing a live ready agent’s green marker. Attention and unavailable states retain priority.
 
 ### Tests
 
