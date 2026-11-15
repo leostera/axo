@@ -22,6 +22,8 @@ Opening a Session shows its daemon-owned shell. Quitting the desktop app detache
 
 For example, opening shell 105 connects to `attach.sock`, sends `105\n`, reads the eight-byte big-endian replay length and receives one PTY master descriptor. The socket supplies replay followed by live output; the master is used only for input, resize and terminal queries. Neither a renderer nor a second client consumes the daemon's PTY output directly.
 
+The product UI target is the Mac workbench's compact Session sidebar and full-height terminal/pane area, with the same selection, splitting and keyboard workflows adapted to native Linux conventions. The prototype's GTK title/header bar is scaffolding, not the final design. Matching the terminal engine does not by itself match fonts, padding, selection/copy policy, shortcuts, find, scrollbars, IME or accessibility; these require explicit comparisons with the Mac adapters.
+
 The initial prototype deliberately does something narrower: it owns a local command/PTY through Ghostty and never connects to the paired daemon. Its standalone status is visible in the window and command help. This remains a development mode, not an alternative Session backend.
 
 ## Reference-level explanation
@@ -93,7 +95,7 @@ The spike is tested with Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and s
 
 - Internal Ghostty GTK APIs cost pin-specific maintenance; a future upstream GTK embedding API would be preferable. A portable VT library alone is not a rendered terminal widget.
 - A single cross-platform rewritten UI reduces native adapters but discards the existing Swift frontend and its OS integration. Two native frontends over shared Rust are the chosen direction.
-- VTE or a browser renderer is easier to embed but introduces a different terminal behavior/renderer. Keep that as a fallback only if the Ghostty integration cannot meet ownership and replay requirements, not as a silent substitution.
+- VTE or a browser renderer introduces different terminal behavior/rendering and is rejected for this port. The user's explicit requirement is Ghostty VT plus its rendered terminal surface, as on Mac; fix the pinned native bridge rather than silently replacing the engine.
 - Translating every Swift model into GTK is initially tempting but creates duplicated policy. Extract only the shared policy needed by each vertical slice, with the existing Mac tests as references.
 - Doing nothing leaves Linux usable only through remote/CLI clients despite the working daemon.
 
