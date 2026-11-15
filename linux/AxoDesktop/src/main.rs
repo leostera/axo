@@ -3,6 +3,8 @@ mod attachment;
 mod ghostty;
 #[cfg(test)]
 mod options_tests;
+mod task;
+mod workbench;
 
 use clap::Parser;
 use ghostty::{Engine, Surface, SurfaceStats};
@@ -16,12 +18,15 @@ use std::{
 #[derive(Clone, Parser)]
 #[command(
     name = "AxoDesktop",
-    about = "GTK4/Ghostty terminal prototype: standalone command or explicit axod attachment"
+    about = "GTK4/Ghostty prototype: local Session workbench or explicit terminal"
 )]
 struct Options {
     /// Local command in standalone mode; never used as an attachment fallback.
-    #[arg(long, conflicts_with_all = ["attach_socket", "shell"])]
+    #[arg(long, conflicts_with_all = ["attach_socket", "shell", "socket"])]
     command: Option<String>,
+    /// Explicit axod RPC socket for the local Session workbench; never starts/upgrades axod.
+    #[arg(long, conflicts_with_all = ["command", "attach_socket", "shell"])]
+    socket: Option<PathBuf>,
     /// Explicit snapshot-v3 daemon attach.sock; no implicit paired-host connection.
     #[arg(long, requires = "shell")]
     attach_socket: Option<PathBuf>,
@@ -42,16 +47,23 @@ enum TerminalSource {
     Attached { socket: PathBuf, shell: i64 },
 }
 
+#[derive(Clone)]
+enum WindowSource {
+    Terminal(TerminalSource),
+    Workbench { socket: PathBuf },
+}
+
 impl Options {
-    fn source(&self) -> Result<TerminalSource, String> {
-        match (&self.attach_socket, self.shell, &self.command) {
-            (Some(socket), Some(shell), None) if shell > 0 => Ok(TerminalSource::Attached {
+    fn source(&self) -> Result<WindowSource, String> {
+        match (&self.socket, &self.attach_socket, self.shell, &self.command) {
+            (Some(socket), None, None, None) => Ok(WindowSource::Workbench { socket: socket.clone() }),
+            (None, Some(socket), Some(shell), None) if shell > 0 => Ok(WindowSource::Terminal(TerminalSource::Attached {
                 socket: socket.clone(),
                 shell,
-            }),
-            (None, None, command) => Ok(TerminalSource::Standalone(command.clone())),
+            })),
+            (None, None, None, command) => Ok(WindowSource::Terminal(TerminalSource::Standalone(command.clone()))),
             _ => Err(
-                "attachment requires --attach-socket and a positive --shell, without --command"
+                "choose --socket for the workbench, --attach-socket with a positive --shell, or standalone --command"
                     .into(),
             ),
         }
@@ -81,7 +93,13 @@ fn run(options: Options) -> Result<(), String> {
         move |app| {
             // Rust owns the window. Suppress Ghostty's default "new Ghostty window" handler.
             app.stop_signal_emission_by_name("activate");
-            if let Err(error) = create_window(app, &engine, &options, &source) {
+            let created = match &source {
+                WindowSource::Terminal(source) => create_window(app, &engine, &options, source),
+                WindowSource::Workbench { socket } => {
+                    workbench::create_window(app, &engine, &options, socket)
+                }
+            };
+            if let Err(error) = created {
                 *failure.borrow_mut() = Some(error);
                 // activate runs before Ghostty marks its run loop live.
                 let engine = engine.clone();

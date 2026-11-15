@@ -1,8 +1,8 @@
-# AxoDesktop — native Linux terminal (in progress)
+# AxoDesktop — native Linux workbench (in progress)
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The candidate can attach to an existing daemon-owned shell with replay, live output, keyboard input and resize. Closing the view detaches; the shell keeps running. It is **not yet the Mac-style Session/pane workbench**. The current header/single-terminal layout is scaffolding, not the final UI.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or closing the window detaches; children keep running. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping, palette and settings remain pending. Native title/pane chrome and fixed terminal defaults are still provisional.
 
 ## Build and run
 
@@ -10,12 +10,14 @@ Build on Linux with the repository's Bazel toolchain. Native dependencies includ
 
 ```sh
 bazel build //linux/AxoDesktop:AxoDesktop
-# Explicit existing shell on a candidate daemon:
+# Existing local Sessions on an explicitly selected candidate daemon:
+bazel run //linux/AxoDesktop:run -- --socket /path/to/candidate/server/axod.sock
+# Explicit single-shell development view:
 bazel run //linux/AxoDesktop:run -- \
   --attach-socket /path/to/candidate/server/attach.sock --shell 105
 # Separate standalone development mode, not an attachment fallback:
 bazel run //linux/AxoDesktop:run -- --command '/bin/sh'
-bazel test //linux/AxoDesktop:unit_tests //crates/axo-pty:axo_pty_tests
+bazel test //linux/AxoDesktop:unit_tests //crates/axo-client:test //crates/axo-pty:axo_pty_tests
 ```
 
 **Attachment requires snapshot-capable protocol v3**, implemented by the candidate daemon ([RFD0055](../../docs/rfds/RFD0055-terminal-snapshot-grid.md)). An older daemon's refusal is shown; no guessed-grid downgrade or local-shell fallback occurs. The candidate server keeps v2 unchanged for shipped Mac/peer clients. Do not install/restart a paired daemon just to try this UI: use an isolated daemon first; deployment is a separate approved operation.
@@ -25,11 +27,12 @@ The `run` target resolves process-local resources/libraries from Bazel runfiles.
 ## Terminal ownership
 
 - `axo-pty::attach` owns the shared v2/v3 wire implementation. v3 supplies the exact grid used to generate its replay, independent of later PTY resizes.
-- `src/attachment.rs` opens/reads the bounded replay off the GTK thread. Dropping its task removes the delivery callback and closes undelivered attachments; a late worker cannot install a view that was closed.
+- `axo-client` owns the shared bounded request/event transport also used by the CLI. `LocalCatalog` binds unique pane identities and layouts to their owning Session and refuses relative advertised sockets. `src/workbench.rs` owns only GTK presentation/selection; catalog reads run off-thread with a deadline and do not wake dormant Pi or mutate the catalog.
+- `src/task.rs` owns one bounded worker result and cancel-safe GTK delivery. `src/attachment.rs` opens/reads the bounded replay off the GTK thread. Dropping its task removes the delivery callback and closes undelivered attachments; a late worker cannot install a view that was closed.
 - `src/ghostty.rs` owns the private, main-thread-only bridge. Widgets retain their engine and immutable prepared attachment through GObject finalization, including before realize.
 - `native/bridge.zig` hosts Ghostty's existing GTK Application/Surface classes with supplied prototype defaults. The GTK-only patch initializes at the captured grid and parses the bounded canonical replay during native surface creation, before live I/O threads and actual-viewport resize. No socket I/O runs on the GTK thread. Large-replay initialization latency has not been characterized.
-- Ghostty reads the attachment socket, **never the PTY master**. Input and host-controlled viewport changes use the master without changing its shared file-status flags. Closing a surface stops its reader and releases duplicates, not the daemon's child process.
-- Teardown rejects live widgets rather than freeing renderer state beneath them. The Apple XCFramework recipe/patch selection is unchanged; the GTK bridge is a private pinned API, not an upstream stable embedding ABI.
+- Ghostty reads output from the attachment socket, **never from the PTY master**. Input, termios queries and host-controlled viewport changes use the master without changing its shared file-status flags. Closing a surface stops its reader and releases duplicates, not the daemon's child process.
+- The Rust host owns app/window lifetime: a temporary zero-surface state during catalog load or Session switching is not quit. App-level quit/unrealize also cancels tasks and releases views. Teardown rejects live widgets rather than freeing renderer state beneath them. The Apple XCFramework recipe/patch selection is unchanged; the GTK bridge is a private pinned API, not an upstream stable embedding ABI.
 
 ## Controls and parity limits
 
@@ -39,7 +42,7 @@ The target UI is Axo's compact Session sidebar, full-height panes, split layouts
 
 ## Owned desktop acceptance
 
-Extra tools: Xvfb, Openbox, xauth, xdotool, system Python GI and GTK/GdkPixbuf introspection. Tests use a private HOME, X server, D-Bus and runtime/data directories; they never read or drive the real desktop. Supply the built Ghostty runtime's resource/library paths:
+Extra tools: Xvfb, Openbox, xauth, xdotool, system Python GI and GTK/GdkPixbuf/AT-SPI introspection. Tests use a private HOME, X server, D-Bus and runtime/data directories; they never read or drive the real desktop. Supply the built Ghostty runtime's resource/library paths:
 
 ```sh
 export GHOSTTY_RESOURCES_DIR=/path/to/ghostty-runtime/share/ghostty
@@ -50,11 +53,17 @@ linux/AxoDesktop/tests/smoke.sh bazel-bin/linux/AxoDesktop/AxoDesktop
 AXOD_BINARY="$PWD/bazel-bin/crates/axod/axod" \
 AXO_DESKTOP_SMOKE_DRIVER="$PWD/linux/AxoDesktop/tests/attach_drive.py" \
 linux/AxoDesktop/tests/smoke.sh bazel-bin/linux/AxoDesktop/AxoDesktop
+
+AXOD_BINARY="$PWD/bazel-bin/crates/axod/axod" \
+AXO_DESKTOP_SMOKE_DRIVER="$PWD/linux/AxoDesktop/tests/workbench_drive.py" \
+linux/AxoDesktop/tests/smoke.sh bazel-bin/linux/AxoDesktop/AxoDesktop
 ```
 
 The standalone test checks actual terminal-color pixels, PTY input, grid/child SIGWINCH, child exit, clean shutdown, unrealized widget lifetime, no Ghostty config creation and no open/read of an existing config canary (inotify).
 
 The attached test starts a real **isolated daemon** and an owned PTY fixture. It checks unchanged v2 framing, v3 replay generated before the view exists, copied long-line text surviving initial grid changes, actual pixels before/after reopening, input, matching resize/SIGWINCH, child/output-pump survival while detached, refusal without fallback and pending-handshake cancellation. Shared Rust tests separately simulate a PTY resize between snapshot capture and client receipt.
+
+The workbench driver checks semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, catalog refresh discovering a new Session without changing selection, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 

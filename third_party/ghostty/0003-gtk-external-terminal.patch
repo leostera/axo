@@ -123,7 +123,36 @@ diff --git a/source/src/Surface.zig b/source/src/Surface.zig
 diff --git a/source/src/termio/Exec.zig b/source/src/termio/Exec.zig
 --- a/source/src/termio/Exec.zig
 +++ b/source/src/termio/Exec.zig
-@@ -652,7 +652,7 @@
+@@ -155,6 +155,7 @@
+         .read_thread = read_thread,
+         .read_thread_pipe = pipe[1],
+         .read_thread_fd = pty_fds.read,
++        .termios_fd = pty_fds.write,
+         .termios_timer = termios_timer,
+     } };
+ 
+@@ -350,7 +351,9 @@
+     // This is kind of hacky but we rebuild a Pty struct to get the
+     // termios data.
+     const mode: ptypkg.Mode = (Pty{
+-        .master = exec.read_thread_fd,
++        // External output is an attach socket, not a tty. Query the master
++        // used for input; normal subprocesses use the same fd for both.
++        .master = exec.termios_fd,
+         .slave = undefined,
+     }).getMode() catch |err| err: {
+         log.warn("error getting termios mode err={}", .{err});
+@@ -540,6 +543,9 @@
+     read_thread_pipe: posix.fd_t,
+     read_thread_fd: posix.fd_t,
+ 
++    /// PTY master for termios queries; never the external output socket.
++    termios_fd: posix.fd_t,
++
+     /// The timer to detect termios state changes.
+     termios_timer: xev.Timer,
+     termios_timer_c: xev.Completion = .{},
+@@ -652,7 +658,7 @@
              const output_fd = try dupCloexec(external.output_fd);
              errdefer _ = posix.system.close(output_fd);
              const pty_fd = try dupCloexec(external.pty_fd);
@@ -132,7 +161,7 @@ diff --git a/source/src/termio/Exec.zig b/source/src/termio/Exec.zig
          } else null;
          errdefer if (external_io) |external| {
              _ = posix.system.close(external.output_fd);
-@@ -1193,6 +1193,11 @@
+@@ -1193,6 +1199,11 @@
          self.grid_size = grid_size;
          self.screen_size = screen_size;
  

@@ -1,7 +1,7 @@
 # RFD0054 - Axo: native Linux desktop
 
 - Feature Name: `linux-desktop`
-- Status: Proposed (Ghostty GTK rendering and v3 daemon-attached slice implemented; workbench pending)
+- Status: Proposed (Ghostty/v3 attachment and first local catalog/pane workbench implemented; full parity pending)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-15
@@ -20,11 +20,11 @@ The Linux daemon can run real Sessions but has no native workbench. A standalone
 
 Opening a Session shows its daemon-owned shell. Quitting the desktop app detaches its views; the Session continues running and can be reopened with its history. Explicitly closing a shell or archiving a Session is different: the app checks busy state, asks when necessary, then calls the existing daemon operation.
 
-For example, opening shell 105 connects to `attach.sock`, sends `105\n`, reads the eight-byte big-endian replay length and receives one PTY master descriptor. The socket supplies replay followed by live output; the master is used only for input, resize and terminal queries. Neither a renderer nor a second client consumes the daemon's PTY output directly.
+For example, a legacy v2 client opening shell 105 connects to `attach.sock`, sends `105\n`, reads the eight-byte big-endian replay length and receives one PTY master descriptor. The socket supplies replay followed by live output; the master is used only for input, resize and terminal queries. Neither a renderer nor a second client consumes the daemon's PTY output directly.
 
 The product UI target is the Mac workbench's compact Session sidebar and full-height terminal/pane area, with the same selection, splitting and keyboard workflows adapted to native Linux conventions. The prototype's GTK title/header bar is scaffolding, not the final design. Matching the terminal engine does not by itself match fonts, padding, selection/copy policy, shortcuts, find, scrollbars, IME or accessibility; these require explicit comparisons with the Mac adapters.
 
-The initial standalone prototype owns a local command/PTY through Ghostty. This remains an explicit development mode, not an alternative Session backend. The attached slice now accepts an explicit candidate daemon socket and shell ID, using [v3 captured-grid metadata](RFD0055-terminal-snapshot-grid.md); it never implicitly connects to or upgrades the paired daemon. It is still not a catalog-backed workbench.
+The initial standalone prototype owns a local command/PTY through Ghostty. This remains an explicit development mode, not an alternative Session backend. The attached slice now accepts an explicit candidate daemon socket and shell ID, using [v3 captured-grid metadata](RFD0055-terminal-snapshot-grid.md); it never implicitly connects to or upgrades the paired daemon. An explicit `--socket` mode now reads the local catalog through `axo-client`, shows a compact Session sidebar and selected persisted split layout, and detaches old views when selection changes. Catalog refresh is manual. It does not yet create/wake/recover Sessions, write layout changes, subscribe/reconnect, archive, or implement the remaining Mac controls.
 
 ## Reference-level explanation
 
@@ -32,7 +32,7 @@ The initial standalone prototype owns a local command/PTY through Ghostty. This 
 
 - `crates/axo-server`, `axo-agent`, `axo-store`, `axo-relay` and `axo-pty` remain authoritative for Sessions, agents, durable state, account routing and PTY ownership.
 - Reuse `axo-protocol` methods/types/capability negotiation and `axo-pty::attach`; do not invent a Linux wire protocol or shell out to the generated CLI for GUI operations.
-- The new CLI's bounded transport currently lives in `crates/axo-cli/src/transport.rs`. When a reusable request/event client is needed, extract a shared Rust implementation and adapt the CLI, rather than copying the private CLI transport into the desktop. Descriptor attachment already has a shared implementation.
+- `crates/axo-client` now owns the extracted bounded request/event transport, consumed by both the CLI and GTK. The CLI adapter keeps presentation/exit codes, not a second wire client. Cancelled exchanges discard the connection; writes never retry implicitly. `LocalCatalog` parses unique identities, absolute advertised attach sockets and within-Session layout references before GTK binds widgets. Descriptor attachment remains in `axo-pty`.
 - `linux/AxoDesktop` owns GTK widgets, desktop integration and its private Ghostty GTK bridge. It must not own a second database, relay implementation, agent scheduler or session lifecycle.
 - New reusable workbench policy belongs in Rust under `crates/`: selection reconciliation, close intent, layout write ordering, activity/unseen grouping and command availability. Native shells own focus, presentation, dialogs and OS-specific APIs. The existing Swift models are the behavioral reference; their migration can be incremental without rewriting the Mac UI.
 - Ghostty's GTK Application/Surface classes are internal APIs, not its Apple rendered C embedding. The bridge is a small pinned-source adaptation. Mac XCFramework patch selection/builds stay separate.
@@ -63,12 +63,12 @@ Paths in this table are relative to `apple/AxoMac/Sources/AxoMac`, except `AxoCl
 
 ### Invariants
 
-1. Axod is the sole reader of a shell's PTY master. Ghostty reads only its attachment output socket. Never change shared PTY file-status flags.
+1. Axod is the sole reader of a shell's PTY output. Ghostty reads only its attachment output socket; input/resize/termios queries use the PTY master, never socket termios. Never change shared PTY file-status flags.
 2. All received/duplicated descriptors are close-on-exec; reject malformed/truncated/multiple descriptor messages without leaking any delivered descriptors. Reset handshake-only socket timeouts before streaming.
 3. Closing/destroying an attached widget cannot send a signal to or terminate its daemon-owned shell. Native Ghostty standalone close behavior is not automatically correct for an attachment.
 4. Replay must initially meet its original grid. A placeholder GTK size must not reflow history before bootstrap. V3 carries the actual VT grid captured under the same lock as the replay, eliminating the later-ioctl inference race without assuming a requested VT resize succeeded. The GTK bridge parses that bounded replay before live-reader startup and actual viewport application; v2 stays unchanged for existing clients.
 5. Socket connect/handshake/replay reads run off the GTK main thread. Bounded canonical VT bootstrap is part of native surface creation; no network/socket I/O runs there, and large-replay initialization latency remains to be characterized. Cancelled/superseded tasks close their resources and cannot install a stale surface. Unsupported snapshot metadata is refused, never guessed; reconnect never blindly repeats writes.
-6. Widgets retain their engine through native finalization, including before realize. Destroy widgets and disconnect callbacks before global renderer teardown. GTK access is main-thread-only.
+6. Widgets retain their engine through native finalization, including before realize. Destroy widgets and disconnect callbacks before global renderer teardown. GTK access is main-thread-only. Rust owns application lifetime: zero surfaces during Session replacement cannot start Ghostty's last-surface quit timer. App quit/unrealize cancels pending callbacks and drops view ownership too.
 7. Unknown busy state asks; closing a remote view is not archiving a remote Session. One layout writer per Session prevents older writes landing after newer ones.
 8. Same UID, a private path, a familiar executable name or a self-asserted role is not privileged client authentication. `Signer::AxoApp` continues to fail closed outside macOS. Never route local calls as `Peer::Relay`.
 9. Keep computer-use GNOME guards and Linux secure-input refusal. A native GTK client does not make focus/origin-bound secret entry safe by itself.
@@ -87,6 +87,8 @@ Implement serially:
 
 ### Tests and compatibility
 
+`workbench_drive.py` tests a real isolated daemon's local sidebar, Pi/terminal panes, persisted right/down split and ratio, A/B/A selection, rendered replay, distinct keyboard input, viewport/kernel sizing, multi-pane resize, refresh preserving selection while discovering a new Session, termios-master polling and clean detach/teardown. Creation, sleep/wake, subscriptions/reconnect and destructive operations still need their own slices and acceptance.
+
 Use existing Rust unit/conformance tests for shared behavior and an owned Xvfb/D-Bus/GTK fixture for actual rendered output, input, resize and widget teardown. Add independent tests for renderer close versus Session close, replay-grid preservation, stale attach completion, reconnect and offline/unsupported states. Test receiving descriptor CLOEXEC/truncation/error cleanup at the shared IPC boundary, not just through GUI happy paths.
 
 The spike is tested with Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and software OpenGL. This is not a portable release floor, hardware-GPU acceptance, native GNOME Wayland acceptance or comprehensive accessibility acceptance. Rootless development library paths/native CPU defaults are not release packaging choices. Do not migrate storage or restart/publish the paired runtime as part of GUI testing.
@@ -101,4 +103,4 @@ The spike is tested with Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and s
 
 ## Unresolved questions
 
-Before privileged UI: choose a Linux application-authentication and approval trust design; this RFD deliberately does not grant authority. Before release: declare the supported distribution/library/CPU matrix, verify native Wayland/GPU/accessibility behavior, and settle artifact authenticity plus install/update lifecycle. During attachment implementation: choose the smallest GTK initial-grid hook and resource-owning external-I/O interface without changing the Mac embedding contract.
+Before privileged UI: choose a Linux application-authentication and approval trust design; this RFD deliberately does not grant authority. Before release: declare the supported distribution/library/CPU matrix, verify native Wayland/GPU/accessibility behavior, and settle artifact authenticity plus install/update lifecycle. Continue reducing pin-specific GTK glue without changing the Mac embedding contract; characterize bounded replay bootstrap latency before making responsiveness claims. The original Apple external-I/O patch shares the read-fd termios-poll assumption corrected in GTK-only 0003; assess that source finding with focused Mac-native acceptance separately. No Mac terminal-control parity claim follows from the Linux fix.

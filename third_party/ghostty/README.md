@@ -52,6 +52,10 @@ core initializes at the server-captured VT grid and parses the replay before its
 live reader starts. GTK then applies its actual viewport; the host owns kernel
 PTY resize assertions so queued provisional resizes cannot race them. An external
 surface's close is detach, never permission to stop the daemon-owned process.
+Termios polling uses the write-side PTY master, not the read-side attach socket;
+normal spawned terminals still query their same master. The host config disables
+Ghostty's last-surface quit timer so Session replacement can pass through zero
+surfaces without quitting the Rust-owned window.
 
 These hooks are GTK-build-only and do not alter the Apple embedding's wire or
 renderer behavior. Snapshot-grid metadata belongs to shared attach protocol v3,

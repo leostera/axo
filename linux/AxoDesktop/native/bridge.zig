@@ -31,6 +31,8 @@ var arguments = [_][*:0]u8{
     @constCast("--keybind=ctrl+shift+v=paste_from_clipboard"),
     @constCast("--class=dev.leostera.AxoDesktop.Prototype"),
     @constCast("--gtk-single-instance=false"),
+    // Rust owns window lifetime; replacing the final pane is not application quit.
+    @constCast("--quit-after-last-window-closed=false"),
     @constCast("--shell-integration=none"),
     // Output-driven clipboard/URL behavior stays disabled until Axo's policy adapter exists.
     @constCast("--clipboard-read=deny"),
