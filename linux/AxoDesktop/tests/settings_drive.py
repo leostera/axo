@@ -50,25 +50,31 @@ def xdo(*args):
     return subprocess.check_output(['xdotool', *map(str,args)], text=True, stderr=subprocess.PIPE).strip()
 
 
-def children(app):
-    desktop = Atspi.get_desktop(0)
-    pending = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
-    pending = [node for node in pending if node.get_process_id() == app.pid]
+def walk(nodes):
+    pending=list(nodes)
     while pending:
-        node = pending.pop()
+        node=pending.pop()
         yield node
         pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
 
 
+def children(app):
+    desktop=Atspi.get_desktop(0)
+    apps=[desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+    # The workbench also has a Sessions label. Bind actions to this window, not
+    # whichever identically named node happens to be last in the app's tree.
+    root=next((node for node in walk(node for node in apps if node.get_process_id()==app.pid)
+               if node.get_name()=='Axo Settings' and node.get_state_set().contains(Atspi.StateType.SHOWING)),None)
+    if root:
+        yield from walk([root])
+
+
 def find(app, name):
-    desktop = Atspi.get_desktop(0)
-    pending = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
-    pending = [node for node in pending if node.get_process_id() == app.pid]
-    while pending:
-        node = pending.pop()
-        if node.get_name() == name or node.get_description() == name:
-            return node
-        pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+    for node in children(app):
+        if (node.get_name()==name or node.get_description()==name) and node.get_state_set().contains(Atspi.StateType.SHOWING):
+            # Stack pages also carry category names; only activate visible controls.
+            if node.get_role() in [Atspi.Role.LABEL,Atspi.Role.PUSH_BUTTON,Atspi.Role.LIST_ITEM,Atspi.Role.PAGE_TAB,Atspi.Role.TEXT,Atspi.Role.ENTRY]:
+                return node
 
 
 def click(app, window, name):
@@ -100,6 +106,13 @@ def window(app):
     return wait('workbench window',lambda:xdo('search','--all','--onlyvisible','--pid',app.pid,'--name','^Axo').splitlines()[0],app)
 
 
+def owned_snapshot(name):
+    # Only the private Xvfb fixture; never the person's desktop.
+    gi.require_version('Gdk','3.0')
+    from gi.repository import Gdk
+    Gdk.pixbuf_get_from_window(Gdk.get_default_root_window(),0,0,1440,1000).savev(str(run/name),'png',[],[])
+
+
 def close_window(window):
     xdo('windowactivate','--sync',window)
     xdo('key','--clearmodifiers','alt+F4')
@@ -126,6 +139,7 @@ try:
     settings=open_settings(app,main)
     wait('loaded shell',lambda:text(app,'Shell command') == '/bin/sh',app)
     assert {key:value(key) for key in keys} == before, 'opening settings wrote configuration'
+    owned_snapshot('settings-general.png')
     # Reopening presents the same window and preserves its draft.
     edit(app,settings,'Shell command','/bin/sh -l')
     assert open_settings(app,main) == settings
@@ -144,6 +158,7 @@ try:
     edit(app,settings,'Maximum idle Pis awake','31')
     click(app,settings,'Save Maximum idle Pis awake')
     wait('idle count saved',lambda:value('sessions.idleLimit') == '31',app)
+    owned_snapshot('settings-sessions.png')
     click(app,settings,'Agent')
     edit(app,settings,'Agent command','pi --model fixture')
     click(app,settings,'Save Agent command')
@@ -154,10 +169,7 @@ try:
     assert value('agent.command') == 'pi --model fixture'
     click(app,settings,'Reload values')
     wait('explicit reload discards invalid draft',lambda:text(app,'Agent command') == 'pi --model fixture',app)
-    # Capture only this owned Xvfb fixture, never the user's desktop.
-    gi.require_version('Gdk','3.0')
-    from gi.repository import Gdk
-    Gdk.pixbuf_get_from_window(Gdk.get_default_root_window(),0,0,1440,1000).savev(str(run/'settings.png'),'png',[],[])
+    owned_snapshot('settings.png')
     close_window(settings)
     settings=open_settings(app,main)
     wait('settings reopen',lambda:text(app,'Shell command') == '/bin/sh -l',app)

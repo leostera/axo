@@ -41,9 +41,11 @@ var arguments = [_][*:0]u8{
     @constCast("--link-osc8=false"),
     @constCast("--right-click-action=ignore"),
     @constCast("--copy-on-select=none"),
-    @constCast("--font-size=14"),
-    @constCast("--background=10141e"),
-    @constCast("--foreground=e6edf3"),
+    @constCast("--font-size=13"),
+    @constCast("--window-padding-x=2"),
+    @constCast("--window-padding-y=10"),
+    @constCast("--background=111318"),
+    @constCast("--foreground=dce0e7"),
     @constCast("--palette=2=#40e080"),
 };
 

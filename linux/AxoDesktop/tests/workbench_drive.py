@@ -63,7 +63,7 @@ def find_label(app, text):
     while pending:
         node = pending.pop()
         name = node.get_name()
-        if node.get_role_name() in ['label', 'push button'] and (name == text or name.endswith(' ' + text)):
+        if node.get_role() in [Atspi.Role.LABEL, Atspi.Role.PUSH_BUTTON] and (name == text or name.endswith(' ' + text) or node.get_description() == text):
             return node
         pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
 
@@ -123,6 +123,9 @@ try:
     app = start([str(binary), '--socket', str(ipc), '--diagnostics', str(diagnostics), '--snapshot', str(picture)], 'workbench', cwd=run/'home')
     window = wait('GTK workbench window', lambda: xdo('search','--onlyvisible','--pid',app.pid,'--name','^Axo').splitlines()[0], app)
     xdo('windowactivate', '--sync', window)
+    caption = wait('compact sidebar caption', lambda: find_label(app, 'Sessions'), app)
+    sidebar_bounds = wait('allocated sidebar', lambda: (bounds if (bounds := caption.get_component_iface().get_extents(Atspi.CoordType.WINDOW)).width > 0 else None), app)
+    assert sidebar_bounds.width <= 220, 'sidebar expanded with its header/footer controls'
 
     def selected(session):
         data = read(diagnostics)
@@ -140,6 +143,8 @@ try:
                 grids = {pane['shellId']:pane for pane in read(diagnostics)['panes']}
                 return grids[pi_id]['columns'] == grids[terminal_id]['columns'] and grids[pi_id]['rows'] < grids[terminal_id]['rows']
             wait('persisted down-split ratio applied', down_layout, app)
+        heading = wait('full-height pane caption', lambda: find_label(app, 'Pi'), app)
+        assert heading.get_component_iface().get_extents(Atspi.CoordType.WINDOW).y < 24, 'terminal pushed down by a full-width toolbar'
         click_label(app, window, 'Pi', below=80)
         assert 'PI_WORKBENCH_READY' in rendered_text(app, window), 'Pi pane is not the real daemon PTY'
         click_label(app, window, 'Terminal', below=80)
@@ -167,13 +172,16 @@ try:
     xdo('windowsize', '--sync', window, '1350', '850')
     wait('two pane grids resize', lambda: all(pane['columns'] > next(old['columns'] for old in data['panes'] if old['shellId'] == pane['shellId']) for pane in read(diagnostics)['panes']), app)
     wait('whole workbench snapshot resized', lambda: GdkPixbuf.Pixbuf.new_from_file(str(picture)).get_width() > original_width, app)
+    # Review settled chrome, not Ghostty's transient native resize indicator.
+    settled = time.time() + 0.8
+    wait('settled workbench snapshot', lambda: picture.stat().st_mtime > settled, app)
     stop(app, window)
     for tag, session, state in sessions:
         assert not read(state)['exited']
         for shell in session['shells']:
             os.kill(shell['processId'], 0)
     assert daemon.poll() is None
-    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'native Session sidebar', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'native catalog refresh preserves selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
+    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar and full-height panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'native catalog refresh preserves selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
 finally:
     for process in reversed(processes):
         if process.poll() is None:

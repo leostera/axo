@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. Native title/pane chrome and fixed terminal defaults are still provisional.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The first styling pass uses Axo-scoped charcoal chrome, a fixed 220px sidebar with native drag/window controls, full-height panes and sidebar-based settings. This is not a complete Mac visual/behavioral conformance claim.
 
 ## Build and run
 
@@ -23,6 +23,19 @@ bazel test //linux/AxoDesktop:unit_tests //crates/axo-client:test //crates/axo-p
 **Attachment requires snapshot-capable protocol v3**, implemented by the candidate daemon ([RFD0055](../../docs/rfds/RFD0055-terminal-snapshot-grid.md)). An older daemon's refusal is shown; no guessed-grid downgrade or local-shell fallback occurs. The candidate server keeps v2 unchanged for shipped Mac/peer clients. Do not install/restart a paired daemon just to try this UI: use an isolated daemon first; deployment is a separate approved operation.
 
 The `run` target resolves process-local resources/libraries from Bazel runfiles. This is not an installer or service. The prototype uses `dev.leostera.AxoDesktop.Prototype` and does not join a running Ghostty app. Rootless development prefixes can be supplied through `PKG_CONFIG_PATH`, `PATH`, `PYTHONPATH` and `XDG_DATA_DIRS` in repository-rule/build-script environments; project files contain no machine-specific prefix.
+
+## Presentation
+
+`src/style.rs` styles only Axo-owned windows, not the desktop theme or Ghostty's
+renderer. The workbench keeps GTK CSD move/resize behavior and the platform's
+window-control order inside the sidebar; the terminal has no full-width titlebar.
+Footer actions retain accessible names/tooltips and keyboard access. Settings use
+native sidebar/stack navigation, compact cards and a stable feedback footer.
+
+Container spacing uses GTK widget margins, not CSS padding, so AT-SPI control
+bounds agree with the rendered layout. Stylesheet parse failures fail startup
+rather than silently using a partially broken theme. Pending terminal attachments
+cannot steal typing focus from an inactive workbench behind Settings.
 
 ## Settings
 
@@ -69,7 +82,7 @@ window-only; native KDE/GNOME/Wayland panel behavior still needs acceptance.
 
 ## Controls and parity limits
 
-Human selection/copy/paste uses Ghostty (`Ctrl+Shift+A/C/V`). Output-driven clipboard reads/writes, automatic/OSC links and the inherited Ghostty context menu are restricted until the Axo policy/UI adapters exist. Default Ghostty config files are not loaded or created. Fixed spike font/colors and copy-on-select behavior do not yet match Mac preferences.
+Human selection/copy/paste uses Ghostty (`Ctrl+Shift+A/C/V`). Output-driven clipboard reads/writes, automatic/OSC links and the inherited Ghostty context menu are restricted until the Axo policy/UI adapters exist. Default Ghostty config files are not loaded or created. The candidate uses a 13-point terminal font, 2-point horizontal/10-point vertical padding and a neutral charcoal palette. Padding follows the Mac defaults, but user config/appearance preferences and copy-on-select policy still need parity work.
 
 The target UI is Axo's compact Session sidebar, full-height panes, split layouts, palette and focus/navigation, with native Linux conventions. [RFD0054](../../docs/rfds/RFD0054-linux-desktop.md) maps the Mac features and shared Rust boundaries. No new session database, relay backend, CLI wrapper or privileged approval mechanism belongs in this GTK shell.
 

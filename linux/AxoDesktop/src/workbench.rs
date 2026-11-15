@@ -25,21 +25,27 @@ pub fn create_window(
         .default_width(1200)
         .default_height(760)
         .build();
-    let header = gtk4::HeaderBar::new();
-    header.set_title_widget(Some(&gtk4::Label::new(Some("Axo · local Sessions"))));
-    window.set_titlebar(Some(&header));
+    window.add_css_class("axo-window");
+    window.set_size_request(760, 480);
     let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    sidebar.add_css_class("sidebar");
+    let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    sidebar.add_css_class("axo-sidebar");
+    sidebar.append(&crate::style::sidebar_titlebar(&window));
     sidebar.set_width_request(220);
+    sidebar.set_hexpand(false);
     let heading = gtk4::Label::new(Some("Sessions"));
     heading.set_xalign(0.0);
+    heading.add_css_class("axo-section-caption");
     heading.set_margin_start(12);
-    heading.set_margin_top(8);
+    heading.set_margin_end(12);
+    heading.set_margin_top(12);
+    heading.set_margin_bottom(6);
     sidebar.append(&heading);
     let list = gtk4::ListBox::new();
     list.set_selection_mode(gtk4::SelectionMode::Single);
-    list.add_css_class("navigation-sidebar");
+    list.add_css_class("axo-session-list");
+    list.set_margin_start(6);
+    list.set_margin_end(6);
     let scroll = gtk4::ScrolledWindow::builder()
         .child(&list)
         .vexpand(true)
@@ -48,17 +54,20 @@ pub fn create_window(
     sidebar.append(&scroll);
     let status = gtk4::Label::new(Some("Connecting…"));
     status.set_wrap(true);
-    status.set_max_width_chars(26);
-    status.set_margin_start(8);
-    status.set_margin_end(8);
-    sidebar.append(&status);
-    let refresh = gtk4::Button::with_label("Refresh Sessions");
-    refresh.add_css_class("flat");
-    sidebar.append(&refresh);
-    let settings = gtk4::Button::with_label("Settings…");
-    settings.add_css_class("flat");
+    status.set_max_width_chars(18);
+    status.set_xalign(0.0);
+    status.add_css_class("axo-status");
+    let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+    footer.add_css_class("axo-sidebar-footer");
+    crate::style::inset(&footer, 8, 8);
+    status.set_hexpand(true);
+    footer.append(&status);
+    let refresh = crate::style::icon_button("view-refresh-symbolic", "Refresh Sessions");
+    footer.append(&refresh);
+    let settings = crate::style::icon_button("emblem-system-symbolic", "Settings…");
     settings.set_action_name(Some("win.settings"));
-    sidebar.append(&settings);
+    footer.append(&settings);
+    sidebar.append(&footer);
     root.append(&sidebar);
     root.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -382,8 +391,8 @@ impl Workbench {
             label.set_xalign(0.0);
             label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             label.set_max_width_chars(24);
-            label.set_margin_top(5);
-            label.set_margin_bottom(5);
+            label.set_margin_top(3);
+            label.set_margin_bottom(3);
             label.set_margin_start(6);
             label.set_margin_end(6);
             label.set_tooltip_text(Some(&session.folder.to_string_lossy()));
@@ -536,6 +545,7 @@ impl SessionView {
         let pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         pane.set_hexpand(true);
         pane.set_vexpand(true);
+        pane.add_css_class("axo-pane");
         let Some(shell) = self.session.shells.iter().find(|shell| shell.id == id) else {
             pane.append(&gtk4::Label::new(Some(
                 "Pane does not belong to this Session",
@@ -547,8 +557,8 @@ impl SessionView {
             PaneRole::Terminal => "Terminal",
         }));
         heading.set_xalign(0.0);
-        heading.set_margin_start(8);
-        heading.add_css_class("dim-label");
+        heading.add_css_class("axo-pane-heading");
+        crate::style::inset(&heading, 3, 8);
         pane.append(&heading);
         match &shell.availability {
             Availability::Unavailable { reason } => {
@@ -616,7 +626,13 @@ impl SessionView {
         surface.widget().set_vexpand(true);
         pane.append(surface.widget());
         self.observe_surface(id, surface);
-        if self.focused.get() == Some(id) {
+        // An attachment completing behind Settings must not steal its typing focus.
+        if self.focused.get() == Some(id)
+            && self
+                .window
+                .upgrade()
+                .is_some_and(|window| window.is_active())
+        {
             surface.focus();
         }
     }

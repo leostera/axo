@@ -74,6 +74,24 @@ Paths in this table are relative to `apple/AxoMac/Sources/AxoMac`, except `AxoCl
 9. Keep computer-use GNOME guards and Linux secure-input refusal. A native GTK client does not make focus/origin-bound secret entry safe by itself.
 10. Treat terminal output/links as untrusted. Custom-scheme/executable-file handling and clipboard/paste policy need an Axo-equivalent audit before enabling a real-client surface; do not assume upstream GTK defaults match the Mac adapter.
 
+### Native presentation
+
+The first styling pass follows the Mac workbench's 220-point sidebar/full-height
+pane organization, while retaining GTK widgets and platform window controls.
+`style.rs` is scoped to Axo windows: neutral charcoal surfaces, quiet focus/selection,
+compact footer actions and sidebar-based settings replace the spike's default
+header/notebook chrome. GTK WindowHandle/WindowControls supply move, resize and
+window actions; there is no drawn imitation of macOS traffic lights.
+
+Native widget margins own container layout so AT-SPI bounds match rendered
+controls; CSS owns appearance. Tests bind settings actions to its own window,
+ignore hidden stack pages, assert the sidebar cannot expand with its controls and
+check terminal captions reach the top edge. Invalid CSS fails startup. Renderer
+font/padding defaults move to 13pt and Mac's 2/10-point insets, without loading
+user config or changing VT/descriptor/lifecycle contracts. Pending attachments
+must not steal focus from Settings. This does not prove full visual, theme,
+high-contrast, scale, Wayland, IME or accessibility equivalence with Mac.
+
 ### Settings slice
 
 A native singleton settings window now follows General / Sessions / Agent from the

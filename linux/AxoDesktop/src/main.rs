@@ -4,6 +4,7 @@ mod ghostty;
 #[cfg(test)]
 mod options_tests;
 mod settings;
+mod style;
 mod task;
 mod tray;
 mod workbench;
@@ -87,6 +88,7 @@ fn run(options: Options) -> Result<(), String> {
     let engine = Rc::new(Engine::new()?);
     // Native Ghostty initializes GTK first; this also establishes gtk-rs's main-thread guard.
     gtk4::init().map_err(|error| error.to_string())?;
+    style::install()?;
     let app = engine.application();
     let failure = Rc::new(RefCell::new(None));
     let activated = app.connect_activate({

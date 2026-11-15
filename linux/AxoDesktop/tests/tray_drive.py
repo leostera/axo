@@ -10,7 +10,8 @@ import sys
 import time
 import gi
 gi.require_version('Gio','2.0')
-from gi.repository import Gio, GLib
+gi.require_version('Atspi','2.0')
+from gi.repository import Gio, GLib, Atspi
 
 if os.environ.get('AXO_DESKTOP_ISOLATED') != '1': raise SystemExit('use private desktop launcher')
 binary,run=pathlib.Path(sys.argv[1]).resolve(),pathlib.Path(sys.argv[2])
@@ -50,6 +51,23 @@ def visible(app):
 
 def close(window):
     xdo('windowactivate','--sync',window); xdo('key','--clearmodifiers','alt+F4')
+
+
+def native_close(app,window):
+    def control():
+        desktop=Atspi.get_desktop(0)
+        pending=[desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+        pending=[node for node in pending if node.get_process_id()==app.pid]
+        while pending:
+            node=pending.pop()
+            if node.get_role()==Atspi.Role.PUSH_BUTTON and node.get_name()=='Close' and node.get_state_set().contains(Atspi.StateType.SHOWING):
+                return node
+            pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+    button=wait('native window close control',control,app)
+    bounds=button.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+    xdo('windowactivate','--sync',window)
+    xdo('mousemove','--window',window,bounds.x+bounds.width//2,bounds.y+bounds.height//2)
+    xdo('click','1')
 
 
 def stopped(app,name):
@@ -108,7 +126,7 @@ try:
     rpc(ipc,'axo.config.set',{'key':'shell.command','value':'/bin/sh'})
     session=rpc(ipc,'axo.session.create',{'folder':str(run/'home')})
     app,main,service=launch('no-host')
-    close(main); stopped(app,'no-host') # Watcher alone is not a recovery affordance.
+    native_close(app,main); stopped(app,'no-host') # Watcher alone is not a recovery affordance.
 
     host[0]=True
     app,main,service=launch('tray')
@@ -134,7 +152,7 @@ try:
     try: event(service,999)
     except GLib.Error: pass
     else: raise AssertionError('unknown menu action accepted')
-    close(main)
+    native_close(app,main)
     wait('window close hides with a registered host',lambda:not visible(app),app)
     terminal=next(shell for shell in session['shells'] if shell['role']=='terminal')
     ids={'sessionId':session['id'],'shellId':terminal['id']}
@@ -168,7 +186,7 @@ try:
     event(service,4); stopped(app,'quit')
     for shell in session['shells']: os.kill(shell['processId'],0)
     assert daemon.poll() is None
-    print(json.dumps({'status':'passed','checks':['native SNI and DBusMenu export','watcher without host does not hide','daemon status','show/hide/settings/quit','hidden output survives and renders on restore','invalid menu ID refusal','host loss restores hidden window even with live watcher','watcher loss and re-registration','quit is detach, daemon children survive']}))
+    print(json.dumps({'status':'passed','checks':['native SNI and DBusMenu export','watcher without host does not hide','daemon status','native window close and show/hide/settings/quit','hidden output survives and renders on restore','invalid menu ID refusal','host loss restores hidden window even with live watcher','watcher loss and re-registration','quit is detach, daemon children survive']}))
 finally:
     if owner is not None: Gio.bus_unown_name(owner)
     bus.unregister_object(registration)
