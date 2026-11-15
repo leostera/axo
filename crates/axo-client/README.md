@@ -36,6 +36,15 @@ new daemon, session store, account manager or application-authentication scheme.
   subscribes and reads catalog/health; it never retries actions, starts Pi or
   supplies privileged local identity.
 
+`ViewportReporter` is a separate, explicitly mutating UI owner. It publishes only
+validated native metrics through the independently advertised viewport v2 method,
+with 100 ms trailing debounce, one in-flight write, latest-value coalescing and a
+five-second deadline. Missing v2 support never falls back to guessed legacy metrics.
+A lost/malformed acknowledgement fences automatic sends for that epoch, including
+later size changes; explicit Refresh or a new connection epoch permits an idempotent
+geometry reconciliation. This is not a general action/settings retry facility.
+Dropping the reporter cancels its socket/delivery, not a write already admitted.
+
 A private socket/same UID does **not** grant privileged-app identity. This client
 never impersonates `Peer::Relay`, launches/upgrades axod, reads credentials or
 changes pairing. Native workbench policy and presentation remain separate from

@@ -3,8 +3,10 @@
 mod catalog;
 mod catalog_watch;
 mod settings;
+mod viewport_reporter;
 pub use catalog::LocalCatalog;
 pub use catalog_watch::{CatalogSnapshot, CatalogState, CatalogWatch, CatalogWatcher};
+pub use viewport_reporter::{ViewportPhase, ViewportReporter, ViewportStatus, ViewportWorker};
 
 use axo_protocol::rpc::{self, method};
 use serde::de::DeserializeOwned;
