@@ -184,7 +184,7 @@ struct SetupPermissionsPane: View {
               .disabled(status == .checking || model.fixing != nil)
               .accessibilityIdentifier("setup-fix-\(item.rawValue)")
           }
-          Text(status.title).font(.caption).foregroundStyle(.secondary)
+          Text(model.fixing == item ? "Waiting for macOS…" : status.title).font(.caption).foregroundStyle(.secondary)
         }.frame(width: 132, alignment: .trailing)
       }
     }.padding(.horizontal, 16).padding(.vertical, 12)
@@ -202,15 +202,22 @@ struct SetupPermissionsPane: View {
 @MainActor
 final class AppSetupWindowController: NSWindowController, NSWindowDelegate {
   private let onClose: () -> Void
-  init(model: AppSetupModel, onClose: @escaping () -> Void) {
+  init(model: AppSetupModel, appIcon: NSImage? = nil, onClose: @escaping () -> Void) {
     self.onClose = onClose
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 720),
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 720),
       styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
     window.title = "Axo Setup"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(rootView: AppSetupView(model: model))
+    let hosting = NSHostingController(rootView: AppSetupView(model: model, appIcon: appIcon))
+    // SwiftUI's unconstrained ideal height includes every permission row. Let the window,
+    // not that ideal size, constrain the scroll view and keep the footer on screen.
+    hosting.sizingOptions = []
+    window.contentViewController = hosting
+    window.setContentSize(NSSize(width: 820, height: 720))
+    window.contentMinSize = NSSize(width: 740, height: 560)
+    window.contentMaxSize = NSSize(width: 980, height: 840)
     super.init(window: window)
     window.delegate = self
   }

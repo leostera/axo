@@ -2,6 +2,15 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## 0.67 (Mac app build 338, axod 83)
+
+### Fixed
+
+- Setup stays within a bounded native window instead of expanding to SwiftUI’s unconstrained content height. Navigation remains visible; the permission list scrolls inside the window.
+- Foreground startup and upgrade handovers can present setup before Axo becomes active. Background/login launches remain quiet until activation.
+- Requesting an Automation permission no longer replaces unrelated permission rows with transient prompt-time results. Only the requested row waits for macOS; one fresh check follows completion, and earlier in-flight replies are discarded.
+- Added real-window layout, foreground-startup and in-flight permission-request regressions. This release changes only the Mac app; axod remains build 83.
+
 ## 0.66 (Mac app build 337, axod 83)
 
 ### Added

@@ -45,7 +45,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       mascot.start(animatesDockIcon: true)
       if startsDaemon {
         daemon.startIfNeeded()
-        AppSetupModel.shared.start(daemon: daemon)
+        AppSetupModel.shared.start(daemon: daemon, foregroundLaunch: environment.opensTerminalWindow)
       }
     }
     if !usesSplash { LaunchBoot.run() }

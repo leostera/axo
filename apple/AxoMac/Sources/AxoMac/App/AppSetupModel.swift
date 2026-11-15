@@ -33,7 +33,7 @@ final class AppSetupModel {
     returningUser = defaults.object(forKey: AxoPreferenceKey.selectedSession) != nil
       || defaults.object(forKey: AxoPreferenceKey.seenSessionsBaseline) != nil
   }
-  func start(daemon: DaemonController) {
+  func start(daemon: DaemonController, foregroundLaunch: Bool) {
     guard observer == nil else { return }
     started = true
     AppSetupLive.daemon = daemon
@@ -52,7 +52,7 @@ final class AppSetupModel {
         try? await Task.sleep(for: .milliseconds(500))
       }
       await refresh()
-      considerAutomaticPresentation()
+      considerAutomaticPresentation(foregroundLaunch: foregroundLaunch)
     }
   }
 
@@ -73,16 +73,22 @@ final class AppSetupModel {
     let acknowledged = Set(defaults.stringArray(forKey: AxoPreferenceKey.setupAcknowledgedIssues) ?? [])
     return !issueFingerprints.subtracting(acknowledged).isEmpty
   }
-  private func considerAutomaticPresentation() {
-    guard !automaticConsidered, NSApp.isActive, NSApp.modalWindow == nil else { return }
+  /// Foreground handover can finish probing before the launchd app becomes active.
+  /// Background/login launches remain quiet until the person activates Axo.
+  func automaticPresentation(isActive: Bool, hasModal: Bool, foregroundLaunch: Bool) -> Step? {
+    guard !automaticConsidered, snapshot != nil, !hasModal, isActive || foregroundLaunch else { return nil }
     automaticConsidered = true
-    if shouldPresentAutomatically {
-      show(tour: !defaults.bool(forKey: AxoPreferenceKey.setupPresented) && !returningUser)
-    }
+    guard shouldPresentAutomatically else { return nil }
+    return !defaults.bool(forKey: AxoPreferenceKey.setupPresented) && !returningUser ? .welcome : .permissions
+  }
+  private func considerAutomaticPresentation(foregroundLaunch: Bool = false) {
+    guard let step = automaticPresentation(isActive: NSApp.isActive,
+      hasModal: NSApp.modalWindow != nil, foregroundLaunch: foregroundLaunch) else { return }
+    show(tour: step == .welcome)
   }
 
   func refresh(force: Bool = false) async {
-    guard (!requiresStart || started), (!isChecking || force) else { return }
+    guard (!requiresStart || started), fixing == nil, (!isChecking || force) else { return }
     generation += 1
     let current = generation
     isChecking = true
@@ -115,6 +121,10 @@ final class AppSetupModel {
       } catch { failure = error.localizedDescription }
       return
     }
+    // Invalidate probes admitted before the prompt. Activation during an OS dialog must
+    // not replace every row with a transient TCC failure. Recheck once the request finishes.
+    generation += 1
+    isChecking = false
     fixing = item
     // An admitted OS request stays owned if the view closes; no cancellation/retry on disappear.
     do { try await effects.fix(item) } catch { failure = error.localizedDescription }

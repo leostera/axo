@@ -2,7 +2,7 @@ import { atMost, defineActor, defineProperty, defineSpec, defineZone } from "@le
 
 // RFD0056: bounded observations and owned permission requests, not OS grant accuracy,
 // code-signature cryptography, process crashes, GUI timing or network-fault guarantees.
-const ui = "apple/AxoMac/Sources/AxoMac/App/AppSetupModel.swift:84-101" as const;
+const ui = "apple/AxoMac/Sources/AxoMac/App/AppSetupModel.swift:90-119" as const;
 const daemon = "crates/axo-server/src/permissions.rs:70-165" as const;
 const zone = defineZone({ name: "This Mac", place: { column: 0 } });
 const Setup = defineActor({

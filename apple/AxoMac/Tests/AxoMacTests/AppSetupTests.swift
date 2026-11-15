@@ -172,6 +172,90 @@ final class AppSetupTests: XCTestCase {
   }
 
   @MainActor
+  func testAutomationPromptKeepsOtherRowsStableAndDiscardsAnEarlierProbe() async throws {
+    var checks = 0
+    var oldReply: CheckedContinuation<SetupSnapshot, Never>?
+    var prompt: CheckedContinuation<Void, Never>?
+    var initial = Self.snapshot()
+    initial.permissions = DaemonPermissions(processId: 42, accessibility: .granted, inputControl: .granted,
+      screenRecording: .granted, developerTools: .granted, fullDiskAccess: .granted,
+      automationFinder: .granted, automationSystemEvents: .notRunning)
+    let e = AppSetupEffects(check: {
+      checks += 1
+      if checks == 2 { return await withCheckedContinuation { oldReply = $0 } }
+      return checks == 1 ? initial : Self.snapshot(.notGranted)
+    }, fix: { _ in await withCheckedContinuation { prompt = $0 } },
+      testConnection: { "fixture" }, guide: { _, _, _ in XCTFail("No guide") },
+      openTerminal: {}, restartDaemon: {})
+    let model = AppSetupModel(defaults: store(), effects: e)
+    await model.refresh()
+    let old = Task { await model.refresh(force: true) }
+    for _ in 0..<100 { if oldReply != nil { break }; await Task.yield() }
+    let stale = try XCTUnwrap(oldReply)
+    let request = Task { await model.fix(.systemEvents) }
+    for _ in 0..<100 { if prompt != nil { break }; await Task.yield() }
+    let pending = try XCTUnwrap(prompt)
+    stale.resume(returning: Self.snapshot(.notGranted))
+    await old.value
+    await model.refresh(force: true) // activation while the OS dialog is up
+    XCTAssertEqual(checks, 2, "Do not probe TCC while an admitted prompt is pending")
+    XCTAssertEqual(model.readyCount, 8, "Transient prompt-time replies must not revoke unrelated rows")
+    XCTAssertEqual(model.fixing, .systemEvents)
+    XCTAssertFalse(model.isChecking)
+    pending.resume()
+    await request.value
+    XCTAssertEqual(checks, 3, "One fresh report after completion")
+    XCTAssertNil(model.fixing)
+    XCTAssertEqual(model.readyCount, 3, "A fresh post-prompt revocation must not be hidden by cached observations")
+  }
+
+  @MainActor
+  func testForegroundUpgradePresentsEvenBeforeActivationButLoginStaysQuiet() async {
+    let defaults = store()
+    defaults.set("existing-session", forKey: AxoPreferenceKey.selectedSession)
+    let model = AppSetupModel(defaults: defaults, effects: effects(check: { Self.snapshot() }))
+    XCTAssertNil(model.automaticPresentation(isActive: false, hasModal: false, foregroundLaunch: true),
+      "Wait for the first report without consuming the presentation")
+    await model.refresh()
+    XCTAssertNil(model.automaticPresentation(isActive: false, hasModal: false, foregroundLaunch: false))
+    XCTAssertNil(model.automaticPresentation(isActive: false, hasModal: true, foregroundLaunch: true))
+    XCTAssertEqual(model.automaticPresentation(isActive: false, hasModal: false, foregroundLaunch: true), .permissions)
+    XCTAssertNil(model.automaticPresentation(isActive: true, hasModal: false, foregroundLaunch: true))
+  }
+
+  @MainActor
+  func testRealSetupWindowStaysBoundedAcrossStepsWithoutShowingOrActivatingIt() async throws {
+    _ = NSApplication.shared
+    let model = AppSetupModel(defaults: store(), effects: effects(check: { Self.snapshot() }))
+    await model.refresh()
+    let controller = AppSetupWindowController(model: model, appIcon: try AppFixtureArtwork.icon(), onClose: {})
+    let window = try XCTUnwrap(controller.window)
+    defer { window.close() }
+    let content = try XCTUnwrap(window.contentViewController?.view)
+    for step in 0..<4 {
+      content.layoutSubtreeIfNeeded()
+      try await Task.sleep(for: .milliseconds(30))
+      content.layoutSubtreeIfNeeded()
+      XCTAssertEqual(window.contentLayoutRect.width, 820, accuracy: 1)
+      XCTAssertEqual(content.bounds.height, 720, accuracy: 1, "SwiftUI must not enlarge the window to its ideal height")
+      XCTAssertFalse(window.isVisible, "Fixture must never steal the person's focus")
+      if step == 1 {
+        try renderWindowContent(content, name: "axo-setup-real-window")
+      }
+      if step == 2 { model.skipTest() } else if step < 3 { model.next() }
+    }
+  }
+
+  @MainActor
+  private func renderWindowContent(_ content: NSView, name: String) throws {
+    let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+    content.cacheDisplay(in: content.bounds, to: bitmap)
+    let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+    let folder = ProcessInfo.processInfo.environment["TEST_UNDECLARED_OUTPUTS_DIR"] ?? FileManager.default.temporaryDirectory.path
+    try png.write(to: URL(fileURLWithPath: folder).appendingPathComponent(name + ".png"))
+  }
+
+  @MainActor
   private func render(_ view: some View, name: String, width: CGFloat, height: CGFloat) throws {
     let hosting = NSHostingView(rootView: view)
     hosting.appearance = NSAppearance(named: name.hasSuffix("dark") ? .darkAqua : .aqua)
