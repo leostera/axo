@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CLICommandSettingsSection: View {
   var installation: CLICommandInstallation
+  var layoutObserver: SetupLayoutObserver? = nil
   @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
@@ -15,6 +16,7 @@ struct CLICommandSettingsSection: View {
           }
           .disabled(installation.isInstalling || !installation.status.canInstall)
           .accessibilityIdentifier("install-axo-command")
+          .setupLayout(.commandInstall, observer: layoutObserver)
         }
       }
       Text(installation.destination.path)

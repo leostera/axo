@@ -27,7 +27,7 @@ enum SetupStatus: String, Equatable, Sendable {
   }
 }
 
-enum SetupItem: String, CaseIterable, Identifiable {
+enum SetupItem: String, CaseIterable, Identifiable, Hashable {
   case background, accessibility, screenRecording, developerTools, fullDiskAccess
   case finder, systemEvents, notifications, commandLine
   var id: String { rawValue }

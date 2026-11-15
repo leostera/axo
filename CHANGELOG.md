@@ -2,6 +2,17 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## Unreleased
+
+### Fixed
+
+- Temporarily unknown permission results no longer erase acknowledgements of existing limitations. Only a confirmed recovered check can become a newly revoked issue later.
+
+### Tests
+
+- Added 12 setup regressions covering actual control/viewport bounds at small and full-height sizes, hidden installed-command buttons, connection failure/recovery and coalescing, daemon restoration, account-link decoding, notification callback/deadline arbitration and acknowledgement recovery.
+- Layout assertions use an opt-in fixture observer and hidden native windows; no OS privacy grants, visible-window automation or live app restarts are needed.
+
 ## 0.68 (Mac app build 339, axod 83)
 
 ### Improved

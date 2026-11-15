@@ -105,7 +105,10 @@ final class AppSetupModel {
     }
     // A recovered grant leaves the acknowledgement set, so later revocation is a new issue.
     let old = Set(defaults.stringArray(forKey: AxoPreferenceKey.setupAcknowledgedIssues) ?? [])
-    let remaining = old.intersection(issueFingerprints)
+    let recovered = SetupItem.allCases.filter { status($0).isReady }
+    let remaining = old.filter { issue in
+      !recovered.contains { issue.hasPrefix($0.rawValue + ":") }
+    }
     if remaining != old {
       defaults.set(Array(remaining).sorted(), forKey: AxoPreferenceKey.setupAcknowledgedIssues)
     }

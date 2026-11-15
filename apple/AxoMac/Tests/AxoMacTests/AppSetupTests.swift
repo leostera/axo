@@ -38,6 +38,24 @@ final class AppSetupTests: XCTestCase {
   }
 
   @MainActor
+  func testNotificationCallbackWinningCancelsDeadlineAndIgnoresLateTimeout() async {
+    var deadline: Task<Void, Never>?
+    let result: SetupStatus = await withCheckedContinuation { continuation in
+      let reply = AppSetupLive.NotificationReply(continuation)
+      let task = Task { if !Task.isCancelled { XCTFail("Completed notification probe must cancel its deadline") } }
+      deadline = task
+      reply.deadline = task
+      reply.finish(.ready)
+      XCTAssertNil(reply.deadline)
+      XCTAssertNil(reply.continuation)
+      reply.finish(.unknown)
+    }
+    await deadline?.value
+    XCTAssertTrue(deadline?.isCancelled == true)
+    XCTAssertEqual(result, .ready)
+  }
+
+  @MainActor
   func testCheckHasNoEffectsAndUnknownNeverBecomesGranted() async {
     var source = Self.snapshot(.unknown)
     let model = AppSetupModel(defaults: store(), effects: effects(check: { source }))

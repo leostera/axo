@@ -126,6 +126,33 @@ final class CLICommandInstallationTests: XCTestCase {
   }
 
   @MainActor
+  func testInstalledCommandHasNoInstallButtonButMissingCommandDoes() async throws {
+    let fixture = try Fixture()
+    defer { fixture.clean() }
+    let model = CLICommandInstallation(bundle: fixture.bundle, destination: fixture.destination) { _ in
+      XCTFail("Rendering must never install or request authorization")
+    }
+    for installed in [false, true] {
+      if installed { try fixture.link(to: fixture.source); model.refresh() }
+      var installButtonFrame: CGRect?
+      let view = Form {
+        CLICommandSettingsSection(installation: model, layoutObserver: { element, frame in
+          if element == .commandInstall { installButtonFrame = frame }
+        })
+      }.formStyle(.grouped).coordinateSpace(name: "axo-setup-layout")
+      let hosting = NSHostingView(rootView: view)
+      hosting.frame = NSRect(x: 0, y: 0, width: 540, height: 230)
+      hosting.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+      hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+      await Task.yield()
+      XCTAssertEqual(installButtonFrame != nil, !installed)
+      if let frame = installButtonFrame { XCTAssertFalse(frame.isEmpty) }
+      XCTAssertEqual(model.status, installed ? .installed : .missing)
+    }
+  }
+
+  @MainActor
   func testCommandSettingsRendersWithoutLaunchingAnAppOrInstallingACommand() throws {
     let fixture = try Fixture()
     defer { fixture.clean() }

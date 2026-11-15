@@ -15,6 +15,7 @@ struct AppSetupView: View {
   var model: AppSetupModel
   var appIcon: NSImage? = nil
   var onStepChange: ((AppSetupModel.Step) -> Void)? = nil
+  var layoutObserver: SetupLayoutObserver? = nil
   var body: some View {
     VStack(alignment: .leading, spacing: 22) {
       HStack(spacing: 10) {
@@ -46,7 +47,7 @@ struct AppSetupView: View {
         }.padding(24).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
       case .permissions:
         heading("Let Axo work on this Mac", "Enable what you need. Rows update when macOS confirms access.")
-        SetupPermissionsPane(model: model)
+        SetupPermissionsPane(model: model, layoutObserver: layoutObserver)
       case .tryIt:
         heading("Your Axo connections", "Local Sessions work without an account. Link this Mac to pick them up from your other devices.")
         VStack(alignment: .leading, spacing: 22) {
@@ -101,16 +102,19 @@ struct AppSetupView: View {
       HStack(spacing: 12) {
         if model.step != .welcome {
           Button("Back") { model.back() }.keyboardShortcut(.leftArrow, modifiers: [.command])
+            .setupLayout(.back, observer: layoutObserver)
         }
         Spacer()
         Button(primaryTitle) { model.next() }
           .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+          .setupLayout(.primary, observer: layoutObserver)
       }
     }
     .padding(32)
     .frame(maxWidth: 850, maxHeight: .infinity)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(Color(nsColor: .windowBackgroundColor))
+    .coordinateSpace(name: "axo-setup-layout")
     .onChange(of: model.step) { _, step in onStepChange?(step) }
   }
   private var primaryTitle: String {
@@ -145,6 +149,7 @@ struct AppSetupView: View {
 
 struct SetupPermissionsPane: View {
   var model: AppSetupModel
+  var layoutObserver: SetupLayoutObserver? = nil
   @State private var confirmingRestart = false
   @State private var contentHeight: CGFloat = 0
   @State private var viewportHeight: CGFloat = 0
@@ -173,11 +178,12 @@ struct SetupPermissionsPane: View {
             }.font(.callout).padding(10)
               .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
           }.buttonStyle(.plain).accessibilityIdentifier("setup-review-unchecked")
+          .setupLayout(.review, observer: layoutObserver)
         }
         ScrollView {
           VStack(spacing: 0) {
             ForEach(SetupItem.allCases) { item in
-              row(item).id(item.id)
+              row(item).id(item.id).setupLayout(.row(item), observer: layoutObserver)
               if item != SetupItem.allCases.last { Divider().padding(.leading, 64) }
             }
           }
@@ -185,6 +191,7 @@ struct SetupPermissionsPane: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
         .scrollIndicators(.visible)
+        .setupLayout(.viewport, observer: layoutObserver)
         .scrollIndicatorsFlash(trigger: contentHeight > viewportHeight + 1)
         .background(.quaternary.opacity(0.2))
         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -192,6 +199,7 @@ struct SetupPermissionsPane: View {
         if contentHeight > viewportHeight + 1 {
           Label("Scroll to see all \(SetupItem.allCases.count) checks", systemImage: "arrow.down")
             .font(.caption).foregroundStyle(.secondary)
+            .setupLayout(.scrollHint, observer: layoutObserver)
         }
         Text("Permissions are checked for axod; notifications belong to Axo.app. Optional access does not block Sessions.")
           .font(.caption).foregroundStyle(.secondary)
@@ -255,7 +263,7 @@ struct SetupPermissionsPane: View {
 @MainActor
 final class AppSetupWindowController: NSWindowController, NSWindowDelegate {
   private let onClose: () -> Void
-  init(model: AppSetupModel, appIcon: NSImage? = nil, onClose: @escaping () -> Void) {
+  init(model: AppSetupModel, appIcon: NSImage? = nil, layoutObserver: SetupLayoutObserver? = nil, onClose: @escaping () -> Void) {
     self.onClose = onClose
     let size = Self.preferredSize(for: model.step)
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
@@ -268,7 +276,7 @@ final class AppSetupWindowController: NSWindowController, NSWindowDelegate {
       onStepChange: { [weak window] step in
         guard let window else { return }
         Self.resize(window, for: step)
-      }))
+      }, layoutObserver: layoutObserver))
     // SwiftUI's unconstrained ideal height includes every permission row. Let the window,
     // not that ideal size, constrain the scroll view and keep the footer on screen.
     hosting.sizingOptions = []
