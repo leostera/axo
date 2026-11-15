@@ -14,7 +14,7 @@ Expose `self()`, `sendAfter(...)` and `sendInterval(...)` through the Session MC
 
 ## Guide-level explanation
 
-`self({})` returns `{sessionId}` for the calling Session, not the selected UI row or Pi transcript ID. `sendAfter({sessionId:"self",text:"Check the build",delayMs:60000})` schedules one message; `sendInterval({sessionId:"self",text:"Check progress",intervalMs:60000})` schedules recurring messages. Omitting sessionId targets self. Both return a timer ID, not a delivery acknowledgement. `session_timers({})` lists only this Session's timers; `session_cancel_timer({timerId})` closes future admission. A send already claimed, queued or delivered may still arrive: cancellation is not message retraction. The cancel receipt’s `inFlight` describes a pending admission/receipt, not whether an already accepted message is still queued.
+`self({})` returns `{sessionId}` for the calling Session, not the selected UI row or Pi transcript ID. `sendAfter({sessionId:"self",text:"Check the build",delayMs:60000})` schedules one message; `sendInterval({sessionId:"self",text:"Check progress",intervalMs:60000})` schedules recurring messages. Omitting sessionId targets self. Both return a timer ID, not a delivery acknowledgement. `listTimers({})` lists only this Session's timers; `cancelTimer({timerId})` closes future admission. A send already claimed, queued or delivered may still arrive: cancellation is not message retraction. The cancel receipt’s `inFlight` describes a pending admission/receipt, not whether an already accepted message is still queued.
 
 ## Reference-level explanation
 

@@ -4,6 +4,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### Changed
+
+- Name the Session timer listing/cancellation tools `listTimers({})` and `cancelTimer({timerId})`, matching `sendAfter` and `sendInterval`. Both remain scoped to the calling Session; cancellation stops future sends, not messages already admitted or queued.
+
 ### Improved
 
 - Strip local/debug native symbols from the Swift app and embedded frameworks, and maximally strip standalone helper executables before signing. Required dynamic exports remain intact; unstripped build outputs remain available separately. MLX’s full Metal kernel library remains byte-for-byte unchanged.

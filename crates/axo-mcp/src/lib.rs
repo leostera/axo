@@ -39,7 +39,7 @@ const SELF: &str = "self";
 const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi conversation (the "pi" pane) with a terminal pane beside it, working in a folder. These tools see and drive every Session on this Mac.
 
 - `whoami` returns this agent's own Session, including its panes' shell IDs.
-- Anywhere a tool takes a Session ID (`sessionId`, `like`), "self" means this agent's own Session. `self({})` returns only `{sessionId}`. `sendAfter({text,delayMs,sessionId?,delivery?})` and `sendInterval({text,intervalMs,sessionId?,delivery?})` schedule agent messages (default target self, delivery followUp). Timers live only in this axod runtime: no persistence or missed-tick bursts. `session_timers` lists your active timers; `session_cancel_timer({timerId})` cancels future ticks, not already admitted messages. Existing prompt limits apply.
+- Anywhere a tool takes a Session ID (`sessionId`, `like`), "self" means this agent's own Session. `self({})` returns only `{sessionId}`. `sendAfter({text,delayMs,sessionId?,delivery?})` and `sendInterval({text,intervalMs,sessionId?,delivery?})` schedule agent messages (default target self, delivery followUp). Timers live only in this axod runtime: no persistence or missed-tick bursts. `listTimers` lists your active timers; `cancelTimer({timerId})` cancels future ticks, not already admitted messages. Existing prompt limits apply.
 - `session_catalog` lists open Sessions (with their panes) and archived ones. Each has `piSessionFile`, the absolute path of its Pi transcript: a JSONL file, one JSON record per line. Records with `"type":"message"` carry `message.role` ("user", "assistant", "toolResult") and `message.content`, a list of blocks such as `{"type":"text","text":...}`. Search and read transcripts with ordinary tools, e.g. `rg -l -i "backoff" <files>`, or `jq -r 'select(.type=="message" and .message.role=="user") | .message.content[]? | select(.type=="text") | .text' <file>`. A file may not exist if Pi never wrote to it.
 - `session_prompt` sends a message to a Session's agent, including this one ("self"). `delivery`: "followUp" (default; after its current turn), "steer" (after its current tool calls) or "turn" (only if idle). Prompts from an agent are limited: at most 30 a minute, 10 of them to "self".
 - `terminal_write` types text into a pane: end a command with "\r" to run it; "\u0003" is Ctrl-C. `terminal_screen` reads a pane's screen and scrollback as plain text.
@@ -125,7 +125,7 @@ const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
-        name: "session_timers",
+        name: "listTimers",
         method: Some(method::SESSION_TIMER_LIST),
         description: "Active runtime timers owned by the calling Session, without message text or durable history.",
         properties: || json!({}),
@@ -135,10 +135,10 @@ const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
-        name: "session_cancel_timer",
+        name: "cancelTimer",
         method: Some(method::SESSION_TIMER_CANCEL),
         description: "Cancel future firings of your timer. A claimed or queued send may still arrive. The slot stays owned until retirement.",
-        properties: || json!({"timerId":{"type":"string","description":"Timer UUID from sendAfter/sendInterval or session_timers."}}),
+        properties: || json!({"timerId":{"type":"string","description":"Timer UUID from sendAfter/sendInterval or listTimers."}}),
         required: &["timerId"],
         output: None,
         read_only: false,
@@ -1898,7 +1898,7 @@ mod tests {
             assert_eq!(resolved["timing"], json!({"kind":kind,"milliseconds":1000}));
             assert!(!resolved.contains_key(field));
         }
-        for name in ["session_timers", "session_cancel_timer"] {
+        for name in ["listTimers", "cancelTimer"] {
             let tool = TOOLS.iter().find(|t| t.name == name).unwrap();
             let resolved = server
                 .resolve(

@@ -96,7 +96,7 @@ fn agent_timer_helpers_use_own_identity_and_outlive_the_mcp_connection() {
     ] {
         assert!(!mcp.err("sendAfter", args).is_empty());
     }
-    assert_eq!(mcp.ok("session_timers", json!({}))["timers"], json!([]));
+    assert_eq!(mcp.ok("listTimers", json!({}))["timers"], json!([]));
     mcp.ok(
         "sendAfter",
         json!({"delayMs":20,"text":"timer-wire-one-shot","fromSessionId":other}),
@@ -111,7 +111,7 @@ fn agent_timer_helpers_use_own_identity_and_outlive_the_mcp_connection() {
         "sendInterval",
         json!({"intervalMs":3600000,"text":"hourly fixture"}),
     );
-    let listed = mcp.ok("session_timers", json!({}));
+    let listed = mcp.ok("listTimers", json!({}));
     assert!(
         listed["timers"]
             .as_array()
@@ -120,18 +120,31 @@ fn agent_timer_helpers_use_own_identity_and_outlive_the_mcp_connection() {
             .any(|t| t["timerId"] == interval["timerId"])
     );
     assert_eq!(
-        another.ok(
-            "session_cancel_timer",
-            json!({"timerId":interval["timerId"]})
-        )["cancelled"],
+        another.ok("cancelTimer", json!({"timerId":interval["timerId"]}))["cancelled"],
         false
     );
     assert_eq!(
-        mcp.ok(
-            "session_cancel_timer",
-            json!({"timerId":interval["timerId"]})
-        )["cancelled"],
+        mcp.ok("cancelTimer", json!({"timerId":interval["timerId"]}))["cancelled"],
         true
+    );
+    let after = mcp.ok(
+        "sendAfter",
+        json!({"delayMs":3600000,"text":"cancelled one-shot fixture"}),
+    );
+    assert_eq!(
+        mcp.ok("cancelTimer", json!({"timerId":after["timerId"]}))["cancelled"],
+        true
+    );
+    assert_eq!(
+        mcp.ok("cancelTimer", json!({"timerId":after["timerId"]}))["cancelled"],
+        false
+    );
+    assert!(
+        !mcp.ok("listTimers", json!({}))["timers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["timerId"] == after["timerId"])
     );
     let retained = mcp.ok(
         "sendAfter",
