@@ -4,6 +4,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### Added
+
+- Copy Session ID in the expanded and collapsed Session context menus, alongside Copy Session Info. Copies just the right-clicked Session’s UUID, for local and remote Sessions.
+
 ### Fixed
 
 - Temporarily unknown permission results no longer erase acknowledgements of existing limitations. Only a confirmed recovered check can become a newly revoked issue later.

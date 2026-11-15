@@ -207,6 +207,10 @@ struct WorkbenchSidebar: View {
     Button(sessions.isPinned(session.id) ? "Unpin Session" : "Pin Session") {
       withAnimation(.easeInOut(duration: 0.2)) { sessions.togglePin(session.id) }
     }
+    Button("Copy Session ID") {
+      SessionInfo.copyID(session.id)
+    }
+    .accessibilityIdentifier("copy-session-id-\(session.id.rawValue)")
     Button("Copy Session Info") {
       SessionInfo.copy(session, hostLabel: sessions.hostLabel(for: session.id))
     }

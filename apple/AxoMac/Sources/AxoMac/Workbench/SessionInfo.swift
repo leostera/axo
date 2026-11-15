@@ -26,6 +26,13 @@ enum SessionInfo {
     return lines.joined(separator: "\n")
   }
 
+  /// Copies only the canonical ID of the right-clicked Session, not the current selection.
+  /// An injected private pasteboard keeps tests away from the person's clipboard.
+  static func copyID(_ id: SessionID, to pasteboard: NSPasteboard = .general) {
+    pasteboard.clearContents()
+    pasteboard.setString(id.rawValue, forType: .string)
+  }
+
   static func copy(_ session: TerminalSession, hostLabel: String? = nil) {
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()

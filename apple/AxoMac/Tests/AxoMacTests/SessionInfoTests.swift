@@ -1,9 +1,26 @@
+import AppKit
 import AxoProtocol
 import XCTest
 
 @testable import AxoMac
 
 final class SessionInfoTests: XCTestCase {
+  @MainActor
+  func testCopyIDUsesOnlyTheChosenUUIDOnAPrivatePasteboard() {
+    let pasteboard = NSPasteboard.withUniqueName()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.setString("old private fixture", forType: .string)
+    let clicked = SessionID.fixture(7)
+    SessionInfo.copyID(clicked, to: pasteboard)
+    XCTAssertEqual(pasteboard.string(forType: .string), clicked.rawValue)
+    XCTAssertEqual(pasteboard.pasteboardItems?.count, 1)
+    // Copying another row replaces the previous value without consulting selection or host.
+    let another = SessionID.fixture(9)
+    SessionInfo.copyID(another, to: pasteboard)
+    XCTAssertEqual(pasteboard.string(forType: .string), another.rawValue)
+    XCTAssertFalse(pasteboard.string(forType: .string)!.contains("\n"))
+  }
+
   func testThisMacsSessionNamesItsIDFolderAndTranscript() {
     let session = TerminalSession(
       id: 7, folder: "/Users/leo/axo", shells: [],
