@@ -124,6 +124,18 @@ pub const PARITY: &[Parity] = &[
         Remote::Call("axo.remote.session.prompt"),
     ),
     row(
+        method::SESSION_TIMER_CREATE,
+        Remote::LocalOnly("volatile timers belong to this daemon runtime"),
+    ),
+    row(
+        method::SESSION_TIMER_LIST,
+        Remote::LocalOnly("timer inspection is scoped to a local sending Session"),
+    ),
+    row(
+        method::SESSION_TIMER_CANCEL,
+        Remote::LocalOnly("timer cancellation is scoped to a local sending Session"),
+    ),
+    row(
         method::CLIENT_VIEWPORT_SET,
         Remote::LocalOnly("window geometry of a client on this Mac"),
     ),

@@ -5,6 +5,9 @@
   "$defs": {
     "Call": {
       "oneOf": [
+        {"$ref":"#/$defs/TimerCreateCall"},
+        {"$ref":"#/$defs/TimerListCall"},
+        {"$ref":"#/$defs/TimerCancelCall"},
         {
           "$ref": "#/$defs/NegotiateCall"
         },
@@ -64,6 +67,9 @@
         }
       ]
     },
+    "TimerCreateCall": {"allOf":[{"$ref":"#/$defs/BaseCall"},{"required":["params"],"properties":{"method":{"const":"axo.session.timer.create"},"params":{"type":"object","additionalProperties":false,"required":["sessionId","fromSessionId","text","timing"],"properties":{"sessionId":{"$ref":"common.schema.json#/$defs/SessionId"},"fromSessionId":{"$ref":"common.schema.json#/$defs/SessionId"},"text":{"type":"string","minLength":1,"maxLength":16000},"delivery":{"enum":["followUp","steer","turn"]},"timing":{"oneOf":[{"type":"object","additionalProperties":false,"required":["kind","milliseconds"],"properties":{"kind":{"const":"after"},"milliseconds":{"type":"integer","minimum":1,"maximum":2592000000}}},{"type":"object","additionalProperties":false,"required":["kind","milliseconds"],"properties":{"kind":{"const":"interval"},"milliseconds":{"type":"integer","minimum":1000,"maximum":86400000}}}]}}}}}]},
+    "TimerListCall": {"allOf":[{"$ref":"#/$defs/BaseCall"},{"required":["params"],"properties":{"method":{"const":"axo.session.timer.list"},"params":{"type":"object","additionalProperties":false,"required":["fromSessionId"],"properties":{"fromSessionId":{"$ref":"common.schema.json#/$defs/SessionId"}}}}}]},
+    "TimerCancelCall": {"allOf":[{"$ref":"#/$defs/BaseCall"},{"required":["params"],"properties":{"method":{"const":"axo.session.timer.cancel"},"params":{"type":"object","additionalProperties":false,"required":["fromSessionId","timerId"],"properties":{"fromSessionId":{"$ref":"common.schema.json#/$defs/SessionId"},"timerId":{"type":"string","pattern":"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}}}}}]},
     "NegotiateCall": {
       "allOf": [
         {

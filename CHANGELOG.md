@@ -6,6 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Runtime-only Session message tools: self returns the calling Session ID; sendAfter and sendInterval schedule attributed agent messages, with timer listing/cancellation, shared prompt limits, bounded capacity and no missed-tick bursts. Timers are lost on axod restart and cancelled when sender or target closes. Requires axod 84; admitted messages cannot be retracted.
 - Copy Session ID in the expanded and collapsed Session context menus, alongside Copy Session Info. Copies just the right-clicked Session’s UUID, for local and remote Sessions.
 
 ### Fixed

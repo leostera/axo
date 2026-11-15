@@ -84,7 +84,7 @@ impl AccountApps {
 
 const INTRODUCTION: &str = "You run inside Axo, as the agent of one of its Sessions. Call Axo's tools from a codemode script as `tools.mcp__axo__<tool>(args)`; each answers JSON in `structuredContent`. These are the ones to reach for first; `describeNamespace(\"axo\")` has the full guide.";
 
-const SESSIONS: &str = "- Sessions on this Mac: `whoami` (your own Session; \"self\" works wherever a Session ID goes), `session_catalog` (open and archived Sessions, with the path of each one's Pi transcript), `session_prompt`, `session_create`, `terminal_write` and `terminal_screen` (type into and read a terminal pane).";
+const SESSIONS: &str = "- Sessions on this Mac: `whoami` (your own Session; \"self\" works wherever a Session ID goes), `session_catalog` (open and archived Sessions, with the path of each one's Pi transcript), `session_prompt`, `self` (current Session ID), `sendAfter` and `sendInterval` (runtime-only messages; `session_timers` lists them and `session_cancel_timer` cancels future ticks), `session_create`, `terminal_write` and `terminal_screen` (type into and read a terminal pane).";
 
 const ASKING: &str = "- Asking the person: `elicitation_request` asks them a yes-or-no question on their own devices and waits up to 5 minutes for the answer; act only on \"accept\". Ask before anything that sends, posts, pays or deletes. Never ask for a password, login or one-time code in the chat.";
 

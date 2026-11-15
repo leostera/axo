@@ -17,6 +17,7 @@ mod model;
 pub mod parity;
 mod relay;
 pub mod rpc;
+pub mod timers;
 mod viewport;
 
 #[cfg(test)]

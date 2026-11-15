@@ -710,6 +710,18 @@ pub static OPERATIONS: &[Operation] = &[
 /// Deliberate exclusions, not forgotten commands. Raw RPC still enforces the daemon's caller policy.
 pub const EXCLUDED: &[(&str, &str)] = &[
     (
+        method::SESSION_TIMER_CREATE,
+        "Agent-owned runtime timer; use the Session MCP tools",
+    ),
+    (
+        method::SESSION_TIMER_LIST,
+        "Agent-owned runtime timer inventory; use the Session MCP tools",
+    ),
+    (
+        method::SESSION_TIMER_CANCEL,
+        "Agent-owned runtime timer cancellation; use the Session MCP tools",
+    ),
+    (
         method::DAEMON_PERMISSION_REQUEST,
         "Only signed Axo.app may request OS permission from an explicit setup action",
     ),

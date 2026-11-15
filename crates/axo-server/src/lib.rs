@@ -38,6 +38,7 @@ mod store;
 mod terminal_input;
 #[cfg(test)]
 mod test_support;
+mod timers;
 mod transcripts;
 mod workspace_state;
 
@@ -511,6 +512,7 @@ impl Extension for Daemon {
     fn register(&self, methods: &mut IoHandler) {
         add_protocol_negotiate_method(methods);
         permissions::register(methods);
+        timers::register(methods, Arc::clone(&self.core));
         let core = Arc::clone(&self.core);
         add_health_method(methods, self.version, move || {
             core.ready.load(std::sync::atomic::Ordering::Acquire)

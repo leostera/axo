@@ -467,6 +467,7 @@ impl Session {
         self.closed.store(true, Ordering::Release);
         self.core.catalog.remove(self.id);
         self.core.registry.remove(self.id);
+        self.core.timers.close_session(self.id);
         crate::core::lock(&self.core.provenance).forget(self.id);
         if let Some(pi) = &mut self.pi {
             pi.let_go();

@@ -876,6 +876,7 @@ pub(crate) async fn stop(core: &Core) {
     if core.stopping.swap(true, Ordering::AcqRel) {
         return;
     }
+    core.timers.stop();
     // First, before anything slow: launchd kills an axod that takes too long to stop.
     record_stop(core).await;
     let mut stopping = tokio::task::JoinSet::new();

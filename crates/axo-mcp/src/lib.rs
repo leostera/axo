@@ -39,7 +39,7 @@ const SELF: &str = "self";
 const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi conversation (the "pi" pane) with a terminal pane beside it, working in a folder. These tools see and drive every Session on this Mac.
 
 - `whoami` returns this agent's own Session, including its panes' shell IDs.
-- Anywhere a tool takes a Session ID (`sessionId`, `like`), "self" means this agent's own Session.
+- Anywhere a tool takes a Session ID (`sessionId`, `like`), "self" means this agent's own Session. `self({})` returns only `{sessionId}`. `sendAfter({text,delayMs,sessionId?,delivery?})` and `sendInterval({text,intervalMs,sessionId?,delivery?})` schedule agent messages (default target self, delivery followUp). Timers live only in this axod runtime: no persistence or missed-tick bursts. `session_timers` lists your active timers; `session_cancel_timer({timerId})` cancels future ticks, not already admitted messages. Existing prompt limits apply.
 - `session_catalog` lists open Sessions (with their panes) and archived ones. Each has `piSessionFile`, the absolute path of its Pi transcript: a JSONL file, one JSON record per line. Records with `"type":"message"` carry `message.role` ("user", "assistant", "toolResult") and `message.content`, a list of blocks such as `{"type":"text","text":...}`. Search and read transcripts with ordinary tools, e.g. `rg -l -i "backoff" <files>`, or `jq -r 'select(.type=="message" and .message.role=="user") | .message.content[]? | select(.type=="text") | .text' <file>`. A file may not exist if Pi never wrote to it.
 - `session_prompt` sends a message to a Session's agent, including this one ("self"). `delivery`: "followUp" (default; after its current turn), "steer" (after its current tool calls) or "turn" (only if idle). Prompts from an agent are limited: at most 30 a minute, 10 of them to "self".
 - `terminal_write` types text into a pane: end a command with "\r" to run it; "\u0003" is Ctrl-C. `terminal_screen` reads a pane's screen and scrollback as plain text.
@@ -75,7 +75,75 @@ fn shell_id_schema() -> Value {
 const COMPUTER: &str = "computer";
 const COMPUTER_TOOLS: &str = "computer_tools";
 
+fn timer_properties(recurring: bool) -> Value {
+    let field = if recurring { "intervalMs" } else { "delayMs" };
+    let mut properties = json!({
+        "sessionId": session_id_schema(),
+        "text": {"type":"string","minLength":1,"maxLength":MAX_PROMPT_BYTES},
+        "delivery":{"type":"string","enum":["followUp","steer","turn"]}
+    });
+    properties[field] = if recurring {
+        json!({"type":"integer","minimum":1000,"maximum":86400000})
+    } else {
+        json!({"type":"integer","minimum":1,"maximum":2592000000_u64})
+    };
+    properties
+}
+fn self_output() -> Value {
+    json!({"type":"object","required":["sessionId"],"properties":{"sessionId":{"type":"string"}}})
+}
+
 const TOOLS: &[Tool] = &[
+    Tool {
+        name: "self",
+        method: None,
+        description: "The calling Session's ID, not the UI selection or Pi transcript ID.",
+        properties: || json!({}),
+        required: &[],
+        output: Some(self_output),
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "sendAfter",
+        method: Some(method::SESSION_TIMER_CREATE),
+        description: "Schedule one agent message after delayMs; sessionId defaults to self. Returns a timerId, not delivery. Lost on axod restart; admitted sends cannot be retracted.",
+        properties: || timer_properties(false),
+        required: &["text", "delayMs"],
+        output: None,
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "sendInterval",
+        method: Some(method::SESSION_TIMER_CREATE),
+        description: "Schedule recurring agent messages every intervalMs, first after one interval; sessionId defaults to self. No catch-up bursts. Lost on axod restart. Agent prompt limits apply; uncertain sends stop recurrence.",
+        properties: || timer_properties(true),
+        required: &["text", "intervalMs"],
+        output: None,
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
+        name: "session_timers",
+        method: Some(method::SESSION_TIMER_LIST),
+        description: "Active runtime timers owned by the calling Session, without message text or durable history.",
+        properties: || json!({}),
+        required: &[],
+        output: None,
+        read_only: true,
+        destructive: false,
+    },
+    Tool {
+        name: "session_cancel_timer",
+        method: Some(method::SESSION_TIMER_CANCEL),
+        description: "Cancel future firings of your timer. A claimed or queued send may still arrive. The slot stays owned until retirement.",
+        properties: || json!({"timerId":{"type":"string","description":"Timer UUID from sendAfter/sendInterval or session_timers."}}),
+        required: &["timerId"],
+        output: None,
+        read_only: false,
+        destructive: false,
+    },
     Tool {
         name: "whoami",
         method: None,
@@ -330,6 +398,7 @@ const TOOLS: &[Tool] = &[
 ];
 
 /// A failed tool call, reported to the agent as an `isError` result.
+#[derive(Debug)]
 struct ToolError(String);
 
 impl From<io::Error> for ToolError {
@@ -545,18 +614,22 @@ impl McpServer {
             COMPUTER_TOOLS => return computer_tools(&arguments),
             _ => {}
         }
-        let outcome = match tool.method {
-            None => self.own_session().await.map(|session| {
-                json!({
-                    "sessionId": session["id"],
-                    "folder": session["folder"],
-                    "session": session,
-                })
-            }),
-            Some(method) => match self.resolve(tool, arguments).await {
-                Ok(params) => self.call(method, Value::Object(params)).await,
-                Err(error) => Err(error),
-            },
+        let outcome = if tool.name == "self" {
+            Ok(json!({"sessionId":self.session_id}))
+        } else {
+            match tool.method {
+                None => self.own_session().await.map(|session| {
+                    json!({
+                        "sessionId": session["id"],
+                        "folder": session["folder"],
+                        "session": session,
+                    })
+                }),
+                Some(method) => match self.resolve(tool, arguments).await {
+                    Ok(params) => self.call(method, Value::Object(params)).await,
+                    Err(error) => Err(error),
+                },
+            }
         };
         log::info!(
             "event=mcp.tool_called tool={name} outcome={}",
@@ -594,7 +667,30 @@ impl McpServer {
         if arguments.get("like").and_then(Value::as_str) == Some(SELF) {
             arguments.insert("like".into(), json!(self.session_id));
         }
-        if tool.method == Some(method::SESSION_PROMPT) {
+        if tool.method == Some(method::SESSION_TIMER_CREATE) {
+            arguments
+                .entry("sessionId")
+                .or_insert_with(|| json!(self.session_id));
+            let (field, kind) = if tool.name == "sendAfter" {
+                ("delayMs", "after")
+            } else {
+                ("intervalMs", "interval")
+            };
+            let milliseconds = arguments.remove(field).unwrap_or(Value::Null);
+            arguments.insert(
+                "timing".into(),
+                json!({"kind":kind,"milliseconds":milliseconds}),
+            );
+        }
+        if matches!(
+            tool.method,
+            Some(
+                method::SESSION_PROMPT
+                    | method::SESSION_TIMER_CREATE
+                    | method::SESSION_TIMER_LIST
+                    | method::SESSION_TIMER_CANCEL
+            )
+        ) {
             arguments.insert("fromSessionId".into(), json!(self.session_id));
         }
         // An agent asks only for its own Session, as itself, whatever it passes: only its message
@@ -1777,6 +1873,44 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "terminal_screen", "arguments": { "sessionId": "self", "shellId": 1 } } }))
             .unwrap();
         assert_eq!(call["result"]["isError"], true);
+    }
+
+    #[test]
+    fn timer_helpers_bind_sender_and_default_target_and_self_needs_no_catalog() {
+        let server = serving(IoHandler::new());
+        let own = server
+            .handle(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+          "params":{"name":"self","arguments":{"sessionId":"someone-else"}}}))
+            .unwrap();
+        assert_eq!(own["result"]["structuredContent"], json!({"sessionId":SID}));
+        for (name, field, kind) in [
+            ("sendAfter", "delayMs", "after"),
+            ("sendInterval", "intervalMs", "interval"),
+        ] {
+            let tool = TOOLS.iter().find(|t| t.name == name).unwrap();
+            let mut args = json!({"text":"later","fromSessionId":"forged"});
+            args[field] = json!(1000);
+            let resolved = server
+                .resolve(tool, args.as_object().unwrap().clone())
+                .unwrap();
+            assert_eq!(resolved["fromSessionId"], json!(SID));
+            assert_eq!(resolved["sessionId"], json!(SID));
+            assert_eq!(resolved["timing"], json!({"kind":kind,"milliseconds":1000}));
+            assert!(!resolved.contains_key(field));
+        }
+        for name in ["session_timers", "session_cancel_timer"] {
+            let tool = TOOLS.iter().find(|t| t.name == name).unwrap();
+            let resolved = server
+                .resolve(
+                    tool,
+                    json!({"fromSessionId":"forged"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+            assert_eq!(resolved["fromSessionId"], json!(SID));
+        }
     }
 
     #[test]

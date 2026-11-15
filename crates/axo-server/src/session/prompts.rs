@@ -22,7 +22,7 @@ pub(crate) const MAX_QUEUED_PI_PROMPTS: usize = 8;
 /// Prompts one Session's agent may send per [`RATE_WINDOW`], to anyone and to itself.
 const MAX_AGENT_PROMPTS_PER_WINDOW: usize = 30;
 const MAX_SELF_PROMPTS_PER_WINDOW: usize = 10;
-const RATE_WINDOW: Duration = Duration::from_secs(60);
+pub(crate) const RATE_WINDOW: Duration = Duration::from_secs(60);
 /// How long a prompt waits for Pi to answer on its bridge.
 pub(crate) const PROMPT_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 

@@ -110,6 +110,51 @@ fn permissions_are_live_observations_and_only_the_signed_app_can_request_them() 
 }
 
 #[test]
+fn runtime_timers_are_owned_cancellable_and_not_restored() {
+    let mut axod = Axod::start();
+    let session = axod.ok("axo.session.create", json!({}));
+    let owner = session["id"].as_str().unwrap();
+    let created = axod.ok(
+        "axo.session.timer.create",
+        json!({
+            "sessionId":owner,"fromSessionId":owner,"text":"private timer fixture",
+            "timing":{"kind":"after","milliseconds":3600000}
+        }),
+    );
+    let timer = created["timerId"].as_str().unwrap();
+    let listed = axod.ok("axo.session.timer.list", json!({"fromSessionId":owner}));
+    assert_eq!(listed["timers"].as_array().unwrap().len(), 1);
+    assert!(listed["timers"][0].get("text").is_none());
+    let other = "00000000-0000-4000-8000-000000000099";
+    assert_eq!(
+        axod.ok(
+            "axo.session.timer.cancel",
+            json!({"fromSessionId":other,"timerId":timer})
+        )["cancelled"],
+        false
+    );
+    assert_eq!(
+        axod.ok(
+            "axo.session.timer.cancel",
+            json!({"fromSessionId":owner,"timerId":timer})
+        )["cancelled"],
+        true
+    );
+    axod.ok(
+        "axo.session.timer.create",
+        json!({
+            "sessionId":owner,"fromSessionId":owner,"text":"lost at restart",
+            "timing":{"kind":"interval","milliseconds":3600000}
+        }),
+    );
+    axod.restart();
+    assert_eq!(
+        axod.ok("axo.session.timer.list", json!({"fromSessionId":owner}))["timers"],
+        json!([])
+    );
+}
+
+#[test]
 fn settings_are_read_changed_and_kept_across_a_restart() {
     let mut axod = Axod::start();
     let agent = axod.ok("axo.config.get", json!({ "key": "agent.command" }));

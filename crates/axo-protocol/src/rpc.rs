@@ -77,6 +77,9 @@ pub mod method {
     pub const SESSION_LIST: &str = "axo.session.list";
     pub const SESSION_CATALOG: &str = "axo.session.catalog";
     pub const SESSION_PROMPT: &str = "axo.session.prompt";
+    pub const SESSION_TIMER_CREATE: &str = "axo.session.timer.create";
+    pub const SESSION_TIMER_LIST: &str = "axo.session.timer.list";
+    pub const SESSION_TIMER_CANCEL: &str = "axo.session.timer.cancel";
     pub const SESSION_CREATE: &str = "axo.session.create";
     pub const SESSION_CLOSE: &str = "axo.session.close";
     pub const SESSION_REOPEN: &str = "axo.session.reopen";
@@ -150,6 +153,9 @@ pub mod method {
         TERMINAL_WRITE,
         TERMINAL_SCREEN,
         SESSION_PROMPT,
+        SESSION_TIMER_CREATE,
+        SESSION_TIMER_LIST,
+        SESSION_TIMER_CANCEL,
         CLIENT_VIEWPORT_SET,
         RELAY_LINK,
         RELAY_STATUS,

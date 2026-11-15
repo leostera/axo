@@ -53,6 +53,7 @@ pub(crate) struct Core {
     pub(crate) bridges_changed: Arc<Notify>,
     /// Who prompted whom, for the agents' rate limits.
     pub(crate) provenance: Mutex<crate::session::prompts::PromptProvenance>,
+    pub(crate) timers: crate::timers::Timers,
     /// Archived Sessions being reopened: their transcripts are not deleted meanwhile (RFD0027).
     pub(crate) reopening: Mutex<HashSet<SessionId>>,
     /// Each Session's folder as git saw it when its agent last settled (RFD0022).
@@ -121,6 +122,7 @@ impl Core {
             lifeline: parts.lifeline,
             bridges_changed: Arc::new(Notify::new()),
             provenance: Mutex::default(),
+            timers: crate::timers::Timers::default(),
             reopening: Mutex::default(),
             workspace_states: WorkspaceStates::default(),
             peers: Peers::default(),

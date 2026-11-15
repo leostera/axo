@@ -80,6 +80,75 @@ fn an_agent_finds_itself_and_the_sessions_around_it() {
 }
 
 #[test]
+fn agent_timer_helpers_use_own_identity_and_outlive_the_mcp_connection() {
+    let axod = Axod::start();
+    let (session, id) = first_session(&axod);
+    axod.wait_for_pi(&session);
+    let (_, other) = first_session(&axod);
+    let mut mcp = Mcp::start(&axod, &id);
+    let mut another = Mcp::start(&axod, &other);
+    assert_eq!(mcp.ok("self", json!({}))["sessionId"], json!(id));
+    for args in [
+        json!({"text":"bad","delayMs":0}),
+        json!({"text":"bad","delayMs":1.5}),
+        json!({"text":"bad","delayMs":1,"delivery":"interrupt"}),
+        json!({"text":" ","delayMs":1}),
+    ] {
+        assert!(!mcp.err("sendAfter", args).is_empty());
+    }
+    assert_eq!(mcp.ok("session_timers", json!({}))["timers"], json!([]));
+    mcp.ok(
+        "sendAfter",
+        json!({"delayMs":20,"text":"timer-wire-one-shot","fromSessionId":other}),
+    );
+    axod.wait_for("scheduled attributed prompt", || {
+        let log = axod.pi_log();
+        (log.contains("timer-wire-one-shot")
+            && log.contains(&format!("SENT:[From Axo Session {id}")))
+        .then_some(())
+    });
+    let interval = mcp.ok(
+        "sendInterval",
+        json!({"intervalMs":3600000,"text":"hourly fixture"}),
+    );
+    let listed = mcp.ok("session_timers", json!({}));
+    assert!(
+        listed["timers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["timerId"] == interval["timerId"])
+    );
+    assert_eq!(
+        another.ok(
+            "session_cancel_timer",
+            json!({"timerId":interval["timerId"]})
+        )["cancelled"],
+        false
+    );
+    assert_eq!(
+        mcp.ok(
+            "session_cancel_timer",
+            json!({"timerId":interval["timerId"]})
+        )["cancelled"],
+        true
+    );
+    let retained = mcp.ok(
+        "sendAfter",
+        json!({"delayMs":3600000,"text":"not owned by the MCP transport"}),
+    );
+    assert_eq!(mcp.close().code(), Some(0));
+    let active = axod.ok("axo.session.timer.list", json!({"fromSessionId":id}));
+    assert!(
+        active["timers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["timerId"] == retained["timerId"])
+    );
+}
+
+#[test]
 fn an_agent_starts_names_and_prompts_another_session() {
     let axod = Axod::start();
     let (_, id) = first_session(&axod);

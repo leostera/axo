@@ -19,6 +19,17 @@ Axo guides you through Welcome → Setup → Connections → Ready. Setup checks
 
 **Check for Updates…** opens a review window on the primary display with version details and release notes before you choose to install.
 
+## Session timers
+
+Inside an Axo Session, the MCP tools provide:
+
+- `self({})` → `{sessionId}`, the calling Session's ID.
+- `sendAfter({text, delayMs, sessionId?, delivery?})` → a timer record.
+- `sendInterval({text, intervalMs, sessionId?, delivery?})` → a recurring timer record.
+- `session_timers({})` lists your active timers; `session_cancel_timer({timerId})` cancels future firings.
+
+The default target is self and delivery is `followUp`; `steer` and `turn` are also supported. Timers belong to the current daemon runtime: restarting axod loses them, closing sender/target cancels them, and waking after a delay does not replay missed interval ticks. Cancelling cannot retract a claimed or queued message. Scheduling returns admission, not a delivery guarantee. Existing agent prompt limits apply; an uncertain send stops recurrence rather than retrying it. Requires axod 84.
+
 ## Command line
 
 Axo.app ships the `axo` CLI. The installer sets up `/usr/local/bin/axo`; a downloaded app offers setup once on first launch. macOS asks for administrator approval only if needed. You can also use **Axo → Install “axo” Command…** or **Settings → General → Command Line**. Existing commands and shell profiles are never replaced. Once installed, app upgrades update the command too.
