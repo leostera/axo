@@ -158,15 +158,29 @@ fn text(words: &str) -> Value {
     json!({ "role": "assistant", "content": [{ "type": "text", "text": words }] })
 }
 
-/// One turn: the user's message, a reply that grows, and its end.
-fn run_turn(pi: &Arc<Mutex<Pi>>, session: &str, stream: &str, prompt: String) {
-    let user =
-        json!({ "role": "user", "content": [{ "type": "text", "text": prompt }], "timestamp": 0 });
+enum TurnInput {
+    User(String),
+    Resume,
+}
+
+/// A real prompt adds its user message; recovery adds no starting message at all.
+fn run_turn(pi: &Arc<Mutex<Pi>>, session: &str, stream: &str, input: TurnInput) {
+    let prompt = match &input {
+        TurnInput::User(text) => text.clone(),
+        TurnInput::Resume => "resumed".to_owned(),
+    };
     let turn = {
         let mut pi = pi.lock().unwrap();
-        let turn = pi.record(session, json!({ "type": "message", "message": user }));
+        let turn = match input {
+            TurnInput::User(text) => {
+                let user = json!({ "role": "user", "content": [{ "type": "text", "text": text }], "timestamp": 0 });
+                let turn = pi.record(session, json!({ "type": "message", "message": user }));
+                pi.publish(stream, "message.end", json!({ "message": user }));
+                turn
+            }
+            TurnInput::Resume => format!("resume-{}", pi.sequence),
+        };
         pi.turn = Some(turn.clone());
-        pi.publish(stream, "message.end", json!({ "message": user }));
         pi.publish(stream, "agent.start", json!({}));
         pi.publish(
             stream,
@@ -205,7 +219,7 @@ fn run_turn(pi: &Arc<Mutex<Pi>>, session: &str, stream: &str, prompt: String) {
         (!pi.queued.is_empty()).then(|| pi.queued.remove(0))
     };
     if let Some(prompt) = next {
-        run_turn(pi, session, stream, prompt);
+        run_turn(pi, session, stream, TurnInput::User(prompt));
     }
 }
 
@@ -283,6 +297,21 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
         }
         let action = &record["action"];
         match action["kind"].as_str().unwrap_or_default() {
+            "resumeTurn" => {
+                let working = pi.lock().unwrap().turn.is_some();
+                if working {
+                    answer(
+                        &mut stream,
+                        &record,
+                        json!({ "accepted": false, "reason": "busy" }),
+                    );
+                    continue;
+                }
+                log("RESUME_TURN\n");
+                answer(&mut stream, &record, json!({ "accepted": true }));
+                let (pi, session, events) = (Arc::clone(&pi), session.clone(), events.clone());
+                thread::spawn(move || run_turn(&pi, &session, &events, TurnInput::Resume));
+            }
             "send" => {
                 let prompt = action["text"].as_str().unwrap_or_default().to_owned();
                 if let Some(id) = action["commandId"].as_str() {
@@ -316,7 +345,7 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                 }
                 answer(&mut stream, &record, json!({ "accepted": true }));
                 let (pi, session, events) = (Arc::clone(&pi), session.clone(), events.clone());
-                thread::spawn(move || run_turn(&pi, &session, &events, prompt));
+                thread::spawn(move || run_turn(&pi, &session, &events, TurnInput::User(prompt)));
             }
             "stop" => {
                 let turn = action["turnId"].as_str().unwrap_or_default();

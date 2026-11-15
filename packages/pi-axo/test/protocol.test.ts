@@ -21,6 +21,13 @@ test("parses a scoped send command into a trusted value", () => {
   });
 });
 
+test("resume-turn is scoped control, never a disguised prompt", () => {
+  const command = {type:"command",requestId:"resume-1",axoSessionId:sessionId,action:{kind:"resumeTurn"}};
+  assert.equal(parsePiControlCommand(command,sessionId).ok,true);
+  assert.equal(parsePiControlCommand({...command,action:{kind:"resumeTurn",text:"fake"}},sessionId).ok,false);
+  assert.equal(parsePiControlCommand({...command,axoSessionId:paneId},sessionId).ok,false);
+});
+
 test("parses a graceful shutdown command for takeover", () => {
   assert.deepEqual(parsePiControlCommand({
     type: "command",

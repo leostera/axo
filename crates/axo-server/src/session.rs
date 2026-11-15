@@ -414,15 +414,18 @@ impl Session {
             return;
         }
         let record = self.record();
-        let (phase, working) = self
+        let (phase, working, recoverable) = self
             .pi
             .as_ref()
-            .map_or((PiPhase::Absent, false), |pi| (pi.phase(), pi.working()));
+            .map_or((PiPhase::Absent, false, false), |pi| {
+                (pi.phase(), pi.working(), pi.recovery_candidate())
+            });
         self.core.catalog.put(
             Entry {
                 record: record.clone(),
                 pi: phase,
                 working,
+                recoverable,
             },
             &self.closed,
         );

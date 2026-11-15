@@ -1,10 +1,6 @@
-//! Telling the agents an Axod stop interrupted that they may carry on.
-//!
-//! When Axod stops (to update Axo, say), every Pi stops with it, and a Pi in the middle of a
-//! turn stops mid-thought. On its way out Axod writes down its version and which Sessions were
-//! working; the next Axod restores those Sessions' Pis before any other, then prompts each one
-//! with what happened, so the agent picks up where it was rather than sitting idle until
-//! someone notices. A stop that leaves no record (a crash, a kill) prompts no one.
+//! Capturing work interrupted by a graceful daemon stop for message-free restart recovery.
+//! The serialized stop record is retained across upgrades; continuation is a bridge control,
+//! not a fabricated user/custom message. Crashes without a stop record remain outside this path.
 
 use std::io;
 
@@ -69,34 +65,6 @@ impl DaemonStop {
             interrupted,
         })
     }
-
-    /// What an interrupted agent is told when `current` restores it.
-    pub(crate) fn notice(&self, current: &DaemonStop) -> String {
-        let reason = if self.version != current.version {
-            format!(
-                "to update Axo from {} to {}",
-                short_version(&self.version),
-                short_version(&current.version)
-            )
-        } else if self.build != current.build {
-            let version = short_version(&current.version);
-            format!(
-                "to update Axo from {version} (axod {}) to {version} (axod {})",
-                self.build, current.build
-            )
-        } else {
-            "when Axo restarted".to_owned()
-        };
-        format!("(the session was stopped {reason}, you may continue)")
-    }
-}
-
-/// `0.7` for Cargo's `0.7.0`, as Axo's versions are written; anything else as it is.
-fn short_version(version: &str) -> &str {
-    version
-        .strip_suffix(".0")
-        .filter(|short| short.contains('.'))
-        .unwrap_or(version)
 }
 
 #[cfg(test)]
@@ -109,24 +77,6 @@ mod tests {
             build,
             interrupted: Vec::new(),
         }
-    }
-
-    #[test]
-    fn the_notice_says_what_the_update_was() {
-        assert_eq!(
-            stop("0.6.0", 32).notice(&stop("0.7.0", 33)),
-            "(the session was stopped to update Axo from 0.6 to 0.7, you may continue)"
-        );
-        assert_eq!(
-            stop("0.7.0", 33).notice(&stop("0.7.0", 34)),
-            "(the session was stopped to update Axo from 0.7 (axod 33) to 0.7 (axod 34), you may continue)"
-        );
-        assert_eq!(
-            stop("0.7.0", 33).notice(&stop("0.7.0", 33)),
-            "(the session was stopped when Axo restarted, you may continue)"
-        );
-        assert_eq!(short_version("1.0"), "1.0");
-        assert_eq!(short_version("0.10.0"), "0.10");
     }
 
     #[test]

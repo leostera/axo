@@ -399,9 +399,9 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
         .await;
     fixture.set_turn_ms(0);
     fixture.restart().await;
-    let notice = "SENT:(the session was stopped when Axo restarted, you may continue)";
+    let notice = "RESUME_TURN";
     fixture
-        .until("the restored Pi to be told", || {
+        .until("the restored Pi to receive a message-free resume", || {
             fixture.pi_log().contains(notice)
         })
         .await;
@@ -424,6 +424,207 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
     fixture.wait_for_pi(record.id).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fixture.pi_log().matches(notice).count(), 1);
+}
+
+async fn working_session(fixture: &Fixture) -> axo_protocol::SessionRecord {
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    sessions::prompt(
+        &fixture.core,
+        axo_protocol::rpc::PromptSession {
+            session_id: record.id,
+            text: axo_protocol::rpc::PromptText::parse("original interrupted work".into()).unwrap(),
+            delivery: axo_protocol::rpc::PromptDelivery::FollowUp,
+            from_session_id: None,
+        },
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    fixture
+        .until("the original work to start", || {
+            fixture.core.catalog.view().sessions[&record.id].working
+        })
+        .await;
+    record
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_explicit_working_pi_restart_resumes_without_a_new_user_message() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 30_000 }).await;
+    let record = working_session(&fixture).await;
+    let old = pid(&record, PaneRole::Pi);
+    let terminal = pid(&record, PaneRole::Terminal);
+    fixture.set_turn_ms(0);
+    sessions::handle(&fixture.core, record.id)
+        .unwrap()
+        .call(|session| Box::pin(session.restart_for_client()))
+        .await
+        .unwrap()
+        .unwrap();
+    fixture
+        .until("one resume control", || {
+            fixture.pi_log().matches("RESUME_TURN").count() == 1
+        })
+        .await;
+    let after = fixture.listed(record.id).unwrap();
+    assert_ne!(pid(&after, PaneRole::Pi), old);
+    assert_eq!(pid(&after, PaneRole::Terminal), terminal);
+    let transcript = fs::read_to_string(after.pi_session_file.unwrap()).unwrap();
+    let users = transcript
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|row| row["type"] == "message" && row["message"]["role"] == "user")
+        .count();
+    assert_eq!(
+        users, 1,
+        "Recovery must not fabricate a second user message"
+    );
+    assert!(!fixture.pi_log().contains("the session was stopped"));
+    sessions::stop(&fixture.core).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_an_idle_pi_does_not_invent_work() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let old = pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+    sessions::handle(&fixture.core, record.id)
+        .unwrap()
+        .call(|session| Box::pin(session.restart_for_client()))
+        .await
+        .unwrap()
+        .unwrap();
+    fixture
+        .until("idle replacement Pi", || {
+            fixture.listed(record.id).is_some_and(|row| {
+                let next = pid(&row, PaneRole::Pi);
+                next > 0 && next != old
+            })
+        })
+        .await;
+    fixture.wait_for_pi(record.id).await;
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+    sessions::stop(&fixture.core).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_stop_intent_is_not_resurrected_even_before_its_receipt() {
+    for daemon_restart in [false, true] {
+        let mut fixture = Fixture::with(Pi::Fake { turn_ms: 30_000 }).await;
+        let record = working_session(&fixture).await;
+        let old = pid(&record, PaneRole::Pi);
+        // The same admission used by ops::stop_turn, before any stop I/O/receipt. Leave the
+        // fake running to expose a stale "working" observation at restart.
+        let link = sessions::handle(&fixture.core, record.id)
+            .unwrap()
+            .with(|session| session.pi_stop_link())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(link);
+        {
+            let view = fixture.core.catalog.view();
+            assert!(view.sessions[&record.id].working);
+            assert!(!view.sessions[&record.id].recoverable);
+        }
+        fixture.set_turn_ms(0);
+        if daemon_restart {
+            fixture.restart().await;
+        } else {
+            sessions::handle(&fixture.core, record.id)
+                .unwrap()
+                .call(|session| Box::pin(session.restart_for_client()))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        fixture
+            .until("a replacement after explicit stop intent", || {
+                fixture.listed(record.id).is_some_and(|row| {
+                    let next = pid(&row, PaneRole::Pi);
+                    next > 0 && next != old
+                })
+            })
+            .await;
+        fixture.wait_for_pi(record.id).await;
+        assert!(!fixture.pi_log().contains("RESUME_TURN"));
+        sessions::stop(&fixture.core).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_real_prompt_supersedes_unclaimed_restart_recovery() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 30_000 }).await;
+    let record = working_session(&fixture).await;
+    fixture.set_startup_ms(300);
+    fixture.set_turn_ms(0);
+    sessions::handle(&fixture.core, record.id)
+        .unwrap()
+        .call(|session| Box::pin(session.restart_for_client()))
+        .await
+        .unwrap()
+        .unwrap();
+    sessions::prompt(
+        &fixture.core,
+        axo_protocol::rpc::PromptSession {
+            session_id: record.id,
+            text: axo_protocol::rpc::PromptText::parse("new real request".into()).unwrap(),
+            delivery: axo_protocol::rpc::PromptDelivery::FollowUp,
+            from_session_id: None,
+        },
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    assert!(
+        !fixture.core.catalog.view().sessions[&record.id].recoverable,
+        "An accepted queued prompt must not recreate old recovery intent"
+    );
+    fixture
+        .until("the queued real request", || {
+            fixture.pi_log().contains("SENT:new real request")
+        })
+        .await;
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+    sessions::stop(&fixture.core).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_survives_another_graceful_stop_before_the_replacement_is_ready() {
+    let mut fixture = Fixture::with(Pi::Fake { turn_ms: 30_000 }).await;
+    let record = working_session(&fixture).await;
+    fixture.set_turn_ms(0);
+    fixture.set_startup_ms(1500);
+    fixture.restart().await;
+    fixture
+        .until("captured recovery in the startup catalog", || {
+            fixture
+                .core
+                .catalog
+                .view()
+                .sessions
+                .get(&record.id)
+                .is_some_and(|e| e.recoverable)
+        })
+        .await;
+    fixture.set_startup_ms(20);
+    fixture.restart().await;
+    fixture
+        .until("one recovered turn after the second boot", || {
+            fixture.pi_log().matches("RESUME_TURN").count() == 1
+        })
+        .await;
+    fixture
+        .until("recovered turn to settle", || {
+            !fixture.core.catalog.view().sessions[&record.id].recoverable
+        })
+        .await;
+    assert!(!fixture.pi_log().contains("the session was stopped"));
+    sessions::stop(&fixture.core).await;
 }
 
 /// A layout the store cannot read is no reason to lose the Session: it is restored with its panes

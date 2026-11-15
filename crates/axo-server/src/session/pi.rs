@@ -43,6 +43,8 @@ const KILLED_RELEASE: Duration = Duration::from_secs(2);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PiStart {
     Now,
+    /// Restore work interrupted by a graceful daemon stop, without a synthetic prompt.
+    Resume,
     /// Not until the Session is shown, prompted or typed into; unless an earlier axod's Pi still
     /// runs, which is replaced at once.
     Dormant,
@@ -67,6 +69,46 @@ enum PiState {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Recovery {
+    #[default]
+    None,
+    Pending,
+    /// Sent once to this runtime; retain recovery across shutdown until agent.start is seen.
+    Claimed,
+    /// Explicit stop intent wins, including when the eventual stop receipt is uncertain.
+    Suppressed,
+    /// The stopped run is observed idle. A subsequent start is new work, not a late old event.
+    SettledAfterStop,
+}
+
+impl Recovery {
+    fn claim(&mut self) -> bool {
+        if *self != Self::Pending {
+            return false;
+        }
+        *self = Self::Claimed;
+        true
+    }
+
+    fn disarmed(self) -> bool {
+        matches!(self, Self::Suppressed | Self::SettledAfterStop)
+    }
+
+    fn started(&mut self) -> bool {
+        if *self == Self::Suppressed {
+            return false;
+        }
+        std::mem::replace(self, Self::None) != Self::None
+    }
+
+    fn settled(&mut self) {
+        if *self == Self::Suppressed {
+            *self = Self::SettledAfterStop;
+        }
+    }
+}
+
 pub(crate) struct Pi {
     pub(crate) shell_id: ShellId,
     pub(crate) pane_id: String,
@@ -85,6 +127,7 @@ pub(crate) struct Pi {
     /// something on its bridge, or was prompted.
     active_at: Instant,
     attempts: u64,
+    recovery: Recovery,
 }
 
 use axo_protocol::ShellId;
@@ -102,7 +145,23 @@ impl Pi {
             sleep: false,
             active_at: Instant::now(),
             attempts: 0,
+            recovery: Recovery::None,
         }
+    }
+
+    pub(crate) fn recovering(&self) -> bool {
+        matches!(self.recovery, Recovery::Pending | Recovery::Claimed)
+    }
+
+    fn resumable_work(&self) -> bool {
+        self.working() && !self.recovery.disarmed()
+    }
+
+    pub(crate) fn recovery_candidate(&self) -> bool {
+        self.recovering()
+            || (self.phase() == PiPhase::Connected
+                && self.queued.is_empty()
+                && self.resumable_work())
     }
 
     pub(crate) fn is_dormant(&self) -> bool {
@@ -264,6 +323,10 @@ impl Session {
         }
         let start = match start {
             PiStart::Now => true,
+            PiStart::Resume => {
+                self.pi.as_mut().expect("Pi checked above").recovery = Recovery::Pending;
+                true
+            }
             PiStart::Dormant => {
                 let id = self.id;
                 let previous = self
@@ -312,6 +375,9 @@ impl Session {
                 let _ = waiter.send(Err("Axod is shutting down".to_owned()));
             }
             return;
+        }
+        if pi.recovering() {
+            pi.recovery = Recovery::Pending;
         }
         pi.attempts += 1;
         let attempt = pi.attempts;
@@ -496,6 +562,9 @@ impl Session {
         let restart = std::mem::take(&mut pi.restart);
         let sleep = std::mem::take(&mut pi.sleep);
         let queued = std::mem::take(&mut pi.queued);
+        if pi.resumable_work() && !sleep && queued.is_empty() {
+            pi.recovery = Recovery::Pending;
+        }
         pi.let_go();
         if restart {
             pi.queued = queued;
@@ -583,12 +652,16 @@ impl Session {
                 "Axod is shutting down",
             ));
         }
+        let interrupted = self.pi.as_ref().is_some_and(Pi::resumable_work);
         let Some(pi) = &mut self.pi else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "the Session has no Pi pane",
             ));
         };
+        if interrupted {
+            pi.recovery = Recovery::Pending;
+        }
         log::info!(
             "event=session.pi_restart_requested session_id={} running={}",
             self.id,
@@ -609,6 +682,7 @@ impl Session {
             PiState::Launching { .. } => {}
             PiState::Dormant | PiState::Unavailable => self.start_pi(None).await,
         }
+        self.publish();
         Ok(())
     }
 
@@ -691,17 +765,37 @@ impl Session {
             pi.restart = true;
         }
         let taking = pi.connected() && !pi.restart;
-        match &pi.state {
-            PiState::Running { link, .. } if taking => Ok(Admission::Send(link.clone())),
+        let admitted = match &pi.state {
+            PiState::Running { link, .. } if taking => {
+                pi.recovery = Recovery::None;
+                Ok(Admission::Send(link.clone()))
+            }
             PiState::Running { .. } | PiState::Launching { .. } => {
                 if pi.queued.len() >= MAX_QUEUED_PI_PROMPTS {
                     return Err(PromptError::QueueFull);
                 }
                 pi.queued.push(prompt);
+                pi.recovery = Recovery::None;
                 Ok(Admission::Queued)
             }
             PiState::Dormant | PiState::Unavailable => Err(PromptError::NoPi),
+        };
+        // Shutdown reads the catalog: publish supersession before admission returns.
+        if admitted.is_ok() {
+            self.publish();
         }
+        admitted
+    }
+
+    /// Disarm automatic recovery before admitting explicit stop I/O. A lost receipt must not
+    /// turn a person's stop into fresh work after a restart. New real prompts re-arm normally.
+    pub(crate) fn pi_stop_link(&mut self) -> io::Result<LinkCommands> {
+        let link = self.pi_link()?;
+        if let Some(pi) = &mut self.pi {
+            pi.recovery = Recovery::Suppressed;
+        }
+        self.publish();
+        Ok(link)
     }
 
     /// The running Pi's link: `NotFound` when no Pi runs.
@@ -803,12 +897,35 @@ impl Session {
         }
         let Some(pi) = &mut self.pi else { return };
         pi.activity.get_or_insert_default().connected = true;
+        // Never deliver replacement-runtime work back to the old Pi while it exits.
+        if pi.restart || self.core.is_stopping() {
+            return;
+        }
         let queued = std::mem::take(&mut pi.queued);
+        let resume = queued.is_empty() && pi.recovery.claim();
+        if !queued.is_empty() {
+            pi.recovery = Recovery::None;
+        }
         let link = match &pi.state {
             PiState::Running { link, .. } => link.clone(),
             _ => return,
         };
         self.publish();
+        if resume {
+            let resume_link = link.clone();
+            tokio::spawn(async move {
+                // A lost receipt is uncertain: don't recreate intent on reconnect or retry it.
+                match resume_link.resume_turn(ANSWER_TIMEOUT).await {
+                    Ok(result) => log::info!(
+                        "event=session.pi_resume_turn session_id={id} outcome={result:?}"
+                    ),
+                    Err(error) => log::warn!(
+                        "event=session.pi_resume_turn_uncertain session_id={id} kind={:?}",
+                        error.kind()
+                    ),
+                }
+            });
+        }
         if queued.is_empty() {
             return;
         }
@@ -871,9 +988,19 @@ impl Session {
         let id = self.id;
         let changed = match PiCatalogEvent::parse(name, data) {
             PiCatalogEvent::AgentStarted | PiCatalogEvent::UserMessageStarted => {
+                let recovered = self.pi.as_mut().is_some_and(|pi| {
+                    if pi.restart {
+                        return false;
+                    }
+                    pi.recovery.started()
+                });
                 self.update_activity(|activity| !std::mem::replace(&mut activity.working, true))
+                    || recovered
             }
             PiCatalogEvent::AgentSettled => {
+                if let Some(pi) = &mut self.pi {
+                    pi.recovery.settled();
+                }
                 // The agent may have changed the repository: read it again.
                 self.core.workspace_states.refresh(id, self.folder());
                 self.update_activity(|activity| std::mem::replace(&mut activity.working, false))
@@ -888,9 +1015,18 @@ impl Session {
                 activity.ui_waits = previous.saturating_sub(1);
                 activity.ui_waits != previous
             }),
-            PiCatalogEvent::ActivitySnapshot { working } => self.update_activity(|activity| {
-                std::mem::replace(&mut activity.working, working) != working
-            }),
+            PiCatalogEvent::ActivitySnapshot { working } => {
+                if let Some(pi) = &mut self.pi {
+                    if working && pi.recovery == Recovery::SettledAfterStop {
+                        pi.recovery.started();
+                    } else if !working {
+                        pi.recovery.settled();
+                    }
+                }
+                self.update_activity(|activity| {
+                    std::mem::replace(&mut activity.working, working) != working
+                })
+            }
             PiCatalogEvent::MessageEnded => self
                 .write(move |database| {
                     axo_store::record_session_message(database, id, axo_store::unix_timestamp())
@@ -982,5 +1118,44 @@ pub(crate) async fn set_model(
         CommandResult::Rejected(reason) => Err(io::Error::other(format!(
             "Pi did not switch the model: {reason}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::Recovery;
+
+    #[test]
+    fn reconnects_cannot_reclaim_a_runtime_resume() {
+        let mut recovery = Recovery::Pending;
+        assert!(recovery.claim());
+        assert!(!recovery.claim());
+        assert!(recovery.started());
+        assert_eq!(recovery, Recovery::None);
+        assert!(!recovery.claim());
+    }
+
+    #[test]
+    fn late_start_events_cannot_resurrect_a_stop_before_settlement() {
+        let mut recovery = Recovery::Suppressed;
+        for _ in 0..2 {
+            assert!(!recovery.started());
+        }
+        assert!(recovery.disarmed());
+        recovery.settled();
+        assert_eq!(recovery, Recovery::SettledAfterStop);
+        assert!(recovery.disarmed());
+        assert!(recovery.started());
+        assert_eq!(recovery, Recovery::None);
+        assert!(!recovery.disarmed());
+    }
+
+    #[test]
+    fn an_old_runtime_settling_does_not_erase_captured_recovery() {
+        for mut recovery in [Recovery::Pending, Recovery::Claimed] {
+            let captured = recovery;
+            recovery.settled();
+            assert_eq!(recovery, captured);
+        }
     }
 }

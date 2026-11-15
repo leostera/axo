@@ -1,0 +1,361 @@
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index 3a9174cf6ea4cdce791c08a84f6ac25b95b6fb01..7d348ec878651f9347d1febed73cedfced7e8489 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -1865,7 +1865,7 @@ export class AgentSession {
+ 	// =========================================================================
+ 
+ 	/**
+-	 * Start a run from a user or custom message. The session counts as busy from here on, so
++	 * Start a run from a user message, custom message, or saved-context continuation. The session counts as busy from here on, so
+ 	 * messages sent while before_agent_start handlers run are queued into this run instead of
+ 	 * starting another, and an abort requested meanwhile aborts the run as soon as it exists.
+ 	 * @param onStarted Called once the run's messages are prepared, before the first request.
+@@ -1944,7 +1944,7 @@ export class AgentSession {
+ 		const messages: AgentMessage[] = [];
+ 		if (trigger.messageType === "custom") {
+ 			messages.push(trigger.message);
+-		} else {
++		} else if (trigger.messageType === "user") {
+ 			// Normalize images after before_agent_start so extension-driven model selection
+ 			// determines the resize profile used for the request and history.
+ 			const normalized = await this._normalizePromptImages(trigger.images);
+@@ -2080,6 +2080,21 @@ export class AgentSession {
+ 		return { images: normalizedImages, hints };
+ 	}
+ 
++	/** Start a model turn from saved context without adding a user or custom message. */
++	async resumeTurn(): Promise<void> {
++		if (this._isEmittingAgentSettled) {
++			this._deferredSettledActions.push(async () => await this.resumeTurn());
++			return;
++		}
++		if (!this.isIdle) throw new Error("Agent is already processing; resumeTurn cannot queue another turn.");
++		this._refreshFinalizedContext();
++		if (!convertToLlm(this.messages).some((message) => message.role !== "system")) {
++			throw new Error("No messages to resume from");
++		}
++		if (!this.model) throw new Error(formatNoModelSelectedMessage());
++		await this._startRun({ messageType: "resume" });
++	}
++
+ 	/**
+ 	 * Send a prompt to the agent.
+ 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
+@@ -3454,6 +3469,15 @@ export class AgentSession {
+ 						});
+ 					});
+ 				},
++				resumeTurn: () => {
++					this.resumeTurn().catch((err) => {
++						runner.emitError({
++							extensionPath: "<runtime>",
++							event: "resume_turn",
++							error: err instanceof Error ? err.message : String(err),
++						});
++					});
++				},
+ 				sendUserMessage: (content, options) => {
+ 					this.sendUserMessage(content, options).catch((err) => {
+ 						runner.emitError({
+diff --git a/packages/coding-agent/src/core/extensions/index.ts b/packages/coding-agent/src/core/extensions/index.ts
+index 1465e8267e93073b322b7637bbc7996d1f2eaa54..228a51835eb9e7b352362091f19bd9b3c23de53d 100644
+--- a/packages/coding-agent/src/core/extensions/index.ts
++++ b/packages/coding-agent/src/core/extensions/index.ts
+@@ -40,6 +40,7 @@ export type {
+ 	BeforeAgentStartCustomEvent,
+ 	BeforeAgentStartEvent,
+ 	BeforeAgentStartEventResult,
++	BeforeAgentStartResumeEvent,
+ 	BeforeAgentStartUserEvent,
+ 	BeforeProviderHeadersEvent,
+ 	BeforeProviderRequestEvent,
+diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
+index cbc1100fc0000a0d44c05d4492cbb36b807d9527..9ac67b9ffc67f9cc059e0d19f02e6eec85cdb78d 100644
+--- a/packages/coding-agent/src/core/extensions/loader.ts
++++ b/packages/coding-agent/src/core/extensions/loader.ts
+@@ -172,6 +172,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
+ 	const runtime: ExtensionRuntime = {
+ 		sendMessage: notInitialized,
+ 		sendUserMessage: notInitialized,
++		resumeTurn: notInitialized,
+ 		appendEntry: notInitialized,
+ 		setSessionName: notInitialized,
+ 		getSessionName: notInitialized,
+@@ -391,6 +392,11 @@ function createExtensionAPI(
+ 			runtime.sendUserMessage(content, options);
+ 		},
+ 
++		resumeTurn(): void {
++			assertActive();
++			runtime.resumeTurn();
++		},
++
+ 		appendEntry(customType: string, data?: unknown): void {
+ 			assertActive();
+ 			runtime.appendEntry(customType, data);
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index 77712e677f91dde65d4d4db906a26b16bbd9de9c..5db730c30e74134f5f87217869915c1f2e40b503 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -168,7 +168,8 @@ function isUserBashEventResult(value: unknown): value is UserBashEventResult {
+ /** The message that starts a run: the before_agent_start event without its prompt fields. */
+ export type BeforeAgentStartTrigger =
+ 	| Pick<BeforeAgentStartUserEvent, "messageType" | "prompt" | "images">
+-	| Pick<BeforeAgentStartCustomEvent, "messageType" | "message">;
++	| Pick<BeforeAgentStartCustomEvent, "messageType" | "message">
++	| { messageType: "resume" };
+ 
+ /** Combined result from all before_agent_start handlers. */
+ interface BeforeAgentStartCombinedResult {
+@@ -428,6 +429,7 @@ export class ExtensionRunner {
+ 		// Copy actions into the shared runtime (all extension APIs reference this)
+ 		this.runtime.sendMessage = actions.sendMessage;
+ 		this.runtime.sendUserMessage = actions.sendUserMessage;
++		this.runtime.resumeTurn = actions.resumeTurn;
+ 		this.runtime.appendEntry = actions.appendEntry;
+ 		this.runtime.setSessionName = actions.setSessionName;
+ 		this.runtime.getSessionName = actions.getSessionName;
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index 60388c0eb6ddc8c46fd44191b7d872a14a53decd..2f89d65e101a54f52f78c7022c78f3c5d0484ffa 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -953,8 +953,16 @@ export interface BeforeAgentStartCustomEvent extends BeforeAgentStartEventBase {
+ 	message: CustomMessage;
+ }
+ 
+-/** Fired before a run starts from a user message or an idle custom message with `triggerTurn`. */
+-export type BeforeAgentStartEvent = BeforeAgentStartUserEvent | BeforeAgentStartCustomEvent;
++/** A message-free model turn requested through the SDK or an extension. */
++export interface BeforeAgentStartResumeEvent extends BeforeAgentStartEventBase {
++	messageType: "resume";
++}
++
++/** Fired before a run starts from a message or an explicit resume request. */
++export type BeforeAgentStartEvent =
++	| BeforeAgentStartUserEvent
++	| BeforeAgentStartCustomEvent
++	| BeforeAgentStartResumeEvent;
+ 
+ /** Fired when an agent loop starts */
+ export interface AgentStartEvent {
+@@ -1743,6 +1751,9 @@ export interface ExtensionAPI {
+ 		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+ 	): void;
+ 
++	/** Start a turn from saved context without adding a user/custom message. Must be idle. */
++	resumeTurn(): void;
++
+ 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
+ 	appendEntry<T = unknown>(customType: string, data?: T): void;
+ 
+@@ -2189,6 +2200,7 @@ export interface ExtensionRuntimeState {
+ export interface ExtensionActions {
+ 	sendMessage: SendMessageHandler;
+ 	sendUserMessage: SendUserMessageHandler;
++	resumeTurn: () => void;
+ 	appendEntry: AppendEntryHandler;
+ 	setSessionName: SetSessionNameHandler;
+ 	getSessionName: GetSessionNameHandler;
+diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
+index 0b8fb1dd209d8064e083585dd862b4d592e45eb8..11e539a4e69390ec5524d4f4edeeca25b0362146 100644
+--- a/packages/coding-agent/src/index.ts
++++ b/packages/coding-agent/src/index.ts
+@@ -67,6 +67,7 @@ export type {
+ 	BeforeAgentStartCustomEvent,
+ 	BeforeAgentStartEvent,
+ 	BeforeAgentStartEventResult,
++	BeforeAgentStartResumeEvent,
+ 	BeforeAgentStartUserEvent,
+ 	BeforeProviderHeadersEvent,
+ 	BeforeProviderRequestEvent,
+diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
+index 7c4a5f4289d25274c1cec97b2ccab2c674776763..327af61bf173bb1a2a826ed0ceeb25bc2a3bfc8b 100644
+--- a/packages/coding-agent/test/extensions-runner.test.ts
++++ b/packages/coding-agent/test/extensions-runner.test.ts
+@@ -82,6 +82,7 @@ describe("ExtensionRunner", () => {
+ 	const extensionActions: ExtensionActions = {
+ 		sendMessage: () => {},
+ 		sendUserMessage: () => {},
++		resumeTurn: () => {},
+ 		appendEntry: () => {},
+ 		setSessionName: () => {},
+ 		getSessionName: () => undefined,
+diff --git a/packages/coding-agent/test/suite/agent-session-resume-turn.test.ts b/packages/coding-agent/test/suite/agent-session-resume-turn.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..73e00bc50d9a10fadc56a814dce8d7de9d116b95
+--- /dev/null
++++ b/packages/coding-agent/test/suite/agent-session-resume-turn.test.ts
+@@ -0,0 +1,172 @@
++import type { AgentTool } from "@earendil-works/pi-agent-core";
++import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
++import { Type } from "typebox";
++import { afterEach, describe, expect, it } from "vitest";
++import type { ExtensionAPI } from "../../src/core/extensions/types.ts";
++import { createHarness, type Harness } from "./harness.ts";
++
++const harnesses: Harness[] = [];
++afterEach(() => {
++	while (harnesses.length) harnesses.pop()?.cleanup();
++});
++function seedUser(h: Harness): void {
++	h.sessionManager.appendMessage({
++		role: "user",
++		content: [{ type: "text", text: "original request" }],
++		timestamp: 1,
++	});
++}
++
++describe("message-free resumeTurn", () => {
++	it("starts from restored context with normal hooks and no synthetic message", async () => {
++		const starts: string[] = [];
++		const h = await createHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.on("before_agent_start", (event) => {
++						starts.push(event.messageType);
++					});
++				},
++			],
++		});
++		harnesses.push(h);
++		seedUser(h);
++		h.setResponses([
++			(context) => {
++				expect(context.messages.filter((m) => m.role === "user")).toHaveLength(1);
++				expect(JSON.stringify(context.messages)).toContain("original request");
++				expect(context.messages.map((m) => m.role)).not.toContain("custom");
++				return fauxAssistantMessage("continued");
++			},
++		]);
++		await h.session.resumeTurn();
++		expect(starts).toEqual(["resume"]);
++		expect(h.sessionManager.getEntries().filter((e) => e.type === "custom_message")).toHaveLength(0);
++		expect(h.session.messages.filter((m) => m.role === "user")).toHaveLength(1);
++		expect(h.eventsOfType("agent_settled")).toHaveLength(1);
++	});
++
++	it("does not re-execute a saved completed tool call", async () => {
++		let executions = 0;
++		const tool: AgentTool = {
++			name: "effect",
++			label: "Effect",
++			description: "A test effect",
++			parameters: Type.Object({}),
++			execute: async () => {
++				executions++;
++				return { content: [{ type: "text", text: "unexpected" }], details: {} };
++			},
++		};
++		const h = await createHarness({ tools: [tool] });
++		harnesses.push(h);
++		seedUser(h);
++		const call = fauxToolCall("effect", {});
++		h.sessionManager.appendMessage(fauxAssistantMessage(call, { stopReason: "toolUse" }));
++		h.sessionManager.appendMessage({
++			role: "toolResult",
++			toolCallId: call.id,
++			toolName: "effect",
++			content: [{ type: "text", text: "already completed" }],
++			isError: false,
++			timestamp: 2,
++		});
++		h.setResponses([
++			(context) => {
++				expect(context.messages.filter((m) => m.role === "toolResult")).toHaveLength(1);
++				return fauxAssistantMessage("used saved result");
++			},
++		]);
++		await h.session.resumeTurn();
++		expect(executions).toBe(0);
++	});
++
++	it("supports extension-side continuation without a hidden custom trigger", async () => {
++		let api: ExtensionAPI | undefined;
++		const h = await createHarness({
++			extensionFactories: [
++				(pi) => {
++					api = pi;
++				},
++			],
++		});
++		harnesses.push(h);
++		seedUser(h);
++		h.setResponses([fauxAssistantMessage("continued")]);
++		api!.resumeTurn();
++		await h.session.waitForIdle();
++		expect(h.session.messages.map((m) => m.role)).toEqual(["user", "system", "assistant"]);
++		expect(h.sessionManager.getEntries().some((e) => e.type === "custom_message")).toBe(false);
++	});
++
++	it("refuses empty context without adding any entry", async () => {
++		const h = await createHarness();
++		harnesses.push(h);
++		const before = h.sessionManager.getEntries();
++		await expect(h.session.resumeTurn()).rejects.toThrow("No messages to resume");
++		expect(h.sessionManager.getEntries()).toEqual(before);
++		expect(h.session.isIdle).toBe(true);
++	});
++
++	it("reserves the run while start hooks await, refuses duplicates and honors abort", async () => {
++		let entered = () => {};
++		let release = () => {};
++		const started = new Promise<void>((resolve) => {
++			entered = resolve;
++		});
++		const gate = new Promise<void>((resolve) => {
++			release = resolve;
++		});
++		const h = await createHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.on("before_agent_start", async () => {
++						entered();
++						await gate;
++					});
++				},
++			],
++		});
++		harnesses.push(h);
++		seedUser(h);
++		h.setResponses([fauxAssistantMessage("must not complete")]);
++		const running = h.session.resumeTurn();
++		await started;
++		await expect(h.session.resumeTurn()).rejects.toThrow("already processing");
++		const aborting = h.session.abort();
++		release();
++		await Promise.all([running, aborting]);
++		const last = h.session.messages.at(-1);
++		expect(last?.role === "assistant" && last.stopReason).toBe("aborted");
++		expect(h.session.messages.filter((message) => message.role === "user")).toHaveLength(1);
++		expect(h.session.isIdle).toBe(true);
++	});
++
++	it("keeps normal tool interception and post-run settlement", async () => {
++		const h = await createHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.registerTool({
++						name: "blocked",
++						label: "Blocked",
++						description: "Must be blocked",
++						parameters: Type.Object({}),
++						execute: async () => {
++							throw new Error("must never execute");
++						},
++					});
++					pi.on("tool_call", () => ({ block: true, reason: "normal safety gate" }));
++				},
++			],
++		});
++		harnesses.push(h);
++		seedUser(h);
++		h.setResponses([
++			fauxAssistantMessage(fauxToolCall("blocked", {}), { stopReason: "toolUse" }),
++			fauxAssistantMessage("gate honored"),
++		]);
++		await h.session.resumeTurn();
++		expect(h.session.messages.some((m) => m.role === "toolResult" && m.isError)).toBe(true);
++		expect(h.eventsOfType("agent_settled")).toHaveLength(1);
++	});
++});

@@ -481,9 +481,12 @@ fn the_account_restarts_a_working_pi_on_the_same_conversation() {
         json!({ "target": target, "sessionId": session }),
     );
     assert_eq!(restarted["restarted"], true, "{restarted}");
-    axod.wait_for("a second Pi to start and be ready", || {
+    axod.wait_for("a second Pi to resume the interrupted work", || {
         let listed = the_session(&axod, &session);
-        (logged(&axod, "STARTED:") == 2 && listed["status"] == "ready").then_some(())
+        (logged(&axod, "STARTED:") == 2
+            && logged(&axod, "RESUME_TURN") == 1
+            && listed["status"] == "working")
+            .then_some(())
     });
     assert_eq!(
         the_session(&axod, &session)["piSessionFile"],

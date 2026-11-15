@@ -35,6 +35,8 @@ pub(crate) struct Entry {
     pub(crate) pi: PiPhase,
     /// Whether its Pi is in the middle of a turn.
     pub(crate) working: bool,
+    /// Known working or captured pending recovery, unless explicitly stopped.
+    pub(crate) recoverable: bool,
 }
 
 #[derive(Clone, Debug, Default)]

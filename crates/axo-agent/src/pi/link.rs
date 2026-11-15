@@ -77,6 +77,7 @@ enum OwnedAction {
         attachments: Vec<axo_protocol::asset::FetchedAttachment>,
     },
     Stop(StopTarget),
+    ResumeTurn,
     Shutdown,
     SetModel {
         model: Option<(String, String)>,
@@ -100,6 +101,7 @@ impl OwnedAction {
             },
             Self::Stop(stop) => Action::Stop(stop),
             Self::Shutdown => Action::Shutdown,
+            Self::ResumeTurn => Action::ResumeTurn,
             Self::SetModel {
                 model,
                 thinking_level,
@@ -161,6 +163,11 @@ impl LinkCommands {
         timeout: Duration,
     ) -> io::Result<CommandResult> {
         self.command(OwnedAction::Stop(stop), timeout).await
+    }
+
+    /// Starts a turn without injecting a message. A lost receipt is not retried.
+    pub async fn resume_turn(&self, timeout: Duration) -> io::Result<CommandResult> {
+        self.command(OwnedAction::ResumeTurn, timeout).await
     }
 
     /// Asks Pi to exit now, stopping any turn in progress; see [`Action::Shutdown`].

@@ -43,6 +43,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
   const registered = new Map<string, (event: never, context: never) => unknown>();
   const commands = new Map<string, (args: string, context: ExtensionContext) => Promise<void>>();
   const sentMessages: Array<{ text: string; options?: unknown }> = [];
+  let resumes = 0;
   let aborted = 0;
   let shutdowns = 0;
   let idle = true;
@@ -71,6 +72,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     sendUserMessage(text: string, options?: unknown) {
       sentMessages.push({ text, options });
     },
+    resumeTurn() { resumes++; },
     appendEntry(customType: string, data: unknown) {
       entries.push({ type: "custom", customType, data });
     },
@@ -178,6 +180,17 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     if (event.type !== "event") throw new Error("expected a Pi event");
     assert.equal(event.name, "message.end");
     assert.deepEqual(event.data, { type: "message_end", message: { role: "assistant", content: "hello" } });
+
+    idle = false;
+    socket.write(`${JSON.stringify({type:"command",requestId:"resume-busy",axoSessionId,action:{kind:"resumeTurn"}})}\n`);
+    assert.deepEqual(await next(),{type:"commandResult",requestId:"resume-busy",result:{accepted:false,reason:"busy"}});
+    idle = true;
+    for (const requestId of ["resume-1","resume-duplicate"]) {
+      socket.write(`${JSON.stringify({type:"command",requestId,axoSessionId,action:{kind:"resumeTurn"}})}\n`);
+      assert.deepEqual(await next(),{type:"commandResult",requestId,result:{accepted:true}});
+    }
+    assert.equal(resumes,1);
+    assert.deepEqual(sentMessages,[], "Resume control adds no fake user message");
 
     socket.write(`${JSON.stringify({
       type: "command",

@@ -10,6 +10,7 @@ import { QUEUED_ENTRY, RECEIPT_ENTRY, RemoteCommands, type ClientPrompt } from "
 import { commandList, modelList, piState } from "./pi-state.js";
 import { promptContent, showAttachmentLines, type PromptContent } from "./attachments.js";
 import type { ThinkingLevel } from "./pi-state.js";
+import { ResumeTurnControl } from "./resume-turn.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -68,6 +69,8 @@ function errorCode(error: unknown): string {
 export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExtensionConfig): Promise<void> {
   let context: ExtensionContext | undefined;
   let identity: PiSessionIdentity | undefined;
+  const continuationApi = pi as ExtensionAPI & { resumeTurn?: () => void };
+  const resumeTurn = continuationApi.resumeTurn;
   const remote = new RemoteCommands({
     isIdle: () => context?.isIdle() ?? true,
     entries: () => context?.sessionManager.getEntries() ?? [],
@@ -89,11 +92,22 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     abort: () => context?.abort(),
     now: () => Date.now(),
   });
+  const continuation = new ResumeTurnControl({
+    isIdle: () => context?.isIdle() ?? false,
+    hasQueuedPrompts: () => remote.heldCount > 0,
+    resume: typeof resumeTurn === "function" ? () => resumeTurn.call(pi) : undefined,
+    unsupported: () => {
+      console.warn("Axo automatic continuation unavailable: Pi SDK lacks message-free resumeTurn");
+      if (context?.hasUI) context.ui.notify("Automatic restart continuation requires a Pi build exposing resumeTurn. This build does not support it.", "warning");
+    },
+  });
   const handleCommand = async (command: PiControlCommand) => {
     const activeContext = context;
     if (activeContext === undefined || identity?.axoSessionId !== command.axoSessionId) {
       return { accepted: false as const, reason: "stale" as const };
     }
+
+    if (command.action.kind === "resumeTurn") return continuation.take();
 
     if (command.action.kind === "shutdown") {
       if (!activeContext.isIdle()) activeContext.abort();

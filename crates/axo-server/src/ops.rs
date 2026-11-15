@@ -208,7 +208,7 @@ pub(crate) async fn press_key(core: &Core, id: SessionId, key: PiKey) -> io::Res
 /// Stops the Session's running run if anything in `stop` belongs to it; whether it did.
 pub(crate) async fn stop_turn(core: &Core, id: SessionId, stop: StopTarget) -> io::Result<bool> {
     let link = handle(core, id)?
-        .with(|session| session.pi_link())
+        .with(|session| session.pi_stop_link())
         .await??;
     let stopped = prompts::stop(&link, &stop).await.map_err(io::Error::from)?;
     log::info!("event=session.pi_turn_stop session_id={id} stopped={stopped}");

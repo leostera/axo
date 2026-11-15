@@ -63,6 +63,8 @@ pub enum Outgoing<'a> {
     rename_all_fields = "camelCase"
 )]
 pub enum Action<'a> {
+    /// Start a turn from saved context without adding a user/custom message.
+    ResumeTurn,
     /// Exit now, aborting any turn in progress.
     Shutdown,
     /// Submit `text` as a user message. An idle Pi starts a turn with it; a working Pi queues
@@ -240,6 +242,10 @@ mod tests {
                 "axoSessionId": "session",
                 "action": { "kind": "shutdown" }
             })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::ResumeTurn).unwrap(),
+            json!({ "kind": "resumeTurn" })
         );
         assert_eq!(
             serde_json::to_value(Action::Shutdown).unwrap(),

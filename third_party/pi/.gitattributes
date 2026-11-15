@@ -1,0 +1,2 @@
+# Unified-diff context prefixes precede upstream tabs; preserve the patch as data.
+resume-turn.patch -whitespace

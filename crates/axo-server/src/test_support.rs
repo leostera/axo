@@ -57,11 +57,13 @@ impl Fixture {
                 let fake = std::env::var("AXO_TEST_FAKE_PI").expect("the fake Pi's runfile");
                 let fake = fs::canonicalize(fake).unwrap();
                 fs::write(directory.join("turn-ms"), turn_ms.to_string()).unwrap();
+                fs::write(directory.join("startup-ms"), "20").unwrap();
                 executable(
                     &directory.join("fake-pi"),
                     &format!(
-                        "#!/bin/sh\nAXO_FAKE_PI_LOG='{}' AXO_FAKE_PI_STARTUP_MS=20 AXO_FAKE_PI_TURN_MS=$(cat '{}') exec '{}' \"$@\"\n",
+                        "#!/bin/sh\nAXO_FAKE_PI_LOG='{}' AXO_FAKE_PI_STARTUP_MS=$(cat '{}') AXO_FAKE_PI_TURN_MS=$(cat '{}') exec '{}' \"$@\"\n",
                         directory.join("pi.log").display(),
+                        directory.join("startup-ms").display(),
                         directory.join("turn-ms").display(),
                         fake.display()
                     ),
@@ -98,6 +100,10 @@ impl Fixture {
     /// How long the fake Pi's turns last from its next start.
     pub(crate) fn set_turn_ms(&self, turn_ms: u64) {
         fs::write(self.directory.join("turn-ms"), turn_ms.to_string()).unwrap();
+    }
+
+    pub(crate) fn set_startup_ms(&self, milliseconds: u64) {
+        fs::write(self.directory.join("startup-ms"), milliseconds.to_string()).unwrap();
     }
 
     /// Serves the attach socket, as axod does.

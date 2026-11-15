@@ -118,7 +118,10 @@ pub(crate) async fn restore(core: &Arc<Core>, previous: Option<DaemonStop>) -> i
         .map_or(&[][..], |stop| &stop.interrupted[..]);
     let (mut starting, mut dormant) = (0, 0);
     for (record, activity) in stored {
-        let start = if interrupted.contains(&record.id) || activity >= active_since {
+        let start = if interrupted.contains(&record.id) {
+            starting += 1;
+            PiStart::Resume
+        } else if activity >= active_since {
             starting += 1;
             PiStart::Now
         } else {
@@ -133,40 +136,6 @@ pub(crate) async fn restore(core: &Arc<Core>, previous: Option<DaemonStop>) -> i
     log::info!("event=session.pis_restoring starting={starting} dormant={dormant}");
     tokio::spawn(launch_ready(Arc::clone(core)));
     tokio::spawn(crate::idle_pis::run(Arc::downgrade(core)));
-    // Sessions a stop interrupted mid-turn are told, once their Pi takes prompts.
-    if let Some(stop) = previous {
-        let notice = match PromptText::parse(stop.notice(&stop_notice::this_daemon(Vec::new()))) {
-            Ok(notice) => notice,
-            Err(error) => {
-                log::warn!("event=session.stop_notice_skipped reason={error}");
-                return Ok(());
-            }
-        };
-        for session_id in stop.interrupted {
-            let core = Arc::clone(core);
-            let notice = notice.clone();
-            tokio::spawn(async move {
-                let told = prompt(
-                    &core,
-                    PromptSession {
-                        session_id,
-                        text: notice,
-                        delivery: PromptDelivery::FollowUp,
-                        from_session_id: None,
-                    },
-                    None,
-                    Vec::new(),
-                )
-                .await;
-                match told {
-                    Ok(_) => log::info!("event=session.stop_notice_sent session_id={session_id}"),
-                    Err(error) => log::warn!(
-                        "event=session.stop_notice_skipped session_id={session_id} reason={error}"
-                    ),
-                }
-            });
-        }
-    }
     Ok(())
 }
 
@@ -854,7 +823,7 @@ async fn record_stop(core: &Core) {
         .view()
         .sessions
         .values()
-        .filter(|entry| entry.pi == PiPhase::Connected && entry.working)
+        .filter(|entry| entry.recoverable)
         .map(|entry| (entry.record.id, entry.record.last_message_at.unwrap_or(0)))
         .collect();
     interrupted.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
