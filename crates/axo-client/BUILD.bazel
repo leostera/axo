@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "axo_client",
+    srcs = ["src/lib.rs", "src/catalog.rs", "src/tests.rs"],
+    edition = "2024",
+    deps = [
+        "//crates/axo-protocol:axo_protocol",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "test",
+    crate = ":axo_client",
+    edition = "2024",
+)

@@ -10,6 +10,7 @@ rust_binary(
     version = AXO["version"] + ".0",
     rustc_env = {"MACOSX_DEPLOYMENT_TARGET": AXO["apple"]["macos_min"]},
     deps = [
+        "//crates/axo-client:axo_client",
         "//crates/axo-protocol:axo_protocol",
         "@crates//:clap",
         "@crates//:serde",

@@ -2,6 +2,10 @@
 
 Control Axo Sessions from a shell. `axo` is a thin local client of axod, shipped as the signed `Axo.app/Contents/Helpers/axo` helper; it never starts a second daemon or reads pairing credentials.
 
+Request/event framing lives in [`axo-client`](../axo-client/README.md), shared with
+the native Linux workbench. This crate owns command parsing, output and exit codes;
+it does not maintain another transport implementation.
+
 ## Install the command
 
 The shell installer automatically installs `/usr/local/bin/axo` after the verified app reaches its stable location. macOS requests administrator approval only if that directory is not writable. Downloading the app directly offers the same setup once on first launch; **Axo → Install “axo” Command…** and **Settings → General → Command Line** remain available as fallbacks. Normal app upgrades preserve the link and replace the CLI with the app.
