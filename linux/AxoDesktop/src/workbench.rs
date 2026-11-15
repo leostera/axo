@@ -82,6 +82,10 @@ pub fn create_window(
         updating: Cell::new(false),
         closing: Cell::new(false),
         settings_window: glib::WeakRef::new(),
+        tray: RefCell::new(None),
+        tray_available: Cell::new(false),
+        health_task: RefCell::new(None),
+        health_timer: RefCell::new(None),
     });
     let settings_action = gtk4::gio::SimpleAction::new("settings", None);
     settings_action.connect_activate({
@@ -127,8 +131,14 @@ pub fn create_window(
     window.connect_close_request({
         let model = model.clone();
         move |_| {
-            model.shutdown();
-            model.engine.request_quit();
+            if model.tray_available.get() {
+                if let Some(window) = model.window.upgrade() {
+                    window.set_visible(false);
+                }
+            } else {
+                model.shutdown();
+                model.engine.request_quit();
+            }
             glib::Propagation::Stop
         }
     });
@@ -139,6 +149,7 @@ pub fn create_window(
     });
     window.present();
     model.reload();
+    model.start_tray();
     Ok(())
 }
 
@@ -158,8 +169,137 @@ struct Workbench {
     updating: Cell<bool>,
     closing: Cell<bool>,
     settings_window: glib::WeakRef<gtk4::Window>,
+    tray: RefCell<Option<crate::tray::Tray>>,
+    tray_available: Cell<bool>,
+    health_task: RefCell<Option<MainThreadTask>>,
+    health_timer: RefCell<Option<glib::SourceId>>,
 }
 impl Workbench {
+    fn start_tray(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        gtk4::gio::bus_get(
+            gtk4::gio::BusType::Session,
+            gtk4::gio::Cancellable::NONE,
+            move |result| {
+                let Some(model) = weak.upgrade().filter(|model| !model.closing.get()) else {
+                    return;
+                };
+                let Ok(connection) = result else { return }; // Workbench never depends on a tray.
+                let action_model = Rc::downgrade(&model);
+                let availability_model = Rc::downgrade(&model);
+                let tray = crate::tray::Tray::new(
+                    connection,
+                    move |action| {
+                        if let Some(model) = action_model.upgrade() {
+                            model.tray_action(action);
+                        }
+                    },
+                    move |available| {
+                        if let Some(model) = availability_model
+                            .upgrade()
+                            .filter(|model| !model.closing.get())
+                        {
+                            model.tray_available.set(available);
+                            if available {
+                                model.refresh_daemon_status();
+                            } else if let Some(window) =
+                                model.window.upgrade().filter(|window| !window.is_visible())
+                            {
+                                window.present();
+                            }
+                        }
+                    },
+                );
+                match tray {
+                    Ok(tray) => *model.tray.borrow_mut() = Some(tray),
+                    Err(error) => eprintln!("AxoDesktop: tray unavailable: {error}"),
+                }
+            },
+        );
+        let weak = Rc::downgrade(self);
+        *self.health_timer.borrow_mut() = Some(glib::timeout_add_local(
+            std::time::Duration::from_secs(15),
+            move || {
+                let Some(model) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                model.refresh_daemon_status();
+                glib::ControlFlow::Continue
+            },
+        ));
+    }
+    fn tray_action(self: &Rc<Self>, action: crate::tray::Action) {
+        if self.closing.get() {
+            return;
+        }
+        match action {
+            crate::tray::Action::Show => {
+                if let Some(window) = self.window.upgrade() {
+                    window.present();
+                }
+            }
+            crate::tray::Action::Hide => {
+                if self.tray_available.get() {
+                    if let Some(window) = self.window.upgrade() {
+                        window.set_visible(false);
+                    }
+                }
+            }
+            crate::tray::Action::Settings => {
+                if let Some(window) = self.window.upgrade() {
+                    window.present();
+                }
+                self.open_settings();
+            }
+            crate::tray::Action::Quit => {
+                self.shutdown();
+                self.engine.request_quit();
+            }
+        }
+    }
+    fn refresh_daemon_status(self: &Rc<Self>) {
+        if self.closing.get() || !self.tray_available.get() || self.health_task.borrow().is_some() {
+            return;
+        }
+        let socket = self.socket.clone();
+        let weak = Rc::downgrade(self);
+        let task = MainThreadTask::start(
+            "axo-tray-health",
+            move || {
+                crate::task::daemon_request(&socket, |mut client| async move {
+                    client
+                        .call_typed::<axo_protocol::rpc::DaemonHealth>(
+                            axo_protocol::rpc::method::DAEMON_HEALTH,
+                            serde_json::json!({}),
+                        )
+                        .await
+                })
+            },
+            move |result| {
+                let Some(model) = weak.upgrade() else { return };
+                model.health_task.borrow_mut().take();
+                let status = match result {
+                    Ok(health) => format!(
+                        "Daemon {} · Axo {}",
+                        if health.ready { "running" } else { "starting" },
+                        health.version
+                    ),
+                    Err(_) => "Daemon unavailable".into(),
+                };
+                if let Some(tray) = model.tray.borrow().as_ref() {
+                    tray.daemon_status(&status);
+                }
+            },
+        );
+        match task {
+            Ok(task) => *self.health_task.borrow_mut() = Some(task),
+            Err(_) => {
+                if let Some(tray) = self.tray.borrow().as_ref() {
+                    tray.daemon_status("Daemon status unavailable");
+                }
+            }
+        }
+    }
     fn open_settings(&self) {
         if self.closing.get() {
             return;
@@ -180,6 +320,12 @@ impl Workbench {
         if let Some(window) = self.settings_window.upgrade() {
             window.destroy();
         }
+        if let Some(timer) = self.health_timer.borrow_mut().take() {
+            timer.remove();
+        }
+        self.health_task.borrow_mut().take();
+        self.tray.borrow_mut().take();
+        self.tray_available.set(false);
         self.task.borrow_mut().take();
         self.view.borrow_mut().take();
         while let Some(child) = self.content.first_child() {

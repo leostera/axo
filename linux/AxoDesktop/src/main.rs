@@ -5,6 +5,7 @@ mod ghostty;
 mod options_tests;
 mod settings;
 mod task;
+mod tray;
 mod workbench;
 
 use clap::Parser;

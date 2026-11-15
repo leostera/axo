@@ -1,7 +1,7 @@
 # RFD0054 - Axo: native Linux desktop
 
 - Feature Name: `linux-desktop`
-- Status: Proposed (Ghostty/v3 attachment and first local catalog/pane workbench implemented; full parity pending)
+- Status: Proposed (Ghostty/v3, first local workbench, daemon settings and SNI tray slices implemented; full parity pending)
 - Author: leostera
 - Start Date: 2026-11-14
 - Updated: 2026-11-15
@@ -39,7 +39,7 @@ The initial standalone prototype owns a local command/PTY through Ghostty. This 
 
 ### Feature inventory and cutover map
 
-Reference: Mac source at Axo 0.64, commit `24e8a85056222c809f8ba43fe50f13b4faa86529`. This is a source inventory, not a claim that the entire Mac UI was interactively retested.
+Inventory reference: Mac source at Axo 0.64, commit `24e8a85056222c809f8ba43fe50f13b4faa86529`. The Linux branch has since been rebased onto 0.66 (`4c9f11d6`), preserving guided setup/CLI changes without porting their whole UI. This inventory is not an interactive Mac conformance run.
 
 | User-visible behavior | Current reference | Linux implementation boundary |
 | --- | --- | --- |
@@ -87,7 +87,30 @@ rejections permit immediate correction. Lost replies/timeouts require an explici
 reload before further saves, because a dispatched write may already have committed.
 Callbacks are cancelled when windows close; that cannot undo a dispatched write.
 No daemon/process restart accompanies edits. Appearance, power, grouping, remote
-access and tray integration remain separate pending slices.
+access remain separate pending slices.
+
+### Native status integration
+
+`src/tray.rs` exports StatusNotifierItem and DBusMenu over GIO on the session bus;
+no GTK3 compatibility runtime, XEmbed shim or GNOME shell modification is needed.
+The menu shows Show/Hide, Settings, Quit and bounded daemon-health status. Quit
+only detaches frontend views. There are no privileged answer actions or fabricated
+question counts; attention/notification wiring is a later policy slice.
+
+Hide/close-to-tray requires registration acknowledgement and positive
+`IsStatusNotifierHostRegistered` from the current watcher owner. Async results from
+older owners cannot grant availability. Watcher loss disables hide immediately;
+periodic bounded host checks also detect a lost host when its watcher survives.
+A lost recovery affordance restores a hidden window. Without a confirmed host,
+window-close quits normally; the app never requires a tray to remain usable.
+Registration, exported objects, polling and callbacks have app-owned teardown.
+
+Acceptance uses a simulated watcher/host plus the real GTK app/isolated daemon.
+Real KDE/GNOME/Wayland panel integration and tray branding remain release gates,
+not implied by this protocol fixture. This adds no installed/autostart service.
+
+Protocol references: [StatusNotifierWatcher](https://specifications.freedesktop.org/status-notifier-item/latest/status-notifier-watcher.html)
+and [DBusMenu XML](https://cgit.arctica-project.org/libdbusmenu/tree/libdbusmenu-glib/dbus-menu.xml?id=57befc99feb45329551f956beeb594df3b541835).
 
 ### Implementation sequence
 
@@ -117,5 +140,11 @@ The spike is tested with Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and s
 - Doing nothing leaves Linux usable only through remote/CLI clients despite the working daemon.
 
 ## Unresolved questions
+
+Before Linux release, resolve the blocked-input server regression
+`a_pane_that_takes_no_input_holds_up_only_its_own_writers` (the full suite and an
+isolated run time out). The other server cases pass with that case explicitly
+excluded, but this is not full-suite acceptance. Preserve shared-master flags and
+descriptor ownership when designing a bounded input/teardown fix.
 
 Before privileged UI: choose a Linux application-authentication and approval trust design; this RFD deliberately does not grant authority. Before release: declare the supported distribution/library/CPU matrix, verify native Wayland/GPU/accessibility behavior, and settle artifact authenticity plus install/update lifecycle. Continue reducing pin-specific GTK glue without changing the Mac embedding contract; characterize bounded replay bootstrap latency before making responsiveness claims. The original Apple external-I/O patch shares the read-fd termios-poll assumption corrected in GTK-only 0003; assess that source finding with focused Mac-native acceptance separately. No Mac terminal-control parity claim follows from the Linux fix.

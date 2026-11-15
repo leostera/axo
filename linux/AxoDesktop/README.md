@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or closing the window detaches; children keep running. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. Native title/pane chrome and fixed terminal defaults are still provisional.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. Native title/pane chrome and fixed terminal defaults are still provisional.
 
 ## Build and run
 
@@ -37,6 +37,25 @@ same window without losing drafts, and Reload values explicitly discards drafts.
 Invalid input stays editable. An unconfirmed write disables further saves until a
 read reconciles the real value; writes are never automatically retried. Closing
 settings or the app cancels UI delivery, not an already-dispatched daemon write.
+
+## Tray / status app
+
+Workbench mode exports a native **StatusNotifierItem + DBusMenu** over the session
+bus using GIO (no GTK3/VTE shim). Its menu offers Show Axo, Hide Axo, Settings and
+Quit, plus daemon connection status. Quit detaches views; it never stops axod or
+its children. Standalone development mode keeps its existing window lifecycle.
+
+The watcher must acknowledge registration **and** report a live tray host before
+window-close or Hide can hide the workbench. Watcher presence alone is insufficient.
+Host presence is rechecked because the standard has no required host-unregistered
+signal. Losing the watcher/host restores a hidden window rather than stranding the
+app. No tray is required to use the workbench, and no GNOME extension is installed.
+
+This is process-lifetime integration, not login/autostart installation. Tray branding,
+question/attention badges, notifications and hardware-panel acceptance remain
+pending. In particular, no fake pending-question count or privileged answer action
+is exposed. GNOME desktops without StatusNotifier/AppIndicator support remain
+window-only; native KDE/GNOME/Wayland panel behavior still needs acceptance.
 
 ## Terminal ownership
 
@@ -77,6 +96,12 @@ The standalone test checks actual terminal-color pixels, PTY input, grid/child S
 
 The attached test starts a real **isolated daemon** and an owned PTY fixture. It checks unchanged v2 framing, v3 replay generated before the view exists, copied long-line text surviving initial grid changes, actual pixels before/after reopening, input, matching resize/SIGWINCH, child/output-pump survival while detached, refusal without fallback and pending-handshake cancellation. Shared Rust tests separately simulate a PTY resize between snapshot capture and client receipt.
 
+The `tray_drive.py` driver uses an owned real daemon and a **simulated** native
+watcher/host on private D-Bus. It checks protocol/menu export, daemon status,
+show/hide/settings/quit, unknown action rejection, watcher-without-host behavior,
+recovery when the host disappears but the watcher stays, watcher loss/re-registration
+and surviving daemon children. This is not a real desktop-panel visual conformance run.
+
 The `settings_drive.py` driver checks Ctrl+, singleton/draft preservation, no writes
 on load, all four persisted settings, server rejection/canonical values, no process
 restart, close with settings open, and lost-acknowledgement reload without retry.
@@ -86,5 +111,11 @@ its owned-desktop screenshot.
 The workbench driver checks semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, catalog refresh discovering a new Session without changing selection, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
+
+A broader Linux server regression run currently times out in
+`scenarios::prompts::a_pane_that_takes_no_input_holds_up_only_its_own_writers`,
+also reproduced in isolation. This is an unresolved backpressure/teardown gate,
+not a passing full-server suite. Its writer/test code is unchanged by this slice;
+no shared-master flag workaround is introduced here.
 
 Current acceptance uses Ubuntu 26.04/x86-64, GTK 4.22.4, libadwaita 1.9.1 and software OpenGL under Xvfb. It is not a portable release floor, native Wayland/hardware-GPU acceptance, exhaustive terminal/IME/accessibility parity, a persistent installation, or a completed Linux privileged-client trust design.
