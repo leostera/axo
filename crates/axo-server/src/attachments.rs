@@ -154,10 +154,12 @@ async fn serve(core: Arc<Core>, stream: UnixStream) {
     let requested = tokio::task::spawn_blocking(move || {
         let mut handshake = blocking(&stream, ATTACH_REPLAY_WRITE_TIMEOUT)?;
         attach::set_send_buffer(&handshake, ATTACH_SEND_BUFFER_BYTES);
-        let id = attach::read_request(&mut handshake).and_then(|id| {
-            ShellId::new(id).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "shell ID must be positive")
-            })
+        let id = attach::read_versioned_request(&mut handshake).and_then(|request| {
+            ShellId::new(request.shell_id)
+                .map(|id| (request.version, id))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "shell ID must be positive")
+                })
         });
         Ok::<_, io::Error>((handshake, id))
     })
@@ -165,8 +167,8 @@ async fn serve(core: Arc<Core>, stream: UnixStream) {
     let Ok(Ok((mut handshake, id))) = requested else {
         return;
     };
-    let shell_id = match id {
-        Ok(id) => id,
+    let (version, shell_id) = match id {
+        Ok(request) => request,
         Err(error) => {
             log::debug!(
                 "event=session.attach_rejected reason=invalid_request error_kind={:?}",
@@ -203,15 +205,34 @@ async fn serve(core: Arc<Core>, stream: UnixStream) {
     // surface is created at too.
     let accepted = tokio::task::spawn_blocking(move || {
         let overflow_shutdown = handshake.try_clone().ok().map(OwnedFd::from);
-        let size = axo_pty::process::window_size(&master).ok();
-        let (replay, subscriber) = output.subscribe(size, overflow_shutdown);
-        let written = attach::write_acceptance(&mut handshake, replay.len(), &master)
-            .map_err(|(phase, error)| (phase.as_str(), error))
-            .and_then(|()| {
-                handshake
-                    .write_all(&replay)
-                    .map_err(|error| ("replay", error))
-            });
+        let requested_size = axo_pty::process::window_size(&master).ok();
+        let (snapshot, subscriber) = output.subscribe_captured(requested_size, overflow_shutdown);
+        let replay = snapshot.bytes;
+        let size = snapshot.size;
+        // The actual VT grid and replay were captured under one output-state lock,
+        // even if a different client changed the PTY or its requested VT resize failed.
+        let header = match (version, size) {
+            (attach::AttachVersion::V2, _) => {
+                attach::write_acceptance(&mut handshake, replay.len(), &master)
+                    .map_err(|(phase, error)| (phase.as_str(), error))
+            }
+            (attach::AttachVersion::V3, Some(size)) => {
+                attach::write_snapshot_acceptance(&mut handshake, replay.len(), &master, size)
+                    .map_err(|(phase, error)| (phase.as_str(), error))
+            }
+            (attach::AttachVersion::V3, None) => {
+                let _ = attach::write_rejection(&mut handshake, attach::Rejection::Other);
+                Err((
+                    "snapshot_grid",
+                    io::Error::new(io::ErrorKind::InvalidData, "PTY snapshot has no grid"),
+                ))
+            }
+        };
+        let written = header.and_then(|()| {
+            handshake
+                .write_all(&replay)
+                .map_err(|error| ("replay", error))
+        });
         (handshake, subscriber, replay.len(), written)
     })
     .await;

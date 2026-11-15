@@ -1,11 +1,15 @@
-//! Attach protocol v2, both ends.
+//! Attach protocols v2/v3, both ends.
 //!
-//! The client writes its shell ID and a newline. Axod answers with either `u64::MAX` and a
-//! one-byte rejection code, or:
+//! The client writes its positive shell ID and newline (v2), or `3:<id>\n` (v3).
+//! Axod answers with either `u64::MAX` and a one-byte rejection code, or:
 //!
 //! 1. the replay length as a big-endian `u64` (at most `MAX_TERMINAL_REPLAY_BYTES`),
-//! 2. a one-byte message (`'1'`) carrying the PTY master descriptor (`SCM_RIGHTS`), then
-//! 3. the replay followed by live output, as raw bytes, until the PTY reaches end of file.
+//! 2. v3 only: snapshot rows and columns, each a positive big-endian `u16`,
+//! 3. a one-byte message (`'1'`) carrying the PTY master descriptor (`SCM_RIGHTS`), then
+//! 4. the replay followed by live output, as raw bytes, until the PTY reaches end of file.
+//!
+//! v3's captured grid permits initial replay parsing without guessing from a later
+//! PTY size or GTK allocation. v2 remains byte-for-byte compatible with shipped clients.
 //!
 //! The descriptor is for input, resizing, and termios/foreground queries only; reading it would
 //! steal output from Axod's pump. Closing the socket detaches. End of file means the shell exited
@@ -53,16 +57,128 @@ pub struct Attachment {
     pub replay_bytes: u64,
 }
 
+/// An attachment whose bounded initial replay has been read off the UI thread.
+/// The renderer bootstraps at `size` before consuming live bytes from `control`.
+#[derive(Debug)]
+pub struct PreparedAttachment {
+    attachment: Attachment,
+    replay: Vec<u8>,
+    size: crate::process::WindowSize,
+}
+
+impl PreparedAttachment {
+    pub fn attachment(&self) -> &Attachment {
+        &self.attachment
+    }
+    pub fn replay(&self) -> &[u8] {
+        &self.replay
+    }
+    pub fn size(&self) -> crate::process::WindowSize {
+        self.size
+    }
+}
+
+impl Attachment {
+    /// Consumes exactly the announced replay, at the server-captured grid. The
+    /// PTY may already have a different size when another client resizes it.
+    fn prepare_at(mut self, size: crate::process::WindowSize) -> io::Result<PreparedAttachment> {
+        let length = usize::try_from(self.replay_bytes)
+            .ok()
+            .filter(|length| *length <= MAX_TERMINAL_REPLAY_BYTES)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "oversized initial replay")
+            })?;
+        // Validate that the supplied descriptor is a sized PTY, not arbitrary input.
+        let _current_size = crate::process::window_size(&self.pty)?;
+        let mut replay = vec![0; length];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut received = 0;
+        while received < length {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "initial replay timed out",
+                ));
+            }
+            stream_option_result(
+                &self.control,
+                self.control.set_read_timeout(Some(remaining)),
+            )?;
+            match self.control.read(&mut replay[received..]) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "initial replay truncated",
+                    ));
+                }
+                Ok(count) => received += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        clear_handshake_timeouts(&self.control)?;
+        Ok(PreparedAttachment {
+            attachment: self,
+            replay,
+            size,
+        })
+    }
+
+    /// The kernel signals the foreground group. Never read the master or change
+    /// its shared file-status flags, and never signal a guessed child PID.
+    pub fn resize(&self, size: crate::process::WindowSize) -> io::Result<()> {
+        if crate::process::window_size(&self.pty)? == size {
+            return Ok(());
+        }
+        let dimensions = libc::winsize {
+            ws_row: size.rows(),
+            ws_col: size.columns(),
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: this attachment owns a live master; dimensions is initialized.
+        if unsafe { libc::ioctl(self.pty.as_raw_fd(), libc::TIOCSWINSZ, &dimensions) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
 // Server side.
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 const MAX_SHELL_ID_DIGITS: usize = 19;
 
-/// Reads the client's request: one positive shell ID and a newline, within `REQUEST_TIMEOUT`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachVersion {
+    V2,
+    V3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttachRequest {
+    pub version: AttachVersion,
+    pub shell_id: i64,
+}
+
+/// Legacy request reader retained for v2 clients/tests.
 pub fn read_request(stream: &mut UnixStream) -> io::Result<i64> {
+    let request = read_versioned_request(stream)?;
+    if request.version != AttachVersion::V2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected v2 attachment request",
+        ));
+    }
+    Ok(request.shell_id)
+}
+
+/// Reads a bounded positive shell ID (v2), or `3:<id>` (v3), within REQUEST_TIMEOUT.
+pub fn read_versioned_request(stream: &mut UnixStream) -> io::Result<AttachRequest> {
     let deadline = Instant::now() + REQUEST_TIMEOUT;
-    let mut request = Vec::with_capacity(MAX_SHELL_ID_DIGITS);
+    let mut request = Vec::with_capacity(MAX_SHELL_ID_DIGITS + 2);
     let mut byte = [0_u8; 1];
     loop {
         wait_for_request_data(stream.as_raw_fd(), deadline)?;
@@ -74,7 +190,7 @@ pub fn read_request(stream: &mut UnixStream) -> io::Result<i64> {
                 ));
             }
             Ok(_) if byte[0] == b'\n' && !request.is_empty() => break,
-            Ok(_) if byte[0].is_ascii_digit() && request.len() < MAX_SHELL_ID_DIGITS => {
+            Ok(_) if request.len() < MAX_SHELL_ID_DIGITS + 2 => {
                 request.push(byte[0]);
             }
             Ok(_) => {
@@ -97,6 +213,16 @@ pub fn read_request(stream: &mut UnixStream) -> io::Result<i64> {
 
     let text = std::str::from_utf8(&request)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shell ID is not UTF-8"))?;
+    let (version, text) = match text.strip_prefix("3:") {
+        Some(id) => (AttachVersion::V3, id),
+        None => (AttachVersion::V2, text),
+    };
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid attachment version or shell ID",
+        ));
+    }
     let shell_id = text
         .parse::<i64>()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shell ID is invalid"))?;
@@ -106,7 +232,7 @@ pub fn read_request(stream: &mut UnixStream) -> io::Result<i64> {
             "shell ID must be positive",
         ));
     }
-    Ok(shell_id)
+    Ok(AttachRequest { version, shell_id })
 }
 
 fn wait_for_request_data(file_descriptor: RawFd, deadline: Instant) -> io::Result<()> {
@@ -171,6 +297,22 @@ pub fn write_acceptance(
 ) -> Result<(), (AcceptPhase, io::Error)> {
     stream
         .write_all(&(replay_bytes as u64).to_be_bytes())
+        .map_err(|error| (AcceptPhase::ReplayHeader, error))?;
+    send_descriptor(stream.as_raw_fd(), master.as_raw_fd())
+        .map_err(|error| (AcceptPhase::PtyDescriptor, error))
+}
+
+/// v3's captured grid is the same value passed to TerminalOutput::subscribe.
+pub fn write_snapshot_acceptance(
+    stream: &mut UnixStream,
+    replay_bytes: usize,
+    master: &OwnedFd,
+    size: crate::process::WindowSize,
+) -> Result<(), (AcceptPhase, io::Error)> {
+    stream
+        .write_all(&(replay_bytes as u64).to_be_bytes())
+        .and_then(|()| stream.write_all(&size.rows().to_be_bytes()))
+        .and_then(|()| stream.write_all(&size.columns().to_be_bytes()))
         .map_err(|error| (AcceptPhase::ReplayHeader, error))?;
     send_descriptor(stream.as_raw_fd(), master.as_raw_fd())
         .map_err(|error| (AcceptPhase::PtyDescriptor, error))
@@ -268,6 +410,40 @@ pub fn connect(socket_path: &Path, shell_id: i64) -> io::Result<Attachment> {
 /// Opens one attachment: request, header and PTY descriptor. Replay and live output follow on
 /// `Attachment::control`.
 pub fn open(socket_path: &Path, shell_id: i64) -> io::Result<Attachment> {
+    match open_request(socket_path, shell_id, AttachVersion::V2)? {
+        OpenedAttachment::Legacy(attachment) => Ok(attachment),
+        OpenedAttachment::Snapshot { .. } => Err(io::Error::other("unexpected attachment version")),
+    }
+}
+
+/// Opens v3 and reads its bounded replay off the UI thread. An old daemon's
+/// refusal is explicit: never downgrade to an inferred grid or a new subprocess.
+pub fn open_snapshot(socket_path: &Path, shell_id: i64) -> io::Result<PreparedAttachment> {
+    let opened = open_request(socket_path, shell_id, AttachVersion::V3).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("snapshot attach v3 (requires updated axod): {error}"),
+        )
+    })?;
+    match opened {
+        OpenedAttachment::Snapshot { attachment, size } => attachment.prepare_at(size),
+        OpenedAttachment::Legacy(_) => Err(io::Error::other("snapshot metadata is required")),
+    }
+}
+
+enum OpenedAttachment {
+    Legacy(Attachment),
+    Snapshot {
+        attachment: Attachment,
+        size: crate::process::WindowSize,
+    },
+}
+
+fn open_request(
+    socket_path: &Path,
+    shell_id: i64,
+    version: AttachVersion,
+) -> io::Result<OpenedAttachment> {
     if shell_id <= 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -284,18 +460,38 @@ pub fn open(socket_path: &Path, shell_id: i64) -> io::Result<Attachment> {
                 format!("set attachment write timeout: {error}"),
             )
         })?;
-    writeln!(control, "{shell_id}")?;
+    match version {
+        AttachVersion::V2 => writeln!(control, "{shell_id}")?,
+        AttachVersion::V3 => writeln!(control, "3:{shell_id}")?,
+    }
     let replay_bytes = receive_header(&mut control).map_err(|error| {
         io::Error::new(error.kind(), format!("read attachment header: {error}"))
     })?;
+    let snapshot_size = if version == AttachVersion::V3 {
+        let mut grid = [0; 4];
+        read_exact_with_progress(&mut control, &mut grid, "snapshot grid")?;
+        Some(
+            crate::process::WindowSize::new(
+                u16::from_be_bytes([grid[0], grid[1]]).into(),
+                u16::from_be_bytes([grid[2], grid[3]]).into(),
+            )
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid snapshot grid"))?,
+        )
+    } else {
+        None
+    };
     let pty = receive_pty_master(&control)
         .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
     // The handshake deadline must not turn an idle live terminal into a read failure.
     clear_handshake_timeouts(&control)?;
-    Ok(Attachment {
+    let attachment = Attachment {
         control,
         pty,
         replay_bytes,
+    };
+    Ok(match snapshot_size {
+        Some(size) => OpenedAttachment::Snapshot { attachment, size },
+        None => OpenedAttachment::Legacy(attachment),
     })
 }
 
@@ -303,13 +499,17 @@ fn clear_handshake_timeouts(control: &UnixStream) -> io::Result<()> {
     let cleared = control
         .set_read_timeout(None)
         .and_then(|()| control.set_write_timeout(None));
+    stream_option_result(control, cleared)
+}
+
+fn stream_option_result(_control: &UnixStream, cleared: io::Result<()>) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     if let Err(error) = &cleared {
         // Darwin refuses socket options after the peer disconnects, even with replay
         // still buffered. That stream can only drain to EOF; it cannot wait on a timeout.
         if error.raw_os_error() == Some(libc::EINVAL) {
             let mut descriptor = libc::pollfd {
-                fd: control.as_raw_fd(),
+                fd: _control.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             };
@@ -706,6 +906,193 @@ mod tests {
         control.read_exact(&mut bytes).unwrap();
         assert_eq!(&bytes, b"last");
         assert_eq!(control.read(&mut [0]).unwrap(), 0);
+    }
+
+    fn test_pty(rows: u16, columns: u16) -> (OwnedFd, OwnedFd) {
+        let mut master = -1;
+        let mut slave = -1;
+        let mut size = libc::winsize {
+            ws_row: rows,
+            ws_col: columns,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: writable descriptor outputs and initialized size; name/termios are optional.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut size,
+                )
+            },
+            0
+        );
+        // SAFETY: successful openpty returned two fresh owned descriptors.
+        let descriptors = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        crate::process::set_cloexec(master).unwrap();
+        crate::process::set_cloexec(slave).unwrap();
+        descriptors
+    }
+
+    #[test]
+    fn prepared_attachment_preserves_grid_and_leaves_live_bytes_for_the_renderer() {
+        let (control, mut peer) = UnixStream::pair().unwrap();
+        let (pty, slave) = test_pty(45, 200);
+        let flags = unsafe { libc::fcntl(pty.as_raw_fd(), libc::F_GETFL) };
+        peer.write_all(b"historyLIVE").unwrap();
+        let mut prepared = Attachment {
+            control,
+            pty,
+            replay_bytes: 7,
+        }
+        .prepare_at(crate::process::WindowSize::new(45, 200).unwrap())
+        .unwrap();
+        assert_eq!(prepared.replay(), b"history");
+        assert_eq!(
+            (prepared.size().rows(), prepared.size().columns()),
+            (45, 200)
+        );
+        assert_eq!(prepared.attachment.control.read_timeout().unwrap(), None);
+        let mut live = [0; 4];
+        prepared.attachment.control.read_exact(&mut live).unwrap();
+        assert_eq!(&live, b"LIVE");
+        prepared
+            .attachment
+            .resize(crate::process::WindowSize::new(24, 80).unwrap())
+            .unwrap();
+        assert_eq!(
+            crate::process::window_size(&slave).unwrap(),
+            crate::process::WindowSize::new(24, 80).unwrap()
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(prepared.attachment.pty.as_raw_fd(), libc::F_GETFL) },
+            flags
+        );
+    }
+
+    #[test]
+    fn replay_bootstrap_rejects_truncation_oversize_and_unknown_grid() {
+        for (rows, length, expected) in [
+            (25, 6, io::ErrorKind::UnexpectedEof),
+            (
+                25,
+                MAX_TERMINAL_REPLAY_BYTES as u64 + 1,
+                io::ErrorKind::InvalidData,
+            ),
+            (0, 0, io::ErrorKind::InvalidData),
+        ] {
+            let (control, mut peer) = UnixStream::pair().unwrap();
+            let (pty, _slave) = test_pty(rows, 80);
+            peer.write_all(b"short").unwrap();
+            drop(peer);
+            let error = Attachment {
+                control,
+                pty,
+                replay_bytes: length,
+            }
+            .prepare_at(crate::process::WindowSize::new(25, 80).unwrap())
+            .unwrap_err();
+            assert_eq!(error.kind(), expected);
+        }
+    }
+
+    #[test]
+    fn snapshot_grid_is_captured_metadata_not_a_later_pty_query() {
+        let (listener, path) = listener();
+        let (master, slave) = test_pty(45, 200);
+        let captured = crate::process::WindowSize::new(45, 200).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_versioned_request(&mut stream).unwrap(),
+                AttachRequest {
+                    version: AttachVersion::V3,
+                    shell_id: 42
+                }
+            );
+            // A different client resized after snapshot capture, before descriptor receipt.
+            let changed = libc::winsize {
+                ws_row: 20,
+                ws_col: 70,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            assert_eq!(
+                unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ, &changed) },
+                0
+            );
+            write_snapshot_acceptance(&mut stream, 7, &master, captured).unwrap();
+            stream.write_all(b"historyLIVE").unwrap();
+        });
+        let mut prepared = open_snapshot(&path, 42).unwrap();
+        assert_eq!(prepared.size(), captured);
+        assert_eq!(prepared.replay(), b"history");
+        assert_eq!(
+            crate::process::window_size(&prepared.attachment.pty).unwrap(),
+            crate::process::WindowSize::new(20, 70).unwrap()
+        );
+        let mut live = [0; 4];
+        prepared.attachment.control.read_exact(&mut live).unwrap();
+        assert_eq!(&live, b"LIVE");
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_requests_reject_bad_versions_and_bad_grid_metadata() {
+        for request in [
+            b"3:\n".as_slice(),
+            b"4:42\n",
+            b"3:-1\n",
+            b"3:0\n",
+            b"3:9223372036854775808\n",
+        ] {
+            let (mut server, mut client) = UnixStream::pair().unwrap();
+            client.write_all(request).unwrap();
+            assert!(read_versioned_request(&mut server).is_err());
+        }
+        let (listener, path) = listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_versioned_request(&mut stream).unwrap().version,
+                AttachVersion::V3
+            );
+            stream.write_all(&0_u64.to_be_bytes()).unwrap();
+            stream.write_all(&[0, 0, 0, 80]).unwrap();
+        });
+        assert_eq!(
+            open_snapshot(&path, 1).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_refusal_never_retries_as_legacy() {
+        let (listener, path) = listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_versioned_request(&mut stream).unwrap().version,
+                AttachVersion::V3
+            );
+            write_rejection(&mut stream, Rejection::Other).unwrap();
+            listener
+        });
+        let error = open_snapshot(&path, 1).unwrap_err();
+        assert!(error.to_string().contains("requires updated axod"));
+        let listener = server.join().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -34,6 +34,14 @@ use crate::process::{self, WindowSize};
 /// The largest replay an attachment announces; see `TerminalScreen::replay`.
 pub const MAX_TERMINAL_REPLAY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SUBSCRIBER_BACKLOG_BYTES: usize = 8 * 1024 * 1024;
+
+/// Replay and its actual VT grid, captured under the same output-state lock.
+/// `size` is absent when the headless terminal/snapshot is unavailable; legacy
+/// clients may still consume the degraded empty stream, but v3 must refuse it.
+pub struct CapturedReplay {
+    pub bytes: Vec<u8>,
+    pub size: Option<WindowSize>,
+}
 /// History each PTY's headless terminal keeps, in libghostty-vt page memory. A replay of it is
 /// usually far smaller; `TerminalScreen::replay` sheds history if one would still be too large.
 const SCREEN_SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -253,6 +261,18 @@ impl TerminalOutput {
         size: Option<WindowSize>,
         overflow_shutdown: Option<OwnedFd>,
     ) -> (Vec<u8>, Arc<OutputSubscriber>) {
+        let (snapshot, subscriber) = self.subscribe_captured(size, overflow_shutdown);
+        (snapshot.bytes, subscriber)
+    }
+
+    /// Captures the grid of the VT that actually serialized the replay, not just
+    /// the requested kernel grid (a VT resize can fail). Subscription is atomic
+    /// with the snapshot, so following live chunks cannot overtake it.
+    pub fn subscribe_captured(
+        &self,
+        size: Option<WindowSize>,
+        overflow_shutdown: Option<OwnedFd>,
+    ) -> (CapturedReplay, Arc<OutputSubscriber>) {
         let mut state = self.lock();
         if let Some(size) = size {
             state.screen.resize(size);
@@ -261,7 +281,16 @@ impl TerminalOutput {
         if !state.ended {
             state.subscribers.push(Arc::clone(&subscriber));
         }
-        (state.screen.replay(), subscriber)
+        let bytes = state.screen.replay();
+        let size = if bytes.is_empty() {
+            None
+        } else {
+            state.screen.terminal.as_ref().and_then(|terminal| {
+                let grid = terminal.size();
+                WindowSize::new(grid.rows().into(), grid.columns().into())
+            })
+        };
+        (CapturedReplay { bytes, size }, subscriber)
     }
 
     /// The screen and its scrollback as plain text; empty if the headless terminal is missing.
@@ -702,6 +731,37 @@ mod tests {
             "reflowed onto one 120-column row"
         );
         assert_eq!(parsed(wide, &replay), parsed(wide, &b"x".repeat(100)));
+    }
+
+    #[test]
+    fn captured_replay_reports_its_actual_vt_grid_under_the_snapshot_lock() {
+        let output = TerminalOutput::detached_for_tests();
+        let (blank, _) = output.subscribe_captured(None, None);
+        assert!(!blank.bytes.is_empty());
+        assert_eq!(blank.size, Some(WindowSize::DEFAULT));
+        let actual = WindowSize::new(31, 137).unwrap();
+        output
+            .lock()
+            .screen
+            .terminal
+            .as_mut()
+            .unwrap()
+            .resize(grid_size(actual))
+            .unwrap();
+        output.record(b"captured grid");
+        let (snapshot, _) = output.subscribe_captured(None, None);
+        assert_eq!(snapshot.size, Some(actual));
+        assert!(contains(&snapshot.bytes, "captured grid"));
+    }
+
+    #[test]
+    fn unavailable_snapshot_has_no_fabricated_grid_and_keeps_legacy_degradation() {
+        let output = TerminalOutput::detached_for_tests();
+        output.lock().screen.terminal = None;
+        let (snapshot, _) = output.subscribe_captured(Some(WindowSize::DEFAULT), None);
+        assert_eq!(snapshot.size, None);
+        assert!(snapshot.bytes.is_empty());
+        assert!(output.subscribe(None, None).0.is_empty());
     }
 
     #[test]

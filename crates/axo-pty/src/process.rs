@@ -372,10 +372,8 @@ pub fn window_size(master: &OwnedFd) -> io::Result<WindowSize> {
     if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    Ok(WindowSize {
-        rows: size.ws_row,
-        columns: size.ws_col,
-    })
+    WindowSize::new(size.ws_row.into(), size.ws_col.into())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "PTY has no valid grid size"))
 }
 
 /// Resizes only when the size differs, so an unchanged layout never interrupts the program
