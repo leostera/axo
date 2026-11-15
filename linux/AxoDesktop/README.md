@@ -2,7 +2,7 @@
 
 A Rust/GTK4 window embedding the **real pinned Ghostty GTK terminal surface**, its VT engine, renderer, fonts and native input machinery. Not GNOME VTE, a browser, or a home-grown text renderer.
 
-The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, manual catalog refresh, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, live event/reconnect coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
+The first local workbench has a compact Session sidebar, selected Session, real Pi/terminal panes from the daemon's persisted right/down layout, live catalog updates, reconnect, replay/input and resize. Switching Sessions or quitting detaches; children keep running. Closing hides the window only when a tray host is confirmed; otherwise it quits. It uses the shared Rust client, not a CLI subprocess or separate backend. This is **not yet Mac feature/visual parity**: creation, dormant Pi wake, app-wide viewport coordination, layout writes, archive/close, grouping and palette remain pending. Native settings now expose daemon-owned shell/agent commands and idle Pi limits; appearance, power, grouping and remote-access settings remain pending. The presentation now follows screenshots of the running Mac app: neutral grouped settings with inline values, a fixed 220px sidebar with 22px Session rows, native drag/window controls and caption-free, full-height panes. This is not a complete Mac visual/behavioral conformance claim.
 
 ## Build and run
 
@@ -31,9 +31,9 @@ renderer. The workbench keeps GTK CSD move/resize behavior and the platform's
 window-control order inside the sidebar; the terminal has no full-width titlebar.
 The unneeded wordmark and visible pane captions are removed; Pi/terminal groups
 retain accessible names. Session rows have the daemon's last-read status, emoji or
-native fallback glyph; sleeping Pis stay gray rather than appearing ready. Manual
-refresh still controls freshness; there is no fabricated unseen/activity state or
-live subscription. Footer actions retain accessible names/tooltips and keyboard
+native fallback glyph; sleeping Pis stay gray rather than appearing ready. A single shared Rust catalog subscription now drives freshness; manual Refresh
+remains available without recreating healthy panes. There is no fabricated unseen
+or grouping state. Footer actions retain accessible names/tooltips and keyboard
 access.
 
 Settings use a 180px icon sidebar with its own native title/close controls, not a
@@ -84,12 +84,38 @@ window-only; native KDE/GNOME/Wayland panel behavior still needs acceptance.
 ## Terminal ownership
 
 - `axo-pty::attach` owns the shared v2/v3 wire implementation. v3 supplies the exact grid used to generate its replay, independent of later PTY resizes.
-- `axo-client` owns the shared bounded request/event transport also used by the CLI. `LocalCatalog` binds unique pane identities and layouts to their owning Session and refuses relative advertised sockets. `src/workbench.rs` owns only GTK presentation/selection; catalog reads run off-thread with a deadline and do not wake dormant Pi or mutate the catalog.
+- `axo-client` owns the shared bounded request/event transport also used by the CLI. `LocalCatalog` binds unique pane identities and layouts to their owning Session and refuses relative advertised sockets. `src/workbench.rs` owns only GTK presentation/selection; `CatalogWatcher` owns one read-only subscription and bounded catalog/health reads, without waking dormant Pi or mutating the catalog. `src/catalog_task.rs` bridges one latest-state mailbox to GTK and cancels the worker on teardown.
 - `src/task.rs` owns one bounded worker result and cancel-safe GTK delivery. `src/attachment.rs` opens/reads the bounded replay off the GTK thread. Dropping its task removes the delivery callback and closes undelivered attachments; a late worker cannot install a view that was closed.
 - `src/ghostty.rs` owns the private, main-thread-only bridge. Widgets retain their engine and immutable prepared attachment through GObject finalization, including before realize.
 - `native/bridge.zig` hosts Ghostty's existing GTK Application/Surface classes with supplied prototype defaults. The GTK-only patch initializes at the captured grid and parses the bounded canonical replay during native surface creation, before live I/O threads and actual-viewport resize. No socket I/O runs on the GTK thread. Large-replay initialization latency has not been characterized.
 - Ghostty reads output from the attachment socket, **never from the PTY master**. Input, termios queries and host-controlled viewport changes use the master without changing its shared file-status flags. Closing a surface stops its reader and releases duplicates, not the daemon's child process.
 - The Rust host owns app/window lifetime: a temporary zero-surface state during catalog load or Session switching is not quit. App-level quit/unrealize also cancels tasks and releases views. Teardown rejects live widgets rather than freeing renderer state beneath them. The Apple XCFramework recipe/patch selection is unchanged; the GTK bridge is a private pinned API, not an upstream stable embedding ABI.
+
+## Live catalog and reconnect
+
+The shared watcher subscribes before reading the authoritative catalog. Events
+invalidate reads rather than applying older subscription snapshots; bursts coalesce,
+and idle catalogs do not poll the daemon. EOF, lag, malformed frames and failed
+reads discard both connections and retry with bounded backoff. Offline/starting
+views are detached and input-disabled; selection is preserved for recovery. A new
+subscription epoch forces fresh v3 attachments even if every pane ID/PID/path
+matches and GTK missed the intermediate offline notification. Metadata-only updates
+and healthy manual refresh keep the selected widgets intact.
+
+Independent attachment EOF comes from Ghostty's existing native `child-exited`
+notification after output is drained. Widget replacement is deferred beyond the
+native callback, then weak view identity is checked. A single selected-view timer
+backs off read-only attach retries from 500 ms to 5 s. Transient handshake failures
+retry; unsupported v3/invalid replay and renderer failures remain explicit errors
+without downgrade or shell fallback. Manual Refresh can retry a failed view.
+Selection changes/quit cancel retries and stale delivery; the reconnect controller
+never queues or replays input or settings writes. Tray daemon status uses this same catalog
+owner instead of another health poller. A failed worker is shown as stopped with
+explicit Refresh recovery, never a fabricated reconnect loop.
+
+This does not create/wake Sessions, follow focus intents, write layouts or publish
+an app-wide viewport. Existing actual-surface master resizes still apply after v3
+bootstrap. Those coordination/product slices remain separate.
 
 ## Controls and parity limits
 
@@ -134,7 +160,20 @@ native sidebar Close button. It uses an owned daemon plus a local protocol fixtu
 add GDK3 introspection for its owned-desktop screenshot.
 
 The workbench driver checks 22px row bounds, named caption-free pane groups,
-top-edge geometry, actual native Close, semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, catalog refresh discovering a new Session without changing selection, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
+top-edge geometry, actual native Close, semantic AT-SPI sidebar selection A/B/A, two real rendered Pi/terminal PTYs, persisted right/down layout and ratio, keyboard routing, matching kernel grids, multi-pane resize, live catalog create/rename/remove without recreating selected panes, healthy explicit refresh, child survival and clean teardown. It also rejects termios-query failures (the output socket is not a tty).
+
+`reconnect_drive.py` adds an owned RPC/attach proxy around that same real fixture
+daemon. It cuts catalog transport and attachment output independently, holds a late
+handshake across a selection change, checks new epochs/fresh replay, exactly two
+native pane groups, unchanged child PIDs/input counts, no replay of keys typed
+while offline, and released connections on quit. The proxy forwards v3 descriptor
+markers with CLOEXEC and never changes shared master flags. Run it with the same
+isolated launcher as the other drivers; no live service is restarted. The current candidate passes all six GTK drivers,
+with additional reconnect repeats, and all eight focused Bazel suites. The 18
+shared client tests pass ten complete runs. Some unchanged server/PTY/IPC/protocol
+checks are cached in this slice; native Mac and real Wayland/GPU acceptance were
+not rerun. App-wide viewport publication and cold daemon-restart acceptance remain
+separate from these transport-cut tests.
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 

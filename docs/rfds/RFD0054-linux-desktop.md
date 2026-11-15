@@ -24,7 +24,7 @@ For example, a legacy v2 client opening shell 105 connects to `attach.sock`, sen
 
 The product UI target is the Mac workbench's compact Session sidebar and full-height terminal/pane area, with the same selection, splitting and keyboard workflows adapted to native Linux conventions. The prototype's GTK title/header bar is scaffolding, not the final design. Matching the terminal engine does not by itself match fonts, padding, selection/copy policy, shortcuts, find, scrollbars, IME or accessibility; these require explicit comparisons with the Mac adapters.
 
-The initial standalone prototype owns a local command/PTY through Ghostty. This remains an explicit development mode, not an alternative Session backend. The attached slice now accepts an explicit candidate daemon socket and shell ID, using [v3 captured-grid metadata](RFD0055-terminal-snapshot-grid.md); it never implicitly connects to or upgrades the paired daemon. An explicit `--socket` mode now reads the local catalog through `axo-client`, shows a compact Session sidebar and selected persisted split layout, and detaches old views when selection changes. Catalog refresh is manual. It does not yet create/wake/recover Sessions, write layout changes, subscribe/reconnect, archive, or implement the remaining Mac controls.
+The initial standalone prototype owns a local command/PTY through Ghostty. This remains an explicit development mode, not an alternative Session backend. The attached slice now accepts an explicit candidate daemon socket and shell ID, using [v3 captured-grid metadata](RFD0055-terminal-snapshot-grid.md); it never implicitly connects to or upgrades the paired daemon. An explicit `--socket` mode now reads the local catalog through `axo-client`, shows a compact Session sidebar and selected persisted split layout, and detaches old views when selection changes. A shared `axo-client::CatalogWatcher` now subscribes before authoritative catalog/health reads, coalesces invalidations and reconnects with bounded backoff. GTK consumes one latest-state mailbox, detaches offline views and recreates attachments on epoch changes; metadata-only updates preserve healthy widgets. It does not yet create/wake/recover Sessions, coordinate app-wide viewports, write layout changes, archive, or implement the remaining Mac controls.
 
 ## Reference-level explanation
 
@@ -81,8 +81,8 @@ screenshots, not just a source interpretation. It keeps the 220-point sidebar,
 22-point Session rows and full-height panes while retaining GTK widgets and native
 platform window controls. The wordmark and visible pane captions are removed;
 Pi/terminal pane groups remain accessible by name. Status/glyphs come from the last
-catalog read, with dormant Pis gray; no unseen/grouping/live-update behavior is
-invented. `style.rs` is scoped to Axo windows, with neutral surfaces and quiet
+catalog read, now refreshed by the live shared subscription, with dormant Pis gray;
+no unseen/grouping behavior is invented. `style.rs` is scoped to Axo windows, with neutral surfaces and quiet
 selection. GTK WindowHandle/WindowControls supply move, resize and window actions;
 there is no drawn imitation of macOS traffic lights.
 
@@ -156,7 +156,7 @@ Implement serially:
 
 ### Tests and compatibility
 
-`workbench_drive.py` tests a real isolated daemon's local sidebar, Pi/terminal panes, persisted right/down split and ratio, A/B/A selection, rendered replay, distinct keyboard input, viewport/kernel sizing, multi-pane resize, refresh preserving selection while discovering a new Session, termios-master polling and clean detach/teardown. Creation, sleep/wake, subscriptions/reconnect and destructive operations still need their own slices and acceptance.
+`workbench_drive.py` tests a real isolated daemon's local sidebar, Pi/terminal panes, persisted right/down split and ratio, A/B/A selection, rendered replay, distinct keyboard input, viewport/kernel sizing, multi-pane resize, live catalog create/rename/remove without replacing healthy selected panes, explicit refresh, termios-master polling and clean detach/teardown. `reconnect_drive.py` cuts owned RPC and v3 attach proxies independently, proves epoch-based recovery with identical IDs/PIDs, native output-EOF retry, cancelled late attachment delivery, no duplicate pane groups/input replay and released connections on quit. Shared watcher tests cover subscribe-before-list ordering, lag/malformed frames, readiness, bounded latest delivery, idle reads, startup absence and prompt cancellation. Creation, sleep/wake, app-wide viewport coordination and destructive operations still need their own slices and acceptance.
 
 Use existing Rust unit/conformance tests for shared behavior and an owned Xvfb/D-Bus/GTK fixture for actual rendered output, input, resize and widget teardown. Add independent tests for renderer close versus Session close, replay-grid preservation, stale attach completion, reconnect and offline/unsupported states. Test receiving descriptor CLOEXEC/truncation/error cleanup at the shared IPC boundary, not just through GUI happy paths.
 

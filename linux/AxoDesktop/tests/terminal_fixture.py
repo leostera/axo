@@ -10,7 +10,7 @@ import sys
 import termios
 
 state_file = pathlib.Path(sys.argv[1])
-state = {'pid': os.getpid(), 'input': None, 'exited': False}
+state = {'pid': os.getpid(), 'input': None, 'inputCount': 0, 'exited': False}
 
 
 def publish(*_):
@@ -32,6 +32,7 @@ sys.stdout.flush()
 publish()
 for line in sys.stdin:
     state['input'] = line.strip()
+    state['inputCount'] += 1
     publish()
     print('INPUT_OK:', state['input'], flush=True)
     if state['input'] == 'quit':

@@ -68,6 +68,18 @@ impl Surface {
         unsafe { axo_gtk_surface_focus(self.widget.to_glib_none().0) };
     }
 
+    /// External-stream EOF is reported by Ghostty after its reader drains and parses output.
+    /// Callers must defer widget replacement until this native notification has returned.
+    pub fn on_output_ended(&self, ended: impl Fn() + 'static) {
+        let notified = Cell::new(false);
+        self.widget
+            .connect_notify_local(Some("child-exited"), move |widget, _| {
+                if widget.property::<bool>("child-exited") && !notified.replace(true) {
+                    ended();
+                }
+            });
+    }
+
     pub fn on_frame(&self, observe: impl Fn(SurfaceStats, i64) + 'static) {
         // The callback is attached only to a widget constructed by this module; it
         // does not capture a strong reference to that widget and create a cycle.

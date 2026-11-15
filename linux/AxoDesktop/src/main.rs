@@ -1,5 +1,6 @@
 //! Native Rust/GTK4 shell around Ghostty's actual GTK terminal widget.
 mod attachment;
+mod catalog_task;
 mod ghostty;
 #[cfg(test)]
 mod options_tests;

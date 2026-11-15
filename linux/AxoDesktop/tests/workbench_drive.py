@@ -23,6 +23,7 @@ repository = here.parents[2]
 rpc = runpy.run_path(str(repository / 'linux/smoke.py'))['rpc']
 ipc = run / 'server/axod.sock'
 processes, logs = [], []
+proxy = None
 
 
 def start(command, name, **options):
@@ -59,13 +60,35 @@ def xdo(*args):
 def find_label(app, text):
     desktop = Atspi.get_desktop(0)
     apps = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
-    pending = [node for node in apps if node.get_process_id() == app.pid]
+    pending = [node for node in apps if node is not None and node.get_process_id() == app.pid]
     while pending:
         node = pending.pop()
-        name = node.get_name()
-        if (node.get_role() in [Atspi.Role.LABEL, Atspi.Role.PUSH_BUTTON] or name in ['Pi pane', 'Terminal pane']) and (name == text or name.endswith(' ' + text) or node.get_description() == text):
-            return node
-        pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+        if node is None:
+            continue  # Live catalog updates can remove an AT-SPI child during traversal.
+        try:
+            name = node.get_name() or ''
+            if (node.get_role() in [Atspi.Role.LABEL, Atspi.Role.PUSH_BUTTON] or name in ['Pi pane', 'Terminal pane']) and (name == text or name.endswith(' ' + text) or node.get_description() == text):
+                return node
+            pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+        except GLib.Error:
+            continue
+
+
+def pane_group_count(app):
+    desktop = Atspi.get_desktop(0)
+    pending = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+    pending = [node for node in pending if node is not None and node.get_process_id() == app.pid]
+    count = 0
+    while pending:
+        node = pending.pop()
+        if node is None:
+            continue
+        try:
+            count += node.get_name() in ['Pi pane', 'Terminal pane']
+            pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+        except GLib.Error:
+            continue
+    return count
 
 
 def click_label(app, window, text, below=0):
@@ -128,7 +151,12 @@ try:
         wait(f'{tag} fixture', lambda: read(state), daemon)
         sessions.append((tag, session, state))
     diagnostics, picture = run/'workbench.json', run/'workbench.png'
-    app = start([str(binary), '--socket', str(ipc), '--diagnostics', str(diagnostics), '--snapshot', str(picture)], 'workbench', cwd=run/'home')
+    frontend_socket = ipc
+    if os.environ.get('AXO_DESKTOP_RECONNECT_TEST') == '1':
+        from reconnect_proxy import OwnedProxy
+        proxy = OwnedProxy(run, ipc)
+        frontend_socket = proxy.rpc_path
+    app = start([str(binary), '--socket', str(frontend_socket), '--diagnostics', str(diagnostics), '--snapshot', str(picture)], 'workbench', cwd=run/'home')
     window = wait('GTK workbench window', lambda: xdo('search','--onlyvisible','--pid',app.pid,'--name','^Axo').splitlines()[0], app)
     xdo('windowactivate', '--sync', window)
     caption = wait('compact sidebar caption', lambda: find_label(app, 'Sessions'), app)
@@ -144,6 +172,7 @@ try:
     for index, (tag, session, state) in enumerate(sessions + sessions[:1]):
         click_label(app, window, tag)
         data = wait(f'{tag}: both native panes ready', lambda: selected(session), app)
+        wait('exactly two native pane groups', lambda: pane_group_count(app) == 2, app)
         if tag == 'workbench-B':
             pi_id = next(shell['id'] for shell in session['shells'] if shell['role'] == 'pi')
             terminal_id = next(shell['id'] for shell in session['shells'] if shell['role'] == 'terminal')
@@ -176,14 +205,64 @@ try:
         data = selected(session)
         grid = next(pane for pane in data['panes'] if pane['shellId'] == terminal['id'])
         wait('layout viewport matches kernel PTY', lambda: read(state)['columns'] == grid['columns'] and read(state)['rows'] == grid['rows'], app)
-    # Catalog refresh preserves the selected view, but discovers newly created Sessions.
+    # Live updates discover new Sessions without a manual refresh or view replacement.
+    generation = read(diagnostics)['viewGeneration']
     folder = run/'home'/'workbench-C'
     folder.mkdir()
     third = rpc(ipc, 'axo.session.create', {'folder':str(folder)})
     rpc(ipc, 'axo.session.rename', {'sessionId':third['id'], 'name':'workbench-C'})
+    wait('new Session appears live', lambda: find_label(app, 'workbench-C'), app)
+    assert selected(sessions[0][1]), 'live update changed the selected Session'
+    assert read(diagnostics)['viewGeneration'] == generation, 'unrelated Session recreated selected panes'
+    rpc(ipc, 'axo.session.rename', {'sessionId':sessions[0][1]['id'], 'name':'workbench-A-live'})
+    wait('live rename', lambda: find_label(app, 'workbench-A-live'), app)
+    assert read(diagnostics)['viewGeneration'] == generation, 'rename recreated terminal widgets'
+    rpc(ipc, 'axo.session.rename', {'sessionId':sessions[0][1]['id'], 'name':'workbench-A'})
+    wait('live rename restored', lambda: find_label(app, 'workbench-A'), app)
     click_label(app, window, 'Refresh Sessions')
-    wait('new Session appears after native refresh', lambda: find_label(app, 'workbench-C'), app)
-    assert selected(sessions[0][1]), 'refresh changed the selected Session'
+    rpc(ipc, 'axo.session.rename', {'sessionId':third['id'], 'name':'workbench-C-refreshed'})
+    wait('refresh and event update settle', lambda: find_label(app, 'workbench-C-refreshed'), app)
+    assert read(diagnostics)['viewGeneration'] == generation, 'healthy refresh recreated terminal widgets'
+    rpc(ipc, 'axo.session.close', {'sessionId':third['id']})
+    wait('externally archived Session disappears live', lambda: find_label(app, 'workbench-C-refreshed') is None, app)
+    assert read(diagnostics)['viewGeneration'] == generation, 'unrelated removal recreated selected panes'
+
+    if proxy:
+        counts = {tag: read(state)['inputCount'] for tag, _, state in sessions}
+        before = read(diagnostics)
+        proxy.available = False
+        proxy.cut('rpc')
+        wait('offline view is detached', lambda: find_label(app, 'Daemon disconnected. Reconnecting…'), app)
+        xdo('type', '--clearmodifiers', '--delay', '5', 'MUST_NOT_REPLAY')
+        xdo('key', '--clearmodifiers', 'Return')
+        proxy.available = True
+        wait('catalog reconnect installs fresh epoch and selected view', lambda:
+             selected(sessions[0][1]) and read(diagnostics)['catalogEpoch'] > before['catalogEpoch']
+             and read(diagnostics)['viewGeneration'] > before['viewGeneration'], app)
+        before = read(diagnostics)
+        proxy.cut('attach')
+        wait('Ghostty EOF reconnects output without resetting catalog', lambda:
+             selected(sessions[0][1]) and read(diagnostics)['viewGeneration'] > before['viewGeneration'], app)
+        assert read(diagnostics)['catalogEpoch'] == before['catalogEpoch']
+        wait('exactly two panes after EOF retry', lambda: pane_group_count(app) == 2, app)
+        # Hold an attachment handshake, switch selection, then release its stale completion.
+        proxy.attach_gate.clear()
+        opened = proxy.opened['attach']
+        before_pending = read(diagnostics)['viewGeneration']
+        click_label(app, window, 'workbench-B')
+        wait('owned pending attachments', lambda: proxy.opened['attach'] > opened, app)
+        click_label(app, window, 'workbench-A')
+        proxy.attach_gate.set()
+        wait('new selection owns both panes after late old attach', lambda:
+             selected(sessions[0][1]) and read(diagnostics)['viewGeneration'] > before_pending, app)
+        wait('exactly two panes after late attachment', lambda: pane_group_count(app) == 2, app)
+        click_pane(app, window, 'Terminal pane')
+        assert 'GHOSTTY_RENDER_PROBE' in rendered_text(app, window)
+        for tag, _, state in sessions:
+            assert read(state)['pid'] == original_pids[tag], 'transport retry restarted a child'
+            assert read(state)['inputCount'] == counts[tag], 'transport retry replayed input'
+        assert not proxy.errors, proxy.errors
+    data = selected(sessions[0][1])
     original_width = wait('initial workbench snapshot', lambda: GdkPixbuf.Pixbuf.new_from_file(str(picture)).get_width(), app)
     xdo('windowsize', '--sync', window, '1350', '850')
     wait('two pane grids resize', lambda: all(pane['columns'] > next(old['columns'] for old in data['panes'] if old['shellId'] == pane['shellId']) for pane in read(diagnostics)['panes']), app)
@@ -192,13 +271,18 @@ try:
     settled = time.time() + 0.8
     wait('settled workbench snapshot', lambda: picture.stat().st_mtime > settled, app)
     stop(app, window)
+    if proxy:
+        wait('catalog/attachment connections released on quit', lambda: proxy.count('rpc') == 0 and proxy.count('attach') == 0, daemon)
+        assert not proxy.errors, proxy.errors
     for tag, session, state in sessions:
         assert not read(state)['exited']
         for shell in session['shells']:
             os.kill(shell['processId'], 0)
     assert daemon.poll() is None
-    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar, 22px rows and caption-free accessible panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'native catalog refresh preserves selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
+    print(json.dumps({'status':'passed', 'checks':['owned real axod catalog', 'compact fixed-width Session sidebar, 22px rows and caption-free accessible panes', 'two actual Ghostty panes per persisted right/down layout', 'rendered Pi and terminal replay', 'selection A/B/A detaches without stopping children', 'keyboard routed to selected pane', 'kernel resize matches viewport', 'two pane resize', 'live catalog create/rename/remove without replacing selected panes', 'explicit refresh preserves selection', 'isolated RPC and attachment EOF recovery, stale attach cancellation and no input replay' if proxy else 'detach-only selection', 'master-fd termios polling', 'clean widget and engine teardown'], 'snapshot':str(picture)}))
 finally:
+    if proxy:
+        proxy.close()
     for process in reversed(processes):
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)

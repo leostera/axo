@@ -1,7 +1,7 @@
-//! First local catalog workbench. Daemon owns sessions/layout/processes; this view
+//! Live local catalog workbench. Daemon owns sessions/layout/processes; this view
 //! owns selection and cancellable, detach-only Ghostty widgets. No CLI subprocess.
-use crate::{Options, attachment::AttachmentTask, ghostty::Engine, task::MainThreadTask};
-use axo_client::LocalCatalog;
+use crate::{Options, attachment::AttachmentTask, catalog_task::CatalogTask, ghostty::Engine};
+use axo_client::{CatalogState, LocalCatalog};
 use axo_protocol::{
     Availability, LayoutDirection, LayoutNode, PaneRole, SessionId, SessionRecord, SessionStatus,
     ShellId,
@@ -9,9 +9,10 @@ use axo_protocol::{
 use gtk4::{glib, prelude::*};
 use std::{
     cell::{Cell, RefCell},
-    io,
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 pub fn create_window(
@@ -92,6 +93,11 @@ pub fn create_window(
         content,
         catalog: RefCell::new(None),
         task: RefCell::new(None),
+        epoch: Cell::new(None),
+        view_generation: Cell::new(0),
+        online: Cell::new(false),
+        retry_timer: RefCell::new(None),
+        retry_delay: Cell::new(Duration::from_millis(500)),
         selected: Cell::new(None),
         view: RefCell::new(None),
         updating: Cell::new(false),
@@ -99,8 +105,7 @@ pub fn create_window(
         settings_window: glib::WeakRef::new(),
         tray: RefCell::new(None),
         tray_available: Cell::new(false),
-        health_task: RefCell::new(None),
-        health_timer: RefCell::new(None),
+        daemon_status: RefCell::new("Daemon connecting…".into()),
     });
     let settings_action = gtk4::gio::SimpleAction::new("settings", None);
     settings_action.connect_activate({
@@ -117,7 +122,7 @@ pub fn create_window(
         let model = Rc::downgrade(&model);
         move |_| {
             if let Some(model) = model.upgrade() {
-                model.reload();
+                model.refresh_selected();
             }
         }
     });
@@ -177,8 +182,13 @@ struct Workbench {
     status: gtk4::Label,
     refresh: gtk4::Button,
     content: gtk4::Box,
-    catalog: RefCell<Option<Rc<LocalCatalog>>>,
-    task: RefCell<Option<MainThreadTask>>,
+    catalog: RefCell<Option<Arc<LocalCatalog>>>,
+    task: RefCell<Option<CatalogTask>>,
+    epoch: Cell<Option<u64>>,
+    view_generation: Cell<u64>,
+    online: Cell<bool>,
+    retry_timer: RefCell<Option<glib::SourceId>>,
+    retry_delay: Cell<Duration>,
     selected: Cell<Option<SessionId>>,
     view: RefCell<Option<Rc<SessionView>>>,
     updating: Cell<bool>,
@@ -186,8 +196,7 @@ struct Workbench {
     settings_window: glib::WeakRef<gtk4::Window>,
     tray: RefCell<Option<crate::tray::Tray>>,
     tray_available: Cell<bool>,
-    health_task: RefCell<Option<MainThreadTask>>,
-    health_timer: RefCell<Option<glib::SourceId>>,
+    daemon_status: RefCell<String>,
 }
 impl Workbench {
     fn start_tray(self: &Rc<Self>) {
@@ -216,7 +225,7 @@ impl Workbench {
                         {
                             model.tray_available.set(available);
                             if available {
-                                model.refresh_daemon_status();
+                                model.publish_daemon_status();
                             } else if let Some(window) =
                                 model.window.upgrade().filter(|window| !window.is_visible())
                             {
@@ -226,22 +235,14 @@ impl Workbench {
                     },
                 );
                 match tray {
-                    Ok(tray) => *model.tray.borrow_mut() = Some(tray),
+                    Ok(tray) => {
+                        *model.tray.borrow_mut() = Some(tray);
+                        model.publish_daemon_status();
+                    }
                     Err(error) => eprintln!("AxoDesktop: tray unavailable: {error}"),
                 }
             },
         );
-        let weak = Rc::downgrade(self);
-        *self.health_timer.borrow_mut() = Some(glib::timeout_add_local(
-            std::time::Duration::from_secs(15),
-            move || {
-                let Some(model) = weak.upgrade() else {
-                    return glib::ControlFlow::Break;
-                };
-                model.refresh_daemon_status();
-                glib::ControlFlow::Continue
-            },
-        ));
     }
     fn tray_action(self: &Rc<Self>, action: crate::tray::Action) {
         if self.closing.get() {
@@ -272,48 +273,123 @@ impl Workbench {
             }
         }
     }
-    fn refresh_daemon_status(self: &Rc<Self>) {
-        if self.closing.get() || !self.tray_available.get() || self.health_task.borrow().is_some() {
+    fn publish_daemon_status(&self) {
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            tray.daemon_status(&self.daemon_status.borrow());
+        }
+    }
+    fn observe_catalog(self: &Rc<Self>, state: Arc<CatalogState>) {
+        if self.closing.get() {
             return;
         }
-        let socket = self.socket.clone();
-        let weak = Rc::downgrade(self);
-        let task = MainThreadTask::start(
-            "axo-tray-health",
-            move || {
-                crate::task::daemon_request(&socket, |mut client| async move {
-                    client
-                        .call_typed::<axo_protocol::rpc::DaemonHealth>(
-                            axo_protocol::rpc::method::DAEMON_HEALTH,
-                            serde_json::json!({}),
-                        )
-                        .await
-                })
-            },
-            move |result| {
-                let Some(model) = weak.upgrade() else { return };
-                model.health_task.borrow_mut().take();
-                let status = match result {
-                    Ok(health) => format!(
-                        "Daemon {} · Axo {}",
-                        if health.ready { "running" } else { "starting" },
-                        health.version
-                    ),
-                    Err(_) => "Daemon unavailable".into(),
-                };
-                if let Some(tray) = model.tray.borrow().as_ref() {
-                    tray.daemon_status(&status);
+        match state.as_ref() {
+            CatalogState::Connecting => {
+                self.online.set(false);
+                self.list.set_sensitive(false);
+                self.detach_view("Connecting to daemon…");
+                self.status.set_text("Connecting…");
+                *self.daemon_status.borrow_mut() = "Daemon connecting…".into();
+            }
+            CatalogState::Reconnecting { reason } => {
+                self.online.set(false);
+                self.list.set_sensitive(false);
+                self.detach_view("Daemon disconnected. Reconnecting…");
+                self.status.set_text(&format!("Reconnecting: {reason}"));
+                *self.daemon_status.borrow_mut() = "Daemon unavailable · reconnecting".into();
+            }
+            CatalogState::Live(snapshot) => {
+                // Latest-state delivery may coalesce an entire outage. Epoch changes still
+                // force fresh attachments even when IDs, PIDs and advertised paths match.
+                if self.epoch.replace(Some(snapshot.epoch)) != Some(snapshot.epoch)
+                    || !snapshot.health.ready
+                {
+                    self.detach_view("Waiting for daemon readiness…");
                 }
-            },
-        );
-        match task {
-            Ok(task) => *self.health_task.borrow_mut() = Some(task),
-            Err(_) => {
-                if let Some(tray) = self.tray.borrow().as_ref() {
-                    tray.daemon_status("Daemon status unavailable");
-                }
+                self.online.set(snapshot.health.ready);
+                self.list.set_sensitive(snapshot.health.ready);
+                self.install_catalog(snapshot.catalog.clone());
+                self.status.set_text(if !snapshot.health.ready {
+                    "Daemon starting…"
+                } else if self.retry_timer.borrow().is_some() {
+                    "Reconnecting terminal…"
+                } else {
+                    ""
+                });
+                *self.daemon_status.borrow_mut() = format!(
+                    "Daemon {} · Axo {}",
+                    if snapshot.health.ready {
+                        "running"
+                    } else {
+                        "starting"
+                    },
+                    snapshot.health.version
+                );
             }
         }
+        self.publish_daemon_status();
+    }
+    fn cancel_retry(&self) {
+        if let Some(timer) = self.retry_timer.borrow_mut().take() {
+            timer.remove();
+        }
+    }
+    fn detach_view(&self, message: &str) {
+        self.cancel_retry();
+        self.view.borrow_mut().take();
+        while let Some(child) = self.content.first_child() {
+            self.content.remove(&child);
+        }
+        self.content.append(&notice(message));
+    }
+    fn refresh_selected(self: &Rc<Self>) {
+        if self.closing.get() {
+            return;
+        }
+        let retry = self
+            .view
+            .borrow()
+            .as_ref()
+            .is_some_and(|view| view.needs_retry.get());
+        if retry {
+            self.detach_view("Reconnecting Session…");
+        }
+        self.reload();
+    }
+    fn schedule_retry(self: &Rc<Self>, view: &Rc<SessionView>) {
+        if self.closing.get()
+            || !self.online.get()
+            || self.retry_timer.borrow().is_some()
+            || !self
+                .view
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(current, view))
+        {
+            return;
+        }
+        if view.began.elapsed() >= Duration::from_secs(10) {
+            self.retry_delay.set(Duration::from_millis(500));
+        }
+        let delay = self.retry_delay.get();
+        self.retry_delay
+            .set((delay * 2).min(Duration::from_secs(5)));
+        self.status.set_text("Reconnecting terminal…");
+        let weak = Rc::downgrade(self);
+        let view = Rc::downgrade(view);
+        *self.retry_timer.borrow_mut() = Some(glib::timeout_add_local_once(delay, move || {
+            let Some(model) = weak.upgrade() else { return };
+            model.retry_timer.borrow_mut().take();
+            if let Some(view) = view.upgrade() {
+                if model
+                    .view
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &view))
+                {
+                    model.refresh_selected();
+                }
+            }
+        }));
     }
     fn open_settings(&self) {
         if self.closing.get() {
@@ -335,10 +411,7 @@ impl Workbench {
         if let Some(window) = self.settings_window.upgrade() {
             window.destroy();
         }
-        if let Some(timer) = self.health_timer.borrow_mut().take() {
-            timer.remove();
-        }
-        self.health_task.borrow_mut().take();
+        self.cancel_retry();
         self.tray.borrow_mut().take();
         self.tray_available.set(false);
         self.task.borrow_mut().take();
@@ -347,40 +420,45 @@ impl Workbench {
             self.content.remove(&child);
         }
     }
-    fn reload(self: &Rc<Self>) {
-        if self.closing.get() || self.task.borrow().is_some() {
+    fn observer_stopped(&self, reason: &str) {
+        if self.closing.get() {
             return;
         }
-        self.status.set_text("Refreshing…");
-        self.refresh.set_sensitive(false);
-        let socket = self.socket.clone();
+        self.online.set(false);
+        self.list.set_sensitive(false);
+        self.detach_view("Catalog observer stopped. Refresh Sessions to retry.");
+        self.status.set_text(&format!("Observer stopped: {reason}"));
+        *self.daemon_status.borrow_mut() = "Daemon status unavailable".into();
+        self.publish_daemon_status();
+    }
+    fn reload(self: &Rc<Self>) {
+        if self.closing.get() {
+            return;
+        }
+        if self
+            .task
+            .borrow()
+            .as_ref()
+            .is_some_and(CatalogTask::refresh)
+        {
+            return;
+        }
+        self.task.borrow_mut().take();
+        self.observe_catalog(Arc::new(CatalogState::Connecting));
         let weak = Rc::downgrade(self);
-        let task = MainThreadTask::start(
-            "axo-catalog",
-            move || load_catalog(socket),
-            move |result| {
-                let Some(model) = weak.upgrade().filter(|model| !model.closing.get()) else {
-                    return;
-                };
-                model.task.borrow_mut().take();
-                model.refresh.set_sensitive(true);
+        match CatalogTask::start(self.socket.clone(), move |result| {
+            if let Some(model) = weak.upgrade() {
                 match result {
-                    Ok(catalog) => model.install_catalog(catalog),
-                    Err(error) => model
-                        .status
-                        .set_text(&format!("Cannot load Sessions: {error}")),
+                    Ok(state) => model.observe_catalog(state),
+                    Err(reason) => model.observer_stopped(&reason),
                 }
-            },
-        );
-        match task {
-            Ok(task) => *self.task.borrow_mut() = Some(task),
-            Err(error) => {
-                self.status.set_text(&error.to_string());
-                self.refresh.set_sensitive(true);
             }
+        }) {
+            Ok(task) => *self.task.borrow_mut() = Some(task),
+            Err(error) => self.observer_stopped(&error.to_string()),
         }
     }
-    fn install_catalog(self: &Rc<Self>, catalog: LocalCatalog) {
+    fn install_catalog(self: &Rc<Self>, catalog: Arc<LocalCatalog>) {
         let selected = self
             .selected
             .get()
@@ -393,16 +471,17 @@ impl Workbench {
         for session in catalog.sessions() {
             self.list.append(&session_row(session));
         }
-        // Keep normal chrome quiet; connection failures still appear here.
-        self.status.set_text("");
         let index = selected.and_then(|id| {
             catalog
                 .sessions()
                 .iter()
                 .position(|session| session.id == id)
         });
-        *self.catalog.borrow_mut() = Some(Rc::new(catalog));
+        *self.catalog.borrow_mut() = Some(catalog);
         self.updating.set(false);
+        if !self.online.get() {
+            return;
+        }
         if let Some(index) = index {
             self.list
                 .select_row(self.list.row_at_index(index as i32).as_ref());
@@ -419,12 +498,17 @@ impl Workbench {
         }
     }
     fn select(self: &Rc<Self>, id: SessionId) {
+        if self.closing.get() || !self.online.get() {
+            return;
+        }
         let catalog = self.catalog.borrow().clone();
         let Some(catalog) = catalog else { return };
         let Some(session) = catalog.session(id) else {
             return;
         };
-        self.selected.set(Some(id));
+        if self.selected.replace(Some(id)) != Some(id) {
+            self.retry_delay.set(Duration::from_millis(500));
+        }
         if let Some(window) = self.window.upgrade() {
             window.set_title(Some(&format!(
                 "Axo · {}",
@@ -438,11 +522,23 @@ impl Workbench {
         }) {
             return;
         }
+        self.cancel_retry();
         self.view.borrow_mut().take(); // Cancels pending attachments before replacing widgets.
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
         }
+        let generation = self
+            .view_generation
+            .get()
+            .checked_add(1)
+            .expect("view generation exhausted");
+        self.view_generation.set(generation);
         let view = Rc::new(SessionView {
+            epoch: self.epoch.get().expect("a live catalog has an epoch"),
+            generation,
+            needs_retry: Cell::new(false),
+            owner: Rc::downgrade(self),
+            began: Instant::now(),
             session: session.clone(),
             root: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
             engine: self.engine.clone(),
@@ -578,13 +674,12 @@ mod tests {
     }
 }
 
-fn load_catalog(socket: PathBuf) -> io::Result<LocalCatalog> {
-    crate::task::daemon_request(&socket, |mut client| async move {
-        LocalCatalog::load(&mut client).await
-    })
-}
-
 struct SessionView {
+    epoch: u64,
+    generation: u64,
+    needs_retry: Cell<bool>,
+    owner: std::rc::Weak<Workbench>,
+    began: Instant,
     session: SessionRecord,
     root: gtk4::Box,
     engine: Rc<Engine>,
@@ -596,6 +691,12 @@ struct SessionView {
     snapshot_observed: Cell<bool>,
 }
 impl SessionView {
+    fn retry(self: &Rc<Self>) {
+        self.needs_retry.set(true);
+        if let Some(owner) = self.owner.upgrade() {
+            owner.schedule_retry(self);
+        }
+    }
     fn node(self: &Rc<Self>, node: &LayoutNode) -> gtk4::Widget {
         match node {
             LayoutNode::Pane { shell_id } => self.pane(*shell_id).upcast(),
@@ -680,6 +781,17 @@ impl SessionView {
                 if let Some(message) = weak_message.upgrade() {
                     pane.remove(&message);
                 }
+                let retry = result.as_ref().err().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound
+                            | std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::UnexpectedEof
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::BrokenPipe
+                    )
+                });
                 let result = result
                     .map_err(|error| error.to_string())
                     .and_then(|prepared| view.engine.attached_surface(prepared));
@@ -687,6 +799,10 @@ impl SessionView {
                     Ok(surface) => view.install_surface(id, &pane, &surface),
                     Err(error) => {
                         pane.append(&notice(&format!("Cannot attach: {error}")));
+                        view.needs_retry.set(true);
+                        if retry {
+                            view.retry();
+                        }
                     }
                 }
             });
@@ -706,6 +822,17 @@ impl SessionView {
         pane: &gtk4::Box,
         surface: &crate::ghostty::Surface,
     ) {
+        // Native EOF notification runs inside Ghostty's core dispatch. Never destroy that
+        // surface there: defer until it returns, then verify this view is still selected.
+        let weak = Rc::downgrade(self);
+        surface.on_output_ended(move || {
+            let weak = weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(view) = weak.upgrade() {
+                    view.retry();
+                }
+            });
+        });
         let focus = gtk4::EventControllerFocus::new();
         focus.connect_enter({
             let view = Rc::downgrade(self);
@@ -759,7 +886,8 @@ impl SessionView {
         let panes: Vec<_> = grids.iter().map(|(id, stats)| serde_json::json!({
             "shellId":id, "ready":stats.ready == 1, "columns":stats.columns, "rows":stats.rows
         })).collect();
-        let data = serde_json::json!({"sessionId":self.session.id,"panes":panes});
+        let data = serde_json::json!({"sessionId":self.session.id,"panes":panes,
+            "catalogEpoch":self.epoch,"viewGeneration":self.generation});
         if let Some(path) = &self.options.diagnostics {
             if let Err(error) = std::fs::write(path, data.to_string()) {
                 eprintln!("diagnostics: {error}");
