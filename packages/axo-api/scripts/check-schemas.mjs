@@ -55,6 +55,18 @@ validateWith(localCallSchema, await fixture("events-stream.call.json"));
 validateWith(localCallSchema, await fixture("terminal-input.local.call.json"));
 validateWith(localCallSchema, await fixture("terminal-resize.local.call.json"));
 validateWith(localCallSchema, await fixture("client-viewport-set.local.call.json"));
+const nativeViewport = await fixture("client-viewport-set-v2.local.call.json");
+validateWith(localCallSchema, nativeViewport);
+for (const change of [
+  (call) => { delete call.params.rasterization; },
+  (call) => { call.params.rasterization.origin.x = 100001; },
+  (call) => { call.params.rasterization.paddingPixels.left = 8001; },
+  (call) => { call.method = "axo.client.viewport.set"; },
+]) {
+  const invalid = structuredClone(nativeViewport);
+  change(invalid);
+  assert.equal(ajv.getSchema(localCallSchema)(invalid), false, "native viewport boundary");
+}
 validateWith(localCallSchema, await fixture("remote-access-status.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-connect.call.json"));
 validateWith(localCallSchema, await fixture("config.get.call.json"));

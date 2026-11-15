@@ -140,6 +140,10 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("window geometry of a client on this Mac"),
     ),
     row(
+        method::CLIENT_VIEWPORT_SET_V2,
+        Remote::LocalOnly("native renderer metrics for this host; not remote terminal state"),
+    ),
+    row(
         method::RELAY_LINK,
         Remote::LocalOnly("pairing links this Mac itself"),
     ),

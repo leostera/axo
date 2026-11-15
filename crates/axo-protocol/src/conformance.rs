@@ -45,6 +45,9 @@ fn exactly_specified_fixtures_round_trip() {
     round_trips::<crate::Viewport>(
         &json(fixture!("client-viewport-set.local.call.json"))["params"],
     );
+    round_trips::<crate::Viewport>(
+        &json(fixture!("client-viewport-set-v2.local.call.json"))["params"],
+    );
     round_trips::<ProtocolNegotiated>(&json(fixture!("negotiate.result.json")));
     round_trips::<ConfigValue>(&json(fixture!("config.value.shell.json")));
     round_trips::<ConfigValue>(&json(fixture!("config.value.agent.json")));

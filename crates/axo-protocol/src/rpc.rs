@@ -95,6 +95,7 @@ pub mod method {
     pub const TERMINAL_WRITE: &str = "axo.terminal.write";
     pub const TERMINAL_SCREEN: &str = "axo.terminal.screen";
     pub const CLIENT_VIEWPORT_SET: &str = "axo.client.viewport.set";
+    pub const CLIENT_VIEWPORT_SET_V2: &str = "axo.client.viewport.set.v2";
     pub const RELAY_LINK: &str = "axo.relay.link";
     pub const RELAY_STATUS: &str = "axo.relay.status";
     pub const RELAY_UNLINK: &str = "axo.relay.unlink";
@@ -157,6 +158,7 @@ pub mod method {
         SESSION_TIMER_LIST,
         SESSION_TIMER_CANCEL,
         CLIENT_VIEWPORT_SET,
+        CLIENT_VIEWPORT_SET_V2,
         RELAY_LINK,
         RELAY_STATUS,
         RELAY_UNLINK,

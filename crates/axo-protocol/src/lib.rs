@@ -32,4 +32,7 @@ pub use model::{
     SessionStatus, ShellRecord, ThinkingLevel, folder_name,
 };
 pub use relay::{HostKind, RelayState, RelayStatus};
-pub use viewport::{GridSize, Padding, PixelSize, Size, Viewport, ViewportError};
+pub use viewport::{
+    GridSize, Padding, PixelSize, Size, SplitRounding, Viewport, ViewportError, ViewportOrigin,
+    ViewportRasterization,
+};

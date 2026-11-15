@@ -745,6 +745,10 @@ pub const EXCLUDED: &[(&str, &str)] = &[
         "UI-owned viewport; not a CLI display",
     ),
     (
+        method::CLIENT_VIEWPORT_SET_V2,
+        "UI-owned native renderer metrics; not a CLI display",
+    ),
+    (
         method::RELAY_CONNECT,
         "App retry compatibility method; linked hosts automatically reconnect",
     ),

@@ -1,0 +1,33 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "axo.client.viewport.set.v2",
+  "params": {
+    "terminalArea": {
+      "width": 102.0,
+      "height": 100.0
+    },
+    "backingScale": 1.5,
+    "cell": {
+      "width": 8,
+      "height": 18
+    },
+    "padding": {
+      "top": 2,
+      "bottom": 2,
+      "left": 1,
+      "right": 1
+    },
+    "dividerThickness": 1.0,
+    "rasterization": {
+      "origin": { "x": 0.0, "y": 0.0 },
+      "paddingPixels": {
+        "top": 3,
+        "bottom": 3,
+        "left": 2,
+        "right": 2
+      },
+      "splitRounding": "logicalFloor"
+    }
+  }
+}

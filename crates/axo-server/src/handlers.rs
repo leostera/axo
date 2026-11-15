@@ -258,6 +258,28 @@ impl Extension for Sessions {
             method::CLIENT_VIEWPORT_SET,
             "expected {terminalArea, backingScale, cell, padding, dividerThickness} in range",
             |core, viewport: Viewport| async move {
+                if viewport.is_native() {
+                    return Err(invalid_params(
+                        "native rasterization requires viewport.set.v2",
+                    ));
+                }
+                crate::sessions::set_viewport(&core, viewport)
+                    .await
+                    .map(|()| rpc::ViewportAccepted { accepted: true })
+                    .map_err(internal_rpc_error)
+            },
+        );
+        add(
+            handler,
+            core,
+            method::CLIENT_VIEWPORT_SET_V2,
+            "expected a validated viewport with native rasterization",
+            |core, viewport: Viewport| async move {
+                if !viewport.is_native() {
+                    return Err(invalid_params(
+                        "viewport.set.v2 requires native rasterization",
+                    ));
+                }
                 crate::sessions::set_viewport(&core, viewport)
                     .await
                     .map(|()| rpc::ViewportAccepted { accepted: true })
@@ -493,3 +515,6 @@ impl Extension for Sessions {
         );
     }
 }
+
+#[cfg(test)]
+mod viewport_tests;
