@@ -1,7 +1,7 @@
 # RFD0058 - Axo: message-free restart continuation
 
 - Feature Name: `restart-continuation`
-- Status: Implemented locally (unreleased; requires Pi SDK capability)
+- Status: Implemented (0.70; continuation requires Pi SDK capability)
 - Author: leostera
 - Start Date: 2026-11-15
 - Updated: 2026-11-15
@@ -42,7 +42,7 @@ Use fake providers and isolated Pi/daemon Sessions only. Check actual provider i
 - `session/pi.rs` owns typed pending/claimed/suppressed recovery state. Bridge readiness claims once before sending; repeated readiness cannot reclaim it. The catalog retains recoverable intent through another graceful shutdown before the replacement is ready. `ops::stop_turn` disarms before transport admission.
 - `sessions.rs` consumes the existing compatible graceful-stop record but no longer sends a stop-notice prompt. Unexpected Pi exits capture last-observed working state for the next managed start. Abrupt axod crashes without a graceful-stop record are not recovered by this change.
 - `pi-axo` delegates control to the SDK API, once per runtime, refusing busy/held-prompt or unsupported hosts without any fabricated-message fallback.
-- The SDK prerequisite and exact source patch are preserved in [third_party/pi](../../third_party/pi/README.md). It is not installed or published automatically. Release remains gated on distributing a supporting SDK.
+- The SDK prerequisite and exact source patch are preserved in [third_party/pi](../../third_party/pi/README.md). It is not installed or published automatically. Out-of-box continuation remains gated on distributing a supporting SDK. The 0.70 release explicitly documents that current unmodified Pi cannot use continuation; it does not install the patch.
 - Eight focused Bazel test targets pass, including real MCP/daemon/relay conformance and private daemon/Pi restart scenarios. This is not a full application release gate. Five new daemon lifecycle tests cover working/idle restart, new-prompt priority, consecutive graceful shutdowns and explicit stop before receipt; three recovery-state tests cover reconnect claims, late start events and old-runtime settlement.
 - The selected SDK regression run passes 112 tests, including six new resume cases. The portable Axo real-SDK/socket/provider test passes against the patched source and checks one provider call, one original user message and zero custom-message triggers despite duplicate controls. The ordinary dependency also passes its explicit-unsupported branch.
 - The logical admission model explores 117 states and checks two properties, plus randomized runs. It has no injected faults or locked source ranges; no crash/exactly-once proof is claimed. Installed Pi agents and the app/daemon were not replaced or restarted for validation.

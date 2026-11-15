@@ -2,7 +2,7 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
-## Unreleased
+## 0.70 (Mac app build 341, axod 85)
 
 ### Changed
 
@@ -10,7 +10,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Improved
 
-- Resume interrupted work after managed Pi restarts and graceful axod restarts through a message-free turn control, replacing the synthetic restart prompt. Idle agents stay idle, new prompts win over pending recovery, explicit stop intent disarms recovery, and bridge reconnects do not repeat a claimed resume. Requires a Pi SDK exposing `resumeTurn`; the source patch is included but is not automatically installed. Unsupported hosts refuse instead of fabricating a message.
+- Add SDK-gated, message-free recovery after managed Pi restarts and graceful axod restarts. Idle/stopped agents stay stopped, new prompts win, and reconnects do not repeat recovery. **Requires a Pi build exposing `resumeTurn`; current unmodified Pi cannot use this feature.** The SDK source patch is in the repository, not automatically installed. The old fabricated restart prompt is removed; unsupported hosts refuse recovery rather than inventing a message.
 - Strip local/debug native symbols from the Swift app and embedded frameworks, and maximally strip standalone helper executables before signing. Required dynamic exports remain intact; unstripped build outputs remain available separately. MLX’s full Metal kernel library remains byte-for-byte unchanged.
 
 ## 0.69 (Mac app build 340, axod 84)
