@@ -102,6 +102,46 @@ final class AppUpgradeTests: XCTestCase {
       FileManager.default.fileExists(atPath: folder.appendingPathComponent(".Axo.app.staging").path))
   }
 
+  @MainActor
+  func testRevokedInstallationCannotReplaceThePrivateBundle() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("axo-update-gate-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let bundle = folder.appendingPathComponent("Axo.app")
+    let download = folder.appendingPathComponent("download/Axo.app")
+    try write(build: "260", to: bundle)
+    try write(build: "261", to: download)
+    let staged = try AppUpgradeInstaller.stage(download, beside: bundle)
+    XCTAssertThrowsError(try AppUpgradeInstaller.commitStaged(staged, over: bundle,
+      authorizeInstallation: { throw CancellationError() }))
+    XCTAssertEqual(AppUpgradeInstaller.bundleBuild(of: bundle), 260)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".Axo.app.previous").path))
+    var authorized = 0
+    try AppUpgradeInstaller.commitStaged(staged, over: bundle, authorizeInstallation: { authorized += 1 })
+    XCTAssertEqual(authorized, 1)
+    XCTAssertEqual(AppUpgradeInstaller.bundleBuild(of: bundle), 261)
+    XCTAssertEqual(AppUpgradeInstaller.bundleBuild(of: staged), 260, "The commit retains the previous bundle before housekeeping")
+    AppUpgradeInstaller.preservePrevious(staged, beside: bundle)
+    XCTAssertEqual(AppUpgradeInstaller.bundleBuild(of: folder.appendingPathComponent(".Axo.app.previous")), 260)
+  }
+
+  @MainActor
+  func testCancelledTaskCannotEnterTheAtomicReplacement() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("axo-update-cancel-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let bundle = folder.appendingPathComponent("Axo.app")
+    let download = folder.appendingPathComponent("download/Axo.app")
+    try write(build: "260", to: bundle)
+    try write(build: "261", to: download)
+    let staged = try AppUpgradeInstaller.stage(download, beside: bundle)
+    let task = Task { @MainActor in
+      try AppUpgradeInstaller.commitStaged(staged, over: bundle,
+        authorizeInstallation: { XCTFail("Cancellation must be checked before authorization") })
+    }
+    task.cancel()
+    do { try await task.value; XCTFail("Expected cancellation") } catch is CancellationError {} catch { XCTFail("\(error)") }
+    XCTAssertEqual(AppUpgradeInstaller.bundleBuild(of: bundle), 260)
+  }
+
   func testBundleMetadataMustMatchTheCapturedReleaseBeforeSwap() throws {
     let app = FileManager.default.temporaryDirectory.appendingPathComponent("axo-release-\(UUID().uuidString)/Axo.app")
     defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }

@@ -23,6 +23,7 @@ final class AppUpgradeModel {
 
   private(set) var available: AppUpgrade?
   private(set) var phase = Phase.idle
+  let automatic = AppAutomaticUpdates()
 
   @ObservationIgnored private let logger = Logger(subsystem: "dev.leostera.axo", category: "upgrade")
   @ObservationIgnored private let origin = RelayEndpoint.production.origin
@@ -30,6 +31,7 @@ final class AppUpgradeModel {
   @ObservationIgnored private var published: PublishedBuild?
   @ObservationIgnored private var publishedCheckedAt: Date?
   @ObservationIgnored private var timer: Timer?
+  @ObservationIgnored private var backgroundCheckedAt: Date?
   @ObservationIgnored private var downloadPanel: NSPanel?
   @ObservationIgnored private var updateWindow: AppUpdateWindowController?
   @ObservationIgnored private var notesTask: Task<Void, Never>?
@@ -39,7 +41,8 @@ final class AppUpgradeModel {
     runningAxod: (Bundle.main.infoDictionary?["AXODBuildNumber"] as? String).flatMap(Int.init))
   /// How stale the published build may be when the menu opens.
   private static let publishedFreshness: TimeInterval = 10 * 60
-  private static let backgroundInterval: TimeInterval = 60 * 60
+  private static let backgroundInterval: TimeInterval = 60
+  private static let manualBackgroundInterval: TimeInterval = 60 * 60
 
   private var bundle: URL { Bundle.main.bundleURL }
 
@@ -58,14 +61,27 @@ final class AppUpgradeModel {
     (Bundle.main.infoDictionary?["AXODBuildNumber"] as? String).flatMap(Int.init)
   }
 
-  /// Checks now and then hourly; the menu also checks when it opens (`refresh`).
+  /// Poll once a minute when opted in; otherwise keep hourly background checks.
   func start() {
     guard timer == nil else { return }
+    backgroundCheckedAt = Date()
     refresh(force: true)
     timer = Timer.scheduledTimer(withTimeInterval: Self.backgroundInterval, repeats: true) {
       _ in
-      MainActor.assumeIsolated { AppUpgradeModel.shared.refresh(force: true) }
+      MainActor.assumeIsolated { AppUpgradeModel.shared.backgroundTick() }
     }
+  }
+
+  private func backgroundTick() {
+    let interval = automatic.isEnabled ? Self.backgroundInterval : Self.manualBackgroundInterval
+    guard backgroundCheckedAt.map({ Date().timeIntervalSince($0) >= interval }) ?? true else { return }
+    backgroundCheckedAt = Date()
+    refresh(force: true)
+  }
+
+  func setAutomaticUpdates(_ enabled: Bool) {
+    automatic.setEnabled(enabled)
+    if enabled { refresh(force: true) }
   }
 
   /// Re-reads the bundle on disk at once, and the published build when it is stale.
@@ -81,6 +97,8 @@ final class AppUpgradeModel {
         let release = try await AppUpgradeInstaller.fetchPublished(origin: origin)
         guard generation == publishedGeneration else { return }
         published = release
+        decide()
+        automaticallyInstall(release)
       } catch {
         guard generation == publishedGeneration else { return }
         logger.info("event=upgrade.published_check_failed reason=\(error.localizedDescription, privacy: .public)")
@@ -222,6 +240,22 @@ final class AppUpgradeModel {
     }
   }
 
+  private func automaticallyInstall(_ release: PublishedBuild) {
+    guard phase == .idle, updateWindow == nil, available == .published(release),
+      let running, let team, let bundleID = Bundle.main.bundleIdentifier else { return }
+    let accepted = automatic.start(release,
+      install: { [self] release, authorize in
+        try await AppUpgradeInstaller.install(
+          origin: origin, published: release, over: bundle, bundleIdentifier: bundleID,
+          team: team, running: running, authorizeInstallation: authorize)
+      },
+      didInstall: { [weak self] build in self?.restart(into: build, automatically: true) },
+      didFinish: { [weak self] in
+        if self?.phase == .downloading(release) { self?.phase = .idle }
+      })
+    if accepted { phase = .downloading(release) }
+  }
+
   private func showDownloadProgress(_ release: PublishedBuild) {
     closeDownloadProgress()
     let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 140),
@@ -251,7 +285,7 @@ final class AppUpgradeModel {
       installedVersion: AppUpgradeInstaller.bundleVersion(of: bundle),
       published: published,
       canVerifyDownloads: team != nil)
-    if phase == .idle, updateWindow == nil, let available {
+    if !automatic.isEnabled, phase == .idle, updateWindow == nil, let available {
       Task { await AppUpgradeNotifications.shared.notify(available, running: running) }
     }
   }
@@ -262,7 +296,7 @@ final class AppUpgradeModel {
     let alert = NSAlert()
     alert.messageText = "Upgrade to \(upgrade.title)?"
     alert.informativeText =
-      "It comes with axod build \(axod) (this is \(runningAxod)), so axod restarts: terminals restart and Pi sessions resume."
+      "It comes with axod build \(axod) (this is \(runningAxod)), so axod, terminals and Pi processes restart. Conversation histories are kept; automatic continuation requires a compatible Pi SDK."
     alert.addButton(withTitle: "Upgrade")
     alert.addButton(withTitle: "Cancel")
     NSApp.activate(ignoringOtherApps: true)
@@ -271,17 +305,24 @@ final class AppUpgradeModel {
 
   /// The bundle on disk is `build` now: open a new instance of it, which replaces this one
   /// without asking (`--replace-running`) and hands over to launchd.
-  func restart(into build: Int) {
+  func restart(into build: Int, automatically: Bool = false) {
     phase = .restarting(build: build)
     logger.info("event=upgrade.restart build=\(build, privacy: .public)")
     let configuration = NSWorkspace.OpenConfiguration()
     configuration.createsNewApplicationInstance = true
+    configuration.activates = !automatically
     configuration.arguments = [AppAgentController.replaceRunningArgument]
-    NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
+    NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { [weak self] _, error in
       guard let error else { return }
       Task { @MainActor in
-        AppUpgradeModel.shared.phase = .idle
-        AppUpgradeModel.shared.fail("Couldn’t start Axo build \(build)", error.localizedDescription)
+        guard let self else { return }
+        self.phase = .idle
+        if automatically {
+          self.logger.error("event=upgrade.automatic_restart_failed build=\(build, privacy: .public) reason=\(error.localizedDescription, privacy: .public)")
+          self.automatic.reportRestartFailure(error.localizedDescription)
+        } else {
+          self.fail("Couldn’t start Axo build \(build)", error.localizedDescription)
+        }
       }
     }
   }

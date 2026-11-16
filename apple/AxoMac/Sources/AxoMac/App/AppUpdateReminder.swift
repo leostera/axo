@@ -1,6 +1,6 @@
 import Foundation
 
-/// Manual checks ignore these preferences. They only control automatic update banners.
+/// Manual checks ignore these preferences. Skip/remind also defer opt-in automatic installs.
 enum AppUpdateReminder {
   static let skippedBuildKey = "upgrade.skippedBuild.v1"
   static let reminderBuildKey = "upgrade.reminderBuild.v1"
@@ -16,6 +16,16 @@ enum AppUpdateReminder {
     defaults.set(build, forKey: reminderBuildKey)
     defaults.set(now.addingTimeInterval(delay).timeIntervalSince1970, forKey: reminderDateKey)
   }
+  /// Notification deduplication must not suppress installation after opting in.
+  static func mayInstallAutomatically(build: Int, defaults: UserDefaults, now: Date) -> Bool {
+    guard defaults.integer(forKey: skippedBuildKey) != build else { return false }
+    if defaults.integer(forKey: reminderBuildKey) == build {
+      let due = defaults.double(forKey: reminderDateKey)
+      if due.isFinite, due > 0 { return now.timeIntervalSince1970 >= due }
+    }
+    return true
+  }
+
   static func mayNotify(build: Int, defaults: UserDefaults, now: Date) -> Bool {
     guard defaults.integer(forKey: skippedBuildKey) != build,
       build >= defaults.integer(forKey: AppUpgradeNotificationRoute.lastNotifiedKey) else { return false }

@@ -32,7 +32,8 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
     },
     deliver: { request in try await UNUserNotificationCenter.current().add(request) },
     isCurrent: { build in
-      AppUpgradeModel.shared.phase == .idle && AppUpgradeModel.shared.available?.build == build
+      !AppUpgradeModel.shared.automatic.isEnabled && AppUpgradeModel.shared.phase == .idle
+        && AppUpgradeModel.shared.available?.build == build
     })
 
   private let defaults: UserDefaults

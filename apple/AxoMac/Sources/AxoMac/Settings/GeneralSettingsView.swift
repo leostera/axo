@@ -7,6 +7,7 @@ struct GeneralSettingsView: View {
   let settingsClient: AxodSettingsClient?
   var ghostty: GhosttyRuntime
   var sleepPrevention: SleepPreventionController
+  var upgrades: AppUpgradeModel = .shared
   @State private var isConfirmingRestart = false
 
   private var scrollSensitivityPosition: Binding<Double> {
@@ -28,6 +29,9 @@ struct GeneralSettingsView: View {
   var body: some View {
     Form {
       CLICommandSettingsSection(installation: CLICommandInstallation.shared)
+
+      AppUpdateSettingsSection(automatic: upgrades.automatic, canCheck: upgrades.phase == .idle,
+        setEnabled: upgrades.setAutomaticUpdates, check: { upgrades.checkForUpdates() })
 
       Section("Terminal") {
         VStack(alignment: .leading, spacing: 8) {

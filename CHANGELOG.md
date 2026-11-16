@@ -6,6 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Mac Settings → General → Updates has an opt-in “Automatically install updates” toggle. Enabled copies check every minute while running and awake, verify and install published releases, then restart without per-release confirmation. Updates can interrupt terminals/Pi processes. Disabling revokes pending installs; committed replacements finish handover. Failed attempts back off for 15 minutes; skip/remind and manual review remain available. Off by default.
 - Pre-set a Session’s name at creation: `session_create({name, folder?, like?})` or `axo session create --name`. Local/remote APIs and native clients accept the optional name, persisted atomically before Pi starts. Explicit names remain visible over automatic Pi titles and survive restart; omitting the name preserves existing behavior.
 
 ### Fixed

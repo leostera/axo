@@ -172,10 +172,12 @@ public enum AppUpgradeInstaller {
 
   /// Puts the published build at `bundle` and returns its build number. Throws, leaving `bundle`
   /// as it was, unless the download is this app (`bundleIdentifier`), signed by `team` and newer
-  /// than `running`.
+  /// than `running`. The authorization callback runs on the main actor immediately before
+  /// atomic replacement. Cancellation after replacement cannot retract the installed build.
   public static func install(
     origin: URL, published: PublishedBuild, over bundle: URL, bundleIdentifier: String, team: String, running: Int,
-    session: URLSession = .shared
+    session: URLSession = .shared,
+    authorizeInstallation: @escaping @MainActor @Sendable () throws -> Void = {}
   ) async throws -> Int {
     let archiveURL = try published.archiveURL(origin: origin)
     let work = try FileManager.default.url(
@@ -207,13 +209,22 @@ public enum AppUpgradeInstaller {
     // could not register its LaunchAgents.
     _ = try? run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", app.path]) { .install("") }
 
+    try Task.checkCancellation()
     try verify(app, bundleIdentifier: bundleIdentifier, team: team)
     let found = bundleBuild(of: app)
     guard let found, found > running else {
       throw AppUpgradeError.notNewer(found: found, running: running)
     }
     try verifyReleaseMetadata(app, published: published)
-    try swapIn(app, over: bundle)
+    try Task.checkCancellation()
+    let staged = try stage(app, beside: bundle)
+    do {
+      try await commitStaged(staged, over: bundle, authorizeInstallation: authorizeInstallation)
+    } catch {
+      try? FileManager.default.removeItem(at: staged)
+      throw error
+    }
+    preservePrevious(staged, beside: bundle)
     return found
   }
 
@@ -251,19 +262,46 @@ public enum AppUpgradeInstaller {
   /// Copies `app` beside `bundle` and swaps the two atomically, so a running Axo or Finder never
   /// sees a half-copied bundle; the previous one ends up at .Axo.app.previous.
   static func swapIn(_ app: URL, over bundle: URL) throws {
-    let folder = bundle.deletingLastPathComponent()
-    let staged = folder.appendingPathComponent(".Axo.app.staging")
-    let previous = folder.appendingPathComponent(".Axo.app.previous")
-    try? FileManager.default.removeItem(at: staged)
-    try run("/usr/bin/ditto", [app.path, staged.path]) {
-      AppUpgradeError.install("could not copy it beside \(bundle.path)")
+    let staged = try stage(app, beside: bundle)
+    do { try replaceStaged(staged, over: bundle) }
+    catch { try? FileManager.default.removeItem(at: staged); throw error }
+    preservePrevious(staged, beside: bundle)
+  }
+
+  static func stage(_ app: URL, beside bundle: URL) throws -> URL {
+    let staged = bundle.deletingLastPathComponent().appendingPathComponent(".Axo.app.staging-\(UUID().uuidString)")
+    do {
+      try run("/usr/bin/ditto", [app.path, staged.path]) {
+        AppUpgradeError.install("could not copy it beside \(bundle.path)")
+      }
+    } catch {
+      try? FileManager.default.removeItem(at: staged)
+      throw error
     }
+    return staged
+  }
+
+  /// The consent check and replacement share one main-actor turn; Settings cannot interleave.
+  @MainActor
+  static func commitStaged(_ staged: URL, over bundle: URL,
+    authorizeInstallation: @MainActor () throws -> Void) throws {
+    try Task.checkCancellation()
+    try authorizeInstallation()
+    try replaceStaged(staged, over: bundle)
+  }
+
+  private static func replaceStaged(_ staged: URL, over bundle: URL) throws {
     guard renameatx_np(AT_FDCWD, staged.path, AT_FDCWD, bundle.path, UInt32(RENAME_SWAP)) == 0 else {
       let reason = String(cString: strerror(errno))
       try? FileManager.default.removeItem(at: staged)
       throw AppUpgradeError.install("could not swap it in: \(reason)")
     }
-    // After the swap, `staged` holds the previous bundle.
+  }
+
+  /// Post-commit housekeeping runs off the main actor. If rotation fails, retain the old bundle
+  /// in its unique staging directory rather than deleting the last recoverable copy.
+  static func preservePrevious(_ staged: URL, beside bundle: URL) {
+    let previous = bundle.deletingLastPathComponent().appendingPathComponent(".Axo.app.previous")
     try? FileManager.default.removeItem(at: previous)
     try? FileManager.default.moveItem(at: staged, to: previous)
   }
