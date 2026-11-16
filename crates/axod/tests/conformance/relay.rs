@@ -190,7 +190,11 @@ fn the_account_creates_renames_and_closes_sessions_on_the_mac() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
 
-    let created = hub.ok("axo.remote.session.create", json!({ "target": target }));
+    let created = hub.ok(
+        "axo.remote.session.create",
+        json!({ "target": target, "name": "Preset remote helper" }),
+    );
+    assert_eq!(created["session"]["name"], "Preset remote helper");
     let session = created["session"]["sessionId"].clone();
     assert!(session.is_string(), "{created}");
     let home = std::fs::canonicalize(axod.home()).unwrap();

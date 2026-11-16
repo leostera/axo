@@ -185,6 +185,10 @@ export const hostSessionsPublishSchema = z.object({
 });
 const emptyParamsSchema = z.object({}).strict();
 const subscriptionIdSchema = z.object({ subscriptionId: z.uuid() }).strict();
+const creationNameSchema = z.string().min(1).max(80)
+  .regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u)
+  .refine(name => !/^\p{White_Space}|\p{White_Space}$/u.test(name), "No surrounding whitespace");
+
 const targetSchema = z.object({ target: hostRefSchema }).strict();
 const sessionTargetSchema = targetSchema.extend({ sessionId: sessionIdSchema }).strict();
 const shellTargetSchema = sessionTargetSchema.extend({ shellId: shellIdSchema }).strict();
@@ -198,7 +202,10 @@ export const hostV1Methods = {
   "axo.host.subscribe": hostRefSchema,
   "axo.host.unsubscribe": subscriptionIdSchema,
   // In the folder of the open Session `like`, or the Mac's home directory (RFD0038).
-  "axo.remote.session.create": targetSchema.extend({ like: sessionIdSchema.optional() }).strict(),
+  "axo.remote.session.create": targetSchema.extend({
+    like: sessionIdSchema.optional(),
+    name: creationNameSchema.optional(),
+  }).strict(),
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,
   "axo.remote.shell.close": shellTargetSchema,

@@ -129,9 +129,12 @@ impl Extension for Remote {
             |core, request: CreateSessionParams| async move {
                 let session = crate::sessions::create(
                     &core,
-                    request
-                        .like
-                        .map_or(rpc::CreateSession::AtHome, rpc::CreateSession::Like),
+                    rpc::CreateSession {
+                        location: request
+                            .like
+                            .map_or(rpc::SessionLocation::AtHome, rpc::SessionLocation::Like),
+                        name: request.name,
+                    },
                 )
                 .await
                 .map_err(failed)?;
@@ -531,7 +534,7 @@ macro_rules! params {
 
 params! {
     SessionTargetParams { session_id: SessionId }
-    CreateSessionParams { like: Option<SessionId> = default }
+    CreateSessionParams { like: Option<SessionId> = default, name: Option<rpc::SessionName> = default }
     RenameSessionParams { session_id: SessionId, name: String }
     ShellTargetParams { session_id: SessionId, shell_id: ShellId }
     LayoutSetParams { session_id: SessionId, layout: LayoutNode }

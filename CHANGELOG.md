@@ -2,6 +2,12 @@
 
 What changed in each published version of Axo. Every publish raises the minor version; the build numbers are the Mac app's and axod's.
 
+## Unreleased
+
+### Added
+
+- Pre-set a Session’s name at creation: `session_create({name, folder?, like?})` or `axo session create --name`. Local/remote APIs and native clients accept the optional name, persisted atomically before Pi starts. Explicit names remain visible over automatic Pi titles and survive restart; omitting the name preserves existing behavior.
+
 ## 0.70 (Mac app build 341, axod 85)
 
 ### Changed

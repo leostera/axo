@@ -45,6 +45,11 @@ const fixture = async (name) =>
 
 const localCallSchema = "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/Call";
 validateWith(localCallSchema, await fixture("session-list.call.json"));
+for (const location of [{}, {folder:"/tmp"}, {like:"82cfd1e8-1cc6-4473-a16d-6f0e77476311"}]) {
+  validateWith(localCallSchema, {jsonrpc:"2.0",id:1,method:"axo.session.create",params:{...location,name:"Preset helper"}});
+}
+assert.equal(ajv.getSchema(localCallSchema)({jsonrpc:"2.0",id:1,method:"axo.session.create",params:{folder:"/tmp",like:"82cfd1e8-1cc6-4473-a16d-6f0e77476311",name:"Preset helper"}}),false);
+
 validateWith(localCallSchema, await fixture("negotiate.call.json"));
 validateWith(localCallSchema, await fixture("events-stream.call.json"));
 validateWith(localCallSchema, await fixture("terminal-input.local.call.json"));

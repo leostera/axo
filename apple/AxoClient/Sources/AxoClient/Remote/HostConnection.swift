@@ -18,13 +18,21 @@ public struct HostConnection: Sendable {
 
   /// A new Session in the Mac's home folder.
   public func createSession() async throws -> RemoteSession {
-    try await session(from: call("axo.remote.session.create", Target(target: host)))
+    try await createSession(name: nil)
+  }
+
+  public func createSession(name: String?) async throws -> RemoteSession {
+    try await session(from: call("axo.remote.session.create", SessionCreateTarget(target: host, like: nil, name: name)))
   }
 
   /// A new Session in the folder of the Mac's open Session `sessionID` (RFD0038).
   public func createSession(like sessionID: SessionID) async throws -> RemoteSession {
+    try await createSession(like: sessionID, name: nil)
+  }
+
+  public func createSession(like sessionID: SessionID, name: String?) async throws -> RemoteSession {
     try await session(
-      from: call("axo.remote.session.create", LikeTarget(target: host, like: sessionID)))
+      from: call("axo.remote.session.create", SessionCreateTarget(target: host, like: sessionID, name: name)))
   }
 
   /// Closes a Session; nothing opens in its place.
@@ -210,9 +218,10 @@ public enum PiControlError {
 // MARK: - Wire shapes
 
 private struct Target: Encodable, Sendable { let target: RemoteHostRef }
-private struct LikeTarget: Encodable, Sendable {
+private struct SessionCreateTarget: Encodable, Sendable {
   let target: RemoteHostRef
-  let like: SessionID
+  let like: SessionID?
+  let name: String?
 }
 private struct SessionTarget: Encodable, Sendable {
   let target: RemoteHostRef

@@ -568,7 +568,7 @@ final class AccountConnectionTests: XCTestCase {
       hostId: UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!,
       hostGeneration: UUID(uuidString: "C3B6DA28-55C0-4BB0-AC04-DD458FD41A2B")!)
     let connection = HostConnection(account: account, host: upper)
-    async let created = connection.createSession(like: SessionID(rawValue: "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2")!)
+    async let created = connection.createSession(like: SessionID(rawValue: "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2")!, name: "Preset remote helper")
     let sent = try await request(channel, 0)
     XCTAssertEqual(sent["method"] as? String, "axo.client.command")
     let params = try XCTUnwrap(sent["params"] as? [String: Any])
@@ -577,6 +577,7 @@ final class AccountConnectionTests: XCTestCase {
     let raw = String(decoding: try await channel.rawRequests(count: 1)[0], as: UTF8.self)
     XCTAssertTrue(raw.contains("c3b6da28-55c0-4bb0-ac04-dd458fd41a2b"), raw)
     XCTAssertTrue(raw.contains("7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2"), raw)
+    XCTAssertTrue(raw.contains("Preset remote helper"), "The creation request carries its preset name")
     XCTAssertFalse(raw.contains("ABCDEF00") || raw.contains("C3B6DA28"), "no uppercase identity may leave the app")
     channel.reply(
       to: try XCTUnwrap(sent["id"] as? Int),

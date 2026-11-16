@@ -166,7 +166,11 @@ fn an_agent_starts_names_and_prompts_another_session() {
     let axod = Axod::start();
     let (_, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
-    let other = mcp.ok("session_create", json!({ "like": "self" }));
+    let other = mcp.ok(
+        "session_create",
+        json!({ "like": "self", "name": "Preset helper" }),
+    );
+    assert_eq!(other["manualName"], "Preset helper");
     let other_id = other["id"].clone();
     assert_ne!(other_id, json!(id));
     let mine = axod

@@ -14,6 +14,7 @@ struct ConfigSetRequest: Encodable {
 struct SessionCreateRequest: Encodable {
   let folder: String?
   let like: SessionID?
+  let name: String?
 }
 
 struct SessionRenameRequest: Encodable {

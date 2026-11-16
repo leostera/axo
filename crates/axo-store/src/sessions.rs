@@ -290,6 +290,7 @@ pub struct NewSession<'a> {
     pub session_id: SessionId,
     pub folder: &'a Path,
     pub name: &'a str,
+    pub manual_name: Option<&'a axo_protocol::rpc::SessionName>,
     pub pi_session_file: &'a Path,
     pub bridge_socket: &'a BridgeSocketPath,
     pub pane_id: &'a str,
@@ -315,13 +316,14 @@ pub fn insert_new_session(
     transaction
         .execute(
             "INSERT INTO sessions
-                (id, initial_pwd, state, created_at, name, pi_session_file, pi_bridge_socket_path)
-             VALUES (?, ?, 'open', ?, ?, ?, ?)",
+                (id, initial_pwd, state, created_at, name, manual_name, pi_session_file, pi_bridge_socket_path)
+             VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
             params![
                 new.session_id.to_string(),
                 new.folder.to_string_lossy(),
                 unix_timestamp(),
                 new.name,
+                new.manual_name.map(|name| name.as_str()),
                 new.pi_session_file.to_string_lossy(),
                 new.bridge_socket.as_str(),
             ],
@@ -572,12 +574,14 @@ mod tests {
 
         let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
         let split = new_uuid_v4().unwrap();
+        let preset = axo_protocol::rpc::SessionName::parse("Preset helper".into()).unwrap();
         let inserted = insert_new_session(
             database,
             &NewSession {
                 session_id: SessionId::new_v4().unwrap(),
                 folder,
                 name: "Session 1",
+                manual_name: Some(&preset),
                 pi_session_file: Path::new("/h.jsonl"),
                 bridge_socket: &socket,
                 pane_id: "pane",
@@ -591,6 +595,11 @@ mod tests {
 
         // The Session arrives whole: Pi on the left, a terminal on the right.
         let row = open_session_row(database, session).unwrap();
+        assert_eq!(row.manual_name.as_deref(), Some("Preset helper"));
+        describe_session(database, session, Some("Automatic Pi title"), None).unwrap();
+        let renamed = open_session_row(database, session).unwrap();
+        assert_eq!(renamed.name, "Automatic Pi title");
+        assert_eq!(renamed.manual_name.as_deref(), Some("Preset helper"));
         assert_eq!(
             row.layout,
             Some(Layout::side_by_side(inserted.pi, inserted.terminal, split).unwrap())

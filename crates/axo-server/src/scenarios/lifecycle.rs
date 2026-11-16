@@ -61,9 +61,12 @@ async fn a_new_session_starts_in_a_folder_beside_another_or_at_home_and_nothing_
         "nothing is opened for you"
     );
 
-    let first = sessions::create(core, CreateSession::InFolder(project.clone()))
-        .await
-        .unwrap();
+    let first = sessions::create(
+        core,
+        axo_protocol::rpc::SessionLocation::InFolder(project.clone()).into(),
+    )
+    .await
+    .unwrap();
     assert_eq!(first.folder, project);
     assert!(
         first
@@ -76,9 +79,12 @@ async fn a_new_session_starts_in_a_folder_beside_another_or_at_home_and_nothing_
         Some(core.pi_directories.transcripts.as_path()),
         "a transcript is under its Mac's folder, by the Session's id"
     );
-    let beside = sessions::create(core, CreateSession::Like(first.id))
-        .await
-        .unwrap();
+    let beside = sessions::create(
+        core,
+        axo_protocol::rpc::SessionLocation::Like(first.id).into(),
+    )
+    .await
+    .unwrap();
     assert_eq!(beside.folder, project);
     assert_eq!(beside.name, "Session 2", "numbered within its folder");
     let home = sessions::create(core, CreateSession::default())
@@ -88,7 +94,9 @@ async fn a_new_session_starts_in_a_folder_beside_another_or_at_home_and_nothing_
 
     // A relative folder, or a folder and a Session at once, cannot be asked for at all
     // (`CreateSession`'s parsing); a folder that is not there is refused here.
-    for refused in [CreateSession::InFolder(fixture.directory.join("missing"))] {
+    for refused in
+        [axo_protocol::rpc::SessionLocation::InFolder(fixture.directory.join("missing")).into()]
+    {
         assert!(sessions::create(core, refused).await.is_err());
     }
 
@@ -320,9 +328,12 @@ async fn a_terminal_whose_folder_is_gone_is_closed_instead_of_failing_restore() 
     let mut fixture = Fixture::new().await;
     let folder = fixture.directory.join("gone");
     fs::create_dir_all(&folder).unwrap();
-    let record = sessions::create(&fixture.core, CreateSession::InFolder(folder.clone()))
-        .await
-        .unwrap();
+    let record = sessions::create(
+        &fixture.core,
+        axo_protocol::rpc::SessionLocation::InFolder(folder.clone()).into(),
+    )
+    .await
+    .unwrap();
     let other = fixture.new_session().await;
     let terminal = pane(&record, PaneRole::Terminal);
     crate::sessions::stop(&fixture.core).await;
@@ -424,6 +435,35 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
     fixture.wait_for_pi(record.id).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fixture.pi_log().matches(notice).count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_creation_name_is_visible_immediately_and_survives_auto_titles_and_restart() {
+    let mut fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let request = axo_protocol::rpc::CreateSession {
+        location: axo_protocol::rpc::SessionLocation::InFolder(fixture.directory.clone()),
+        name: Some(axo_protocol::rpc::SessionName::parse("Preset helper".into()).unwrap()),
+    };
+    let created = sessions::create(&fixture.core, request).await.unwrap();
+    assert_eq!(created.manual_name.as_deref(), Some("Preset helper"));
+    assert_eq!(
+        fixture.listed(created.id).unwrap().manual_name,
+        created.manual_name
+    );
+    let id = created.id;
+    fixture
+        .core
+        .store
+        .call(move |database| {
+            axo_store::describe_session(database, id, Some("Pi automatic title"), None)
+        })
+        .await
+        .unwrap();
+    fixture.restart().await;
+    let restored = fixture.listed(id).unwrap();
+    assert_eq!(restored.name, "Pi automatic title");
+    assert_eq!(restored.manual_name.as_deref(), Some("Preset helper"));
+    sessions::stop(&fixture.core).await;
 }
 
 async fn working_session(fixture: &Fixture) -> axo_protocol::SessionRecord {

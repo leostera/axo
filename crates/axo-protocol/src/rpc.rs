@@ -437,18 +437,65 @@ pub struct RenameSession {
     pub name: String,
 }
 
-/// Where `axo.session.create` makes its Session (RFD0038). On the wire `{folder}`, `{like}` or
-/// `{}`; both at once, or a relative folder, is refused while parsing.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "CreateSessionWire", into = "CreateSessionWire")]
-pub enum CreateSession {
-    /// The home directory.
+/// An explicit Session name: 1–80 UTF-16 units, no controls or surrounding whitespace.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SessionName(String);
+
+impl SessionName {
+    pub fn parse(name: String) -> Result<Self, InvalidParam> {
+        if name.is_empty()
+            || name.trim() != name
+            || name.encode_utf16().count() > 80
+            || name.chars().any(char::is_control)
+        {
+            return Err(InvalidParam(
+                "Session name must be 1–80 UTF-16 units, without controls or surrounding whitespace",
+            ));
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for SessionName {
+    type Error = InvalidParam;
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        Self::parse(name)
+    }
+}
+impl From<SessionName> for String {
+    fn from(name: SessionName) -> Self {
+        name.0
+    }
+}
+
+/// Where a Session starts; folder and like remain mutually exclusive.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SessionLocation {
     #[default]
     AtHome,
-    /// This absolute path; that it is an existing directory is checked when the Session is made.
     InFolder(PathBuf),
-    /// The folder of this open Session.
     Like(SessionId),
+}
+
+/// Optional explicit name is independent of the Session's location (RFD0038).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "CreateSessionWire", into = "CreateSessionWire")]
+pub struct CreateSession {
+    pub location: SessionLocation,
+    pub name: Option<SessionName>,
+}
+
+impl From<SessionLocation> for CreateSession {
+    fn from(location: SessionLocation) -> Self {
+        Self {
+            location,
+            name: None,
+        }
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -458,36 +505,45 @@ struct CreateSessionWire {
     folder: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     like: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<SessionName>,
 }
 
 impl TryFrom<CreateSessionWire> for CreateSession {
     type Error = InvalidParam;
 
     fn try_from(wire: CreateSessionWire) -> Result<Self, InvalidParam> {
-        match (wire.folder, wire.like) {
-            (None, None) => Ok(Self::AtHome),
-            (Some(folder), None) if folder.is_absolute() => Ok(Self::InFolder(folder)),
-            (Some(_), None) => Err(InvalidParam("a Session's folder must be an absolute path")),
-            (None, Some(like)) => Ok(Self::Like(like)),
-            (Some(_), Some(_)) => Err(InvalidParam(
-                "a new Session takes a folder or another Session's, not both",
-            )),
-        }
+        let location = match (wire.folder, wire.like) {
+            (None, None) => SessionLocation::AtHome,
+            (Some(folder), None) if folder.is_absolute() => SessionLocation::InFolder(folder),
+            (Some(_), None) => {
+                return Err(InvalidParam("a Session's folder must be an absolute path"));
+            }
+            (None, Some(like)) => SessionLocation::Like(like),
+            (Some(_), Some(_)) => {
+                return Err(InvalidParam(
+                    "a new Session takes a folder or another Session's, not both",
+                ));
+            }
+        };
+        Ok(Self {
+            location,
+            name: wire.name,
+        })
     }
 }
 
 impl From<CreateSession> for CreateSessionWire {
     fn from(create: CreateSession) -> Self {
-        match create {
-            CreateSession::AtHome => Self::default(),
-            CreateSession::InFolder(folder) => Self {
-                folder: Some(folder),
-                like: None,
-            },
-            CreateSession::Like(like) => Self {
-                folder: None,
-                like: Some(like),
-            },
+        let (folder, like) = match create.location {
+            SessionLocation::AtHome => (None, None),
+            SessionLocation::InFolder(folder) => (Some(folder), None),
+            SessionLocation::Like(like) => (None, Some(like)),
+        };
+        Self {
+            folder,
+            like,
+            name: create.name,
         }
     }
 }
@@ -983,27 +1039,69 @@ mod tests {
     #[test]
     fn a_new_session_names_a_folder_another_session_or_neither() {
         let parse = |value| serde_json::from_value::<CreateSession>(value);
-        assert_eq!(parse(json!({})).unwrap(), CreateSession::AtHome);
+        assert_eq!(parse(json!({})).unwrap(), CreateSession::default());
         assert_eq!(
             parse(json!({ "folder": "/tmp" })).unwrap(),
-            CreateSession::InFolder("/tmp".into())
+            CreateSession::from(SessionLocation::InFolder("/tmp".into()))
         );
         assert_eq!(
             parse(json!({ "like": SID })).unwrap(),
-            CreateSession::Like(SID.parse().unwrap())
+            CreateSession::from(SessionLocation::Like(SID.parse().unwrap()))
         );
         let both = parse(json!({ "folder": "/tmp", "like": SID })).unwrap_err();
         assert!(both.to_string().contains("not both"), "{both}");
         let relative = parse(json!({ "folder": "tmp" })).unwrap_err();
         assert!(relative.to_string().contains("absolute"), "{relative}");
         for create in [
-            CreateSession::AtHome,
-            CreateSession::InFolder("/tmp".into()),
-            CreateSession::Like(SID.parse().unwrap()),
+            CreateSession::default(),
+            CreateSession::from(SessionLocation::InFolder("/tmp".into())),
+            CreateSession::from(SessionLocation::Like(SID.parse().unwrap())),
         ] {
             let wire = serde_json::to_value(&create).unwrap();
             assert_eq!(parse(wire).unwrap(), create);
         }
+    }
+
+    #[test]
+    fn creation_names_are_parsed_independently_of_location() {
+        for location in [
+            serde_json::json!({}),
+            serde_json::json!({"folder":"/tmp"}),
+            serde_json::json!({"like":SID}),
+        ] {
+            let mut wire = location;
+            wire["name"] = serde_json::json!("Parser fixes");
+            let parsed: CreateSession = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(parsed.name.as_ref().unwrap().as_str(), "Parser fixes");
+            assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+        }
+        for name in [
+            String::new(),
+            " ".into(),
+            " padded".into(),
+            "padded ".into(),
+            "a\nb".into(),
+            "x".repeat(81),
+            "🐈".repeat(41),
+        ] {
+            assert!(
+                serde_json::from_value::<CreateSession>(serde_json::json!({"name":name})).is_err()
+            );
+        }
+        assert!(SessionName::parse("🐈".repeat(40)).is_ok());
+        assert!(serde_json::from_value::<CreateSession>(serde_json::json!({"name":7})).is_err());
+        assert!(
+            serde_json::from_value::<CreateSession>(
+                serde_json::json!({"name":"ok","folder":"/tmp","like":SID})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<CreateSession>(
+                serde_json::json!({"name":"ok","unknown":true})
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -12,10 +12,7 @@ pub(crate) const UNRECOVERABLE_PI_REASON: &str =
     "Axo could not recover this Pi session. Its conversation history is preserved.";
 
 pub(crate) fn valid_session_title(title: &str) -> bool {
-    !title.is_empty()
-        && title.trim() == title
-        && title.encode_utf16().count() <= 80
-        && !title.chars().any(char::is_control)
+    axo_protocol::rpc::SessionName::parse(title.to_owned()).is_ok()
 }
 
 pub(crate) fn valid_session_emoji(emoji: &str) -> bool {

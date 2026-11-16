@@ -4,7 +4,7 @@
 - Status: Part 1 implemented. Part 2 superseded by [RFD0041](RFD0041-axod-session-tasks.md)
 - Author: leostera
 - Start Date: 2026-11-09
-- Updated: 2026-11-10
+- Updated: 2026-11-15
 - Document Type: Proposal
 - Supersedes: [RFD0014](RFD0014-workspaces-and-agent-led-sessions.md) (Workspaces)
 - Amends: [RFD0022](RFD0022-sessions-across-macs.md) (transcript paths), [RFD0034](RFD0034-axod-as-an-axp-server.md) (split by owner), [RFD0037](RFD0037-axod-reactive-core.md) (step 5)
@@ -35,7 +35,8 @@ Later, Pi will be able to move its Session to another folder (`/axo-set-cwd` in 
 ### Part 1: Sessions without Workspaces
 
 - **A Session's folder** is `sessions.initial_pwd`, which every Session already has (a Workspace Session's is its Workspace's directory). `SessionRecord.folder` carries it to the Mac. The remote snapshot and the sync metadata carry `folderName`, its last component: remote clients never see a path from them.
-- **Creating:** `axo.session.create { folder? | like? }` makes a Session with Pi and a terminal in `folder` (absolute, an existing directory), in the folder of the open Session `like`, or in the home directory; both at once, a relative or missing folder, or a `like` that is not open are invalid params. A Session whose Pi cannot start is not made. `axo.remote.session.create { target, like? }` takes only `like`: the phone and the web never send a path. axod's MCP tool `session_create` takes `folder` or `like`, as the local method does, where `"self"` is the agent's own Session (`crates/axo-mcp/src/lib.rs`).
+- **Creating:** `axo.session.create { name?, folder? | like? }` makes a Session with Pi and a terminal in `folder` (absolute, an existing directory), in the folder of the open Session `like`, or in the home directory; both at once, a relative or missing folder, or a `like` that is not open are invalid params. A Session whose Pi cannot start is not made. `axo.remote.session.create { target, name?, like? }` accepts an optional name and `like`, but no folder path: the phone and the web never send a path. axod's MCP tool `session_create` takes `folder` or `like`, as the local method does, where `"self"` is the agent's own Session (`crates/axo-mcp/src/lib.rs`).
+- **Explicit creation names (unreleased):** both creation methods accept optional `name`; MCP accepts `session_create({name,folder?,like?})`, and the CLI accepts `--name`. The name is parsed before effects (1–80 UTF-16 units, no controls or surrounding whitespace) and inserted as `manual_name` in the same transaction as the Session and panes, before the first snapshot or Pi startup. Automatic titles still update `name`, never the explicit override. Omission keeps default numbering and automatic naming; no database migration is needed.
 - **Removed outright** (the app and axod ship together; the Worker first):
   - local: `axo.workspace.list`, `.create`, `.rename`, `.archive`, `.session.create`, and the `workspaceChanged` event;
   - remote: `axo.remote.workspace.list` and `axo.remote.workspace.session.create`;

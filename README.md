@@ -19,6 +19,13 @@ Axo guides you through Welcome → Setup → Connections → Ready. Setup checks
 
 **Check for Updates…** opens a review window on the primary display with version details and release notes before you choose to install.
 
+## Named Sessions (unreleased)
+
+Agents can create a named Session in one call: `session_create({name:"axo: tests",like:"self"})`.
+The optional name is saved before Pi starts and wins over automatic titles. Omit it to keep normal
+Session numbering and automatic naming. Names use 1–80 UTF-16 units, with no surrounding whitespace
+or control characters. Local/remote RPCs and native client APIs also accept `name`.
+
 ## Session timers
 
 Inside an Axo Session, the MCP tools provide:
@@ -36,7 +43,7 @@ Axo.app ships the `axo` CLI. The installer sets up `/usr/local/bin/axo`; a downl
 
 ```sh
 axo session list
-axo session create --folder .
+axo session create --folder . --name "axo: tests"
 axo session prompt --sid <session-id> --message "Run the tests"
 axo relay link ABCD-1234
 ```

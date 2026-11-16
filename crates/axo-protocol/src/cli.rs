@@ -233,6 +233,13 @@ pub static OPERATIONS: &[Operation] = &[
                 ValueKind::Session,
                 false,
                 "Use another Session's folder"
+            ),
+            p(
+                "name",
+                "name",
+                ValueKind::Text,
+                false,
+                "Explicit Session name, preserved over automatic titles"
             )
         ]
     ),

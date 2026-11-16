@@ -181,15 +181,15 @@ async fn launch_ready(core: Arc<Core>) {
 /// Where a new Session starts: `folder`, the folder of the open Session `like`, or the home
 /// directory. Canonical, so Sessions in one folder share one path.
 fn new_session_folder(core: &Core, request: &rpc::CreateSession) -> io::Result<PathBuf> {
-    let folder = match request {
-        rpc::CreateSession::InFolder(folder) => folder.clone(),
-        rpc::CreateSession::Like(like) => {
+    let folder = match &request.location {
+        rpc::SessionLocation::InFolder(folder) => folder.clone(),
+        rpc::SessionLocation::Like(like) => {
             core.catalog
                 .record(*like)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "that Session is not open"))?
                 .folder
         }
-        rpc::CreateSession::AtHome => core.home.clone(),
+        rpc::SessionLocation::AtHome => core.home.clone(),
     };
     let folder = folder.canonicalize()?;
     if !folder.is_dir() {
@@ -207,7 +207,7 @@ pub(crate) async fn create(
     request: rpc::CreateSession,
 ) -> io::Result<SessionRecord> {
     let folder = new_session_folder(core, &request)?;
-    create_in(core, folder, None).await
+    create_in(core, folder, None, request.name).await
 }
 
 /// Creates a Session in `folder` (canonical, an existing directory). Its transcript is
@@ -216,6 +216,7 @@ async fn create_in(
     core: &Arc<Core>,
     folder: PathBuf,
     import: Option<PathBuf>,
+    name: Option<rpc::SessionName>,
 ) -> io::Result<SessionRecord> {
     if core.is_stopping() {
         return Err(io::Error::new(
@@ -249,6 +250,7 @@ async fn create_in(
                         session_id,
                         folder: &folder,
                         name: &format!("Session {ordinal}"),
+                        manual_name: name.as_ref(),
                         pi_session_file: &transcript,
                         bridge_socket: &bridge_socket,
                         pane_id: &pane_id,
@@ -415,7 +417,7 @@ async fn import_now(
             "Pi Session is no longer current",
         ));
     }
-    let session = create_in(core, folder, Some(source)).await?;
+    let session = create_in(core, folder, Some(source), None).await?;
     core.events.publish(Event::SessionFocus {
         session_id: session.id,
     });

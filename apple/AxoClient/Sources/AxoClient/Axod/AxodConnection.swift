@@ -144,17 +144,29 @@ public final class AxodConnection: Sendable {
 
   /// A new Session at home (RFD0038).
   public func createSession() async throws -> TerminalSession {
-    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: nil))
+    try await createSession(name: nil)
+  }
+
+  public func createSession(name: String?) async throws -> TerminalSession {
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: nil, name: name))
   }
 
   /// A new Session in `folder`, an absolute path to a directory that exists.
   public func createSession(inFolder folder: String) async throws -> TerminalSession {
-    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: folder, like: nil))
+    try await createSession(inFolder: folder, name: nil)
+  }
+
+  public func createSession(inFolder folder: String, name: String?) async throws -> TerminalSession {
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: folder, like: nil, name: name))
   }
 
   /// A new Session in the folder of the open Session `sessionID`.
   public func createSession(like sessionID: SessionID) async throws -> TerminalSession {
-    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: sessionID))
+    try await createSession(like: sessionID, name: nil)
+  }
+
+  public func createSession(like sessionID: SessionID, name: String?) async throws -> TerminalSession {
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: sessionID, name: name))
   }
 
   public func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {

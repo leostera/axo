@@ -30,7 +30,23 @@ fn ok(daemon: &Axod, args: &[&str]) -> Value {
 fn sessions_and_settings_use_the_real_protocol_without_consuming_focus_or_hiding_errors() {
     let daemon = Axod::start();
     assert!(ok(&daemon, &["session", "list"]).is_array());
-    let created = ok(&daemon, &["session", "create"]);
+    for name in ["", " padded", "a\nb"] {
+        assert_eq!(
+            cli(&daemon, &["session", "create", "--name", name])
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+    assert!(
+        daemon.sessions().is_empty(),
+        "Invalid names fail before creating Sessions"
+    );
+    let created = ok(
+        &daemon,
+        &["session", "create", "--name", "Preset CLI fixture"],
+    );
+    assert_eq!(created["manualName"], "Preset CLI fixture");
     let id = created["id"].as_str().unwrap();
     daemon.wait_for_pi(&created);
     ok(

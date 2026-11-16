@@ -281,11 +281,12 @@
             "params": {
               "type": "object",
               "additionalProperties": false,
-              "maxProperties": 1,
-              "description": "Where the Session starts: an absolute folder, the folder of an open Session, or with neither the home directory.",
+              "not": { "properties": { "folder": {}, "like": {} }, "required": ["folder", "like"] },
+              "description": "Optional explicit name, set before startup. Folder and like are mutually exclusive; neither means home.",
               "properties": {
                 "folder": { "type": "string", "minLength": 1 },
-                "like": { "$ref": "common.schema.json#/$defs/SessionId" }
+                "like": { "$ref": "common.schema.json#/$defs/SessionId" },
+                "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "1–80 UTF-16 units, without controls or surrounding whitespace. Sets the manual name." }
               }
             }
           }

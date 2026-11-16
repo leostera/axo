@@ -40,7 +40,11 @@ fn a_new_axod_opens_no_session_and_starts_each_where_it_is_asked() {
     std::fs::create_dir_all(&project).unwrap();
     let project = std::fs::canonicalize(&project).unwrap();
 
-    let first = axod.ok("axo.session.create", json!({ "folder": project }));
+    let first = axod.ok(
+        "axo.session.create",
+        json!({ "folder": project, "name": "Project helper" }),
+    );
+    assert_eq!(first["manualName"], "Project helper");
     assert_eq!(first["folder"], json!(project), "{first}");
     let roles: Vec<&str> = first["shells"]
         .as_array()
@@ -49,9 +53,17 @@ fn a_new_axod_opens_no_session_and_starts_each_where_it_is_asked() {
         .map(|p| p["role"].as_str().unwrap())
         .collect();
     assert_eq!(roles, ["pi", "terminal"], "Pi beside a terminal: {first}");
-    let beside = axod.ok("axo.session.create", json!({ "like": first["id"] }));
+    let beside = axod.ok(
+        "axo.session.create",
+        json!({ "like": first["id"], "name": "Beside helper" }),
+    );
+    assert_eq!(beside["manualName"], "Beside helper");
     assert_eq!(beside["folder"], json!(project), "{beside}");
     let home = axod.ok("axo.session.create", json!({}));
+    assert!(
+        home["manualName"].is_null(),
+        "Omitting name preserves automatic naming"
+    );
     assert_eq!(
         home["folder"],
         json!(std::fs::canonicalize(axod.home()).unwrap()),
@@ -62,6 +74,11 @@ fn a_new_axod_opens_no_session_and_starts_each_where_it_is_asked() {
         json!({ "folder": project.join("missing") }),
         json!({ "folder": project, "like": first["id"] }),
         json!({ "workspaceId": "gone" }),
+        json!({ "name": "" }),
+        json!({ "name": " padded" }),
+        json!({ "name": "a\nb" }),
+        json!({ "name": "🐈".repeat(41) }),
+        json!({ "name": 7 }),
     ] {
         assert_eq!(
             axod.err("axo.session.create", refused.clone()).code,
@@ -70,6 +87,11 @@ fn a_new_axod_opens_no_session_and_starts_each_where_it_is_asked() {
         );
     }
 
+    assert_eq!(
+        axod.sessions().len(),
+        3,
+        "Invalid names must create no Sessions"
+    );
     for session in [&first, &beside, &home] {
         let closed = axod.ok("axo.session.close", json!({ "sessionId": session["id"] }));
         assert_eq!(closed, json!({ "archivedSessionId": session["id"] }));

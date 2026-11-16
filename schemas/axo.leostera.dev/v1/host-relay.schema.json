@@ -334,7 +334,8 @@
                 "like": {
                   "$ref": "common.schema.json#/$defs/SessionId",
                   "description": "An open Session whose folder the new one starts in; the Mac's home directory without it."
-                }
+                },
+                "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Optional fixed name, 1–80 UTF-16 units, no controls or surrounding whitespace." }
               }
             }
           }

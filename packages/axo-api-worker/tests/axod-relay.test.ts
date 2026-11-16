@@ -127,7 +127,8 @@ test("an isolated axod pairs with an account, then the account drives it through
     );
     await assert.rejects(command("axo.remote.session.prompt", { target, sessionId: firstSession.sessionId, text: "" }));
 
-    const created = (await command("axo.remote.session.create", { target })).session;
+    const created = (await command("axo.remote.session.create", { target, name: "Preset relay helper" })).session;
+    assert.equal(created.name, "Preset relay helper");
     assert.equal(created.hostId, hostId);
     await waitFor("the new Session in the client's list", 10_000, async () => client!.sessions.get(created.sessionId), daemon);
 
