@@ -99,6 +99,8 @@ What is used on what, by model, provider, Session, folder, Mac, day and tier.
 
 All three share one sandbox, one store for content (assets, RFD0030) and one channel for events back to the agent. Design them together.
 
+Inline HTML pages in the transcript, the first of these, are [RFD0059](rfds/RFD0059-webviews.md) (Draft): the sandbox, the content domain and, in its phase 2, clicks back to the agent.
+
 - **The web rail:**
   - A fixed panel on the right of the Session window: a sandboxed WebView the Session's agent owns, for showing rather than telling. Progress dashboards, diffs, charts, a dev server's preview.
   - Content is HTML the agent writes, or a URL (`localhost`); structured blocks that also render natively on the phone come later.
