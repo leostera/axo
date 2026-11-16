@@ -65,13 +65,13 @@ pi-axo registers `webview` (`packages/pi-axo/src/webview.ts`):
   - `title`: 1 to 120 characters; the asset's name is `<title>.html`, with characters a name can't hold replaced.
   - `alt`: 1 to 2,000 characters. Clients show it while the page loads, to screen readers, where they can't draw the page, and on share pages.
   - `height`: the height in CSS pixels the client reserves before the page reports its own, 80 to 2,000; 320 if absent.
-- **Self-contained:** a webview is one file, with all its CSS, JavaScript, images and fonts inline. It loads nothing from anywhere (below).
-- **Size:** at most 1 MiB passed as `html`, at most 8 MiB from `path`. A page that inlines a library, such as D3, is built from a file with the agent's tools.
+- **One file:** a webview is one HTML file, with its own CSS and JavaScript inline. Libraries (Mermaid, D3, Chart.js, KaTeX) come from jsDelivr, at an exact version (below).
+- **Size:** at most 1 MiB passed as `html`, at most 8 MiB from `path`.
 - **What it does:** it reads `path` relative to the Session's working directory if given, asks axod to save the bytes as an asset of type `text/html` (`axo.assets.save`, below), and answers:
   - `content`: `Shown "<title>" (<size>): https://axo.leostera.dev/w/sha256:<hex>`.
   - `details`: `{ webview: 1, asset: "sha256:<hex>", title, alt, height, size }`. Clients render from `details`, never from the arguments, so `html` and `path` render alike.
 - **Failures** are tool errors the agent sees: no `html` or `path`, both, too large, a file it can't read, or the Mac signed out or offline (*the page could not be stored: this Mac is not connected to Axo*). No page is shown with nothing stored behind it.
-- **The brief** (`brief.ts`) gets one line: *To show the person a diagram, chart or sketch, write a self-contained HTML page and call `webview`; use the app's CSS variables to match its colours. The page must be self-contained: inline every script, style, image and font, since it can't load anything or use storage.*
+- **The brief** (`brief.ts`) gets one line: *To show the person a diagram, chart or sketch, write a self-contained HTML page and call `webview`; use the app's CSS variables to match its colours. Inline your own code; load libraries only from cdn.jsdelivr.net, at an exact version (`npm/mermaid@11.4.1/…`), with an `integrity` attribute. Pages can't use storage or any other host.*
 
 ### axod: `axo.assets.save`
 
@@ -107,13 +107,13 @@ A second host served by the same Worker, `axo-public-app`, and only for webviews
   - `Content-Security-Policy`:
     - `sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox`: the document has an opaque origin even when opened on its own, not in a frame.
     - `default-src 'none'`
-    - `script-src 'unsafe-inline'`, `style-src 'unsafe-inline'`
-    - `img-src data: blob:`, `font-src data:`, `media-src data: blob:`
-    - `connect-src 'none'`, `worker-src blob:`
+    - `script-src 'unsafe-inline' https://cdn.jsdelivr.net`, `style-src 'unsafe-inline' https://cdn.jsdelivr.net`
+    - `img-src data: blob: https://cdn.jsdelivr.net`, `font-src data: https://cdn.jsdelivr.net`, `media-src data: blob:`
+    - `connect-src https://cdn.jsdelivr.net`, `worker-src blob:`
     - `frame-ancestors https://axo.leostera.dev`
     - `form-action 'none'`, `base-uri 'none'`
   - No nonce: a nonce would make browsers ignore `'unsafe-inline'`, and the agent's own scripts are inline.
-- **No network at all:** a page loads nothing and sends nothing. It can't send off what the agent put in it, it can't change after it was stored (a page is exactly its asset's bytes), and no third party learns when it was opened.
+- **One CDN:** jsDelivr, because a URL at an exact npm version never changes, and `integrity` makes the browser refuse other bytes. esm.sh builds its files on request, so it is not on the list. A page reaches no other host, so it can't send off what the agent put in it. Adding a CDN is one directive in one place.
 - **Not cached across people:** the asset is cached as an asset (RFD0030); the page with its bootstrap is made per request, which is cheap.
 
 ### The bootstrap
@@ -195,7 +195,8 @@ The Worker logs `webviews.view` (account, hash, outcome: `ok`, `forbidden`, `exp
 - **Pages are opaque to search and to the model:** both see the `alt`, not the drawing. The `alt` has to be good.
 - **The HTML is in the transcript twice** when the agent passes `html`: in the tool call, and as an asset. `path` avoids the first.
 - **Pages can't use storage:** `localStorage` throws in an opaque origin, and some libraries expect it.
-- **No libraries from the network:** a page that wants Mermaid or D3 carries it inline, hundreds of kilobytes to megabytes, stored again in each page that uses it. Assets are stored once per hash, but each page's HTML differs.
+- **jsDelivr learns when a page is opened,** from where, and a page that uses a library breaks when jsDelivr is unreachable or offline.
+- **The CSP can't require `integrity`:** a page without it trusts jsDelivr to serve the version it names.
 
 ## Alternatives
 
@@ -214,5 +215,5 @@ Before acceptance:
 During implementation:
 
 - Whether `HTMLRewriter` keeps a document byte for byte apart from the inserted script, on pages that are not well-formed.
-- Whether common libraries work inlined under this CSP: Mermaid, D3 and Chart.js, in particular code that builds workers or loads fonts.
+- Whether common libraries work under this CSP: Mermaid, D3, Chart.js and KaTeX, in particular code that builds workers or loads fonts.
 - Whether a `WKWebView` reports a reliable height for a page whose content is laid out after fonts load. The bootstrap may need to report again after `document.fonts.ready`.
