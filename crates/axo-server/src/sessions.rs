@@ -719,14 +719,16 @@ pub(crate) async fn prompt(
         .and_then(|admitted| admitted)
         .map_err(refused)?;
     match admission {
-        Admission::Queued => {
+        Admission::Queued { delivery } => {
             prompts::log_prompt(target, from, delivery, "queued");
             Ok(PromptAccepted {
                 accepted: true,
                 queued: true,
             })
         }
-        Admission::Send(link) => {
+        Admission::Send { link, delivery } => {
+            let mut prompt = prompt;
+            prompt.delivery = delivery;
             let sent = prompts::send(&link, &prompt).await;
             prompts::log_prompt(
                 target,

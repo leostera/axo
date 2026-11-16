@@ -128,6 +128,8 @@ pub(crate) struct Pi {
     active_at: Instant,
     attempts: u64,
     recovery: Recovery,
+    /// A normal Send must not abort a request or the work approved during this run.
+    human_turn_protected: bool,
 }
 
 use axo_protocol::ShellId;
@@ -146,6 +148,7 @@ impl Pi {
             active_at: Instant::now(),
             attempts: 0,
             recovery: Recovery::None,
+            human_turn_protected: false,
         }
     }
 
@@ -304,9 +307,14 @@ fn invalid_data(message: &str) -> io::Error {
 /// What a prompt for the Session's Pi does now.
 pub(crate) enum Admission {
     /// It waits for Pi to come up.
-    Queued,
+    Queued {
+        delivery: axo_protocol::rpc::PromptDelivery,
+    },
     /// Send it on this link.
-    Send(LinkCommands),
+    Send {
+        link: LinkCommands,
+        delivery: axo_protocol::rpc::PromptDelivery,
+    },
 }
 
 impl Session {
@@ -754,12 +762,26 @@ impl Session {
 
     /// Takes a prompt for the Pi: sent now on its link if it is up, or queued while it starts.
     /// A dormant Pi starts for it.
-    pub(crate) async fn admit_prompt(&mut self, prompt: Prompt) -> Result<Admission, PromptError> {
+    pub(crate) async fn admit_prompt(
+        &mut self,
+        mut prompt: Prompt,
+    ) -> Result<Admission, PromptError> {
         self.wake(None).await;
+        let asking = self
+            .core
+            .questions
+            .pending()
+            .iter()
+            .any(|question| question.session_id == self.id);
         let Some(pi) = &mut self.pi else {
             return Err(PromptError::NoPi);
         };
         pi.active_at = Instant::now();
+        if (pi.human_turn_protected || asking)
+            && prompt.delivery == axo_protocol::rpc::PromptDelivery::Interrupt
+        {
+            prompt.delivery = axo_protocol::rpc::PromptDelivery::FollowUp;
+        }
         // A Pi on its way to sleep starts again for it; the prompt waits for the next one.
         if std::mem::take(&mut pi.sleep) {
             pi.restart = true;
@@ -768,15 +790,19 @@ impl Session {
         let admitted = match &pi.state {
             PiState::Running { link, .. } if taking => {
                 pi.recovery = Recovery::None;
-                Ok(Admission::Send(link.clone()))
+                Ok(Admission::Send {
+                    link: link.clone(),
+                    delivery: prompt.delivery,
+                })
             }
             PiState::Running { .. } | PiState::Launching { .. } => {
                 if pi.queued.len() >= MAX_QUEUED_PI_PROMPTS {
                     return Err(PromptError::QueueFull);
                 }
+                let delivery = prompt.delivery;
                 pi.queued.push(prompt);
                 pi.recovery = Recovery::None;
-                Ok(Admission::Queued)
+                Ok(Admission::Queued { delivery })
             }
             PiState::Dormant | PiState::Unavailable => Err(PromptError::NoPi),
         };
@@ -787,12 +813,32 @@ impl Session {
         admitted
     }
 
+    fn release_human_turn_if_settled(&mut self) {
+        if !self
+            .core
+            .questions
+            .pending()
+            .iter()
+            .any(|question| question.session_id == self.id)
+            && let Some(pi) = &mut self.pi
+        {
+            pi.human_turn_protected = false;
+        }
+    }
+
+    pub(crate) fn protect_human_turn(&mut self) {
+        if let Some(pi) = &mut self.pi {
+            pi.human_turn_protected = true;
+        }
+    }
+
     /// Disarm automatic recovery before admitting explicit stop I/O. A lost receipt must not
     /// turn a person's stop into fresh work after a restart. New real prompts re-arm normally.
     pub(crate) fn pi_stop_link(&mut self) -> io::Result<LinkCommands> {
         let link = self.pi_link()?;
         if let Some(pi) = &mut self.pi {
             pi.recovery = Recovery::Suppressed;
+            pi.human_turn_protected = false;
         }
         self.publish();
         Ok(link)
@@ -998,6 +1044,7 @@ impl Session {
                     || recovered
             }
             PiCatalogEvent::AgentSettled => {
+                self.release_human_turn_if_settled();
                 if let Some(pi) = &mut self.pi {
                     pi.recovery.settled();
                 }
@@ -1016,6 +1063,9 @@ impl Session {
                 activity.ui_waits != previous
             }),
             PiCatalogEvent::ActivitySnapshot { working } => {
+                if !working {
+                    self.release_human_turn_if_settled();
+                }
                 if let Some(pi) = &mut self.pi {
                     if working && pi.recovery == Recovery::SettledAfterStop {
                         pi.recovery.started();
@@ -1159,3 +1209,7 @@ mod recovery_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "human_turn_tests.rs"]
+mod human_turn_tests;

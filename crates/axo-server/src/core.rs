@@ -179,6 +179,12 @@ impl QuestionsHost for Core {
     }
 
     fn publish(&self, event: Event) {
+        // Establish scheduling protection before any client can answer and then press Send.
+        if let Event::ElicitationRequested { elicitation } = &event
+            && let Some(session) = self.registry.get(elicitation.session_id)
+        {
+            session.post(|session| session.protect_human_turn());
+        }
         self.events.publish(event);
     }
 

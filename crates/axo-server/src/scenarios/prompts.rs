@@ -114,6 +114,92 @@ async fn a_prompt_names_open_sessions_only() {
     ));
 }
 
+/// A normal Send from any client must not abort either the question or its approved run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_send_queues_behind_a_human_question_and_the_work_approved_by_yes() {
+    use axo_protocol::elicitation::{Asker, ElicitationAction, ElicitationAnswer, Reply};
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 30_000 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let asking = {
+        let core = std::sync::Arc::clone(&fixture.core);
+        tokio::spawn(async move {
+            core.ask_with(
+                record.id,
+                "Approve the current work?",
+                Asker::Agent,
+                None,
+                Duration::from_secs(30),
+            )
+            .await
+        })
+    };
+    fixture
+        .until("the question to be published", || {
+            !fixture.core.questions.pending().is_empty()
+        })
+        .await;
+    let question = fixture.core.questions.pending().pop().unwrap();
+    let send = |text: &str| PromptSession {
+        session_id: record.id,
+        text: prompt_text(text),
+        delivery: PromptDelivery::Interrupt,
+        from_session_id: None,
+    };
+    sessions::prompt(
+        &fixture.core,
+        send("while Yes is on its way"),
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    fixture
+        .until("the protected prompt to reach Pi", || {
+            fixture
+                .pi_log()
+                .contains("DELIVERY:followUp:while Yes is on its way")
+        })
+        .await;
+    assert!(
+        !asking.is_finished(),
+        "Send must not settle or cancel the question"
+    );
+    fixture
+        .core
+        .questions
+        .resolve(
+            fixture.core.as_ref(),
+            &question.id,
+            ElicitationAnswer::Accept,
+            Reply::Bare,
+        )
+        .unwrap();
+    assert_eq!(
+        asking.await.unwrap().unwrap().outcome.action,
+        ElicitationAction::Accept
+    );
+    sessions::prompt(
+        &fixture.core,
+        send("voice message after Yes"),
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    fixture
+        .until("the post-approval prompt to reach Pi", || {
+            fixture
+                .pi_log()
+                .contains("DELIVERY:followUp:voice message after Yes")
+        })
+        .await;
+    assert!(
+        !fixture.pi_log().contains("DELIVERY:interrupt:"),
+        "No ordinary Send interrupts this protected run"
+    );
+}
+
 /// A key a person presses away from the Mac reaches Pi as that key.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_key_press_reaches_pi_as_that_key() {
