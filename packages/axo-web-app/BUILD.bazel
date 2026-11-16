@@ -67,17 +67,28 @@ js_library(
     srcs = _SRCS + glob(["test/*.mjs"]),
 )
 
+_BROWSER_DATA = _DEPS + [
+    ":browser_test_files",
+    ":node_modules/@vitejs/plugin-react",
+    ":node_modules/playwright-core",
+    ":node_modules/ws",
+    "//sites/axo.leostera.dev:app_files",
+]
+
+node_test(
+    name = "jump_browser_test",
+    concurrency = 1,
+    data = _BROWSER_DATA,
+    tags = ["manual", "no-sandbox", "requires-browser"],
+    tests = ["test/jump-to-latest.test.mjs"],
+    tests_in_data = True,
+)
+
 # One focused media/approval flow for fast interaction regressions; also in the full suite below.
 node_test(
     name = "elicitations_browser_test",
     concurrency = 1,
-    data = _DEPS + [
-        ":browser_test_files",
-        ":node_modules/@vitejs/plugin-react",
-        ":node_modules/playwright-core",
-        ":node_modules/ws",
-        "//sites/axo.leostera.dev:app_files",
-    ],
+    data = _BROWSER_DATA,
     tags = ["manual", "no-sandbox", "requires-browser"],
     tests = ["test/elicitations.test.mjs"],
     tests_in_data = True,
@@ -87,13 +98,7 @@ node_test(
 node_test(
     name = "browser_test",
     concurrency = 1,
-    data = _DEPS + [
-        ":browser_test_files",
-        ":node_modules/@vitejs/plugin-react",
-        ":node_modules/playwright-core",
-        ":node_modules/ws",
-        "//sites/axo.leostera.dev:app_files",
-    ],
+    data = _BROWSER_DATA,
     tags = [
         "no-sandbox",
         "requires-browser",
@@ -107,6 +112,7 @@ node_test(
         "test/shared-session.test.mjs",
         "test/tools.test.mjs",
         "test/queued-messages.test.mjs",
+        "test/jump-to-latest.test.mjs",
         "test/elicitations.test.mjs",
     ],
     tests_in_data = True,

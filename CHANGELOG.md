@@ -12,6 +12,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Web Jump to latest/new message now instantly reveals the entire held backlog, fetches unseen records, and snaps to the actual bottom without smooth scrolling. Later catch-up and live updates remain unanimated for that visit; the jump control is available during animated replay even while following the bottom. Superseded opens cannot replace the newer snapshot.
 - Recording → Yes → Send no longer interrupts the question or the approved run. Web/iPhone wait for in-flight same-Session answers; failed answers keep the words in the draft. Shared daemon admission queues ordinary Send behind runs that asked the person, including sends from another device. Dedicated Stop remains available; a stale/unconfirmed Stop does not silently release protection.
 - Web queued messages stay at the bottom as agent output arrives, rather than becoming fixed in the middle of the transcript. Receipted messages return to normal conversation order, and new-output indicators still work above a waiting queue.
 - iOS Session history no longer gets stranded loading after chat switches or cancelled opens. Stale responses cannot replace a newer request, and live records/progress arriving during the first page are retained rather than acknowledged and discarded.

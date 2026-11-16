@@ -1428,6 +1428,68 @@ test("a reply is let out by the feed's clock, with no view, and what follows it 
   assert.equal(feed.items[1]!.revealed, null, "all out, it shows whole");
 });
 
+test("Jump fast-forwards 200 messages, queued prompts and later catch-up without one clock tick", () => {
+  const transcript = transcriptOf([said(1, "user", "start")]);
+  const feed = feedOf(transcript);
+  const first = feed.items[0];
+  const backlog = Array.from({ length: 200 }, (_, i) => said(i + 2, "assistant", `Reply ${i}: ${"a long reply ".repeat(80)}`, { timestamp: i + 2 }));
+  transcript.append(backlog);
+  const waiting: WaitingPrompt[] = [{ id: "waiting", text: "next task", files: [], delivery: "followUp", state: "queued", mine: true }];
+  feed.update(transcript, waiting);
+  assert.equal(feed.hasRevealBacklog, true);
+  assert.ok(feed.items.length < 202);
+  feed.fastForward();
+  assert.equal(feed.items.length, 202);
+  assert.equal(feed.items[0], first, "keep existing row identity");
+  assert.equal(feed.items.at(-1)?.id, "pending:waiting");
+  assert.equal(feed.hasRevealBacklog, false);
+  const instant = () => assert.ok(feed.items.every(item => item.row.kind !== "message" || (!item.row.enter && !item.row.reveal && item.revealed === null)));
+  instant();
+  transcript.append([said(202, "assistant", "A later catch-up batch", { timestamp: 202 })]);
+  feed.update(transcript, waiting);
+  transcript.progress("message", { message: { role: "assistant", timestamp: 203, content: [{ type: "text", text: "Still streaming, already fully visible" }] } });
+  feed.update(transcript, waiting);
+  instant();
+  assert.ok(ids(feed).includes("Still streaming, already fully visible"));
+  feed.closed();
+  feed.opened();
+  transcript.append([said(204, "assistant", "A new visit uses the normal live presentation again", { timestamp: 204 })]);
+  feed.update(transcript, []);
+  assert.equal(feed.hasRevealBacklog, true);
+  feed.dispose();
+});
+
+test("Jump fetches unseen records and an older open cannot overwrite its snapshot", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "start")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  const open = account.open.bind(account);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let held = false;
+  let epoch = 1;
+  account.open = async request => {
+    const result = { ...await open(request), epoch };
+    if (!held) { held = true; await gate; }
+    return result;
+  };
+  const olderOpen = workbench.openChat(sid(1));
+  await tick();
+  epoch = 2;
+  account.records.set(sid(1), [said(1, "user", "start"), said(2, "assistant", "Fetched newest reply", { timestamp: 2 })]);
+  await workbench.jumpToLatest(sid(1));
+  assert.ok(ids(workbench.chat(sid(1)).feed).includes("Fetched newest reply"));
+  release();
+  await olderOpen;
+  assert.equal(workbench.chat(sid(1)).epoch, 2, "a late response cannot roll back the new epoch");
+  assert.ok(ids(workbench.chat(sid(1)).feed).includes("Fetched newest reply"));
+  assert.equal(workbench.chat(sid(1)).feed.hasRevealBacklog, false);
+  assert.equal(account.commands.length, 0, "Jump is a read, never a prompt or Stop");
+  workbench.dispose();
+});
+
 test("off screen nothing waits: a reveal under way shows whole, and what arrives just shows", () => {
   const transcript = transcriptOf([said(1, "user", "hi")]);
   const feed = feedOf(transcript);

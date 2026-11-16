@@ -31,10 +31,12 @@ export class ConversationFeed {
 
   private version = 0;
   private readonly listeners = new Set<() => void>();
+  private readonly backlogListeners = new Set<() => void>();
   private transcript: ChatTranscript | null = null;
   private waiting: readonly WaitingPrompt[] = [];
   private byId = new Map<string, FeedItem>();
   private onScreen = false;
+  private instant = false;
   private readonly reveal = new RevealState();
   private revealing: FeedItem[] = [];
   private clock: ReturnType<typeof setTimeout> | null = null;
@@ -76,6 +78,7 @@ export class ConversationFeed {
   /** The chat came on screen: everything it holds now is history, and just appears. */
   opened(): void {
     this.onScreen = true;
+    this.instant = false;
     this.reveal.captureHistory(this.transcript?.messages ?? [], this.transcript?.live ?? []);
     this.rebuild();
   }
@@ -95,6 +98,19 @@ export class ConversationFeed {
   }
 
   get isOnScreen(): boolean { return this.onScreen; }
+  get hasRevealBacklog(): boolean { return this.revealing.length > 0; }
+  /** Presentation controls observe backlog changes without invalidating the message list. */
+  subscribeBacklog = (listener: () => void): (() => void) => {
+    this.backlogListeners.add(listener);
+    return () => this.backlogListeners.delete(listener);
+  };
+
+  /** Skip everything held back, including later catch-up batches, for this visit to the chat. */
+  fastForward(): void {
+    this.instant = true;
+    this.reveal.captureHistory(this.transcript?.messages ?? [], this.transcript?.live ?? []);
+    this.rebuild();
+  }
 
   /** Advances incoming word and entry animations by `ms`; completed ones show whole. */
   tick(ms: number): void {
@@ -143,10 +159,11 @@ export class ConversationFeed {
   dispose(): void { this.runClock(false); }
 
   private rebuild(): void {
+    const wasRevealing = this.hasRevealBacklog;
     const transcript = this.transcript;
     const messages = transcript?.messages ?? [];
     const live = transcript?.live ?? [];
-    const presenting = this.animates && this.onScreen;
+    const presenting = this.animates && this.onScreen && !this.instant;
     const shown = presenting
       ? this.reveal.shown(messages, live)
       : [...messages.map(message => ({ message, live: false, enter: false, reveal: null })),
@@ -175,6 +192,9 @@ export class ConversationFeed {
       item.set(item.row, out);
     }
     this.runClock(this.revealing.length > 0 || (presenting && this.reveal.hasEntries));
+    if (wasRevealing !== this.hasRevealBacklog) {
+      for (const listener of this.backlogListeners) listener();
+    }
   }
 
   /**

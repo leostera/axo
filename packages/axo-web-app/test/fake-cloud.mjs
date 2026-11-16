@@ -126,6 +126,7 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
         return reply({ accepted: true });
       }
       if (call.method === "axo.client.session.open") {
+        http.emit("session-open", call.params);
         const lines = transcripts.get(call.params.sessionId) ?? [];
         const records = call.params.have ? lines.filter((line) => line.cursor > call.params.have.cursor) : lines.slice(-call.params.window.last);
         return reply({ epoch: 1, records, cursor: lines.length, older: null, progress: [] });

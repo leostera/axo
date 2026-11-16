@@ -216,6 +216,8 @@ export class Chat {
   epoch: number | null = null;
   /** The `before` of the next older page, or null when the start is held. */
   older: number | null = null;
+  /** Only the newest open operation may install its snapshot. */
+  openRequest: object | null = null;
 
   /**
    * The person's messages the agent has not recorded yet: the ones sent from here, then the ones the
@@ -833,16 +835,23 @@ export class ChatWorkbench {
 
   // MARK: - History
 
-  /**
-   * Opens a chat on the socket: from what is held when something is, or else its newest page.
-   * Its new records then arrive as they are written.
-   */
+  /** Jump means no presentation backlog, including records still being fetched from the socket. */
+  async jumpToLatest(sessionId: string): Promise<void> {
+    if (this.selection?.kind !== "chat" || this.selection.sessionId !== sessionId) return;
+    this.chat(sessionId).feed.fastForward();
+    this.changed(false);
+    await this.openChat(sessionId);
+  }
+
+  /** Opens from the held cursor (or newest page); subsequent records follow on the socket. */
   async openChat(sessionId: string): Promise<void> {
     const session = this.openHost?.sessions.find(candidate => candidate.sessionId === sessionId);
     const hostId = session?.hostId ?? this.openHostId;
     const connection = this.connection;
     const chat = this.chat(sessionId);
     if (!hostId || !connection?.active) return;
+    const request = {};
+    chat.openRequest = request;
     if (this.opened && this.opened.sessionId !== sessionId) connection.closeSession(this.opened.sessionId);
     this.opened = { hostId, sessionId };
     const held = !chat.cached && chat.transcript && chat.epoch !== null ? { epoch: chat.epoch, cursor: chat.transcript.lastCursor } : null;
@@ -850,8 +859,8 @@ export class ChatWorkbench {
     this.changed();
     try {
       const result = await connection.open(held ? { hostId, sessionId, have: held } : { hostId, sessionId, window: { last: historyPageSize } });
-      if (this.opened?.sessionId !== sessionId || this.chats.get(sessionId) !== chat) return;
-      if (!held) {
+      if (this.opened?.sessionId !== sessionId || this.chats.get(sessionId) !== chat || chat.openRequest !== request) return;
+      if (!held || result.epoch !== held.epoch) {
         chat.transcript = null;
         chat.older = result.older;
       }
@@ -866,7 +875,7 @@ export class ChatWorkbench {
       chat.feed.restoreHistory(chat.transcript, chat.waiting);
       chat.history = { kind: "loaded", records: chat.transcript!.records.length, hasOlder: chat.older !== null };
     } catch (error) {
-      if (this.opened?.sessionId === sessionId) chat.history = { kind: "failed", message: describe(error) };
+      if (this.opened?.sessionId === sessionId && chat.openRequest === request) chat.history = { kind: "failed", message: describe(error) };
     }
     this.changed();
   }
@@ -896,7 +905,10 @@ export class ChatWorkbench {
   }
 
   private closeOpened(): void {
-    if (this.opened) this.connection?.closeSession(this.opened.sessionId);
+    if (this.opened) {
+      this.chat(this.opened.sessionId).openRequest = null;
+      this.connection?.closeSession(this.opened.sessionId);
+    }
     this.opened = null;
   }
 

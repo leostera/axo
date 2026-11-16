@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
+import { flushSync } from "react-dom";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
@@ -44,6 +45,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
 
   // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
   const feed = session && chat ? chat.feed : noFeed;
+  const hasRevealBacklog = useSyncExternalStore(feed.subscribeBacklog, () => feed.hasRevealBacklog, () => false);
   const feedRef = useRef(feed);
   feedRef.current = feed;
   const sessionRef = useRef(session?.sessionId ?? null);
@@ -176,7 +178,12 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     following.current = true;
     setShowJump(false);
     setHasNew(false);
-    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+    held.current = null;
+    anchor.current = null;
+    // Commit all revealed rows before measuring the destination; never scroll to yesterday's tail.
+    flushSync(() => { if (session) void workbench.jumpToLatest(session.sessionId); });
+    scrollToEnd(element);
+    lastScrollTop.current = element.scrollTop;
   };
 
   const send = async (delivery: Delivery = "interrupt") => {
@@ -274,7 +281,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             ) : null}
           </div>
         ) : null}
-        {showJump ? (
+        {showJump || hasRevealBacklog ? (
           <button className={hasNew ? "jump-button with-label" : "jump-button"} onClick={jumpToEnd}
             aria-label={hasNew ? "Jump to new message" : "Jump to latest"}>
             <Icon name="arrowDown" size={18} />{hasNew ? <span>Jump to new message</span> : null}
