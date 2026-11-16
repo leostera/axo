@@ -71,6 +71,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const messageCount = transcript?.messages.length ?? 0;
   /** The newest row as of the last layout: a different one is something new below. */
   const seenLastRow = useRef<string | undefined>(undefined);
+  const seenLastMessage = useRef<string | undefined>(undefined);
 
   // A new chat on screen starts at its newest message; before it is drawn, so it never shows
   // anywhere else first.
@@ -78,6 +79,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     following.current = true;
     anchor.current = null;
     seenLastRow.current = feed.items.at(-1)?.id;
+    seenLastMessage.current = feed.items.findLast(item => item.row.kind === "message")?.id;
     setShowJump(false);
     setHasNew(false);
     if (scroller.current) scrollToEnd(scroller.current);
@@ -111,8 +113,11 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     if (!element || !column) return;
     const observer = new ResizeObserver(() => {
       const last = feedRef.current.items.at(-1)?.id;
-      const added = last !== seenLastRow.current;
+      // A waiting prompt can remain the last row while new output arrives ahead of it.
+      const message = feedRef.current.items.findLast(item => item.row.kind === "message")?.id;
+      const added = last !== seenLastRow.current || message !== seenLastMessage.current;
       seenLastRow.current = last;
+      seenLastMessage.current = message;
       const opened = held.current;
       held.current = null;
       if (opened) {

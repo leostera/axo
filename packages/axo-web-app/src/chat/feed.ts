@@ -11,9 +11,10 @@ import { toolGroups, type ToolGroupPlace } from "./tool-groups.ts";
  * every row each time. The feed holds each row as an object of its own instead. A change to the
  * transcript changes the rows it touches, in place, and adds the new ones. A row's view subscribes
  * to its row alone, so a reply being written renders that reply, and the list renders only when a
- * row is added or removed.
+ * row order or membership changes.
  *
- * Rows only ever go on the end, and keep their places. The exceptions are a page of older history,
+ * Message rows go on the end and keep their places; waiting prompts stay after all output.
+ * The other exceptions are a page of older history,
  * which goes on the top; a message the person took back; and a transcript read again from the start
  * (a cut, or a reload), which starts the rows again.
  *
@@ -23,7 +24,7 @@ import { toolGroups, type ToolGroupPlace } from "./tool-groups.ts";
  * what arrives shows as it is.
  */
 export class ConversationFeed {
-  /** The rows, top to bottom. A new array only when a row is added or removed. */
+  /** The rows, top to bottom. A new array only when row order or membership changes. */
   items: FeedItem[] = [];
   /** Whether messages come in at all: off where motion is reduced. */
   animates = true;
@@ -168,8 +169,8 @@ export class ConversationFeed {
   }
 
   /**
-   * Brings the rows to `wanted` without moving one already held: a held row is changed where it
-   * is, a new one goes on the end (or the top, before every held row: an older page).
+   * Keep message identities/positions; new output goes before the trailing waiting prompts.
+   * Older pages still go above held messages, and receipt/reveal placeholders stay until replaced.
    */
   private keep(wanted: FeedRow[], transcript: ChatTranscript | null, holding: boolean): void {
     const inTranscript = new Set([...(transcript?.messages ?? []), ...(transcript?.live ?? [])].map(message => message.key));
@@ -199,9 +200,10 @@ export class ConversationFeed {
         else top.push(item);
       }
     }
-    const kept = this.items.filter(item => wantedIds.has(item.id) || stays(item, transcript, holding));
+    const kept = this.items.filter(item => wantedIds.has(item.id) || stays(item, transcript, holding, wantedIds));
     for (const item of this.items) if (!kept.includes(item)) this.byId.delete(item.id);
-    const next = [...top, ...kept, ...bottom];
+    const ordered = [...top, ...kept, ...bottom];
+    const next = [...ordered.filter(item => item.row.kind === "message"), ...ordered.filter(item => item.row.kind === "waiting")];
     if (reset || next.length !== before.length || next.some((item, index) => item !== before[index])) {
       this.items = next;
       this.version += 1;
@@ -211,14 +213,15 @@ export class ConversationFeed {
 }
 
 /** Whether a row the conversation does not list now stays anyway: what it shows is still coming. */
-function stays(item: FeedItem, transcript: ChatTranscript | null, holding: boolean): boolean {
+function stays(item: FeedItem, transcript: ChatTranscript | null, holding: boolean, shownIds: ReadonlySet<string>): boolean {
   const row = item.row;
   // A reply whose live words were cleared before its record came: it stays as it was until the
   // record takes its place, while Pi works. One with no stamp to know its record by goes.
   if (row.kind === "message") return row.live && item.id.startsWith("reply:") && Boolean(transcript?.working);
   // Taken by the log, its message held back behind a reply still being let out: it stays until
   // that message shows in its place.
-  return holding && Boolean(transcript?.delivered.has(row.prompt.id));
+  const deliveredEntry = transcript?.delivered.get(row.prompt.id);
+  return holding && typeof deliveredEntry === "string" && !shownIds.has(deliveredEntry);
 }
 
 export type RowReveal = { final: boolean; hurry: boolean; fade: boolean };
@@ -274,7 +277,7 @@ function sameRow(a: FeedRow, b: FeedRow): boolean {
     if (a.kind !== "waiting" || b.kind !== "waiting") return false;
     const x = a.prompt, y = b.prompt;
     return x === y || (x.id === y.id && x.text === y.text && x.state === y.state && x.delivery === y.delivery
-      && x.at === y.at && x.files.length === y.files.length && x.files.every((file, index) => file === y.files[index]));
+      && x.files.length === y.files.length && x.files.every((file, index) => file === y.files[index]));
   }
   return a.live === b.live && a.enter === b.enter && a.working === b.working
     && a.group?.first === b.group?.first && a.group?.last === b.group?.last && a.group?.title === b.group?.title

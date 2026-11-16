@@ -1264,7 +1264,7 @@ test("sent while idle: one copy, shown last until the log has it, then in its pl
   workbench.dispose();
 });
 
-test("sent while a run streams: it stays after the reply it was sent under, not below every reply that follows", async () => {
+test("sent while a run streams: queued prompts remain below all ongoing output", async () => {
   const account = new FakeAccount();
   account.records.set(sid(1), [said(1, "user", "go")]);
   const { workbench } = await workbenchWith(account);
@@ -1282,8 +1282,8 @@ test("sent while a run streams: it stays after the reply it was sent under, not 
   // The reply they were sent under is recorded, and the run goes on: many more replies.
   account.push(sid(1), [said(4, "assistant", "step one", { timestamp: 10 }), said(5, "assistant", "step two"), said(6, "assistant", "step three")]);
   assert.deepEqual(rowsOf(workbench, sid(1)), [
-    "user: go", "assistant: step one", "waiting(queued): and the tests", "waiting(queued): use bun", "assistant: step two", "assistant: step three",
-  ], "never at the end, below replies they did not ask for");
+    "user: go", "assistant: step one", "assistant: step two", "assistant: step three", "waiting(queued): and the tests", "waiting(queued): use bun",
+  ], "unconsumed prompts stay at the end until their receipts");
   const labels = workbench.chat(sid(1)).waiting.map(prompt => pendingLabel(prompt));
   assert.deepEqual(labels, ["Queued · answered after the current reply", "Steering · read at the agent's next step"]);
   // The steer joins the run at a turn's end; the follow-up starts the next run. Each shows once, before its replies.
@@ -1296,13 +1296,13 @@ test("sent while a run streams: it stays after the reply it was sent under, not 
   workbench.dispose();
 });
 
-test("reloaded mid-run, a queued message shows from the log alone, once, in the same place", async () => {
+test("reloaded mid-run, a queued message shows once at the bottom from the log alone", async () => {
   const account = new FakeAccount();
   account.records.set(sid(1), [said(1, "user", "go"), queued(2, "c0ffee00-0000-4000-8000-000000000001", "and the tests"), said(3, "assistant", "step one"), said(4, "assistant", "step two")]);
   const { workbench } = await workbenchWith(account);
   workbench.selectChat(hostId, sid(1));
   await tick();
-  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: go", "assistant: step one", "waiting(queued): and the tests", "assistant: step two"]);
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: go", "assistant: step one", "assistant: step two", "waiting(queued): and the tests"]);
   workbench.dispose();
 });
 
@@ -1525,6 +1525,64 @@ test("a waiting message is a row, and only a tool's row asks whether Pi works", 
   transcript.working = true;
   feed.update(transcript, [prompt]);
   assert.equal(changed, 0);
+});
+
+test("the feed moves waiting rows behind new output without recreating historical or queue rows", () => {
+  const transcript = transcriptOf([said(1, "user", "go")]);
+  const feed = feedOf(transcript);
+  const waiting = [
+    { id: "c1", text: "first", files: [], delivery: "followUp" as const, state: "queued" as const, mine: true },
+    { id: "c2", text: "second", files: [], delivery: "steer" as const, state: "queued" as const, mine: false },
+  ];
+  feed.update(transcript, waiting);
+  const original = feed.items[0];
+  const queue = feed.items.slice(-2);
+  for (let step = 2; step <= 5; step++) {
+    transcript.append([said(step, "assistant", "step " + step)]);
+    feed.update(transcript, waiting);
+    for (let tick = 0; tick < 20; tick++) {
+      assert.equal(feed.items.at(-2), queue[0]);
+      assert.equal(feed.items.at(-1), queue[1]);
+      assert.equal(feed.items[0], original);
+      assert.equal(new Set(feed.items.map(item => item.id)).size, feed.items.length);
+      feed.tick(100);
+    }
+  }
+  assert.deepEqual(ids(feed), ["go", "step 2", "step 3", "step 4", "step 5", "pending:c1", "pending:c2"]);
+  transcript.append([receipt(6, "c1"), said(7, "user", "first"), said(8, "assistant", "answer")]);
+  feed.update(transcript, waiting.slice(1));
+  letOut(feed);
+  assert.deepEqual(ids(feed), ["go", "step 2", "step 3", "step 4", "step 5", "first", "answer", "pending:c2"]);
+  feed.restoreHistory(transcript, waiting.slice(1));
+  assert.equal(ids(feed).at(-1), "pending:c2");
+  feed.dispose();
+});
+
+test("a consumed queue bubble disappears when its user row shows, even with more reveal backlog", () => {
+  const transcript = transcriptOf([said(1, "user", "go")]);
+  const feed = feedOf(transcript);
+  const prompt = { id: "c1", text: "next task", files: [], delivery: "followUp" as const, state: "queued" as const, mine: true };
+  feed.update(transcript, [prompt]);
+  transcript.append([
+    said(2, "assistant", "Current reply " + "before ".repeat(100)),
+    receipt(3, "c1"), said(4, "user", "next task"),
+    said(5, "assistant", "The next task " + "after ".repeat(100)),
+    said(6, "assistant", "Still more output"),
+  ]);
+  feed.update(transcript, []);
+  assert.ok(ids(feed).includes("pending:c1"), "keep the placeholder while its real user row is held back");
+  let sawUserWithBacklog = false;
+  for (let tick = 0; tick < 1_000; tick++) {
+    feed.tick(32);
+    const rows = ids(feed);
+    if (rows.includes("next task")) {
+      assert.ok(!rows.includes("pending:c1"), "never show both a queued bubble and its actual user row");
+      if (!rows.includes("Still more output")) sawUserWithBacklog = true;
+    }
+  }
+  assert.ok(sawUserWithBacklog);
+  assert.equal(transcript.delivered.get("c1"), "e4");
+  feed.dispose();
 });
 
 // MARK: - Tools (what they were given, and the blocks they make)

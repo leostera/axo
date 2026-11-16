@@ -135,6 +135,15 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
       lines.push(next);
       send("axo.client.session.records", { sessionId, epoch: 1, records: [next], cursor: next.cursor });
     },
+    /** Queue/receipt records from another client, without sending a prompt from this browser. */
+    custom(sessionId, customType, data) {
+      const lines = transcripts.get(sessionId);
+      const next = record(lines.length + 1, null);
+      const { message: _, ...entry } = JSON.parse(next.line);
+      next.line = JSON.stringify({ ...entry, type: "custom", customType, data });
+      lines.push(next);
+      send("axo.client.session.records", { sessionId, epoch: 1, records: [next], cursor: next.cursor });
+    },
     progress(sessionId, snapshot) { send("axo.client.session.progress", { sessionId, slot: "message", snapshot }); },
     /** A running tool's output so far, as Pi sends it: by its call id. */
     toolProgress(sessionId, callId, snapshot) { send("axo.client.session.progress", { sessionId, slot: callId, snapshot }); },

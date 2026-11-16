@@ -161,11 +161,6 @@ export interface WaitingPrompt {
   readonly state: PendingState;
   /** Sent from this tab: it can be taken off the screen once its fate is unknown. */
   readonly mine: boolean;
-  /**
-   * How many of the conversation's messages come before it: its place in the log once the log
-   * holds it as queued. Without one, it is the newest thing in the chat and goes last.
-   */
-  readonly at?: number;
 }
 
 /** A new model, thinking level, or both, for a Session's Pi. */
@@ -236,12 +231,10 @@ export class Chat {
           id: prompt.id, text: prompt.text, files: prompt.attachments.map(file => file.name), delivery: prompt.delivery,
           state: prompt.state === "sent" && logged ? "queued" as const : prompt.state,
           mine: true,
-          ...(logged?.at === undefined ? {} : { at: logged.at }),
         };
       }),
       ...queued.filter(prompt => !mine.has(prompt.commandId)).map(prompt => ({
         id: prompt.commandId, text: prompt.text, files: prompt.files, delivery: prompt.delivery, state: "queued" as const, mine: false,
-        ...(prompt.at === undefined ? {} : { at: prompt.at }),
       })),
     ];
   }

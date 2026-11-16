@@ -11,6 +11,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Web queued messages stay at the bottom as agent output arrives, rather than becoming fixed in the middle of the transcript. Receipted messages return to normal conversation order, and new-output indicators still work above a waiting queue.
 - iOS Session history no longer gets stranded loading after chat switches or cancelled opens. Stale responses cannot replace a newer request, and live records/progress arriving during the first page are retained rather than acknowledged and discarded.
 - iOS Session search accepts fuzzy title/folder matches, ranked by match quality then recent activity; an empty search shows recent chats.
 - Streaming replies leave the reader in control while touching, dragging or coasting through conversation history.

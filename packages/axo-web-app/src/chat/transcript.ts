@@ -134,12 +134,6 @@ export interface QueuedPrompt {
   readonly text: string;
   /** The names of the files that go with it. */
   readonly files: readonly string[];
-  /**
-   * Where it shows: after the reply that was being written when it was sent, as the number of
-   * messages before it. What the run writes after that comes below it, rather than it sinking
-   * below every new reply. Until that reply is recorded it is the newest thing, and goes last.
-   */
-  readonly at?: number;
 }
 
 /** A record as the conversation sees it: a message, a client's receipt or queued prompt, or nothing to show. */
@@ -192,8 +186,8 @@ export class ChatTranscript {
   question: ChatQuestion | null = null;
   /** The records held, oldest first, without gaps. */
   records: TranscriptRecord[] = [];
-  /** The clients' prompts whose user message the log holds, by commandId (RFD0024). */
-  delivered = new Set<string>();
+  /** Delivered commandId → user entry id; null means a command with no user message (RFD0024). */
+  delivered = new Map<string, string | null>();
   /** The clients' prompts the log holds that Pi has not taken yet, oldest first (RFD0033). */
   queued: QueuedPrompt[] = [];
   /** The entry id of the newest user message: the turn a stop names while Pi works. */
@@ -294,7 +288,7 @@ export class ChatTranscript {
     this.messages = [];
     this.results = new Map();
     this.recordedReplies = new Set();
-    this.delivered = new Set();
+    this.delivered = new Map();
     this.queued = [];
     this.lastUserEntry = null;
     this.receipt = null;
@@ -306,7 +300,7 @@ export class ChatTranscript {
     // A receipt followed by anything but its user message ran as a command (`/axo-share`):
     // nothing more of it will come.
     if (this.receipt !== null && !isUserOrSystem(entry)) {
-      this.delivered.add(this.receipt);
+      this.delivered.set(this.receipt, null);
       this.receipt = null;
     }
     if (entry.kind === "receipt") {
@@ -328,7 +322,7 @@ export class ChatTranscript {
     if (typeof role !== "string") return;
     if (role === "user") {
       this.lastUserEntry = id;
-      if (this.receipt !== null) this.delivered.add(this.receipt);
+      if (this.receipt !== null) this.delivered.set(this.receipt, id);
       this.receipt = null;
     }
     if (role === "toolResult") {
@@ -340,7 +334,6 @@ export class ChatTranscript {
       this.live = [];
       if (timestamp !== null) this.recordedReplies.add(timestamp);
     }
-    const placing = role === "assistant" && this.queued.some(prompt => prompt.at === undefined);
     pieces(message, role).forEach((piece, index) => {
       const callId = piece.tool?.callId;
       const result = callId ? this.results.get(callId) : undefined;
@@ -354,8 +347,6 @@ export class ChatTranscript {
         ...(piece.files?.length ? { files: piece.files } : {}),
       });
     });
-    // The reply being written when they were sent is recorded: they go after it.
-    if (placing) this.queued = this.queued.map(prompt => prompt.at === undefined ? { ...prompt, at: this.messages.length } : prompt);
   }
 
   private recordResult(message: Record<string, unknown>): void {

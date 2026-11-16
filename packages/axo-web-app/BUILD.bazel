@@ -82,6 +82,7 @@ node_test(
         "test/conversation.test.mjs",
         "test/shared-session.test.mjs",
         "test/tools.test.mjs",
+        "test/queued-messages.test.mjs",
     ],
     tests_in_data = True,
 )
