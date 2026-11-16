@@ -23,7 +23,7 @@ enum AppUpgradeNotificationRoute {
 /// Quiet, local macOS banners from the updater's existing startup/hourly checks. No APNs service.
 /// Delivery is injected so tests never ask permission or post on the person's desktop.
 @MainActor
-final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate {
+final class AppUpgradeNotifications {
   static let shared = AppUpgradeNotifications(
     defaults: .standard,
     authorize: {
@@ -54,16 +54,6 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
     self.now = now
   }
 
-  func install() {
-    let center = UNUserNotificationCenter.current()
-    center.delegate = self
-    center.setNotificationCategories([
-      UNNotificationCategory(identifier: AppUpgradeNotificationRoute.category,
-        actions: [UNNotificationAction(identifier: AppUpgradeNotificationRoute.upgradeAction,
-          title: "Upgrade Axo", options: [.foreground])], intentIdentifiers: [])
-    ])
-  }
-
   func notify(_ upgrade: AppUpgrade, running: Int) async {
     guard upgrade.build > running, !sending,
       AppUpdateReminder.mayNotify(build: upgrade.build, defaults: defaults, now: now()) else { return }
@@ -85,26 +75,4 @@ final class AppUpgradeNotifications: NSObject, UNUserNotificationCenterDelegate 
     }
   }
 
-  nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-    willPresent notification: UNNotification,
-    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void)
-  {
-    // Preserve terminal notifications' existing foreground behavior; only update banners opt in.
-    completionHandler(notification.request.content.categoryIdentifier == AppUpgradeNotificationRoute.category ? [.banner, .list] : [])
-  }
-
-  nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-    didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void)
-  {
-    let action = AppUpgradeNotificationRoute.action(category: response.notification.request.content.categoryIdentifier,
-      identifier: response.actionIdentifier)
-    Task { @MainActor in
-      switch action {
-      case .ignore: break
-      case .offer: AppUpgradeModel.shared.checkForUpdates(askFirst: true)
-      case .upgrade: AppUpgradeModel.shared.checkForUpdates(askFirst: false)
-      }
-    }
-    completionHandler()
-  }
 }

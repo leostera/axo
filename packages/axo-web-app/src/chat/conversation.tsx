@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { AxoMascot } from "../axo-mascot.tsx";
 import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
-import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
+import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
@@ -79,7 +79,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     following.current = true;
     anchor.current = null;
     seenLastRow.current = feed.items.at(-1)?.id;
-    seenLastMessage.current = feed.items.findLast(item => item.row.kind === "message")?.id;
+    seenLastMessage.current = feed.lastMessageId;
     setShowJump(false);
     setHasNew(false);
     if (scroller.current) scrollToEnd(scroller.current);
@@ -114,7 +114,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     const observer = new ResizeObserver(() => {
       const last = feedRef.current.items.at(-1)?.id;
       // A waiting prompt can remain the last row while new output arrives ahead of it.
-      const message = feedRef.current.items.findLast(item => item.row.kind === "message")?.id;
+      const message = feedRef.current.lastMessageId;
       const added = last !== seenLastRow.current || message !== seenLastMessage.current;
       seenLastRow.current = last;
       seenLastMessage.current = message;
@@ -263,16 +263,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
         ) : null}
         {/* What waits for the person sits above the message box, not at the end of the transcript:
             it holds the agent up, so it is seen wherever the reader is in the history (RFD0029). */}
-        {session && (workbench.questions(session.sessionId).length > 0 || transcript?.question) ? (
+        {session && transcript?.question ? (
           <div className="footer-questions" aria-label="Waiting for you">
-            {workbench.questions(session.sessionId).map(question => (
-              <ElicitationCard
-                key={question.elicitation.id}
-                question={question}
-                canAnswer={online}
-                onAnswer={(action, values) => void workbench.answerQuestion(question.elicitation.id, action, values)}
-              />
-            ))}
             {transcript?.question ? (
               <QuestionCard
                 question={transcript.question}
@@ -293,7 +285,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           wide={wide}
           voice={voice}
           placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
-          canSend={online}
+          canSend={online && !workbench.isSending}
           onSend={delivery => void send(delivery)}
           onEscape={stopReply}
           onApps={onApps}

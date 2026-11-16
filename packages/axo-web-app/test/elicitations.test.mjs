@@ -1,0 +1,107 @@
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { test } from "node:test";
+import { chromePath, hostId, listed, record, sid, startApp, startCloud } from "./fake-cloud.mjs";
+
+test("global inbox reaches both devices and Yes followed by voice Send never interrupts", {
+  skip: !existsSync(chromePath) && "Chrome/Chromium required", timeout: 60_000,
+}, async () => {
+  const cloud = await startCloud(new Map([
+    [sid(1), [record(1, { role: "user", content: "Original chat" })]],
+    [sid(2), [record(1, { role: "user", content: "A different chat" })]],
+  ]), [listed(sid(1), "Original", 1), listed(sid(2), "Different", 1)]);
+  let app;
+  try {
+    app = await startApp(cloud);
+    const pages = [];
+    for (const [session, viewport] of [[sid(1), { width: 1180, height: 900 }], [sid(2), { width: 390, height: 844 }], [sid(1), { width: 1000, height: 800 }]]) {
+      const page = await app.browser.newPage({ viewport });
+      await page.addInitScript(() => {
+        window.__notices = [];
+        window.__permissionRequests = 0;
+        class FakeNotification {
+          static permission = "granted";
+          static async requestPermission() { window.__permissionRequests++; return "granted"; }
+          constructor(title, options) {
+            this.entry = { title, ...options, closed: false };
+            window.__notices.push(this.entry);
+          }
+          close() { this.entry.closed = true; }
+        }
+        window.Notification = FakeNotification;
+        Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia: async () => new MediaStream() } });
+        window.SpeechRecognition = class {
+          start() { queueMicrotask(() => this.onresult?.({ results: [{ isFinal: true, 0: { transcript: "These are my recorded words." } }] })); }
+          stop() { queueMicrotask(() => this.onend?.()); }
+          abort() { this.onend?.(); }
+        };
+      });
+      await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${session}`, { waitUntil: "networkidle" });
+      pages.push(page);
+    }
+    const [desktop, phone, otherDevice] = pages;
+    await desktop.getByRole("button", { name: "Talk", exact: true }).click();
+    await desktop.getByRole("group", { name: "Listening", exact: true }).waitFor();
+    cloud.holdAnswers();
+    const question = {
+      id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f81", sessionId: sid(1), kind: "confirm", askedBy: "agent",
+      message: "A private request to review (fixture).", createdAt: Date.now(), expiresAt: Date.now() + 300_000,
+    };
+    cloud.ask(question);
+    cloud.ask(question); // replay is not another request or native notification
+    for (const page of pages) {
+      await page.getByRole("button", { name: "Requests, 1 pending", exact: true }).waitFor();
+      await page.waitForFunction(() => window.__notices.length === 1);
+      assert.equal(await page.evaluate(() => window.__permissionRequests), 0);
+      assert.ok(!(await page.evaluate(() => JSON.stringify(window.__notices))).includes("private request"));
+    }
+    // Sending from a second device before Yes cannot bypass the same-Session fence.
+    await otherDevice.locator("textarea").fill("A detail from the other device");
+    await otherDevice.getByRole("button", { name: "Send", exact: true }).click();
+    await otherDevice.waitForFunction(() => !document.querySelector("textarea")?.disabled);
+    assert.equal(cloud.prompts.length, 1);
+    assert.notEqual(cloud.prompts[0].delivery, "interrupt");
+
+    // The phone is in another Session, but its global inbox still contains this request.
+    await phone.getByTestId("elicitation-bell").click();
+    const phoneInbox = phone.getByRole("dialog", { name: "Requests", exact: true });
+    await phoneInbox.getByText(question.message, { exact: true }).waitFor();
+    assert.ok(phone.url().endsWith(sid(2)));
+    const output = process.env.TEST_UNDECLARED_OUTPUTS_DIR;
+    if (output) await phone.screenshot({ path: resolve(output, "web-requests-phone.png") });
+
+    await desktop.getByTestId("elicitation-bell").click();
+    const inbox = desktop.getByRole("dialog", { name: "Requests", exact: true });
+    await inbox.getByRole("button", { name: "Yes", exact: true }).click();
+    await phoneInbox.getByText("You’re all caught up.", { exact: true }).waitFor();
+    await inbox.getByRole("button", { name: "Close requests" }).click();
+    await desktop.getByRole("group", { name: "Listening", exact: true }).waitFor();
+    await desktop.getByRole("button", { name: "Send", exact: true }).click();
+    await desktop.waitForFunction(() => document.querySelector("textarea")?.disabled);
+    assert.equal(cloud.answers.length, 1);
+    assert.equal(cloud.prompts.length, 1, "the voice Send waits for acknowledgment of Yes");
+    cloud.releaseAnswers();
+    await desktop.waitForFunction(() => !document.querySelector("textarea")?.disabled);
+    assert.equal(cloud.prompts.length, 2);
+    assert.equal(cloud.prompts[1].text, "These are my recorded words.");
+    assert.notEqual(cloud.prompts[1].delivery, "interrupt");
+    for (const page of pages) {
+      await page.waitForFunction(() => window.__notices.every(notice => notice.closed));
+      await page.getByRole("button", { name: "Requests, 0 pending", exact: true }).waitFor();
+    }
+    cloud.ask(question); // a late replay after settlement must not resurrect the bell
+    // A distinct request is an ordering fence: both replay and marker have now been processed.
+    const marker = { ...question, id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f82", sessionId: sid(2), message: "A short-lived request.", createdAt: Date.now(), expiresAt: Date.now() + 2_000 };
+    cloud.ask(marker);
+    await phoneInbox.getByText(marker.message, { exact: true }).waitFor();
+    for (const page of pages) {
+      await page.waitForFunction(() => window.__notices.length === 2);
+      await page.getByRole("button", { name: "Requests, 1 pending", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Requests, 0 pending", exact: true }).waitFor();
+      await page.waitForFunction(() => window.__notices.every(notice => notice.closed));
+    }
+  } finally {
+    if (app) await app.close(); else { cloud.wss.close(); cloud.http.close(); }
+  }
+});

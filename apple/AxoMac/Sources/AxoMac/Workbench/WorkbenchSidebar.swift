@@ -31,6 +31,7 @@ struct WorkbenchSidebar: View {
             selection: sessions.sidebarMacs,
             hosts: sessions.peerHosts,
             topPadding: 4,
+            requests: sessions.elicitations,
             onSelect: { macs in
               withAnimation(.easeInOut(duration: 0.15)) { sessions.setSidebarMacs(macs) }
             },
@@ -279,6 +280,8 @@ struct WorkbenchSidebar: View {
     VStack(spacing: 0) {
       WindowDragStrip()
         .frame(height: WindowDragStrip.height)
+      RequestsButton(model: sessions.elicitations)
+        .frame(height: 26)
       ScrollView {
         VStack(spacing: 0) {
           ForEach(sessions.sidebarOrderedSessions) { session in

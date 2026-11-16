@@ -28,6 +28,8 @@ final class ElicitationsModel {
   /// Why the last answer did not go, worded for the person.
   private(set) var failure: String?
 
+  @ObservationIgnored private var settledQuestions: [String: Int64] = [:]
+  @ObservationIgnored var pendingChanged: ([Elicitation]) -> Void = { _ in }
   @ObservationIgnored private let client: AxodElicitationClient?
   /// The name of the Session that asks, shown over its question.
   @ObservationIgnored var sessionName: @MainActor (SessionID) -> String = { _ in "a Session" }
@@ -49,7 +51,8 @@ final class ElicitationsModel {
   /// Takes what axod has pending now, after a (re)subscription.
   func refresh() async {
     guard let client, let pending = try? await client.pendingElicitations() else { return }
-    questions = pending
+    questions = pending.filter { settledQuestions[$0.id] == nil }
+    pendingChanged(questions)
     answering.formIntersection(Set(pending.map(\.id)))
   }
 
@@ -57,8 +60,12 @@ final class ElicitationsModel {
   func apply(_ event: TerminalSessionEvent) -> Bool {
     switch event {
     case .elicitationRequested(let elicitation):
+      let now = Date().timeIntervalSince1970 * 1_000
+      settledQuestions = settledQuestions.filter { Double($0.value) > now }
+      guard settledQuestions[elicitation.id] == nil else { return true }
       guard !questions.contains(where: { $0.id == elicitation.id }) else { return true }
       questions.append(elicitation)
+      pendingChanged(questions)
     case .elicitationResolved(let id, _, _):
       settle(id)
     default:
@@ -86,8 +93,18 @@ final class ElicitationsModel {
     }
   }
 
+  /// Local expiry is presentation cleanup, never an answer on the person's behalf.
+  func expire(_ ids: [String]) {
+    let now = Date().timeIntervalSince1970 * 1_000
+    questions.removeAll { ids.contains($0.id) && Double($0.expiresAt) <= now }
+    answering.formIntersection(Set(questions.map(\.id)))
+    pendingChanged(questions)
+  }
+
   private func settle(_ id: String) {
+    if let question = questions.first(where: { $0.id == id }) { settledQuestions[id] = question.expiresAt }
     questions.removeAll { $0.id == id }
+    pendingChanged(questions)
     answering.remove(id)
   }
 }

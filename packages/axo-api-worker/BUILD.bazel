@@ -32,8 +32,16 @@ _DEPS = [
     ":node_modules/zod",
 ]
 
-ts_project(
+# no_emit puts the compiler check in its own output group, not DefaultInfo.
+# Make the public gate actually run tsc rather than merely copy its inputs.
+filegroup(
     name = "typecheck",
+    srcs = [":typecheck_project"],
+    output_group = "typecheck",
+)
+
+ts_project(
+    name = "typecheck_project",
     srcs = glob(["src/**/*.ts", "tests/**/*.ts", "testing/**/*.ts", "scripts/**/*.ts"]),
     no_emit = True,
     tsconfig = "tsconfig.json",
@@ -88,6 +96,17 @@ node_test(
     data = _DEPS + [":node_modules/tsx", ":test_files"],
     tests = ["tests/gateway.test.ts", "tests/run-scope.test.ts", "tests/mcp-client.test.ts", "tests/third-party.test.ts"],
     tests_in_data = True,
+    tsx = True,
+)
+
+# Focused person-request fanout across relayed and direct clients.
+node_test(
+    name = "elicitations_test",
+    concurrency = 1,
+    data = _DEPS + [":node_modules/tsx", ":test_files"],
+    tests = ["tests/elicitations.test.ts", "tests/push-delivery.test.ts"],
+    tests_in_data = True,
+    tags = ["manual"],
     tsx = True,
 )
 

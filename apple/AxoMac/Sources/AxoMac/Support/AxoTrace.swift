@@ -5,6 +5,7 @@ import os
 /// `log show --last 10m --predicate 'subsystem == "dev.leostera.axo"' --info`
 enum AxoTrace {
   static let commands = Logger(subsystem: "dev.leostera.axo", category: "commands")
+  static let elicitations = Logger(subsystem: "dev.leostera.axo", category: "elicitations")
   static let surfaces = Logger(subsystem: "dev.leostera.axo", category: "surfaces")
   /// Input and frame latency: main-thread stalls and delayed libghostty ticks.
   static let latency = Logger(subsystem: "dev.leostera.axo", category: "latency")

@@ -6,11 +6,13 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- A global Requests bell/inbox on web and iPhone, plus a local-request bell on Mac. Connected person clients see requests independently of the selected Session; answering removes them across connected clients. Desktop notifications use existing permission (web has explicit enable), private generic previews and inbox-only clicks. This does not add APNs/Web Push or account-wide native Mac sign-in.
 - Mac Settings → General → Updates has an opt-in “Automatically install updates” toggle. Enabled copies check every minute while running and awake, verify and install published releases, then restart without per-release confirmation. Updates can interrupt terminals/Pi processes. Disabling revokes pending installs; committed replacements finish handover. Failed attempts back off for 15 minutes; skip/remind and manual review remain available. Off by default.
 - Pre-set a Session’s name at creation: `session_create({name, folder?, like?})` or `axo session create --name`. Local/remote APIs and native clients accept the optional name, persisted atomically before Pi starts. Explicit names remain visible over automatic Pi titles and survive restart; omitting the name preserves existing behavior.
 
 ### Fixed
 
+- Recording → Yes → Send no longer interrupts the question or the approved run. Web/iPhone wait for in-flight same-Session answers; failed answers keep the words in the draft. Shared daemon admission queues ordinary Send behind runs that asked the person, including sends from another device. Dedicated Stop remains available; a stale/unconfirmed Stop does not silently release protection.
 - Web queued messages stay at the bottom as agent output arrives, rather than becoming fixed in the middle of the transcript. Receipted messages return to normal conversation order, and new-output indicators still work above a waiting queue.
 - iOS Session history no longer gets stranded loading after chat switches or cancelled opens. Stale responses cannot replace a newer request, and live records/progress arriving during the first page are retained rather than acknowledged and discarded.
 - iOS Session search accepts fuzzy title/folder matches, ranked by match quality then recent activity; an empty search shows recent chats.
@@ -19,6 +21,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Tests
 
+- Add held-answer dictation, three-client inbox/notification, expiry/replay, stalled-legacy fanout, subscription ownership, native notification-race and fresh-simulator inbox regressions. Web/Worker typecheck gates now run the no-emit compiler check by default.
 - Add request-ownership, cancellation, buffered-live/reset, fuzzy-ranking, scrolling and dictation regressions. A fresh, owned iOS simulator checks fuzzy search/navigation and a stable historical row during streaming; physical-device audio/lock behavior still needs verification.
 
 ## 0.70 (Mac app build 341, axod 85)

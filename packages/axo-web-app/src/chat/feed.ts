@@ -57,6 +57,15 @@ export class ConversationFeed {
 
   getVersion = (): number => this.version;
 
+  /** Queue rows may trail the newest message, so the last row alone is not an output marker. */
+  get lastMessageId(): string | undefined {
+    for (let index = this.items.length - 1; index >= 0; index--) {
+      const item = this.items[index];
+      if (item?.row.kind === "message") return item.id;
+    }
+    return undefined;
+  }
+
   /** The chat's transcript or its waiting messages changed. */
   update(transcript: ChatTranscript | null, waiting: readonly WaitingPrompt[]): void {
     this.transcript = transcript;

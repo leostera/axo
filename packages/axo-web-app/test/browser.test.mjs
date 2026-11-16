@@ -854,7 +854,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       id: elicitationId, sessionId: sid(1), kind: "confirm",
       message: "Delete the branch feat/old-ui? It has 3 unmerged commits.", createdAt: Date.now(), expiresAt: Date.now() + 300_000,
     } });
-    const card = page.locator(".conversation-footer").getByRole("group", { name: "The agent asks you" });
+    await page.getByTestId("elicitation-bell").click();
+    const requests = page.getByRole("dialog", { name: "Requests", exact: true });
+    const card = requests.getByRole("group", { name: "The agent asks you" });
     await expect(card.getByText("Delete the branch feat/old-ui? It has 3 unmerged commits."));
     const shown = await card.boundingBox();
     const viewport = page.viewportSize();
@@ -870,6 +872,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(answers.map(({ device, ...rest }) => rest), [{ hostId, elicitationId, action: "accept" }]);
     assert.equal(answers[0].device.name, "Chrome on Mac");
     assert.equal(answers[0].device.key.length, 88);
+    await requests.getByRole("button", { name: "Close requests" }).click();
 
     // A new chat: its first message starts it in the Mac's home folder.
     await chats.getByRole("button", { name: "New chat", exact: true }).click();

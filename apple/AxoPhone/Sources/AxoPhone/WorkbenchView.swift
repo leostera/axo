@@ -45,6 +45,7 @@ struct WorkbenchView: View {
     PreviewFixture.appsOpen ? .apps : PreviewFixture.settingsOpen ? .settings : nil
   /// Settings › Apps: what the account's Sessions can use.
   @State private var apps: AppsModel
+  @State private var showingRequests = false
   @State private var showingSearch = false
   @State private var showingPairing = false
   /// Asks the relay for codes that link a Mac (the preview's stand-in in the simulator preview).
@@ -148,6 +149,10 @@ struct WorkbenchView: View {
     )
     .background(ChatColors.background.ignoresSafeArea())
     .environment(\.assetLoader, assetLoader)
+    .overlay(alignment: .topTrailing) {
+      RequestsBell(phone: workbench, open: { showingRequests = true }).padding(.trailing, 14).padding(.top, 6)
+    }
+    .sheet(isPresented: $showingRequests) { RequestsInbox(phone: workbench) }
     .onChange(of: layer) { _, layer in
       // The keyboard belongs to the conversation's box; it goes when the conversation does.
       if layer != .conversation {

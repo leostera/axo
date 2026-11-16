@@ -203,6 +203,7 @@ export class Chat {
   pending: PendingPrompt[] = [];
   history: HistoryState = { kind: "none" };
   stopping = false;
+  humanTurnProtected = false;
   /** A restart was asked for and the agent is not ready again yet. */
   restarting = false;
   /** The restart has been seen to take the agent down (or start it); its next `ready` ends it. */
@@ -228,7 +229,7 @@ export class Chat {
       ...this.pending.map(prompt => {
         const logged = inLog.get(prompt.id);
         return {
-          id: prompt.id, text: prompt.text, files: prompt.attachments.map(file => file.name), delivery: prompt.delivery,
+          id: prompt.id, text: prompt.text, files: prompt.attachments.map(file => file.name), delivery: logged?.delivery ?? prompt.delivery,
           state: prompt.state === "sent" && logged ? "queued" as const : prompt.state,
           mine: true,
         };
@@ -374,6 +375,9 @@ export class ChatWorkbench {
   private screenFeed: ConversationFeed | null = null;
 
   private readonly chats = new Map<string, Chat>();
+  /** Terminal requests stay suppressed until their expiry, including reconnect/catch-up replay. */
+  private readonly settledQuestions = new Map<string, number>();
+  private readonly answersInFlight = new Map<string, { hostId: string; sessionId: string; result: Promise<boolean> }>();
   /** What the Macs ask, by elicitation id, oldest first (RFD0029). */
   private readonly asked = new Map<string, AskedQuestion>();
   private readonly drafts = new Map<string, string>();
@@ -563,10 +567,15 @@ export class ChatWorkbench {
       progress: mine((sessionId, slot, snapshot) => this.receiveProgress(sessionId, slot, snapshot)),
       reset: mine((sessionId, epoch, keep) => this.receiveReset(sessionId, epoch, keep)),
       elicitationRequested: mine((hostId, elicitation) => {
+        for (const [id, expiry] of this.settledQuestions) if (expiry <= Date.now()) this.settledQuestions.delete(id);
+        if (this.settledQuestions.has(elicitation.id)) return;
+        this.chat(elicitation.sessionId).humanTurnProtected = true;
         if (!this.asked.has(elicitation.id)) this.asked.set(elicitation.id, { hostId, elicitation, answering: null });
         this.changed();
       }),
       elicitationResolved: mine((_hostId, resolved) => {
+        const known = this.asked.get(resolved.id);
+        if (known) this.settledQuestions.set(resolved.id, known.elicitation.expiresAt);
         if (this.asked.delete(resolved.id)) this.changed();
       }),
       closed: mine(error => this.connectionLost(error)),
@@ -710,6 +719,8 @@ export class ChatWorkbench {
       if (session.hostId !== hostId) continue;
       this.storeSession(session);
       const chat = this.chats.get(session.sessionId);
+      if (chat && (session.status === "ready" || session.status === "unavailable") && this.questions(session.sessionId).length === 0
+        && ![...this.answersInFlight.values()].some(answer => answer.sessionId === session.sessionId)) chat.humanTurnProtected = false;
       if (chat?.transcript && session.status) {
         const working = session.status === "working";
         chat.transcript.settle(working);
@@ -1020,7 +1031,15 @@ export class ChatWorkbench {
   async send(delivery: Delivery = "interrupt"): Promise<SendOutcome> {
     const selection = this.selection;
     if (this.isSending || !selection || !this.canSendDraft) return { kind: "failed" };
-    if (selection.kind === "chat") return this.sending(() => this.prompt(selection, delivery));
+    if (selection.kind === "chat") return this.sending(async () => {
+      const hostId = this.openHostId;
+      const answers = [...this.answersInFlight.values()].filter(answer => answer.hostId === hostId && answer.sessionId === selection.sessionId);
+      const results = await Promise.all(answers.map(answer => answer.result));
+      if (results.some(result => !result) || this.openHostId !== hostId
+        || this.selection?.kind !== "chat" || this.selection.sessionId !== selection.sessionId) return { kind: "failed" };
+      const protectedTurn = this.chat(selection.sessionId).humanTurnProtected || this.questions(selection.sessionId).length > 0;
+      return this.prompt(selection, delivery === "interrupt" && protectedTurn ? "followUp" : delivery);
+    });
     return this.startChat(selection);
   }
 
@@ -1334,7 +1353,18 @@ export class ChatWorkbench {
    */
   async answerQuestion(elicitationId: string, action: ElicitationAnswer, values?: Record<string, string>): Promise<void> {
     const question = this.asked.get(elicitationId);
-    if (!question || question.answering || !this.connection) return;
+    if (!question || question.answering || this.answersInFlight.has(elicitationId)) return;
+    this.chat(question.elicitation.sessionId).humanTurnProtected = true;
+    const result = this.performAnswer(elicitationId, action, values).catch(error => {
+      this.failure = describe(error); this.changed(); return false;
+    });
+    this.answersInFlight.set(elicitationId, { hostId: question.hostId, sessionId: question.elicitation.sessionId, result });
+    try { await result; } finally { this.answersInFlight.delete(elicitationId); }
+  }
+
+  private async performAnswer(elicitationId: string, action: ElicitationAnswer, values?: Record<string, string>): Promise<boolean> {
+    const question = this.asked.get(elicitationId);
+    if (!question || question.answering || !this.connection) return false;
     const input = question.elicitation.input;
     let sealed: Sealed | undefined;
     if (input && action === "accept") {
@@ -1343,9 +1373,9 @@ export class ChatWorkbench {
       if (inputKeyPins.check(question.hostId, input.key) === "changed") {
         this.failure = "This Mac's encryption key changed. Nothing was sent; check the key in Axo on that Mac.";
         this.changed();
-        return;
+        return false;
       }
-      if (!values) return;
+      if (!values) return false;
       question.answering = action;
       this.changed();
       try {
@@ -1354,7 +1384,7 @@ export class ChatWorkbench {
         question.answering = null;
         this.failure = describe(error);
         this.changed();
-        return;
+        return false;
       }
     }
     question.answering = action;
@@ -1363,12 +1393,19 @@ export class ChatWorkbench {
       const proof = await this.device.proof(elicitationId, action, sealed);
       await this.connection.resolveElicitation(question.hostId, elicitationId, action, proof, sealed);
       this.failure = null;
+      this.changed();
+      return true;
     } catch (error) {
       question.answering = null;
-      if ((error as { code?: number }).code === ELICITATION_ERRORS.notPending) this.asked.delete(elicitationId);
-      else this.failure = describe(error);
+      if ((error as { code?: number }).code === ELICITATION_ERRORS.notPending) {
+        this.asked.delete(elicitationId);
+        this.changed();
+        return true;
+      }
+      this.failure = describe(error);
     }
     this.changed();
+    return false;
   }
 
   /** Answers the agent's question: yes is Enter, no is Escape, words are sent as a prompt is. */

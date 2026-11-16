@@ -423,6 +423,34 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testRequestsInboxStaysGlobalAfterSwitchingChats() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "elicitation"])
+    let bell = app.buttons["elicitation-bell"]
+    let pending = NSPredicate(format: "label == %@", "Requests, 1 pending")
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: pending, object: bell)], timeout: 15), .completed)
+    app.buttons["Chats menu"].tapWhereItIs()
+    XCTAssertTrue(hittable(app.buttons["Search chats"]))
+    app.buttons["Search chats"].tapWhereItIs()
+    let search = app.textFields["search-field"]
+    XCTAssertTrue(search.waitForExistence(timeout: 5))
+    search.tap()
+    search.typeText("rly")
+    let relay = app.buttons.matching(identifier: "search-result")
+      .matching(NSPredicate(format: "label CONTAINS %@", "Explain the relay")).firstMatch
+    XCTAssertTrue(relay.waitForExistence(timeout: 5))
+    relay.tapWhereItIs()
+    XCTAssertTrue(menuClosed(app))
+    XCTAssertEqual(app.staticTexts["conversation-title"].label, "Explain the relay")
+    bell.tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Requests"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["Delete the branch feat/old-ui? It has 3 unmerged commits."].waitForExistence(timeout: 5))
+    capture(app, named: "phone-global-requests")
+    app.buttons["Done"].tap()
+    XCTAssertEqual(app.staticTexts["conversation-title"].label, "Explain the relay")
+    XCTAssertEqual(bell.label, "Requests, 1 pending")
+  }
+
+  @MainActor
   func testSearchFindsAChatByName() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

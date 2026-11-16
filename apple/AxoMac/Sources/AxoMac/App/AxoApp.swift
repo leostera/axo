@@ -40,6 +40,15 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       daemonIsRunning: environment.daemonIsRunning,
       daemonUnreachable: environment.daemonUnreachable)
     let startsDaemon = environment.startsDaemon
+    if startsDaemon {
+      let questions = environment.sessions.elicitations
+      questions.pendingChanged = { ElicitationNotifications.shared.update($0) }
+      ElicitationNotifications.shared.expired = { [weak questions] ids in questions?.expire(ids) }
+      ElicitationNotifications.shared.openInbox = { [weak questions] in
+        guard let questions else { return }
+        QuestionsPanel.shared.show(questions)
+      }
+    }
     LaunchBoot.hold {
       ghostty.initialize()
       mascot.start(animatesDockIcon: true)
@@ -493,7 +502,7 @@ private struct AxoMenu: View {
           MainActor.assumeIsolated { QuestionsPanel.shared.show(elicitations) }
         }
       } label: {
-        Label(count == 1 ? "1 Question…" : "\(count) Questions…", systemImage: "questionmark.bubble.fill")
+        Label("Requests (\(count))…", systemImage: "bell.badge.fill")
       }
       Divider()
     }

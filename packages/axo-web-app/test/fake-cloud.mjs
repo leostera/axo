@@ -64,6 +64,10 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
     response.statusCode = 404;
     response.end(JSON.stringify({ error: "not here" }));
   });
+  const requests = new Map();
+  const answers = [];
+  let holdAnswers = false;
+  const answerReplies = [];
   const wss = new WebSocketServer({ noServer: true });
   http.on("upgrade", (request, socket, head) => wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws)));
   wss.on("connection", (socket) => {
@@ -80,12 +84,24 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
         return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "Invalid params" } }));
       }
       if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
-        return reply({ hosts: listedHosts, sessions });
+        reply({ hosts: listedHosts, sessions });
+        for (const elicitation of requests.values()) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: { hostId, elicitation } }));
+        return;
       }
       if (call.method === "axo.client.command") {
         const { method, params } = call.params;
         call.method = method;
         call.params = params;
+      }
+      if (call.method === "axo.elicitation.resolve") {
+        answers.push(call.params);
+        const question = requests.get(call.params.elicitationId);
+        if (!question) return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32011, message: "Already answered" } }));
+        requests.delete(question.id);
+        send("axo.elicitation.resolved", { hostId, id: question.id, sessionId: question.sessionId, action: call.params.action });
+        const done = () => reply({ resolved: true });
+        if (holdAnswers) answerReplies.push(done); else done();
+        return;
       }
       if (call.method === "axo.remote.session.models") return reply({ models });
       if (call.method === "axo.remote.session.model.set") {
@@ -119,7 +135,16 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
   });
   const send = (method, params) => { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method, params })); };
   return {
-    http, wss, modelSets, prompts,
+    http, wss, modelSets, prompts, answers,
+    holdAnswers() { holdAnswers = true; },
+    releaseAnswers() { holdAnswers = false; for (const reply of answerReplies.splice(0)) reply(); },
+    ask(elicitation) { requests.set(elicitation.id, elicitation); send("axo.elicitation.requested", { hostId, elicitation }); },
+    settle(id, action = "cancel") {
+      const question = requests.get(id);
+      if (!question) return;
+      requests.delete(id);
+      send("axo.elicitation.resolved", { hostId, id, sessionId: question.sessionId, action });
+    },
     rejectNextModelChange() { rejectNextModel = true; },
     activity(sessionId, lastMessageAt) {
       const index = sessions.findIndex(session => session.sessionId === sessionId);

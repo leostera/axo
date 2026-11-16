@@ -14,7 +14,7 @@ fn prompt() -> Prompt {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settlement_and_explicit_stop_release_human_turn_protection() {
+async fn settlement_releases_protection_but_unconfirmed_stop_does_not() {
     let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
     let record = fixture.new_session().await;
     fixture.wait_for_pi(record.id).await;
@@ -48,11 +48,13 @@ async fn settlement_and_explicit_stop_release_human_turn_protection() {
                     }
                 ));
                 session.protect_human_turn();
+                // The dedicated Stop path remains available, without authorizing a later
+                // Send to interrupt work if the Stop itself is stale or loses its receipt.
                 session.pi_stop_link().unwrap();
                 assert!(matches!(
                     session.admit_prompt(prompt()).await.unwrap(),
                     Admission::Send {
-                        delivery: PromptDelivery::Interrupt,
+                        delivery: PromptDelivery::FollowUp,
                         ..
                     }
                 ));

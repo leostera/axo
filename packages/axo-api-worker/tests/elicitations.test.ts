@@ -2,8 +2,77 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ELICITATION_ERRORS, type Elicitation } from "@axo/protocol";
 import { Peer } from "../testing/client";
+import { ElicitationReplay } from "../src/elicitation-replay";
+import { deliverHostNoticeBatch } from "../src/host-notice-delivery";
+import type { HostNotice } from "../src/host-do";
 import { harness, signIn } from "./harness";
 import { connectClient, connectHost, pairHost } from "./account-support";
+
+test("requests and resolution bypass a stalled legacy follower without reordering ordinary notices", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const direct: HostNotice[][] = [];
+  const targets = { direct: async (batch: HostNotice[]) => { direct.push(batch); },
+    legacy: async () => { await gate; }, urgentFailure: () => assert.fail("no delivery error") };
+  const requested: HostNotice = { kind: "elicitationRequested", elicitation: {
+    id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f93", sessionId: "2a76c3e1-8b42-4f8d-9c15-1a2b3c4d5e6f",
+    kind: "confirm", askedBy: "agent", message: "Fixture", createdAt: 1, expiresAt: 10_000 } };
+  const ordinary: HostNotice = { kind: "presence", online: false, hostGeneration: null };
+  const asking = deliverHostNoticeBatch([ordinary, requested], targets);
+  assert.deepEqual(direct, [[requested]], "the legacy gate has not retired");
+  const resolved: HostNotice = { kind: "elicitationResolved", resolved: {
+    id: requested.elicitation.id, sessionId: requested.elicitation.sessionId, action: "accept" } };
+  const answering = deliverHostNoticeBatch([resolved], targets);
+  assert.deepEqual(direct, [[requested], [resolved]], "resolution is not stuck behind the older flush");
+  release();
+  await Promise.all([asking, answering]);
+  assert.deepEqual(direct, [[requested], [resolved], [ordinary]]);
+});
+
+test("failure of urgent direct delivery never skips the legacy recipients", async () => {
+  let failures = 0, legacy = 0;
+  await deliverHostNoticeBatch([{ kind: "elicitationResolved", resolved: {
+    id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f94", sessionId: "2a76c3e1-8b42-4f8d-9c15-1a2b3c4d5e6f", action: "cancel" } }], {
+    direct: async () => { throw new Error("Closed direct socket"); },
+    legacy: async () => { legacy++; },
+    urgentFailure: () => { failures++; },
+  });
+  assert.equal(failures, 1);
+  assert.equal(legacy, 1);
+});
+
+test("resolution wins both before and after a delayed subscription snapshot", () => {
+  for (const resolveFirst of [true, false]) {
+    const replay = new ElicitationReplay();
+    const reading = replay.begin();
+    const question: Elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f91", sessionId: "2a76c3e1-8b42-4f8d-9c15-1a2b3c4d5e6f", kind: "confirm", askedBy: "agent", message: "Fixture", createdAt: 1, expiresAt: 10_000 };
+    if (resolveFirst) replay.resolve(question.id);
+    reading.add("host", question);
+    assert.deepEqual(replay.take(), [], "never send an incomplete snapshot");
+    if (!resolveFirst) replay.resolve(question.id);
+    reading.finish();
+    assert.deepEqual(replay.take(), []);
+  }
+});
+
+test("superseding or disconnecting a snapshot retires its catch-up authority", () => {
+  const replay = new ElicitationReplay();
+  const question: Elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f92", sessionId: "2a76c3e1-8b42-4f8d-9c15-1a2b3c4d5e6f", kind: "confirm", askedBy: "agent", message: "Fixture", createdAt: 1, expiresAt: 10_000 };
+  const obsolete = replay.begin();
+  const current = replay.begin();
+  obsolete.add("old-host", question);
+  obsolete.finish();
+  assert.deepEqual(replay.take(), []);
+  current.add("host", question);
+  current.finish();
+  assert.deepEqual(replay.take(), [{ hostId: "host", elicitation: question }]);
+  assert.deepEqual(replay.take(), [], "a ready snapshot is consumed once");
+  const disconnected = replay.begin();
+  replay.clear();
+  disconnected.add("host", question);
+  disconnected.finish();
+  assert.deepEqual(replay.take(), []);
+});
 
 /**
  * Elicitations through the cloud (RFD0029): what a Mac asks reaches every client its person has
@@ -70,6 +139,36 @@ test("what a Mac asks reaches its person's clients, and their answer reaches the
   // Settled: a late answer never reaches the Mac.
   const late = (await browser.call("axo.elicitation.resolve", { hostId: host.hostId, elicitationId: elicitation.id, action: "decline" })) as Message;
   assert.equal(late.error?.code, ELICITATION_ERRORS.notPending);
+});
+
+test("all simultaneous person clients hear requests and resolution without opening the Session", async (t) => {
+  const { h, session, host, daemon, elicitation } = await fixture(t);
+  const { client: legacy } = await connectClient(h, session);
+  t.after(() => legacy.close());
+  const direct = async () => {
+    const clientId = `tab-${crypto.randomUUID()}`;
+    const client = await Peer.connectHostClient(h.url, host.hostId, clientId, session.headers);
+    t.after(() => client.close());
+    const hello = await client.call("axo.client.hello", { protocolVersion: 3, clientId, connection: 1 });
+    assert.ok("result" in hello);
+    return client;
+  };
+  const phone = await direct();
+  const browser = await direct();
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: elicitation });
+  for (const client of [legacy, phone, browser])
+    assert.deepEqual(await until(client, "axo.elicitation.requested"), { hostId: host.hostId, elicitation });
+  const later = await direct();
+  assert.deepEqual(await until(later, "axo.elicitation.requested"), { hostId: host.hostId, elicitation });
+  const answer = phone.call("axo.elicitation.resolve", { hostId: host.hostId, elicitationId: elicitation.id, action: "decline" });
+  const forwarded = (await daemon.next()) as Message;
+  assert.equal(forwarded.method, "axo.elicitation.resolve");
+  daemon.send({ jsonrpc: "2.0", id: forwarded.id, result: { resolved: true } });
+  assert.deepEqual(((await answer) as Message).result, { resolved: true });
+  const resolved = { id: elicitation.id, sessionId: elicitation.sessionId, action: "decline" };
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.resolved", params: resolved });
+  for (const client of [legacy, phone, browser, later])
+    assert.deepEqual(await until(client, "axo.elicitation.resolved"), { hostId: host.hostId, ...resolved });
 });
 
 test("a Mac's own credential neither sees nor answers what another Mac asks", async (t) => {

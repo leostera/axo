@@ -9,7 +9,7 @@ final class AxoURLSchemeDelegate: NSObject, NSApplicationDelegate {
     LaunchBoot.scheduleFallback()
     StatusItemDrag.install()
     observeOtherAxos()
-    AppUpgradeNotifications.shared.install()
+    AppNotifications.shared.install()
     AppUpgradeModel.shared.start()
   }
 

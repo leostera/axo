@@ -4,9 +4,10 @@ export type IconName =
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
   | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut" | "plug" | "mail" | "chevronLeft" | "chevronRight" | "calendar" | "folder" | "table" | "contacts" | "presentation" | "checklist" | "video" | "cloud" | "paperclip"
   | "pin" | "pinFill" | "plus" | "mic" | "camera" | "photo" | "chevronDown" | "restart"
-  | "macStudio" | "macMini" | "desktop" | "tower" | "linux" | "windows";
+  | "bell" | "macStudio" | "macMini" | "desktop" | "tower" | "linux" | "windows";
 
 const paths: Record<IconName, string> = {
+  bell: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4",
   menu: "M5 9h14M5 15h14",
   info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9.5v.5",
   person: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-6 5.5c1.2-2 3.4-3 6-3s4.8 1 6 3",

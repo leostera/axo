@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { ElicitationReplay } from "./elicitation-replay";
 import { HTTPClientMailbox, closedHTTPClient, readHTTPClientRequest, type ClientConnection } from "./client-http";
 import { json } from "./auth/account-access";
 import {
@@ -30,7 +31,6 @@ import {
   type HostModel,
   type ClientOpenResult,
   type ClientSession,
-  type Elicitation,
   type Reply,
 } from "@axo/protocol";
 import { z } from "zod";
@@ -128,7 +128,7 @@ export class AxoClientDO extends DurableObject<Env> {
    */
   private readonly heads = new Map<string, KnownHead>();
   /** What the Macs were asking when last followed, sent once the listing has gone (RFD0029). */
-  private asked: Array<{ hostId: string; elicitation: Elicitation }> = [];
+  private readonly elicitationCatchup = new ElicitationReplay();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -310,6 +310,7 @@ export class AxoClientDO extends DurableObject<Env> {
           if (this.isPerson()) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.requested, params: { hostId, elicitation: notice.elicitation } });
           break;
         case "elicitationResolved":
+          this.elicitationCatchup.resolve(notice.resolved.id);
           if (this.isPerson()) this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.resolved, params: { hostId, ...notice.resolved } });
           break;
       }
@@ -548,7 +549,7 @@ export class AxoClientDO extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const sessions: ClientSession[] = [];
     const followed = new Set<string>();
-    this.asked = [];
+    const catchup = this.elicitationCatchup.begin();
     await Promise.all(listed.map(async (host) => {
       try {
         // Subscribed until the socket closes; a call that fails is made again at once (RFD0031).
@@ -561,7 +562,9 @@ export class AxoClientDO extends DurableObject<Env> {
           host.hostId, subscription.hostGeneration ?? host.hostGeneration, host.label, host.hostKind,
           host.model === undefined ? null : JSON.stringify(host.model), subscription.online ? 1 : 0, host.lastSeenAt);
         sessions.push(...subscription.sessions);
-        for (const elicitation of subscription.elicitations ?? []) this.asked.push({ hostId: host.hostId, elicitation });
+        for (const elicitation of subscription.elicitations ?? []) {
+          catchup.add(host.hostId, elicitation);
+        }
       } catch {
         recordApiEvent({ event: "client_follow_failed" });
       }
@@ -585,6 +588,7 @@ export class AxoClientDO extends DurableObject<Env> {
         await this.pump(session.sessionId, session.epoch !== null && open.epoch !== null && session.epoch !== open.epoch);
       }
     }
+    catchup.finish();
     return sessions;
   }
 
@@ -595,6 +599,7 @@ export class AxoClientDO extends DurableObject<Env> {
     const hosts = sql.exec<{ host_id: string }>("SELECT host_id FROM hosts").toArray();
     sql.exec("DELETE FROM hosts");
     sql.exec("DELETE FROM open_sessions");
+    this.elicitationCatchup.clear();
     this.partials.clear();
     this.reads.clear();
     this.heads.clear();
@@ -615,8 +620,7 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   private sendElicitations(socket: ClientConnection): void {
-    const asked = this.asked;
-    this.asked = [];
+    const asked = this.elicitationCatchup.take();
     if (!this.isPerson()) return;
     for (const { hostId, elicitation } of asked)
       this.send(socket, { jsonrpc: "2.0", method: ELICITATION_METHODS.requested, params: { hostId, elicitation } });

@@ -29,6 +29,7 @@ type ApiEvent =
   | { event: "host_client_replaced"; outcome: "replaced" | "refused" }
   | { event: "client_stalled" }
   | { event: "client_follow_failed" }
+  | { event: "client_notice_failed"; protocol: 2 | 3 }
   /** What a Mac asked its person, and how it ended (RFD0029); never the words. */
   | { event: "elicitation_requested"; kind: "confirm" | "input" }
   | { event: "elicitation_resolved"; outcome: "accept" | "decline" | "cancel" }

@@ -7,6 +7,7 @@ import { attachmentsIn, ChatTranscript, toolInput, type ToolActivity } from "../
 import { toolGroupTitle } from "../src/chat/tool-groups.ts";
 import { hostFamily, hostIcon } from "../src/chat/host-model.ts";
 import { ConversationFeed } from "../src/chat/feed.ts";
+import { ElicitationNotifications } from "../src/chat/elicitation-notifications.ts";
 import { conversationRows, levelsOf, matchingCommands, matchingModels, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
@@ -517,10 +518,12 @@ class FakeAccount implements AccountLink {
 
   resolves: Array<{ hostId: string; elicitationId: string; action: string; sealed?: { enc: string; ciphertext: string } }> = [];
   resolveFails: Error | null = null;
+  resolveGate: Promise<void> | null = null;
   devices: Array<{ key: string; signature: string }> = [];
   async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline", device: { key: string; signature: string }, sealed?: { enc: string; ciphertext: string }) {
     this.devices.push(device);
     this.resolves.push(sealed ? { hostId, elicitationId, action, sealed } : { hostId, elicitationId, action });
+    await this.resolveGate;
     if (this.resolveFails) throw this.resolveFails;
   }
 
@@ -1583,6 +1586,84 @@ test("a consumed queue bubble disappears when its user row shows, even with more
   assert.ok(sawUserWithBacklog);
   assert.equal(transcript.delivered.get("c1"), "e4");
   feed.dispose();
+});
+
+test("Yes followed by Send waits for the answer and queues behind the approved run", async () => {
+  const account = new FakeAccount();
+  let release!: () => void;
+  account.resolveGate = new Promise<void>(resolve => { release = resolve; });
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  const question = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f71", sessionId: sid(1),
+    kind: "confirm" as const, message: "Approve?", createdAt: Date.now(), expiresAt: Date.now() + 300_000 };
+  account.events.elicitationRequested?.(hostId, question);
+  const answer = workbench.answerQuestion(question.id, "accept");
+  await tick();
+  workbench.setDraft("The recorded words");
+  const send = workbench.send();
+  await tick();
+  assert.equal(account.commands.filter(call => call.method.endsWith("session.prompt")).length, 0);
+  account.events.elicitationResolved?.(hostId, { id: question.id, sessionId: sid(1), action: "accept" });
+  release();
+  await answer;
+  assert.equal((await send).kind, "sent");
+  const prompt = account.commands.find(call => call.method.endsWith("session.prompt"))!;
+  assert.equal(prompt.params.text, "The recorded words");
+  assert.notEqual(prompt.params.delivery, "interrupt");
+  // Another Send while the approved run still works remains a follow-up.
+  workbench.setDraft("And the next detail");
+  await workbench.send();
+  assert.ok(account.commands.filter(call => call.method.endsWith("session.prompt")).every(call => call.params.delivery !== "interrupt"));
+  workbench.dispose();
+});
+
+test("a failed Yes leaves Send unsent with its original draft", async () => {
+  const account = new FakeAccount();
+  let release!: () => void;
+  account.resolveGate = new Promise<void>(resolve => { release = resolve; });
+  account.resolveFails = new Error("Answer did not reach the Mac");
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  const question = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f72", sessionId: sid(1),
+    kind: "confirm" as const, message: "Approve?", createdAt: Date.now(), expiresAt: Date.now() + 300_000 };
+  account.events.elicitationRequested?.(hostId, question);
+  const answer = workbench.answerQuestion(question.id, "accept");
+  await tick();
+  workbench.setDraft("Keep these words");
+  const send = workbench.send();
+  await tick();
+  release();
+  await answer;
+  assert.equal((await send).kind, "failed");
+  assert.equal(workbench.draft(), "Keep these words");
+  assert.equal(account.commands.filter(call => call.method.endsWith("session.prompt")).length, 0);
+  workbench.dispose();
+});
+
+test("desktop request notifications deduplicate reconnect replay, retract and expire without permission prompts", () => {
+  const notices = new ElicitationNotifications();
+  const request = { id: "request-a", expiresAt: 10_000 };
+  let delivered = 0, closed = 0;
+  const show = () => { delivered++; return { close: () => { closed++; } }; };
+  notices.update([request], false, show, 1_000);
+  assert.equal(delivered, 0);
+  notices.update([request], true, show, 1_000);
+  notices.update([request], true, show, 1_001);
+  assert.equal(delivered, 1);
+  notices.update([], true, show, 1_002);
+  assert.equal(closed, 1);
+  notices.update([request], true, show, 1_003);
+  assert.equal(delivered, 1, "a reconnect does not ring the same request again");
+  notices.update([request], true, show, 10_001);
+  assert.equal(delivered, 1, "expired requests never notify");
+  notices.dispose();
+  let attempts = 0;
+  notices.update([request], true, () => { attempts++; throw new Error("Unavailable"); }, 1_000);
+  notices.update([request], true, () => { attempts++; throw new Error("Unavailable"); }, 1_001);
+  assert.equal(attempts, 1, "constructor failure cannot create a render/retry storm");
+  notices.dispose();
 });
 
 // MARK: - Tools (what they were given, and the blocks they make)

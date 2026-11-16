@@ -59,6 +59,13 @@ public final class PhoneWorkbench {
   private var drafts: [Selection: String] = [:]
   /// What the Macs' agents ask now, oldest first (RFD0029).
   public private(set) var questions: [AskedQuestion] = []
+  @ObservationIgnored private var settledQuestions: [String: Int64] = [:]
+  private struct AnswerOperation {
+    let destination: Selection
+    let result: Task<Bool, Never>
+  }
+  @ObservationIgnored private var answersInFlight: [String: AnswerOperation] = [:]
+  @ObservationIgnored private var protectedInteractions: Set<Selection> = []
   /// Why the last answer did not go, until the next one does.
   public private(set) var answerFailure: String?
   /// Each Mac's input key as first seen.
@@ -153,6 +160,13 @@ public final class PhoneWorkbench {
       hosts.update(hosts: listed)
       listingChanged()
     case .sessions(let host, let changed):
+      for session in changed where session.status == .ready || session.status == .unavailable {
+        let destination = Selection(host: host, session: session.sessionId)
+        if !questions.contains(where: { $0.hostID == host && $0.elicitation.sessionId == session.sessionId })
+          && !answersInFlight.values.contains(where: { $0.destination == destination }) {
+          protectedInteractions.remove(destination)
+        }
+      }
       hosts.update(sessions: changed, of: host)
       listingChanged()
     case .records(let id, let epoch, let records, let cursor):
@@ -166,10 +180,15 @@ public final class PhoneWorkbench {
     case .reset(let id, let epoch, let keep):
       current?.receive(resetTo: keep, epoch: epoch, in: id)
     case .elicitationRequested(let host, let elicitation):
+      let now = Date().timeIntervalSince1970 * 1_000
+      settledQuestions = settledQuestions.filter { Double($0.value) > now }
+      guard settledQuestions[elicitation.id] == nil else { break }
+      protectedInteractions.insert(Selection(host: host, session: elicitation.sessionId))
       if !questions.contains(where: { $0.id == elicitation.id }) {
         questions.append(AskedQuestion(hostID: host, elicitation: elicitation))
       }
     case .elicitationResolved(_, let id, _):
+      if let question = questions.first(where: { $0.id == id }) { settledQuestions[id] = question.elicitation.expiresAt }
       questions.removeAll { $0.id == id }
     }
   }
@@ -193,7 +212,18 @@ public final class PhoneWorkbench {
   /// Answers what a Mac's agent asks. The card stays until the Mac says it is settled; an answer
   /// that came too late (another device answered, or it expired) removes it.
   public func answer(_ id: String, _ action: ElicitationAnswer, values: [String: String]? = nil) async {
-    guard let index = questions.firstIndex(where: { $0.id == id }), questions[index].answering == nil else { return }
+    guard answersInFlight[id] == nil, let question = questions.first(where: { $0.id == id }),
+      question.answering == nil else { return }
+    let destination = Selection(host: question.hostID, session: question.elicitation.sessionId)
+    protectedInteractions.insert(destination)
+    let result = Task { await performAnswer(id, action, values: values) }
+    answersInFlight[id] = AnswerOperation(destination: destination, result: result)
+    _ = await result.value
+    answersInFlight[id] = nil
+  }
+
+  private func performAnswer(_ id: String, _ action: ElicitationAnswer, values: [String: String]? = nil) async -> Bool {
+    guard let index = questions.firstIndex(where: { $0.id == id }), questions[index].answering == nil else { return false }
     let host = questions[index].hostID
     var sealed: SealedInput?
     if let input = questions[index].elicitation.input, action == .accept {
@@ -201,14 +231,14 @@ public final class PhoneWorkbench {
       // for that Mac: a different one may be the cloud's, not the Mac's.
       guard inputKeyPins.check(host: host, key: input.key) != .changed else {
         answerFailure = "This Mac's encryption key changed. Nothing was sent; check the key in Axo on that Mac."
-        return
+        return false
       }
-      guard let values else { return }
+      guard let values else { return false }
       do {
         sealed = try InputSeal.seal(values, to: input.key, requestID: id, origin: input.origin)
       } catch {
         answerFailure = "The values could not be encrypted for this Mac."
-        return
+        return false
       }
     }
     let signer = device ?? PhoneDeviceKey.stored()
@@ -218,18 +248,21 @@ public final class PhoneWorkbench {
       proof = try signer.prove(requestID: id, action: action, sealed: sealed, name: deviceName)
     } catch {
       answerFailure = "This iPhone couldn’t sign the answer."
-      return
+      return false
     }
     questions[index].answering = action
     do {
       try await feed.resolveElicitation(id, on: host, action: action, device: proof, sealed: sealed)
       answerFailure = nil
+      return true
     } catch {
       if case AxoClientError.serverRejected(let code, _) = error, code == ElicitationError.notPending {
         questions.removeAll { $0.id == id }
+        return true
       } else {
         if let again = questions.firstIndex(where: { $0.id == id }) { questions[again].answering = nil }
         answerFailure = error.localizedDescription
+        return false
       }
     }
   }
@@ -468,7 +501,16 @@ public final class PhoneWorkbench {
     isSending = true
     defer { isSending = false }
     guard selection.session != nil else { return await startChat(in: .home, from: selection) }
-    return await prompt(from: selection, delivery: delivery)
+    let answers = answersInFlight.values.filter { $0.destination == selection }.map(\.result)
+    for answer in answers {
+      guard await answer.value else { return .failed }
+    }
+    // The box remains owned by its original chat while the answer is acknowledged.
+    guard self.selection == selection else { return .failed }
+    let protected = protectedInteractions.contains(selection)
+      || questions.contains { $0.hostID == selection.host && $0.elicitation.sessionId == selection.session }
+    let effective: PromptDelivery = delivery == .interrupt && protected ? .followUp : delivery
+    return await prompt(from: selection, delivery: effective)
   }
 
   /// Starts the new chat in `place` with what is typed in it: how a chat starts somewhere other

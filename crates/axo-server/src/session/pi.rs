@@ -838,7 +838,8 @@ impl Session {
         let link = self.pi_link()?;
         if let Some(pi) = &mut self.pi {
             pi.recovery = Recovery::Suppressed;
-            pi.human_turn_protected = false;
+            // Stop bypasses prompt admission. An unconfirmed/stale Stop is not proof that
+            // the protected run ended; its settlement event releases the Send fence.
         }
         self.publish();
         Ok(link)

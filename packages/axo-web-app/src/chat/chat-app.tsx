@@ -17,6 +17,7 @@ import {
 } from "./workbench.ts";
 import { assetUploader } from "./assets.ts";
 import { ChatCache } from "./cache.ts";
+import { ElicitationInbox } from "./elicitation-inbox.tsx";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
@@ -210,6 +211,7 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
 
   return (
     <main className="chat-app">
+      <ElicitationInbox workbench={workbench} />
       <div className={stackClass} inert={settings !== null}>
         <div className="layer layer-account" inert={wide ? sidebar !== "account" : layer !== "account"}>
           <AccountPanel

@@ -8,6 +8,7 @@ struct SidebarHeader: View {
   let selection: SidebarMacs
   let hosts: [PeerHost]
   let topPadding: CGFloat
+  let requests: ElicitationsModel
   let onSelect: (SidebarMacs) -> Void
   let onNewSessionInFolder: () -> Void
 
@@ -40,6 +41,7 @@ struct SidebarHeader: View {
       .accessibilityLabel("Sessions on \(title)")
       .accessibilityIdentifier("sidebar-macs-menu")
       Spacer(minLength: 0)
+      RequestsButton(model: requests)
       Button(action: onNewSessionInFolder) {
         Image(systemName: "plus")
           .font(.system(size: 11, weight: .semibold))

@@ -1,3 +1,4 @@
+import { deliverHostNoticeBatch } from "./host-notice-delivery";
 import {
   APPS_LIMITS,
   ELICITATION_ERRORS,
@@ -925,6 +926,14 @@ export class AxoHostDO extends AxoHostRelay {
     if (!identity || this.notices.size === 0) return;
     const notices = [...this.notices.values()];
     this.notices.clear();
+    await deliverHostNoticeBatch(notices, {
+      direct: batch => this.clients.deliver(batch),
+      legacy: batch => this.deliverLegacyNotices(identity.host_id, batch),
+      urgentFailure: () => recordApiEvent({ event: "client_notice_failed", protocol: 3 }),
+    });
+  }
+
+  private async deliverLegacyNotices(hostId: string, notices: HostNotice[]): Promise<void> {
     const sql = this.ctx.storage.sql;
     const followers = sql.exec<{ client_do: string; behind: number }>("SELECT client_do, behind FROM followers").toArray();
     const watching = new Map<string, Set<string>>();
@@ -936,20 +945,20 @@ export class AxoHostDO extends AxoHostRelay {
       // Progress and epochs are for the ClientDOs with that Session open (RFD0031).
       const batch = behind ? this.everything(watches) : notices.filter((notice) =>
         notice.kind !== "progress" && notice.kind !== "epoch" ? true : watches.has(notice.sessionId));
-      if (behind) batch.push(...notices.filter((notice) => notice.kind === "epoch" && watches.has(notice.sessionId)));
+      if (behind) batch.push(...notices.filter((notice) => notice.kind === "elicitationResolved"
+        || (notice.kind === "epoch" && watches.has(notice.sessionId))));
       if (batch.length === 0) return;
       sent += 1;
       const client = this.client(client_do);
       // A notice that fails is sent again at once; if that fails too, the next one carries everything.
-      const following = await client.notify(identity.host_id, batch)
-        .catch(() => client.notify(identity.host_id, batch))
+      const following = await client.notify(hostId, batch)
+        .catch(() => client.notify(hostId, batch))
         .catch(() => null);
       if (following === false) this.forgetFollower(client_do);
       else if (following === null) sql.exec("UPDATE followers SET behind = 1 WHERE client_do = ?", client_do);
       else if (behind) sql.exec("UPDATE followers SET behind = 0 WHERE client_do = ?", client_do);
     }));
     if (sent) recordApiEvent({ event: "notice_batch", subscribers: sent, notices: notices.length });
-    await this.clients.deliver(notices);
   }
 
   /** What a follower a notice failed to reach needs: the index, presence, and its Sessions' progress. */

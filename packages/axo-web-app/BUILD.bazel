@@ -38,8 +38,16 @@ js_library(
     deps = [":node_modules/vite"],
 )
 
-ts_project(
+# no_emit puts the compiler check in its own output group, not DefaultInfo.
+# Make the public gate actually run tsc rather than merely copy its inputs.
+filegroup(
     name = "typecheck",
+    srcs = [":typecheck_project"],
+    output_group = "typecheck",
+)
+
+ts_project(
+    name = "typecheck_project",
     srcs = glob(["src/**/*.ts", "src/**/*.tsx"]),
     no_emit = True,
     tsconfig = "tsconfig.json",
@@ -57,6 +65,22 @@ node_test(
 js_library(
     name = "browser_test_files",
     srcs = _SRCS + glob(["test/*.mjs"]),
+)
+
+# One focused media/approval flow for fast interaction regressions; also in the full suite below.
+node_test(
+    name = "elicitations_browser_test",
+    concurrency = 1,
+    data = _DEPS + [
+        ":browser_test_files",
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/playwright-core",
+        ":node_modules/ws",
+        "//sites/axo.leostera.dev:app_files",
+    ],
+    tags = ["manual", "no-sandbox", "requires-browser"],
+    tests = ["test/elicitations.test.mjs"],
+    tests_in_data = True,
 )
 
 # The app in Chrome against fixture APIs, served by Vite from the site.
@@ -83,6 +107,7 @@ node_test(
         "test/shared-session.test.mjs",
         "test/tools.test.mjs",
         "test/queued-messages.test.mjs",
+        "test/elicitations.test.mjs",
     ],
     tests_in_data = True,
 )
