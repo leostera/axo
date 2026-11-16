@@ -6,6 +6,67 @@ import XCTest
 
 @MainActor
 final class HostWorkbenchModelTests: XCTestCase {
+  func testSwitchingAwayDuringOpenDoesNotLeaveThatChatPermanentlyLoading() async throws {
+    let world = HostWorld(sessions: [(1, "One"), (2, "Two")])
+    let first = Task { await world.model.loadHistory(of: 1) }
+    let channel = try await world.channel()
+    let stale = try await channel.nextRequest()
+    _ = try await world.open(2, answering: Wire.opened([said(1, "second chat")]))
+    world.model.selectedSessionID = 1
+    let reopened = Task { await world.model.follow(1) }
+    let fresh = try await channel.nextRequest()
+    channel.reply(to: stale.id, result: Wire.opened([said(1, "stale response")]))
+    await first.value
+    XCTAssertEqual(world.model.historyStates[1], .loading, "The older completion cannot clear the new request")
+    channel.reply(to: fresh.id, result: Wire.opened([said(1, "correct history")]))
+    await reopened.value
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["correct history"])
+    XCTAssertEqual(world.model.historyStates[1], .loaded(records: 1, hasOlder: false))
+  }
+
+  func testCancelledOpenCanBeFollowedAgainWithoutRestartingTheApp() async throws {
+    let world = HostWorld()
+    let first = Task { await world.model.loadHistory(of: 1) }
+    let channel = try await world.channel()
+    _ = try await channel.nextRequest()
+    first.cancel()
+    await first.value
+    let retry = Task { await world.model.follow(1) }
+    let request = try await channel.nextRequest()
+    channel.reply(to: request.id, result: Wire.opened([said(1, "recovered")]))
+    await retry.value
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["recovered"])
+  }
+
+  func testLiveRecordsAndProgressDuringInitialOpenAreAppliedBeforeAcknowledging() async throws {
+    let world = HostWorld()
+    let first = Task { await world.model.loadHistory(of: 1) }
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest()
+    world.model.receive(records: [said(2, "arrived while opening")], epoch: 1, cursor: 2, in: 1)
+    world.model.receive(progress: "message", snapshot: jsonValue(#"{"message":{"role":"assistant","content":"still streaming"}}"#), in: 1)
+    XCTAssertTrue(channel.acks(of: 1).isEmpty)
+    channel.reply(to: request.id, result: Wire.opened([said(1, "old history")]))
+    await first.value
+    XCTAssertEqual(world.model.chats[1]?.messages.map(\.text), ["old history", "arrived while opening"])
+    XCTAssertEqual(world.model.chats[1]?.live.map(\.text), ["still streaming"])
+    try await eventually { channel.acks(of: 1) == [2] }
+  }
+
+  func testEpochResetDuringOpenRefetchesInsteadOfAcceptingAnObsoletePage() async throws {
+    let world = HostWorld()
+    let opening = Task { await world.model.loadHistory(of: 1) }
+    let channel = try await world.channel()
+    let request = try await channel.nextRequest()
+    world.model.receive(resetTo: 0, epoch: 2, in: 1)
+    channel.reply(to: request.id, result: Wire.opened([said(1, "obsolete")]))
+    await opening.value
+    let fresh = try await channel.nextRequest()
+    XCTAssertNil(fresh.params["have"])
+    channel.reply(to: fresh.id, result: Wire.opened(epoch: 2, [said(1, "current")]))
+    try await eventually { world.model.chats[1]?.messages.map(\.text) == ["current"] }
+  }
+
   // MARK: - Reading a chat
 
   func testOpeningAChatReadsItsNewestWindowAndItsNewRecordsFollow() async throws {

@@ -48,11 +48,14 @@ public struct VoiceTranscript: Equatable, Sendable, Identifiable {
   public let id: UUID
   public let text: String
   public let delivery: VoiceDelivery
+  /// Captured when recording starts, never inferred from whichever chat is now on screen.
+  public let destination: PhoneWorkbench.Selection?
 
-  public init(id: UUID = UUID(), text: String, delivery: VoiceDelivery) {
+  public init(id: UUID = UUID(), text: String, delivery: VoiceDelivery, destination: PhoneWorkbench.Selection? = nil) {
     self.id = id
     self.text = text
     self.delivery = delivery
+    self.destination = destination
   }
 
   /// After what is already typed: what was typed while listening is kept, and nothing dictated
@@ -110,6 +113,9 @@ public final class VoicePrompt {
   /// Each dictation's own number: what an older one reports after a cancel is ignored.
   @ObservationIgnored private var generation = 0
   @ObservationIgnored private var work: Task<Void, Never>?
+  @ObservationIgnored private var cleanup: Task<Void, Never>?
+  @ObservationIgnored private var lastHeard = HeardText()
+  @ObservationIgnored private var destination: PhoneWorkbench.Selection?
 
   public init(engine: any DictationEngine) {
     self.engine = engine
@@ -132,14 +138,19 @@ public final class VoicePrompt {
 
   /// Asks for the microphone, sets up the speech model if it is not yet, and starts listening:
   /// one tap, however much of that is needed.
-  public func start() {
+  public func start(in destination: PhoneWorkbench.Selection? = nil) {
     guard !isBusy else { return }
+    self.destination = destination
     transcript = nil
+    lastHeard = HeardText()
     generation += 1
     let current = generation
     state = .requestingPermission
+    let retiring = cleanup
     work = Task { [self] in
       defer { if current == generation { work = nil } }
+      await retiring?.value
+      guard current == generation else { return }
       guard await engine.requestPermission() else { return fail(.microphoneDenied, current) }
       guard current == generation else { return }
       do {
@@ -152,20 +163,24 @@ public final class VoicePrompt {
           guard current == generation else { return }
           prepared = true
         }
-        state = .listening(HeardText())
+        // Don't offer Stop/Send until start actually owns a running microphone.
+        state = .preparing(VoiceSetupProgress(stage: .finishing))
         try await engine.start(
           heard: { [weak self] heard in
-            guard let self, current == self.generation, self.isListening else { return }
-            self.state = .listening(heard)
+            guard let self, current == self.generation else { return }
+            self.lastHeard = heard
+            if self.isListening { self.state = .listening(heard) }
           },
           interrupted: { [weak self] in
-            guard let self, current == self.generation, self.isListening else { return }
-            self.cancel(because: .interrupted)
+            guard let self, current == self.generation, self.isBusy else { return }
+            self.interrupt()
           })
         guard current == generation else { return await engine.cancel() }
+        state = .listening(lastHeard)
       } catch {
         guard current == generation else { return }
         await engine.cancel()
+        guard current == generation else { return }
         state = .failed(error.localizedDescription)
       }
     }
@@ -181,18 +196,45 @@ public final class VoicePrompt {
       do {
         let text = try await engine.finish().trimmingCharacters(in: .whitespacesAndNewlines)
         guard current == generation else { return }
-        guard !text.isEmpty else { return fail(.noSpeech, current) }
-        transcript = VoiceTranscript(text: text, delivery: delivery)
+        guard !text.isEmpty else {
+          if !recoverHeardDraft() { fail(.noSpeech, current) }
+          return
+        }
+        transcript = VoiceTranscript(text: text, delivery: delivery, destination: destination)
         state = .idle
       } catch {
         guard current == generation else { return }
-        state = .failed(error.localizedDescription)
+        await engine.cancel()
+        guard current == generation else { return }
+        if !recoverHeardDraft() { state = .failed(error.localizedDescription) }
       }
     }
   }
 
+  /// A lock/call is not Cancel: keep even tentative recognized words for review, never send.
+  public func interrupt() {
+    guard isBusy else { return }
+    retireWork()
+    if !recoverHeardDraft() { state = .failed(VoicePromptError.interrupted.localizedDescription) }
+  }
+
+  @discardableResult
+  private func recoverHeardDraft() -> Bool {
+    let text = (lastHeard.settled + lastHeard.tentative).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return false }
+    transcript = VoiceTranscript(text: text, delivery: .draft, destination: destination)
+    state = .idle
+    return true
+  }
+
   /// Stops whatever is happening and forgets it: nothing heard reaches the box.
-  public func cancel() { cancel(because: nil) }
+  public func cancel() {
+    guard isBusy else { return }
+    retireWork()
+    transcript = nil
+    lastHeard = HeardText()
+    state = .idle
+  }
 
   /// Takes a failure off the screen.
   public func dismissFailure() {
@@ -200,18 +242,26 @@ public final class VoicePrompt {
   }
 
   /// The screen has put `transcript` in the box or sent it.
-  public func consume(_ transcript: VoiceTranscript) {
-    if self.transcript?.id == transcript.id { self.transcript = nil }
+  @discardableResult
+  public func consume(_ transcript: VoiceTranscript) -> Bool {
+    guard self.transcript?.id == transcript.id else { return false }
+    self.transcript = nil
+    return true
   }
 
-  private func cancel(because reason: VoicePromptError?) {
-    guard isBusy else { return }
+  /// An old asynchronous start/finalize must retire before another recording uses the engine.
+  private func retireWork() {
     generation += 1
-    work?.cancel()
+    let previous = work
+    let retiring = cleanup
+    previous?.cancel()
     work = nil
-    transcript = nil
-    state = reason.map { .failed($0.localizedDescription) } ?? .idle
-    Task { [engine] in await engine.cancel() }
+    cleanup = Task { [engine] in
+      await retiring?.value
+      await engine.cancel()
+      await previous?.value
+      await engine.cancel()
+    }
   }
 
   private func fail(_ error: VoicePromptError, _ current: Int) {

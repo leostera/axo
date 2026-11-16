@@ -50,7 +50,7 @@ public struct ScrollFollow: Equatable, Sendable {
       return .stay
     }
     // Not under the reader's finger; an animated jump is overtaken, and lands at the true end.
-    return scrolling == .byReader ? .stay : .keepAtEnd
+    return scrolling == .byReader || scrolling == .touched ? .stay : .keepAtEnd
   }
 
   /// The scroll view started or stopped moving; `atEnd` says whether the end is in view.

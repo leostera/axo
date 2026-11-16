@@ -95,6 +95,7 @@ struct ConversationList: UIViewRepresentable {
     func makeView() -> ConversationCollectionView {
       let view = ConversationCollectionView(frame: .zero, collectionViewLayout: ConversationList.layout())
       view.backgroundColor = .clear
+      view.accessibilityIdentifier = "conversation-list"
       view.alwaysBounceVertical = true
       view.keyboardDismissMode = .interactive
       view.contentInsetAdjustmentBehavior = .never
@@ -109,6 +110,7 @@ struct ConversationList: UIViewRepresentable {
       let row = UICollectionView.CellRegistration<UICollectionViewCell, String> { [weak self] cell, _, id in
         guard let self, let content = self.content, let item = content.feed.item(id) else { return }
         Self.clip(cell)
+        cell.accessibilityIdentifier = "conversation-row-\(id)"
         cell.contentConfiguration = UIHostingConfiguration {
           self.dressed(ConversationItemView(item: item, feed: content.feed, actions: content.actions))
         }
@@ -225,6 +227,7 @@ struct ConversationList: UIViewRepresentable {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
       scroll.pull.touching = true
+      (scrollView as? ConversationCollectionView)?.readerTookOver()
       _ = scroll.follow.scrollingChanged(to: .byReader, atEnd: (scrollView as? ConversationCollectionView)?.isAtEnd ?? true)
     }
 
@@ -354,8 +357,16 @@ final class ConversationCollectionView: UICollectionView {
   /// Keeps `entry` where it is on screen through the next layout, whatever it is following: the
   /// reader opened or folded it, and it opens downwards from under their finger.
   func hold(_ entry: ConversationList.Entry) {
+    guard !held else { return }
     guard let indexPath = indexPathOf(entry), let frame = layoutAttributesForItem(at: indexPath)?.frame else { return }
     holding = (entry, frame.minY - contentOffset.y, frame.height, Date().addingTimeInterval(0.5))
+  }
+
+  /// A gesture cancels any screen-owned jump or row hold before the next streamed layout.
+  func readerTookOver() {
+    animatingToEnd = false
+    holding = nil
+    anchor = readerRow()
   }
 
   private var scale: CGFloat { max(1, traitCollection.displayScale) }
@@ -391,7 +402,14 @@ final class ConversationCollectionView: UICollectionView {
   override func layoutSubviews() {
     let before = contentOffset.y
     super.layoutSubviews()
-    if let holding, !isTracking, !isDragging {
+    // Dragging, tracking and deceleration belong to UIKit/the reader. Anchor compensation in
+    // this branch used to write contentOffset on every streamed resize and fight the gesture.
+    guard !held else {
+      holding = nil
+      anchor = readerRow()
+      return
+    }
+    if let holding {
       guard let indexPath = indexPathOf(holding.entry), let frame = layoutAttributesForItem(at: indexPath)?.frame else {
         self.holding = nil
         return

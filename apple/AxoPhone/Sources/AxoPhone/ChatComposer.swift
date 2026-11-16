@@ -24,6 +24,7 @@ struct ChatComposer: View {
   var attach: ([(data: Data, name: String, mimeType: String, thumbnail: Data?)]) -> Void = { _ in }
   var detach: (UUID) -> Void = { _ in }
   let voice: VoicePrompt?
+  var voiceDestination: PhoneWorkbench.Selection?
   /// Settings › Apps, from the + menu's Plugins.
   var showApps: (() -> Void)?
   /// The chat's Pi: its model, and its commands.
@@ -99,7 +100,7 @@ struct ChatComposer: View {
         Spacer(minLength: 0)
         if let pi, let label = pi.runtime?.label { modelButton(pi, label: label) }
         if isLong { expandButton }
-        if let voice { VoiceButton(voice: voice, enabled: canSend) }
+        if let voice { VoiceButton(voice: voice, enabled: canSend, destination: voiceDestination) }
         sendButton
       }
     }

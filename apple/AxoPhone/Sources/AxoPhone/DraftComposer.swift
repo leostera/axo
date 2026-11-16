@@ -28,19 +28,19 @@ struct DraftComposer: View {
       attach: { phone.attach($0) },
       detach: { phone.detach($0) },
       voice: voice,
+      voiceDestination: phone.selection,
       showApps: showApps,
       pi: pi,
       send: send)
-    .onChange(of: voice?.transcript) { _, transcript in
+    .onChange(of: voice?.transcript, initial: true) { _, transcript in
       if let transcript { take(transcript) }
     }
   }
 
   private func take(_ transcript: VoiceTranscript) {
-    voice?.consume(transcript)
-    guard let selection = phone.selection else { return }
-    phone.setDraft(transcript.appending(to: phone.draft(for: selection)), for: selection)
-    if transcript.delivery == .send, canSend, !phone.isSending { send(.interrupt) }
+    guard let destination = transcript.destination, voice?.consume(transcript) == true else { return }
+    phone.setDraft(transcript.appending(to: phone.draft(for: destination)), for: destination)
+    if transcript.delivery == .send, phone.selection == destination, canSend, !phone.isSending { send(.interrupt) }
   }
 
   /// The open chat's Pi, read here so only the box redraws as it changes.

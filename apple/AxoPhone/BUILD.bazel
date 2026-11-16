@@ -19,6 +19,7 @@ swift_library(
     srcs = glob(["Sources/AxoPhoneModel/**/*.swift"]),
     copts = ["-swift-version", "5"],
     deps = [
+        "//apple/AxoSearch",
         "//apple/AxoClient",
         "//apple/AxoProtocol",
     ],
@@ -155,6 +156,24 @@ ios_ui_test(
     test_host = ":AxoPhoneApp",
     # Some thirty tests that each launch the app (about fifteen minutes) take longer than "long".
     timeout = "eternal",
+    deps = [":AxoPhoneUITestsLib"],
+)
+
+# Focused interaction regressions always use a fresh, owned simulator. Pick an installed runtime
+# with --@rules_apple//apple/build_settings:ios_simulator_version, not a personal device.
+ios_xctestrun_runner(
+    name = "AxoPhoneRegressionTestRunner",
+    device_type = AXO["apple"]["simulator"]["device"],
+    reuse_simulator = False,
+)
+
+ios_ui_test(
+    name = "AxoPhoneRegressionUITests",
+    minimum_os_version = AXO["apple"]["ios_min"],
+    runner = ":AxoPhoneRegressionTestRunner",
+    tags = ["manual"],
+    timeout = "long",
+    test_host = ":AxoPhoneApp",
     deps = [":AxoPhoneUITestsLib"],
 )
 

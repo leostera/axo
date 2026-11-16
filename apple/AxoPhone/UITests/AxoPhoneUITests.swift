@@ -431,8 +431,9 @@ final class AxoPhoneUITests: XCTestCase {
     let field = app.textFields["search-field"]
     XCTAssertTrue(field.waitForExistence(timeout: 5))
     field.tap()
-    field.typeText("relay")
-    let result = app.buttons.matching(identifier: "search-result").firstMatch
+    field.typeText("rly")
+    let result = app.buttons.matching(identifier: "search-result")
+      .matching(NSPredicate(format: "label CONTAINS %@", "Explain the relay")).firstMatch
     XCTAssertTrue(result.waitForExistence(timeout: 5))
     result.tapWhereItIs()
     XCTAssertTrue(app.staticTexts["Explain the relay"].waitForExistence(timeout: 5))
@@ -676,6 +677,29 @@ final class AxoPhoneUITests: XCTestCase {
     XCTAssertTrue(failure.waitForExistence(timeout: 10))
     XCTAssertTrue(failure.label.hasPrefix("Not sent"), failure.label)
     XCTAssertEqual(composer.value as? String, "Ship it", "the words are back in the box")
+  }
+
+  @MainActor
+  func testReadingHistoryStaysPutWhileTheReplyStreams() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "stream",
+                      "AXO_PHONE_PREVIEW_STREAM_STEPS": "150"])
+    let list = app.collectionViews["conversation-list"]
+    XCTAssertTrue(list.waitForExistence(timeout: 10))
+    app.buttons["play-stream"].tap()
+    list.swipeDown()
+    list.swipeDown()
+    XCTAssertTrue(app.buttons["Jump to new message"].waitForExistence(timeout: 5))
+    let height = app.windows.firstMatch.frame.height
+    guard let anchor = list.cells.allElementsBoundByIndex.first(where: {
+      $0.identifier.hasPrefix("conversation-row-") && $0.frame.minY > 100 && $0.frame.minY < height - 180
+    }) else { return XCTFail("No historical row is visible") }
+    let id = anchor.identifier
+    let before = anchor.frame.minY
+    RunLoop.current.run(until: Date().addingTimeInterval(2))
+    let after = list.cells[id]
+    XCTAssertTrue(after.exists)
+    XCTAssertEqual(after.frame.minY, before, accuracy: 3, "Streaming must not move a historical row")
+    XCTAssertTrue(app.buttons["Jump to new message"].isHittable)
   }
 
   @MainActor

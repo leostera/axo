@@ -285,6 +285,7 @@ struct HostWorld {
 
   /// Opens `id` and answers the open with `result`.
   func open(_ id: SessionID, answering result: String) async throws -> ScriptedRequest {
+    model.selectedSessionID = id
     let opening = Task { await model.loadHistory(of: id) }
     let channel = try await channel()
     let request = try await channel.nextRequest()

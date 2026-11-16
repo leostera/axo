@@ -6,9 +6,10 @@ import SwiftUI
 struct VoiceButton: View {
   let voice: VoicePrompt
   let enabled: Bool
+  var destination: PhoneWorkbench.Selection?
 
   var body: some View {
-    Button { voice.start() } label: {
+    Button { voice.start(in: destination) } label: {
       Group {
         if case .requestingPermission = voice.state {
           ProgressView()

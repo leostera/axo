@@ -48,6 +48,14 @@ final class ScrollFollowTests: XCTestCase {
     XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
   }
 
+  func testTouchingOrDraggingDuringManyStreamedUpdatesNeverRequestsAMove() {
+    for phase in [ScrollFollow.Scrolling.touched, .byReader] {
+      var follow = ScrollFollow()
+      _ = follow.scrollingChanged(to: phase, atEnd: true)
+      for _ in 0..<100 { XCTAssertEqual(follow.contentChangedAtEnd(), .stay) }
+    }
+  }
+
   func testSendingGoesToTheEndFromAnywhere() {
     var follow = ScrollFollow()
     _ = follow.scrollingChanged(to: .byReader, atEnd: true)

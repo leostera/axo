@@ -46,6 +46,10 @@ public final class Chat {
   fileprivate var epoch: Int64?
   /// The `before` of the next older page; nil when the start is held.
   fileprivate var older: Int64?
+  fileprivate var historyRequest: UUID?
+  fileprivate var openingRecords: [(records: [ClientRecord], epoch: Int64, cursor: Int64)] = []
+  fileprivate var openingProgress: [String: JSONValue] = [:]
+  fileprivate var openingReset: (keep: Int64, epoch: Int64)?
 
   nonisolated init() {}
 }
@@ -175,6 +179,11 @@ public final class HostWorkbenchModel {
   private let account: AccountSession
   /// The chat open on the socket: its new records arrive as they are written.
   private var opened: SessionID?
+  private struct HistoryRequest: Equatable {
+    let session: SessionID
+    let id: UUID
+  }
+  private var opening: HistoryRequest?
   /// Chats started here that the host has not listed yet: kept until it does.
   private var created: [SessionID: RemoteSession] = [:]
   /// The next try of each uncertain message, by its commandId.
@@ -201,13 +210,15 @@ public final class HostWorkbenchModel {
   /// The account's socket connected again: the open chat reads on from what it holds, the others
   /// will when opened.
   func reconnected() async {
-    let reopen = opened
+    let reopen = selectedSessionID ?? opened
+    opening = nil
     opened = nil
     if let reopen { await loadHistory(of: reopen) }
   }
 
   /// Lets go of the open chat on the socket.
   func stop() {
+    opening = nil
     if let opened { Task { [feed] in await feed.close(opened) } }
     opened = nil
   }
@@ -269,13 +280,23 @@ public final class HostWorkbenchModel {
 
   /// The next records of the open chat; the batch is acknowledged once taken.
   func receive(records: [ClientRecord], epoch: Int64, cursor: Int64, in id: SessionID) {
+    // The first page is parsed off-main. Do not acknowledge and discard live records while
+    // it is being installed: keep the batch until that page can accept it. The unacknowledged
+    // window provides backpressure until we drain it.
+    if opened == id, let chat = chatStore[id], chat.historyRequest != nil {
+      chat.openingRecords.append((records, epoch, cursor))
+      return
+    }
     defer { Task { [feed] in await feed.acknowledge(id, cursor: cursor) } }
     guard opened == id, let chat = chatStore[id], let transcript = chat.transcript else { return }
     if let held = chat.epoch, held != epoch { return }
     chat.epoch = epoch
     if let first = records.first, first.cursor > transcript.lastCursor + 1 {
       // A batch that does not follow what is held: open again from what is held.
-      Task { await loadHistory(of: id) }
+      Task {
+        guard opened == id else { return }
+        await loadHistory(of: id)
+      }
       return
     }
     changeChat(id) { $0.append(records) }
@@ -283,12 +304,20 @@ public final class HostWorkbenchModel {
   }
 
   func receive(progress slot: String, snapshot: JSONValue, in id: SessionID) {
+    if opened == id, let chat = chatStore[id], chat.historyRequest != nil {
+      chat.openingProgress[slot] = snapshot
+      return
+    }
     guard chatStore[id]?.transcript != nil else { return }
     changeChat(id) { $0.progress(slot: slot, snapshot: snapshot) }
   }
 
   /// The cloud copy was cut back: what came after `keep` goes.
   func receive(resetTo keep: Int64, epoch: Int64, in id: SessionID) {
+    if opened == id, let chat = chatStore[id], chat.historyRequest != nil {
+      chat.openingReset = (keep, epoch)
+      return
+    }
     guard let chat = chatStore[id], chat.transcript != nil else { return }
     chat.epoch = epoch
     let first = chat.transcript?.firstCursor
@@ -323,19 +352,38 @@ public final class HostWorkbenchModel {
   /// Opens a chat on the socket: from what is held when something is, or else its newest page.
   /// Its new records then arrive as they are written. The chat open before is let go.
   public func loadHistory(of id: SessionID) async {
+    guard selectedSessionID == nil || selectedSessionID == id else { return }
     let chat = chat(id)
-    if case .loading = chat.history { return }
-    if case .loadingOlder = chat.history { return }
+    if opening?.session == id, opened == id { return }
+    let request = HistoryRequest(session: id, id: UUID())
+    opening = request
+    chat.historyRequest = request.id
+    chat.openingRecords = []
+    chat.openingProgress = [:]
+    chat.openingReset = nil
+    defer {
+      if opening == request {
+        opening = nil
+        if Task.isCancelled, opened == id { opened = nil }
+      }
+      if chat.historyRequest == request.id {
+        chat.historyRequest = nil
+        if case .loading = chat.history {
+          chat.history = chat.transcript.map { .loaded(records: $0.records.count, hasOlder: chat.older != nil) }
+        }
+      }
+    }
     if let previous = opened, previous != id { Task { [feed] in await feed.close(previous) } }
     opened = id
     let held = chat.transcript.flatMap { transcript in chat.epoch.map { (epoch: $0, cursor: transcript.lastCursor) } }
     if held == nil { chat.history = .loading }
     do {
       let result = try await feed.open(id, on: reference.hostId, have: held, window: Self.historyPageSize)
-      guard opened == id else { return }
+      guard opening == request, opened == id, !Task.isCancelled else { return }
       if held == nil {
         // Parsed away from the main actor: Markdown and pictures take milliseconds a page.
         let parsed = await Self.parse(result.records)
+        guard opening == request, opened == id, !Task.isCancelled else { return }
         chat.older = result.older
         changeChat(id) { $0 = parsed }
       } else {
@@ -345,11 +393,41 @@ public final class HostWorkbenchModel {
       changeChat(id) { transcript in
         for progress in result.progress { transcript.progress(slot: progress.slot, snapshot: progress.snapshot) }
       }
+      // Replaying now is safe: the initial transcript exists, and clearing the request fence
+      // makes receive apply/ack these records rather than buffer them again.
+      chat.historyRequest = nil
+      let buffered = chat.openingRecords
+      let progress = chat.openingProgress
+      chat.openingRecords = []
+      chat.openingProgress = [:]
+      var needsFreshPage = chat.openingReset != nil
+      if let reset = chat.openingReset {
+        chat.openingReset = nil
+        receive(resetTo: reset.keep, epoch: reset.epoch, in: id)
+      }
+      for batch in buffered where !needsFreshPage {
+        if batch.epoch == result.epoch {
+          receive(records: batch.records, epoch: batch.epoch, cursor: batch.cursor, in: id)
+        } else { needsFreshPage = true }
+      }
+      if !needsFreshPage {
+        for (slot, snapshot) in progress { receive(progress: slot, snapshot: snapshot, in: id) }
+      }
       settleChats()
       showHistoryState(of: id)
+      if needsFreshPage {
+        chat.epoch = nil
+        Task {
+          guard opened == id else { return }
+          await loadHistory(of: id)
+        }
+      }
     } catch is CancellationError {
+      guard opening == request else { return }
+      if opened == id { opened = nil }
       if held == nil { chat.history = nil }
     } catch {
+      guard opening == request else { return }
       account.noteFailure(error)
       if opened == id { opened = nil }
       chat.history = .failed(error.localizedDescription)
@@ -358,7 +436,7 @@ public final class HostWorkbenchModel {
 
   /// Opens `id` on the socket unless it is open already.
   func follow(_ id: SessionID) async {
-    guard opened != id else { return }
+    if opened == id, opening?.session == id || chatStore[id]?.transcript != nil { return }
     await loadHistory(of: id)
   }
 

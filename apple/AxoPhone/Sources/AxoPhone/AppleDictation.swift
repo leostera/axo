@@ -2,6 +2,7 @@ import AVFoundation
 import AxoPhoneModel
 import Foundation
 import Speech
+import UIKit
 import os
 
 /// Voice prompting is offered where Apple's on-device speech model is: iOS 26 and later.
@@ -64,6 +65,9 @@ final class AppleDictation: DictationEngine {
   private var locale: Locale?
   private var listening: Listening?
   private var observers: [NSObjectProtocol] = []
+  private let wake = RecordingWakeLock(
+    read: { UIApplication.shared.isIdleTimerDisabled },
+    write: { UIApplication.shared.isIdleTimerDisabled = $0 })
 
   /// One dictation: the microphone, the recogniser, and what it has settled on.
   private final class Listening {
@@ -156,6 +160,7 @@ final class AppleDictation: DictationEngine {
         listening.audio.prepare()
         try listening.audio.start()
       }
+      wake.acquire()
       watch(for: interrupted)
     } catch {
       await cancel()
@@ -181,6 +186,7 @@ final class AppleDictation: DictationEngine {
   }
 
   private func stopAudio(_ listening: Listening) {
+    wake.release()
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
     observers = []
     listening.audio.inputNode.removeTap(onBus: 0)

@@ -21,18 +21,12 @@ struct SessionSearchView: View {
   private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
   private var matches: [Match] {
-    guard !trimmedQuery.isEmpty else { return [] }
-    return hosts.flatMap { host in
-      sessionsOf(host).filter {
-        // Chats only: a bare terminal has nothing to read here.
-        $0.hasAgent != false
-          && ($0.displayName.localizedCaseInsensitiveContains(trimmedQuery)
-          || ($0.folderName ?? "").localizedCaseInsensitiveContains(trimmedQuery))
-      }.map { Match(host: host, session: $0) }
-    }
+    ChatSearch.matches(query, hosts: hosts, sessionsOf: sessionsOf)
+      .map { Match(host: $0.host, session: $0.session) }
   }
 
   var body: some View {
+    let results = matches
     NavigationStack {
       List {
         Section {
@@ -51,14 +45,14 @@ struct SessionSearchView: View {
             }
           }
         }
-        if trimmedQuery.isEmpty {
+        if results.isEmpty && trimmedQuery.isEmpty {
           ContentUnavailableView(
             "Search chats", systemImage: "magnifyingglass",
             description: Text("Search by chat or folder name."))
-        } else if matches.isEmpty {
+        } else if results.isEmpty {
           ContentUnavailableView.search(text: query)
         } else {
-          ForEach(matches) { match in
+          ForEach(results) { match in
             Button {
               choose(match.host, match.session)
               dismiss()

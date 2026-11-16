@@ -159,6 +159,23 @@ final class VoicePromptTests: XCTestCase {
     XCTAssertEqual(engine.preparations, 2)
   }
 
+  func testARecordingKeepsItsOriginalChatAndItsWordsAreConsumedOnlyOnce() async throws {
+    let engine = FakeDictation()
+    let voice = VoicePrompt(engine: engine)
+    let original = PhoneWorkbench.Selection(host: UUID(), session: nil)
+    let elsewhere = PhoneWorkbench.Selection(host: UUID(), session: nil)
+    voice.start(in: original)
+    try await until { voice.isListening }
+    voice.start(in: elsewhere)
+    engine.say(HeardText(settled: "Keep this in the original chat"))
+    voice.interrupt()
+    let transcript = try XCTUnwrap(voice.transcript)
+    XCTAssertEqual(transcript.destination, original)
+    XCTAssertEqual(transcript.delivery, .draft)
+    XCTAssertTrue(voice.consume(transcript))
+    XCTAssertFalse(voice.consume(transcript))
+  }
+
   func testTappingAgainWhileBusyDoesNothing() async throws {
     let engine = FakeDictation()
     let voice = VoicePrompt(engine: engine)
@@ -203,6 +220,63 @@ final class VoicePromptTests: XCTestCase {
     XCTAssertLessThan(quiet, 0.8)
   }
 
+  func testInterruptionKeepsSettledAndTentativeWordsAsDraftAndIgnoresLateWords() async throws {
+    let engine = FakeDictation()
+    let voice = VoicePrompt(engine: engine)
+    voice.start()
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Keep the", tentative: " message"))
+    engine.interrupt()
+    XCTAssertEqual(voice.transcript?.text, "Keep the message")
+    XCTAssertEqual(voice.transcript?.delivery, .draft)
+    XCTAssertEqual(voice.state, .idle)
+    engine.say(HeardText(settled: "late words"))
+    XCTAssertEqual(voice.transcript?.text, "Keep the message")
+  }
+
+  func testBackgroundInterruptionWhileSendingKeepsDraftAndCannotLaterSendIt() async throws {
+    let engine = FakeDictation()
+    engine.holdFinish = true
+    let voice = VoicePrompt(engine: engine)
+    voice.start()
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Do not lose this"))
+    voice.finish(.send)
+    try await until { engine.isHoldingFinish }
+    voice.interrupt()
+    XCTAssertEqual(voice.transcript?.text, "Do not lose this")
+    XCTAssertEqual(voice.transcript?.delivery, .draft)
+    engine.releaseFinish()
+    try await Task.sleep(for: .milliseconds(20))
+    XCTAssertEqual(voice.transcript?.delivery, .draft)
+  }
+
+  func testFinishingFailurePreservesRecognizedWordsInsteadOfDiscardingTheMessage() async throws {
+    let engine = FakeDictation()
+    engine.finishError = FakeError()
+    let voice = VoicePrompt(engine: engine)
+    voice.start()
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Recovered draft"))
+    voice.finish(.send)
+    try await until { voice.transcript != nil }
+    XCTAssertEqual(voice.transcript?.text, "Recovered draft")
+    XCTAssertEqual(voice.transcript?.delivery, .draft)
+  }
+
+  func testRecordingWakeLockRestoresPriorStateAndIsIdempotent() {
+    for original in [false, true] {
+      var disabled = original
+      let wake = RecordingWakeLock(read: { disabled }, write: { disabled = $0 })
+      wake.acquire()
+      wake.acquire()
+      XCTAssertTrue(disabled)
+      wake.release()
+      wake.release()
+      XCTAssertEqual(disabled, original)
+    }
+  }
+
   private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
     for _ in 0..<200 {
       if condition() { return }
@@ -220,6 +294,7 @@ private final class FakeDictation: DictationEngine {
   var audioLevel: Double = 0.5
   var permission = true
   var prepareError: Error?
+  var finishError: Error?
   var holdPreparation = false
   var holdFinish = false
   var holdPermission = false
@@ -256,6 +331,7 @@ private final class FakeDictation: DictationEngine {
 
   func finish() async throws -> String {
     if holdFinish { await withCheckedContinuation { finishGate = $0 } }
+    if let finishError { throw finishError }
     return finalText
   }
 

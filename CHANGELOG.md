@@ -8,6 +8,17 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 - Pre-set a Session’s name at creation: `session_create({name, folder?, like?})` or `axo session create --name`. Local/remote APIs and native clients accept the optional name, persisted atomically before Pi starts. Explicit names remain visible over automatic Pi titles and survive restart; omitting the name preserves existing behavior.
 
+### Fixed
+
+- iOS Session history no longer gets stranded loading after chat switches or cancelled opens. Stale responses cannot replace a newer request, and live records/progress arriving during the first page are retained rather than acknowledged and discarded.
+- iOS Session search accepts fuzzy title/folder matches, ranked by match quality then recent activity; an empty search shows recent chats.
+- Streaming replies leave the reader in control while touching, dragging or coasting through conversation history.
+- Active iOS dictation prevents auto-lock and restores the previous setting when recording stops. Lock/background/audio interruptions and finalization failures retain recognized words in the original chat’s draft, never automatically sending them. This preserves recognized text through suspension, not raw audio or drafts after process termination.
+
+### Tests
+
+- Add request-ownership, cancellation, buffered-live/reset, fuzzy-ranking, scrolling and dictation regressions. A fresh, owned iOS simulator checks fuzzy search/navigation and a stable historical row during streaming; physical-device audio/lock behavior still needs verification.
+
 ## 0.70 (Mac app build 341, axod 85)
 
 ### Changed

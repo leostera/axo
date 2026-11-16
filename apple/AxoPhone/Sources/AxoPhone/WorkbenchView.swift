@@ -172,7 +172,8 @@ struct WorkbenchView: View {
             guard let current = workbench.current, let id = current.selectedSessionID else { return }
             Task {
               // Five updates a second, as pi-axo sends them.
-              for event in PreviewFixture.streamEvents(steps: 20) {
+              let requested = Int(ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_STREAM_STEPS"] ?? "") ?? 20
+              for event in PreviewFixture.streamEvents(steps: min(200, max(1, requested))) {
                 current.playForPreview([event], in: id)
                 try? await Task.sleep(for: .milliseconds(200))
               }
@@ -268,12 +269,15 @@ struct WorkbenchView: View {
         #endif
       }
     }
+    .onDisappear { keepInterruptedVoice() }
+    .onChange(of: workbench.selection) { keepInterruptedVoice() }
     .onChange(of: scenePhase) { _, phase in
       // A socket left open in the background dies unnoticed; let it go, and come back fresh.
       switch phase {
       case .background:
-        // Listening stops with the screen; what was heard is not kept.
-        voice?.cancel()
+        // A locked screen is not an explicit Cancel. Hand recognized words to this chat
+        // synchronously, before suspending its connection or SwiftUI stops rendering updates.
+        keepInterruptedVoice()
         workbench.suspend()
       // From the background the scene passes through inactive first; the model knows whether
       // it let go and has anything to resume.
@@ -293,8 +297,13 @@ struct WorkbenchView: View {
       showApps: { settings = .apps }
     )
     .id(currentSession?.sessionId)
-    // Words said for one chat never land in another.
-    .onChange(of: currentSession?.sessionId) { voice?.cancel() }
+  }
+
+  private func keepInterruptedVoice() {
+    voice?.interrupt()
+    guard let voice, let transcript = voice.transcript, let destination = transcript.destination,
+      voice.consume(transcript) else { return }
+    workbench.setDraft(transcript.appending(to: workbench.draft(for: destination)), for: destination)
   }
 
   // MARK: - The menu
