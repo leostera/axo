@@ -8,10 +8,11 @@ struct WorkbenchSidebarPager<Chats: View, Hosts: View>: View {
 
   var body: some View {
     TabView(selection: $showingHosts) {
-      chats.tag(false)
-        .accessibilityHidden(showingHosts)
+      // Hosts are left of the default conversations page; detail never participates in paging.
       hosts.tag(true)
         .accessibilityHidden(!showingHosts)
+      chats.tag(false)
+        .accessibilityHidden(showingHosts)
     }
     .tabViewStyle(.page(indexDisplayMode: .never))
   }

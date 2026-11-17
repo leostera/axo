@@ -878,19 +878,19 @@ private struct HostsPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(ChatColors.background.ignoresSafeArea())
     .layerBar(edge: .top) {
-      // No way back here: the chats are the strip at the edge, a tap or a swipe left away.
+      // Conversations are to the right, both in the compact layers and the iPad sidebar.
       HStack {
-        if let backToChats {
-          Button(action: backToChats) {
-            Image(systemName: "chevron.left").frame(width: 44, height: 44)
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Back to chats")
-        }
         Text(backToChats == nil ? "Account" : HostPresentation.collectionName(hosts.hosts)).font(.title3.weight(.semibold))
           .accessibilityAddTraits(.isHeader)
         Spacer(minLength: 0)
         if let requests { requests }
+        if let backToChats {
+          Button(action: backToChats) {
+            Image(systemName: "chevron.right").frame(width: 44, height: 44)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Back to chats")
+        }
       }
       .frame(minHeight: 44)
       .padding(.leading, MenuLayout.contentLeading)

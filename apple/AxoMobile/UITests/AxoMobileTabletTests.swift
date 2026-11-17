@@ -24,14 +24,21 @@ final class AxoMobileTabletTests: XCTestCase {
     let editor = app.textViews["composer"]
     editor.tapWhereItIs()
     editor.typeText("Keep this iPad draft")
-    sidebar.swipeLeft(velocity: .slow)
+    let detailX = title.frame.minX
+    sidebar.swipeRight(velocity: .slow)
     let hosts = app.scrollViews["hosts-panel"].firstMatch
     wait { hosts.isHittable }
     XCTAssertEqual(title.label, "Fix the sidebar spacing")
     XCTAssertEqual(editor.value as? String, "Keep this iPad draft")
     XCTAssertTrue(title.isHittable)
+    XCTAssertEqual(title.frame.minX, detailX, accuracy: 1)
     XCTAssertEqual(app.buttons.matching(identifier: "elicitation-bell").count, 1)
     Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "ipad-hosts-beside-conversation")
+    hosts.swipeLeft(velocity: .slow)
+    wait { sidebar.isHittable }
+    XCTAssertEqual(editor.value as? String, "Keep this iPad draft")
+    sidebar.swipeRight(velocity: .slow)
+    wait { hosts.isHittable }
     app.buttons["Back to chats"].tapWhereItIs()
     wait { sidebar.isHittable }
     XCTAssertEqual(editor.value as? String, "Keep this iPad draft")

@@ -70,8 +70,9 @@ positively a Mac. Unknown/mixed collections say Hosts and never default to a lap
 
 ## Regular-width design refinement
 
-The sidebar defaults to conversations. Swipe left inside that column for connected hosts;
-swipe right or use Back to chats to return. These are sidebar pages, not workbench destinations:
+The spatial order is `hosts ↔ conversations | chat`. Conversations plus chat is the main,
+default view. Swipe right inside the sidebar to reveal hosts on the left; swipe left or use
+Back to chats to return. These are sidebar pages, not workbench destinations:
 the selected conversation, request scope and persistent composer remain in the detail. Native
 sidebar collapse changes visibility only. The same readable 800-point column bounds wide
 transcripts and composers. Command-N creates a chat, Command-K opens search, and
