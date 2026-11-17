@@ -94,7 +94,7 @@ struct ChatComposer: View {
   }
 
   /// What follows a `/` starting the box, while a command's name is typed.
-  private var slashQuery: String? { canSend ? SlashCommands.query(in: draft) : nil }
+  private var slashQuery: String? { canSend && pi?.supportsCommands == true ? SlashCommands.query(in: draft) : nil }
 
   private var box: some View {
     ComposerIslandLayout(expanded: isExpanded) {
@@ -108,7 +108,7 @@ struct ChatComposer: View {
         .frame(minHeight: 30)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
       HStack(spacing: 8) {
-        if isExpanded, let pi, let label = pi.runtime?.label { modelButton(pi, label: label) }
+        if isExpanded, let pi { modelButton(pi, label: pi.runtime?.label ?? (pi.useDefault != nil ? "Host default" : "Model")) }
         if isExpanded, isLong { expandButton }
         if let voice { VoiceButton(voice: voice, enabled: canSend, destination: voiceDestination) }
         sendButton
@@ -292,6 +292,9 @@ struct ComposerPi {
   let loadCommands: () async -> Void
   let choose: (PiModel) -> Void
   let chooseLevel: (ThinkingLevel) -> Void
+  var useDefault: (() -> Void)? = nil
+  var modelsFailure: String? = nil
+  var supportsCommands = true
 }
 
 /// The chat's Pi's commands that match what follows the `/`, over the box. Tapping one puts it in
@@ -360,6 +363,17 @@ private struct ModelMenu: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 2) {
+        if let useDefault = pi.useDefault {
+          row("Use host default", chosen: pi.runtime == nil, id: "model-host-default") {
+            useDefault()
+            done()
+          }
+        }
+        if let failure = pi.modelsFailure {
+          Text(failure).font(.footnote).foregroundStyle(.secondary).padding(10)
+          Button("Retry") { Task { await pi.loadModels() } }
+            .padding(10).accessibilityIdentifier("model-retry")
+        }
         if let models = pi.models {
           ForEach(Self.providers(models), id: \.provider) { group in
             header(Self.providerName(group.provider))
@@ -379,7 +393,7 @@ private struct ModelMenu: View {
               }
             }
           }
-        } else {
+        } else if pi.modelsFailure == nil {
           HStack(spacing: 8) {
             ProgressView()
             Text("Reading the models…").foregroundStyle(.secondary)

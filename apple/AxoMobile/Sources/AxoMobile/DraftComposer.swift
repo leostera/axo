@@ -45,7 +45,28 @@ struct DraftComposer: View {
 
   /// The open chat's Pi, read here so only the box redraws as it changes.
   private var pi: ComposerPi? {
-    guard let workbench, let session else { return nil }
+    guard let workbench, let destination = phone.selection else { return nil }
+    if session == nil || phone.modelChoice(for: destination) != nil {
+      let choice = phone.modelChoice(for: destination)
+      return ComposerPi(
+        runtime: choice?.runtime,
+        models: session.map { workbench.chat($0).models } ?? workbench.draftModels,
+        commands: nil,
+        loadModels: {
+          if let session { await workbench.loadModels(in: session) }
+          else { await workbench.loadDraftModels() }
+        },
+        loadCommands: {},
+        choose: { model in
+          let level = choice.flatMap { model.thinkingLevels.contains($0.thinkingLevel) ? $0.thinkingLevel : nil }
+          phone.chooseModel(model, thinkingLevel: level, for: destination)
+        },
+        chooseLevel: { level in phone.chooseModel(choice?.model, thinkingLevel: level, for: destination) },
+        useDefault: session == nil ? { phone.chooseModel(nil, for: destination) } : nil,
+        modelsFailure: session == nil ? workbench.draftModelsFailure : workbench.failure,
+        supportsCommands: false)
+    }
+    guard let session else { return nil }
     let chat = workbench.chat(session)
     return ComposerPi(
       runtime: workbench.piRuntime(of: session),

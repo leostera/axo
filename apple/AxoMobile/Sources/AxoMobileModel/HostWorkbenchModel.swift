@@ -65,6 +65,11 @@ public final class HostWorkbenchModel {
   public let reference: RemoteHostRef
   public private(set) var status: RemoteHostStatus
   public private(set) var sessions: [RemoteSession]
+  /// A read-only catalog reported by a Pi on this exact host generation; not another chat's settings.
+  public private(set) var draftModels: [PiModel]?
+  public private(set) var draftModelsFailure: String?
+  @ObservationIgnored private var draftModelsRequest: UUID?
+
   /// Each chat's state. Not observed as a whole: views observe the one `Chat` they show.
   @ObservationIgnored private var chatStore: [SessionID: Chat] = [:]
 
@@ -477,7 +482,10 @@ public final class HostWorkbenchModel {
 
   /// Starts a chat in `place` and opens it. A chat is a Session, running the agent in its folder
   /// on the Mac: the Mac's home folder unless it is started beside another chat (RFD0038).
-  public func createChat(in place: NewChatPlace) async {
+  @discardableResult
+  public func createChat(in place: NewChatPlace) async -> SessionID? {
+    var createdID: SessionID?
+    let previousSelection = selectedSessionID
     await attempt {
       let session =
         switch place {
@@ -486,11 +494,13 @@ public final class HostWorkbenchModel {
         }
       created[session.sessionId] = session
       update([session])
-      selectedSessionID = session.sessionId
+      createdID = session.sessionId
+      if selectedSessionID == previousSelection { selectedSessionID = session.sessionId }
       // A new chat holds nothing yet: open it, so what the agent writes arrives.
       chat(session.sessionId).history = .loaded(records: 0, hasOlder: false)
       Task { await loadHistory(of: session.sessionId) }
     }
+    return createdID
   }
 
   public func closeSession(_ id: SessionID) async {
@@ -708,6 +718,71 @@ public final class HostWorkbenchModel {
       account.noteFailure(error)
     }
     return chatStore[id]?.commands
+  }
+
+  /// Existing daemons keep Pi's announced catalog. Reading it neither wakes nor changes that Pi.
+  /// No catalog yet is an explicit limitation, not permission to invent models or create a chat.
+  public func loadDraftModels() async {
+    let request = UUID()
+    draftModelsRequest = request
+    draftModels = nil
+    draftModelsFailure = nil
+    guard status == .online, link == .connected else {
+      draftModelsFailure = "Reconnect to this host to read its models."
+      return
+    }
+    let candidates = sessions.reversed().filter {
+      $0.hasAgent != false && ($0.status == .ready || $0.status == .working || $0.status == .needsAttention)
+    }.prefix(3)
+    do {
+      for session in candidates {
+        try Task.checkCancellation()
+        let models = try await connection.piModels(in: session.sessionId)
+        guard draftModelsRequest == request, status == .online, link == .connected else { return }
+        if !models.isEmpty {
+          draftModels = models
+          return
+        }
+      }
+      guard draftModelsRequest == request else { return }
+      draftModels = []
+      draftModelsFailure = "This host hasn't reported models yet. Open Pi on the host, then retry, or use the host default."
+    } catch is CancellationError {
+    } catch {
+      guard draftModelsRequest == request else { return }
+      account.noteFailure(error)
+      draftModelsFailure = Self.controlFailure(error)
+    }
+  }
+
+  /// A first message waits for both fresh availability in its actual folder and configuration ack.
+  /// Failure leaves the same chat and its draft available for an explicit retry; never falls back.
+  public func applyInitialModel(_ choice: DraftModelChoice, in id: SessionID) async -> Bool {
+    guard status == .online, link == .connected else {
+      failure = "Reconnect to this host before sending."
+      return false
+    }
+    do {
+      let models = try await connection.piModels(in: id)
+      chat(id).models = models
+      guard let available = models.first(where: { $0.isModel(choice.runtime.model) }),
+        available.thinkingLevels.contains(choice.thinkingLevel)
+      else {
+        failure = "The chosen model or thinking level isn't available in this chat. Choose another before sending."
+        return false
+      }
+      try Task.checkCancellation()
+      try await connection.setPiModel(in: id, model: choice.runtime.model, thinkingLevel: choice.thinkingLevel)
+      chat(id).chosen = choice.runtime
+      failure = nil
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      account.noteFailure(error)
+      failure = Self.controlFailure(error)
+      return false
+    }
   }
 
   /// Reads the models the chat's Pi could switch to. The last list read stays when this fails.

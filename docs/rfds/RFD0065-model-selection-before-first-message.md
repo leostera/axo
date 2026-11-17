@@ -1,7 +1,7 @@
 # RFD0065 - Axo: choose a model before the first message
 
 - Feature Name: `draft-model-selection`
-- Status: Draft — behavior requested; implementation pending
+- Status: Partially implemented — mobile preselection; empty-host discovery and server-wide initialization pending
 - Author: leostera
 - Start Date: 2026-11-17
 - Document Type: Proposal
@@ -14,7 +14,25 @@ to the selected host and its Pi configuration, not the phone, browser, account i
 or an arbitrary existing chat. Catalog inspection must not create a persisted chat or send a
 synthetic prompt. This is a requested product contract, not optional client feature parity.
 
-## Current boundary
+## Mobile delivery
+
+The mobile client can inspect a read-only catalog already announced by a Pi on the selected host,
+without creating, waking, prompting or reconfiguring that existing chat. It checks up to three
+live candidates and reports missing catalogs explicitly. Preferences belong to a host generation.
+New-chat model controls support explicit host-default reset and model-specific thinking levels.
+
+On Send, the client creates one chat, validates the choice against that chat's catalog in its
+actual folder, and waits for model/thinking configuration acknowledgement before submitting its
+own first prompt. Failed configuration retains the same chat, words, files and intent for explicit
+retry. Navigation retires the Send, including A/B/A; an acknowledged creation remains reusable
+before the account listing catches up. None of this requires restarting installed hosts.
+
+This is deliberately narrower than the complete server contract below: a host with no reported
+Pi catalog cannot yet offer preselection, other clients are not fenced by server initialization,
+and web preselection is not implemented. Do not describe this mobile release as those features.
+Owned empty-host discovery and a server-wide first-prompt barrier remain future work.
+
+## Original boundary
 
 `DraftComposer.pi` returns nil without an existing Session ID. `HostConnection.piModels(in:)`
 uses `axo.remote.session.models`; `HostWorkbenchModel.setModel` also targets a Session.

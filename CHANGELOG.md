@@ -13,6 +13,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Choose a model and its supported thinking level in a new mobile draft, using a read-only catalog reported by the selected host. Confirm availability and configuration before its first prompt; failures preserve the same chat and draft for explicit retry. No existing Pi is reconfigured or restarted. Empty hosts without a reported catalog show an actionable limitation rather than guessed models.
 - AxoMobile is one universal iPhone/iPad app, replacing the AxoPhone source modules and build targets. Regular-width windows show chats beside the conversation; compact windows retain the phone's layered navigation. iPad supports all orientations, with shared drafts, voice and approval behavior. Canonical app installation and credential migration remain separate rollout steps.
 
 ## 0.71 (Mac app build 342, iPhone build 54, axod 86)

@@ -57,6 +57,33 @@ public final class PhoneWorkbench {
   /// What is typed in each chat's box, kept while other chats are open. A new chat's is keyed by
   /// its Mac with no Session.
   private var drafts: [Selection: String] = [:]
+  /// Preferences never cross host generations; pending initialization stays with its created chat.
+  private var draftModels: [RemoteHostRef: DraftModelChoice] = [:]
+  private var initialModels: [Selection: DraftModelChoice] = [:]
+  private struct DraftTarget: Hashable {
+    let host: RemoteHostRef
+    let place: NewChatPlace
+  }
+  private var preparedChats: [DraftTarget: RemoteSession] = [:]
+  @ObservationIgnored private var navigationRevision = 0
+
+  public func modelChoice(for destination: Selection) -> DraftModelChoice? {
+    if destination.session != nil { return initialModels[destination] }
+    guard let host = hosts.hosts.first(where: { $0.hostId == destination.host }) else { return nil }
+    return draftModels[host.reference]
+  }
+
+  /// Picking changes intent only. Even Retry requires an explicit Send, never an automatic prompt.
+  public func chooseModel(_ model: PiModel?, thinkingLevel: ThinkingLevel? = nil, for destination: Selection) {
+    guard !isSending, selection == destination, let current else { return }
+    let choice = model.flatMap { DraftModelChoice(model: $0, thinkingLevel: thinkingLevel) }
+    guard model == nil || choice != nil else { return }
+    if destination.session != nil {
+      initialModels[destination] = choice
+    } else {
+      draftModels[current.reference] = choice
+    }
+  }
   /// What the Macs' agents ask now, oldest first (RFD0029).
   public private(set) var questions: [AskedQuestion] = []
   @ObservationIgnored private var settledQuestions: [String: Int64] = [:]
@@ -372,6 +399,7 @@ public final class PhoneWorkbench {
       workbench.link = link
       current = workbench
     }
+    navigationRevision += 1
     selection = Selection(host: hostID, session: session)
     guard let workbench = current else { return }
     workbench.selectedSessionID = session
@@ -528,20 +556,40 @@ public final class PhoneWorkbench {
 
   private func startChat(in place: NewChatPlace, from draft: Selection) async -> SendOutcome {
     guard let workbench = await openNewChatHost(for: draft) else { return .failed }
-    await workbench.createChat(in: place)
-    guard workbench.failure == nil, let id = workbench.selectedSessionID else { return .failed }
+    let revision = navigationRevision
+    let target = DraftTarget(host: workbench.reference, place: place)
+    let choice = draftModels[workbench.reference]
+    let id: SessionID
+    if let prepared = preparedChats[target] {
+      id = prepared.sessionId
+      if !workbench.sessions.contains(where: { $0.sessionId == id }) { workbench.update([prepared]) }
+    } else {
+      guard let created = await workbench.createChat(in: place) else { return .failed }
+      preparedChats[target] = workbench.sessions.first { $0.sessionId == created }
+      id = created
+    }
+    // Navigation, including A/B/A, retires this Send; keep any prepared chat for an explicit retry.
+    guard navigationRevision == revision, selection == draft, current === workbench else { return .failed }
+    preparedChats[target] = nil
     // The words move to the chat they started; a refusal leaves them in its box.
     let chat = Selection(host: draft.host, session: id)
     setDraft(self.draft(for: draft), for: chat)
     setDraft("", for: draft)
     draftFiles[chat] = draftFiles[draft]
     draftFiles[draft] = nil
-    select(session: id)
+    initialModels[chat] = choice
+    select(host: draft.host, session: id)
     return await prompt(from: chat)
   }
 
   private func prompt(from selection: Selection, delivery: PromptDelivery = .interrupt) async -> SendOutcome {
-    guard let workbench = current, workbench.reference.hostId == selection.host else { return .failed }
+    guard let workbench = current, workbench.reference.hostId == selection.host, let session = selection.session else { return .failed }
+    let revision = navigationRevision
+    if let choice = initialModels[selection] {
+      guard await workbench.applyInitialModel(choice, in: session) else { return .failed }
+      guard navigationRevision == revision, self.selection == selection, current === workbench else { return .failed }
+      initialModels[selection] = nil
+    }
     let text = text(of: selection)
     let files = attachments(for: selection)
     setDraft("", for: selection)
@@ -586,6 +634,7 @@ public final class PhoneWorkbench {
   public func close() {
     current?.stop()
     current = nil
+    navigationRevision += 1
     selection = nil
   }
 
