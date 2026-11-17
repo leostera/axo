@@ -9,6 +9,7 @@ struct SettingsView: View {
   let apps: AppsModel
   let chatList: ChatListPreferences
   var opening: Opening = .settings
+  var openAppsInWorkbench: (() -> Void)? = nil
   let signOut: () -> Void
   @Environment(\.dismiss) private var dismiss
   @AppStorage("appearance") private var appearance: AppAppearance = .system
@@ -116,8 +117,13 @@ struct SettingsView: View {
   private var divider: some View { Divider().padding(.leading, 56) }
 
   private func destination(_ page: Page, _ title: String, icon: String, value: String = "", subtitle: String? = nil) -> some View {
-    NavigationLink(value: page) {
-      SettingsNavigationRow(title: title, icon: icon, value: value, subtitle: subtitle)
+    let row = SettingsNavigationRow(title: title, icon: icon, value: value, subtitle: subtitle)
+    return Group {
+      if page == .apps, let openAppsInWorkbench {
+        Button { dismiss(); openAppsInWorkbench() } label: { row }
+      } else {
+        NavigationLink(value: page) { row }
+      }
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier("settings-\(String(describing: page))")

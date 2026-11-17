@@ -3,6 +3,8 @@ import AxoMobileModel
 import AxoProtocol
 import SwiftUI
 
+private enum WorkbenchDetail { case conversation, apps }
+
 /// The phone's screens, stacked, the bottom first. At rest the conversation covers the rest;
 /// a swipe right shows the chats under it, and another the account and its Macs under those.
 /// A swipe left on the conversation pulls the chat's info in over it from the right.
@@ -44,9 +46,11 @@ struct WorkbenchView: View {
   @State private var splitVisibility: NavigationSplitViewVisibility = .all
   @State private var sidebarShowsHosts = PreviewFixture.hostsOpen
   @State private var showingInfo = false
+  @State private var detail: WorkbenchDetail = .conversation
+  @State private var appsPath: [AppsRoute] = []
   /// Settings, open on its first page or on Apps (the account panel's Apps row).
   @State private var settings: SettingsView.Opening? =
-    PreviewFixture.appsOpen ? .apps : PreviewFixture.settingsOpen ? .settings : nil
+    PreviewFixture.appsOpen ? nil : PreviewFixture.settingsOpen ? .settings : nil
   /// Settings › Apps: what the account's Sessions can use.
   @State private var apps: AppsModel
   @State private var showingRequests = false
@@ -143,41 +147,40 @@ struct WorkbenchView: View {
           .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 340)
           .toolbar(.hidden, for: .navigationBar)
         } detail: {
-          conversation
-            .toolbar(.hidden, for: .navigationBar)
+          regularDetail
         }
         .navigationSplitViewStyle(.balanced)
       } else {
-        LayerStack(
-          showing: Binding(get: { layer.rawValue }, set: { layer = Layer(rawValue: $0) ?? .conversation }),
-          home: Layer.conversation.rawValue,
-          edgeNames: Layer.allCases.map(\.edgeName),
-          layers: [
-            AnyView(accountLayer), AnyView(sidebar), AnyView(conversation),
-            AnyView(SessionInfoPanel(workbench: workbench.current, session: currentSession)
-          .layerBar(edge: .top) {
-            HStack {
-              Spacer()
-              if layer == .info { RequestsBell(phone: workbench, open: { showingRequests = true }) }
-            }.padding(.horizontal, 14)
-          }),
-          ]
-        )
+        ZStack {
+          LayerStack(
+            showing: Binding(get: { layer.rawValue }, set: { layer = Layer(rawValue: $0) ?? .conversation }),
+            home: Layer.conversation.rawValue,
+            edgeNames: Layer.allCases.map(\.edgeName),
+            layers: [
+              AnyView(accountLayer), AnyView(sidebar), AnyView(conversation),
+              AnyView(SessionInfoPanel(workbench: workbench.current, session: currentSession)
+                .layerBar(edge: .top) {
+                  HStack {
+                    Spacer()
+                    if detail == .conversation, layer == .info {
+                      RequestsBell(phone: workbench, open: { showingRequests = true })
+                    }
+                  }.padding(.horizontal, 14)
+                }),
+            ]
+          )
+          .opacity(detail == .conversation ? 1 : 0)
+          .allowsHitTesting(detail == .conversation)
+          .accessibilityHidden(detail != .conversation)
+          if detail == .apps {
+            NavigationStack(path: $appsPath) { appsContent }
+          }
+        }
       }
     }
     .background(ChatColors.background.ignoresSafeArea())
     .environment(\.assetLoader, assetLoader)
     .sheet(isPresented: $showingRequests) { RequestsInbox(phone: workbench) }
-    .sheet(isPresented: $showingInfo) {
-      NavigationStack {
-        SessionInfoPanel(workbench: workbench.current, session: currentSession)
-          .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-              Button("Done") { showingInfo = false }
-            }
-          }
-      }
-    }
     .onChange(of: layer) { _, layer in
       // The keyboard belongs to the conversation's box; it goes when the conversation does.
       if layer != .conversation {
@@ -188,10 +191,10 @@ struct WorkbenchView: View {
     }
     // The open chat's messages are seen as they arrive.
     .onChange(of: currentSession.map { ChatMenu.activity($0) }, initial: true) {
-      if let currentSession, layer == .conversation { chatPrefs.markSeen(currentSession) }
+      if let currentSession, conversationIsVisible { chatPrefs.markSeen(currentSession) }
     }
     .onChange(of: currentSession?.sessionId) {
-      if let currentSession { chatPrefs.markSeen(currentSession) }
+      if let currentSession, conversationIsVisible { chatPrefs.markSeen(currentSession) }
     }
     .overlay(alignment: .trailing) {
       if RenderCount.enabled { RenderCountLabel() }
@@ -254,7 +257,8 @@ struct WorkbenchView: View {
         refresh: { await workbench.refresh() })
     }
     .sheet(item: $settings) { opening in
-      SettingsView(account: environment.account, hosts: workbench.hosts, apps: apps, chatList: chatPrefs, opening: opening) {
+      SettingsView(account: environment.account, hosts: workbench.hosts, apps: apps, chatList: chatPrefs, opening: opening,
+        openAppsInWorkbench: usesAppsPane ? { openApps() } : nil) {
         Task {
           // End it at the relay too, so a copied token stops working; then forget it here.
           try? await AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens).signOut()
@@ -264,6 +268,7 @@ struct WorkbenchView: View {
     }
     .task {
       await workbench.start()
+      if PreviewFixture.appsOpen { openApps() }
       if PreviewFixture.chatOpen != nil {
         // The listing is applied as the socket's hello arrives, after `start` returns: wait for it
         // (a few seconds at most) before choosing the chat to open.
@@ -317,6 +322,78 @@ struct WorkbenchView: View {
     }
   }
 
+  private var usesAppsPane: Bool {
+    horizontalSizeClass == .regular || UIDevice.current.userInterfaceIdiom == .pad
+  }
+
+  private var conversationIsVisible: Bool {
+    detail == .conversation && (horizontalSizeClass == .regular || layer == .conversation)
+  }
+
+  /// Only the sidebar pages. Apps replaces detail; info adds a nonmodal trailing column.
+  private var regularDetail: some View {
+    GeometryReader { geometry in
+      HStack(spacing: 0) {
+        NavigationStack(path: $appsPath) {
+          ZStack {
+            // Keep the same editor/transcript mounted while browsing Apps.
+            conversation
+              .opacity(detail == .conversation ? 1 : 0)
+              .allowsHitTesting(detail == .conversation)
+              .accessibilityHidden(detail != .conversation)
+            if detail == .apps {
+              appsContent
+            }
+          }
+          .toolbar(detail == .apps ? .visible : .hidden, for: .navigationBar)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if detail == .conversation, showingInfo {
+          Divider()
+          SessionInfoPanel(workbench: workbench.current, session: currentSession)
+            .layerBar(edge: .top) {
+              HStack {
+                Text("Chat info").font(.headline)
+                Spacer()
+                Button { toggleInfo() } label: {
+                  Image(systemName: "xmark").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain).accessibilityLabel("Close chat info")
+              }
+              .padding(.horizontal, 14)
+            }
+            .frame(width: min(320, max(240, geometry.size.width * 0.35)))
+            .transition(.move(edge: .trailing))
+        }
+      }
+    }
+  }
+
+  private var appsContent: some View {
+    AppsView(model: apps)
+      .toolbar {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+          Button { show(.conversation) } label: {
+            Label("Back to conversation", systemImage: "bubble.left")
+          }
+          RequestsBell(phone: workbench, open: { showingRequests = true })
+        }
+      }
+  }
+
+  private func toggleInfo() {
+    withAnimation(reduceMotion ? nil : .snappy) { showingInfo.toggle() }
+  }
+
+  private func openApps() {
+    guard usesAppsPane else { settings = .apps; return }
+    workbench.retirePendingSend()
+    keepInterruptedVoice()
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    settings = nil
+    detail = .apps
+  }
+
   private var conversation: some View {
     ConversationView(
       phone: workbench,
@@ -330,9 +407,10 @@ struct WorkbenchView: View {
         }
       },
       voice: voice,
-      showApps: { settings = .apps },
-      showRequests: horizontalSizeClass == .regular || layer == .conversation ? { showingRequests = true } : nil,
-      showInfo: horizontalSizeClass == .regular ? { showingInfo = true } : nil
+      showApps: openApps,
+      showRequests: detail == .conversation && (horizontalSizeClass == .regular || layer == .conversation)
+        ? { showingRequests = true } : nil,
+      showInfo: horizontalSizeClass == .regular ? { toggleInfo() } : nil
     )
     .id(currentSession?.sessionId)
   }
@@ -557,7 +635,7 @@ struct WorkbenchView: View {
   private var accountLayer: some View {
     HostsPanel(
       hosts: workbench.hosts,
-      openHost: workbench.current?.reference.hostId,
+      openHost: detail == .apps ? nil : workbench.current?.reference.hostId,
       chatsOf: { workbench.sessions(of: $0).filter { $0.hasAgent != false }.count },
       newChat: { host in
         workbench.select(host: host.hostId, session: nil)
@@ -565,16 +643,22 @@ struct WorkbenchView: View {
       },
       rename: { host, name in await workbench.renameHost(host.hostId, to: name) },
       pair: { showingPairing = true },
-      showApps: { settings = .apps },
+      showApps: openApps,
       showSettings: { settings = .settings },
       refresh: { await workbench.refresh() },
-      requests: horizontalSizeClass != .regular && layer == .account
+      requests: detail == .conversation && horizontalSizeClass != .regular && layer == .account
         ? RequestsBell(phone: workbench, open: { showingRequests = true }) : nil,
+      appsSelected: detail == .apps,
       backToChats: horizontalSizeClass == .regular ? { sidebarShowsHosts = false } : nil)
   }
 
   /// Moves the stack to `layer`, as a swipe would.
   private func show(_ layer: Layer) {
+    if layer == .conversation {
+      detail = .conversation
+      appsPath = []
+      if let currentSession { chatPrefs.markSeen(currentSession) }
+    }
     if horizontalSizeClass == .regular, layer == .account || layer == .chats {
       withAnimation(reduceMotion ? nil : .snappy) { sidebarShowsHosts = layer == .account }
       return
@@ -605,7 +689,7 @@ struct WorkbenchView: View {
       }
       .accessibilityLabel("Search chats")
       .keyboardShortcut("k", modifiers: .command)
-      if horizontalSizeClass != .regular, layer == .chats {
+      if detail == .conversation, horizontalSizeClass != .regular, layer == .chats {
         RequestsBell(phone: workbench, open: { showingRequests = true })
       }
     }
@@ -776,6 +860,7 @@ private struct HostsPanel: View {
   let showSettings: () -> Void
   let refresh: () async -> Void
   let requests: RequestsBell?
+  var appsSelected = false
   var backToChats: (() -> Void)? = nil
 
   /// The Mac being named, and the name typed so far.
@@ -842,6 +927,12 @@ private struct HostsPanel: View {
           .contentShape(Rectangle())
           .accessibilityElement(children: .ignore)
           .accessibilityLabel("Apps")
+          .accessibilityAddTraits(appsSelected ? .isSelected : [])
+          .background {
+            if appsSelected {
+              RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.06))
+            }
+          }
         }
         .buttonStyle(.layerRow)
         .padding(.horizontal, MenuLayout.rowInset)

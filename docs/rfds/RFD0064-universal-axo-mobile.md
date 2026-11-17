@@ -78,6 +78,18 @@ sidebar collapse changes visibility only. The same readable 800-point column bou
 transcripts and composers. Command-N creates a chat, Command-K opens search, and
 Command-backslash toggles the sidebar.
 
+Apps is a workbench detail destination, not a modal on iPad, including narrow windows and
+entry through Settings. Keep the selected conversation and its editor mounted while browsing;
+returning to it or choosing a sidebar chat restores the draft. Apps owns its navigation stack,
+while the global requests inbox stays available in its header. Leaving the conversation retires
+pending Send admission, never cancels an already-dispatched command, and cannot release a
+late configuration acknowledgment as a prompt. A hidden conversation does not mark new
+activity seen; returning marks it seen.
+
+Conversation info adds a bounded trailing column at regular width; it neither replaces nor
+dims the conversation. The same composer stays interactive while that pane opens and closes.
+Compact layers retain their rightward info navigation; no info sheet is introduced.
+
 Settings uses icon-led rows in rounded grouped cards with actual account/app status and native
 Account, Apps, Appearance and Chats destinations. Settings is a contained form sheet on iPad,
 not a new tablet preference store. Reference images inform spacing, typography and grouping;

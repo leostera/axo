@@ -176,6 +176,26 @@ final class DraftModelSelectionTests: XCTestCase {
     XCTAssertEqual(retried, .sent)
   }
 
+  func testLeavingConversationRetiresPendingSendWithoutChangingItsDraftOrSelection() async throws {
+    let host = Mac("A", online: true, sessions: [1])
+    let world = try await world([host])
+    let phone = world.workbench!
+    phone.select(host: host.id, session: nil)
+    let destination = try XCTUnwrap(phone.selection)
+    phone.setDraft("Keep this draft", for: destination)
+    phone.chooseModel(model, thinkingLevel: .high, for: destination)
+    let sending = Task { await phone.send() }
+    let channel = try await world.transport.channel()
+    let create = try await channel.nextRequest("axo.remote.session.create")
+    phone.retirePendingSend()
+    channel.reply(to: create.id, result: #"{"session":\#(sessionJSON(host: host.id, id: 99, name: "New chat", shells: []))}"#)
+    let result = await sending.value
+    XCTAssertEqual(result, .failed)
+    XCTAssertEqual(phone.selection, destination)
+    XCTAssertEqual(phone.draft(for: destination), "Keep this draft")
+    XCTAssertFalse(channel.hasRequest, "Opening Apps cannot release a delayed configuration or prompt")
+  }
+
   func testAnEmptyHostReportsUnavailabilityWithoutCreatingAnything() async throws {
     let world = try await world([Mac("Empty", online: true)])
     await world.workbench.current?.loadDraftModels()

@@ -405,6 +405,12 @@ public final class PhoneWorkbench {
     select(host: host.hostId, session: nil)
   }
 
+  /// Leave execution admission behind without losing selection or drafts. Already-dispatched
+  /// commands cannot be recalled; a pending create/configuration acknowledgment cannot send later.
+  public func retirePendingSend() {
+    navigationRevision += 1
+  }
+
   public func select(host hostID: UUID, session: SessionID?) {
     guard let remote = hosts.hosts.first(where: { $0.hostId == hostID }) else { return }
     if current?.reference.hostId != hostID {

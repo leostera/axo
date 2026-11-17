@@ -56,6 +56,94 @@ final class AxoMobileTabletTests: XCTestCase {
   }
 
   @MainActor
+  func testAppsReplacesDetailAndReturningKeepsTheConversationDraft() {
+    continueAfterFailure = false
+    XCUIDevice.shared.orientation = .landscapeLeft
+    defer { XCUIDevice.shared.orientation = .portrait }
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_CHAT": "2"]
+    app.launch()
+    let title = app.staticTexts["conversation-title"]
+    XCTAssertTrue(title.waitForExistence(timeout: 20))
+    wait { title.label == "Fix the sidebar spacing" }
+    let editor = app.textViews["composer"]
+    editor.tapWhereItIs()
+    editor.typeText("Keep this Apps draft")
+    let sidebar = app.scrollViews["workbench-menu"].firstMatch
+    sidebar.swipeRight(velocity: .slow)
+    let hosts = app.scrollViews["hosts-panel"].firstMatch
+    wait { hosts.isHittable }
+    hosts.swipeUp()
+    app.buttons["Apps"].tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Apps"].waitForExistence(timeout: 10))
+    XCTAssertFalse(editor.isHittable)
+    XCTAssertEqual(app.sheets.count, 0)
+    XCTAssertTrue(hosts.isHittable)
+    XCTAssertEqual(app.buttons.matching(identifier: "elicitation-bell").count, 1)
+    let gmail = app.buttons["Gmail"]
+    XCTAssertTrue(gmail.waitForExistence(timeout: 10))
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "ipad-apps-detail")
+    XCTAssertTrue(gmail.isHittable)
+    XCTAssertGreaterThanOrEqual(gmail.frame.minX, hosts.frame.maxX)
+    gmail.tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Gmail"].waitForExistence(timeout: 5))
+    app.navigationBars.buttons["Apps"].tapWhereItIs()
+    app.buttons["Back to conversation"].tapWhereItIs()
+    XCTAssertTrue(editor.waitForExistence(timeout: 5))
+    XCTAssertEqual(editor.value as? String, "Keep this Apps draft")
+    XCTAssertEqual(title.label, "Fix the sidebar spacing")
+
+    app.buttons["Apps"].tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Apps"].waitForExistence(timeout: 5))
+    app.buttons["Back to chats"].tapWhereItIs()
+    let selected = sidebar.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Fix the sidebar spacing")).firstMatch
+    selected.tapWhereItIs()
+    XCTAssertTrue(editor.waitForExistence(timeout: 5))
+    XCTAssertEqual(editor.value as? String, "Keep this Apps draft")
+  }
+
+  @MainActor
+  func testChatInfoIsATrailingPaneAndKeepsTheComposerInteractive() {
+    continueAfterFailure = false
+    XCUIDevice.shared.orientation = .landscapeLeft
+    defer { XCUIDevice.shared.orientation = .portrait }
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_CHAT": "2"]
+    app.launch()
+    let title = app.staticTexts["conversation-title"]
+    XCTAssertTrue(title.waitForExistence(timeout: 20))
+    wait { title.label == "Fix the sidebar spacing" }
+    let editor = app.textViews["composer"]
+    editor.tapWhereItIs()
+    editor.typeText("Keep this info draft")
+    app.buttons["Chat info"].tapWhereItIs()
+    let info = app.scrollViews["session-info"].firstMatch
+    wait { info.isHittable }
+    XCTAssertEqual(app.sheets.count, 0)
+    XCTAssertTrue(editor.isHittable)
+    XCTAssertGreaterThanOrEqual(info.frame.minX, editor.frame.maxX)
+    editor.typeText(" and keep typing")
+    XCTAssertEqual(editor.value as? String, "Keep this info draft and keep typing")
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "ipad-chat-info-pane")
+    app.buttons["Close chat info"].tapWhereItIs()
+    wait { !info.isHittable }
+    XCTAssertEqual(editor.value as? String, "Keep this info draft and keep typing")
+  }
+
+  @MainActor
+  func testSettingsAppsOpensTheWorkbenchDetailInsteadOfAnotherModalPage() {
+    continueAfterFailure = false
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_SETTINGS": "1"]
+    app.launch()
+    XCTAssertTrue(app.buttons["settings-apps"].waitForExistence(timeout: 20))
+    app.buttons["settings-apps"].tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Apps"].waitForExistence(timeout: 10))
+    XCTAssertEqual(app.sheets.count, 0)
+    XCTAssertTrue(app.buttons["Back to conversation"].exists)
+  }
+
+  @MainActor
   func testSettingsAreAContainedDirectoryWithNativeSubpages() {
     continueAfterFailure = false
     XCUIDevice.shared.orientation = .landscapeLeft
