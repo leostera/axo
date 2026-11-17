@@ -50,8 +50,21 @@ pub(crate) async fn run(core: Weak<Core>) {
 
 /// Puts to sleep the idle Pis `policy` chooses; the Sessions it asked.
 pub(crate) async fn look(core: &Arc<Core>, policy: Policy) -> Vec<SessionId> {
+    let pinned = match crate::local_pins::read(core).await {
+        Ok(pinned) => pinned,
+        Err(error) => {
+            log::warn!(
+                "event=idle_pis.pins_unavailable error_kind={:?}",
+                error.kind()
+            );
+            return Vec::new();
+        }
+    };
     let mut asking = tokio::task::JoinSet::new();
     for handle in core.registry.all() {
+        if pinned.contains(&handle.id) {
+            continue;
+        }
         asking.spawn(async move {
             let idle = tokio::time::timeout(ANSWER_WAIT, handle.with(|session| session.pi_idle()))
                 .await
@@ -68,6 +81,19 @@ pub(crate) async fn look(core: &Arc<Core>, policy: Policy) -> Vec<SessionId> {
     let chosen = choose(&idle, policy);
     let mut slept = Vec::new();
     for id in chosen {
+        // Refresh after selection, immediately before sleep admission. A newly pinned Session
+        // must not sleep merely because an earlier scan found it idle.
+        match crate::local_pins::read(core).await {
+            Ok(pinned) if pinned.contains(&id) => continue,
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!(
+                    "event=idle_pis.pins_unavailable error_kind={:?}",
+                    error.kind()
+                );
+                break;
+            }
+        }
         let Some(handle) = core.registry.get(id) else {
             continue;
         };

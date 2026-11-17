@@ -45,6 +45,7 @@ pub(crate) struct Core {
     /// Every Mac's transcripts by host (RFD0022); other Macs' are copies.
     pub(crate) sessions_directory: PathBuf,
     pub(crate) settings: Mutex<Settings>,
+    pub(crate) local_pins: crate::local_pins::LocalPins,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
     pub(crate) viewport: watch::Sender<Option<Viewport>>,
     /// Every Pi holds its read end, and goes when axod does (RFD0041).
@@ -118,6 +119,7 @@ impl Core {
             pi_directories: parts.pi_directories,
             sessions_directory: parts.sessions_directory,
             settings: Mutex::new(parts.settings),
+            local_pins: crate::local_pins::LocalPins::default(),
             viewport: watch::channel(parts.viewport).0,
             lifeline: parts.lifeline,
             bridges_changed: Arc::new(Notify::new()),

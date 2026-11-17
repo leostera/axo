@@ -15,6 +15,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Conversations pinned on their host Mac are exempt from axod's idle timeout and idle-count limit. Pins on other clients do not count; there is no synchronization. Unpinning restores ordinary sleep eligibility on the next scan.
 - iPad keeps conversations beside a collapsible sidebar: chats by default, swipe right inside the sidebar for connected hosts on their left, and swipe back or tap Back to chats without navigating the conversation or losing its draft. Wide transcripts and composers share a centered readable column; Command-N, Command-K and Command-backslash cover creation, search and sidebar visibility.
 - On iPad, Apps opens in the main detail pane, including when reached from Settings; selecting a conversation restores its draft. Chat info opens as a nonmodal trailing pane, keeping the composer interactive. Browsing Apps retires pending Send admission without changing the selected conversation or sending later on return.
 - Mobile Settings becomes a grouped-card directory with account identity, live connected-app status, and dedicated Appearance/Chats pages. iPad uses a contained form sheet; existing preferences and app connections are preserved, and sign-out requires confirmation. Reference screenshots inform the design, not unsupported product capabilities.

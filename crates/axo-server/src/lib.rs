@@ -22,6 +22,7 @@ mod event_stream;
 mod events;
 mod handlers;
 mod idle_pis;
+mod local_pins;
 mod input_key;
 mod ops;
 mod peers;

@@ -46,6 +46,74 @@ fn pi_is_dormant(fixture: &Fixture, id: SessionId) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mac_pins_exempt_both_limits_and_unpin_restores_normal_sleep() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let pinned = fixture.new_session().await;
+    let other = fixture.new_session().await;
+    fixture.wait_for_pi(pinned.id).await;
+    fixture.wait_for_pi(other.id).await;
+    let original = pid(&fixture.listed(pinned.id).unwrap(), PaneRole::Pi);
+    fixture
+        .core
+        .local_pins
+        .use_source(move || Ok([pinned.id].into_iter().collect()));
+    assert_eq!(
+        idle_pis::look(&fixture.core, SLEEP_ALL).await,
+        vec![other.id]
+    );
+    assert!(alive(original));
+    fixture
+        .core
+        .local_pins
+        .use_source(|| Ok(Default::default()));
+    assert_eq!(
+        idle_pis::look(&fixture.core, SLEEP_ALL).await,
+        vec![pinned.id]
+    );
+    fixture
+        .until("unpinned Pi to become dormant", || {
+            pi_is_dormant(&fixture, pinned.id)
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pin_added_after_the_idle_scan_is_rechecked_before_sleep() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let reads = std::sync::atomic::AtomicUsize::new(0);
+    fixture.core.local_pins.use_source(move || {
+        if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Ok(Default::default())
+        } else {
+            Ok([record.id].into_iter().collect())
+        }
+    });
+    assert!(idle_pis::look(&fixture.core, SLEEP_ALL).await.is_empty());
+    assert!(alive(pid(
+        &fixture.listed(record.id).unwrap(),
+        PaneRole::Pi
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreadable_mac_pins_do_not_get_treated_as_an_empty_preference() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    fixture
+        .core
+        .local_pins
+        .use_source(|| Err(std::io::Error::other("synthetic read failure")));
+    assert!(idle_pis::look(&fixture.core, SLEEP_ALL).await.is_empty());
+    assert!(alive(pid(
+        &fixture.listed(record.id).unwrap(),
+        PaneRole::Pi
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_idle_pi_sleeps_and_its_session_stays_until_a_prompt_wakes_it() {
     let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
     let record = fixture.new_session().await;
