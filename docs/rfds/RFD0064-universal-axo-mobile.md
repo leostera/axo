@@ -34,7 +34,9 @@ sidebar; chat info opens separately. Rotation does not change the selected desti
   duplicate app implementation or old product-label forwarding aliases.
 - Renaming source/modules does not migrate app containers. The canonical bundle ID remains
   dev.leostera.axo. ExistingPhoneUpdate retains its explicit old identities and credential
-  namespace; its manual update path stays iPhone-only until RFD0063 migration is validated.
+  namespace. For explicitly approved owned-device testing, that manual target is also universal:
+  update the existing iPhone in place and install the same development build on the iPad.
+  This is not canonical-identifier migration; verify provisioning for each device before installation.
 - Do not install the canonical app over the person's phone or reset its trusted signing key
   as part of tablet support. The already-installed 0.71 phone remains intact.
 

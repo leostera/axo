@@ -30,7 +30,8 @@ with tempfile.TemporaryDirectory(prefix="axo-existing-phone-") as directory:
         assert info["CFBundleShortVersionString"] == config["version"]
         assert info["CFBundleVersion"] == str(config["builds"]["phone"])
         if identifier == phone:
-            assert info["UIDeviceFamily"] == [1], "This release does not start the iPad migration"
+            assert set(info["UIDeviceFamily"]) == {1, 2}, "The owned-device test build must be universal"
+            assert len(set(info["UISupportedInterfaceOrientations~ipad"])) == 4
         if identifier == watch:
             assert info["WKCompanionAppBundleIdentifier"] == phone
         bundle = info_path.parent

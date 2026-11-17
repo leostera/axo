@@ -65,7 +65,8 @@ ios_application(
     watch_application = ":Watch",
     app_icons = ["//assets:ios_app_icon"],
     entitlements = "ExistingPhone.entitlements",
-    families = ["iphone"],
+    # The same universal development build runs on both owned devices without migrating the phone.
+    families = ["iphone", "ipad"],
     infoplists = ["//apple/AxoMobile:Info.plist"],
     minimum_os_version = AXO["apple"]["ios_min"],
     resources = ["//assets:mascot", "//assets:fonts", "//apple/AxoMobile:app_logos"],
