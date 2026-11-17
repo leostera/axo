@@ -42,7 +42,7 @@ enum ListeningStep: String {
   case microphone = "microphone"
 }
 
-private let log = Logger(subsystem: "dev.leostera.axo.phone", category: "dictation")
+private let log = Logger(subsystem: "dev.leostera.axo", category: "dictation")
 
 /// Runs `work`, labelling any error with the step it happened in.
 private func during<T>(_ step: ListeningStep, _ work: () async throws -> T) async throws -> T {

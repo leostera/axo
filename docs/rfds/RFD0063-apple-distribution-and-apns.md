@@ -1,7 +1,7 @@
 # RFD0063 - Axo: Apple distribution and request push
 
 - Feature Name: `apple-distribution-and-apns`
-- Status: Draft — main phone identifier decision pending
+- Status: Draft — namespace approved; signing rollout, data migration and APNs pending
 - Author: leostera
 - Start Date: 2026-11-16
 - Document Type: Proposal
@@ -11,13 +11,23 @@
 
 Use the registered Axo product identity for intentional Apple signing/distribution and add APNs attention for pending requests. Keep Bazel as the build and generate Xcode configuration from it. Registration, provider credentials, distribution and real push testing are explicit account operations, not incidental build effects.
 
-## Current state and first decision
+## Namespace decision
 
-The Mac identifier is `dev.leostera.axo`; the phone is `dev.leostera.axo.phone`, with watch and keychain configuration beneath the phone identity. The new root store record does not automatically update those targets or enable APNs.
+Previously the Mac identifier was `dev.leostera.axo`, while the phone/watch used `dev.leostera.axo.phone` and its descendants. The person approved a clean namespace cutover: main Mac and phone `dev.leostera.axo`, watch `dev.leostera.axo.watch`, WidgetKit `dev.leostera.axo.watch.complications`, and phone token service `dev.leostera.axo.access`. Configuration, Keychain entitlements and runtime logging use that namespace.
 
-**Decision pending:** (a) use `dev.leostera.axo` for the main phone app too (recommended), or (b) intentionally keep a separate phone record. Confirm platform/team settings before configuring profiles. A bundle change needs a deliberate keychain/account/trusted-device migration or explicit re-enrollment; no silent credential loss, key export or app-container deletion.
+This approves the identifier layout, not installation, portal mutations, key generation or uploads. The new store record does not automatically enable APNs. Named provisioning profiles must match the expected signing team and explicit application identifier, using their actual App Identifier Prefix rather than assuming it equals the Team ID.
+
+Automatic installation additionally requires an exact `phone.install_bundle_id` pin. An old `phone.install: true` flag is not consent to install a differently identified app.
 
 The full Mac app remains a direct-download product unless Mac App Store eligibility is separately established. Developer ID signing/notarization and iOS App Store/TestFlight signing are different release paths.
+
+## Data migration gate
+
+The old phone's session token lives in its default Keychain group, but the approval-signing key's Secure Enclave representation is stored in its private UserDefaults container. Sharing a Keychain group alone therefore cannot preserve the trusted device. The new identifier has a different app container.
+
+Before installing over or retiring anything, stage an explicit old-identity migration build that retains the old phone/watch identities and containers. It must transfer only allowlisted state through an entitled, device-only shared Keychain envelope; never export private key bytes, tokens or transcripts through the coding harness or network. The new app must validate/import before any new signer can be created, handle locked storage and conflicting identities without silently replacing keys, and leave the source data intact until physical-device validation and explicit cleanup approval. Watch account refresh can use the new phone's authenticated companion path; pending recordings in the old app must not be erased.
+
+That bridge/importer is not implemented by the identifier cutover. A new-ID installation cannot be represented as preserving old sign-in, preferences or trusted-device identity until the bridge is implemented and validated. Explicit sign-in/re-enrollment is an alternative only with the person's informed choice.
 
 ## Guide
 
@@ -45,7 +55,7 @@ Only after approval: enable portal capabilities, create/store keys, regenerate p
 
 Keeping foreground-only inboxes avoids provider infrastructure but cannot supply locked-phone attention. Silent-only pushes cannot replace user-visible alerts because Apple does not guarantee background delivery. A notification broker adds another data processor; direct APNs from the Worker is preferred only after its production transport is validated.
 
-First resolve the phone bundle identity. Then verify the actual team, capability/profile/certificate availability, migration path and desired distribution channels. This draft does not claim any portal setup, key generation, notarization, upload or push delivery has occurred.
+The namespace decision is settled. Remaining work is the migration bridge/importer, platform/team/profile/certificate verification, capability setup and distribution channels. This draft does not claim any portal setup, key generation, notarization, upload or push delivery has occurred.
 
 ## Sources
 

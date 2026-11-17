@@ -99,7 +99,7 @@ All targets are declared in the same generated Xcode project. Shared project gen
 
 ## Run on devices
 
-Xcode must already trust both devices, Developer Mode must be enabled, and the development profiles named by `apple.phone_profile`, `apple.watch_profile`, and `apple.watch_complication_profile` in `config.json` must be installed. Profile creation/registration is an explicit Apple-account operation; the script below never does it automatically. Signing credentials and profiles stay outside Git.
+Xcode must already trust both devices, Developer Mode must be enabled, and the development profiles named by `apple.phone_profile`, `apple.watch_profile`, and `apple.watch_complication_profile` in `config.json` must be installed. Profile creation/registration is an explicit Apple-account operation; the script below never does it automatically. Signing credentials and profiles stay outside Git. The canonical identifiers are now `dev.leostera.axo` (phone), `dev.leostera.axo.watch` (watch), and `dev.leostera.axo.watch.complications` (WidgetKit). Old `.phone` profiles do not authorize these targets. Automatic phone installation also requires `phone.install_bundle_id` to match the canonical phone ID; do not enable it before the identity/data migration is ready.
 
 ```sh
 xcrun devicectl list devices
@@ -108,7 +108,7 @@ apple/AxoWatch/run_device.sh <iPhone-identifier> <Watch-identifier>
 
 The script builds the real signed Bazel iPhone bundle with its embedded arm64 Watch app, verifies signatures, installs and launches both apps, and checks that the newly launched Watch PID is running. It preserves bundles and JSON verification results in the temporary directory it prints. The first sign-in, if needed, is performed by the person on the iPhone; the Watch never asks for a password.
 
-The Watch shares the iPhone build/version because Apple requires companion bundle versions to match. Its bundle ID is `dev.leostera.axo.phone.watchkitapp`.
+The Watch shares the iPhone build/version because Apple requires companion bundle versions to match. Its bundle ID is `dev.leostera.axo.watch`; the companion iPhone is `dev.leostera.axo`.
 
 ## HTTPS relay
 

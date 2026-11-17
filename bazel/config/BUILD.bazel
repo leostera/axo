@@ -1,7 +1,42 @@
 load("@axo_config//:defs.bzl", "AXO")
+load(":apple_signing_policy_test.bzl", "apple_signing_policy_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-exports_files(["extension.bzl"])
+exports_files(["extension.bzl", "apple_signing_policy.bzl"])
+
+apple_signing_policy_test(name = "apple_signing_policy_test")
+
+sh_test(
+    name = "apple_identity_test",
+    srcs = ["apple_identity_test.sh"],
+    args = [
+        "$(rootpath //:config.json)",
+        "$(rootpath //apple/AxoPhone:AxoPhone.entitlements)",
+        "$(rootpath //apple/AxoPhone:AxoPhone-device.entitlements)",
+        "$(rootpath //apple/AxoWatch:companion_info)",
+    ],
+    data = [
+        "//:config.json",
+        "//apple/AxoPhone:AxoPhone.entitlements",
+        "//apple/AxoPhone:AxoPhone-device.entitlements",
+        "//apple/AxoWatch:companion_info",
+    ],
+)
+
+# The application label resolves as its launch script in location expansion; select its files.
+filegroup(
+    name = "phone_identity_archive",
+    testonly = True,
+    srcs = ["//apple/AxoPhone:AxoPhoneApp"],
+)
+
+sh_test(
+    name = "apple_bundle_identity_test",
+    srcs = ["apple_bundle_identity_test.sh"],
+    args = ["$(rootpath //:config.json)", "$(rootpath :phone_identity_archive)"],
+    data = ["//:config.json", ":phone_identity_archive"],
+    tags = ["manual"],
+)
 
 sh_test(
     name = "macos_minimum_os_test",

@@ -20,6 +20,8 @@ It is its own repository because it reruns on every edit there, which should not
 keychain again.
 """
 
+load(":apple_signing_policy.bzl", "phone_installation", "profile_matches")
+
 # Every key config.json must have, with its type. config.local.json may override any of them and
 # may add the keys in _LOCAL_SCHEMA.
 _SCHEMA = {
@@ -48,7 +50,7 @@ _SCHEMA = {
 }
 
 _LOCAL_SCHEMA = {
-    "phone": {"device": "string", "install": "bool"},
+    "phone": {"device": "string", "install": "bool", "install_bundle_id": "string"},
     "signing": {"identity": "string"},
     "pi": "string",
 }
@@ -160,8 +162,14 @@ def _signing_identity(rctx, config):
     candidates = sorted(candidates, key = lambda identity: (not identity.name.startswith("Apple Development"), identity.name, identity.sha1))
     return candidates[0], None
 
-def _provisioning_profile(rctx, name):
-    """Whether an app's provisioning profile is installed, and why not."""
+def _profile_field(rctx, key):
+    """A normalized metadata value from the currently decoded profile, never its credentials."""
+    value = _run(rctx, ["/usr/bin/plutil", "-extract", key, "raw", "-o", "-", "profile.plist"])
+    return value.strip() if value else None
+
+def _provisioning_profile(rctx, name, team, bundle_id):
+    """Whether a named profile matches this target's team and explicit application identity."""
+    mismatch = None
     home = rctx.os.environ.get("HOME", "")
     for folder in [
         home + "/Library/Developer/Xcode/UserData/Provisioning Profiles",
@@ -180,9 +188,20 @@ def _provisioning_profile(rctx, name):
                 continue
             rctx.file("profile.plist", decoded)
             profile_name = _run(rctx, ["/usr/bin/plutil", "-extract", "Name", "raw", "-o", "-", "profile.plist"])
-            rctx.delete("profile.plist")
             if profile_name != None and profile_name.strip() == name:
-                return True, None
+                actual = struct(
+                    team = _profile_field(rctx, "TeamIdentifier.0"),
+                    prefix = _profile_field(rctx, "ApplicationIdentifierPrefix.0"),
+                    application_id = _profile_field(rctx, "Entitlements.application-identifier"),
+                )
+                rctx.delete("profile.plist")
+                if profile_matches(actual, team, bundle_id):
+                    return True, None
+                mismatch = "profile %r does not authorize team %s and app %s" % (name, team, bundle_id)
+            else:
+                rctx.delete("profile.plist")
+    if mismatch:
+        return False, mismatch
     return False, "no provisioning profile named %r (Xcode makes it the first time it signs the app)" % name
 
 def _git_commit(rctx, workspace):
@@ -238,26 +257,23 @@ def _axo_config_impl(rctx):
     if reason:
         reasons["sign"] = reason
 
-    has_watch_app_profile, watch_reason = _provisioning_profile(rctx, config["apple"]["watch_profile"])
-    has_complication_profile, complication_reason = _provisioning_profile(rctx, config["apple"]["watch_complication_profile"])
+    has_watch_app_profile, watch_reason = _provisioning_profile(rctx, config["apple"]["watch_profile"], config["apple"]["team"], config["apple"]["bundle_ids"]["watch"])
+    has_complication_profile, complication_reason = _provisioning_profile(rctx, config["apple"]["watch_complication_profile"], config["apple"]["team"], config["apple"]["bundle_ids"]["watch"] + ".complications")
     has_watch_profile = has_watch_app_profile and has_complication_profile
     watch_reason = watch_reason or complication_reason
     if watch_reason:
         reasons["watch_device"] = watch_reason
-    has_phone_profile, reason = _provisioning_profile(rctx, config["apple"]["phone_profile"])
+    has_phone_profile, reason = _provisioning_profile(rctx, config["apple"]["phone_profile"], config["apple"]["team"], config["apple"]["bundle_ids"]["phone"])
     # The device phone embeds the Watch and its WidgetKit extension; all three need profiles.
     has_profile = has_phone_profile and has_watch_profile
     if reason or watch_reason:
         reasons["phone_device"] = reason or watch_reason
 
     phone = config.get("phone", {})
-    phone_install = has_profile and phone.get("install", False) and bool(phone.get("device"))
-    if not phone.get("install", False):
-        reasons["phone_install"] = "off (set phone.install in config.local.json)"
-    elif not phone.get("device"):
-        reasons["phone_install"] = "phone.device is not set in config.local.json"
-    elif not has_profile:
-        reasons["phone_install"] = "the phone app cannot be signed: " + reasons["phone_device"]
+    installation = phone_installation(phone, config["apple"]["bundle_ids"]["phone"], has_profile, reasons.get("phone_device", ""))
+    phone_install = installation.enabled
+    if installation.reason:
+        reasons["phone_install"] = installation.reason
 
     pi = config.get("pi") or rctx.which("pi")
     if pi == None:

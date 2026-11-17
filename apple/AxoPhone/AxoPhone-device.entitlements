@@ -4,7 +4,7 @@
 <dict>
     <key>keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)dev.leostera.axo.phone</string>
+        <string>$(AppIdentifierPrefix)dev.leostera.axo</string>
     </array>
 </dict>
 </plist>
