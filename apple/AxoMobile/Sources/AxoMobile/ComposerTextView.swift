@@ -9,6 +9,7 @@ struct ComposerTextView: UIViewRepresentable {
   let placeholder: String
   var enabled = true
   var maxLines = 8
+  var focusChanged: (Bool) -> Void = { _ in }
   /// The pictures on the clipboard, when Paste is chosen and there are any; the words on it are
   /// left out, as on the web.
   let pastePictures: ([[String: Any]]) -> Void
@@ -57,6 +58,10 @@ struct ComposerTextView: UIViewRepresentable {
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: ComposerTextView
     init(_ parent: ComposerTextView) { self.parent = parent }
+
+    func textViewDidBeginEditing(_ view: UITextView) { parent.focusChanged(true) }
+
+    func textViewDidEndEditing(_ view: UITextView) { parent.focusChanged(false) }
 
     func textViewDidChange(_ view: UITextView) {
       parent.text = view.text

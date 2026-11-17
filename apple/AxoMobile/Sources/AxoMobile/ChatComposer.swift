@@ -5,7 +5,8 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The message box: one rounded card, the words on top and a bar under them with + on the left
+/// An empty, unfocused message box is a small single-row island. Editing expands the same text
+/// view into a rounded card, the words on top and a bar under them with + on the left
 /// (the camera, photos, files and plugins, in a menu above it) and voice and Send on the right. It
 /// grows with the words. It stays closed, saying why in its placeholder, when there is nobody to
 /// send to. Once a message runs past a few lines it can be opened full screen. Return starts a new
@@ -32,6 +33,8 @@ struct ChatComposer: View {
   let send: (PromptDelivery) -> Void
 
   @State private var editorHeight: CGFloat = 0
+  @State private var editorFocused = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var showingExpandedEditor = false
   @State private var pickedPhotos: [PhotosPickerItem] = []
   @State private var showingPhotos = false
@@ -46,6 +49,13 @@ struct ChatComposer: View {
   private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty }
   /// About three lines: long enough to want the whole screen to read and edit it.
   private var isLong: Bool { editorHeight >= 66 }
+
+  /// Keep content and menu anchors open; collapsing is only for an empty, unfocused island.
+  private var isExpanded: Bool {
+    editorFocused || !draft.isEmpty || !files.isEmpty || showsVoiceStatus
+      || showingExpandedEditor || showingAddMenu || showingModels || showingDeliveries
+      || showingPhotos || showingFiles || showingCamera
+  }
 
   private var isListening: Bool {
     guard let voice else { return false }
@@ -87,24 +97,25 @@ struct ChatComposer: View {
   private var slashQuery: String? { canSend ? SlashCommands.query(in: draft) : nil }
 
   private var box: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      ComposerTextView(text: $draft, placeholder: placeholder, enabled: canSend) { items in
-        attach(AttachmentImport.pasted(items))
-      }
+    ComposerIslandLayout(expanded: isExpanded) {
+      addButton
+      // One persistent UIKit editor: changing the layout must not replace focus or marked text.
+      ComposerTextView(text: $draft, placeholder: placeholder, enabled: canSend,
+        focusChanged: { editorFocused = $0 }) { items in
+          attach(AttachmentImport.pasted(items))
+        }
         .padding(.horizontal, 6).padding(.top, 4).padding(.bottom, 2)
         .frame(minHeight: 30)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
-      // Return starts a new line, as on the web on a touch screen; Send sends.
       HStack(spacing: 8) {
-        addButton
-        Spacer(minLength: 0)
-        if let pi, let label = pi.runtime?.label { modelButton(pi, label: label) }
-        if isLong { expandButton }
+        if isExpanded, let pi, let label = pi.runtime?.label { modelButton(pi, label: label) }
+        if isExpanded, isLong { expandButton }
         if let voice { VoiceButton(voice: voice, enabled: canSend, destination: voiceDestination) }
         sendButton
       }
     }
-    .composerCard()
+    .composerCard(compact: !isExpanded)
+    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.88), value: isExpanded)
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
     }
@@ -515,13 +526,14 @@ private struct CameraPicker: UIViewControllerRepresentable {
 
 extension View {
   /// The composer's card: the words on top, a bar of controls under them.
-  func composerCard() -> some View {
-    padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 8)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+  func composerCard(compact: Bool = false) -> some View {
+    let radius: CGFloat = compact ? 28 : 26
+    return padding(.horizontal, compact ? 8 : 10).padding(.top, compact ? 8 : 12).padding(.bottom, 8)
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
       )
-      .padding(.horizontal, 12)
+      .padding(.horizontal, compact ? 24 : 12)
   }
 
   /// The composer's rounded box around one row of controls.

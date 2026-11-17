@@ -475,7 +475,7 @@ final class AxoMobileUITests: XCTestCase {
     let composer = app.textViews["composer"]
     let add = app.buttons["attach"]
     XCTAssertTrue(add.waitForExistence(timeout: 5))
-    XCTAssertLessThan(composer.frame.maxY, add.frame.minY + 1, "the words on top, the + in the bar under them")
+    XCTAssertLessThan(abs(composer.frame.midY - add.frame.midY), 8, "an empty, unfocused composer is one row")
     capture(app, named: "composer-light")
     add.tapWhereItIs()
     let photos = app.buttons["add-photos"]

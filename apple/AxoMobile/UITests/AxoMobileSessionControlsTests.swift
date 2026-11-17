@@ -58,6 +58,7 @@ final class AxoMobileSessionControlsTests: XCTestCase {
   @MainActor
   func testTheBoxNamesTheModelAndPickingAnotherOrALevelChangesIt() {
     let app = launch(chat: 2)
+    app.textViews["composer"].tapWhereItIs()
     let model = element(app, "model-picker")
     XCTAssertTrue(model.waitForExistence(timeout: 5))
     XCTAssertEqual(model.label, "Model: Opus 4.1 · High")

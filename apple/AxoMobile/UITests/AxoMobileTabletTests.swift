@@ -38,5 +38,15 @@ final class AxoMobileTabletTests: XCTestCase {
     attachment.lifetime = .keepAlways
     add(attachment)
     Snapshots.save(screenshot.pngRepresentation, named: "axo-mobile-ipad")
+    let editor = app.textViews["composer"]
+    let compactWidth = editor.frame.width
+    editor.tapWhereItIs()
+    let expanded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      editor.frame.width > compactWidth && app.buttons["attach"].frame.minY >= editor.frame.maxY
+    }, object: nil)
+    XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 8), .completed)
+    XCTAssertGreaterThanOrEqual(editor.frame.minX, sidebar.frame.maxX)
+    XCTAssertTrue(sidebar.isHittable)
+    Snapshots.save(app.screenshot().pngRepresentation, named: "axo-mobile-ipad-composer-focused")
   }
 }
