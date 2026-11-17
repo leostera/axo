@@ -4,7 +4,11 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.71 (Mac app build 342, iPhone build 54, axod 86)
+
 ### Added
+
+- Ship the iPhone improvements as an in-place update of the existing phone/watch/widget identities, preserving the current container, token service and trusted-device key. The new canonical phone identity and AxoMobile/iPad migration remain separate rollout work.
 
 - Stage the canonical Apple identity: `dev.leostera.axo` for Mac/iPhone, `.watch` for watchOS and `.watch.complications` for its widget. Update phone Keychain configuration and development-profile names. Profile detection now checks team and explicit app identity; automatic installation requires an exact bundle-ID consent pin. This does not install apps, migrate an existing phone container/trusted key, enable APNs, or configure distribution signing; those remain gated rollout steps.
 - A global Requests bell/inbox on web and iPhone, plus a local-request bell on Mac. Connected person clients see requests independently of the selected Session; answering removes them across connected clients. Desktop notifications use existing permission (web has explicit enable), private generic previews and inbox-only clicks. This does not add APNs/Web Push or account-wide native Mac sign-in.
