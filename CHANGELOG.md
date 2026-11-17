@@ -6,6 +6,8 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Mobile approval-key restoration fails closed instead of replacing an unavailable or damaged existing identity with a new key. Preserve existing software identities; only simulators may create new software keys. Token replacement updates the Keychain item instead of deleting the old credential before a potentially failing write.
+
 - Mobile attachments are separate, spaced previews without filename/size labels. Upload spinners sit over desaturated images, which regain color on success; exhausted uploads show a retry overlay, and tapping a preview reveals its remove cross. Transient failures get three bounded attempts, then require an explicit retry; original bytes stay in memory only until success/removal. Removal cancels work, late completions cannot resurrect files, and moving an uploading draft between hosts no longer strands it. Uploads never automatically send a message.
 - Remove the mobile chat-list mode selector and folder layout. Pinned / Active / Earlier is now the only layout, regardless of any old saved mode; Earlier folding and selected-chat visibility are unchanged.
 - The mobile composer rests as a smaller, inset single-row island and smoothly expands into the existing two-row editor on focus. One persistent text view preserves focus and composition; drafts, attachments and open menus stay expanded, with no changes to voice or delivery semantics.
@@ -15,6 +17,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Apple distribution foundations: injected APNs provider protocol tests, exact-key migration restoration/proof checks and read-only channel-specific signing preflight. This does not enable live push, transfer credentials, switch the installed identity, configure Apple accounts or submit apps.
 - Conversations pinned on their host Mac are exempt from axod's idle timeout and idle-count limit. Pins on other clients do not count; there is no synchronization. Unpinning restores ordinary sleep eligibility on the next scan.
 - iPad keeps conversations beside a collapsible sidebar: chats by default, swipe right inside the sidebar for connected hosts on their left, and swipe back or tap Back to chats without navigating the conversation or losing its draft. Wide transcripts and composers share a centered readable column; Command-N, Command-K and Command-backslash cover creation, search and sidebar visibility.
 - iPad Apps uses the web-style adaptive card grid with search, connection-status and category filters. Sidebar safe areas match the pane background, and footer controls sit closer to the container edges without reducing their hit targets.

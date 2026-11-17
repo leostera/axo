@@ -99,6 +99,15 @@ node_test(
     tsx = True,
 )
 
+# APNs protocol tests use ephemeral signing keys and an injected transport, never real devices.
+node_test(
+    name = "apns_test",
+    data = _DEPS + [":node_modules/tsx", ":test_files"],
+    tests = ["tests/apns.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
 # Focused person-request fanout across relayed and direct clients.
 node_test(
     name = "elicitations_test",

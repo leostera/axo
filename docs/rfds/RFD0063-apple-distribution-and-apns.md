@@ -1,7 +1,7 @@
 # RFD0063 - Axo: Apple distribution and request push
 
 - Feature Name: `apple-distribution-and-apns`
-- Status: Draft — namespace approved; signing rollout, data migration and APNs pending
+- Status: Draft — namespace approved; provider, key-restoration and signing-preflight foundations implemented; live rollout pending
 - Author: leostera
 - Start Date: 2026-11-16
 - Document Type: Proposal
@@ -72,11 +72,68 @@ First configure and verify the chosen identity/signing graph without installing 
 
 Only after approval: enable portal capabilities, create/store keys, regenerate profiles, install an owned device build and validate foreground/background/locked behavior with real APNs. Test cross-device answers and stale alerts without promising unconditional OS withdrawal. No automatic TestFlight upload, production push or daemon restart.
 
+## Implementation checkpoint (2026-11-17)
+
+The person requested these foundations without app submissions and with continued direct
+development installs on the owned iPhone/iPad. The account-change elicitation timed out
+(`cancel`): no new capability, profile, certificate or provider key was authorized or changed
+in this checkpoint. No app was submitted, no APNs packet was sent, and no canonical app was
+installed.
+
+Implemented:
+
+- Existing approval-key restoration fails closed, including malformed stored values and
+  unavailable Enclave access. It does not generate a replacement/fallback or overwrite the
+  stored reference on failure. Preserve an existing software identity; new software keys are
+  simulator-only. Answer admission reports storage failure without sending.
+- A migration restoration primitive takes only an existing bounded opaque reference, checks
+  the exact expected public key and verifies a fresh signing challenge. Hardware effects are
+  injectable; tests use synthetic references and ephemeral software keys. This is not the
+  shared-Keychain exporter/importer or a cross-app preservation claim.
+- Keychain token replacement updates rather than deletes first; a failed update cannot
+  discard a usable credential.
+- The APNs provider primitive implements scoped sandbox/production topics, ES256 JWT reuse,
+  generic routing-only alerts, expiry, bounded feedback and one owned attempt with cancellation.
+  No registration, dispatch endpoint, live credential or native remote-notification enrollment
+  is connected. Acceptance is distinct from delivery; transport failures are uncertain.
+- A read-only Bazel signing preflight covers development, ad-hoc, App Store Connect and
+  Developer ID evidence. It verifies real profile prefixes, certificate membership, Keychain
+  scope, APNs environment, companion identities and hardened/timestamped Mac code. It does
+  not submit, notarize or install, and uses OpenSSL/system Apple roots rather than importing
+  profile certificates into the person's Keychain.
+
+Inspection found the old development watch/widget signatures retain their profiles'
+wildcard Keychain group. Preserve that already-installed namespace until approved Watch
+migration validation. The preflight permits it only for those exact old development
+companion identities; canonical/production artifacts require exact groups, with the default
+group first. Do not silently narrow an existing companion's namespace and claim sign-in was
+preserved.
+
+Remaining rollout gates:
+
+- [ ] Approved capabilities, scoped provider secret and matching development profiles.
+- [ ] Authenticated person-owned registration and account/install ownership, rotation,
+      sign-out and stale-feedback fencing.
+- [ ] Durable authoritative outbox, bounded dispatch, crash recovery and pending/expiry checks.
+- [ ] Native permission/token lifecycle, safe taps and reconciliation.
+- [ ] Device-only migration envelope, explicit exporter, exclusive startup importer,
+      allowlisted preferences, conflict/locked/crash behavior and physical key/approval proof.
+- [ ] Preserve Watch credentials/recordings; retire source only with explicit approval.
+      Signing out a source that shares the migrated session token revokes that token for
+      the destination too; retirement must not do that accidentally.
+- [ ] Deployed HTTP/2 and real foreground/background/locked-device APNs verification.
+- [ ] Developer ID/Apple Distribution credentials and channel-specific signing builds.
+      Notarization and TestFlight/App Store submissions remain separate, unperformed operations.
+
+Commands and limits: [Apple distribution foundations](../../apple/DISTRIBUTION.md).
+Apple's current response documentation recommends waiting 15 minutes before retrying 5xx
+responses, often longer than a request's lifetime. There is no provider-internal retry loop.
+
 ## Alternatives and open questions
 
 Keeping foreground-only inboxes avoids provider infrastructure but cannot supply locked-phone attention. Silent-only pushes cannot replace user-visible alerts because Apple does not guarantee background delivery. A notification broker adds another data processor; direct APNs from the Worker is preferred only after its production transport is validated.
 
-The namespace decision is settled. Remaining work is the migration bridge/importer, platform/team/profile/certificate verification, capability setup and distribution channels. The owned-device development profile above is the completed portal setup recorded here. Canonical distribution signing, new key generation, notarization, public upload and push delivery remain uncompleted.
+The namespace decision is settled. The checkpoint above distinguishes implemented source foundations from the remaining migration, account configuration, channel-specific signing and physical validation. The earlier owned-device development profile remains the completed portal setup. Canonical distribution signing, new provider/distribution credentials, notarization, app submissions and push delivery remain uncompleted.
 
 ## Sources
 
@@ -85,3 +142,6 @@ The namespace decision is settled. Remaining work is the migration bridge/import
 - [Apple: APNs requests](https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns).
 - [Apple: background updates](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app).
 - [workerd 4841: local versus production HTTP/2](https://github.com/cloudflare/workerd/issues/4841).
+- [Apple: storing CryptoKit keys in the Keychain](https://developer.apple.com/documentation/cryptokit/storing-cryptokit-keys-in-the-keychain).
+- [Apple: sharing Keychain items](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps).
+- [Apple: handling APNs responses](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns).

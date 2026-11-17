@@ -282,13 +282,16 @@ public final class PhoneWorkbench {
         return false
       }
     }
-    let signer = device ?? PhoneDeviceKey.stored()
-    device = signer
     let proof: DeviceProof
     do {
+      let signer = try device ?? PhoneDeviceKey.stored()
+      device = signer
       proof = try signer.prove(requestID: id, action: action, sealed: sealed, name: deviceName)
+    } catch let error as PhoneDeviceKey.StorageError {
+      answerFailure = error.localizedDescription
+      return false
     } catch {
-      answerFailure = "This iPhone couldn’t sign the answer."
+      answerFailure = "This device couldn’t sign the answer."
       return false
     }
     questions[index].answering = action

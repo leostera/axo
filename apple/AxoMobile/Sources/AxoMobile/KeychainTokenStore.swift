@@ -32,12 +32,17 @@ struct KeychainTokenStore: SessionTokenStoring {
   }
 
   func save(_ token: SessionToken) throws {
-    delete()
-    var item = baseQuery
-    item[kSecValueData as String] = Data(token.value.utf8)
-    item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-    let status = SecItemAdd(item as CFDictionary, nil)
-    guard status == errSecSuccess else { throw KeychainError(status: status) }
+    let attributes: [String: Any] = [
+      kSecValueData as String: Data(token.value.utf8),
+      kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+    ]
+    // Updating must not first delete a usable credential: a failed write leaves it intact.
+    let updated = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+    if updated == errSecSuccess { return }
+    guard updated == errSecItemNotFound else { throw KeychainError(status: updated) }
+    let item = baseQuery.merging(attributes) { _, new in new }
+    let added = SecItemAdd(item as CFDictionary, nil)
+    guard added == errSecSuccess else { throw KeychainError(status: added) }
   }
 
   func delete() {
