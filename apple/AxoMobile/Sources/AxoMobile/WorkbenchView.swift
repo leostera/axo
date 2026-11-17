@@ -87,8 +87,10 @@ struct WorkbenchView: View {
         pairingIssuer = PreviewPairing()
         _apps = State(initialValue: AppsModel(service: PreviewApps()))
         let feed = AccountConnection(transport: PreviewTransport(), clientID: .random())
+        let uploads = PreviewAttachmentUploads(mode: ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_UPLOAD"])
         _workbench = State(initialValue: PhoneWorkbench(
           hosts: HostsModel(profile: PreviewPairing()), feed: feed, account: account,
+          uploadAsset: { data, name, mimeType in try await uploads.upload(data, name: name, mimeType: mimeType) },
           makeWorkbench: { host in
             HostWorkbenchModel(
               host: host, connection: HostConnection(account: feed, host: host.reference), feed: feed, account: account)
@@ -296,6 +298,7 @@ struct WorkbenchView: View {
           }
         #endif
       }
+      await PreviewFixture.attach(to: workbench)
     }
     .onDisappear { keepInterruptedVoice() }
     .onChange(of: workbench.selection) { keepInterruptedVoice() }

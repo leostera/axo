@@ -6,6 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Mobile attachments are overlapping previews without filename/size labels. Upload spinners sit over desaturated images, which regain color on success; exhausted uploads show a retry overlay, and tapping a preview reveals its remove cross. Transient failures get three bounded attempts, then require an explicit retry; original bytes stay in memory only until success/removal. Removal cancels work, late completions cannot resurrect files, and moving an uploading draft between hosts no longer strands it. Uploads never automatically send a message.
 - Remove the mobile chat-list mode selector and folder layout. Pinned / Active / Earlier is now the only layout, regardless of any old saved mode; Earlier folding and selected-chat visibility are unchanged.
 - The mobile composer rests as a smaller, inset single-row island and smoothly expands into the existing two-row editor on focus. One persistent text view preserves focus and composition; drafts, attachments and open menus stay expanded, with no changes to voice or delivery semantics.
 - Keep the selected chat visible and highlighted when Earlier or its folder is collapsed, or a row limit would hide it. Show the conversation name in the header.

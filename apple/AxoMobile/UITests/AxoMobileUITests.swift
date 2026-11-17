@@ -172,6 +172,10 @@ final class AxoMobileUITests: XCTestCase {
     let paste = app.menuItems["Paste"]
     XCTAssertTrue(paste.waitForExistence(timeout: 5), "Paste is offered for a picture")
     paste.tap()
+    let preview = app.buttons["attachment-preview"].firstMatch
+    XCTAssertTrue(preview.waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Remove pasted-1.png"].exists, "remove is revealed only when selected")
+    preview.tapWhereItIs()
     XCTAssertTrue(app.buttons["Remove pasted-1.png"].waitForExistence(timeout: 5), "the picture is attached as it was, a PNG")
     XCTAssertEqual(composer.value as? String ?? "", "", "and nothing is typed")
     // Words still paste as words.

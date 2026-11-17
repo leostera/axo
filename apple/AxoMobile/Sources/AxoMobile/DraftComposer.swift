@@ -27,6 +27,7 @@ struct DraftComposer: View {
       files: phone.selection.map(phone.attachments(for:)) ?? [],
       attach: { phone.attach($0) },
       detach: { phone.detach($0) },
+      retryAttachment: { phone.retryUpload($0) },
       voice: voice,
       voiceDestination: phone.selection,
       showApps: showApps,

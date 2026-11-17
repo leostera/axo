@@ -116,6 +116,22 @@ enum PreviewFixture {
       }
     }()
 
+    @MainActor static func attach(to workbench: PhoneWorkbench) async {
+      guard ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_ATTACHMENTS"] == "1" else { return }
+      for _ in 0..<100 where workbench.selection == nil { try? await Task.sleep(for: .milliseconds(30)) }
+      let photo = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 80)).pngData { context in
+        UIColor.systemTeal.setFill()
+        context.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+        UIColor.white.setFill()
+        context.cgContext.fillEllipse(in: CGRect(x: 20, y: 20, width: 40, height: 40))
+      }
+      workbench.attach([
+        (photo, "first.png", "image/png", photo),
+        (photo, "second.png", "image/png", photo),
+        (Data("Fixture notes".utf8), "notes.txt", "text/plain", nil),
+      ])
+    }
+
     static let pi = #"{"model":{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1"},"thinkingLevel":"high"}"#
 
     /// Chat `number` as the account's socket lists it, with `status` in place of its own: the
@@ -205,6 +221,7 @@ enum PreviewFixture {
       ]
     }
   #else
+    @MainActor static func attach(to workbench: PhoneWorkbench) async {}
     static var requested: Bool { false }
     static var menuOpen: Bool { false }
     static var chatOpen: Int? { nil }

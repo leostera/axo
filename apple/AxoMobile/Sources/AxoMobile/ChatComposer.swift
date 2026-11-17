@@ -24,6 +24,7 @@ struct ChatComposer: View {
   var files: [PhoneWorkbench.DraftAttachment] = []
   var attach: ([(data: Data, name: String, mimeType: String, thumbnail: Data?)]) -> Void = { _ in }
   var detach: (UUID) -> Void = { _ in }
+  var retryAttachment: (UUID) -> Void = { _ in }
   let voice: VoicePrompt?
   var voiceDestination: PhoneWorkbench.Selection?
   /// Settings › Apps, from the + menu's Plugins.
@@ -73,7 +74,7 @@ struct ChatComposer: View {
     let _ = RenderCount.note("Composer")
     VStack(spacing: 10) {
       if let voice { VoiceStatusCard(voice: voice) }
-      if !files.isEmpty { AttachmentStrip(files: files, detach: detach) }
+      if !files.isEmpty { AttachmentStrip(files: files, detach: detach, retry: retryAttachment) }
       if let pi, let query = slashQuery {
         SlashCommandList(commands: pi.commands, query: query) { command in draft = SlashCommands.inserting(command) }
           .transition(.opacity.combined(with: .move(edge: .bottom)))

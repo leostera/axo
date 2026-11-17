@@ -105,6 +105,16 @@ public final class PhoneWorkbench {
   public private(set) var isSending = false
   /// The files in each chat's box (RFD0030), uploading or ready, kept like the words.
   private var draftFiles: [Selection: [DraftAttachment]] = [:]
+  /// Original bytes stay only in memory until success or removal, so a failed upload can retry.
+  @ObservationIgnored private var uploads: [UUID: DraftUpload] = [:]
+  @ObservationIgnored var uploadRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
+  private struct DraftUpload: Sendable {
+    let data: Data
+    let name: String
+    let mimeType: String
+    var generation = UUID()
+    var task: Task<Void, Never>?
+  }
   /// Puts a file in the account's assets; what a prompt names it by.
   private let uploadAsset: @Sendable (Data, String, String) async throws -> Attachment
 
@@ -132,6 +142,10 @@ public final class PhoneWorkbench {
     self.account = account
     self.reconnectDelays = reconnectDelays
     self.makeWorkbench = makeWorkbench
+  }
+
+  deinit {
+    for upload in uploads.values { upload.task?.cancel() }
   }
 
   /// Follows the account's socket, and lands on a new chat, ready to be typed into, on the first
@@ -459,6 +473,12 @@ public final class PhoneWorkbench {
     /// A small picture of it, for an image.
     public let thumbnail: Data?
     public fileprivate(set) var state: State
+    fileprivate let retryable: Bool
+
+    public var canRetry: Bool {
+      if case .failed = state { return retryable }
+      return false
+    }
   }
 
   public func attachments(for selection: Selection) -> [DraftAttachment] { draftFiles[selection] ?? [] }
@@ -473,30 +493,100 @@ public final class PhoneWorkbench {
       let draft = DraftAttachment(
         id: UUID(), name: Attachment.safeName(file.name), mimeType: Attachment.storedType(file.mimeType),
         size: file.data.count, thumbnail: file.thumbnail,
-        state: tooLarge ? .failed("Files can be at most 100 MB.") : .uploading)
+        state: tooLarge ? .failed("Files can be at most 100 MB.") : .uploading, retryable: !tooLarge)
       draftFiles[selection, default: []].append(draft)
       guard !tooLarge else { continue }
-      let upload = uploadAsset
-      Task { [weak self] in
-        let state: DraftAttachment.State
-        do {
-          state = .ready(try await upload(file.data, draft.name, draft.mimeType))
-        } catch {
-          state = .failed(error.localizedDescription)
-        }
-        self?.finishUpload(draft.id, in: selection, state: state)
-      }
+      uploads[draft.id] = DraftUpload(data: file.data, name: draft.name, mimeType: draft.mimeType)
+      startUpload(draft.id)
     }
   }
 
-  private func finishUpload(_ id: UUID, in selection: Selection, state: DraftAttachment.State) {
-    guard let index = draftFiles[selection]?.firstIndex(where: { $0.id == id }) else { return }
-    draftFiles[selection]?[index].state = state
+  /// Explicit retries start one new bounded batch, never a message or a reconnect outbox.
+  public func retryUpload(_ id: UUID) {
+    guard let selection, attachments(for: selection).contains(where: { $0.id == id && $0.canRetry }) else { return }
+    startUpload(id)
+  }
+
+  private func attachmentLocation(_ id: UUID) -> (selection: Selection, index: Int)? {
+    for (selection, files) in draftFiles {
+      if let index = files.firstIndex(where: { $0.id == id }) { return (selection, index) }
+    }
+    return nil
+  }
+
+  private func startUpload(_ id: UUID) {
+    guard var input = uploads[id], let location = attachmentLocation(id) else { return }
+    input.task?.cancel()
+    input.generation = UUID()
+    let generation = input.generation
+    let data = input.data, name = input.name, mimeType = input.mimeType
+    let upload = uploadAsset, delays = uploadRetryDelays
+    draftFiles[location.selection]?[location.index].state = .uploading
+    input.task = Task { [weak self] in
+      // AssetsClient uses a content-addressed PUT: retrying these same bytes is idempotent.
+      for attempt in 0...delays.count {
+        guard self?.uploads[id]?.generation == generation else { return }
+        do {
+          if attempt > 0 { try await Task.sleep(for: delays[attempt - 1]) }
+          try Task.checkCancellation()
+          let attachment = try await upload(data, name, mimeType)
+          try Task.checkCancellation()
+          self?.finishUpload(id, generation: generation, state: .ready(attachment))
+          return
+        } catch is CancellationError {
+          if !Task.isCancelled {
+            self?.finishUpload(id, generation: generation, state: .failed("Upload interrupted. Tap to retry."))
+          }
+          return
+        } catch {
+          guard !Task.isCancelled else { return }
+          if attempt < delays.count, Self.shouldRetryUpload(error) { continue }
+          self?.finishUpload(id, generation: generation, state: .failed(error.localizedDescription))
+          return
+        }
+      }
+    }
+    uploads[id] = input
+  }
+
+  nonisolated private static func shouldRetryUpload(_ error: Error) -> Bool {
+    if let refusal = error as? AppsRefusal {
+      return refusal.status == 408 || (500...599).contains(refusal.status)
+    }
+    if let relay = error as? RelayError {
+      switch relay {
+      case .unreachable: return true
+      case .httpStatus(let status): return status == 408 || (500...599).contains(status)
+      case .signInRequired: return false
+      }
+    }
+    if let client = error as? AxoClientError {
+      switch client {
+      case .connectionClosed, .connectionFailed, .requestTimedOut: return true
+      default: return false
+      }
+    }
+    if let error = error as? URLError {
+      return [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed]
+        .contains(error.code)
+    }
+    return false
+  }
+
+  private func finishUpload(_ id: UUID, generation: UUID, state: DraftAttachment.State) {
+    guard uploads[id]?.generation == generation, let location = attachmentLocation(id) else { return }
+    // Locate by attachment identity: choosing another host may have moved its draft while uploading.
+    draftFiles[location.selection]?[location.index].state = state
+    if case .ready = state { uploads[id] = nil }
+    else { uploads[id]?.task = nil }
   }
 
   /// Takes a file out of the open chat's box; an uploaded one stays in the account.
   public func detach(_ id: UUID) {
     guard let selection else { return }
+    guard attachments(for: selection).contains(where: { $0.id == id }) else { return }
+    uploads[id]?.task?.cancel()
+    uploads[id] = nil
     draftFiles[selection]?.removeAll { $0.id == id }
     if draftFiles[selection]?.isEmpty == true { draftFiles[selection] = nil }
   }

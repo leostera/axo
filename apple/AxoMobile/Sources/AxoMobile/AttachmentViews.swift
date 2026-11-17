@@ -5,58 +5,118 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The files in the message box, above it: a thumbnail or a page, the name, and how the upload
-/// goes, each with a way to take it out.
+/// Compact overlapping previews; controls live on the preview, never in a filename/size row.
 struct AttachmentStrip: View {
   let files: [PhoneWorkbench.DraftAttachment]
   let detach: (UUID) -> Void
+  let retry: (UUID) -> Void
+  @State private var selected: UUID?
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        ForEach(files) { file in chip(file) }
+      HStack(spacing: -12) {
+        ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
+          AttachmentTile(file: file, selected: selected == file.id,
+            select: { selected = selected == file.id ? nil : file.id },
+            detach: { detach(file.id) }, retry: { retry(file.id) })
+            .zIndex(selected == file.id ? 100 : Double(index))
+        }
       }
-      .padding(.horizontal, 12)
+      .padding(.horizontal, 16).padding(.vertical, 8)
+    }
+    .onChange(of: files.map(\.id)) { _, ids in
+      if let selected, !ids.contains(selected) { self.selected = nil }
+    }
+  }
+}
+
+private struct AttachmentTile: View {
+  let file: PhoneWorkbench.DraftAttachment
+  let selected: Bool
+  let select: () -> Void
+  let detach: () -> Void
+  let retry: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var ready: Bool { if case .ready = file.state { true } else { false } }
+  private var status: String {
+    switch file.state {
+    case .uploading: "Uploading"
+    case .ready: "Ready"
+    case .failed(let reason): "Upload failed. \(reason)"
     }
   }
 
-  private func chip(_ file: PhoneWorkbench.DraftAttachment) -> some View {
-    HStack(spacing: 8) {
-      Group {
-        if let thumbnail = file.thumbnail, let image = UIImage(data: thumbnail) {
-          Image(uiImage: image).resizable().scaledToFill()
-        } else {
-          Image(systemName: "doc").font(.system(size: 17)).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity).background(.secondary.opacity(0.12))
-        }
-      }
-      .frame(width: 40, height: 40)
-      .clipShape(RoundedRectangle(cornerRadius: 10))
-      .opacity(file.state == .uploading ? 0.6 : 1)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(file.name).font(.footnote).lineLimit(1)
-        status(file).font(.caption2)
-      }
-      .frame(maxWidth: 150, alignment: .leading)
-      Button { detach(file.id) } label: {
-        Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 24, height: 24)
+  var body: some View {
+    ZStack(alignment: .topTrailing) {
+      Button(action: select) {
+        thumbnail
+          .saturation(ready ? 1 : 0)
+          .opacity(ready ? 1 : 0.45)
+          .frame(width: 80, height: 80)
+          .background(.quaternary)
+          .clipShape(RoundedRectangle(cornerRadius: 14))
+          .overlay {
+            RoundedRectangle(cornerRadius: 14)
+              .strokeBorder(Color.primary.opacity(selected ? 0.3 : 0.12), lineWidth: 0.5)
+          }
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Remove \(file.name)")
+      .accessibilityLabel(file.name)
+      .accessibilityValue(status)
+      .accessibilityHint("Tap to show the remove button")
+      .accessibilityIdentifier("attachment-preview")
+      .accessibilityAction(named: "Remove attachment", detach)
+      .overlay {
+        switch file.state {
+        case .uploading:
+          ProgressView().tint(.primary).padding(10)
+            .background(.regularMaterial, in: Circle())
+            .accessibilityLabel("Uploading \(file.name)")
+            .accessibilityIdentifier("attachment-uploading")
+            .allowsHitTesting(false)
+        case .failed:
+          if file.canRetry {
+            Button(action: retry) {
+              Image(systemName: "arrow.clockwise").font(.body.weight(.semibold))
+                .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Retry \(file.name)")
+            .accessibilityIdentifier("attachment-retry")
+          } else {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+              .accessibilityLabel(status)
+              .allowsHitTesting(false)
+          }
+        case .ready: EmptyView()
+        }
+      }
+      if selected {
+        Button(action: detach) {
+          Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.white).frame(width: 22, height: 22).background(.black.opacity(0.8), in: Circle())
+            .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .offset(x: 8, y: -8)
+        .accessibilityLabel("Remove \(file.name)")
+        .accessibilityIdentifier("attachment-remove")
+      }
     }
-    .padding(4).padding(.trailing, 2)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    .frame(width: 80, height: 80)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: ready)
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("attachment")
   }
 
-  @ViewBuilder private func status(_ file: PhoneWorkbench.DraftAttachment) -> some View {
-    switch file.state {
-    case .uploading:
-      HStack(spacing: 4) { ProgressView().controlSize(.mini); Text("Uploading…") }.foregroundStyle(.secondary)
-    case .ready:
-      Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)).foregroundStyle(.secondary)
-    case .failed(let reason):
-      Text(reason).foregroundStyle(.orange).lineLimit(1)
+  @ViewBuilder private var thumbnail: some View {
+    if let thumbnail = file.thumbnail, let image = UIImage(data: thumbnail) {
+      Image(uiImage: image).resizable().scaledToFill()
+    } else {
+      Image(systemName: file.mimeType.hasPrefix("image/") ? "photo" : "doc")
+        .font(.system(size: 28)).foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
 }
