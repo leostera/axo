@@ -76,7 +76,7 @@ enum AppLaunchHandover {
         + (instance.bundlePath.map { " at \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? "")
     }.joined(separator: ", ")
     alert.informativeText =
-      "Axo \(describing) is running. Replacing it restarts axod if its build changed: terminals restart and Pi sessions resume."
+      "Axo \(describing) is running. Replacing it restarts axod if its build changed, including terminals and Pi processes. Conversation histories are kept; automatic continuation requires a compatible Pi SDK."
     alert.addButton(withTitle: "Replace")
     alert.addButton(withTitle: "Keep the Running Axo")
     activate()
@@ -141,7 +141,7 @@ enum InstalledUpdateCheck {
     let alert = NSAlert()
     alert.messageText = "Restart into Axo build \(installed)?"
     alert.informativeText =
-      "Build \(installed) is installed; this is build \(running). Restarting restarts axod if its build changed: terminals restart and Pi sessions resume."
+      "Build \(installed) is installed; this is build \(running). Restarting restarts axod if its build changed, including terminals and Pi processes. Conversation histories are kept; automatic continuation requires a compatible Pi SDK."
     alert.addButton(withTitle: "Restart")
     alert.addButton(withTitle: "Not Now")
     guard alert.runModal() == .alertFirstButtonReturn else {

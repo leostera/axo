@@ -427,8 +427,12 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
     // This axod stopped with nothing working, so the one after it tells no one.
     fixture.wait_for_pi(record.id).await;
     fixture
-        .until("the notice's turn to end", || {
-            !fixture.core.catalog.view().sessions[&record.id].working
+        .until("the recovered turn to be observed settled", || {
+            // Receipt is logged before agent.start reaches the actor. Initial not-working
+            // is not settlement: stop then, and recovery correctly survives another boot.
+            let view = fixture.core.catalog.view();
+            let session = &view.sessions[&record.id];
+            !session.working && !session.recoverable
         })
         .await;
     fixture.restart().await;
