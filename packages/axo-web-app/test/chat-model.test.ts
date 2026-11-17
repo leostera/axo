@@ -621,6 +621,42 @@ test("cached chats, selection and drafts render before connecting, but never res
   restored.dispose();
 });
 
+test("fresh authenticated metadata permits a safe Send while cached history is still loading", async () => {
+  const cache = new ChatCache("account-a", cacheStorage());
+  const old = new FakeAccount();
+  old.records.set(sid(1), [said(1, "user", "saved preview")]);
+  const { workbench } = await workbenchWith(old, undefined, undefined, cache);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("Typed during connection");
+  workbench.dispose();
+  const fresh = new FakeAccount();
+  fresh.records.set(sid(1), [said(1, "user", "fresh history")]);
+  const open = fresh.open.bind(fresh);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  fresh.open = async request => { const result = await open(request); await gate; return result; };
+  const restored = new ChatWorkbench({ connect: async (_id, events) => { fresh.events = events; return fresh; } },
+    undefined, undefined, undefined, undefined, undefined, cache);
+  assert.equal(restored.canSendToSelection, false);
+  restored.start();
+  await tick();
+  assert.equal(restored.canSendToSelection, true);
+  assert.equal(restored.chat(sid(1)).cached, true);
+  restored.chat(sid(1)).transcript!.settle(true);
+  await restored.stop(sid(1));
+  assert.equal(fresh.commands.length, 0, "stale cached entries cannot target Stop");
+  assert.equal((await restored.send()).kind, "sent");
+  assert.equal(fresh.commands.length, 1);
+  assert.equal(fresh.commands[0]!.params.sessionId, sid(1));
+  assert.notEqual(fresh.commands[0]!.params.delivery, "interrupt");
+  release();
+  await tick();
+  assert.equal(restored.chat(sid(1)).cached, false);
+  assert.equal(restored.chat(sid(1)).transcript?.messages[0]?.text, "fresh history");
+  restored.dispose();
+});
+
 test("a cache is account-scoped and sign-out cannot be undone by late persistence", async () => {
   const storage = cacheStorage();
   const cache = new ChatCache("account-a", storage);

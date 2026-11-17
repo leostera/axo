@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
@@ -69,6 +69,7 @@ function useAppearance(): [Appearance, (value: Appearance) => void] {
 /** While a settings page is open, the URL is its own: the chats leave it alone. */
 function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: boolean, onRoute: () => void): void {
   const initial = useRef<ChatRoute | null>(parseRoute(basePath, window.location.pathname));
+  const initialNavigation = useRef(workbench.navigationRevision);
 
   const follow = (route: ChatRoute) => {
     const host = route.kind === "chat" ? workbench.hosts.find(candidate => candidate.hostId === route.hostId) : undefined;
@@ -81,14 +82,23 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: 
   // What is on screen, in the URL. The first listing of the Macs opens the chat the URL names, if
   // it is still there; until then the URL waits to be read.
   const path = routePath(basePath, workbench.openHostId, workbench.selection);
-  useEffect(() => {
+  // Resolve the destination before paint, so live readiness cannot expose Send on an old route.
+  useLayoutEffect(() => {
     if (!["loaded", "cached"].includes(workbench.hostsPhase) || settingsOpen) return;
+    if (workbench.navigationRevision !== initialNavigation.current) initial.current = null;
     const route = initial.current;
     if (workbench.hostsPhase === "cached") {
       // A deep link not in the bounded cache must wait for the authoritative listing.
       if (route?.kind === "chat" && workbench.hosts.some(host => host.hostId === route.hostId
         && host.sessions.some(session => session.sessionId === route.sessionId))) {
+        initial.current = null;
         follow(route);
+      } else if (route?.kind !== "chat") {
+        initial.current = null;
+        if (window.location.pathname !== path) {
+          if (route) window.history.replaceState(null, "", path);
+          else window.history.pushState(null, "", path);
+        }
       }
       return;
     }
@@ -106,7 +116,7 @@ function useChatRoute(workbench: ChatWorkbench, basePath: string, settingsOpen: 
     if (window.location.pathname === path) return;
     if (route) window.history.replaceState(null, "", path);
     else window.history.pushState(null, "", path);
-  }, [path, workbench.hostsPhase, settingsOpen]);
+  }, [path, workbench.hostsPhase, workbench.navigationRevision, settingsOpen]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -381,7 +391,7 @@ function MacRow({ host, selected, onOpen, onRename }: {
   return (
     <div className="mac-row-wrap">
       <button className={selected ? "mac-row selected" : "mac-row"} aria-current={selected ? "true" : undefined} onClick={onOpen}
-        disabled={host.status !== "online"} title={host.status === "online" ? "Start a new chat on this Mac" : undefined}>
+        title="Start a draft on this Mac">
         <span className="mac-icon" data-icon={hostIcon(host)} title={host.model?.name}><Icon name={hostIcon(host)} size={22} /></span>
         <span className="mac-copy">
           <strong>{host.label}</strong>

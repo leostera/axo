@@ -364,6 +364,8 @@ export function tabClientIdentity(storage: Storage | null = globalThis.sessionSt
 export class ChatWorkbench {
   hosts: Host[] = [];
   hostsPhase: "loading" | "cached" | "loaded" | "failed" = "loading";
+  /** Explicit navigation supersedes a startup deep link, even while the socket is opening. */
+  navigationRevision = 0;
   openHostId: string | null = null;
   link: Link = "idle";
   selection: Selection | null = null;
@@ -916,6 +918,7 @@ export class ChatWorkbench {
 
   /** Shows a chat, on whichever Mac it is. */
   selectChat(hostId: string, sessionId: string): void {
+    this.navigationRevision += 1;
     if (hostId !== this.openHostId) this.openMac(hostId);
     this.selection = { kind: "chat", sessionId };
     const chat = this.chat(sessionId);
@@ -928,6 +931,7 @@ export class ChatWorkbench {
 
   /** A new chat on `hostId` (the open Mac when not given). */
   newChat(hostId: string | null = null): void {
+    this.navigationRevision += 1;
     if (hostId && hostId !== this.openHostId) this.openMac(hostId);
     this.selection = { kind: "new" };
     this.closeOpened();
@@ -941,6 +945,7 @@ export class ChatWorkbench {
   chooseHost(hostId: string): void {
     const selection = this.selection;
     if (selection?.kind !== "new" || hostId === this.openHostId || !this.hosts.some(host => host.hostId === hostId)) return;
+    this.navigationRevision += 1;
     const text = this.draft(selection);
     const files = this.attachments(selection);
     this.setDraft("", selection);
@@ -1049,7 +1054,9 @@ export class ChatWorkbench {
       const results = await Promise.all(answers.map(answer => answer.result));
       if (results.some(result => !result) || this.openHostId !== hostId
         || this.selection?.kind !== "chat" || this.selection.sessionId !== selection.sessionId) return { kind: "failed" };
-      const protectedTurn = this.chat(selection.sessionId).humanTurnProtected || this.questions(selection.sessionId).length > 0;
+      const chat = this.chat(selection.sessionId);
+      // An unseen run should not be interrupted just because its history is still loading.
+      const protectedTurn = chat.cached || chat.transcript === null || chat.humanTurnProtected || this.questions(selection.sessionId).length > 0;
       return this.prompt(selection, delivery === "interrupt" && protectedTurn ? "followUp" : delivery);
     });
     return this.startChat(selection);
@@ -1107,16 +1114,26 @@ export class ChatWorkbench {
     }
   }
 
+  /** Live authenticated metadata authorizes a destination; a display-history fetch does not. */
+  get canSendToSelection(): boolean {
+    return this.link === "connected" && this.hostsPhase === "loaded" && this.connection?.active === true
+      && this.openHost?.status === "online" && this.selection !== null
+      && (this.selection.kind === "new" || Boolean(this.selectedSession && isChat(this.selectedSession)));
+  }
+
   private ready(): boolean {
-    if (this.selection?.kind === "chat" && this.chats.get(this.selection.sessionId)?.cached) return false;
+    if (!this.connection?.active || this.link !== "connected" || this.hostsPhase !== "loaded") {
+      this.report("Not connected yet. Your message stays in its draft.");
+      return false;
+    }
     const host = this.openHost;
     if (!host) return false;
     if (host.status !== "online") {
       this.report(`${host.label} is offline.`);
       return false;
     }
-    if (!this.connection?.active) {
-      this.report("Not connected yet. Try again in a moment.");
+    if (!this.canSendToSelection) {
+      this.report("This chat is no longer available. Your message was not sent.");
       return false;
     }
     return true;
@@ -1238,7 +1255,7 @@ export class ChatWorkbench {
     const host = this.openHost;
     const chat = this.chat(sessionId);
     const transcript = chat.transcript;
-    if (!host || !transcript?.working || chat.stopping || !this.ready()) return;
+    if (chat.cached || !host || !transcript?.working || chat.stopping || !this.ready()) return;
     const turnId = transcript.lastUserEntry ?? undefined;
     const seen = transcript.records.at(-1)?.id ?? undefined;
     const commandIds = chat.pending.map(prompt => prompt.id).slice(-32);
@@ -1423,7 +1440,7 @@ export class ChatWorkbench {
   /** Answers the agent's question: yes is Enter, no is Escape, words are sent as a prompt is. */
   async answer(sessionId: string, answer: Answer): Promise<void> {
     const host = this.openHost;
-    if (!host || !this.chats.get(sessionId)?.transcript?.question || !this.ready()) return;
+    if (!host || this.chats.get(sessionId)?.cached || !this.chats.get(sessionId)?.transcript?.question || !this.ready()) return;
     const target = this.reference(host);
     try {
       if (answer.kind === "text") await this.connection!.command("axo.remote.session.prompt", { target, sessionId, text: answer.text, commandId: this.newId() });

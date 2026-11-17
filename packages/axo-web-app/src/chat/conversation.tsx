@@ -40,7 +40,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const selection = workbench.selection;
   const chat = session ? workbench.chat(session.sessionId) : null;
   const transcript = chat?.transcript ?? null;
-  const online = host?.status === "online" && workbench.link === "connected" && !chat?.cached;
+  const online = workbench.canSendToSelection;
+  const canCompose = Boolean(host && selection) && !workbench.isSending;
   const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
 
   // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
@@ -192,7 +193,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   };
 
   const working = Boolean(transcript?.working);
-  const canStop = online && working && !chat?.stopping;
+  const canStop = online && !chat?.cached && working && !chat?.stopping;
   // A stop goes at once, without asking: interrupting has to be quick, and a reply stopped by
   // mistake costs only sending the message again.
   const stopReply = () => {
@@ -275,7 +276,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             {transcript?.question ? (
               <QuestionCard
                 question={transcript.question}
-                canAnswer={online}
+                canAnswer={online && !chat?.cached}
                 onAnswer={answer => void workbench.answer(session.sessionId, answer)}
               />
             ) : null}
@@ -291,7 +292,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           workbench={workbench}
           wide={wide}
           voice={voice}
-          placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
+          placeholder={!host ? "Choose a Mac to start a draft" : "Message Axo"}
+          canCompose={canCompose}
           canSend={online && !workbench.isSending}
           onSend={delivery => void send(delivery)}
           onEscape={stopReply}
@@ -312,12 +314,13 @@ const encoder = new TextEncoder();
  * the words. While listening the box becomes the listening bar. With a keyboard, Enter sends and
  * Shift-Enter starts a new line; on a touch screen Return starts a new line and Send sends.
  */
-function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEscape, onApps }: {
+function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, onSend, onEscape, onApps }: {
   workbench: ChatWorkbench;
   /** Wide, the Mac is chosen inside the box; narrow, from a chip floating above it. */
   wide: boolean;
   voice: VoicePrompt | null;
   placeholder: string;
+  canCompose: boolean;
   canSend: boolean;
   onSend: (delivery: Delivery) => void;
   /** Escape with nothing to cancel: stops the reply. */
@@ -360,13 +363,13 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
   useEffect(() => {
     const moved = previousSelection.current !== workbench.selection;
     previousSelection.current = workbench.selection;
-    if (!canSend || listening) return;
+    if (!canCompose || listening) return;
     // The first render can have a disabled composer. Try again when it becomes ready, without
     // stealing focus from a dialog, search field or an interaction during reconnect.
     if (moved || !document.activeElement || document.activeElement === document.body) {
       field.current?.focus({ preventScroll: true });
     }
-  }, [workbench.selection, canSend, listening]);
+  }, [workbench.selection, canCompose, listening]);
 
   // Words said for one chat never land in another.
   useEffect(() => () => voice?.cancel(), [workbench.selection, voice]);
@@ -388,10 +391,10 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
   const [highlighted, setHighlighted] = useState(0);
   const slashOpen = query !== null && dismissedSlash !== draft;
   const commands = session ? workbench.chat(session.sessionId).commands : null;
-  const matches = slashOpen && commands?.kind === "loaded" ? matchingCommands(commands.items, query) : [];
+  const matches = slashOpen && canSend && commands?.kind === "loaded" ? matchingCommands(commands.items, query) : [];
   useEffect(() => {
-    if (slashOpen && session) void workbench.loadCommands(session.sessionId);
-  }, [slashOpen, session?.sessionId]);
+    if (slashOpen && canSend && session) void workbench.loadCommands(session.sessionId);
+  }, [slashOpen, session?.sessionId, canSend]);
   useEffect(() => setHighlighted(0), [query]);
   const pickCommand = (command: (typeof matches)[number]) => {
     workbench.setDraft(withCommand(command));
@@ -453,7 +456,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
           {files.map(file => <AttachmentChip key={file.id} file={file} onRemove={() => workbench.detach(file.id)} />)}
         </ul>
       ) : null}
-      {slashOpen && !(voice && listening) ? (
+      {slashOpen && canSend && !(voice && listening) ? (
         <SlashMenu state={commands} matches={matches} highlighted={highlighted} onHighlight={setHighlighted} onPick={pickCommand} />
       ) : null}
       {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
@@ -462,13 +465,13 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
           if (ready) onSend("interrupt");
         }}
         onDragOver={event => {
-          if (!canSend || !event.dataTransfer.types.includes("Files")) return;
+          if (!canCompose || !event.dataTransfer.types.includes("Files")) return;
           event.preventDefault();
           setDragging(true);
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={event => {
-          if (!canSend) return;
+          if (!canCompose) return;
           event.preventDefault();
           setDragging(false);
           attach(event.dataTransfer.files);
@@ -482,7 +485,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
             aria-controls={slashOpen ? "slash-menu" : undefined}
             aria-activedescendant={slashOpen && matches.length ? `slash-${highlighted}` : undefined}
             enterKeyHint={touchTyping() ? "enter" : "send"}
-            disabled={!canSend}
+            disabled={!canCompose}
             onChange={event => workbench.setDraft(event.target.value)}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
@@ -500,7 +503,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
             event.target.value = "";
           }} />
           <div className="composer-toolbar">
-            <AddMenu disabled={!canSend} onPick={choice => {
+            <AddMenu disabled={!canCompose} onPick={choice => {
               if (choice === "camera") cameraPicker.current?.click();
               else if (choice === "photos") photoPicker.current?.click();
               else if (choice === "files") picker.current?.click();
@@ -511,7 +514,7 @@ function Composer({ workbench, wide, voice, placeholder, canSend, onSend, onEsca
             {session ? <ModelPicker workbench={workbench} session={session} disabled={!canSend} /> : null}
             {voice ? (
               <button type="button" className="round-button composer-mic"
-                disabled={!canSend || voice.isBusy} onClick={() => void voice.start()}
+                disabled={!canCompose || voice.isBusy} onClick={() => void voice.start()}
                 aria-label="Talk" title="Say your message; stop to read it first, or send it straight away">
                 {voiceState === "requestingPermission" ? <span className="spinner" aria-hidden="true" /> : <Icon name="mic" size={20} />}
               </button>
@@ -662,7 +665,7 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
         <div className="host-menu" role="menu" aria-label="Start on">
           {workbench.hosts.map(candidate => (
             <button key={candidate.hostId} type="button" role="menuitemradio" aria-checked={candidate.hostId === host.hostId}
-              className="host-menu-item" disabled={candidate.status !== "online"}
+              className="host-menu-item"
               onClick={() => { workbench.chooseHost(candidate.hostId); setOpen(false); }}>
               <Icon name={candidate.hostId === host.hostId ? "check" : hostIcon(candidate)} size={15} />
               <span className="host-picker-label">{candidate.label}</span>

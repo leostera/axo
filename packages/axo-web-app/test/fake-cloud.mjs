@@ -52,6 +52,8 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
   let rejectNextModel = false;
   const sockets = new Set();
   let paused = false;
+  let historyPaused = false;
+  const pendingHistory = [];
   const pending = [];
   const http = createHttpServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
@@ -78,7 +80,9 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
       if (!call.method || call.id === undefined) return;
       const reply = (result) => {
         const send = () => { if (socket.readyState === 1) socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result })); };
-        if (paused) pending.push(send); else send();
+        if (paused) pending.push(send);
+        else if (historyPaused && call.method === "axo.client.session.open") pendingHistory.push(send);
+        else send();
       };
       if (call.method === "axo.client.hello" && call.params.protocolVersion !== 2) {
         return socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32602, message: "Invalid params" } }));
@@ -152,6 +156,8 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
       sessions[index] = { ...sessions[index], metadata: { ...sessions[index].metadata, lastMessageAt } };
       send("axo.client.sessions", { hostId, sessions: [sessions[index]] });
     },
+    holdHistory() { historyPaused = true; },
+    releaseHistory() { historyPaused = false; for (const reply of pendingHistory.splice(0)) reply(); },
     pause() { paused = true; },
     resume() { paused = false; for (const reply of pending.splice(0)) reply(); },
     /** Writes a line of `sessionId`, as Pi would. */
