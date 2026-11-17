@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Compact overlapping previews; controls live on the preview, never in a filename/size row.
+/// Separate compact previews; controls live on each preview, never in a filename/size row.
 struct AttachmentStrip: View {
   let files: [PhoneWorkbench.DraftAttachment]
   let detach: (UUID) -> Void
@@ -14,12 +14,11 @@ struct AttachmentStrip: View {
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: -12) {
-        ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
+      HStack(spacing: 8) {
+        ForEach(files) { file in
           AttachmentTile(file: file, selected: selected == file.id,
             select: { selected = selected == file.id ? nil : file.id },
             detach: { detach(file.id) }, retry: { retry(file.id) })
-            .zIndex(selected == file.id ? 100 : Double(index))
         }
       }
       .padding(.horizontal, 16).padding(.vertical, 8)

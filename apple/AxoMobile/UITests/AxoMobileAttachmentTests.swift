@@ -28,13 +28,13 @@ final class AxoMobileAttachmentTests: XCTestCase {
     add(attachment)
   }
 
-  @MainActor func testPreviewsOverlapWithProgressOnTopAndSelectionRevealsRemove() {
+  @MainActor func testPreviewsStaySeparateWithProgressOnTopAndSelectionRevealsRemove() {
     let app = launch("slow")
     let previews = app.buttons.matching(identifier: "attachment-preview")
     XCTAssertEqual(previews.count, 3)
     let first = app.buttons["first.png"], second = app.buttons["second.png"]
-    XCTAssertGreaterThan(first.frame.maxX, second.frame.minX, "a small stack, not filename chips")
-    XCTAssertLessThan(first.frame.minX, second.frame.minX)
+    XCTAssertEqual(second.frame.minX - first.frame.maxX, 8, accuracy: 1, "photos must not overlap")
+    XCTAssertFalse(first.frame.intersects(second.frame))
     XCTAssertEqual(first.frame.width, 80, accuracy: 1)
     XCTAssertFalse(app.staticTexts["first.png"].exists)
     XCTAssertFalse(app.staticTexts["notes.txt"].exists, "ordinary files are preview-only too")
