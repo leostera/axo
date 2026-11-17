@@ -6,6 +6,8 @@ load("@axo_config//:defs.bzl", "AXO", "CAN")
 
 package(default_visibility = ["//visibility:public"])
 
+exports_files(["Info.plist"])
+
 swift_library(
     name = "AxoWatch",
     srcs = glob(["Sources/AxoWatch/*.swift"]),

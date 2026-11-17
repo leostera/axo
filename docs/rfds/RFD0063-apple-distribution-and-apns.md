@@ -21,6 +21,23 @@ Automatic installation additionally requires an exact `phone.install_bundle_id` 
 
 The full Mac app remains a direct-download product unless Mac App Store eligibility is separately established. Developer ID signing/notarization and iOS App Store/TestFlight signing are different release paths.
 
+## Release the existing improvements first
+
+The person subsequently prioritized shipping the current improvements to the existing phone,
+all owned Macs and the web before making AxoMobile (iPhone and iPad). Read-only device inspection
+confirmed the phone still runs `dev.leostera.axo.phone`. The explicit, manual-only
+`//apple/ExistingPhoneUpdate:ipa` target therefore builds the shared current implementation with
+the installed phone/watch/widget identities and existing development profiles. Token storage is
+selected from the signed app's recognized identity, retaining the exact old service in that build.
+This updates the existing container in place; it neither creates the canonical app nor transfers
+credentials between containers. Remove this bounded release path after validated canonical
+migration and approved retirement. No automatic install target uses it.
+
+Apple-account configuration, credential creation and tested cloud/release publication have
+explicit rollout approval; app installation/restart remains a separate checkpoint. A read-only
+portal inspection verified the canonical explicit root App ID, its real prefix and the expected
+team. No capability mutation, new profile/key creation or notarization has yet occurred.
+
 ## Data migration gate
 
 The old phone's session token lives in its default Keychain group, but the approval-signing key's Secure Enclave representation is stored in its private UserDefaults container. Sharing a Keychain group alone therefore cannot preserve the trusted device. The new identifier has a different app container.

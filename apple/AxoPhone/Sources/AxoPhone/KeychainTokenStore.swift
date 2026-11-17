@@ -6,7 +6,12 @@ import Security
 /// The session token in the Keychain, readable only while the phone is unlocked and never
 /// copied to another device or a backup.
 struct KeychainTokenStore: SessionTokenStoring {
-  private let service = "dev.leostera.axo.access"
+  private var service: String {
+    guard let identity = PhoneStorageIdentity(bundleIdentifier: Bundle.main.bundleIdentifier) else {
+      preconditionFailure("Credential storage requires a recognized phone app identity")
+    }
+    return identity.tokenService
+  }
   private let account = "session-token"
 
   func load() -> SessionToken? { try? loadForCompanion() }

@@ -1,0 +1,98 @@
+load("@axo_config//:defs.bzl", "AXO")
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
+load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@rules_apple//apple:watchos.bzl", "watchos_application", "watchos_extension")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/apple:defs.bzl", "ios_device_app")
+
+# Deliberate, manual in-place update of the installed phone, not a canonical-ID fallback.
+# Remove this package and PhoneStorageIdentity.existingPhone after validated device migration.
+package(default_visibility = ["//visibility:private"])
+
+_PHONE = "dev.leostera.axo.phone"
+_WATCH = _PHONE + ".watchkitapp"
+
+[
+    local_provisioning_profile(
+        name = name,
+        profile_name = "iOS Team Provisioning Profile: " + identifier,
+        team_id = AXO["apple"]["team"],
+        tags = ["manual"],
+    )
+    for name, identifier in [
+        ("phone_profile", _PHONE),
+        ("watch_profile", _WATCH),
+        ("widget_profile", _WATCH + ".complications"),
+    ]
+]
+
+genrule(
+    name = "companion_info",
+    outs = ["Companion-Info.plist"],
+    cmd = "printf '%s' '<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>WKCompanionAppBundleIdentifier</key><string>%s</string></dict></plist>' > $@" % ("%s", _PHONE),
+    tags = ["manual"],
+)
+
+watchos_extension(
+    name = "Widget",
+    application_extension = True,
+    bundle_id = _WATCH + ".complications",
+    infoplists = ["//apple/AxoWatchComplication:Info.plist"],
+    minimum_os_version = AXO["apple"]["watchos_min"],
+    provisioning_profile = ":widget_profile",
+    version = "//apple/AxoPhone:build_version",
+    tags = ["manual"],
+    deps = ["//apple/AxoWatchComplication:AxoWatchComplication"],
+)
+
+watchos_application(
+    name = "Watch",
+    bundle_id = _WATCH,
+    app_icons = ["//assets:watch_app_icon"],
+    extensions = [":Widget"],
+    resources = ["//assets:watch_brand", "//assets:fonts"],
+    infoplists = ["//apple/AxoWatch:Info.plist", ":companion_info"],
+    minimum_os_version = AXO["apple"]["watchos_min"],
+    version = "//apple/AxoPhone:build_version",
+    provisioning_profile = ":watch_profile",
+    tags = ["manual"],
+    deps = ["//apple/AxoWatch:AxoWatch"],
+)
+
+ios_application(
+    name = "Phone",
+    bundle_id = _PHONE,
+    watch_application = ":Watch",
+    app_icons = ["//assets:ios_app_icon"],
+    entitlements = "ExistingPhone.entitlements",
+    families = ["iphone"],
+    infoplists = ["//apple/AxoPhone:Info.plist"],
+    minimum_os_version = AXO["apple"]["ios_min"],
+    resources = ["//assets:mascot", "//assets:fonts", "//apple/AxoPhone:app_logos"],
+    provisioning_profile = ":phone_profile",
+    version = "//apple/AxoPhone:build_version",
+    tags = ["manual"],
+    deps = ["//apple/AxoPhone:AxoPhoneMain"],
+)
+
+filegroup(
+    name = "archive",
+    srcs = [":Phone"],
+    tags = ["manual"],
+)
+
+# Building is never installing. This forces the device architecture even from a host build.
+ios_device_app(
+    name = "ipa",
+    app = ":archive",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+sh_test(
+    name = "archive_test",
+    srcs = ["archive_test.sh"],
+    args = ["$(rootpath //:config.json)", "$(rootpath :ipa)"],
+    data = ["//:config.json", ":ipa"],
+    tags = ["manual", "no-sandbox"],
+)
