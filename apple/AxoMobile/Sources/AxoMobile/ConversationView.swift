@@ -31,6 +31,7 @@ struct ConversationView: View {
   /// What the rows do, kept apart so that a row compares equal to itself when the list redraws.
   @State private var actions = ConversationRowActions()
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(SidewaysScrolling.self) private var sidewaysScrolling
   @Environment(\.assetLoader) private var assetLoader
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
@@ -139,7 +140,8 @@ struct ConversationView: View {
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
         }
-        .accessibilityLabel("Chats menu")
+        .accessibilityLabel(horizontalSizeClass == .regular ? "Toggle sidebar" : "Chats menu")
+        .keyboardShortcut("\\", modifiers: .command)
         Text(session?.displayName ?? "New chat")
           .font(.callout.weight(.semibold))
           .lineLimit(1)
@@ -222,6 +224,8 @@ struct ConversationView: View {
         phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, showApps: showApps,
         workbench: workbench, session: session?.sessionId, send: sendDraft)
     }
+    .frame(maxWidth: horizontalSizeClass == .regular ? ConversationLayout.columnWidth : .infinity)
+    .frame(maxWidth: .infinity)
     // With the keyboard down the composer sits down in the home indicator's area, as the
     // system's own bars do, rather than above all of it; with the keyboard up, just above it.
     .padding(.bottom, keyboardIsUp ? 6 : max(6, bottomInset - 22))

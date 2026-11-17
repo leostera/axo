@@ -1,0 +1,43 @@
+import XCTest
+
+final class AxoMobileSettingsTests: XCTestCase {
+  @MainActor private func launch(_ appearance: String) -> XCUIApplication {
+    continueAfterFailure = false
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_SETTINGS": "1"]
+    app.launchArguments = ["-appearance", appearance]
+    app.launch()
+    XCTAssertTrue(app.scrollViews["settings-home"].waitForExistence(timeout: 20))
+    return app
+  }
+
+  @MainActor
+  func testAppearanceHasVisibleLabelsAndTrailingPickers() {
+    let app = launch("light")
+    app.buttons["settings-appearance"].tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Appearance"].waitForExistence(timeout: 5))
+    let label = app.staticTexts["Accent color"]
+    let picker = app.buttons["accent-picker"]
+    XCTAssertTrue(label.exists)
+    XCTAssertTrue(picker.exists)
+    XCTAssertLessThan(label.frame.maxX, picker.frame.minX)
+    XCTAssertTrue(app.buttons["appearance-picker"].exists)
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "settings-appearance")
+  }
+
+  @MainActor
+  func testDarkSettingsKeepsRealDestinationsAndSignOutNeedsConfirmation() {
+    let app = launch("dark")
+    for name in ["account", "apps", "appearance", "chats"] {
+      XCTAssertTrue(app.buttons["settings-\(name)"].exists)
+    }
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "settings-home-dark")
+    app.buttons["Sign out"].tapWhereItIs()
+    let cancel = app.buttons["Cancel"].firstMatch
+    XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+    cancel.tapWhereItIs()
+    XCTAssertTrue(app.scrollViews["settings-home"].exists, "Cancel retains this device's sign-in")
+    app.buttons["Close settings"].tapWhereItIs()
+    XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 5))
+  }
+}

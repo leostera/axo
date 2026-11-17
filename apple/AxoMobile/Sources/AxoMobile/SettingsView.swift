@@ -1,102 +1,222 @@
 import AxoMobileModel
 import SwiftUI
+import UIKit
 
+/// A compact settings directory; each real capability has its own native subpage.
 struct SettingsView: View {
   let account: AccountSession
-  /// What the account's Sessions can use: Settings › Apps.
+  let hosts: HostsModel
   let apps: AppsModel
-  /// How the chat list groups chats, and the pins: kept on this phone.
   let chatList: ChatListPreferences
-  /// The page Settings opens on.
   var opening: Opening = .settings
   let signOut: () -> Void
   @Environment(\.dismiss) private var dismiss
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
   @State private var path = NavigationPath()
+  @State private var confirmingSignOut = false
 
-  /// The page Settings opens on: its first, or Apps (as the account panel's Apps row opens it).
   enum Opening: String, Identifiable {
     case settings, apps
     var id: String { rawValue }
   }
 
-  private enum SettingsPage: Hashable { case apps }
+  private enum Page: Hashable { case account, apps, appearance, chats }
+
+  private var accountName: String {
+    hosts.signedIn?.profile?.name ?? hosts.signedIn?.profile?.email ?? "Signed in"
+  }
+
+  private var appStatus: String {
+    guard apps.phase == .loaded else { return "Connect apps" }
+    let count = apps.apps.filter(\.isConnected).count + apps.servers.filter { $0.state == .ready }.count
+    return "\(count) connected"
+  }
+
+  private var version: String {
+    let info = Bundle.main.infoDictionary
+    return "Axo \(info?["CFBundleShortVersionString"] as? String ?? "") (\(info?["CFBundleVersion"] as? String ?? ""))"
+  }
 
   var body: some View {
     NavigationStack(path: $path) {
-      List {
-        Section {
-          NavigationLink(value: SettingsPage.apps) {
-            Label {
-              VStack(alignment: .leading, spacing: 2) {
-                Text("Apps")
-                Text("Gmail, GitHub, MCP servers and more").font(.caption).foregroundStyle(.secondary)
-              }
-            } icon: {
-              Image(systemName: "powerplug")
+      landing
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(for: Page.self) { destination in
+          switch destination {
+          case .account: accountPage
+          case .apps: AppsView(model: apps)
+          case .appearance: appearancePage
+          case .chats: chatsPage
+          }
+        }
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Button { dismiss() } label: {
+              Image(systemName: "xmark").frame(width: 44, height: 44)
             }
+            .accessibilityLabel("Close settings")
+            .keyboardShortcut(.cancelAction)
           }
-          .accessibilityIdentifier("settings-apps")
-        } footer: {
-          Text("What your Sessions can use, the accounts they use it with, and what they did.")
-        }
-
-        ChatListSettingsSection(preferences: chatList)
-
-        Section("Theme") {
-          Picker(selection: $appearance) {
-            ForEach(AppAppearance.allCases) { Text($0.title).tag($0) }
-          } label: {
-            Label("Appearance", systemImage: "moon")
-          }
-          .pickerStyle(.menu)
-
-          Picker(selection: $accentColor) {
-            ForEach(AppAccentColor.allCases) { option in
-              HStack(spacing: 8) {
-                Circle().fill(option.color).frame(width: 12, height: 12)
-                Text(option.title)
+          ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+              Button { UIPasteboard.general.string = version } label: {
+                Label(version, systemImage: "doc.on.doc")
               }
-              .tag(option)
+            } label: {
+              Image(systemName: "info.circle").frame(width: 44, height: 44)
             }
-          } label: {
-            Label("Accent color", systemImage: "paintpalette")
+            .accessibilityLabel("About Axo")
           }
-          .pickerStyle(.menu)
         }
-
-        Section {
-          Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
-            dismiss()
-            signOut()
-          }
-        } footer: {
-          Text("Signing out ends this phone's session. Your Macs and conversations stay on your account.")
-        }
-      }
-      .listStyle(.insetGrouped)
-      .scrollContentBackground(.hidden)
-      .background(ChatColors.background)
-      .navigationTitle("Settings")
-      .navigationBarTitleDisplayMode(.inline)
-      .navigationDestination(for: SettingsPage.self) { _ in AppsView(model: apps) }
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button { dismiss() } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 14, weight: .semibold))
-              .frame(width: 36, height: 36)
-              .background(.secondary.opacity(0.12), in: Circle())
-          }
-          .accessibilityLabel("Close settings")
-        }
-      }
     }
-    .onAppear { if opening == .apps, path.isEmpty { path.append(SettingsPage.apps) } }
+    .onAppear { if opening == .apps, path.isEmpty { path.append(Page.apps) } }
+    .task { await apps.refresh() }
+    .alert("Sign out of Axo on this device?", isPresented: $confirmingSignOut) {
+      Button("Sign out", role: .destructive) { dismiss(); signOut() }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Your hosts and conversations stay on your account.")
+    }
+    .frame(idealWidth: 640, idealHeight: 740)
+    .presentationSizing(.form)
     .presentationDetents([.large])
     .presentationBackground(ChatColors.background)
     .tint(accentColor.color)
+  }
+
+  private var landing: some View {
+    ScrollView {
+      VStack(spacing: 24) {
+        SettingsCard {
+          destination(.account, "Account", icon: "person.crop.circle", value: accountName)
+        }
+        SettingsCard {
+          destination(.apps, "Apps", icon: "powerplug", value: appStatus,
+            subtitle: "Accounts and MCP servers")
+        }
+        SettingsCard {
+          destination(.appearance, "Appearance", icon: "paintpalette", value: appearance.title)
+          divider
+          destination(.chats, "Chats", icon: "bubble.left.and.bubble.right",
+            subtitle: "Pinned, Active and Earlier")
+        }
+        SettingsCard { signOutButton }
+        Text(version).font(.footnote).foregroundStyle(.secondary)
+      }
+      .padding(20)
+      .frame(maxWidth: 640)
+      .frame(maxWidth: .infinity)
+    }
+    .background(ChatColors.background)
+    .accessibilityIdentifier("settings-home")
+  }
+
+  private var divider: some View { Divider().padding(.leading, 56) }
+
+  private func destination(_ page: Page, _ title: String, icon: String, value: String = "", subtitle: String? = nil) -> some View {
+    NavigationLink(value: page) {
+      SettingsNavigationRow(title: title, icon: icon, value: value, subtitle: subtitle)
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("settings-\(String(describing: page))")
+  }
+
+  private var accountPage: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 24) {
+        SettingsCard {
+          SettingsNavigationRow(title: accountName, icon: "person.crop.circle", subtitle: hosts.signedIn?.profile?.email,
+            disclosure: false)
+        }
+        SettingsCard { signOutButton }
+        Text("Signing out ends this device’s session. Your hosts and conversations stay on your account.")
+          .font(.footnote).foregroundStyle(.secondary)
+      }
+      .padding(20).frame(maxWidth: 640).frame(maxWidth: .infinity)
+    }
+    .background(ChatColors.background)
+    .navigationTitle("Account").navigationBarTitleDisplayMode(.inline)
+  }
+
+  private var appearancePage: some View {
+    ScrollView {
+      SettingsCard {
+        HStack {
+          Label("Appearance", systemImage: "moon")
+          Spacer()
+          Picker("Appearance", selection: $appearance) {
+            ForEach(AppAppearance.allCases) { Text($0.title).tag($0) }
+          }
+          .labelsHidden().pickerStyle(.menu).accessibilityIdentifier("appearance-picker")
+        }
+        .padding(18)
+        Divider().padding(.leading, 56)
+        HStack {
+          Label("Accent color", systemImage: "paintpalette")
+          Spacer()
+          Picker("Accent color", selection: $accentColor) {
+            ForEach(AppAccentColor.allCases) { Text($0.title).tag($0) }
+          }
+          .labelsHidden().pickerStyle(.menu).accessibilityIdentifier("accent-picker")
+        }
+        .padding(18)
+      }
+      .padding(20).frame(maxWidth: 640).frame(maxWidth: .infinity)
+    }
+    .background(ChatColors.background)
+    .navigationTitle("Appearance").navigationBarTitleDisplayMode(.inline)
+  }
+
+  private var chatsPage: some View {
+    List { ChatListSettingsSection(preferences: chatList) }
+      .listStyle(.insetGrouped).scrollContentBackground(.hidden)
+      .background(ChatColors.background)
+      .navigationTitle("Chats").navigationBarTitleDisplayMode(.inline)
+  }
+
+  private var signOutButton: some View {
+    Button { confirmingSignOut = true } label: {
+      SettingsNavigationRow(title: "Sign out", icon: "rectangle.portrait.and.arrow.right", disclosure: false)
+        .foregroundStyle(.red)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Sign out")
+  }
+}
+
+private struct SettingsCard<Content: View>: View {
+  let content: Content
+  init(@ViewBuilder content: () -> Content) { self.content = content() }
+  var body: some View {
+    VStack(spacing: 0) { content }
+      .background(ChatColors.background, in: RoundedRectangle(cornerRadius: 26))
+      .overlay { RoundedRectangle(cornerRadius: 26).strokeBorder(Color.primary.opacity(0.1), lineWidth: 1) }
+  }
+}
+
+private struct SettingsNavigationRow: View {
+  let title: String
+  let icon: String
+  var value = ""
+  var subtitle: String? = nil
+  var disclosure = true
+
+  var body: some View {
+    HStack(spacing: 14) {
+      Image(systemName: icon).font(.system(size: 20)).frame(width: 24)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(title).font(.body)
+        if let subtitle { Text(subtitle).font(.footnote).foregroundStyle(.secondary) }
+      }
+      Spacer(minLength: 8)
+      if !value.isEmpty { Text(value).font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+      if disclosure { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
+    }
+    .padding(.horizontal, 18).padding(.vertical, 16)
+    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+    .contentShape(Rectangle())
   }
 }
 
@@ -152,7 +272,7 @@ private struct ChatListSettingsSection: View {
     } header: {
       Text("Chats")
     } footer: {
-      Text("Active chats are working, waiting on you, unseen, or active in the last few minutes. Pins and these settings stay on this iPhone.")
+      Text("Active chats are working, waiting on you, unseen, or active in the last few minutes. Pins and these settings stay on this device.")
     }
     .pickerStyle(.menu)
   }

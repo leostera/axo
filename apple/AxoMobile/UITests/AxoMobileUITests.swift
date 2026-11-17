@@ -504,9 +504,11 @@ final class AxoMobileUITests: XCTestCase {
     XCTAssertNotNil(settings)
     settings?.tapWhereItIs()
     XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-    // Settings › Chats: how the list groups chats, as the Mac sets it.
+    capture(app, named: "settings-home-light")
+    app.buttons["settings-chats"].tapWhereItIs()
     XCTAssertTrue(app.staticTexts["Active for"].exists || app.buttons["Active for"].exists)
     capture(app, named: "settings-chats-light")
+    app.navigationBars.buttons["Settings"].tapWhereItIs()
     let signOut = app.buttons["Sign out"]
     for _ in 0..<4 where !signOut.isHittable { app.swipeUp() }
     XCTAssertTrue(signOut.isHittable)

@@ -68,8 +68,27 @@ Legacy records can incorrectly report every platform as macos. Until platform re
 corrected independently, only a macos record with a reported Apple hardware identifier is
 positively a Mac. Unknown/mixed collections say Hosts and never default to a laptop icon.
 
+## Regular-width design refinement
+
+The sidebar defaults to conversations. Swipe left inside that column for connected hosts;
+swipe right or use Back to chats to return. These are sidebar pages, not workbench destinations:
+the selected conversation, request scope and persistent composer remain in the detail. Native
+sidebar collapse changes visibility only. The same readable 800-point column bounds wide
+transcripts and composers. Command-N creates a chat, Command-K opens search, and
+Command-backslash toggles the sidebar.
+
+Settings uses icon-led rows in rounded grouped cards with actual account/app status and native
+Account, Apps, Appearance and Chats destinations. Settings is a contained form sheet on iPad,
+not a new tablet preference store. Reference images inform spacing, typography and grouping;
+they do not add unsupported ChatGPT capabilities. Sign-out requires a separate confirmation.
+
+Fresh owned simulators cover sidebar swipes, collapse/reopen and rotation while retaining the
+same chat and draft, detail-width bounds, contained Settings navigation, visible picker labels,
+light/dark presentation, sign-out cancellation, and iPhone composer and Apps regressions.
+Owned-device in-place deployment is the completion gate for each mobile update, not a public
+release, canonical identity migration or APNs verification.
+
 ## Remaining work
 
-Polish regular-width density, keyboard shortcuts, narrow/resizable iPad windows, sheets and
-multiwindow voice ownership. Complete the independent credential bridge before canonical
+Validate narrow Stage Manager windows and multiwindow voice ownership on physical iPad. Complete the independent credential bridge before canonical
 phone installation. These are not claims of behavior already validated by the first slice.

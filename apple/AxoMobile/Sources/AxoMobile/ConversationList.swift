@@ -271,7 +271,9 @@ struct ConversationList: UIViewRepresentable {
   }
 
   fileprivate static func layout() -> UICollectionViewCompositionalLayout {
-    UICollectionViewCompositionalLayout { index, _ in
+    UICollectionViewCompositionalLayout { index, environment in
+      // Center a readable column on wide detail panes; narrow windows retain their full width.
+      let inset = ConversationLayout.rowInset(in: environment.container.effectiveContentSize.width)
       let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(120))
       let item = NSCollectionLayoutItem(layoutSize: size)
       let group = NSCollectionLayoutGroup.vertical(layoutSize: size, subitems: [item])
@@ -279,12 +281,12 @@ struct ConversationList: UIViewRepresentable {
       switch index {
       case 0:
         // Less the point the top takes when it has nothing to show (`LeadingColumn`).
-        section.contentInsets = .init(top: 23, leading: 20, bottom: 0, trailing: 20)
+        section.contentInsets = .init(top: 23, leading: inset, bottom: 0, trailing: inset)
       default:
         // No room between rows: each row leaves its own under it (`ConversationItemView.gap`), so
         // tools used one after another can join into one block. What is under the last row is the
         // bottom's to leave (`ConversationBottom`).
-        section.contentInsets = .init(top: 0, leading: 20, bottom: 0, trailing: 20)
+        section.contentInsets = .init(top: 0, leading: inset, bottom: 0, trailing: inset)
       }
       return section
     }

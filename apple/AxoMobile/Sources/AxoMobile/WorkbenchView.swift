@@ -42,6 +42,7 @@ struct WorkbenchView: View {
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @State private var splitVisibility: NavigationSplitViewVisibility = .all
+  @State private var sidebarShowsHosts = PreviewFixture.hostsOpen
   @State private var showingInfo = false
   /// Settings, open on its first page or on Apps (the account panel's Apps row).
   @State private var settings: SettingsView.Opening? =
@@ -138,10 +139,8 @@ struct WorkbenchView: View {
     Group {
       if horizontalSizeClass == .regular {
         NavigationSplitView(columnVisibility: $splitVisibility) {
-          Group {
-            if layer == .account { accountLayer } else { sidebar }
-          }
-          .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
+          WorkbenchSidebarPager(showingHosts: $sidebarShowsHosts, chats: sidebar, hosts: accountLayer)
+          .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 340)
           .toolbar(.hidden, for: .navigationBar)
         } detail: {
           conversation
@@ -255,7 +254,7 @@ struct WorkbenchView: View {
         refresh: { await workbench.refresh() })
     }
     .sheet(item: $settings) { opening in
-      SettingsView(account: environment.account, apps: apps, chatList: chatPrefs, opening: opening) {
+      SettingsView(account: environment.account, hosts: workbench.hosts, apps: apps, chatList: chatPrefs, opening: opening) {
         Task {
           // End it at the relay too, so a copied token stops working; then forget it here.
           try? await AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens).signOut()
@@ -570,11 +569,16 @@ struct WorkbenchView: View {
       showSettings: { settings = .settings },
       refresh: { await workbench.refresh() },
       requests: horizontalSizeClass != .regular && layer == .account
-        ? RequestsBell(phone: workbench, open: { showingRequests = true }) : nil)
+        ? RequestsBell(phone: workbench, open: { showingRequests = true }) : nil,
+      backToChats: horizontalSizeClass == .regular ? { sidebarShowsHosts = false } : nil)
   }
 
   /// Moves the stack to `layer`, as a swipe would.
   private func show(_ layer: Layer) {
+    if horizontalSizeClass == .regular, layer == .account || layer == .chats {
+      withAnimation(reduceMotion ? nil : .snappy) { sidebarShowsHosts = layer == .account }
+      return
+    }
     withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.42, bounce: 0.08)) { self.layer = layer }
   }
 
@@ -600,6 +604,7 @@ struct WorkbenchView: View {
           .frame(width: 44, height: 44)
       }
       .accessibilityLabel("Search chats")
+      .keyboardShortcut("k", modifiers: .command)
       if horizontalSizeClass != .regular, layer == .chats {
         RequestsBell(phone: workbench, open: { showingRequests = true })
       }
@@ -624,6 +629,7 @@ struct WorkbenchView: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("New chat")
+      .keyboardShortcut("n", modifiers: .command)
 
       Spacer(minLength: 0)
 
@@ -770,6 +776,7 @@ private struct HostsPanel: View {
   let showSettings: () -> Void
   let refresh: () async -> Void
   let requests: RequestsBell?
+  var backToChats: (() -> Void)? = nil
 
   /// The Mac being named, and the name typed so far.
   @State private var renaming: RemoteHost?
@@ -873,7 +880,14 @@ private struct HostsPanel: View {
     .layerBar(edge: .top) {
       // No way back here: the chats are the strip at the edge, a tap or a swipe left away.
       HStack {
-        Text("Account").font(.title3.weight(.semibold))
+        if let backToChats {
+          Button(action: backToChats) {
+            Image(systemName: "chevron.left").frame(width: 44, height: 44)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Back to chats")
+        }
+        Text(backToChats == nil ? "Account" : HostPresentation.collectionName(hosts.hosts)).font(.title3.weight(.semibold))
           .accessibilityAddTraits(.isHeader)
         Spacer(minLength: 0)
         if let requests { requests }
