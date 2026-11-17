@@ -10,6 +10,33 @@ struct AppsView: View {
   @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
+    Group {
+      if UIDevice.current.userInterfaceIdiom == .pad {
+        AppsGridView(model: model, tiles: allTiles, query: $query)
+      } else {
+        phoneList
+      }
+    }
+    .background(ChatColors.background)
+    .navigationTitle("Apps")
+    .navigationBarTitleDisplayMode(.inline)
+    .navigationDestination(for: AppsRoute.self) { route in
+      switch route {
+      case .app(let name): AppPageView(model: model, name: name)
+      case .server(let id): KnownServerPageView(model: model, known: KnownServer.all.first { $0.id == id }!)
+      case .servers: ServersPageView(model: model)
+      case .activity: ActivityView(model: model)
+      }
+    }
+    .refreshable { await Task { await model.refresh() }.value }
+    .task { await model.refresh() }
+    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await model.refresh() } } }
+    .appsNotice(model)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("apps")
+  }
+
+  private var phoneList: some View {
     List {
       switch model.phase {
       case .idle, .loading:
@@ -28,59 +55,32 @@ struct AppsView: View {
     .scrollContentBackground(.hidden)
     .background(ChatColors.background)
     .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search apps")
-    .navigationTitle("Apps")
-    .navigationBarTitleDisplayMode(.inline)
-    .navigationDestination(for: AppsRoute.self) { route in
-      switch route {
-      case .app(let name): AppPageView(model: model, name: name)
-      case .server(let id): KnownServerPageView(model: model, known: KnownServer.all.first { $0.id == id }!)
-      case .servers: ServersPageView(model: model)
-      case .activity: ActivityView(model: model)
-      }
-    }
-    .refreshable { await Task { await model.refresh() }.value }
-    .task { await model.refresh() }
-    // Back from a sign-in on the web: what it added shows.
-    .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await model.refresh() } } }
-    .appsNotice(model)
-    .accessibilityIdentifier("apps")
   }
 
   // MARK: - Tiles
 
-  private struct Tile: Identifiable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let detail: String
-    let category: String
-    let connected: Bool
-    let logo: AppLogo.Source
-    let route: AppsRoute
-  }
-
-  private var allTiles: [Tile] {
+  private var allTiles: [AppCatalogTile] {
     let apps = model.apps.map { app in
-      Tile(
+      AppCatalogTile(
         id: app.name, title: app.title, subtitle: app.description, detail: AppsCatalog.detail(of: app),
-        category: app.category, connected: app.isConnected, logo: .app(app.name), route: .app(app.name))
+        category: app.category, provider: app.provider, connected: app.isConnected, logo: .app(app.name), route: .app(app.name))
     }
     let known = KnownServer.all.map { known in
       let added = model.servers.filter { KnownServer.of(url: $0.url)?.id == known.id }
-      return Tile(
+      return AppCatalogTile(
         id: "mcp:\(known.id)", title: known.title, subtitle: known.description,
-        detail: added.isEmpty ? "Add" : AppsCatalog.count(added.count, "account"), category: known.category,
+        detail: added.isEmpty ? "Add" : AppsCatalog.count(added.count, "account"), category: known.category, provider: known.provider,
         connected: added.contains { $0.state == .ready }, logo: .known(known), route: .server(known.id))
     }
     let byURL = model.servers.filter { KnownServer.of(url: $0.url) == nil }.map { server in
-      Tile(
+      AppCatalogTile(
         id: server.name, title: server.displayName, subtitle: Self.host(server.url), detail: ServerRow.state(of: server),
-        category: "mcp", connected: server.state == .ready, logo: .server(server.icon), route: .servers)
+        category: "mcp", provider: "MCP", connected: server.state == .ready, logo: .server(server.icon), route: .servers)
     }
     return apps + known + byURL
   }
 
-  private var shownTiles: [Tile] {
+  private var shownTiles: [AppCatalogTile] {
     let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
     guard !needle.isEmpty else { return allTiles }
     return allTiles.filter { "\($0.title) \($0.subtitle)".lowercased().contains(needle) }
@@ -117,7 +117,7 @@ struct AppsView: View {
     }
   }
 
-  private func tileRow(_ tile: Tile) -> some View {
+  private func tileRow(_ tile: AppCatalogTile) -> some View {
     NavigationLink(value: tile.route) {
       HStack(spacing: 12) {
         AppLogo(source: tile.logo, size: 30)

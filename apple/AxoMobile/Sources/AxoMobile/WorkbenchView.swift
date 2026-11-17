@@ -410,7 +410,8 @@ struct WorkbenchView: View {
       showApps: openApps,
       showRequests: detail == .conversation && (horizontalSizeClass == .regular || layer == .conversation)
         ? { showingRequests = true } : nil,
-      showInfo: horizontalSizeClass == .regular ? { toggleInfo() } : nil
+      showInfo: horizontalSizeClass == .regular ? { toggleInfo() } : nil,
+      presented: detail == .conversation
     )
     .id(currentSession?.sessionId)
   }
@@ -730,8 +731,8 @@ struct WorkbenchView: View {
       .accessibilityLabel("Settings")
     }
     .buttonStyle(.plain)
-    .padding(.leading, MenuLayout.contentLeading)
-    .padding(.trailing, MenuLayout.contentTrailing)
+    .padding(.leading, UIDevice.current.userInterfaceIdiom == .pad ? 12 : MenuLayout.contentLeading)
+    .padding(.trailing, UIDevice.current.userInterfaceIdiom == .pad ? 12 : MenuLayout.contentTrailing)
     .padding(.top, 10)
   }
 }
@@ -1008,8 +1009,8 @@ private struct HostsPanel: View {
         .accessibilityLabel("Settings")
       }
       .buttonStyle(.plain)
-      .padding(.leading, MenuLayout.contentLeading)
-      .padding(.trailing, MenuLayout.contentTrailing)
+      .padding(.leading, UIDevice.current.userInterfaceIdiom == .pad ? 12 : MenuLayout.contentLeading)
+      .padding(.trailing, UIDevice.current.userInterfaceIdiom == .pad ? 12 : MenuLayout.contentTrailing)
       .padding(.top, 10)
     }
   }

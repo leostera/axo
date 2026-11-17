@@ -15,6 +15,7 @@ struct ConversationView: View {
   let showSidebar: () -> Void
   let showRequests: (() -> Void)?
   let showInfo: (() -> Void)?
+  let presented: Bool
   /// Saying a message instead of typing it, where the iPhone can.
   let voice: VoicePrompt?
   /// Settings › Apps, from the box's + menu.
@@ -46,7 +47,7 @@ struct ConversationView: View {
   init(
     phone: PhoneWorkbench, workbench: HostWorkbenchModel?, session: RemoteSession?, showSidebar: @escaping () -> Void,
     voice: VoicePrompt?, showApps: (() -> Void)? = nil,
-    showRequests: (() -> Void)? = nil, showInfo: (() -> Void)? = nil
+    showRequests: (() -> Void)? = nil, showInfo: (() -> Void)? = nil, presented: Bool = true
   ) {
     self.phone = phone
     self.workbench = workbench
@@ -54,6 +55,7 @@ struct ConversationView: View {
     self.showSidebar = showSidebar
     self.showRequests = showRequests
     self.showInfo = showInfo
+    self.presented = presented
     self.voice = voice
     self.showApps = showApps
     let pull = ConversationPull()
@@ -66,8 +68,12 @@ struct ConversationView: View {
     let _ = RenderCount.note("Conversation")
     conversation
       .background(ChatColors.background)
-      .conversationBar(edge: .top) { header }
-      .conversationBar(edge: .bottom) { bottomBar }
+      .conversationBar(edge: .top) {
+        header.opacity(presented ? 1 : 0).allowsHitTesting(presented).accessibilityHidden(!presented)
+      }
+      .conversationBar(edge: .bottom) {
+        bottomBar.opacity(presented ? 1 : 0).allowsHitTesting(presented).accessibilityHidden(!presented)
+      }
       .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
       // On screen, what the chat holds is history: it just appears.
       .onChange(of: session?.sessionId, initial: true) { previous, _ in

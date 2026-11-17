@@ -9,6 +9,69 @@ final class AxoMobileTabletTests: XCTestCase {
   }
 
   @MainActor
+  func testSidebarBackgroundCoversTopAndBottomSafeAreasOnBothPages() {
+    continueAfterFailure = false
+    XCUIDevice.shared.orientation = .portrait
+    for appearance in ["light", "dark"] {
+      let app = XCUIApplication()
+      app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_CHAT": "2"]
+      app.launchArguments = ["-appearance", appearance]
+      app.launch()
+      let sidebar = app.scrollViews["workbench-menu"].firstMatch
+      XCTAssertTrue(sidebar.waitForExistence(timeout: 20))
+      assertFooterInsets(in: app, container: sidebar, leading: "New chat")
+      Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "ipad-sidebar-\(appearance)-full-bleed")
+      assertSidebarSafeAreaBackground(sidebar, in: app, dark: appearance == "dark")
+      sidebar.swipeRight(velocity: .slow)
+      let hosts = app.scrollViews["hosts-panel"].firstMatch
+      wait { hosts.isHittable }
+      assertFooterInsets(in: app, container: hosts, leading: "Pair a Mac")
+      assertSidebarSafeAreaBackground(hosts, in: app, dark: appearance == "dark")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  private func assertFooterInsets(in app: XCUIApplication, container: XCUIElement, leading: String) {
+    let first = app.buttons.matching(identifier: leading).allElementsBoundByIndex.first { $0.isHittable }
+    let last = app.buttons.matching(identifier: "Settings").allElementsBoundByIndex.first { $0.isHittable }
+    XCTAssertNotNil(first)
+    XCTAssertNotNil(last)
+    guard let first, let last else { return }
+    XCTAssertLessThanOrEqual(first.frame.minX - container.frame.minX, 16)
+    XCTAssertLessThanOrEqual(container.frame.maxX - last.frame.maxX, 16)
+    XCTAssertGreaterThanOrEqual(last.frame.height, 44)
+  }
+
+  @MainActor
+  private func assertSidebarSafeAreaBackground(_ sidebar: XCUIElement, in app: XCUIApplication, dark: Bool) {
+    let screenshot = XCUIScreen.main.screenshot()
+    guard let image = screenshot.image.cgImage else { return XCTFail("Missing screenshot") }
+    let width = image.width, height = image.height
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    let drawn = pixels.withUnsafeMutableBytes { bytes -> Bool in
+      guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
+      else { return false }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+      return true
+    }
+    XCTAssertTrue(drawn)
+    // Portrait avoids XCTest's landscape bitmap orientation issue. Stay clear of system text,
+    // window corners and the detail pane's home indicator.
+    let scale = Double(width) / app.windows.firstMatch.frame.width
+    let x = Int(sidebar.frame.midX * scale)
+    for y in [4, height - 5] {
+      let offset = (y * width + x) * 4
+      let rgb = pixels[offset..<(offset + 3)]
+      // Allow the native floating-column shadow at the extreme bottom edge, not a solid grey band.
+      XCTAssertTrue(rgb.allSatisfy { dark ? $0 < 30 : $0 > 240 },
+        "Sidebar safe areas must match its background, not leak grey navigation chrome: dark=\(dark) x=\(x) y=\(y) rgb=\(Array(rgb))")
+    }
+  }
+
+  @MainActor
   func testSidebarPagingAndCollapsePreserveTheConversationAndDraft() {
     continueAfterFailure = false
     XCUIDevice.shared.orientation = .landscapeLeft
@@ -53,6 +116,41 @@ final class AxoMobileTabletTests: XCTestCase {
     app.buttons["Toggle sidebar"].tapWhereItIs()
     wait { sidebar.isHittable }
     XCTAssertEqual(editor.value as? String, "Keep this iPad draft")
+  }
+
+  @MainActor
+  func testAppsUsesCardsWithSearchStatusAndCategoryFilters() {
+    continueAfterFailure = false
+    XCUIDevice.shared.orientation = .landscapeLeft
+    defer { XCUIDevice.shared.orientation = .portrait }
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_APPS": "1"]
+    app.launch()
+    let gmail = app.buttons["Gmail"]
+    let passwords = app.buttons["1Password"]
+    XCTAssertTrue(gmail.waitForExistence(timeout: 20))
+    XCTAssertTrue(passwords.exists)
+    XCTAssertEqual(gmail.frame.minY, passwords.frame.minY, accuracy: 2)
+    XCTAssertGreaterThanOrEqual(passwords.frame.minX, gmail.frame.maxX + 10)
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "ipad-apps-grid")
+    let search = app.textFields["apps-grid-search"]
+    search.tapWhereItIs()
+    search.typeText("Google\n")
+    XCTAssertTrue(gmail.exists)
+    XCTAssertTrue(app.buttons["Calendar"].exists, "Search includes the provider as on the web")
+    app.buttons["apps-status-notConnected"].tapWhereItIs()
+    wait { !gmail.exists }
+    XCTAssertTrue(app.buttons["Calendar"].exists)
+    app.buttons["apps-category-productivity"].tapWhereItIs()
+    XCTAssertTrue(app.buttons["Calendar"].exists)
+    app.buttons["apps-category-communication"].tapWhereItIs()
+    XCTAssertTrue(app.staticTexts["No apps match"].exists)
+    app.buttons["apps-status-all"].tapWhereItIs()
+    XCTAssertTrue(gmail.exists)
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "ipad-apps-filtered")
+    gmail.tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Gmail"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.sheets.count, 0)
   }
 
   @MainActor

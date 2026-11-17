@@ -79,7 +79,9 @@ transcripts and composers. Command-N creates a chat, Command-K opens search, and
 Command-backslash toggles the sidebar.
 
 Apps is a workbench detail destination, not a modal on iPad, including narrow windows and
-entry through Settings. Keep the selected conversation and its editor mounted while browsing;
+entry through Settings. Its adaptive card grid mirrors the web catalog: visible search
+(including providers), connection-status and category filters, and existing app/server detail
+routes. Narrow iPad panes use compact filters without reverting to a phone list. Keep the selected conversation and its editor mounted while browsing;
 returning to it or choosing a sidebar chat restores the draft. Apps owns its navigation stack,
 while the global requests inbox stays available in its header. Leaving the conversation retires
 pending Send admission, never cancels an already-dispatched command, and cannot release a
