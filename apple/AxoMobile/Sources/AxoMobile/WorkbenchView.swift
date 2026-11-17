@@ -56,20 +56,12 @@ struct WorkbenchView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
-  /// The folders folded away in the menu, by section id, one a line; kept across launches.
-  @AppStorage("collapsedFolders") private var collapsedFolderList = ""
-  /// The folders showing their older chats too. Not kept: that is a look back, not a way the
-  /// menu stays.
-  @State private var showingOlder: Set<String> = []
-  /// Whether the menu lists chats as the Mac's sidebar does (Pinned, Active, Earlier) or under
-  /// their folders; kept across launches.
-  @AppStorage("chatListMode") private var chatListMode: ChatListMode = .recent
   /// Pins, seen marks and how to group, kept on this phone (Settings › Chats).
   @State private var chatPrefs = ChatListPreferences(defaults: Self.chatListDefaults())
   /// The groups as they were when the chats showed, so a chat that just finished a message does
   /// not move under a finger reaching for a row; it moves into place the next time they show.
   /// Held, not observed: taking hold as the menu opens is what that redraw just showed, so it
-  /// redraws nothing more (twice per swipe otherwise); a pin or a change of mode redraws anyway.
+  /// redraws nothing more (twice per swipe otherwise); pinning redraws anyway.
   @State private var held = HeldGroups()
 
   private final class HeldGroups {
@@ -274,13 +266,12 @@ struct WorkbenchView: View {
       if PreviewFixture.chatOpen != nil {
         // The listing is applied as the socket's hello arrives, after `start` returns: wait for it
         // (a few seconds at most) before choosing the chat to open.
-        for _ in 0..<100 where sections.flatMap(\.chats).isEmpty {
+        for _ in 0..<100 where menuEntries.isEmpty {
           try? await Task.sleep(for: .milliseconds(30))
         }
       }
-      let chats = sections.flatMap(\.chats)
-      if let index = PreviewFixture.chatOpen, chats.indices.contains(index - 1) {
-        workbench.select(host: chats[index - 1].host.hostId, session: chats[index - 1].session.sessionId)
+      if let selection = PreviewFixture.chatSelection {
+        workbench.select(host: selection.host, session: selection.session)
         #if DEBUG && targetEnvironment(simulator)
           if let live = PreviewFixture.live, live != "stream", let current = workbench.current, let id = current.selectedSessionID {
             // Played over the chat once it is open, or opening it would replace what was played.
@@ -300,7 +291,7 @@ struct WorkbenchView: View {
                   id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a", sessionId: id,
                   message: "Delete the branch feat/old-ui? It has 3 unmerged commits.",
                   createdAt: now, expiresAt: now + 300_000),
-                host: chats[index - 1].host.hostId)
+                host: selection.host)
             }
           }
         #endif
@@ -363,25 +354,8 @@ struct WorkbenchView: View {
           Text(message).font(.caption).foregroundStyle(.orange)
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
-        if chatListMode == .recent, !sections.isEmpty {
-          groupedChats
-        } else if chatListMode == .folders {
-          // Pinned chats lead in folders too, as in the grouped list.
-          ForEach(pinnedEntries, id: \.key) { entry in chatRow(entry, showsAge: false, pinned: true) }
-        }
-        ForEach(chatListMode == .folders ? sections : []) { section in
-          let collapsed = collapsedFolders.contains(section.id)
-          sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
-          if !collapsed {
-            sectionChats(section)
-          } else {
-            ForEach(ChatGrouping.visible(section.chats, folded: true, keeping: selectedChatKey)
-              .filter { !chatPrefs.pins.contains($0.session.sessionId) }, id: \.key) { entry in
-                chatRow(entry, showsAge: false)
-              }
-          }
-        }
-        if sections.isEmpty {
+        if !menuEntries.isEmpty { groupedChats }
+        if menuEntries.isEmpty {
           if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
             ContentUnavailableView(
               "No Macs yet", systemImage: "laptopcomputer",
@@ -463,7 +437,7 @@ struct WorkbenchView: View {
     ForEach(groupedItems) { item in
       switch item {
       case .header(let section, let folded, let first): groupHeader(section, folded: folded, first: first)
-      case .chat(let entry, let pinned): chatRow(entry, showsAge: true, pinned: pinned)
+      case .chat(let entry, let pinned): chatRow(entry, pinned: pinned)
       case .more(let title, let showAll): showMoreButton(title) { showingAllEarlier = showAll }
       }
     }
@@ -489,15 +463,6 @@ struct WorkbenchView: View {
       .accessibilityIdentifier("mark-all-read")
       .transition(.opacity)
     }
-  }
-
-  /// Pinned chats, in pin order: the top of the folders list.
-  private var pinnedEntries: [ChatMenuEntry] {
-    let all = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
-    return ChatGrouping.sections(
-      all.filter { chatPrefs.pins.contains($0.session.sessionId) }, pins: chatPrefs.pins, seen: chatPrefs.seen,
-      now: 0, settings: chatPrefs.settings
-    ).first?.chats ?? []
   }
 
   /// A group's title; Earlier's folds it away, with how many chats it holds.
@@ -548,78 +513,8 @@ struct WorkbenchView: View {
     .padding(.horizontal, MenuLayout.rowInset)
   }
 
-  private var collapsedFolders: Set<String> {
-    Set(collapsedFolderList.split(separator: "\n").map(String.init))
-  }
-
-  private func toggleCollapsed(_ id: String) {
-    var collapsed = collapsedFolders
-    if collapsed.remove(id) == nil { collapsed.insert(id) }
-    collapsedFolderList = collapsed.sorted().joined(separator: "\n")
-  }
-
-  /// A folder's title, which folds it away; a dot says a chat in a folded one is busy.
-  private func sectionHeader(_ section: ChatMenuSection, collapsed: Bool, first: Bool) -> some View {
-    Button {
-      withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { toggleCollapsed(section.id) }
-    } label: {
-      HStack(spacing: 6) {
-        Text(section.title).lineLimit(1)
-        Image(systemName: "chevron.down")
-          .font(.caption2.weight(.bold))
-          .rotationEffect(.degrees(collapsed ? -90 : 0))
-        Spacer(minLength: 0)
-        if collapsed, section.isBusy { Circle().fill(Color.orange).frame(width: 6, height: 6) }
-      }
-      .font(.footnote.weight(.semibold))
-      .foregroundStyle(.secondary)
-      .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
-      .padding(.trailing, MenuLayout.rowInset + MenuLayout.rowTextInset)
-      .padding(.top, first ? 4 : MenuLayout.sectionTopSpacing)
-      .padding(.bottom, 2)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.layerRow)
-    .accessibilityLabel(section.title)
-    .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
-    .accessibilityHint(collapsed ? "Shows its chats" : "Hides its chats")
-    .accessibilityAddTraits(.isHeader)
-    .accessibilityIdentifier("folder-section")
-  }
-
-  /// An open folder's chats: those active in the last 8 hours (and busy ones, and the open one),
-  /// then the rest when asked for.
-  @ViewBuilder private func sectionChats(_ section: ChatMenuSection) -> some View {
-    let recent = section.recentChats(now: .now) { entry in
-      workbench.selection == PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId)
-    }
-    let olderCount = section.chats.count - recent.count
-    let expanded = showingOlder.contains(section.id)
-    // Pinned chats are listed above the folders, not again in theirs.
-    ForEach((expanded ? section.chats : recent).filter { !chatPrefs.pins.contains($0.session.sessionId) },
-      id: \.session.sessionId)
-    { entry in
-      chatRow(entry, showsAge: false)
-    }
-    if olderCount > 0 {
-      Button {
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
-          if expanded { showingOlder.remove(section.id) } else { showingOlder.insert(section.id) }
-        }
-      } label: {
-        Text(expanded ? "Show fewer" : "Show \(olderCount) older \(olderCount == 1 ? "chat" : "chats")")
-          .font(.callout).foregroundStyle(.secondary)
-          .padding(.horizontal, MenuLayout.rowTextInset)
-          .frame(maxWidth: .infinity, minHeight: MenuLayout.rowHeight, alignment: .leading)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.layerRow)
-      .padding(.horizontal, MenuLayout.rowInset)
-    }
-  }
-
   /// A chat in the menu, which opens it; a long press pins it to the top, or unpins it.
-  private func chatRow(_ entry: ChatMenuEntry, showsAge: Bool, pinned: Bool = false) -> some View {
+  private func chatRow(_ entry: ChatMenuEntry, pinned: Bool = false) -> some View {
     let marker = chatPrefs.settings.unseenMarker
     let unseen = chatPrefs.seen.isUnseen(entry.session)
       && workbench.selection != PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId)
@@ -632,9 +527,8 @@ struct WorkbenchView: View {
         selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
         name: entry.session.displayName,
         status: entry.session.status,
-        lastActive: showsAge ? ChatMenu.activity(entry.session) : nil,
-        // In folders the section's title names the Mac; the recent list mixes them.
-        hostLabel: showsAge && workbench.hosts.hosts.count > 1 ? entry.host.label : nil,
+        lastActive: ChatMenu.activity(entry.session),
+        hostLabel: workbench.hosts.hosts.count > 1 ? entry.host.label : nil,
         pinned: pinned,
         unseen: unseen ? marker : nil)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -653,9 +547,8 @@ struct WorkbenchView: View {
     }
   }
 
-  /// The chats, by folder, the most recently active first (see `ChatMenu`).
-  private var sections: [ChatMenuSection] {
-    ChatMenu.sections(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
+  private var menuEntries: [ChatMenuEntry] {
+    ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
   }
 
   /// The account and its Macs, under the chats.
@@ -687,16 +580,6 @@ struct WorkbenchView: View {
       OwnMascotView(loading: workbench.hosts.phase == .loading)
         .frame(maxWidth: 34).frame(height: 34)
       Spacer(minLength: 0)
-      Button {
-        chatListMode = chatListMode == .folders ? .recent : .folders
-        held.groups = liveGroups(now: .now)
-      } label: {
-        Image(systemName: chatListMode == .folders ? "clock" : "list.bullet.indent")
-          .font(.system(size: 18, weight: .medium))
-          .frame(width: 44, height: 44)
-      }
-      .accessibilityLabel(chatListMode == .folders ? "Show recent chats" : "Show folders")
-      .accessibilityIdentifier("chat-list-mode")
       // The account and its Macs are also one more swipe to the right.
       Button {
         show(.account)

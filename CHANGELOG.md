@@ -6,6 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Remove the mobile chat-list mode selector and folder layout. Pinned / Active / Earlier is now the only layout, regardless of any old saved mode; Earlier folding and selected-chat visibility are unchanged.
 - The mobile composer rests as a smaller, inset single-row island and smoothly expands into the existing two-row editor on focus. One persistent text view preserves focus and composition; drafts, attachments and open menus stay expanded, with no changes to voice or delivery semantics.
 - Keep the selected chat visible and highlighted when Earlier or its folder is collapsed, or a row limit would hide it. Show the conversation name in the header.
 - Remove fake screen corner masks, black borders and private display-corner lookup. Request controls belong to the active pane’s header instead of floating across displaced layers; compact header controls no longer use oversized material discs.

@@ -11,13 +11,18 @@ enum PreviewFixture {
     static var requested: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW"] == "1" }
 
     static var menuOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_MENU"] == "1" }
-    /// Open this chat (1 is the first in the menu) instead of a blank one.
+    /// Open the numbered fixture chat instead of a blank one.
     static var chatOpen: Int? { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_CHAT"].flatMap(Int.init) }
     static var settingsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_SETTINGS"] == "1" || appsOpen }
     /// Open Settings › Apps (`AXO_PHONE_PREVIEW_APPS=1`).
     static var appsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_APPS"] == "1" }
     /// Open the Macs and account panel (`AXO_PHONE_PREVIEW_HOSTS=1`).
     static var hostsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_HOSTS"] == "1" }
+    /// Fixture identity is independent of the menu's display ordering.
+    static var chatSelection: PhoneWorkbench.Selection? {
+      guard let chatOpen, let entry = sessions().first(where: { $0.number == chatOpen }) else { return nil }
+      return PhoneWorkbench.Selection(host: entry.host, session: sessionID(entry.number))
+    }
     /// Play a reply being written, a running tool and a question in the open chat
     /// (`AXO_PHONE_PREVIEW_LIVE=reply|question|stopping|elicitation`); `elicitation` also has the
     /// account ask a question a few seconds later.
@@ -203,6 +208,7 @@ enum PreviewFixture {
     static var requested: Bool { false }
     static var menuOpen: Bool { false }
     static var chatOpen: Int? { nil }
+    static var chatSelection: PhoneWorkbench.Selection? { nil }
     static var settingsOpen: Bool { false }
     static var appsOpen: Bool { false }
     static var hostsOpen: Bool { false }

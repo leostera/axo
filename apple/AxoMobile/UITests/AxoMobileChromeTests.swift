@@ -58,6 +58,22 @@ final class AxoMobileChromeTests: XCTestCase {
   }
 
   @MainActor
+  func testOldFolderPreferenceCannotRestoreTheModeSelectorOrFolderLayout() {
+    continueAfterFailure = false
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1"]
+    app.launchArguments = ["-appearance", "light", "-chatListMode", "folders"]
+    app.launch()
+    XCTAssertTrue(app.staticTexts["conversation-title"].waitForExistence(timeout: 15))
+    app.buttons["Chats menu"].tapWhereItIs()
+    XCTAssertTrue(app.buttons["chat-group-active"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["chat-group-earlier"].exists)
+    XCTAssertFalse(app.buttons["chat-list-mode"].exists)
+    XCTAssertFalse(app.buttons["folder-section"].exists)
+    capture(app, "phone-active-earlier-only")
+  }
+
+  @MainActor
   func testContentIsFullBleedWithoutFakeDisplayCorners() {
     let app = launch()
     assertLightCorners(app)
