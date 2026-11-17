@@ -129,6 +129,15 @@ Commands and limits: [Apple distribution foundations](../../apple/DISTRIBUTION.m
 Apple's current response documentation recommends waiting 15 minutes before retrying 5xx
 responses, often longer than a request's lifetime. There is no provider-internal retry loop.
 
+## Coordinated migration authorization
+
+The person subsequently explicitly approved moving the complete installed mobile/Watch/widget
+family with preservation gates, shared migration Keychain access and development provisioning.
+The earlier canceled account prompts above are historical, not the current authorization state.
+[RFD0067](RFD0067-preserving-apple-identity-migration.md) governs that staged rollout. It does not
+authorize uninstall/reset, certificate replacement, production push or app submissions; APNs is
+restricted to the canonical root. Source implementation and physical completion remain distinct.
+
 ## Alternatives and open questions
 
 Keeping foreground-only inboxes avoids provider infrastructure but cannot supply locked-phone attention. Silent-only pushes cannot replace user-visible alerts because Apple does not guarantee background delivery. A notification broker adds another data processor; direct APNs from the Worker is preferred only after its production transport is validated.

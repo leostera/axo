@@ -60,7 +60,19 @@ def mobile_policy(info, entitlements, profile, *, bundle_id, team, channel, apns
     expected_groups = [application_id]
     if migration:
         require(channel == "development", "Migration is a separately approved development operation")
-        expected_groups.append(prefix + "dev.leostera.axo.migration")
+        if bundle_id == "dev.leostera.axo.phone.watchkitapp":
+            expected_groups = [prefix + "*"]  # retain the installed development namespace first
+        shared_group = prefix + "dev.leostera.axo.migration"
+        expected_groups.append(shared_group)
+        source_ids = {"dev.leostera.axo.phone", "dev.leostera.axo.phone.watchkitapp"}
+        destination_ids = {"dev.leostera.axo", "dev.leostera.axo.watch"}
+        require(bundle_id in source_ids or bundle_id in destination_ids, "Unexpected preservation probe identity")
+        expected_mode = "source" if bundle_id in source_ids else "destination"
+        require(info.get("AXOIdentityProbeMode") == expected_mode and
+                info.get("AXOIdentityProbeAccessGroup") == shared_group, "Missing or mismatched preservation gate metadata")
+    else:
+        require("AXOIdentityProbeMode" not in info and "AXOIdentityProbeAccessGroup" not in info,
+                "Preservation probes require the explicit migration signing gate")
     groups = entitlements.get("keychain-access-groups")
     # These already-installed development companions shipped with the profile's wildcard.
     # Preserve that namespace until an approved Watch migration; never waive canonical or
@@ -146,11 +158,7 @@ def is_provisioning_signer(subject):
     return names == ["CN=Apple iPhone OS Provisioning Profile Signing"]
 
 
-def mobile_bundle(app, *, team, identifier, channel, apns, migration, root):
-    info = plist(app / "Info.plist")
-    supported = info.get("CFBundleSupportedPlatforms", [])
-    require(supported == (["iPhoneOS"] if root else ["WatchOS"]), "Unexpected device platform or simulator artifact")
-    entitlements, _ = evidence(app, team, identifier)
+def read_provisioning_profile(path):
     # security cms can import certificates into the default Keychain. Verify CMS against
     # read-only system Apple roots instead; inspection must not mutate the person's Keychain.
     with tempfile.TemporaryDirectory(prefix="axo-profile-evidence-") as directory:
@@ -161,7 +169,7 @@ def mobile_bundle(app, *, team, identifier, channel, apns, migration, root):
         root_file.write_bytes(roots)
         signer_file = Path(directory) / "profile-signer.pem"
         raw, _ = run("/usr/bin/openssl", "smime", "-verify", "-inform", "DER", "-purpose", "any",
-                     "-CAfile", str(root_file), "-signer", str(signer_file), "-in", str(app / "embedded.mobileprovision"))
+                     "-CAfile", str(root_file), "-signer", str(signer_file), "-in", str(path))
         require(signer_file.read_bytes().count(b"BEGIN CERTIFICATE") == 1, "Ambiguous provisioning signer")
         subject, _ = run("/usr/bin/openssl", "x509", "-in", str(signer_file), "-noout", "-subject", "-nameopt", "RFC2253")
         require(is_provisioning_signer(subject.decode("utf-8", errors="replace")),
@@ -171,6 +179,15 @@ def mobile_bundle(app, *, team, identifier, channel, apns, migration, root):
         require(isinstance(profile, dict), "Malformed provisioning profile")
     except (ValueError, plistlib.InvalidFileException):
         raise GateError("Provisioning profile could not be decoded") from None
+    return profile
+
+
+def mobile_bundle(app, *, team, identifier, channel, apns, migration, root):
+    info = plist(app / "Info.plist")
+    supported = info.get("CFBundleSupportedPlatforms", [])
+    require(supported == (["iPhoneOS"] if root else ["WatchOS"]), "Unexpected device platform or simulator artifact")
+    entitlements, _ = evidence(app, team, identifier)
+    profile = read_provisioning_profile(app / "embedded.mobileprovision")
     mobile_policy(info, entitlements, profile, bundle_id=identifier, team=team, channel=channel,
                   apns=apns, migration=migration)
     # A valid Apple signature alone is insufficient: it must use a certificate in this profile.
@@ -242,7 +259,8 @@ def inspect(args, config):
             child_id = plist(child / "Info.plist").get("CFBundleIdentifier")
             require(child_id in expected and child_id not in found, "Unexpected nested app identity")
             found.add(child_id)
-            mobile_bundle(child, team=team, identifier=child_id, channel=args.channel, apns=False, migration=False, root=False)
+            mobile_bundle(child, team=team, identifier=child_id, channel=args.channel, apns=False,
+                          migration=args.migration and child_id == watch, root=False)
         require(found == expected, "Missing watch app or complication")
 
 

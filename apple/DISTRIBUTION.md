@@ -84,6 +84,39 @@ Still required before live push:
 - Explicit deployed HTTP/2 validation and real owned-device foreground/background/locked tests.
   Local fake-transport tests cannot prove Workers-to-APNs compatibility or OS delivery.
 
+## Preservation probes before migration
+
+The coordinated rollout is now explicitly approved under [RFD0067](../docs/rfds/RFD0067-preserving-apple-identity-migration.md).
+That is task-specific authority, not an expansion of routine-update approval.
+
+Build/check the source family with the temporary, default-off staging switch:
+
+```sh
+bazel test //apple/ExistingPhoneUpdate:preservation_archive_test \
+  --//bazel/config:identity_preservation_probe=true --test_output=errors
+```
+
+The corresponding canonical device target is `//apple/AxoMobile:AxoMobile_ipa` with the
+same switch, but requires actual matching canonical development profiles. A skipped target
+or missing IPA is not a successful build. Inspect both signed graphs and require the source
+and destination migration groups to match for each device role before installing either.
+
+The source retains its default Keychain group first, adds only the migration group, and keeps
+its normal UI. The canonical probe has a separate read-only root: no account, workbench,
+companion activation or new signer. Invalid probe configuration stays gated. Shared envelope
+bytes remain inside the device-only Keychain; only fixed status reports may reach the harness.
+
+Launch correlation uses non-secret UUIDs: `AXO_IDENTITY_PROBE_RUN_ID` for each app attempt,
+and `AXO_IDENTITY_PROBE_SOURCE_RUN_ID` on the destination, matching the successful source
+report. A stale envelope cannot satisfy another source attempt. Read only the exact
+`Documents/axo-identity-preservation.json` report, never dump a container/defaults/Keychain.
+The report includes no token, public key, encrypted reference, account or recording metadata.
+
+Inspect the Watch's actual installed identity first; do not assume an old-ID Watch from the
+phone build graph. Source-idle confirmation is required before an update that could terminate
+dictation. A verified probe is **not** token/preferences migration and is not authority to
+remove the canonical startup gate, sign out/delete the source, or claim the move complete.
+
 ## Canonical identity migration
 
 `PhoneDeviceKey.stored` now fails closed on an unavailable or malformed existing identity.
@@ -94,8 +127,10 @@ simulator-only. Token replacement updates the existing Keychain item instead of 
 `PhoneDeviceKey.restoreForMigration` accepts only a supplied bounded opaque Enclave reference,
 restores without a creation fallback, checks the exact expected public key and verifies a
 fresh signing challenge. Its injected tests use synthetic references/software signers, not
-personal data or real Enclave keys. This is an import primitive, **not an implemented transfer
-bridge or physical cross-app proof**.
+personal data or real Enclave keys. This is an import primitive, **not a complete credential/preferences transfer
+or physical cross-app proof**. The staged preservation probe described above shares only an
+existing encrypted reference and proves its use in the other signed app; no account migration
+is enabled by it.
 
 Still required: an explicitly enabled old-ID exporter, allowlisted device-only shared-Keychain
 envelope, strict importer and exclusive startup gate before any signer creation, conflict and

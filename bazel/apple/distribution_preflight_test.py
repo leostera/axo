@@ -39,7 +39,10 @@ def fixture(channel="development", apns=False, migration=False):
     profile["Entitlements"]["keychain-access-groups"] = [PREFIX + ".*"]
     if channel != "app-store-connect":
         profile["ProvisionedDevices"] = ["synthetic-owned-device"]
-    return {"CFBundleIdentifier": BUNDLE}, entitlements, profile
+    info = {"CFBundleIdentifier": BUNDLE}
+    if migration:
+        info.update(AXOIdentityProbeMode="destination", AXOIdentityProbeAccessGroup=PREFIX + ".dev.leostera.axo.migration")
+    return info, entitlements, profile
 
 
 class MobilePolicyTests(unittest.TestCase):
@@ -121,6 +124,18 @@ class MobilePolicyTests(unittest.TestCase):
                 self.check(values, channel, apns=True)
             with self.assertRaises(policy.GateError):
                 self.check(values, channel, apns=False)
+
+    def test_existing_watch_probe_retains_its_default_group_and_requires_signed_mode(self):
+        identifier = "dev.leostera.axo.phone.watchkitapp"
+        values = fixture(migration=True)
+        values[0].update(CFBundleIdentifier=identifier, AXOIdentityProbeMode="source")
+        for entitlements in [values[1], values[2]["Entitlements"]]:
+            entitlements["application-identifier"] = PREFIX + "." + identifier
+        values[1]["keychain-access-groups"][0] = PREFIX + ".*"
+        policy.mobile_policy(*values, bundle_id=identifier, team=TEAM, channel="development", migration=True, now=NOW)
+        values[0]["AXOIdentityProbeMode"] = "destination"
+        with self.assertRaises(policy.GateError):
+            policy.mobile_policy(*values, bundle_id=identifier, team=TEAM, channel="development", migration=True, now=NOW)
 
     def test_migration_is_explicit_development_only_and_only_the_one_shared_group(self):
         self.check(fixture(migration=True), migration=True)

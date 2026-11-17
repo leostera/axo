@@ -4,6 +4,7 @@ load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:watchos.bzl", "watchos_application", "watchos_extension")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/apple:defs.bzl", "ios_device_app")
+load("//bazel/apple:preservation_probe.bzl", "preservation_probe_info")
 
 # Deliberate, manual in-place update of the installed phone, not a canonical-ID fallback.
 # Remove this package and PhoneStorageIdentity.existingPhone after validated device migration.
@@ -45,13 +46,33 @@ watchos_extension(
     deps = ["//apple/AxoWatchComplication:AxoWatchComplication"],
 )
 
+preservation_probe_info(
+    name = "phone_probe_info",
+    profile = ":phone_profile",
+    bundle_id = _PHONE,
+    mode = "source",
+    team = AXO["apple"]["team"],
+)
+
+preservation_probe_info(
+    name = "watch_probe_info",
+    profile = ":watch_profile",
+    bundle_id = _WATCH,
+    mode = "source",
+    team = AXO["apple"]["team"],
+)
+
 watchos_application(
     name = "Watch",
     bundle_id = _WATCH,
     app_icons = ["//assets:watch_app_icon"],
     extensions = [":Widget"],
     resources = ["//assets:watch_brand", "//assets:fonts"],
-    infoplists = ["//apple/AxoWatch:Info.plist", ":companion_info"],
+    infoplists = ["//apple/AxoWatch:Info.plist", ":companion_info", ":watch_probe_info"],
+    entitlements = select({
+        "//bazel/config:identity_preservation_probe_enabled": "WatchProbe.entitlements",
+        "//conditions:default": None,
+    }),
     minimum_os_version = AXO["apple"]["watchos_min"],
     version = "//apple/AxoMobile:build_version",
     provisioning_profile = ":watch_profile",
@@ -64,10 +85,13 @@ ios_application(
     bundle_id = _PHONE,
     watch_application = ":Watch",
     app_icons = ["//assets:ios_app_icon"],
-    entitlements = "ExistingPhone.entitlements",
+    entitlements = select({
+        "//bazel/config:identity_preservation_probe_enabled": "PhoneProbe.entitlements",
+        "//conditions:default": "ExistingPhone.entitlements",
+    }),
     # The same universal development build runs on both owned devices without migrating the phone.
     families = ["iphone", "ipad"],
-    infoplists = ["//apple/AxoMobile:Info.plist"],
+    infoplists = ["//apple/AxoMobile:Info.plist", ":phone_probe_info"],
     minimum_os_version = AXO["apple"]["ios_min"],
     resources = ["//assets:mascot", "//assets:fonts", "//apple/AxoMobile:app_logos"],
     provisioning_profile = ":phone_profile",
@@ -88,6 +112,23 @@ ios_device_app(
     app = ":archive",
     tags = ["manual"],
     visibility = ["//visibility:public"],
+)
+
+# This gate deliberately fails without the explicit probe flag; it is not a routine update.
+sh_test(
+    name = "preservation_archive_test",
+    srcs = ["//bazel/apple:distribution_preflight.sh"],
+    args = [
+        "$(rootpath //bazel/apple:distribution_preflight.py)",
+        "$(rootpath //:config.json)",
+        "--channel",
+        "development",
+        "--existing-installation",
+        "--migration",
+        "$(rootpath :ipa)",
+    ],
+    data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":ipa"],
+    tags = ["manual", "no-sandbox", "no-remote"],
 )
 
 sh_test(

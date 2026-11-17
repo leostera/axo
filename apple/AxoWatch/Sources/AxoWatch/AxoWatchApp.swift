@@ -1,12 +1,15 @@
 import AxoClient
 import AxoCompanion
 import AxoWatchModel
+import AxoMobileModel
+import AxoMigrationUI
 import SwiftUI
 import WidgetKit
 
 @main
 struct AxoWatchApp: App {
   init() {
+    if EnclaveProbeRuntime.requestsDestinationGate(role: .watch) { return }
     // Refresh installed artwork once per build, not on every wrist raise. The complication
     // remains a static launcher and never spends its update budget on an animation loop.
     let defaults = UserDefaults.standard
@@ -21,7 +24,15 @@ struct AxoWatchApp: App {
     Task { await WatchComplicationReport.capture() }
   }
 
-  var body: some Scene { WindowGroup { WatchHome() } }
+  var body: some Scene {
+    WindowGroup {
+      if EnclaveProbeRuntime.requestsDestinationGate(role: .watch) {
+        IdentityPreservationView(role: .watch)
+      } else {
+        WatchHome()
+      }
+    }
+  }
 }
 
 private struct WatchHome: View {
@@ -71,6 +82,7 @@ private struct WatchHome: View {
       let active = scenePhase == .active
       companion.setActive(active)
       if !active { chat?.suspend(); return }
+      _ = EnclaveProbeRuntime.runIfRequested(role: .watch)
       while !Task.isCancelled {
         await companion.model.refresh()
         do { try await Task.sleep(for: .seconds(30)) } catch { break }

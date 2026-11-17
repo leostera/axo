@@ -17,6 +17,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Stage explicit phone/Watch identity-preservation probes with device-only shared Keychain references, fresh source-attempt fencing, signing-scope checks and a canonical startup gate that cannot create account services or replacement keys. These probes do not transfer sign-in/preferences or complete the installed-family migration; physical validation and coordinated rollout remain required.
 - Apple distribution foundations: injected APNs provider protocol tests, exact-key migration restoration/proof checks and read-only channel-specific signing preflight. This does not enable live push, transfer credentials, switch the installed identity, configure Apple accounts or submit apps.
 - Conversations pinned on their host Mac are exempt from axod's idle timeout and idle-count limit. Pins on other clients do not count; there is no synchronization. Unpinning restores ordinary sleep eligibility on the next scan.
 - iPad keeps conversations beside a collapsible sidebar: chats by default, swipe right inside the sidebar for connected hosts on their left, and swipe back or tap Back to chats without navigating the conversation or losing its draft. Wide transcripts and composers share a centered readable column; Command-N, Command-K and Command-backslash cover creation, search and sidebar visibility.

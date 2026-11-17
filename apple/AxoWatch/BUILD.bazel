@@ -3,6 +3,7 @@ load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_apple//apple:watchos.bzl", "watchos_application")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@axo_config//:defs.bzl", "AXO", "CAN")
+load("//bazel/apple:preservation_probe.bzl", "preservation_probe_info")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -16,6 +17,7 @@ swift_library(
     target_compatible_with = ["@platforms//os:watchos"],
     deps = [
         "//apple/AxoCompanion",
+        "//apple/AxoMigrationUI",
         "//apple/AxoWatchModel",
         "//apple/AxoVoiceUI",
         "//apple/AxoMobile:AxoMobileModel",
@@ -24,13 +26,25 @@ swift_library(
     ],
 )
 
+preservation_probe_info(
+    name = "watch_probe_info",
+    profile = ":AxoWatchProfile",
+    bundle_id = AXO["apple"]["bundle_ids"]["watch"],
+    mode = "destination",
+    team = AXO["apple"]["team"],
+) if CAN.watch_device else None
+
 watchos_application(
     name = "AxoWatchApp",
     bundle_id = AXO["apple"]["bundle_ids"]["watch"],
     app_icons = ["//assets:watch_app_icon"],
     extensions = ["//apple/AxoWatchComplication:AxoWatchComplicationExtension"],
     resources = ["//assets:watch_brand", "//assets:fonts"],
-    infoplists = ["Info.plist", ":companion_info"],
+    infoplists = ["Info.plist", ":companion_info"] + ([":watch_probe_info"] if CAN.watch_device else []),
+    entitlements = select({
+        "//bazel/config:identity_preservation_probe_enabled": "AxoWatch-probe.entitlements",
+        "//conditions:default": None,
+    }) if CAN.watch_device else None,
     minimum_os_version = AXO["apple"]["watchos_min"],
     version = ":build_version",
     provisioning_profile = ":AxoWatchProfile" if CAN.watch_device else None,

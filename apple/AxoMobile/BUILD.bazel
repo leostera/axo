@@ -7,6 +7,7 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 load("@axo_config//:defs.bzl", "AXO", "CAN", "REASONS")
 load("//bazel/apple:defs.bzl", "ios_device_app", "phone_install", "phone_reinstall", "status_line")
+load("//bazel/apple:preservation_probe.bzl", "preservation_probe_info")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -76,6 +77,7 @@ swift_library(
         ":AxoMobileModel",
         "//apple/AxoClient",
         "//apple/AxoCompanion",
+        "//apple/AxoMigrationUI",
         "//apple/AxoVoiceUI",
         "//apple/AxoMascot",
         "//apple/AxoProtocol",
@@ -214,6 +216,14 @@ local_provisioning_profile(
     team_id = AXO["apple"]["team"],
 ) if CAN.phone_device else None
 
+preservation_probe_info(
+    name = "phone_probe_info",
+    profile = ":AxoMobileProfile",
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    mode = "destination",
+    team = AXO["apple"]["team"],
+) if CAN.phone_device else None
+
 # The same app, signed for a phone and built for arm64 in every build. Xcode's Run on a device uses
 # it too.
 ios_application(
@@ -221,9 +231,12 @@ ios_application(
     watch_application = "//apple/AxoWatch:AxoWatchApp",
     app_icons = ["//assets:ios_app_icon"],
     bundle_id = AXO["apple"]["bundle_ids"]["phone"],
-    entitlements = "AxoMobile-device.entitlements",
+    entitlements = select({
+        "//bazel/config:identity_preservation_probe_enabled": "AxoMobile-probe.entitlements",
+        "//conditions:default": "AxoMobile-device.entitlements",
+    }),
     families = ["iphone", "ipad"],
-    infoplists = ["Info.plist"],
+    infoplists = ["Info.plist", ":phone_probe_info"],
     minimum_os_version = AXO["apple"]["ios_min"],
     resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
     version = ":build_version",

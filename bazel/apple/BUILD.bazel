@@ -10,6 +10,10 @@ exports_files([
     "package_test.sh",
     "sign_mac_app.sh",
     "strip_mac_app.sh",
+    "distribution_preflight.py",
+    "distribution_preflight.sh",
+    "preservation_probe.bzl",
+    "preservation_probe_info.py",
 ])
 
 sh_test(
@@ -27,6 +31,14 @@ sh_binary(
     srcs = ["distribution_preflight.sh"],
     args = ["$(rootpath :distribution_preflight.py)", "$(rootpath //:config.json)"],
     data = ["distribution_preflight.py", "//:config.json"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+sh_test(
+    name = "preservation_probe_info_test",
+    srcs = ["distribution_preflight_test.sh"],
+    args = ["$(rootpath :preservation_probe_info_test.py)", "$(rootpath :preservation_probe_info.py)"],
+    data = ["preservation_probe_info.py", "preservation_probe_info_test.py"],
     target_compatible_with = ["@platforms//os:macos"],
 )
 

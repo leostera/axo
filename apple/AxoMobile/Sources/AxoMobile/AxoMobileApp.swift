@@ -1,6 +1,7 @@
 import AxoClient
 import AxoCompanion
 import AxoMobileModel
+import AxoMigrationUI
 import SwiftUI
 import UIKit
 
@@ -13,6 +14,8 @@ final class AppEnvironment: ObservableObject {
   let companion: PhoneCompanionSignIn
 
   init() {
+    precondition(!EnclaveProbeRuntime.requestsDestinationGate(role: .mobile),
+      "A preservation destination cannot create account services")
     // A local Worker for development: AXO_RELAY_URL=http://127.0.0.1:8787
     if let text = ProcessInfo.processInfo.environment["AXO_RELAY_URL"], let url = URL(string: text),
       let local = RelayEndpoint(origin: url, allowInsecureLoopback: true)
@@ -48,19 +51,29 @@ final class AppEnvironment: ObservableObject {
 @MainActor
 public final class AxoMobileLifecycle: NSObject, UIApplicationDelegate {
   public func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-    _ = AppEnvironment.shared
+    if !EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) { _ = AppEnvironment.shared }
     return true
   }
 }
 
 public struct AxoMobileRoot: View {
+  public init() {}
+
+  public var body: some View {
+    if EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) {
+      IdentityPreservationView(role: .mobile)
+    } else {
+      AxoMobileAccountRoot()
+    }
+  }
+}
+
+private struct AxoMobileAccountRoot: View {
   @StateObject private var environment = AppEnvironment.shared
   @State private var sidewaysScrolling = SidewaysScrolling()
   @Environment(\.scenePhase) private var scenePhase
 
-  public init() {}
-
-  public var body: some View {
+  var body: some View {
     Group {
       switch environment.account.state {
       case .signedOut:
@@ -70,9 +83,11 @@ public struct AxoMobileRoot: View {
       }
     }
     .environment(sidewaysScrolling)
+    .task { _ = EnclaveProbeRuntime.runIfRequested(role: .mobile) }
     .task(id: environment.account.credentialRevision) { await environment.companion.refresh() }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active {
+        _ = EnclaveProbeRuntime.runIfRequested(role: .mobile)
         environment.account.restoreStoredSession()
         Task { await environment.companion.refresh() }
       }
