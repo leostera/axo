@@ -15,7 +15,7 @@ _WATCH = _PHONE + ".watchkitapp"
 [
     local_provisioning_profile(
         name = name,
-        profile_name = "iOS Team Provisioning Profile: " + identifier,
+        profile_name = "Axo owned devices development" if identifier == _PHONE else "iOS Team Provisioning Profile: " + identifier,
         team_id = AXO["apple"]["team"],
         tags = ["manual"],
     )

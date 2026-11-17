@@ -36,7 +36,11 @@ migration and approved retirement. No automatic install target uses it.
 Apple-account configuration, credential creation and tested cloud/release publication have
 explicit rollout approval; app installation/restart remains a separate checkpoint. A read-only
 portal inspection verified the canonical explicit root App ID, its real prefix and the expected
-team. No capability mutation, new profile/key creation or notarization has yet occurred.
+team. That initial inspection did not mutate capabilities, create profiles/keys or notarize; later owned-device development provisioning is recorded below.
+
+## Owned iPad development provisioning (2026-11-17)
+
+The owned iPad was already registered on the approved team. Its identifier was absent from the existing Xcode-managed old-identity phone profile, which the portal does not expose for editing. Created the manual **Axo owned devices development** profile for the exact existing `dev.leostera.axo.phone` App ID, using existing registered development certificates (including the original signer). Verified that its device set is exactly the original profile’s coverage plus the owned iPad, then installed it locally. The manual universal update target uses this profile; the old profile and watch/widget profiles remain intact. No device registration, new signing key/certificate, App ID/capability change, canonical migration or APNs setup occurred. Development profiles remain private local artifacts, never repository/CDN contents.
 
 ## Data migration gate
 
@@ -72,7 +76,7 @@ Only after approval: enable portal capabilities, create/store keys, regenerate p
 
 Keeping foreground-only inboxes avoids provider infrastructure but cannot supply locked-phone attention. Silent-only pushes cannot replace user-visible alerts because Apple does not guarantee background delivery. A notification broker adds another data processor; direct APNs from the Worker is preferred only after its production transport is validated.
 
-The namespace decision is settled. Remaining work is the migration bridge/importer, platform/team/profile/certificate verification, capability setup and distribution channels. This draft does not claim any portal setup, key generation, notarization, upload or push delivery has occurred.
+The namespace decision is settled. Remaining work is the migration bridge/importer, platform/team/profile/certificate verification, capability setup and distribution channels. The owned-device development profile above is the completed portal setup recorded here. Canonical distribution signing, new key generation, notarization, public upload and push delivery remain uncompleted.
 
 ## Sources
 

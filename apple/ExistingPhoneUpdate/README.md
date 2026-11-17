@@ -15,6 +15,8 @@ bazel test //apple/ExistingPhoneUpdate:archive_test --jobs=4 --test_output=error
 bazel build //apple/ExistingPhoneUpdate:ipa --jobs=4
 ```
 
+The universal main app uses the manually managed **Axo owned devices development** profile. It retains the existing development signing certificate and original device coverage, adding the owned iPad. The Xcode-managed phone-only profile is left intact; watch/widget profiles and all bundle/Keychain identities are unchanged. Install the downloaded profile locally in Xcode’s provisioning-profile directory before building. Never commit or publicly upload a development profile or IPA: it contains private device metadata.
+
 Neither command installs, launches or restarts any app. Installation is a separately approved
 device operation after checking the installed identity, recording state and signed archive.
 **Never upload this development IPA to a public CDN:** embedded profiles contain device metadata.
