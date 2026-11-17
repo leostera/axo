@@ -234,6 +234,16 @@ public struct ChatGroupingSettings: Codable, Equatable, Sendable {
 // MARK: - Grouping
 
 public enum ChatGrouping {
+  /// Folding and limits hide other chats, never the selected destination. Preserve list order.
+  public static func visible(
+    _ entries: [ChatMenuEntry], folded: Bool = false, limit: Int? = nil, keeping selected: ChatMenuEntry.Key? = nil
+  ) -> [ChatMenuEntry] {
+    let count = folded ? 0 : max(0, limit ?? entries.count)
+    return entries.enumerated().compactMap { index, entry in
+      index < count || entry.key == selected ? entry : nil
+    }
+  }
+
   /// When a chat was last active, in Unix seconds, as `ChatMenu.activity` reads it.
   public static func lastActivity(of session: RemoteSession) -> Int64 {
     Int64(ChatMenu.activity(session).timeIntervalSince1970)

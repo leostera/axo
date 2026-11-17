@@ -25,6 +25,30 @@ final class ChatGroupsTests: XCTestCase {
     Dictionary(uniqueKeysWithValues: sections.map { ($0.group.title, $0.chats.map(\.session.displayName)) })
   }
 
+  func testFoldingKeepsOnlyTheSelectedRowInItsOriginalGroup() {
+    let entries = [entry(1, ago: 1_000), entry(2, ago: 2_000), entry(3, ago: 3_000)]
+    XCTAssertEqual(ChatGrouping.visible(entries, folded: true, keeping: entries[1].key), [entries[1]])
+    XCTAssertTrue(ChatGrouping.visible(entries, folded: true).isEmpty)
+  }
+
+  func testLimitsCannotHideTheSelectedRowOrDuplicateIt() {
+    let entries = [entry(1, ago: 1_000), entry(2, ago: 2_000), entry(3, ago: 3_000)]
+    XCTAssertEqual(ChatGrouping.visible(entries, limit: 1, keeping: entries[2].key), [entries[0], entries[2]])
+    XCTAssertEqual(ChatGrouping.visible(entries, limit: 2, keeping: entries[0].key), Array(entries.prefix(2)))
+    XCTAssertEqual(ChatGrouping.visible(entries, keeping: entries[2].key), entries)
+    XCTAssertEqual(ChatGrouping.visible(entries, limit: 0, keeping: entries[2].key), [entries[2]])
+  }
+
+  func testSelectionIsScopedToItsHostAndAbsentSelectionAddsNothing() {
+    let first = entry(1, ago: 1_000)
+    let otherHost = RemoteHost(hostId: UUID(), hostGeneration: UUID(), label: "Other",
+      status: .online, sessions: [])
+    let other = ChatMenuEntry(host: otherHost, session: first.session)
+    XCTAssertTrue(ChatGrouping.visible([other], folded: true, keeping: first.key).isEmpty)
+    XCTAssertEqual(ChatGrouping.visible([first, other], folded: true, keeping: other.key), [other])
+    XCTAssertTrue(ChatGrouping.visible([], folded: true, keeping: first.key).isEmpty)
+  }
+
   func testTheDefaultsAreTheMacs() {
     let settings = ChatGroupingSettings()
     XCTAssertEqual(settings.activeWindowMinutes, 3)

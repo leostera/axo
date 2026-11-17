@@ -42,7 +42,15 @@ final class AxoMobileLayerTests: XCTestCase {
   ) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-      if LayerPositions(app).showing == layer { return true }
+      let index = switch layer {
+      case .account: 0
+      case .chats: 1
+      case .conversation: 2
+      case .info: 3
+      }
+      // A spring can pass its final geometry before its completion unlocks input.
+      let readiness = app.otherElements["layer-readiness"].value as? String
+      if LayerPositions(app).showing == layer, readiness == "\(index):ready" { return true }
       RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     }
     let where_ = ["Chats menu", "New chat"].map { name in

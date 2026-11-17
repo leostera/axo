@@ -13,6 +13,8 @@ struct ConversationView: View {
   let workbench: HostWorkbenchModel?
   let session: RemoteSession?
   let showSidebar: () -> Void
+  let showRequests: (() -> Void)?
+  let showInfo: (() -> Void)?
   /// Saying a message instead of typing it, where the iPhone can.
   let voice: VoicePrompt?
   /// Settings › Apps, from the box's + menu.
@@ -42,12 +44,15 @@ struct ConversationView: View {
 
   init(
     phone: PhoneWorkbench, workbench: HostWorkbenchModel?, session: RemoteSession?, showSidebar: @escaping () -> Void,
-    voice: VoicePrompt?, showApps: (() -> Void)? = nil
+    voice: VoicePrompt?, showApps: (() -> Void)? = nil,
+    showRequests: (() -> Void)? = nil, showInfo: (() -> Void)? = nil
   ) {
     self.phone = phone
     self.workbench = workbench
     self.session = session
     self.showSidebar = showSidebar
+    self.showRequests = showRequests
+    self.showInfo = showInfo
     self.voice = voice
     self.showApps = showApps
     let pull = ConversationPull()
@@ -124,41 +129,44 @@ struct ConversationView: View {
     Task { await workbench?.loadOlderHistory(of: id) }
   }
 
-  /// The menu button, and the Mac's state when it is not simply online. No title: inside the
-  /// chat, its name only takes room (VoiceOver still hears it, as the screen's heading).
+  /// The selected destination is visible, not just a hidden accessibility label.
   private var header: some View {
-    ZStack {
-      Color.clear
-        .frame(width: 1, height: 1)
-        .accessibilityElement()
-        .accessibilityLabel(session?.displayName ?? "New chat")
-        .accessibilityAddTraits([.isHeader, .isStaticText])
-        .accessibilityIdentifier("conversation-title")
+    VStack(spacing: 0) {
+      HStack(spacing: 8) {
+        Button(action: showSidebar) {
+          Image(systemName: "sidebar.leading")
+            .font(.system(size: 18, weight: .medium))
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Chats menu")
+        Text(session?.displayName ?? "New chat")
+          .font(.callout.weight(.semibold))
+          .lineLimit(1)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityAddTraits(.isHeader)
+          .accessibilityIdentifier("conversation-title")
+        if let showInfo {
+          Button(action: showInfo) {
+            Image(systemName: "info.circle").frame(width: 44, height: 44)
+          }
+          .accessibilityLabel("Chat info")
+          .disabled(session == nil)
+        }
+        if let showRequests { RequestsBell(phone: phone, open: showRequests) }
+      }
       if let workbench, let trouble = hostTrouble(workbench) {
         Text(trouble)
           .font(.caption.weight(.medium))
           .foregroundStyle(.orange)
-          .padding(.horizontal, 12).padding(.vertical, 6)
-          .background(.ultraThinMaterial, in: Capsule())
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.leading, 52).padding(.bottom, 6)
           .accessibilityIdentifier("host-trouble")
-      }
-      HStack {
-        Button(action: showSidebar) {
-          VStack(spacing: 4) {
-            Capsule().frame(width: 16, height: 2)
-            Capsule().frame(width: 16, height: 2)
-          }
-          .frame(width: 44, height: 44)
-          .background(.ultraThinMaterial, in: Circle())
-          .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
-        }
-        .accessibilityLabel("Chats menu")
-        Spacer(minLength: 0)
       }
     }
     .buttonStyle(.plain)
     .foregroundStyle(.primary)
-    .padding(.horizontal, 14).padding(.bottom, 10)
+    .padding(.horizontal, 14).padding(.bottom, 4)
   }
 
   /// What is wrong with the chat's Mac, if anything: offline, or reconnecting.

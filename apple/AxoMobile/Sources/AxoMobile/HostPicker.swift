@@ -27,7 +27,7 @@ struct HostPicker: View {
             chip(host, choosing: true)
           }
           .accessibilityLabel("Start on \(host.label)")
-          .accessibilityHint("Chooses the Mac to start this chat on")
+          .accessibilityHint("Chooses the host to start this chat on")
           .accessibilityIdentifier("host-picker")
         } else {
           chip(host, choosing: false)
@@ -69,14 +69,5 @@ struct HostPicker: View {
 }
 
 extension RemoteHost {
-  /// The symbol it is shown by: the shape of Mac it is, or a laptop when it has not said.
-  var symbol: String {
-    switch model?.family {
-    case .laptop, nil: "laptopcomputer"
-    case .studio: "macstudio"
-    case .mini: "macmini"
-    case .desktop: "desktopcomputer"
-    case .tower: "macpro.gen3"
-    }
-  }
+  var symbol: String { HostPresentation.symbol(self) }
 }

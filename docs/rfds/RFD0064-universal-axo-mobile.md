@@ -57,6 +57,17 @@ app. The adaptive shell adds presentation branches and therefore needs resize/ro
 Source/module renaming changes contributor commands; update active consumers directly while
 leaving historical RFDs and release records as historical records.
 
+## Feedback corrections
+
+App content is full-bleed: do not simulate the physical display’s corners or use private screen
+geometry. Header actions belong to their pane, not a window-level overlay. A selected chat stays
+listed and highlighted through section folding and limits, and its name remains visible in the
+conversation header. Selection uses the full host/session key.
+
+Legacy records can incorrectly report every platform as macos. Until platform reporting is
+corrected independently, only a macos record with a reported Apple hardware identifier is
+positively a Mac. Unknown/mixed collections say Hosts and never default to a laptop icon.
+
 ## Remaining work
 
 Polish regular-width density, keyboard shortcuts, narrow/resizable iPad windows, sheets and

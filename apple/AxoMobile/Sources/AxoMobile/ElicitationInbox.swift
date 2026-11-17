@@ -13,7 +13,6 @@ struct RequestsBell: View {
         Image(systemName: count > 0 ? "bell.badge.fill" : "bell")
           .frame(width: 44, height: 44)
           .foregroundStyle(count > 0 ? Color.green : .primary)
-          .background(.regularMaterial, in: Circle())
           .overlay(alignment: .topTrailing) {
             if count > 0 { Text("\(count)").font(.caption2.bold()).padding(4).background(.green, in: Capsule()).foregroundStyle(.white) }
           }

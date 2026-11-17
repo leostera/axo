@@ -10,6 +10,11 @@ public struct ChatMenuEntry: Equatable, Sendable {
   public struct Key: Hashable, Sendable {
     public let host: UUID
     public let session: SessionID
+
+    public init(host: UUID, session: SessionID) {
+      self.host = host
+      self.session = session
+    }
   }
 
   public var key: Key { Key(host: host.hostId, session: session.sessionId) }

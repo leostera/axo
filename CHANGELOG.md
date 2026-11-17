@@ -4,6 +4,12 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### Fixed
+
+- Keep the selected chat visible and highlighted when Earlier or its folder is collapsed, or a row limit would hide it. Show the conversation name in the header.
+- Remove fake screen corner masks, black borders and private display-corner lookup. Request controls belong to the active pane’s header instead of floating across displaced layers; compact header controls no longer use oversized material discs.
+- Use Macs only for a nonempty collection of positively identified Apple hardware; mixed or unknown collections say Hosts, with generic/server icons instead of a guessed MacBook.
+
 ### Added
 
 - AxoMobile is one universal iPhone/iPad app, replacing the AxoPhone source modules and build targets. Regular-width windows show chats beside the conversation; compact windows retain the phone's layered navigation. iPad supports all orientations, with shared drafts, voice and approval behavior. Canonical app installation and credential migration remain separate rollout steps.

@@ -431,6 +431,7 @@ final class AxoMobileUITests: XCTestCase {
     app.buttons["Chats menu"].tapWhereItIs()
     XCTAssertTrue(hittable(app.buttons["Search chats"]))
     app.buttons["Search chats"].tapWhereItIs()
+    capture(app, named: "phone-search-with-pending-request")
     let search = app.textFields["search-field"]
     XCTAssertTrue(search.waitForExistence(timeout: 5))
     search.tap()

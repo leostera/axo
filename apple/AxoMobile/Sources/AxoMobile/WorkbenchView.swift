@@ -161,28 +161,19 @@ struct WorkbenchView: View {
           edgeNames: Layer.allCases.map(\.edgeName),
           layers: [
             AnyView(accountLayer), AnyView(sidebar), AnyView(conversation),
-            AnyView(SessionInfoPanel(workbench: workbench.current, session: currentSession)),
+            AnyView(SessionInfoPanel(workbench: workbench.current, session: currentSession)
+          .layerBar(edge: .top) {
+            HStack {
+              Spacer()
+              if layer == .info { RequestsBell(phone: workbench, open: { showingRequests = true }) }
+            }.padding(.horizontal, 14)
+          }),
           ]
         )
       }
     }
     .background(ChatColors.background.ignoresSafeArea())
     .environment(\.assetLoader, assetLoader)
-    .overlay(alignment: .topTrailing) {
-      HStack(spacing: 8) {
-        if horizontalSizeClass == .regular {
-          Button { showingInfo = true } label: {
-            Image(systemName: "info.circle")
-              .font(.system(size: 18, weight: .medium)).floatingCircle()
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Chat info")
-          .disabled(currentSession == nil)
-        }
-        RequestsBell(phone: workbench, open: { showingRequests = true })
-      }
-      .padding(.trailing, 14).padding(.top, 6)
-    }
     .sheet(isPresented: $showingRequests) { RequestsInbox(phone: workbench) }
     .sheet(isPresented: $showingInfo) {
       NavigationStack {
@@ -346,7 +337,9 @@ struct WorkbenchView: View {
         }
       },
       voice: voice,
-      showApps: { settings = .apps }
+      showApps: { settings = .apps },
+      showRequests: horizontalSizeClass == .regular || layer == .conversation ? { showingRequests = true } : nil,
+      showInfo: horizontalSizeClass == .regular ? { showingInfo = true } : nil
     )
     .id(currentSession?.sessionId)
   }
@@ -379,7 +372,14 @@ struct WorkbenchView: View {
         ForEach(chatListMode == .folders ? sections : []) { section in
           let collapsed = collapsedFolders.contains(section.id)
           sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
-          if !collapsed { sectionChats(section) }
+          if !collapsed {
+            sectionChats(section)
+          } else {
+            ForEach(ChatGrouping.visible(section.chats, folded: true, keeping: selectedChatKey)
+              .filter { !chatPrefs.pins.contains($0.session.sessionId) }, id: \.key) { entry in
+                chatRow(entry, showsAge: false)
+              }
+          }
         }
         if sections.isEmpty {
           if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
@@ -433,6 +433,11 @@ struct WorkbenchView: View {
     }
   }
 
+  private var selectedChatKey: ChatMenuEntry.Key? {
+    guard let selection = workbench.selection, let session = selection.session else { return nil }
+    return .init(host: selection.host, session: session)
+  }
+
   private var groupedItems: [GroupedItem] {
     let settings = chatPrefs.settings
     let groups = ChatGrouping.holding(held.groups, live: liveGroups(now: .now))
@@ -442,12 +447,12 @@ struct WorkbenchView: View {
       if settings.showsGroupTitles || section.group == .earlier {
         items.append(.header(section, folded: folded, first: section.id == groups.first?.id))
       }
-      guard !folded else { continue }
       let limit = section.group == .earlier && !showingAllEarlier ? settings.earlierLimit : nil
-      items += section.chats.prefix(limit ?? .max).map { .chat($0, pinned: section.group == .pinned) }
-      if let limit, section.chats.count > limit {
-        items.append(.more("Show \(section.chats.count - limit) more", showAll: true))
-      } else if section.group == .earlier, showingAllEarlier, let limit = settings.earlierLimit, section.chats.count > limit {
+      let visible = ChatGrouping.visible(section.chats, folded: folded, limit: limit, keeping: selectedChatKey)
+      items += visible.map { .chat($0, pinned: section.group == .pinned) }
+      if !folded, limit != nil, section.chats.count > visible.count {
+        items.append(.more("Show \(section.chats.count - visible.count) more", showAll: true))
+      } else if !folded, section.group == .earlier, showingAllEarlier, let limit = settings.earlierLimit, section.chats.count > limit {
         items.append(.more("Show fewer", showAll: false))
       }
     }
@@ -667,7 +672,9 @@ struct WorkbenchView: View {
       pair: { showingPairing = true },
       showApps: { settings = .apps },
       showSettings: { settings = .settings },
-      refresh: { await workbench.refresh() })
+      refresh: { await workbench.refresh() },
+      requests: horizontalSizeClass != .regular && layer == .account
+        ? RequestsBell(phone: workbench, open: { showingRequests = true }) : nil)
   }
 
   /// Moves the stack to `layer`, as a swipe would.
@@ -676,17 +683,17 @@ struct WorkbenchView: View {
   }
 
   private var menuHeader: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 6) {
       OwnMascotView(loading: workbench.hosts.phase == .loading)
-        .frame(height: 34)
-      Spacer(minLength: 8)
+        .frame(maxWidth: 34).frame(height: 34)
+      Spacer(minLength: 0)
       Button {
         chatListMode = chatListMode == .folders ? .recent : .folders
         held.groups = liveGroups(now: .now)
       } label: {
         Image(systemName: chatListMode == .folders ? "clock" : "list.bullet.indent")
           .font(.system(size: 18, weight: .medium))
-          .floatingCircle()
+          .frame(width: 44, height: 44)
       }
       .accessibilityLabel(chatListMode == .folders ? "Show recent chats" : "Show folders")
       .accessibilityIdentifier("chat-list-mode")
@@ -696,21 +703,24 @@ struct WorkbenchView: View {
       } label: {
         Image(systemName: "person.crop.circle")
           .font(.system(size: 20, weight: .medium))
-          .floatingCircle()
+          .frame(width: 44, height: 44)
       }
-      .accessibilityLabel("Account and Macs")
+      .accessibilityLabel("Account and \(HostPresentation.collectionName(workbench.hosts.hosts))")
       Button {
         showingSearch = true
       } label: {
         Image(systemName: "magnifyingglass")
           .font(.system(size: 19, weight: .medium))
-          .floatingCircle()
+          .frame(width: 44, height: 44)
       }
       .accessibilityLabel("Search chats")
+      if horizontalSizeClass != .regular, layer == .chats {
+        RequestsBell(phone: workbench, open: { showingRequests = true })
+      }
     }
     .buttonStyle(.plain)
-    .padding(.leading, MenuLayout.contentLeading)
-    .padding(.trailing, MenuLayout.contentTrailing)
+    .padding(.leading, 16)
+    .padding(.trailing, 12)
   }
 
   private var menuFooter: some View {
@@ -822,12 +832,13 @@ private struct SessionRow: View {
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(name)
       .accessibilityValue(spokenValue)
+      .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 
   private var spokenValue: String {
     let age = lastActive.map { $0.formatted(.relative(presentation: .named)) }
     let host = hostLabel.map { "on \($0)" }
-    return [pinned ? "Pinned" : "", unseen != nil ? "Unseen" : "", host ?? "", SessionStatusDot.spoken(shownStatus), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
+    return [isSelected ? "Selected" : "", pinned ? "Pinned" : "", unseen != nil ? "Unseen" : "", host ?? "", SessionStatusDot.spoken(shownStatus), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
   }
 }
 
@@ -872,6 +883,7 @@ private struct HostsPanel: View {
   let showApps: () -> Void
   let showSettings: () -> Void
   let refresh: () async -> Void
+  let requests: RequestsBell?
 
   /// The Mac being named, and the name typed so far.
   @State private var renaming: RemoteHost?
@@ -884,13 +896,13 @@ private struct HostsPanel: View {
         account
           .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
           .padding(.top, 18).padding(.bottom, 22)
-        Text("Macs")
+        Text(HostPresentation.collectionName(hosts.hosts))
           .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
           .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
           .padding(.bottom, 4)
           .accessibilityAddTraits(.isHeader)
         if hosts.hosts.isEmpty {
-          Text(hosts.phase == .loading ? "Loading…" : "No Macs yet. Pair one to chat with it from here.")
+          Text(hosts.phase == .loading ? "Loading…" : "No hosts yet. Pair one to chat with it from here.")
             .font(.callout).foregroundStyle(.secondary)
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
@@ -945,9 +957,10 @@ private struct HostsPanel: View {
     }
     .scrollIndicators(.hidden)
     .softLayerEdges()
+    .accessibilityIdentifier("hosts-panel")
     .refreshable { await Task { await refresh() }.value }
     .alert(
-      "Rename Mac",
+      renaming.map { HostPresentation.isKnownMac($0) ? "Rename Mac" : "Rename host" } ?? "Rename host",
       isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
       presenting: renaming
     ) { host in
@@ -959,7 +972,7 @@ private struct HostsPanel: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
-      Text("Shown on every device of this account. Leave it empty for the Mac's own name.")
+      Text("Shown on every device of this account. Leave it empty for the machine’s own name.")
     }
     .alert(
       "Could not rename",
@@ -973,24 +986,28 @@ private struct HostsPanel: View {
     .background(ChatColors.background.ignoresSafeArea())
     .layerBar(edge: .top) {
       // No way back here: the chats are the strip at the edge, a tap or a swipe left away.
-      Text("Account").font(.title3.weight(.semibold))
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .padding(.leading, MenuLayout.contentLeading)
-        .padding(.trailing, MenuLayout.contentTrailing)
-        .accessibilityAddTraits(.isHeader)
+      HStack {
+        Text("Account").font(.title3.weight(.semibold))
+          .accessibilityAddTraits(.isHeader)
+        Spacer(minLength: 0)
+        if let requests { requests }
+      }
+      .frame(minHeight: 44)
+      .padding(.leading, MenuLayout.contentLeading)
+      .padding(.trailing, 12)
     }
     .layerBar(edge: .bottom) {
       HStack(spacing: 16) {
         // Where the chats have their Chat button: the way to add what this layer lists.
         Button(action: pair) {
-          Label("Pair a Mac", systemImage: "laptopcomputer.and.arrow.down")
+          Label(HostPresentation.collectionName(hosts.hosts) == "Macs" ? "Pair a Mac" : "Pair a host", systemImage: "plus")
             .font(.headline)
             .frame(minHeight: MenuLayout.controlSize)
             .padding(.horizontal, 11)
             .background(Color.primary, in: Capsule())
             .foregroundStyle(ChatColors.background)
         }
-        .accessibilityLabel("Pair a Mac")
+        .accessibilityLabel(HostPresentation.collectionName(hosts.hosts) == "Macs" ? "Pair a Mac" : "Pair a host")
         Spacer(minLength: 0)
         Button(action: showSettings) {
           Image(systemName: "gearshape")
@@ -1004,7 +1021,6 @@ private struct HostsPanel: View {
       .padding(.trailing, MenuLayout.contentTrailing)
       .padding(.top, 10)
     }
-    .accessibilityIdentifier("hosts-panel")
   }
 
   @ViewBuilder private var account: some View {
