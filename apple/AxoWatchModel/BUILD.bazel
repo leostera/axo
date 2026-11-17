@@ -10,7 +10,7 @@ swift_library(
     copts = ["-swift-version", "5"],
     deps = [
         "//apple/AxoClient",
-        "//apple/AxoPhone:AxoPhoneModel",
+        "//apple/AxoMobile:AxoMobileModel",
         "//apple/AxoProtocol",
     ],
 )
@@ -22,7 +22,7 @@ swift_test(
     deps = [
         ":AxoWatchModel",
         "//apple/AxoClient",
-        "//apple/AxoPhone:AxoPhoneModel",
+        "//apple/AxoMobile:AxoMobileModel",
         "//apple/AxoProtocol",
     ],
 )

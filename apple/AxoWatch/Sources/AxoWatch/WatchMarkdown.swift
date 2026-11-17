@@ -1,4 +1,4 @@
-import AxoPhoneModel
+import AxoMobileModel
 import SwiftUI
 
 /// Uses the phone's already-parsed blocks and inline styles; no second Markdown parser.

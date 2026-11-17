@@ -12,8 +12,8 @@ cd "$root"
 
 # Use the real companion build, not a separate Xcode build of the Watch's sources.
 # Profiles must already be installed; this command never registers devices or changes Apple accounts.
-bazel build //apple/AxoPhone:AxoPhone_ipa --watchos_cpus=device_arm64
-outputs=$(bazel cquery //apple/AxoPhone:AxoPhone_ipa --watchos_cpus=device_arm64 --output=files)
+bazel build //apple/AxoMobile:AxoMobile_ipa --watchos_cpus=device_arm64
+outputs=$(bazel cquery //apple/AxoMobile:AxoMobile_ipa --watchos_cpus=device_arm64 --output=files)
 ipa=$(printf '%s\n' "$outputs" | awk '/\.ipa$/ { print; count++ } END { if (count != 1) exit 1 }') || {
   echo "No signed companion IPA. Install the phone, Watch, and complication development profiles first (see README.md)." >&2
   exit 1
@@ -23,7 +23,7 @@ ipa=$(printf '%s\n' "$outputs" | awk '/\.ipa$/ { print; count++ } END { if (coun
 artifacts=$(mktemp -d "${TMPDIR:-/tmp}/axo-watch-companion.XXXXXX")
 echo "Preserved device verification artifacts: $artifacts"
 ditto -x -k "$ipa" "$artifacts"
-phone="$artifacts/Payload/AxoPhoneDevice.app"
+phone="$artifacts/Payload/AxoMobileDevice.app"
 watch="$phone/Watch/AxoWatchApp.app"
 [[ -d "$phone" && -d "$watch" ]] || { echo "Missing companion bundles" >&2; exit 1; }
 codesign --verify --deep --strict "$phone"

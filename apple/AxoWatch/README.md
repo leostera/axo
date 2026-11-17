@@ -87,15 +87,15 @@ hard-coded personal color.
 From the repository root:
 
 ```sh
-bazel test //apple/AxoCompanion:AxoCompanionTests //apple/AxoWatchModel:AxoWatchModelTests //apple/AxoPhone:AxoPhoneModelTests
-bazel build //apple/AxoPhone:AxoPhoneApp  # simulator iPhone bundle with embedded Watch app
+bazel test //apple/AxoCompanion:AxoCompanionTests //apple/AxoWatchModel:AxoWatchModelTests //apple/AxoMobile:AxoMobileModelTests
+bazel build //apple/AxoMobile:AxoMobileApp  # simulator iPhone bundle with embedded Watch app
 bazel run //apple:xcodeproj
 open apple/Axo.xcodeproj
 ```
 
 All targets are declared in the same generated Xcode project. Shared project generation also analyzes Mac dependencies, so an unrelated llama.cpp/sccache build problem can block generation even when both companion apps build directly through Bazel.
 
-`apple/AxoCompanion` contains shared authentication, ordered snapshots, bounded voice messages, phone file transcription, and WatchConnectivity adapters. `apple/AxoWatchModel` binds drafts to one remembered target and adapts `PhoneWorkbench`. `apple/AxoVoiceUI` shares the metered waveform with the phone. `Sources/AxoWatch/` contains the Watch UI and recording engine. `AxoPhoneLifecycle` starts the shared phone environment before window creation; credential changes publish new snapshots.
+`apple/AxoCompanion` contains shared authentication, ordered snapshots, bounded voice messages, phone file transcription, and WatchConnectivity adapters. `apple/AxoWatchModel` binds drafts to one remembered target and adapts `PhoneWorkbench`. `apple/AxoVoiceUI` shares the metered waveform with the phone. `Sources/AxoWatch/` contains the Watch UI and recording engine. `AxoMobileLifecycle` starts the shared phone environment before window creation; credential changes publish new snapshots.
 
 ## Run on devices
 

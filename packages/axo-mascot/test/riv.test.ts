@@ -21,7 +21,7 @@ test("the mascot builds deterministically", () => {
 
 test("the Face size matches what the apps lay out", async () => {
   const { MascotBounds } = await import("../src/mascot.ts");
-  // AboutMascotView.swift, AxoPhone's AxoMascotView.swift, axo-web-app's axo-mascot.tsx and the
+  // AboutMascotView.swift, AxoMobile's AxoMascotView.swift, axo-web-app's axo-mascot.tsx and the
   // Mac menu bar size use 1064 x 604: change them together.
   assert.deepEqual([MascotBounds.face.width, MascotBounds.face.height], [1064, 604]);
   assert.deepEqual([MascotBounds.mark.width, MascotBounds.mark.height], [1064, 604]);

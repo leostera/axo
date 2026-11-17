@@ -1,6 +1,6 @@
 import AxoProtocol
 import XCTest
-@testable import AxoPhoneModel
+@testable import AxoMobileModel
 @testable import AxoWatchModel
 
 final class WatchConversationContentTests: XCTestCase {

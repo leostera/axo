@@ -106,7 +106,7 @@ _ios_device_transition = transition(
 
 def _ios_device_app_impl(ctx):
     status = ctx.actions.declare_file(ctx.attr.name + ".status")
-    ctx.actions.write(status, "AxoPhoneDevice: built for a phone\n")
+    ctx.actions.write(status, "AxoMobileDevice: built for a phone\n")
     return [
         DefaultInfo(files = ctx.attr.app[0][DefaultInfo].files),
         StatusInfo(files = depset([status])),

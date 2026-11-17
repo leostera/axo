@@ -1,0 +1,269 @@
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
+load("@rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test")
+load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
+load("@axo_config//:defs.bzl", "AXO", "CAN", "REASONS")
+load("//bazel/apple:defs.bzl", "ios_device_app", "phone_install", "phone_reinstall", "status_line")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Info.plist", "AxoMobile.entitlements", "AxoMobile-device.entitlements"])
+
+# The phone's state and rules: no UIKit, so the same code builds for iOS and is tested on macOS.
+swift_library(
+    name = "AxoMobileModel",
+    module_name = "AxoMobileModel",
+    srcs = glob(["Sources/AxoMobileModel/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [
+        "//apple/AxoSearch",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+swift_test(
+    name = "AxoMobileModelTests",
+    srcs = glob(
+        ["Tests/AxoMobileModelTests/**/*.swift"],
+        exclude = ["Tests/AxoMobileModelTests/EndToEndTests.swift"],
+    ),
+    copts = ["-swift-version", "5"],
+    deps = [
+        ":AxoMobileModel",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+# The phone's model and client against a real Worker relaying to a real axod.
+swift_test(
+    name = "AxoMobileEndToEndTests",
+    srcs = [
+        "Tests/AxoMobileModelTests/EndToEndTests.swift",
+        "Tests/AxoMobileModelTests/MemoryTokenStore.swift",
+    ],
+    copts = ["-swift-version", "5"],
+    data = [
+        "//crates/axod",
+        "//packages/axo-api-worker:e2e_stack",
+    ],
+    env = {
+        "AXO_E2E_AXOD": "$(rootpath //crates/axod)",
+        "AXO_E2E_STACK": "$(rootpath //packages/axo-api-worker:e2e_stack)",
+    },
+    # axod's socket and the Worker's port, on this Mac.
+    tags = ["no-sandbox"],
+    deps = [
+        ":AxoMobileModel",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+# The SwiftUI screens: sign in with Access, your Macs, one Mac's Sessions and terminal.
+swift_library(
+    name = "AxoMobile",
+    module_name = "AxoMobile",
+    srcs = glob(["Sources/AxoMobile/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    # UIKit-backed SwiftUI: only the iOS apps build it, through their platform transition.
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [
+        ":AxoMobileModel",
+        "//apple/AxoClient",
+        "//apple/AxoCompanion",
+        "//apple/AxoVoiceUI",
+        "//apple/AxoMascot",
+        "//apple/AxoProtocol",
+        "@swiftpkg_rive_ios//:RiveRuntime",
+    ],
+)
+
+swift_library(
+    name = "AxoMobileMain",
+    module_name = "AxoMobileMain",
+    srcs = glob(["Sources/AxoMobileMain/*.swift"]),
+    copts = ["-swift-version", "5"],
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [":AxoMobile"],
+)
+
+ios_application(
+    name = "AxoMobileApp",
+    watch_application = "//apple/AxoWatch:AxoWatchApp",
+    app_icons = ["//assets:ios_app_icon"],
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    entitlements = "AxoMobile.entitlements",
+    # One universal app, not separate phone and tablet products.
+    families = ["iphone", "ipad"],
+    infoplists = ["Info.plist"],
+    minimum_os_version = AXO["apple"]["ios_min"],
+    resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
+    version = ":build_version",
+    deps = [":AxoMobileMain"],
+)
+
+# The makers' logos Settings › Apps shows, the web app's own SVGs
+# (packages/axo-web-app/src/chat/logos), as vectors in an asset catalog.
+filegroup(
+    name = "app_logos",
+    srcs = glob(["Resources/AppLogos.xcassets/**"]),
+)
+
+# The app driven as a person would, against its simulator preview:
+# `bazel test //apple/AxoMobile:AxoMobileUITests`.
+swift_library(
+    name = "AxoMobileUITestsLib",
+    testonly = True,
+    srcs = glob(["UITests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    # The reviewed screenshots the visual tests compare against (UITests/Snapshots.swift).
+    data = glob(["Snapshots/Phone/*.png"]),
+    module_name = "AxoMobileUITests",
+)
+
+# Before the tests, the simulator's copy of the app goes: reinstalling the same version and build
+# can leave the old one there, and the tests then run stale code.
+# The runner calls it with no arguments, so the bundle id is written into it.
+genrule(
+    name = "uninstall_test_app_script",
+    srcs = ["uninstall_test_app.sh"],
+    outs = ["uninstall_test_app_for_phone.sh"],
+    cmd = "sed 's/@BUNDLE_ID@/%s/' $< > $@" % AXO["apple"]["bundle_ids"]["phone"],
+)
+
+sh_binary(
+    name = "uninstall_test_app",
+    srcs = [":uninstall_test_app_script"],
+)
+
+ios_xctestrun_runner(
+    name = "AxoMobileUITestRunner",
+    device_type = AXO["apple"]["simulator"]["device"],
+    os_version = AXO["apple"]["simulator"]["os"],
+    pre_action = ":uninstall_test_app",
+)
+
+ios_ui_test(
+    name = "AxoMobileUITests",
+    minimum_os_version = AXO["apple"]["ios_min"],
+    runner = ":AxoMobileUITestRunner",
+    tags = ["manual"],
+    test_host = ":AxoMobileApp",
+    # Some thirty tests that each launch the app (about fifteen minutes) take longer than "long".
+    timeout = "eternal",
+    deps = [":AxoMobileUITestsLib"],
+)
+
+# Focused interaction regressions always use a fresh, owned simulator. Pick an installed runtime
+# with --@rules_apple//apple/build_settings:ios_simulator_version, not a personal device.
+ios_xctestrun_runner(
+    name = "AxoMobileRegressionTestRunner",
+    device_type = AXO["apple"]["simulator"]["device"],
+    reuse_simulator = False,
+)
+
+ios_ui_test(
+    name = "AxoMobileRegressionUITests",
+    minimum_os_version = AXO["apple"]["ios_min"],
+    runner = ":AxoMobileRegressionTestRunner",
+    tags = ["manual"],
+    timeout = "long",
+    test_host = ":AxoMobileApp",
+    deps = [":AxoMobileUITestsLib"],
+)
+
+# The same universal app, driven on a fresh iPad rather than the person's simulator.
+ios_xctestrun_runner(
+    name = "AxoMobileTabletTestRunner",
+    device_type = "iPad Pro 11-inch (M4)",
+    reuse_simulator = False,
+)
+
+ios_ui_test(
+    name = "AxoMobileTabletUITests",
+    minimum_os_version = AXO["apple"]["ios_min"],
+    runner = ":AxoMobileTabletTestRunner",
+    tags = ["manual"],
+    timeout = "long",
+    test_host = ":AxoMobileApp",
+    deps = [":AxoMobileUITestsLib"],
+)
+
+# The mobile app's version and build number come from config.json, counted apart from the Mac
+# app's (RFD0021).
+apple_bundle_version(
+    name = "build_version",
+    build_version = str(AXO["builds"]["phone"]),
+    short_version_string = AXO["version"],
+)
+
+# The profile Xcode made for this app id (it appears in ~/Library/Developer/Xcode/UserData/
+# Provisioning Profiles the first time Xcode signs the app automatically; or download one from the
+# developer portal). Only a Mac that has it builds the device target.
+
+# Only a Mac with the phone's provisioning profile can sign the app for a phone; elsewhere the
+# device targets are a line in the build report (RFD0021).
+local_provisioning_profile(
+    name = "AxoMobileProfile",
+    profile_name = AXO["apple"]["phone_profile"],
+    team_id = AXO["apple"]["team"],
+) if CAN.phone_device else None
+
+# The same app, signed for a phone and built for arm64 in every build. Xcode's Run on a device uses
+# it too.
+ios_application(
+    name = "AxoMobileDevice",
+    watch_application = "//apple/AxoWatch:AxoWatchApp",
+    app_icons = ["//assets:ios_app_icon"],
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    entitlements = "AxoMobile-device.entitlements",
+    families = ["iphone", "ipad"],
+    infoplists = ["Info.plist"],
+    minimum_os_version = AXO["apple"]["ios_min"],
+    resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
+    version = ":build_version",
+    provisioning_profile = ":AxoMobileProfile",
+    # Built through :AxoMobile_ipa, which picks the phone's CPU.
+    tags = ["manual"],
+    deps = [":AxoMobileMain"],
+) if CAN.phone_device else None
+
+ios_device_app(
+    name = "AxoMobile_ipa",
+    app = ":AxoMobileDevice",
+) if CAN.phone_device else status_line(
+    name = "AxoMobile_ipa",
+    line = "AxoMobileDevice: skipped: " + REASONS.get("phone_device", ""),
+)
+
+# Installs and opens each new device build on the phone in config.local.json (phone.device), when
+# phone.install is set; the build report says what happened.
+phone_install(
+    name = "install",
+    app = ":AxoMobile_ipa" if CAN.phone_device else None,
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    device = AXO.get("phone", {}).get("device", ""),
+    off = REASONS.get("phone_install", ""),
+)
+
+# bazel run //apple/AxoMobile:reinstall: installs and opens the last device build again, whatever
+# phone.install says; `install` runs once per new build, so this is the retry.
+phone_reinstall(
+    name = "reinstall",
+    app = ":AxoMobile_ipa" if CAN.phone_device else None,
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    device = AXO.get("phone", {}).get("device", ""),
+    off = "" if CAN.phone_device and AXO.get("phone", {}).get("device", "") else REASONS.get("phone_device", "no phone.device in config.local.json"),
+)
+
+# bazel run //apple/AxoMobile:record_snapshots: after reviewing them, the last UI test run's
+# screenshots become the baselines the visual tests compare against.
+sh_binary(
+    name = "record_snapshots",
+    srcs = ["record_snapshots.sh"],
+)

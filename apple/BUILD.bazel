@@ -18,9 +18,9 @@ xcodeproj(
     tags = ["manual"],
     top_level_targets = [
         "//apple/AxoMac:AxoApp",
-        "//apple/AxoPhone:AxoPhoneApp",
+        "//apple/AxoMobile:AxoMobileApp",
         "//apple/AxoWatch:AxoWatchApp",
-        "//apple/AxoPhone:AxoPhoneModelTests",
+        "//apple/AxoMobile:AxoMobileModelTests",
         "//apple/AxoMac:AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
         "//apple/AxoClient:AxoClientTests",
@@ -34,7 +34,7 @@ xcodeproj(
         "//apple/AxoMac:TerminalWorkbenchE2ETests",
         "//apple/AxoMac:AxoVisualUITests",
         "//apple/AxoMac:AxoAppSelfTestTests",
-    ] + (["//apple/AxoPhone:AxoPhoneDevice"] if CAN.phone_device else []),
+    ] + (["//apple/AxoMobile:AxoMobileDevice"] if CAN.phone_device else []),
     visibility = ["//apple:__subpackages__"],
 )
 

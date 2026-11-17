@@ -1,4 +1,4 @@
-import AxoPhoneModel
+import AxoMobileModel
 import SwiftUI
 
 /// Shared phone/Watch waveform. Every bar is a real measured microphone level; silence is flat.

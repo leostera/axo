@@ -40,7 +40,7 @@ watchos_extension(
     infoplists = ["//apple/AxoWatchComplication:Info.plist"],
     minimum_os_version = AXO["apple"]["watchos_min"],
     provisioning_profile = ":widget_profile",
-    version = "//apple/AxoPhone:build_version",
+    version = "//apple/AxoMobile:build_version",
     tags = ["manual"],
     deps = ["//apple/AxoWatchComplication:AxoWatchComplication"],
 )
@@ -53,7 +53,7 @@ watchos_application(
     resources = ["//assets:watch_brand", "//assets:fonts"],
     infoplists = ["//apple/AxoWatch:Info.plist", ":companion_info"],
     minimum_os_version = AXO["apple"]["watchos_min"],
-    version = "//apple/AxoPhone:build_version",
+    version = "//apple/AxoMobile:build_version",
     provisioning_profile = ":watch_profile",
     tags = ["manual"],
     deps = ["//apple/AxoWatch:AxoWatch"],
@@ -66,13 +66,13 @@ ios_application(
     app_icons = ["//assets:ios_app_icon"],
     entitlements = "ExistingPhone.entitlements",
     families = ["iphone"],
-    infoplists = ["//apple/AxoPhone:Info.plist"],
+    infoplists = ["//apple/AxoMobile:Info.plist"],
     minimum_os_version = AXO["apple"]["ios_min"],
-    resources = ["//assets:mascot", "//assets:fonts", "//apple/AxoPhone:app_logos"],
+    resources = ["//assets:mascot", "//assets:fonts", "//apple/AxoMobile:app_logos"],
     provisioning_profile = ":phone_profile",
-    version = "//apple/AxoPhone:build_version",
+    version = "//apple/AxoMobile:build_version",
     tags = ["manual"],
-    deps = ["//apple/AxoPhone:AxoPhoneMain"],
+    deps = ["//apple/AxoMobile:AxoMobileMain"],
 )
 
 filegroup(

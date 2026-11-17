@@ -1,4 +1,4 @@
-import AxoPhoneModel
+import AxoMobileModel
 import Foundation
 
 /// Bounded, non-sensitive device health report for verifying real-watch connectivity without

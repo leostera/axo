@@ -4,6 +4,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### Added
+
+- AxoMobile is one universal iPhone/iPad app, replacing the AxoPhone source modules and build targets. Regular-width windows show chats beside the conversation; compact windows retain the phone's layered navigation. iPad supports all orientations, with shared drafts, voice and approval behavior. Canonical app installation and credential migration remain separate rollout steps.
+
 ## 0.71 (Mac app build 342, iPhone build 54, axod 86)
 
 ### Added

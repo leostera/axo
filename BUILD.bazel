@@ -32,8 +32,8 @@ build_report(
     pieces = [
         "//apple/AxoMac:Axo",
         "//apple/AxoMac:dist",
-        "//apple/AxoPhone:AxoPhone_ipa",
-        "//apple/AxoPhone:install",
+        "//apple/AxoMobile:AxoMobile_ipa",
+        "//apple/AxoMobile:install",
         "//apple:xcodeproj_install",
         "//bazel/rust:rust_project",
     ],

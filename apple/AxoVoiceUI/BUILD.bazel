@@ -7,5 +7,5 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AxoVoiceUI",
     copts = ["-swift-version", "5"],
-    deps = ["//apple/AxoPhone:AxoPhoneModel"],
+    deps = ["//apple/AxoMobile:AxoMobileModel"],
 )

@@ -175,7 +175,7 @@ node_test(
     tsx = True,
 )
 
-# A Worker relaying to a real axod, for the phone's end-to-end test (//apple/AxoPhone:AxoPhoneEndToEndTests).
+# A Worker relaying to a real axod, for the phone's end-to-end test (//apple/AxoMobile:AxoMobileEndToEndTests).
 # AXOD_BINARY is set by whoever runs it.
 js_binary(
     name = "e2e_stack",
@@ -191,5 +191,5 @@ js_binary(
         "--import",
         "tsx",
     ],
-    visibility = ["//apple/AxoPhone:__pkg__"],
+    visibility = ["//apple/AxoMobile:__pkg__"],
 )

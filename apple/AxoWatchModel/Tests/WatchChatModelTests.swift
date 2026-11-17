@@ -1,7 +1,7 @@
 import AxoClient
 import AxoProtocol
 import XCTest
-@testable import AxoPhoneModel
+@testable import AxoMobileModel
 @testable import AxoWatchModel
 
 @MainActor

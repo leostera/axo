@@ -11,14 +11,14 @@ sh_test(
     srcs = ["apple_identity_test.sh"],
     args = [
         "$(rootpath //:config.json)",
-        "$(rootpath //apple/AxoPhone:AxoPhone.entitlements)",
-        "$(rootpath //apple/AxoPhone:AxoPhone-device.entitlements)",
+        "$(rootpath //apple/AxoMobile:AxoMobile.entitlements)",
+        "$(rootpath //apple/AxoMobile:AxoMobile-device.entitlements)",
         "$(rootpath //apple/AxoWatch:companion_info)",
     ],
     data = [
         "//:config.json",
-        "//apple/AxoPhone:AxoPhone.entitlements",
-        "//apple/AxoPhone:AxoPhone-device.entitlements",
+        "//apple/AxoMobile:AxoMobile.entitlements",
+        "//apple/AxoMobile:AxoMobile-device.entitlements",
         "//apple/AxoWatch:companion_info",
     ],
 )
@@ -27,7 +27,7 @@ sh_test(
 filegroup(
     name = "phone_identity_archive",
     testonly = True,
-    srcs = ["//apple/AxoPhone:AxoPhoneApp"],
+    srcs = ["//apple/AxoMobile:AxoMobileApp"],
 )
 
 sh_test(

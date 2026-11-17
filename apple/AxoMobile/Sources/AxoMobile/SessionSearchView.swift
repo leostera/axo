@@ -1,0 +1,93 @@
+import AxoMobileModel
+import AxoProtocol
+import SwiftUI
+
+/// Finds a Session by its name or its folder, across every Mac. Names only, not conversation text.
+struct SessionSearchView: View {
+  let hosts: [RemoteHost]
+  /// A Mac's Sessions as they are now (the open Mac's are live).
+  let sessionsOf: (RemoteHost) -> [RemoteSession]
+  let choose: (RemoteHost, RemoteSession) -> Void
+  @Environment(\.dismiss) private var dismiss
+  @FocusState private var searchFocused: Bool
+  @State private var query = ""
+
+  private struct Match: Identifiable {
+    let host: RemoteHost
+    let session: RemoteSession
+    var id: String { "\(host.hostId.uuidString)/\(session.sessionId)" }
+  }
+
+  private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  private var matches: [Match] {
+    ChatSearch.matches(query, hosts: hosts, sessionsOf: sessionsOf)
+      .map { Match(host: $0.host, session: $0.session) }
+  }
+
+  var body: some View {
+    let results = matches
+    NavigationStack {
+      List {
+        Section {
+          HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Chat or folder name", text: $query)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled()
+              .focused($searchFocused)
+              .accessibilityIdentifier("search-field")
+            if !query.isEmpty {
+              Button { query = "" } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+              }
+              .accessibilityLabel("Clear search")
+            }
+          }
+        }
+        if results.isEmpty && trimmedQuery.isEmpty {
+          ContentUnavailableView(
+            "Search chats", systemImage: "magnifyingglass",
+            description: Text("Search by chat or folder name."))
+        } else if results.isEmpty {
+          ContentUnavailableView.search(text: query)
+        } else {
+          ForEach(results) { match in
+            Button {
+              choose(match.host, match.session)
+              dismiss()
+            } label: {
+              VStack(alignment: .leading, spacing: 3) {
+                Text(match.session.displayName).font(.body)
+                Text([match.session.folderName, match.host.label].compactMap { $0 }.joined(separator: " · "))
+                  .font(.caption).foregroundStyle(.secondary)
+              }
+              // The whole row, not only its words, takes the tap.
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("search-result")
+          }
+        }
+        Text("Search uses chat and folder names only, not conversation text.")
+          .font(.footnote).foregroundStyle(.secondary)
+      }
+      .navigationTitle("Search")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button { dismiss() } label: {
+            Image(systemName: "xmark")
+              .font(.system(size: 14, weight: .semibold))
+              .frame(width: 36, height: 36)
+              .background(.secondary.opacity(0.12), in: Circle())
+          }
+          .accessibilityLabel("Close search")
+        }
+      }
+    }
+    .presentationDetents([.large])
+    .task { searchFocused = true }
+  }
+}

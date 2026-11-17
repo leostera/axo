@@ -22,11 +22,11 @@ bazel test //...
 
 `bazel test //...` runs every test that needs no desktop, phone or browser of its own. Narrow it to the area you changed, for example `bazel test //crates/...` or `bazel test //packages/pi-axo/...`.
 
-The iPhone UI tests compare screenshots with reviewed baselines (see `apple/AxoPhone/Snapshots/README.md`):
+The iPhone UI tests compare screenshots with reviewed baselines (see `apple/AxoMobile/Snapshots/README.md`):
 
 ```sh
-bazel test //apple/AxoPhone:AxoPhoneUITests --test_filter=AxoPhoneUITests/testVisual
-bazel run //apple/AxoPhone:record_snapshots   # after reviewing a change, accept the new screenshots
+bazel test //apple/AxoMobile:AxoMobileUITests --test_filter=AxoMobileUITests/testVisual
+bazel run //apple/AxoMobile:record_snapshots   # after reviewing a change, accept the new screenshots
 ```
 
 The native Mac visual UI suite is interactive and requires an unlocked desktop, Xcode UI Automation authorization, Axo closed, and macOS 14 or later:

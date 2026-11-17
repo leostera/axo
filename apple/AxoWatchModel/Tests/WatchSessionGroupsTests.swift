@@ -1,4 +1,4 @@
-import AxoPhoneModel
+import AxoMobileModel
 import AxoProtocol
 import XCTest
 @testable import AxoWatchModel

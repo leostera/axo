@@ -1,5 +1,5 @@
 import AxoClient
-import AxoPhoneModel
+import AxoMobileModel
 import AxoProtocol
 import Foundation
 import Observation

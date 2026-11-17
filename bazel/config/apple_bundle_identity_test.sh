@@ -17,6 +17,10 @@ with zipfile.ZipFile(sys.argv[2]) as archive:
             continue
         assert identifier in expected, (name, identifier)
         found.add(identifier)
+        if identifier == ids["phone"]:
+            assert set(info["UIDeviceFamily"]) == {1, 2}, "AxoMobile must be universal"
+            assert len(set(info["UISupportedInterfaceOrientations~ipad"])) == 4
+            assert not info.get("UIRequiresFullScreen", False)
         if identifier == ids["watch"]:
             assert info["WKCompanionAppBundleIdentifier"] == ids["phone"]
 assert found == expected, (found, expected)
