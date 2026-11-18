@@ -138,6 +138,18 @@ pub(crate) struct Pi {
     human_turn_protected: bool,
     /// Questions actually dispatched to this runtime, never a replacement Pi.
     ui_questions: std::collections::HashMap<String, RuntimeId>,
+    /// Another agent's conversation, converted into the Session's transcript.
+    mirror: Mirror,
+}
+
+/// The Session's transcript, kept from another agent's own file of the conversation (RFD0072,
+/// Transcripts): converted again whenever the agent may have written to it, one conversion at a
+/// time; a change during one runs another after it.
+#[derive(Debug, Default)]
+struct Mirror {
+    conversation: Option<PathBuf>,
+    running: bool,
+    again: bool,
 }
 
 use axo_protocol::ShellId;
@@ -159,6 +171,7 @@ impl Pi {
             recovery: Recovery::None,
             human_turn_protected: false,
             ui_questions: std::collections::HashMap::new(),
+            mirror: Mirror::default(),
         }
     }
 
@@ -1220,6 +1233,12 @@ impl Session {
         }
         match event {
             AgentEvent::Bound { agent_session_id } => self.bound(agent_session_id).await,
+            AgentEvent::Conversation { file } => {
+                if let Some(pi) = &mut self.pi {
+                    pi.mirror.conversation = Some(file);
+                }
+                self.mirror_transcript();
+            }
             AgentEvent::Disconnected => {
                 if let Some(pi) = &mut self.pi
                     && let Some(activity) = &mut pi.activity
@@ -1257,6 +1276,9 @@ impl Session {
                 name,
                 data,
             } => {
+                if matches!(name.as_str(), "message.end" | "tool.end" | "agent.settled") {
+                    self.mirror_transcript();
+                }
                 self.pi_event(runtime_id, &name, &data).await;
                 if name == "session.import.requested" || name == "elicitation.answer" {
                     return;
@@ -1505,6 +1527,63 @@ impl Session {
         };
         if changed {
             self.publish();
+        }
+    }
+
+    /// Converts the agent's conversation into the Session's transcript, on the blocking pool,
+    /// unless a conversion runs already (then once more after it). Pi writes its own.
+    fn mirror_transcript(&mut self) {
+        if self.row.agent == AgentKind::Pi {
+            return;
+        }
+        let Some(transcript) = self.row.pi_session_file.clone() else {
+            return;
+        };
+        let Some(pi) = &mut self.pi else { return };
+        let Some(native) = pi.mirror.conversation.clone() else {
+            return;
+        };
+        if pi.mirror.running {
+            pi.mirror.again = true;
+            return;
+        }
+        pi.mirror.running = true;
+        let header = axo_agent::transcript::PiHeader {
+            session_id: self.id.to_string(),
+            timestamp: axo_agent::transcript::rfc3339_utc(self.row.created_at),
+            cwd: self.row.folder.to_string_lossy().into_owned(),
+        };
+        let (kind, id, mailbox) = (self.row.agent, self.id, self.mailbox());
+        tokio::spawn(async move {
+            let converted = tokio::task::spawn_blocking(move || {
+                let native = std::fs::read_to_string(&native)?;
+                let lines = axo_agent::transcript::pi_lines(kind, &native, &header)?;
+                axo_agent::transcript::write_if_changed(&transcript, &lines)
+            })
+            .await
+            .map_err(io::Error::other)
+            .and_then(|converted| converted);
+            match converted {
+                Ok(true) => log::debug!("event=session.transcript_converted session_id={id}"),
+                Ok(false) => {}
+                Err(error) => log::warn!(
+                    "event=session.transcript_unconverted session_id={id} error_kind={:?} reason={error}",
+                    error.kind()
+                ),
+            }
+            if let Some(mailbox) = mailbox.upgrade() {
+                let _ = mailbox.send(Message::Job(Box::new(|session: &mut Session| {
+                    Box::pin(async move { session.mirrored() })
+                })));
+            }
+        });
+    }
+
+    fn mirrored(&mut self) {
+        let Some(pi) = &mut self.pi else { return };
+        pi.mirror.running = false;
+        if std::mem::take(&mut pi.mirror.again) {
+            self.mirror_transcript();
         }
     }
 

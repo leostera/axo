@@ -85,6 +85,29 @@ async fn a_codex_session_runs_the_tui_on_its_own_thread_and_takes_prompts_as_tur
                 .any(|line| line.starts_with("request turn/start ") && line.contains("hello codex"))
         })
         .await;
+
+    // Codex's rollout becomes the Session's transcript, as Pi lines the cloud syncs.
+    let transcript = record.pi_session_file.clone().expect("every Session has a transcript");
+    fixture
+        .until("the turn in the transcript", || {
+            fs::read_to_string(&transcript).is_ok_and(|text| text.contains("echo: hello codex"))
+        })
+        .await;
+    let text = fs::read_to_string(&transcript).unwrap();
+    let header: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(header["type"], "session");
+    assert_eq!(header["id"], record.id.to_string());
+    let messages: Vec<serde_json::Value> = text
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|entry: &serde_json::Value| entry["type"] == "message")
+        .collect();
+    assert!(
+        messages.iter().any(|entry| entry["message"]["role"] == "user"
+            && entry["message"]["content"].to_string().contains("hello codex")),
+        "{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -92,6 +115,8 @@ async fn after_a_restart_a_codex_session_rejoins_its_thread_instead_of_starting_
     let mut fixture = Fixture::new().await;
     let record = codex_session(&fixture).await;
     fixture.wait_for_pi(record.id).await;
+    let tuis = |fixture: &Fixture| codex_log(fixture).lines().filter(|line| line.starts_with("tui ")).count();
+    fixture.until("the first TUI", || tuis(&fixture) == 1).await;
     fixture.restart().await;
     sessions::prompt_from_client(
         &fixture.core,
@@ -111,9 +136,7 @@ async fn after_a_restart_a_codex_session_rejoins_its_thread_instead_of_starting_
         })
         .await;
     fixture
-        .until("the second TUI", || {
-            codex_log(&fixture).lines().filter(|line| line.starts_with("tui ")).count() == 2
-        })
+        .until("the second TUI", || tuis(&fixture) == 2)
         .await;
     let log = codex_log(&fixture);
     assert_eq!(requests(&log, "thread/start"), 1, "one thread for the Session's life:\n{log}");

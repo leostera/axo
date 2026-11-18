@@ -238,6 +238,14 @@ pub async fn create_thread(
     Ok(thread_id)
 }
 
+/// Returns once the server at `socket` completes a WebSocket handshake.
+pub async fn wait_until_listening(socket: &Path) -> io::Result<()> {
+    connect_once(socket, CONNECT_DEADLINE)
+        .await
+        .map(drop)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Codex's app-server is not listening"))
+}
+
 /// Connects and completes the WebSocket handshake, trying again while the server starts,
 /// until `deadline` passes.
 async fn connect_once(socket: &Path, deadline: Duration) -> Option<Socket> {
@@ -322,8 +330,8 @@ impl<'a> Connection<'a> {
         requests: &mut LinkRequests,
         report: &mut (impl FnMut(AgentEvent) -> bool + Send),
     ) -> Outcome {
-        let mut thread = match self.rejoin(config).await {
-            Ok(thread) => thread,
+        let (mut thread, conversation) = match self.rejoin(config).await {
+            Ok(rejoined) => rejoined,
             Err(outcome) => return outcome,
         };
         let thread_id = thread.id().to_owned();
@@ -331,6 +339,11 @@ impl<'a> Connection<'a> {
         if !report(AgentEvent::Bound {
             agent_session_id: thread_id.clone(),
         }) {
+            return Outcome::Ended;
+        }
+        if let Some(file) = conversation
+            && !report(AgentEvent::Conversation { file })
+        {
             return Outcome::Ended;
         }
         let snapshot = thread.snapshot();
@@ -394,7 +407,8 @@ impl<'a> Connection<'a> {
     }
 
     /// Joins the Session's thread: the server loads it, or adds axod to the running one.
-    async fn rejoin(&mut self, config: &LinkConfig) -> Result<Thread, Outcome> {
+    /// Its rollout file, too, once Codex has written one.
+    async fn rejoin(&mut self, config: &LinkConfig) -> Result<(Thread, Option<PathBuf>), Outcome> {
         self.initialize().await?;
         let mut params = json!({ "threadId": config.thread_id, "excludeTurns": true });
         if let Some(instructions) = &config.instructions {
@@ -411,7 +425,11 @@ impl<'a> Connection<'a> {
         {
             thread.set_running_model(provider, model, answer["reasoningEffort"].as_str());
         }
-        Ok(thread)
+        let rollout = answer["thread"]["path"]
+            .as_str()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
+        Ok((thread, rollout))
     }
 
     /// Sends one of the link's own requests and reads frames until its answer. Notifications

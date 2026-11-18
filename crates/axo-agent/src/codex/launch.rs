@@ -17,11 +17,12 @@ use axo_pty::process::{self, PtyProcess, WindowSize};
 use crate::WriterLock;
 use crate::axo_mcp::AxoMcp;
 use crate::process::ProcessIdentity;
-use crate::codex::link::{ServerProcess, create_thread};
+use crate::codex::link::{ServerProcess, create_thread, wait_until_listening};
 use crate::lock::FORK_EXEC_WINDOW;
 
-/// How long a killed earlier server gets to let go of the lock.
-const KILLED_RELEASE: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a killed earlier server (the guard, the server and the helpers it started) gets
+/// to let go of the lock.
+const KILLED_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 /// The longest socket path macOS takes (`sun_path` is 104 bytes, with its terminator).
 const MAX_SOCKET_PATH: usize = 103;
 
@@ -155,7 +156,11 @@ pub async fn attach(
     server: ServerProcess,
 ) -> io::Result<CodexProcess> {
     let thread_id = match &launch.thread_id {
-        Some(thread_id) => thread_id.clone(),
+        // The TUI connects at once and gives up if nothing listens.
+        Some(thread_id) => {
+            wait_until_listening(launch.paths.socket()).await?;
+            thread_id.clone()
+        }
         None => {
             create_thread(
                 launch.paths.socket(),

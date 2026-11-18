@@ -5,8 +5,10 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "axo_agent",
     srcs = glob(["src/**/*.rs"]),
+    compile_data = glob(["testdata/atxf/*"]),
     edition = "2024",
     deps = [
+        "@crates//:atxf",
         "//crates/axo-protocol:axo_protocol",
         "//crates/axo-pty:axo_pty",
         "@crates//:futures-util",
@@ -22,7 +24,7 @@ rust_library(
 
 rust_test(
     name = "axo_agent_tests",
-    compile_data = ["//schemas/axo.leostera.dev/v1"],
+    compile_data = ["//schemas/axo.leostera.dev/v1"] + glob(["testdata/atxf/*"]),
     crate = ":axo_agent",
     data = [":fake_codex"],
     edition = "2024",

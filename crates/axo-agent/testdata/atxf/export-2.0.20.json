@@ -1,0 +1,192 @@
+{
+  "info": {
+    "id": "ses_e73a7ea43ffepr6zTFga6PRFtL",
+    "projectID": "58117e95894313269e44a48dbdeb7c389a88d100",
+    "model": {
+      "id": "mock-1",
+      "providerID": "mock",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 340,
+      "output": 40,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1793355945734,
+      "updated": 1793355947924,
+      "idle": 1793355948006
+    },
+    "title": "probe",
+    "location": {
+      "directory": "/private/tmp/oc-proj"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_18c58174a001MXMnGsI4vy4VaI",
+      "time": {
+        "created": 1793355946022
+      },
+      "text": "\"Please read README.md\"",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_18c58182d001BIb1u1bVYU6rsB",
+      "time": {
+        "created": 1793355946165,
+        "streamed": 1793355946204,
+        "completed": 1793355946258
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "mock-1",
+        "providerID": "mock",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Let me read it."
+        },
+        {
+          "type": "tool",
+          "id": "call_1",
+          "name": "read",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "README.md"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Read file README.md, lines 1-1\n1: hello"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1793355946197,
+            "ran": 1793355946201,
+            "completed": 1793355946255
+          }
+        }
+      ],
+      "finish": "tool-calls",
+      "rawFinish": "tool_calls",
+      "cost": 0,
+      "tokens": {
+        "input": 100,
+        "output": 20,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_18c581925001MowH2noZ2ag87a",
+      "time": {
+        "created": 1793355946294,
+        "streamed": 1793355946401,
+        "completed": 1793355946402
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "mock-1",
+        "providerID": "mock",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "mock reply 2 to: \"Please read README.md\""
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 120,
+        "output": 10,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_18c5819a4001ochxRmh51IrNRS",
+      "time": {
+        "created": 1793355946404
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    },
+    {
+      "id": "msg_18c581dbb001Qn70lCFVedjIpi",
+      "time": {
+        "created": 1793355947967
+      },
+      "text": "\"thanks, now say bye\"",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_18c581fc7001u5AI33ZOgJcDBi",
+      "time": {
+        "created": 1793355947985,
+        "streamed": 1793355948003,
+        "completed": 1793355948004
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "mock-1",
+        "providerID": "mock",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "mock reply 3 to: \"thanks, now say bye\""
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 120,
+        "output": 10,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_18c581fe6002NFV22TAHA5vodI",
+      "time": {
+        "created": 1793355948006
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    }
+  ]
+}

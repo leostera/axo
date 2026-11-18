@@ -17,6 +17,7 @@ mod lock;
 pub mod pi;
 pub mod process;
 mod runtime;
+pub mod transcript;
 
 pub use activity::Activity;
 pub use command::AgentCommand;

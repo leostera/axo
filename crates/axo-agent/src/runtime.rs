@@ -86,6 +86,9 @@ pub enum AgentEvent {
     Bound { agent_session_id: String },
     /// A bound connection ended; the link tries again.
     Disconnected,
+    /// The agent's own file of the conversation (a Codex rollout), which axod converts into the
+    /// Session's transcript (RFD0072, Transcripts).
+    Conversation { file: std::path::PathBuf },
     /// Pi's `/resume` picked a saved Session (`None` when the request was malformed).
     ResumeRequested { target_session_file: Option<String> },
     /// One event, in stream order, named in Axo's agent vocabulary.

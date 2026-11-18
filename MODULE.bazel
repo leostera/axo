@@ -34,6 +34,9 @@ register_toolchains("@rust_toolchains//:all")
 # crate_universe resolves them and pins the versions in bazel/rust/Cargo.lock, which it rewrites
 # when a spec changes; no Cargo command is ever run by hand.
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+# ATXF's lossless converters: other agents' conversations become the Session's transcript (RFD0072).
+# Pinned past 0.1.0 for `from_atxf_tree`, which writes a whole conversation, not only its context.
+crate.spec(package = "atxf", git = "https://github.com/leostera/atxf", rev = "2993930f22ef0693ae3401fe4eba7d4a50c33932")
 crate.spec(package = "clap", version = "4.5", features = ["derive", "string"])
 crate.spec(package = "core-foundation", version = "0.10.1")
 crate.spec(package = "env_logger", version = "0.11")
@@ -56,6 +59,8 @@ crate.spec(package = "rusqlite", version = "0.40", features = ["bundled"])
 crate.spec(package = "tokio-rusqlite", version = "0.8", features = ["bundled"])
 crate.spec(package = "security-framework", version = "3.7.0")
 crate.spec(package = "serde", version = "1", features = ["derive"])
+# OpenCode's HTTP API on 127.0.0.1 (RFD0072): plain HTTP and its SSE stream, no TLS.
+crate.spec(package = "reqwest", version = "0.13", default_features = False, features = ["stream"])
 crate.spec(package = "serde_json", version = "1")
 crate.spec(package = "sha1", version = "0.10")
 crate.spec(package = "sha2", version = "0.10")
