@@ -48,8 +48,17 @@ async fn creation_encodes_home_folder_and_current_context_once() {
             rpc::CreateSession {
                 location: rpc::SessionLocation::Like(SessionId::from_u128(2)),
                 name: Some(rpc::SessionName::parse("named fixture".into()).unwrap()),
+                agent: axo_protocol::agent::AgentKind::Pi,
             },
             json!({"like":SessionId::from_u128(2),"name":"named fixture"}),
+        ),
+        (
+            rpc::CreateSession {
+                location: rpc::SessionLocation::AtHome,
+                name: None,
+                agent: axo_protocol::agent::AgentKind::Codex,
+            },
+            json!({"agent":"codex"}),
         ),
         (
             serde_json::from_value(json!({"folder":"/tmp/fixture","name":"named Session"}))
