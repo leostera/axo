@@ -116,8 +116,24 @@ export type FragmentOutcome =
   /** The sender broke the rules; the receiver closes the socket. */
   | { status: "invalid"; reason: string };
 
-/** Takes one fragment notification's params into `store`. */
-export function receiveFragment(store: PartialStore, params: unknown): FragmentOutcome {
+/**
+ * What one socket's receiver may hold while it reassembles: the largest message it takes, and how
+ * many may be partly received at once. Both are checked at each message's first fragment, from the
+ * count it announces, so a peer never makes the receiver hold more than this.
+ */
+export type ReassemblyLimits = { readonly messageBytes: number; readonly partialMessages: number };
+
+/** A Mac's socket, which carries whole Pi lines (RFD0018). */
+export const DAEMON_REASSEMBLY: ReassemblyLimits = { messageBytes: FRAGMENTS.messageBytes, partialMessages: FRAGMENTS.partialPerSocket };
+
+/**
+ * A client's socket (a browser tab, the phone): its largest message is a prompt with its
+ * attachments. A client sends one message's fragments back to back, so two partials are plenty.
+ */
+export const CLIENT_REASSEMBLY: ReassemblyLimits = { messageBytes: 1_048_576, partialMessages: 2 };
+
+/** Takes one fragment notification's params into `store`, within `limits`. */
+export function receiveFragment(store: PartialStore, params: unknown, limits: ReassemblyLimits = DAEMON_REASSEMBLY): FragmentOutcome {
   const parsed = fragmentParamsSchema.safeParse(params);
   if (!parsed.success) return { status: "invalid", reason: "malformed fragment" };
   const { messageId, index, count, data } = parsed.data;
@@ -134,9 +150,11 @@ export function receiveFragment(store: PartialStore, params: unknown): FragmentO
 
   const known = store.partial(messageId);
   if (known && known.count !== count) return { status: "invalid", reason: "fragment count changed" };
-  if (!known && store.count() >= FRAGMENTS.partialPerSocket) return { status: "invalid", reason: "too many partial messages" };
+  // The smallest message `count` fragments can carry: every chunk full but the last, of one byte.
+  if ((count - 1) * FRAGMENTS.chunkBytes + 1 > limits.messageBytes) return { status: "invalid", reason: "message too large" };
+  if (!known && store.count() >= limits.partialMessages) return { status: "invalid", reason: "too many partial messages" };
   if (store.has(messageId, index)) return { status: "invalid", reason: "fragment repeated" };
-  if ((known?.bytes ?? 0) + bytes > FRAGMENTS.messageBytes) return { status: "invalid", reason: "message too large" };
+  if ((known?.bytes ?? 0) + bytes > limits.messageBytes) return { status: "invalid", reason: "message too large" };
   store.add(messageId, index, count, data, bytes);
   if ((known?.received ?? 0) + 1 < count) return { status: "partial" };
 

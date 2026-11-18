@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fc from "fast-check";
 import {
+  CLIENT_REASSEMBLY,
   FRAGMENTS,
   LIMITS,
   MAX_FRAGMENTS,
@@ -84,6 +85,34 @@ test("a peer that breaks the rules is refused", () => {
   const full = new MemoryPartialStore();
   for (let i = 0; i < FRAGMENTS.partialPerSocket; i++) receiveFragment(full, { ...first, messageId: `m${i}` });
   assert.equal(refuse({ ...first, messageId: "one-more" }, full), "invalid", "too many partial messages");
+});
+
+test("a client's receiver refuses a message larger than it takes", () => {
+  const largest = message(CLIENT_REASSEMBLY.messageBytes);
+  const taken = new MemoryPartialStore();
+  assert.deepEqual(splitMessage(largest, "ok")!.map((frame) => receiveFragment(taken, paramsOf(frame), CLIENT_REASSEMBLY)).at(-1), { status: "complete", raw: largest });
+
+  // One that needs a fragment more than the largest is refused before any of it is held.
+  const store = new MemoryPartialStore();
+  const tooLarge = splitMessage(message(CLIENT_REASSEMBLY.messageBytes + FRAGMENTS.chunkBytes), "big")!;
+  assert.deepEqual(receiveFragment(store, paramsOf(tooLarge[0]!), CLIENT_REASSEMBLY), { status: "invalid", reason: "message too large" });
+  assert.equal(store.count(), 0, "nothing of it is held");
+
+  // One byte over, in as many fragments as the largest, is refused before it completes.
+  const held = new MemoryPartialStore();
+  const outcomes = splitMessage(message(CLIENT_REASSEMBLY.messageBytes + 1), "over")!.map((frame) => receiveFragment(held, paramsOf(frame), CLIENT_REASSEMBLY));
+  assert.deepEqual(outcomes.at(-1), { status: "invalid", reason: "message too large" });
+
+  // A Mac's socket still takes the largest Pi line.
+  assert.equal(receiveFragment(new MemoryPartialStore(), paramsOf(splitMessage(message(FRAGMENTS.messageBytes), "m")![0]!)).status, "partial");
+});
+
+test("a client's receiver holds at most two partial messages", () => {
+  const first = paramsOf(splitMessage(message(LIMITS.frameBytes * 2), "m1")![0]!);
+  const store = new MemoryPartialStore();
+  for (let i = 0; i < CLIENT_REASSEMBLY.partialMessages; i++)
+    assert.equal(receiveFragment(store, { ...first, messageId: `m${i}` }, CLIENT_REASSEMBLY).status, "partial");
+  assert.equal(receiveFragment(store, { ...first, messageId: "one-more" }, CLIENT_REASSEMBLY).status, "invalid");
 });
 
 test("any message survives splitting, in any order of its fragments", () => {

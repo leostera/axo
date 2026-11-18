@@ -8,6 +8,7 @@ import {
   ELICITATION_METHODS,
   clientElicitationResolveParamsSchema,
   DISCARD_METHOD,
+  CLIENT_REASSEMBLY,
   FRAGMENT_METHOD,
   MemoryPartialStore,
   SYNC,
@@ -70,8 +71,6 @@ const PROTOCOL_3_METHODS = new Set<string>([CLIENT_METHODS.hello, CLIENT_METHODS
 
 /** Frames a client may send per second; acknowledgements count. */
 const FRAMES_PER_SECOND = 60;
-/** The largest message a client may send, reassembled. */
-const CLIENT_MESSAGE_BYTES = 1_048_576;
 
 const attachmentSchema = z.object({
   accountId: uuid,
@@ -190,10 +189,10 @@ export class AxoClientDO extends DurableObject<Env> {
       return;
     }
     if (frame?.success && frame.data.method === FRAGMENT_METHOD) {
-      const outcome = receiveFragment(this.partials, frame.data.params);
+      const outcome = receiveFragment(this.partials, frame.data.params, CLIENT_REASSEMBLY);
       if (outcome.status === "invalid") return socket.close(1008, `Invalid fragment: ${outcome.reason}`);
       if (outcome.status !== "complete") return;
-      decoded = decode(outcome.raw, CLIENT_MESSAGE_BYTES);
+      decoded = decode(outcome.raw, CLIENT_REASSEMBLY.messageBytes);
       if ("error" in decoded) return void this.send(socket, decoded.error);
     }
     if (decoded.batch) return void this.send(socket, failure(null, -32600, "Batches are not supported"));

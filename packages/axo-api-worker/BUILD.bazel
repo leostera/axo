@@ -139,6 +139,16 @@ node_test(
     tsx = True,
 )
 
+# Focused limits on what a caller may make the cloud hold or do: fragments, shares, rate limits.
+node_test(
+    name = "limits_test",
+    concurrency = 1,
+    data = _DEPS + [":node_modules/tsx", ":test_files"],
+    tests = ["tests/client-fragments.test.ts", "tests/fragments.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
 # Focused watchOS HTTPS mailbox integration tests (no client WebSockets).
 node_test(
     name = "http_test",

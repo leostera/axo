@@ -2,6 +2,7 @@ import {
   CLIENT_METHODS,
   ELICITATION_ERRORS,
   ELICITATION_METHODS,
+  CLIENT_REASSEMBLY,
   FRAGMENT_METHOD,
   DISCARD_METHOD,
   MemoryPartialStore,
@@ -52,8 +53,6 @@ export const DIRECT_CLIENT_ROLE = "direct-client";
 
 /** Frames a client may send per second on a host socket; acknowledgements count. */
 const FRAMES_PER_SECOND = 60;
-/** The largest message a client may send, reassembled: a prompt with its attachments. */
-const CLIENT_MESSAGE_BYTES = 1_048_576;
 /** How many reads one pump makes before it gives up until the next event: each one learned something. */
 const PUMP_READS = 4;
 
@@ -254,10 +253,10 @@ export class HostClients {
       return null;
     }
     if (frame?.success && frame.data.method === FRAGMENT_METHOD) {
-      const outcome = receiveFragment(this.partialsOf(peer.socketId), frame.data.params);
+      const outcome = receiveFragment(this.partialsOf(peer.socketId), frame.data.params, CLIENT_REASSEMBLY);
       if (outcome.status === "invalid") return this.close(socket, 1008, `Invalid fragment: ${outcome.reason}`), null;
       if (outcome.status !== "complete") return null;
-      decoded = decode(outcome.raw, CLIENT_MESSAGE_BYTES);
+      decoded = decode(outcome.raw, CLIENT_REASSEMBLY.messageBytes);
       if ("error" in decoded) return this.send(socket, decoded.error), null;
     }
     if (decoded.batch) return this.send(socket, failure(null, -32600, "Batches are not supported")), null;
