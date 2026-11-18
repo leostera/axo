@@ -4,7 +4,8 @@ load("//bazel/js:defs.bzl", "node_test")
 # Feynman needs Bun; this focused gate uses the installed owned-Mac runtime, never npx/npm.
 sh_test(
     name = "push_test",
-    srcs = ["check-push.sh"],
+    srcs = ["check-spec.sh"],
+    args = ["check-push.ts"],
     data = [
         "check-push.ts",
         "elicitations/push.ts",
@@ -24,4 +25,17 @@ node_test(
         "//:node_modules/tsx",
     ],
     timeout = "short",
+)
+
+# RFD0070: a script's actions go through the gate; every rule of the model is needed.
+sh_test(
+    name = "tools_ask_test",
+    srcs = ["check-spec.sh"],
+    args = ["check-tools-ask.ts"],
+    data = [
+        "check-tools-ask.ts",
+        "elicitations/tools-ask.ts",
+        "//:node_modules/@leostera/feynman",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
 )

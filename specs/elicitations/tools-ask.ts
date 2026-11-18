@@ -11,8 +11,10 @@ import { atMost, defineActor, defineGroup, defineLimit, defineMessage, definePro
 // client, and what the request says is what the tool will do.
 //
 // Built: the gate asks, confirm only asks, and extra arguments are refused, for the local
-// `computer` tool and for `codemode.computer.run` from another Mac (RFD0028). Not built: binding an
-// Allow to the window it named (onceAndBound) beyond element tokens dying with a newer read.
+// `computer` tool and for `codemode.computer.run` from another Mac (RFD0028). Each action inside a
+// `run_script` is checked as it runs, and one the gate would ask about fails in the script
+// (RFD0070, scriptActionsGated). Not built: binding an Allow to the window it named (onceAndBound)
+// beyond element tokens dying with a newer read.
 
 const Action = oneOf("pay", "scroll");
 const Confirm = oneOf("true", "false", "omitted");
@@ -23,6 +25,7 @@ const Asker = oneOf("tool", "agent");
 
 const Call = defineMessage("Call", { action: Action, confirm: Confirm, approval: String }, { name: "computer", over: "MCP" });
 const Returned = defineMessage("Returned", { action: Action, result: String }, { name: "the tool's result", over: "MCP", tone: "reply" });
+const Script = defineMessage("Script", { action: Action }, { name: "computer run_script", over: "MCP" });
 const OwnQuestion = defineMessage("OwnQuestion", {}, { name: "elicitation_request", over: "MCP" });
 const OwnAnswer = defineMessage("OwnAnswer", { id: String, outcome: Outcome }, { name: "its outcome", over: "MCP", tone: "reply" });
 const Ask = defineMessage("Ask", { action: Action, asker: Asker, target: Number }, { name: "axo.elicitation.request", over: "axod.sock" });
@@ -39,6 +42,7 @@ const phone = defineZone({ name: "Leo's iPhone", place: { column: 1 } });
 const noApprovalArguments = defineRule("noApprovalArguments", { description: "The tool takes no approval as an argument: a call that names an answer or a request is refused." });
 const confirmAsks = defineRule("confirmAsks", { description: "confirm: true makes the tool ask without running the gate's check; it never approves." });
 const answerToTheAsker = defineRule("answerToTheAsker", { description: "axod returns an outcome only on the connection that asked, and keeps nothing a tool could look up." });
+const scriptActionsGated = defineRule("scriptActionsGated", { description: "Each action a script takes goes through the gate; one it would ask about fails in the script instead of running. Without it, only the script's source is looked at, and the source need not name what it does." });
 const onceAndBound = defineRule("onceAndBound", { description: "An Allow runs the action it was asked for, once, and only while the window is the one the person was shown." });
 
 /** What the gate makes of an action: Clef flags a payment. */
@@ -65,6 +69,17 @@ export const Agent = defineActor({
       run(state, { action, confirm, approval }, ctx) {
         state.calls += 1;
         ctx.send(ctx.the(Tool), Call, { action, confirm, approval });
+      },
+    },
+    script: {
+      with: [atMost(1)],
+      label: "Run a script",
+      description: "run_script whose source builds the action's name at run time, so no word in it says what it does.",
+      sends: [Script],
+      inputs: { action: input(Action, { examples: ["pay", "scroll"] as const }) },
+      run(state, { action }, ctx) {
+        state.calls += 1;
+        ctx.send(ctx.the(Tool), Script, { action });
       },
     },
     askOwn: {
@@ -122,6 +137,18 @@ export const Tool = defineActor({
         if (!ask && (approves || !flagged(m.action))) return ctx.send(ctx.the(App), Act, { action: m.action, request: approves ? "confirm: true" : "", target });
         state.waiting = { action: m.action, request: null, target };
         ctx.send(ctx.the(Axod), Ask, { action: m.action, asker: "tool", target });
+      },
+    },
+    script: {
+      on: Script,
+      description: "Runs the script in the gated registry: each action is checked as the script takes it.",
+      sources: ["crates/axo-computer/src/scripts.rs#GatedTool.run"],
+      sends: [Returned, Act],
+      run(_state, m, ctx) {
+        const target = ctx.the(App).state.window;
+        // Without the rule: the source holds no risky word, so the whole script passes.
+        if (scriptActionsGated.on && flagged(m.action)) return ctx.reply(Returned, { action: m.action, result: "not done in a script: needs the person" });
+        ctx.send(ctx.the(App), Act, { action: m.action, request: "", target });
       },
     },
     ownQuestion: {
@@ -280,7 +307,7 @@ const everyGatedRunIsLeosAnswer = defineProperty("everyGatedRunIsLeosAnswer", {
       return request?.asker === "tool" && request.action === r.action && request.outcome === "accept" && request.target === r.target;
     });
   },
-  needs: [noApprovalArguments, confirmAsks, answerToTheAsker, onceAndBound],
+  needs: [noApprovalArguments, confirmAsks, answerToTheAsker, onceAndBound, scriptActionsGated],
 });
 const confirmOnlyAsks = defineProperty("confirmOnlyAsks", {
   description: "Nothing runs on confirm: true alone: a call that passed it ran only after Leo allowed it.",
@@ -324,6 +351,13 @@ const thePageChanges = defineScenario("The page changes while Leo decides", {
     s.settle();
   },
 });
+const aScriptThatPays = defineScenario("A script that pays", {
+  description: "The agent runs a script that clicks Pay now with the word spelled out at run time: the click fails in the script, and nothing is paid.",
+  run(s) {
+    s.act(s.the(Agent), "script", { action: "pay" });
+    s.settle();
+  },
+});
 const confirmAsksInstead = defineScenario("confirm: true asks", {
   description: "The agent passes confirm: true to scroll, an action the gate would let through: the tool asks Leo instead, and he declines.",
   run(s) {
@@ -341,5 +375,5 @@ export default defineSpec({
   groups: [studio],
   limits: [expiry],
   properties: [everyGatedRunIsLeosAnswer, confirmOnlyAsks, callsReturn],
-  scenarios: [ownQuestionThenPay, confirmAsksInstead, scrollFreely, thePageChanges],
+  scenarios: [ownQuestionThenPay, confirmAsksInstead, scrollFreely, thePageChanges, aScriptThatPays],
 });
