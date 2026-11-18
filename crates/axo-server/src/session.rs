@@ -181,6 +181,13 @@ async fn run(mut session: Session, mut mailbox: mpsc::UnboundedReceiver<Message>
             break;
         }
     }
+    // A Pi launched as the Session ended may already be waiting here: stop it, not just drop
+    // it, or it outlives the Session holding its transcript. Later launches find the mailbox
+    // closed and stop their Pi themselves.
+    mailbox.close();
+    while let Some(message) = mailbox.recv().await {
+        pi::stop_unwanted(message);
+    }
 }
 
 fn not_open(what: &str) -> io::Error {

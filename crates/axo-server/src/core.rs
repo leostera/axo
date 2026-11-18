@@ -55,6 +55,8 @@ pub(crate) struct Core {
     /// Who prompted whom, for the agents' rate limits.
     pub(crate) provenance: Mutex<crate::session::prompts::PromptProvenance>,
     pub(crate) timers: crate::timers::Timers,
+    /// Pis being launched, or stopped because their Session moved on meanwhile.
+    pub(crate) pi_launches: crate::session::pi::PiLaunches,
     /// Archived Sessions being reopened: their transcripts are not deleted meanwhile (RFD0027).
     pub(crate) reopening: Mutex<HashSet<SessionId>>,
     /// Each Session's folder as git saw it when its agent last settled (RFD0022).
@@ -128,6 +130,7 @@ impl Core {
             bridges_changed: Arc::new(Notify::new()),
             provenance: Mutex::default(),
             timers: crate::timers::Timers::default(),
+            pi_launches: Default::default(),
             reopening: Mutex::default(),
             workspace_states: WorkspaceStates::default(),
             peers: Peers::default(),

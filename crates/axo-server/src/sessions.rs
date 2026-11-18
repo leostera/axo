@@ -889,6 +889,8 @@ pub(crate) async fn stop(core: &Core) {
     let peers = core.peers.stop_all();
     let all = async {
         while stopping.join_next().await.is_some() {}
+        // A launch that finished as its Session shut down is being stopped now: wait for it.
+        core.pi_launches.settled().await;
         peers.await;
     };
     if tokio::time::timeout(STOP_WAIT, all).await.is_err() {

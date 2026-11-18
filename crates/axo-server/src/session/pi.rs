@@ -23,7 +23,7 @@ use axo_agent::{Activity, AgentCommand, FORK_EXEC_WINDOW, WriterLock};
 use axo_protocol::{Event, PaneRole, PiCommandInfo, PiModelInfo, SessionStatus, ThinkingLevel};
 use axo_pty::WindowSize;
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 use super::controls::{PiCatalogEvent, PiControlEvent, PiControls};
 use super::panes::{Running, RuntimeId, pi_environment};
@@ -225,8 +225,42 @@ impl Pi {
     }
 }
 
+/// Pi launches not yet settled: each ends installed in its Session or stopped. Stopping axod
+/// waits for them, so no Pi it launched outlives it holding its transcript's writer lock, which
+/// the next axod could neither take nor, knowing no such Pi, free.
+pub(crate) struct PiLaunches(Arc<watch::Sender<usize>>);
+
+impl Default for PiLaunches {
+    fn default() -> Self {
+        Self(Arc::new(watch::channel(0).0))
+    }
+}
+
+impl PiLaunches {
+    fn begin(&self) -> LaunchInFlight {
+        self.0.send_modify(|count| *count += 1);
+        LaunchInFlight(Arc::clone(&self.0))
+    }
+
+    /// Waits until every launch has settled.
+    pub(crate) async fn settled(&self) {
+        let _ = self.0.subscribe().wait_for(|count| *count == 0).await;
+    }
+}
+
+/// One launch until its Pi is installed or stopped (or it failed).
+pub(crate) struct LaunchInFlight(Arc<watch::Sender<usize>>);
+
+impl Drop for LaunchInFlight {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
+    }
+}
+
 /// A Pi a launch started.
 pub(crate) struct Launched {
+    /// Dropped once this Pi is installed or stopped.
+    in_flight: LaunchInFlight,
     process: PiProcess,
     bridge_token: String,
     session_file: PathBuf,
@@ -247,7 +281,7 @@ struct LaunchRequest {
     previous: Option<ProcessIdentity>,
 }
 
-fn launch(core: &Core, request: LaunchRequest) -> io::Result<Launched> {
+fn launch(core: &Core, request: LaunchRequest, in_flight: LaunchInFlight) -> io::Result<Launched> {
     let LaunchRequest {
         agent_command,
         folder,
@@ -302,6 +336,7 @@ fn launch(core: &Core, request: LaunchRequest) -> io::Result<Launched> {
         size,
     )?;
     Ok(Launched {
+        in_flight,
         process,
         bridge_token,
         session_file,
@@ -450,8 +485,9 @@ impl Session {
             }
         };
         let mailbox = self.mailbox();
+        let in_flight = core.pi_launches.begin();
         tokio::task::spawn_blocking(move || {
-            let result = launch(&core, request);
+            let result = launch(&core, request, in_flight);
             match mailbox.upgrade() {
                 Some(mailbox) => {
                     if let Err(unsent) = mailbox.send(Message::Launched { attempt, result }) {
@@ -1242,17 +1278,22 @@ impl Session {
 }
 
 /// A Pi started for a Session that no longer wants it is stopped.
-fn stop_unwanted(message: Message) {
+pub(super) fn stop_unwanted(message: Message) {
     if let Message::Launched {
         result: Ok(launched),
         ..
     } = message
     {
-        let mut process = launched.process;
+        let Launched {
+            in_flight,
+            mut process,
+            ..
+        } = launched;
         let grace = axo_agent::pi::STOP_GRACE;
         tokio::spawn(async move {
             axo_pty::process::stop_async(&mut process.pty.child, grace).await;
             drop(process);
+            drop(in_flight);
         });
     }
 }
