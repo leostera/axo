@@ -5,6 +5,7 @@ import { authExports } from "../auth/account-access";
 import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
 import { revokeAccountHost, serveAccountHosts, serveAccountHTTPClient, upgradeAccountClient, upgradeHostClient, upgradeHostDaemon, upgradeHostPeers, upgradePeerHostClient } from "./account-hosts";
+import { deleteAccountShare, serveAccountShares } from "./shares";
 import { serveAccountAssets, serveHostAssets, type AssetRoute } from "./assets";
 import { revokeHostCredential } from "./host-credential";
 import { completeConnectionSignIn, serveApps, startConnectionSignIn, type AppsRoute } from "./apps";
@@ -144,6 +145,13 @@ app.all("/api/v1/account/hosts/:host/revoke", context =>
     authExports((context.executionCtx as ExecutionContext).exports),
     context.req.param("host"),
   ),
+);
+
+app.all("/api/v1/account/shares", context =>
+  serveAccountShares(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports)),
+);
+app.all("/api/v1/account/shares/:share/delete", context =>
+  deleteAccountShare(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.req.param("share")),
 );
 
 // Apps (RFD0016): the Apps page, and the browser side of a third-party sign-in.

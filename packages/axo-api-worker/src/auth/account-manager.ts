@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { accountAssets } from "../assets/store";
-import { LIMITS, type ClientHost } from "@axo/protocol";
+import { LIMITS, SHARE_LIMITS, type AccountShare, type ClientHost } from "@axo/protocol";
 import { hostModelSchema, hostRegisterSchema, hostSnapshotSchema, type HostModel, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
@@ -60,6 +60,9 @@ function shownLabel(row: AccountHostRow): string {
   return row.name ?? row.label;
 }
 
+/** Whether a share may be published: admitted, or why not. */
+export type ShareAdmission = "admitted" | "invalid" | "tooLarge" | "full" | "limited";
+
 export type PairingCreationStatus = "created" | "collision" | "limited";
 export type PairingRedemption =
   | { status: "invalid" }
@@ -106,6 +109,10 @@ export class AxoAccountManager extends DurableObject<Env> {
       host_id TEXT PRIMARY KEY, host_generation TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE,
       credential_verifier TEXT NOT NULL, label TEXT NOT NULL, host_kind TEXT NOT NULL, capabilities_json TEXT,
       linked_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER
+    )`);
+    // The account's published shares (`shares/<id>.json` in PUBLIC_SESSIONS), for its quota and to unpublish them.
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS shares (
+      share_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, bytes INTEGER NOT NULL, published_at INTEGER NOT NULL
     )`);
     // The ClientDOs listing this account's hosts, told when a host is paired or revoked (RFD0031).
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS client_followers (client_do TEXT PRIMARY KEY)");
@@ -386,6 +393,54 @@ export class AxoAccountManager extends DurableObject<Env> {
     if (row.host_generation !== hostGeneration) throw new Error("Host generation conflict");
     this.ctx.storage.sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, hostId);
     return { acknowledged: true, lastSeenAt: new Date(now).toISOString() };
+  }
+
+  // ─── Shares ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Makes room for a share one of the account's Macs publishes, within SHARE_LIMITS. The row is
+   * written before the snapshot, so a share in the bucket is always counted; one whose write then
+   * fails is let go with `forgetShare`.
+   */
+  admitShare(hostId: string, shareId: string, bytes: number, now: number): ShareAdmission {
+    if (!this.activeHost(hostId)) return "invalid";
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > SHARE_LIMITS.snapshotBytes) return "tooLarge";
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const kept = sql.exec<{ count: number; bytes: number | null }>("SELECT COUNT(*) AS count, SUM(bytes) AS bytes FROM shares").one();
+      if (kept.count >= SHARE_LIMITS.perAccount || (kept.bytes ?? 0) + bytes > SHARE_LIMITS.accountBytes) return "full";
+      const lastHour = sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM shares WHERE published_at > ?", now - 3600_000).one().count;
+      if (lastHour >= SHARE_LIMITS.perHour) return "limited";
+      sql.exec("INSERT INTO shares (share_id, host_id, bytes, published_at) VALUES (?, ?, ?, ?)", shareId, hostId, bytes, now);
+      return "admitted";
+    });
+  }
+
+  forgetShare(shareId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM shares WHERE share_id = ?", shareId);
+  }
+
+  listShares(): { shares: AccountShare[] } {
+    return {
+      shares: this.ctx.storage.sql.exec<{ share_id: string; host_id: string; bytes: number; published_at: number }>(
+        "SELECT * FROM shares ORDER BY published_at DESC, share_id").toArray()
+        .map((row) => ({ shareId: row.share_id, hostId: row.host_id, bytes: row.bytes, publishedAt: new Date(row.published_at).toISOString() })),
+    };
+  }
+
+  /**
+   * Unpublishes one of the account's shares. A share from before the account kept a list is its
+   * own if the bucket says this account published it.
+   */
+  async deleteShare(shareId: string): Promise<boolean> {
+    const accountId = this.accountId();
+    if (!accountId) return false;
+    const key = `shares/${shareId}.json`;
+    const listed = this.ctx.storage.sql.exec("SELECT 1 FROM shares WHERE share_id = ?", shareId).toArray().length > 0;
+    if (!listed && (await this.env.PUBLIC_SESSIONS.head(key))?.customMetadata?.principal !== accountId) return false;
+    await this.env.PUBLIC_SESSIONS.delete(key);
+    this.forgetShare(shareId);
+    return true;
   }
 
   /**

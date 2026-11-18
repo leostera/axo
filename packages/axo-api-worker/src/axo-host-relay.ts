@@ -22,6 +22,7 @@ import {
   splitMessage,
   type Decoded,
   type PartialStore,
+  SHARE_LIMITS,
   SHARE_PUBLISH_METHOD,
   sharePublishParamsSchema,
   shareSlug,
@@ -32,6 +33,7 @@ import { UNOWNED_CLOSE, peerSchema, type Peer, type CallerContext, type Route } 
 import { recordApiEvent } from "./observability";
 import { boundReplies } from "./relay/replies";
 import { APP_ORIGIN } from "./auth/config";
+import type { ShareAdmission } from "./auth/account-manager";
 import type { z } from "zod";
 
 type HostRegistrationMethods = {
@@ -58,6 +60,14 @@ const byteLength = (raw: string) => new TextEncoder().encode(raw).byteLength;
  * A route is the lease of the Mac's current connection, one row per host. It is connection
  * state, not data: `reconcile` fences the route of a socket that did not survive a restart.
  */
+/** What a Mac is told when its share is refused. */
+const SHARE_REFUSALS: Record<Exclude<ShareAdmission, "admitted">, string> = {
+  invalid: "Invalid shared conversation",
+  tooLarge: `The conversation is too large to share (over ${SHARE_LIMITS.snapshotBytes} bytes)`,
+  full: "The account has as many shares as it may keep; unpublish some first",
+  limited: `The account has published ${SHARE_LIMITS.perHour} shares in the last hour; try again later`,
+};
+
 export abstract class AxoHostRelay extends DurableObject<Env> {
   private readonly rpc: JSONRPCServer<CallerContext>;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -194,6 +204,10 @@ export abstract class AxoHostRelay extends DurableObject<Env> {
   protected abstract presenceChanged(hostGeneration: string, status: "online" | "offline"): void;
   protected abstract storeHostRegistration(registration: unknown): Promise<HostSnapshot>;
   protected abstract storeHostHeartbeat(reference: unknown): Promise<{ acknowledged: true; lastSeenAt: string }>;
+  /** Makes room in the account's share quota for one of `bytes`, or says why not. */
+  protected abstract admitShare(hostId: string, shareId: string, bytes: number): Promise<ShareAdmission>;
+  /** Lets go of an admitted share whose write failed. */
+  protected abstract forgetShare(shareId: string): Promise<void>;
 
   // ─── The socket ────────────────────────────────────────────────────────────
 
@@ -400,10 +414,18 @@ export abstract class AxoHostRelay extends DurableObject<Env> {
     if (!parsed.success || !route.ready || parsed.data.hostId !== peer.machineId || parsed.data.hostGeneration !== route.generation)
       throw new JSONRPCErrorException("Invalid shared conversation", -32602);
     const shareId = newShareId();
-    await this.env.PUBLIC_SESSIONS.put(`shares/${shareId}.json`, JSON.stringify(parsed.data.snapshot), {
-      httpMetadata: { contentType: "application/json; charset=utf-8" },
-      customMetadata: { principal: peer.identity, hostId: peer.machineId, publishedAt: new Date().toISOString() },
-    });
+    const body = new TextEncoder().encode(JSON.stringify(parsed.data.snapshot));
+    const admission = await this.admitShare(peer.machineId, shareId, body.byteLength);
+    if (admission !== "admitted") throw new JSONRPCErrorException(SHARE_REFUSALS[admission], -32602);
+    try {
+      await this.env.PUBLIC_SESSIONS.put(`shares/${shareId}.json`, body, {
+        httpMetadata: { contentType: "application/json; charset=utf-8" },
+        customMetadata: { principal: peer.identity, hostId: peer.machineId, publishedAt: new Date().toISOString() },
+      });
+    } catch (error) {
+      await this.forgetShare(shareId);
+      throw error;
+    }
     this.renewRoute(peer);
     recordApiEvent({ event: "share_published", messages: parsed.data.snapshot.messages.length });
     return { shareId, url: `${APP_ORIGIN}/s/${shareId}/${shareSlug(parsed.data.snapshot.title)}` };

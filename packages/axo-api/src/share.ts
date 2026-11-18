@@ -11,6 +11,22 @@ import { hostGenerationSchema, hostIdSchema } from "./v1.ts";
 export const SHARE_PUBLISH_METHOD = "axo.host.share.publish";
 export const SHARED_SNAPSHOT_VERSION = 1;
 export const MAX_SHARED_MESSAGES = 5_000;
+
+/**
+ * How much an account may publish. Shares are public on Axo's own origin and anyone can sign up,
+ * so each one is bounded, and so is what one account keeps and how fast it adds to it. Pi's
+ * `/axo-share` keeps a snapshot under 1.9 MB (packages/pi-axo/src/share-command.ts).
+ */
+export const SHARE_LIMITS = {
+  /** One snapshot, as stored: UTF-8 JSON. */
+  snapshotBytes: 2 * 1_048_576,
+  /** Shares one account keeps at once. */
+  perAccount: 1_000,
+  /** Bytes of shares one account keeps at once. */
+  accountBytes: 256 * 1_048_576,
+  /** Shares one account publishes in an hour. */
+  perHour: 30,
+} as const;
 export const shareIdSchema = z.string().regex(/^[A-Za-z0-9_-]{22}$/);
 
 const text = (max: number) => z.string().max(max);
@@ -65,6 +81,16 @@ export const sharePublishResultSchema = z.object({
   url: z.url(),
 }).strict();
 export type SharePublishResult = z.infer<typeof sharePublishResultSchema>;
+
+/** One of the account's shares, as the account lists them. */
+export const accountShareSchema = z.object({
+  shareId: shareIdSchema,
+  hostId: hostIdSchema,
+  bytes: z.number().int().nonnegative(),
+  publishedAt: z.string().datetime({ offset: true }),
+}).strict();
+export type AccountShare = z.infer<typeof accountShareSchema>;
+export const accountShareListSchema = z.object({ shares: z.array(accountShareSchema) }).strict();
 
 /** The readable tail of a share URL; placeholders left by redaction are dropped. */
 export function shareSlug(title: string): string {

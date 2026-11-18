@@ -1,6 +1,7 @@
 import { deliverHostNoticeBatch } from "./host-notice-delivery";
 import type { PushRoute } from "./push/registry";
 import { questionDigest } from "./push/content";
+import type { ShareAdmission } from "./auth/account-manager";
 import {
   APPS_LIMITS,
   ELICITATION_ERRORS,
@@ -118,6 +119,8 @@ type AccountStub = {
   registerHost(registration: unknown, now: number): Promise<HostSnapshot>;
   touchHost(hostId: string, hostGeneration: string, now: number): Promise<{ acknowledged: true; lastSeenAt: string }>;
   appsCall(call: AppsCall): Promise<HostCommandOutcome>;
+  admitShare(hostId: string, shareId: string, bytes: number, now: number): Promise<ShareAdmission>;
+  forgetShare(shareId: string): Promise<void>;
 };
 
 /** The HostDO's schema, one step per change (RFD0032, Release P). */
@@ -329,6 +332,14 @@ export class AxoHostDO extends AxoHostRelay {
     const reply = await this.account().touchHost(hostId, hostGeneration, now);
     this.touched(hostGeneration, now, reply.lastSeenAt);
     return reply;
+  }
+
+  protected override async admitShare(hostId: string, shareId: string, bytes: number): Promise<ShareAdmission> {
+    return this.account().admitShare(hostId, shareId, bytes, Date.now());
+  }
+
+  protected override async forgetShare(shareId: string): Promise<void> {
+    await this.account().forgetShare(shareId);
   }
 
   private touched(hostGeneration: string, at: number, lastSeenAt: string): void {

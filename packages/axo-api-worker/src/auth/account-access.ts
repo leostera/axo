@@ -27,6 +27,8 @@ type AccountStub = {
   listHosts?(): Promise<unknown>;
   clientHosts?(): Promise<Array<{ hostId: string }>>;
   revokeHost?(hostId: string, now?: number): Promise<void>;
+  listShares?(): Promise<unknown>;
+  deleteShare?(shareId: string): Promise<boolean>;
   createPairing?(codeVerifier: string, pairingId: string, now: number, expiresAt: number): Promise<"created" | "collision" | "limited">;
   cancelPairing?(codeVerifier: string, pairingId: string): Promise<void>;
   redeemPairing?(input: {
