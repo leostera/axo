@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { appMacSignInSchema, appSignInSchema } from "@axo/protocol";
 import { AppAccountRefused, BuiltinApps, type MacSignInCallback } from "../src/apps/builtin";
 import { sqlStorage } from "./sql-storage";
+import { Keyring } from "../src/auth/keys";
 
 /**
  * RFD0016, Kraken's sign-in on the person's Mac: kraken-cli's public client redirects only to
@@ -94,7 +95,7 @@ function fixture(options: { macAnswer?: (request: { authorizeUrl: string; ports:
   const macRequests: Array<{ mac: string; authorizeUrl: string; ports: readonly number[]; path: string; state: string; timeoutMs: number }> = [];
   const apps = new BuiltinApps({
     sql: sqlStorage(),
-    secret: "test-secret-of-at-least-thirty-two-bytes",
+    keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"),
     accountId: crypto.randomUUID(),
     fetcher: kraken.fetch,
     waitUntil: (promise) => background.push(promise),

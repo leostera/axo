@@ -5,6 +5,7 @@ import { accountAppSchema } from "@axo/protocol";
 import { AppAccountRefused, BuiltinApps } from "../src/apps/builtin";
 import { FakeHetzner } from "./fake-hetzner";
 import { sqlStorage } from "./sql-storage";
+import { Keyring } from "../src/auth/keys";
 
 /** The person allows every call that asks (RFD0070). */
 const allow = async () => {};
@@ -24,7 +25,7 @@ function fixture() {
     if (!answer) throw new Error(`unexpected request to ${request.url}`);
     return answer;
   }) as typeof fetch;
-  const apps = new BuiltinApps({ sql, secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql, keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { hetzner, sql, apps };
 }
 
@@ -176,7 +177,7 @@ function services() {
     }
     return json({ error: "not found" }, 404);
   }) as typeof fetch;
-  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen };
 }
 
@@ -229,7 +230,7 @@ function signedServices() {
     }
     return json({ error: ["not found"] }, 404);
   }) as typeof fetch;
-  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen, krakenSecret };
 }
 
@@ -291,7 +292,7 @@ function moreServices() {
     }
     return json({ message: "not found" }, 404);
   }) as typeof fetch;
-  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(), fetcher, waitUntil: () => undefined });
   return { apps, seen };
 }
 

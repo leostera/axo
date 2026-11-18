@@ -4,6 +4,7 @@ import { ThirdPartyApps } from "../src/apps/third-party";
 import { seal, unseal } from "../src/auth/crypto";
 import { FakeMcp } from "./fake-mcp";
 import { sqlStorage } from "./sql-storage";
+import { Keyring } from "../src/auth/keys";
 
 const secret = "test-secret-of-at-least-thirty-two-bytes";
 
@@ -13,7 +14,7 @@ async function fixture() {
   const accountId = crypto.randomUUID();
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) =>
     (await server.handle(new Request(input, init))) ?? new Response("not found", { status: 404 })) as typeof fetch;
-  const apps = new ThirdPartyApps({ sql, secret, accountId, fetcher, waitUntil: () => undefined });
+  const apps = new ThirdPartyApps({ sql, keys: Keyring.legacy(secret), accountId, fetcher, waitUntil: () => undefined });
   await apps.add("linear", server.url);
   const sealed = () => sql.exec<{ client_sealed: string | null }>("SELECT client_sealed FROM third_party_connections WHERE name = 'linear'").toArray()[0]!.client_sealed;
   const opens = async () => {

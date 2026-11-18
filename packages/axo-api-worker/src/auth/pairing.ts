@@ -3,7 +3,7 @@ import {
   hostPairingRedeemRequestSchema,
   hostPairingRedeemResultSchema,
 } from "@axo/protocol/v1";
-import { hmac } from "./crypto";
+import { Keyring } from "./keys";
 import { attempt, requestSource } from "./rate-limit";
 import { requireAccount, type AuthExports } from "./account-access";
 import type { AuthEnvironment } from "./config";
@@ -33,7 +33,8 @@ export async function createHostPairing(
   const caller = await requireAccount(request, env, exports, "change");
   if (caller instanceof Response) return caller;
   const accountId = caller.accountId;
-  if (!env.SESSION_SECRET || !exports.AxoAccountManager ||
+  const keys = Keyring.parse(env);
+  if (!keys || !exports.AxoAccountManager ||
       !exports.AxoPairingIndex || !exports.AxoPairingRateLimit) return unavailable();
 
   const account = exports.AxoAccountManager.getByName(accountId);
@@ -44,7 +45,7 @@ export async function createHostPairing(
 
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = generatePairingCode();
-    const verifier = await hmac(env.SESSION_SECRET, `pairing-code\0${code}`);
+    const verifier = await keys.hash("pairing-code", code);
     const pairingId = crypto.randomUUID();
 
     let status: "created" | "collision" | "limited";
@@ -83,7 +84,8 @@ export async function redeemHostPairing(
   exports: AuthExports,
 ): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed("POST");
-  if (!env.SESSION_SECRET || !exports.AxoAccountManager ||
+  const keys = Keyring.parse(env);
+  if (!keys || !exports.AxoAccountManager ||
       !exports.AxoPairingIndex || !exports.AxoPairingRateLimit) return unavailable();
 
   const rawBody = await boundedRequestBody(request);
@@ -98,7 +100,7 @@ export async function redeemHostPairing(
   if (!parsed.success) return badRequest();
 
   const now = Date.now();
-  const sourceKey = await hmac(env.SESSION_SECRET, `pairing-source\0${requestSource(request)}`);
+  const sourceKey = await keys.hash("pairing-source", requestSource(request));
   for (const [name, maximum] of [[`source-${sourceKey}`, MAX_REDEMPTIONS_PER_SOURCE_PER_MINUTE], ["redemption-global", MAX_REDEMPTIONS_PER_MINUTE]] as const) {
     const allowed = await consumeLimit(exports, name, now, maximum);
     if (allowed === "unavailable") return unavailable();
@@ -106,11 +108,17 @@ export async function redeemHostPairing(
   }
 
   const input = parsed.data;
-  const codeVerifier = await hmac(env.SESSION_SECRET, `pairing-code\0${input.code}`);
-  const index = exports.AxoPairingIndex.getByName(pairingShard(codeVerifier));
-  let entry: Awaited<ReturnType<typeof index.lookup>>;
+  // A code issued just before a key rotation is kept by the previous key's hash (RFD0076).
+  let codeVerifier = "";
+  let entry: { accountId: string; pairingId: string; expiresAt: number } | null = null;
   try {
-    entry = await index.lookup(codeVerifier, now);
+    for (const verifier of await keys.hashes("pairing-code", input.code)) {
+      entry = await exports.AxoPairingIndex.getByName(pairingShard(verifier)).lookup(verifier, now);
+      if (entry) {
+        codeVerifier = verifier;
+        break;
+      }
+    }
   } catch {
     return unavailable();
   }
@@ -118,7 +126,7 @@ export async function redeemHostPairing(
 
   const account = exports.AxoAccountManager.getByName(entry.accountId);
   if (!account.redeemPairing) return unavailable();
-  const credentialVerifier = await hmac(env.SESSION_SECRET, `host-credential\0${input.credential}`);
+  const credentialVerifier = await keys.hash("host-credential", input.credential);
   try {
     const redemption = await account.redeemPairing({
       codeVerifier,

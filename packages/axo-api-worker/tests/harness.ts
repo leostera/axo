@@ -220,14 +220,15 @@ export async function harness(configuration: { bindings?: Record<string, string>
   const modules = await bundleOf(configuration.entry ?? resolve(root, "packages/axo-api-worker/src/index.ts"));
   const bundle = join(modules, "worker.mjs");
   const provider = new Provider();
-  const options = convertV4MiniflareOptions({
+  let bindings: Record<string, string> = {
+    OAUTH_CLIENT_ID: "test-client",
+    OAUTH_CLIENT_SECRET: "test-secret",
+    SESSION_SECRET: testSessionSecret,
+    ...configuration.bindings,
+  };
+  const optionsWith = (bindings: Record<string, string>) => convertV4MiniflareOptions({
     name: "api-test",
-    bindings: {
-      OAUTH_CLIENT_ID: "test-client",
-      OAUTH_CLIENT_SECRET: "test-secret",
-      SESSION_SECRET: testSessionSecret,
-      ...configuration.bindings,
-    },
+    bindings,
     // The Worker's outbound requests go to the identity provider, or to what a test adds.
     outboundService: async (request: Request) => (await configuration.outbound?.(request)) ?? provider.handle(request),
     modulesRoot: modules,
@@ -266,7 +267,7 @@ export async function harness(configuration: { bindings?: Record<string, string>
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,
   });
-  let mf = new Miniflare(options);
+  let mf = new Miniflare(optionsWith(bindings));
   let url: string;
   try {
     url = String(await mf.ready);
@@ -285,11 +286,12 @@ export async function harness(configuration: { bindings?: Record<string, string>
     },
     /** Where Durable Objects keep their SQLite files, for tests that edit storage while stopped. */
     storagePath: join(directory, "storage"),
-    /** Stops the runtime, runs `whileStopped`, and starts it again. */
-    async restart(whileStopped?: () => Promise<void> | void) {
+    /** Stops the runtime, runs `whileStopped`, and starts it again, with `changed` bindings if given (a new release's). */
+    async restart(whileStopped?: () => Promise<void> | void, changed?: Record<string, string>) {
       await mf.dispose();
       await whileStopped?.();
-      mf = new Miniflare(options);
+      if (changed) bindings = { ...bindings, ...changed };
+      mf = new Miniflare(optionsWith(bindings));
       url = String(await mf.ready);
     },
     async close() {

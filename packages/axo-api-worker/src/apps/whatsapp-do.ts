@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { whatsapp, WhatsAppDevice, type LinkedDevice, type LinkedOutcome, type LinkStart, type LinkState } from "@axo/apps";
-import { seal, unseal } from "../auth/crypto";
+import { Keyring, type KeyEnvironment } from "../auth/keys";
 
 /**
  * One linked WhatsApp device of an account's (RFD0016, Linked devices), named
@@ -15,11 +15,16 @@ export class AxoWhatsAppDO extends DurableObject<Env> implements LinkedDevice {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const purpose = `apps-whatsapp-device\0${ctx.id.toString()}`;
+    const keys = () => {
+      const parsed = Keyring.parse(env as KeyEnvironment);
+      if (!parsed) throw new Error("The Worker's keys are not configured");
+      return parsed;
+    };
     this.device = new WhatsAppDevice({
       sql: ctx.storage.sql,
-      seal: (plain) => seal(env.SESSION_SECRET, purpose, plain),
+      seal: (plain) => keys().seal(purpose, plain),
       unseal: async (sealed) => {
-        const plain = await unseal(env.SESSION_SECRET, purpose, sealed, 1 << 20);
+        const plain = await keys().unseal(purpose, sealed, 1 << 20);
         return typeof plain === "string" ? plain : null;
       },
       transaction: (work) => ctx.storage.transactionSync(work),

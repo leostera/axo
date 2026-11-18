@@ -1,7 +1,7 @@
 import type { AccountApp, ToolDefinition } from "@axo/protocol";
 import { pkceChallenge } from "@axo/apps";
 import type { RunScope } from "./run-scope";
-import { seal, unseal } from "../auth/crypto";
+import type { Keyring } from "../auth/keys";
 import { callTool, initialize, listTools, McpAuthRequired, McpError, toolOutput, type McpSession } from "./mcp-client";
 
 /** How a tool's "401" is recorded as the connection's last error; a working call clears it. */
@@ -69,7 +69,7 @@ type StoredTool = { name: string; upstream: string; title: string; description: 
 
 export type ThirdPartyDeps = {
   sql: SqlStorage;
-  secret: string;
+  keys: Keyring;
   accountId: string;
   fetcher: typeof fetch;
   /** Keeps background work (tool-list refreshes) alive after the call that started it. */
@@ -234,7 +234,7 @@ export class ThirdPartyApps {
     const client = row?.client_sealed ? await this.client(row.name, row.client_sealed) : null;
     if (!row?.discovery_json || !client) return null;
     const challenge = await pkceChallenge(flow.verifier);
-    const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
+    const state = await this.deps.keys.seal("apps-oauth-state", { accountId: this.deps.accountId, nonce });
     return { authorizeUrl: authorizationUrl(JSON.parse(row.discovery_json) as Discovery, client, challenge, state), name: flow.name, nonce };
   }
 
@@ -444,7 +444,7 @@ export class ThirdPartyApps {
   }
 
   private seal(kind: "client" | "grant", value: unknown): Promise<string> {
-    return seal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, value);
+    return this.deps.keys.seal(`apps-${kind}\0${this.deps.accountId}`, value);
   }
 
   private client(name: string, sealed: string): Promise<Client | null> {
@@ -457,9 +457,9 @@ export class ThirdPartyApps {
    * sealed again under today's, so the next read needs only one try.
    */
   private async opened<T>(kind: "client" | "grant", name: string, sealed: string): Promise<T | null> {
-    const current = await unseal(this.deps.secret, `apps-${kind}\0${this.deps.accountId}`, sealed, 65_536);
+    const current = await this.deps.keys.unseal(`apps-${kind}\0${this.deps.accountId}`, sealed, 65_536);
     if (current !== null) return current as T;
-    const legacy = await unseal(this.deps.secret, `connections-${kind}\0${this.deps.accountId}`, sealed, 65_536);
+    const legacy = await this.deps.keys.unseal(`connections-${kind}\0${this.deps.accountId}`, sealed, 65_536);
     if (legacy === null) return null;
     this.deps.sql.exec(`UPDATE third_party_connections SET ${kind}_sealed = ? WHERE name = ? AND ${kind}_sealed = ?`, await this.seal(kind, legacy), name, sealed);
     return legacy as T;

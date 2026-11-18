@@ -1,7 +1,7 @@
 # RFD0013 - Axo: Cloudflare sign-in and one-time host pairing
 
 - Feature Name: `axo-cloudflare-sign-in-and-host-pairing`
-- Status: Implemented, as amended (see Current state); not built: separate HMAC keys per purpose and their rotation, an explicit Keychain access policy. Amended by [RFD0071](RFD0071-socket-sign-in-leases.md) (sign-in leases for open sockets).
+- Status: Implemented, as amended (see Current state); not built: an explicit Keychain access policy. Amended by [RFD0071](RFD0071-socket-sign-in-leases.md) (sign-in leases for open sockets) and [RFD0076](RFD0076-keyed-secrets-and-rotation.md) (keyed secrets per purpose, and their rotation).
 - Author: leostera
 - Start Date: 2026-10-16
 - Updated: 2026-11-10 (reconciled with the code)

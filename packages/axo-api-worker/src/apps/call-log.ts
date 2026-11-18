@@ -1,5 +1,5 @@
 import { APPS_LIMITS, type CallRecord } from "@axo/protocol";
-import { seal, unseal } from "../auth/crypto";
+import type { Keyring } from "../auth/keys";
 
 /**
  * The account's call log (RFD0016, Call log): one row per tool call, written before the call is
@@ -56,7 +56,7 @@ export class CallLog {
 
   constructor(
     private readonly sql: SqlStorage,
-    private readonly secret: string,
+    private readonly keys: Keyring,
     private readonly accountId: string,
   ) {
     sql.exec(`CREATE TABLE IF NOT EXISTS connection_calls (
@@ -79,7 +79,7 @@ export class CallLog {
   /** A call's sealed input, opened; calls logged before dd9a87de sealed it as "connections-call-input". */
   private async input(sealed: string): Promise<unknown> {
     const max = 4 * APPS_LIMITS.scriptBytes + 1024;
-    return (await unseal(this.secret, this.purpose, sealed, max)) ?? (await unseal(this.secret, `connections-call-input\0${this.accountId}`, sealed, max)) ?? null;
+    return (await this.keys.unseal(this.purpose, sealed, max)) ?? (await this.keys.unseal(`connections-call-input\0${this.accountId}`, sealed, max)) ?? null;
   }
 
   async start(call: CallStart, now = Date.now()): Promise<void> {
@@ -88,7 +88,7 @@ export class CallLog {
     const kept = text.length <= APPS_LIMITS.scriptBytes
       ? call.input ?? null
       : { truncated: true, length: text.length, head: text.slice(0, APPS_LIMITS.scriptBytes) };
-    const sealed = await seal(this.secret, this.purpose, kept);
+    const sealed = await this.keys.seal(this.purpose, kept);
     await this.serial(async () => {
       this.forget(now - APPS_LIMITS.logDays * DAY_MS);
       this.sql.exec(`INSERT INTO connection_calls (call_id, at, session_id, host_id, service, tool, target_host_id, input_sealed)

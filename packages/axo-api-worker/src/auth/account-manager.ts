@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { accountAssets } from "../assets/store";
 import { signInSchema, type SignIn } from "./sign-in-lease";
+import { Keyring, type KeyEnvironment } from "./keys";
 import { LIMITS, SHARE_LIMITS, type AccountShare, type ClientHost } from "@axo/protocol";
 import { hostModelSchema, hostRegisterSchema, hostSnapshotSchema, type HostModel, type HostSnapshot } from "@axo/protocol/v1";
-import { constantTimeEqual, hmac } from "./crypto";
+import { constantTimeEqual } from "./crypto";
 import { hostDOName } from "../host-do";
 import { AccountApps, type CallOutcome, type AppsCall } from "../apps/account";
 import type { DeviceSignIn } from "../apps/builtin";
@@ -147,14 +148,18 @@ export class AxoAccountManager extends DurableObject<Env> {
   }
 
   /** The profile and end of a sign-in that is still good, or null. */
-  verifySession(digest: string, now: number): { profile: AccountProfile; expiresAt: number } | null {
+  /**
+   * The profile and end of a sign-in that is still good, and the hash it is stored by, or null.
+   * `digests` are the token's hashes with each configured key (RFD0076).
+   */
+  verifySession(digests: string[], now: number): { profile: AccountProfile; expiresAt: number; digest: string } | null {
     if (!this.accountId()) return null;
-    const row = this.ctx.storage.sql.exec<{ expires_at: number }>(
-      "SELECT expires_at FROM sessions WHERE digest = ? AND expires_at > ?", digest, now).toArray()[0];
+    const row = digests.slice(0, 2).map((digest) => this.ctx.storage.sql.exec<{ digest: string; expires_at: number }>(
+      "SELECT digest, expires_at FROM sessions WHERE digest = ? AND expires_at > ?", digest, now).toArray()[0]).find(Boolean);
     if (!row) return null;
     const profile = this.ctx.storage.sql.exec<{ email: string | null; name: string | null }>(
       "SELECT email, name FROM profile WHERE singleton = 1").toArray()[0];
-    return { profile: { email: profile?.email ?? null, name: profile?.name ?? null }, expiresAt: row.expires_at };
+    return { profile: { email: profile?.email ?? null, name: profile?.name ?? null }, expiresAt: row.expires_at, digest: row.digest };
   }
 
   isPushHostActive(hostId: string): boolean {
@@ -175,7 +180,7 @@ export class AxoAccountManager extends DurableObject<Env> {
     const parsed = signInSchema.safeParse(signIn);
     if (!parsed.success || !this.accountId()) return false;
     if (onHost !== undefined && !this.activeHost(onHost)) return false;
-    if (parsed.data.kind === "session") return this.verifySession(parsed.data.digest, now) !== null;
+    if (parsed.data.kind === "session") return this.verifySession([parsed.data.digest], now) !== null;
     return this.activeHost(parsed.data.hostId)?.credential_id === parsed.data.credentialId;
   }
 
@@ -200,12 +205,13 @@ export class AxoAccountManager extends DurableObject<Env> {
    * Uses up a login code. It is gone whatever the answer, so a wrong secret is one guess, not a
    * way to keep trying. The profile comes back only if the secret matches what the app started with.
    */
-  redeemLoginCode(digest: string, challenge: string, now: number): AccountProfile | null {
+  /** `digests` are the code's hashes with each configured key (RFD0076); the one stored is burnt. */
+  redeemLoginCode(digests: string[], challenge: string, now: number): AccountProfile | null {
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
-      const row = sql.exec<{ challenge: string; expires_at: number }>(
-        "SELECT challenge, expires_at FROM login_codes WHERE digest = ?", digest).toArray()[0];
-      sql.exec("DELETE FROM login_codes WHERE digest = ?", digest);
+      const row = digests.slice(0, 2).map((digest) => sql.exec<{ digest: string; challenge: string; expires_at: number }>(
+        "SELECT digest, challenge, expires_at FROM login_codes WHERE digest = ?", digest).toArray()[0]).find(Boolean);
+      if (row) sql.exec("DELETE FROM login_codes WHERE digest = ?", row.digest);
       if (!row || row.expires_at <= now || !constantTimeEqual(row.challenge, challenge)) return null;
       const profile = sql.exec<{ email: string | null; name: string | null }>(
         "SELECT email, name FROM profile WHERE singleton = 1").toArray()[0];
@@ -379,11 +385,16 @@ export class AxoAccountManager extends DurableObject<Env> {
   /** Whether `credential` is the current credential of a host this account still owns. */
   async authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean> {
     const host = this.activeHost(hostId);
-    const sessionSecret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
-    if (!host || !/^[A-Za-z0-9_-]{43}$/.test(credential) || credentialId !== host.credential_id || !sessionSecret)
+    const keys = Keyring.parse(this.env as KeyEnvironment);
+    if (!host || !/^[A-Za-z0-9_-]{43}$/.test(credential) || credentialId !== host.credential_id || !keys)
       return false;
-    const verifier = await hmac(sessionSecret, `host-credential\0${credential}`);
-    return constantTimeEqual(verifier, host.credential_verifier);
+    const verified = await keys.verify("host-credential", credential, host.credential_verifier);
+    // A Mac's credential made with the previous key is kept with the current one from its next
+    // sign-in on, so the previous key can be dropped once every Mac has signed in (RFD0076).
+    if (verified === "previous") this.ctx.storage.sql.exec(
+      "UPDATE account_hosts SET credential_verifier = ? WHERE host_id = ? AND credential_id = ?",
+      await keys.hash("host-credential", credential), hostId, credentialId);
+    return verified !== false;
   }
 
   /** A host registered on its socket: keeps its boot generation, label and capabilities. */
@@ -550,11 +561,11 @@ export class AxoAccountManager extends DurableObject<Env> {
   private apps(): AccountApps | null {
     if (this.appsState) return this.appsState;
     const accountId = this.accountId();
-    const secret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
-    if (!accountId || !secret) return null;
+    const keys = Keyring.parse(this.env as KeyEnvironment);
+    if (!accountId || !keys) return null;
     return this.appsState = new AccountApps({
       sql: this.ctx.storage.sql,
-      secret,
+      keys,
       accountId,
       loader: this.env.LOADER,
       hosts: () => this.ctx.storage.sql.exec<AccountHostRow>(

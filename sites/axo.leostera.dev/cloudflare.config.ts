@@ -40,6 +40,8 @@ export default defineConfig(({ isPreview }) => {
         OAUTH_CLIENT_ID: bindings.secret(),
         OAUTH_CLIENT_SECRET: bindings.secret(),
         SESSION_SECRET: bindings.secret(),
+        // Optional: the current key and the one being rotated out (RFD0076). Without it, SESSION_SECRET is the only key.
+        SECRET_KEYS: bindings.secret(),
         APNS_PRIVATE_KEY: bindings.secret(),
         APNS_KEY_ID: bindings.secret(),
         APNS_TEAM_ID: bindings.secret(),

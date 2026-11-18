@@ -7,7 +7,7 @@ import {
   type AuthExports,
 } from "./account-access";
 import { APP_ORIGIN, parseAuthConfiguration, type AuthConfiguration, type AuthEnvironment } from "./config";
-import { constantTimeEqual, hmac, randomToken, seal, sha256, unseal } from "./crypto";
+import { constantTimeEqual, randomToken, sha256 } from "./crypto";
 import { authorizationUrl, fetchIdentity, ProviderFailure } from "./oauth-cloudflare";
 import { attempt, requestSource } from "./rate-limit";
 import {
@@ -65,7 +65,7 @@ export async function startLogin(request: Request, env: AuthEnvironment, exports
 
   const nonce = randomToken(16);
   const verifier = randomToken(48);
-  const state = await seal(config.sessionSecret, "oauth-flow", {
+  const state = await config.keys.seal("oauth-flow", {
     nonce, verifier, expiresAt: Date.now() + FLOW_LIFETIME_MS, client: flowClient,
   } satisfies Flow);
   recordApiEvent({ event: "sign_in", client: flowClient.kind, outcome: "started" });
@@ -122,7 +122,7 @@ export async function completeLogin(
     if (flow.client.kind === "web") {
       const token = newSessionToken(accountId);
       const expiresAt = now + SESSION_LIFETIME_MS.web;
-      await account.establishSession(accountId, await sessionDigest(config.sessionSecret, token), "web", now, expiresAt, profile);
+      await account.establishSession(accountId, await sessionDigest(config.keys, token), "web", now, expiresAt, profile);
       recordApiEvent({ event: "sign_in", client: "web", outcome: "completed" });
       return redirect(`${APP_ORIGIN}/app`, [
         ...done,
@@ -133,7 +133,7 @@ export async function completeLogin(
     // The app gets a code that is worthless without the secret it kept: the token never rides a URL.
     const loginCode = `${accountId}.${randomToken(32)}`;
     await account.createLoginCode(
-      accountId, await loginCodeDigest(config, loginCode), flow.client.challenge, now, now + LOGIN_CODE_LIFETIME_MS, profile,
+      accountId, await config.keys.hash("login-code", loginCode), flow.client.challenge, now, now + LOGIN_CODE_LIFETIME_MS, profile,
     );
     recordApiEvent({ event: "sign_in", client: "native", outcome: "completed" });
     return redirect(`${NATIVE_REDIRECT}?code=${encodeURIComponent(loginCode)}`, done);
@@ -161,12 +161,12 @@ export async function exchangeLoginCode(request: Request, env: AuthEnvironment, 
   try {
     const account = exports.AxoAccountManager.getByName(accountId!);
     // A wrong verifier burns the code too: a guess gets one try.
-    const profile = await account.redeemLoginCode(await loginCodeDigest(config, parsed.data.code), await sha256(parsed.data.verifier), Date.now());
+    const profile = await account.redeemLoginCode(await config.keys.hashes("login-code", parsed.data.code), await sha256(parsed.data.verifier), Date.now());
     if (!profile) return json({ error: "invalid_grant" }, 400);
     const token = newSessionToken(accountId!);
     const now = Date.now();
     const expiresAt = now + SESSION_LIFETIME_MS.native;
-    await account.establishSession(accountId!, await sessionDigest(config.sessionSecret, token), "native", now, expiresAt, profile);
+    await account.establishSession(accountId!, await sessionDigest(config.keys, token), "native", now, expiresAt, profile);
     return json({
       token: formatSessionToken(token),
       accountId,
@@ -208,7 +208,7 @@ export async function logout(request: Request, env: AuthEnvironment, exports: Au
 
 async function openFlow(config: AuthConfiguration, state: string | null, cookieNonce: string | null): Promise<Flow | null> {
   if (!state || state.length > 1024 || !cookieNonce) return null;
-  const parsed = flowSchema.safeParse(await unseal(config.sessionSecret, "oauth-flow", state));
+  const parsed = flowSchema.safeParse(await config.keys.unseal("oauth-flow", state));
   if (!parsed.success) return null;
   const now = Date.now();
   const flow = parsed.data;
@@ -216,10 +216,6 @@ async function openFlow(config: AuthConfiguration, state: string | null, cookieN
   // started cannot sign anyone else in.
   if (flow.expiresAt < now || flow.expiresAt > now + FLOW_LIFETIME_MS + 60_000) return null;
   return constantTimeEqual(flow.nonce, cookieNonce) ? flow : null;
-}
-
-function loginCodeDigest(config: AuthConfiguration, code: string): Promise<string> {
-  return hmac(config.sessionSecret, `login-code\0${code}`);
 }
 
 /**
@@ -234,7 +230,7 @@ async function throttle(
   name: string,
   perSource: number,
 ): Promise<Response | null> {
-  const sourceKey = await hmac(config.sessionSecret, `source\0${requestSource(request)}`);
+  const sourceKey = await config.keys.hash("source", requestSource(request));
   const result = await attempt(exports, `${name}-source-${sourceKey}`, Date.now(), perSource);
   if (result === "unavailable") return unavailable();
   if (result === "limited") return json({ error: "Too many sign-in attempts" }, 429, { "Retry-After": "60" });

@@ -4,6 +4,7 @@ import { appDeviceSignInSchema, accountAppSchema } from "@axo/protocol";
 import { BuiltinApps } from "../src/apps/builtin";
 import { FakeOpenAI } from "./fake-openai";
 import { sqlStorage } from "./sql-storage";
+import { Keyring } from "../src/auth/keys";
 
 /**
  * RFD0016, device sign-in: ChatGPT signs in as the Codex CLI does. Add account shows a code the
@@ -23,7 +24,7 @@ function fixture() {
   }) as typeof fetch;
   const background: Promise<unknown>[] = [];
   const apps = new BuiltinApps({
-    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher, waitUntil: (p) => background.push(p), now: () => clock,
+    sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(), fetcher, waitUntil: (p) => background.push(p), now: () => clock,
   });
   const settled = () => Promise.all(background);
   const tick = (ms: number) => { clock += ms; };

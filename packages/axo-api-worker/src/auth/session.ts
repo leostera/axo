@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { fromBase64Url, hmac, randomToken } from "./crypto";
+import { fromBase64Url, randomToken } from "./crypto";
+import type { Keyring } from "./keys";
 
 /**
  * A session token is `axo1.<account id>.<secret>`: the account says which Durable Object to ask,
@@ -34,8 +35,14 @@ export function parseSessionToken(text: string): SessionToken | null {
   return { accountId: accountId!, secret: secret! };
 }
 
-export function sessionDigest(sessionSecret: string, token: SessionToken): Promise<string> {
-  return hmac(sessionSecret, `session\0${token.accountId}\0${token.secret}`);
+/** The hash a new session is stored by, with the current key (RFD0076). */
+export function sessionDigest(keys: Keyring, token: SessionToken): Promise<string> {
+  return keys.hash("session", `${token.accountId}\0${token.secret}`);
+}
+
+/** The hashes a session may be stored by, one per configured key, current first. */
+export function sessionDigests(keys: Keyring, token: SessionToken): Promise<string[]> {
+  return keys.hashes("session", `${token.accountId}\0${token.secret}`);
 }
 
 /** How long each kind of client stays signed in. */

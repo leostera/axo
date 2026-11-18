@@ -1,5 +1,5 @@
 import { APP_ORIGIN, parseAuthConfiguration, type AuthEnvironment } from "./config";
-import { cookieValue, parseSessionToken, sessionDigest, SESSION_COOKIE, type SessionKind } from "./session";
+import { cookieValue, parseSessionToken, sessionDigests, SESSION_COOKIE, type SessionKind } from "./session";
 
 export { APP_ORIGIN };
 
@@ -20,10 +20,10 @@ export type AccountCaller = {
 type IdentityStub = { resolveAccount(): Promise<string> };
 type AccountStub = {
   establishSession(accountId: string, digest: string, kind: SessionKind, now: number, expiresAt: number, profile: AccountProfile): Promise<void>;
-  verifySession(digest: string, now: number): Promise<{ profile: AccountProfile; expiresAt: number } | null>;
+  verifySession(digests: string[], now: number): Promise<{ profile: AccountProfile; expiresAt: number; digest: string } | null>;
   revokeSession(digest: string): Promise<void>;
   createLoginCode(accountId: string, digest: string, challenge: string, now: number, expiresAt: number, profile: AccountProfile): Promise<void>;
-  redeemLoginCode(digest: string, challenge: string, now: number): Promise<AccountProfile | null>;
+  redeemLoginCode(digests: string[], challenge: string, now: number): Promise<AccountProfile | null>;
   listHosts?(): Promise<unknown>;
   clientHosts?(): Promise<Array<{ hostId: string }>>;
   revokeHost?(hostId: string, now?: number): Promise<void>;
@@ -106,10 +106,11 @@ export async function requireAccount(
     return json({ error: "Origin not allowed" }, 403);
 
   try {
-    const digest = await sessionDigest(configuration.sessionSecret, token);
-    const session = await exports.AxoAccountManager.getByName(token.accountId).verifySession(digest, Date.now());
+    // One hash per configured key: a session stays signed in while the key it was made with does (RFD0076).
+    const digests = await sessionDigests(configuration.keys, token);
+    const session = await exports.AxoAccountManager.getByName(token.accountId).verifySession(digests, Date.now());
     if (!session) return json({ error: "Sign in required" }, 401);
-    return { accountId: token.accountId, profile: session.profile, expiresAt: session.expiresAt, via, sessionDigest: digest };
+    return { accountId: token.accountId, profile: session.profile, expiresAt: session.expiresAt, via, sessionDigest: session.digest };
   } catch {
     return json({ error: "Sign-in is unavailable" }, 503);
   }

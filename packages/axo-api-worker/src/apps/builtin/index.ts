@@ -48,7 +48,7 @@ import {
   type ProviderRequest,
   type TokenApp,
 } from "@axo/apps";
-import { seal, unseal } from "../../auth/crypto";
+import type { Keyring } from "../../auth/keys";
 import { AssetRefused, savedFile, type AccountAssets } from "../../assets/store";
 import { CALLBACK_URL } from "../oauth";
 import { FLOW_LIFETIME_MS, FLOW_REMEMBERED_MS, startUrl, type OpenedFlow } from "../third-party";
@@ -114,7 +114,7 @@ type Row = {
 
 export type AppsDeps = {
   sql: SqlStorage;
-  secret: string;
+  keys: Keyring;
   accountId: string;
   /**
    * Google's client from the Worker's environment, from when Axo's clients were set there: used
@@ -326,7 +326,7 @@ export class BuiltinApps {
     const definition = APP_DEFINITIONS[flow.app as AppName];
     const client = definition?.signIn === "oauth" ? await this.client(definition.provider) : null;
     if (!client || definition?.signIn !== "oauth") return null;
-    const state = await seal(this.deps.secret, "apps-oauth-state", { accountId: this.deps.accountId, nonce });
+    const state = await this.deps.keys.seal("apps-oauth-state", { accountId: this.deps.accountId, nonce });
     const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
     return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await pkceChallenge(flow.verifier), state, CALLBACK_URL), name: `apps.${flow.app}`, nonce };
   }
@@ -436,7 +436,7 @@ export class BuiltinApps {
     const secret = clientSecret.trim();
     if (!id || id.length > 512 || /\s/.test(id)) throw new AppAccountRefused("Enter the client ID, without spaces");
     if (!secret || secret.length > 2048 || /\s/.test(secret)) throw new AppAccountRefused("Enter the client secret, without spaces");
-    const sealed = await seal(this.deps.secret, `apps-client\0${this.deps.accountId}`, { clientId: id, clientSecret: secret } satisfies OAuthClient);
+    const sealed = await this.deps.keys.seal(`apps-client\0${this.deps.accountId}`, { clientId: id, clientSecret: secret } satisfies OAuthClient);
     this.deps.sql.exec(`INSERT INTO app_clients (provider, client_id, secret_sealed, updated_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (provider) DO UPDATE SET client_id = excluded.client_id, secret_sealed = excluded.secret_sealed, updated_at = excluded.updated_at`,
     definition.provider, id, sealed, this.now());
@@ -461,7 +461,7 @@ export class BuiltinApps {
     const id = crypto.randomUUID();
     this.deps.sql.exec("DELETE FROM app_device_flows WHERE created_at < ?", this.now() - DEVICE_CODE_LIFETIME_MS);
     this.deps.sql.exec("INSERT INTO app_device_flows (id, app, device_sealed, interval_s, created_at) VALUES (?, ?, ?, ?, ?)",
-      id, app, await seal(this.deps.secret, `apps-device\0${this.deps.accountId}`, device), device.intervalSeconds, this.now());
+      id, app, await this.deps.keys.seal(`apps-device\0${this.deps.accountId}`, device), device.intervalSeconds, this.now());
     return { flow: id, ...this.pending(device.userCode, device.intervalSeconds, this.now()) };
   }
 
@@ -475,7 +475,7 @@ export class BuiltinApps {
     const flow = this.deps.sql.exec<{ app: string; device_sealed: string; interval_s: number; created_at: number; polled_at: number; done: number }>(
       "SELECT * FROM app_device_flows WHERE id = ? AND app = ? AND created_at >= ?", flowId, app, this.now() - DEVICE_CODE_LIFETIME_MS).toArray()[0];
     if (!flow || flow.done || definition.signIn !== "device") return { state: "failed", error: "This sign-in has ended. Start again." };
-    const device = (await unseal(this.deps.secret, `apps-device\0${this.deps.accountId}`, flow.device_sealed)) as { deviceAuthId: string; userCode: string; intervalSeconds: number } | null;
+    const device = (await this.deps.keys.unseal(`apps-device\0${this.deps.accountId}`, flow.device_sealed)) as { deviceAuthId: string; userCode: string; intervalSeconds: number } | null;
     if (!device) return { state: "failed", error: "This sign-in has ended. Start again." };
     const pending = this.pending(device.userCode, flow.interval_s, flow.created_at);
     if (this.now() - flow.polled_at < flow.interval_s * 1000) return pending;
@@ -731,7 +731,7 @@ export class BuiltinApps {
     const hash = apiHash.trim().toLowerCase();
     if (!/^\d{1,12}$/.test(id) || Number(id) <= 0) throw new AppAccountRefused("The api_id is a number, such as 1234567");
     if (!/^[0-9a-f]{32}$/.test(hash)) throw new AppAccountRefused("The api_hash is 32 letters and digits");
-    const sealed = await seal(this.deps.secret, `apps-client\0${this.deps.accountId}`, { clientId: id, clientSecret: hash } satisfies OAuthClient);
+    const sealed = await this.deps.keys.seal(`apps-client\0${this.deps.accountId}`, { clientId: id, clientSecret: hash } satisfies OAuthClient);
     this.deps.sql.exec(`INSERT INTO app_clients (provider, client_id, secret_sealed, updated_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (provider) DO UPDATE SET client_id = excluded.client_id, secret_sealed = excluded.secret_sealed, updated_at = excluded.updated_at`,
     definition.provider, id, sealed, this.now());
@@ -770,12 +770,12 @@ export class BuiltinApps {
       if (step.step !== "code") return { state: "failed", error: `${definition.providerTitle} did not send a code. Start again.` };
       const id = crypto.randomUUID();
       this.deps.sql.exec("INSERT INTO app_phone_flows (id, app, step, state_sealed, created_at) VALUES (?, ?, 'code', ?, ?)",
-        id, app, await seal(this.deps.secret, sealedAs, { phone: number, pending: step.pending }), this.now());
+        id, app, await this.deps.keys.seal(sealedAs, { phone: number, pending: step.pending }), this.now());
       return { state: "code", flow: id, via: step.via };
     }
     const flow = this.deps.sql.exec<{ step: string; state_sealed: string; attempts: number }>(
       "SELECT step, state_sealed, attempts FROM app_phone_flows WHERE id = ? AND app = ?", request.flow, app).toArray()[0];
-    const state = flow ? (await unseal(this.deps.secret, sealedAs, flow.state_sealed)) as { phone: string; pending: string; via?: "app" | "sms"; hint?: string | null } | null : null;
+    const state = flow ? (await this.deps.keys.unseal(sealedAs, flow.state_sealed)) as { phone: string; pending: string; via?: "app" | "sms"; hint?: string | null } | null : null;
     if (!flow || !state || flow.step !== request.step) return { state: "failed", error: "This sign-in has ended. Start again." };
     const over = (error: string): AppPhoneSignIn => {
       this.deps.sql.exec("DELETE FROM app_phone_flows WHERE id = ?", request.flow);
@@ -799,7 +799,7 @@ export class BuiltinApps {
     }
     if (step.step === "password") {
       this.deps.sql.exec("UPDATE app_phone_flows SET step = 'password', attempts = 0, state_sealed = ? WHERE id = ?",
-        await seal(this.deps.secret, sealedAs, { phone: state.phone, pending: step.pending, hint: step.hint }), request.flow);
+        await this.deps.keys.seal(sealedAs, { phone: state.phone, pending: step.pending, hint: step.hint }), request.flow);
       return { state: "password", flow: request.flow, hint: step.hint };
     }
     if (step.step !== "done") return over(`${definition.providerTitle} did not finish the sign-in. Start again.`);
@@ -985,7 +985,7 @@ export class BuiltinApps {
   }
 
   private async unsealLinked(sealed: string): Promise<LinkedCredential | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as LinkedCredential | { kind?: undefined } | null;
+    const value = (await this.deps.keys.unseal(`apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as LinkedCredential | { kind?: undefined } | null;
     return value?.kind === "linked" ? value : null;
   }
 
@@ -1193,7 +1193,7 @@ export class BuiltinApps {
   /** A provider's client, unsealed; the person's own comes before Google's from the environment. */
   private async client(provider: OAuthProviderName): Promise<OAuthClient | null> {
     const row = this.deps.sql.exec<{ secret_sealed: string }>("SELECT secret_sealed FROM app_clients WHERE provider = ?", provider).toArray()[0];
-    if (row) return (await unseal(this.deps.secret, `apps-client\0${this.deps.accountId}`, row.secret_sealed)) as OAuthClient | null;
+    if (row) return (await this.deps.keys.unseal(`apps-client\0${this.deps.accountId}`, row.secret_sealed)) as OAuthClient | null;
     return provider === "google" ? this.deps.legacyGoogle ?? null : null;
   }
 
@@ -1223,22 +1223,22 @@ export class BuiltinApps {
   }
 
   private seal(credential: Grant | TokenCredential | PhoneCredential | LinkedCredential): Promise<string> {
-    return seal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, credential);
+    return this.deps.keys.seal(`apps-grant\0${this.deps.accountId}`, credential);
   }
 
   /** An OAuth grant; a token is never one. */
   private async unsealGrant(sealed: string): Promise<Grant | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | PhoneCredential | LinkedCredential | null;
+    const value = (await this.deps.keys.unseal(`apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | PhoneCredential | LinkedCredential | null;
     return value && value.kind !== "token" && value.kind !== "phone" && value.kind !== "linked" ? value : null;
   }
 
   private async unsealPhone(sealed: string): Promise<PhoneCredential | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as PhoneCredential | { kind?: undefined } | null;
+    const value = (await this.deps.keys.unseal(`apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as PhoneCredential | { kind?: undefined } | null;
     return value?.kind === "phone" ? value : null;
   }
 
   private async unsealToken(sealed: string): Promise<TokenCredential | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as TokenCredential | { kind?: undefined } | null;
+    const value = (await this.deps.keys.unseal(`apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as TokenCredential | { kind?: undefined } | null;
     return value?.kind === "token" ? value : null;
   }
 }

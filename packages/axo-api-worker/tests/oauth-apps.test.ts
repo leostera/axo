@@ -7,6 +7,7 @@ import { FakeGitHub } from "./fake-github";
 import { FakeSpotify } from "./fake-spotify";
 import { FakeWithings } from "./fake-withings";
 import { sqlStorage } from "./sql-storage";
+import { Keyring } from "../src/auth/keys";
 
 /** The person allows every call that asks (RFD0070). */
 const allow = async () => {};
@@ -32,7 +33,7 @@ async function fixture<F extends Fake>(fake: F, app: AppName) {
   }) as typeof fetch;
   const background: Promise<unknown>[] = [];
   const apps = new BuiltinApps({
-    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
+    sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(),
     fetcher, waitUntil: (p) => background.push(p), now: () => clock,
   });
   const ready = apps.setClient(app, fake.oauth.clientId, fake.oauth.clientSecret);
@@ -61,7 +62,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 }
 
 test("an OAuth app is listed before its provider's client is set up, with where to register one, and its tools appear once it is", async () => {
-  const apps = new BuiltinApps({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
+  const apps = new BuiltinApps({ sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(), fetcher: fetch, waitUntil: () => undefined });
   const listed = () => accountAppSchema.parse(apps.list().find((c) => c.name === "apps.github"));
   const before = listed();
   assert.deepEqual(before.kind === "app" && before.signIn, { kind: "oauth", client: {

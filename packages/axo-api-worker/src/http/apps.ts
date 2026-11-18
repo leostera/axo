@@ -3,7 +3,6 @@ import { appLinkRequestSchema, appMacSignInRequestSchema, appPhoneSignInRequestS
 import type { ChainCheck } from "../apps/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
-import { unseal } from "../auth/crypto";
 import { clearCookie, cookieValue, setCookie } from "../auth/session";
 import type { CallOutcome } from "../apps/account";
 import { FLOW_LIFETIME_MS } from "../apps/third-party";
@@ -185,7 +184,7 @@ export async function completeConnectionSignIn(request: Request, env: AuthEnviro
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state") ?? "";
   if (url.searchParams.get("error") || !code) return done({ error: "The sign-in was cancelled or refused." });
-  const sealed = state.length <= 2048 ? await unseal(configuration.sessionSecret, "apps-oauth-state", state) : null;
+  const sealed = state.length <= 2048 ? await configuration.keys.unseal("apps-oauth-state", state) : null;
   const flow = z.object({ accountId: z.uuid(), nonce: z.uuid() }).safeParse(sealed);
   const cookie = cookieValue(request.headers.get("Cookie"), FLOW_COOKIE);
   // The answer counts only in the browser that started this sign-in, signed in to its account.

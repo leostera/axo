@@ -13,6 +13,8 @@ interface Env {
   OAUTH_CLIENT_ID: string;
   OAUTH_CLIENT_SECRET: string;
   SESSION_SECRET: string;
+  /** The current key and the one being rotated out (RFD0076); without it, SESSION_SECRET is the only key. */
+  SECRET_KEYS?: string;
   APNS_PRIVATE_KEY?: string;
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;

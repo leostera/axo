@@ -4,6 +4,7 @@ import { accountAppSchema } from "@axo/protocol";
 import type { LinkedDevice, LinkedOutcome, LinkStart, LinkState } from "@axo/apps";
 import { BuiltinApps } from "../src/apps/builtin";
 import { sqlStorage } from "./sql-storage";
+import { Keyring } from "../src/auth/keys";
 
 /**
  * RFD0016, linked devices: WhatsApp, which Axo joins as a linked device of the person's account.
@@ -45,7 +46,7 @@ function fixture() {
   const devices = new Map<string, FakeDevice>();
   const background: Promise<unknown>[] = [];
   const apps = new BuiltinApps({
-    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(),
+    sql: sqlStorage(), keys: Keyring.legacy("test-secret-of-at-least-thirty-two-bytes"), accountId: crypto.randomUUID(),
     fetcher: (async () => { throw new Error("a linked app makes no HTTP calls"); }) as typeof fetch,
     waitUntil: (p) => void background.push(p),
     linked: (app, device) => {

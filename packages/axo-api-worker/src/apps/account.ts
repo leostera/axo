@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Keyring } from "../auth/keys";
 import { notifyInputSchema } from "../push/content";
 import {
   APPS_NAMESPACE,
@@ -78,7 +79,7 @@ export type HostLink = { hostId: string; hostGeneration: string; label: string; 
 
 export type AppsDeps = {
   sql: SqlStorage;
-  secret: string;
+  keys: Keyring;
   accountId: string;
   loader: Loader;
   /** The hosts the account owns now, oldest pairing first. */
@@ -146,12 +147,12 @@ export class AccountApps {
   readonly apps: BuiltinApps;
 
   constructor(private readonly deps: AppsDeps) {
-    this.log = new CallLog(deps.sql, deps.secret, deps.accountId);
+    this.log = new CallLog(deps.sql, deps.keys, deps.accountId);
     this.thirdParty = new ThirdPartyApps({
-      sql: deps.sql, secret: deps.secret, accountId: deps.accountId, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
+      sql: deps.sql, keys: deps.keys, accountId: deps.accountId, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
     });
     this.apps = new BuiltinApps({
-      sql: deps.sql, secret: deps.secret, accountId: deps.accountId, legacyGoogle: deps.google, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
+      sql: deps.sql, keys: deps.keys, accountId: deps.accountId, legacyGoogle: deps.google, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
       assets: deps.assets,
       // Mac apps (1Password) run their commands on the account's Macs, as `bash` does.
       macs: () => this.named().map((entry) => entry.name),
