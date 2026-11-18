@@ -3,6 +3,7 @@
 
 pub mod attach;
 pub mod command;
+pub mod disclaim;
 pub mod exit;
 pub mod lifeline;
 #[cfg(target_os = "linux")]
