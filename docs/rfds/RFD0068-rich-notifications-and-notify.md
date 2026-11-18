@@ -25,7 +25,9 @@ conversations do not fall back to an unrelated chat. Drafts survive navigation a
 
 The person selected mockup B for chat requests: flat inline text, a decision-first headline, muted
 supporting detail, compact Yes/No actions, and a quiet divider. No orange outline or enclosing card.
-Long approval scope stays readable on demand; Yes is unavailable until the full request is revealed.
+After reviewing build 73, the person required the entire elicitation message to remain visible:
+no truncation, collapsed scope, or review/expand step. Yes/No are centered, with more vertical space
+around the request. Concision comes from authoring better copy, never hiding approval scope.
 
 ## Reference contract
 

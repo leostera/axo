@@ -4,10 +4,8 @@ import Foundation
 public struct ApprovalCopy: Equatable, Sendable {
   public let headline: String
   public let detail: String?
-  public let requiresReview: Bool
 
   public init(_ message: String) {
-    requiresReview = message.count > 140
     guard let delimiter = message.firstIndex(where: { $0 == "?" || $0 == "\n" }) else {
       headline = message
       detail = nil

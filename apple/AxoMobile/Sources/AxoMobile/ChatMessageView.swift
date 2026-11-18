@@ -365,9 +365,7 @@ struct AgentActivityView: View {
 /// What a Mac's agent asks the person (RFD0029). Only the person answers: the agent waits for Yes
 /// or No, and an answer from any of their devices settles it everywhere.
 struct ElicitationCard: View {
-  @State private var showingDetails = false
   private var copy: ApprovalCopy { ApprovalCopy(question.elicitation.message) }
-  private var needsReview: Bool { copy.requiresReview }
   let question: AskedQuestion
   let canAnswer: Bool
   /// Why the last answer did not go.
@@ -384,31 +382,29 @@ struct ElicitationCard: View {
       }
       VStack(alignment: .leading, spacing: 4) {
         Text(copy.headline).font(.subheadline.weight(.semibold))
-          .lineLimit(needsReview && !showingDetails ? 3 : nil)
+          .fixedSize(horizontal: false, vertical: true)
         if let detail = copy.detail {
           Text(detail).font(.subheadline).foregroundStyle(.secondary)
-            .lineLimit(needsReview && !showingDetails ? 2 : nil)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
       .textSelection(.enabled)
       .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 8) {
-        if needsReview && !showingDetails {
-          AnswerButton(title: "Review request", prominent: true, fill: false) { showingDetails = true }
-            .accessibilityIdentifier("elicitationReview")
-        } else {
-          AnswerButton(title: "Yes", prominent: true, fill: false) { answer(.accept) }
-            .accessibilityIdentifier("elicitationYes")
-        }
+      HStack(spacing: 12) {
+        Spacer(minLength: 0)
+        AnswerButton(title: "Yes", prominent: true, fill: false) { answer(.accept) }
+          .accessibilityIdentifier("elicitationYes")
         AnswerButton(title: "No", prominent: false, fill: false) { answer(.decline) }
           .accessibilityIdentifier("elicitationNo")
+        Spacer(minLength: 0)
       }
+      .padding(.top, 12)
       .disabled(!canAnswer || question.answering != nil)
       if let failure {
         Text(failure).font(.caption).foregroundStyle(.secondary)
       }
     }
-    .padding(.vertical, 12)
+    .padding(.vertical, 24)
     .frame(maxWidth: .infinity, alignment: .leading)
     .overlay(alignment: .bottom) { Divider() }
     .accessibilityElement(children: .contain)
