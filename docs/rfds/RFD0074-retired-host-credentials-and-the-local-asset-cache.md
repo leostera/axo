@@ -68,7 +68,7 @@ While the relay is connected, axod sweeps `~/.axo/assets` once at connect and ev
    - **Anything else, or no answer:** the folder is kept. The sweep never deletes on doubt.
 3. A folder that is not a hash, a link, or a file at the top level is left alone.
 
-Removal holds the cache's write lock, and it re-checks that the folder has not changed since the `HEAD`. Every fetch and every upload copy holds the read lock while it works in the folder. So a re-uploaded asset that is being fetched again is never removed under its fetch.
+Every fetch and every upload copy holds the cache's read lock while it works in the folder. A folder picked by a `404` is asked again while the sweep holds the write lock, and it is removed only if the answer is still `404`. So a copy is never removed under a fetch that is using it, and an asset uploaded again between the two answers keeps its copy.
 
 A Mac linked to a different account sees its old account's assets as `404`, so they are removed. That is what the person asked for when they moved the Mac.
 
@@ -86,7 +86,7 @@ A Mac linked to a different account sees its old account's assets as `404`, so t
   - the sweep removes only folders the account answers `404` for;
   - it keeps folders on errors;
   - it removes stale temporaries and leaves fresh ones;
-  - a folder that changes during the sweep is kept.
+  - a copy whose asset is uploaded again during the sweep is kept.
 
 ## Alternatives
 

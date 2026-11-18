@@ -229,6 +229,25 @@ impl Drop for RelayWorker {
     }
 }
 
+/// The asset sweep of one socket, stopped when the socket ends.
+struct SweepTask(tokio::task::JoinHandle<()>);
+
+impl Drop for SweepTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Sweeps the assets folder now and every [`crate::assets::SWEEP_EVERY`] after.
+async fn keep_swept(source: crate::assets::AssetSource) {
+    loop {
+        if let Err(error) = crate::assets::sweep(&source).await {
+            log::warn!("event=assets.sweep_failed error={error}");
+        }
+        tokio::time::sleep(crate::assets::SWEEP_EVERY).await;
+    }
+}
+
 async fn run_reconnect_loop(
     dependencies: Arc<RelayDependencies>,
     stop: Stop,
@@ -433,6 +452,10 @@ async fn connect_and_serve(
             });
     // Local callers fetch the account's assets through this socket's account while it lives.
     sessions.set_asset_source(assets.clone());
+    // The person's deletes reach this Mac's copies while the socket lives (RFD0074).
+    let _sweeping = assets
+        .clone()
+        .map(|source| SweepTask(tokio::spawn(keep_swept(source))));
     let context = Arc::new(RelaySessionContext {
         sessions: Arc::clone(sessions),
         identity,

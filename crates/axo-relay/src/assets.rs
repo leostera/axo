@@ -10,6 +10,11 @@
 //! read them: every folder is `0700` and every file `0600`, and what an older Axo left more open
 //! is closed when the relay starts ([`make_private`]). A file reaches its name only by a rename,
 //! so a name never holds a torn copy.
+//!
+//! The folder mirrors the account, and nothing is evicted, because Pi transcripts name these
+//! paths and nothing re-fetches one when it is opened. While connected, the relay [`sweep`]s it:
+//! a copy of an asset the account no longer has is removed, so the person's deletes reach every
+//! Mac and the folder never outgrows the account's quota (RFD0074).
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -42,6 +47,16 @@ const UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
 /// How long one attachment may take in all.
 const FETCH_DEADLINE: Duration = Duration::from_secs(5 * 60);
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+/// How often the relay sweeps the folder while it is connected (RFD0074).
+pub const SWEEP_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// A temporary this old belongs to no live transfer: a fetch's deadline is five minutes.
+const STALE_DOWNLOAD: Duration = Duration::from_secs(60 * 60);
+
+/// Held to read by every fetch and upload while it works in the folder, and to write by the
+/// sweep while it removes a copy, so a copy is never removed under a fetch that is using it.
+static CACHE: std::sync::LazyLock<tokio::sync::RwLock<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::RwLock::new(()));
+
 /// Only the person's user may open the assets' folders, or read their files.
 const PRIVATE_FOLDER: u32 = 0o700;
 const PRIVATE_FILE: u32 = 0o600;
@@ -118,6 +133,7 @@ async fn fetch_one(
 ) -> Result<(FetchedAttachment, bool), FetchError> {
     let folder = source.directory.join(attachment.asset.hex());
     let path = folder.join(attachment.name.as_str());
+    let _using = CACHE.read().await;
     let fetched = FetchedAttachment {
         path: path.clone(),
         asset: attachment.asset,
@@ -387,6 +403,7 @@ async fn keep_copy(
     name: &AssetName,
     bytes: &[u8],
 ) -> io::Result<()> {
+    let _using = CACHE.read().await;
     let folder = directory.join(asset.hex());
     private_folder(&folder).await?;
     let temporary = folder.join(format!(".download-{}", axo_protocol::new_uuid_v4()?));
@@ -395,6 +412,94 @@ async fn keep_copy(
     file.write_all(bytes).await?;
     file.sync_all().await?;
     fs::rename(&temporary, folder.join(name.as_str())).await
+}
+
+/// Removes every copy of an asset the account no longer has, and every temporary no transfer
+/// owns. Answers how many copies it removed. A copy is removed only on the account's `404`, asked
+/// once to pick it and once more while no fetch can use it; on any other answer, or none, it is
+/// kept. Only folders named by a hash are touched.
+pub async fn sweep(source: &AssetSource) -> io::Result<usize> {
+    let mut folders = match fs::read_dir(&source.directory).await {
+        Ok(folders) => folders,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut removed = 0;
+    while let Some(folder) = folders.next_entry().await? {
+        let Some(hex) = folder.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_hash(&hex) || !folder.file_type().await?.is_dir() {
+            continue;
+        }
+        remove_stale_downloads(&folder.path()).await;
+        if !is_gone(source, &hex).await {
+            continue;
+        }
+        let _removing = CACHE.write().await;
+        if is_gone(source, &hex).await {
+            fs::remove_dir_all(folder.path()).await?;
+            log::info!("event=assets.swept hash={hex}");
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn is_hash(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Whether the account answers that it has no asset `hex`; anything else is not gone.
+async fn is_gone(source: &AssetSource, hex: &str) -> bool {
+    let url = source
+        .endpoint
+        .asset_url(source.account.account_id(), &source.host_id, hex);
+    let status = async {
+        let headers = authorization(source).await?;
+        let stream = request(&url, "HEAD", &headers, &[], READ_TIMEOUT).await?;
+        Ok::<_, io::Error>(
+            read_head(&mut BufReader::new(stream), READ_TIMEOUT)
+                .await?
+                .status,
+        )
+    }
+    .await;
+    match status {
+        Ok(404) => true,
+        Ok(_) => false,
+        Err(error) => {
+            log::warn!("event=assets.sweep_unanswered hash={hex} error={error}");
+            false
+        }
+    }
+}
+
+async fn remove_stale_downloads(folder: &Path) {
+    let Ok(mut entries) = fs::read_dir(folder).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let stale = entry.metadata().await.is_ok_and(|meta| {
+            meta.is_file()
+                && meta
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > STALE_DOWNLOAD)
+        });
+        if stale
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".download-")
+        {
+            let _ = fs::remove_file(entry.path()).await;
+        }
+    }
 }
 
 /// A header value as `encodeURIComponent` writes it, which the Worker decodes.
@@ -772,6 +877,109 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// A relay answering `HEAD` for each asset with the statuses `statuses` give its hash, in
+    /// turn, the last one from then on; `500` for any other.
+    fn account_with(statuses: Vec<(String, Vec<u16>)>) -> String {
+        let statuses = Mutex::new(statuses);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8_lossy(&request);
+                assert!(request.starts_with("HEAD "), "{request}");
+                let status = statuses
+                    .lock()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|(hex, _)| request.contains(&format!("/assets/{hex} ")))
+                    .map_or(500, |(_, answers)| {
+                        if answers.len() > 1 {
+                            answers.remove(0)
+                        } else {
+                            answers[0]
+                        }
+                    });
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        origin
+    }
+
+    #[tokio::test]
+    async fn the_sweep_removes_only_copies_the_account_no_longer_has() {
+        let directory = temporary_directory();
+        let hex = |byte: u8| format!("{byte:02x}").repeat(32);
+        let (deleted, kept, unanswered) = (hex(0xaa), hex(0xbb), hex(0xcc));
+        for folder in [&deleted, &kept, &unanswered, &"notes".to_owned()] {
+            fs::create_dir_all(directory.join(folder)).unwrap();
+            fs::write(directory.join(folder).join("file.pdf"), b"x").unwrap();
+        }
+        let stale = directory.join(&kept).join(".download-stale");
+        let fresh = directory.join(&kept).join(".download-fresh");
+        for path in [&stale, &fresh] {
+            fs::write(path, b"part").unwrap();
+        }
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - 2 * STALE_DOWNLOAD)
+            .unwrap();
+        let origin = account_with(vec![
+            (deleted.clone(), vec![404]),
+            (kept.clone(), vec![200]),
+        ]);
+
+        assert_eq!(sweep(&source(&origin, &directory)).await.unwrap(), 1);
+        assert!(!directory.join(&deleted).exists(), "the person deleted it");
+        assert!(directory.join(&kept).join("file.pdf").exists());
+        assert!(
+            directory.join(&unanswered).join("file.pdf").exists(),
+            "never removed on doubt"
+        );
+        assert!(directory.join("notes").join("file.pdf").exists());
+        assert!(!stale.exists(), "no transfer owns an hour-old temporary");
+        assert!(fresh.exists(), "a live transfer's temporary is its own");
+        assert_eq!(sweep(&source(&origin, &directory)).await.unwrap(), 0);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[tokio::test]
+    async fn a_copy_uploaded_again_while_it_is_swept_is_kept() {
+        let directory = temporary_directory();
+        let hex = "dd".repeat(32);
+        fs::create_dir_all(directory.join(&hex)).unwrap();
+        // Gone when picked, back by the time no fetch can use it.
+        let origin = account_with(vec![(hex.clone(), vec![404, 200])]);
+        assert_eq!(sweep(&source(&origin, &directory)).await.unwrap(), 0);
+        assert!(directory.join(&hex).exists());
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[tokio::test]
+    async fn a_missing_folder_sweeps_nothing() {
+        let directory = temporary_directory().join("never-made");
+        assert_eq!(
+            sweep(&source(&account_with(vec![]), &directory))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
