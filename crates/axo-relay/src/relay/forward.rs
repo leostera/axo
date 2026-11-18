@@ -15,6 +15,9 @@ const REMOTE_PREFIX: &str = "axo.remote.";
 /// What the relay does with one message from the account.
 #[derive(Debug, PartialEq)]
 pub(super) enum AccountCall {
+    /// No method: a response, to a request nothing waits for any more (a heartbeat's ack, a
+    /// reply that came after its caller gave up). A response is never answered (JSON-RPC).
+    Response,
     /// No id: nothing would hear an answer, so it is not run.
     Notification,
     /// Not a method the account may call; this is its error reply.
@@ -25,6 +28,9 @@ pub(super) enum AccountCall {
 
 impl AccountCall {
     pub(super) fn of(message: &Value) -> Self {
+        if message.get("method").is_none() {
+            return Self::Response;
+        }
         let Some(id) = message.get("id").filter(|id| !id.is_null()).cloned() else {
             return Self::Notification;
         };
@@ -44,7 +50,7 @@ impl AccountCall {
 /// The reply to a message from the account; `None` for a notification.
 pub(super) async fn answer(message: &Value, host: &dyn RelayHost) -> Option<Value> {
     match AccountCall::of(message) {
-        AccountCall::Notification => None,
+        AccountCall::Response | AccountCall::Notification => None,
         AccountCall::Refused(reply) => Some(reply),
         AccountCall::Remote(request) => host.answer_remote(request).await,
     }
@@ -74,8 +80,28 @@ mod tests {
     }
 
     #[test]
+    fn a_response_nothing_waits_for_is_never_answered() {
+        for response in [
+            json!({ "jsonrpc": "2.0", "id": "axod-7", "result": { "ok": true } }),
+            json!({ "jsonrpc": "2.0", "id": "axod-c-3", "error": { "code": -32000, "message": "late" } }),
+        ] {
+            assert_eq!(
+                AccountCall::of(&response),
+                AccountCall::Response,
+                "{response}"
+            );
+        }
+    }
+
+    #[test]
     fn nothing_but_remote_calls_reaches_the_host() {
-        for method in ["axo.config.set", "axo.session.create", "axo.remotex", ""] {
+        for method in [
+            "axo.config.set",
+            "axo.session.create",
+            "axo.remotex",
+            "",
+            "axo.remote",
+        ] {
             let AccountCall::Refused(reply) =
                 AccountCall::of(&json!({ "id": 7, "method": method, "params": {} }))
             else {
