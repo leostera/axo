@@ -1,7 +1,7 @@
 # RFD0029 - Axo: Ask the Person
 
 - Feature Name: `axo-ask-the-person`
-- Status: Partially implemented. Steps 1 to 5 are built: yes-or-no questions, the computer-use gate asks, the Mac app answers, input past the agent, and device-signed answers. Designed but not built yet: push notifications, opening a link, Always allow, and Face ID. App tools that ask are planned, and which ones is an open question. Amended by [RFD0070](RFD0070-computer-use-as-a-real-boundary.md): app tools that ask, redaction at the source, and the gate's reach.
+- Status: Partially implemented. Steps 1 to 5 are built: yes-or-no questions, the computer-use gate asks, the Mac app answers, input past the agent, and device-signed answers. Designed but not built yet: push notifications, opening a link, Always allow, and Face ID. App tools that ask are planned, and which ones is an open question. Amended by [RFD0069](RFD0069-root-of-trust-for-answers-and-secrets.md): devices are allowed at the Mac, clients seal only to a Mac key the person confirmed, and Axo.app authenticates axod. Amended by [RFD0070](RFD0070-computer-use-as-a-real-boundary.md): app tools that ask, redaction at the source, and the gate's reach.
 - Author: leostera
 - Start Date: 2026-11-04
 - Updated: 2026-11-10 (reconciled with the code)
