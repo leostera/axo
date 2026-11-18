@@ -144,7 +144,7 @@ node_test(
     name = "limits_test",
     concurrency = 1,
     data = _DEPS + [":node_modules/tsx", ":node_modules/@axo/pi-axo", ":test_files"],
-    tests = ["tests/client-fragments.test.ts", "tests/fragments.test.ts", "tests/share.test.ts"],
+    tests = ["tests/client-fragments.test.ts", "tests/fragments.test.ts", "tests/rate-limits.test.ts", "tests/share.test.ts"],
     tests_in_data = True,
     tsx = True,
 )

@@ -9,7 +9,7 @@ import {
 import { APP_ORIGIN, parseAuthConfiguration, type AuthConfiguration, type AuthEnvironment } from "./config";
 import { constantTimeEqual, hmac, randomToken, seal, sha256, unseal } from "./crypto";
 import { authorizationUrl, fetchIdentity, ProviderFailure } from "./oauth-cloudflare";
-import { attempt } from "./rate-limit";
+import { attempt, requestSource } from "./rate-limit";
 import {
   clearCookie,
   cookieValue,
@@ -60,7 +60,7 @@ export async function startLogin(request: Request, env: AuthEnvironment, exports
     : null;
   if (!flowClient) return json({ error: "Invalid sign-in request" }, 400);
 
-  const limited = await throttle(request, config, exports, "login-start", 20, 600);
+  const limited = await throttle(request, config, exports, "login-start", 20);
   if (limited) return limited;
 
   const nonce = randomToken(16);
@@ -99,7 +99,7 @@ export async function completeLogin(
       : redirect(`${APP_ORIGIN}/app?signin=cancelled`, done);
   }
 
-  const limited = await throttle(request, config, exports, "login-callback", 30, 600);
+  const limited = await throttle(request, config, exports, "login-callback", 30);
   if (limited) return limited;
 
   let identity;
@@ -148,7 +148,7 @@ export async function exchangeLoginCode(request: Request, env: AuthEnvironment, 
   if (request.method !== "POST") return methodNotAllowed("POST");
   const config = parseAuthConfiguration(env);
   if (!config || !exports.AxoAccountManager) return unavailable();
-  const limited = await throttle(request, config, exports, "login-token", 20, 300);
+  const limited = await throttle(request, config, exports, "login-token", 20);
   if (limited) return limited;
 
   const body = await boundedBody(request);
@@ -222,23 +222,22 @@ function loginCodeDigest(config: AuthConfiguration, code: string): Promise<strin
   return hmac(config.sessionSecret, `login-code\0${code}`);
 }
 
-/** Global and per-source limits for one kind of attempt; the refusal, or null to go on. */
+/**
+ * The per-source limit for one kind of attempt; the refusal, or null to go on. There is no global
+ * limit: one would let anyone lock everyone out of signing in. Codes and states are unguessable,
+ * and Cloudflare's OAuth server limits its own side.
+ */
 async function throttle(
   request: Request,
   config: AuthConfiguration,
   exports: AuthExports,
   name: string,
   perSource: number,
-  global: number,
 ): Promise<Response | null> {
-  const now = Date.now();
-  const source = request.headers.get("CF-Connecting-IP") ?? "";
-  const sourceKey = await hmac(config.sessionSecret, `source\0${source.length > 0 && source.length <= 64 ? source : "unknown"}`);
-  for (const [key, maximum] of [[`${name}-global`, global], [`${name}-source-${sourceKey}`, perSource]] as const) {
-    const result = await attempt(exports, key, now, maximum);
-    if (result === "unavailable") return unavailable();
-    if (result === "limited") return json({ error: "Too many sign-in attempts" }, 429, { "Retry-After": "60" });
-  }
+  const sourceKey = await hmac(config.sessionSecret, `source\0${requestSource(request)}`);
+  const result = await attempt(exports, `${name}-source-${sourceKey}`, Date.now(), perSource);
+  if (result === "unavailable") return unavailable();
+  if (result === "limited") return json({ error: "Too many sign-in attempts" }, 429, { "Retry-After": "60" });
   return null;
 }
 

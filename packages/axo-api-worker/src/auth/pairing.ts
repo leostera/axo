@@ -4,13 +4,19 @@ import {
   hostPairingRedeemResultSchema,
 } from "@axo/protocol/v1";
 import { hmac } from "./crypto";
-import { attempt } from "./rate-limit";
+import { attempt, requestSource } from "./rate-limit";
 import { requireAccount, type AuthExports } from "./account-access";
 import type { AuthEnvironment } from "./config";
 
 const PAIRING_LIFETIME_MS = 10 * 60 * 1000;
-const MAX_ISSUANCE_PER_MINUTE = 20;
-const MAX_REDEMPTIONS_PER_MINUTE = 120;
+/**
+ * Redemptions guess at codes, so they are limited per source and in all. A code has 40 bits and
+ * lives 10 minutes: at the global limit, all the guesses of its lifetime have a chance under 1 in
+ * 10^7 of finding it. The global limit is high so that it takes many sources to reach it, and
+ * only a well-formed redemption, which its source's limit allowed, counts against it.
+ * Issuance is the account's (AxoAccountManager.createPairing): 3 pending, 5 an hour.
+ */
+const MAX_REDEMPTIONS_PER_MINUTE = 6_000;
 const MAX_REDEMPTIONS_PER_SOURCE_PER_MINUTE = 8;
 const MAX_REDEMPTION_BODY_BYTES = 4_096;
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -29,15 +35,6 @@ export async function createHostPairing(
   const accountId = caller.accountId;
   if (!env.SESSION_SECRET || !exports.AxoAccountManager ||
       !exports.AxoPairingIndex || !exports.AxoPairingRateLimit) return unavailable();
-
-  const issuanceAllowed = await consumeLimit(
-    exports,
-    "issuance-global",
-    Date.now(),
-    MAX_ISSUANCE_PER_MINUTE,
-  );
-  if (issuanceAllowed === "unavailable") return unavailable();
-  if (!issuanceAllowed) return rateLimited();
 
   const account = exports.AxoAccountManager.getByName(accountId);
   if (!account.createPairing || !account.cancelPairing) return unavailable();
@@ -89,31 +86,8 @@ export async function redeemHostPairing(
   if (!env.SESSION_SECRET || !exports.AxoAccountManager ||
       !exports.AxoPairingIndex || !exports.AxoPairingRateLimit) return unavailable();
 
-  const now = Date.now();
-  const globalLimit = await consumeLimit(
-    exports,
-    "redemption-global",
-    now,
-    MAX_REDEMPTIONS_PER_MINUTE,
-  );
-  if (globalLimit === "unavailable") return unavailable();
-  if (!globalLimit) return rateLimited();
-
-  const rawSource = request.headers.get("CF-Connecting-IP") ?? "";
-  const source = rawSource.length <= 64 && rawSource.length > 0 ? rawSource : "unknown-source";
-  const sourceKey = await hmac(env.SESSION_SECRET, `pairing-source\0${source}`);
-  const sourceLimit = await consumeLimit(
-    exports,
-    `source-${sourceKey}`,
-    now,
-    MAX_REDEMPTIONS_PER_SOURCE_PER_MINUTE,
-  );
-  if (sourceLimit === "unavailable") return unavailable();
-  if (!sourceLimit) return rateLimited();
-
   const rawBody = await boundedRequestBody(request);
   if (rawBody === null) return badRequest();
-
   let value: unknown;
   try {
     value = JSON.parse(rawBody) as unknown;
@@ -122,6 +96,14 @@ export async function redeemHostPairing(
   }
   const parsed = hostPairingRedeemRequestSchema.safeParse(value);
   if (!parsed.success) return badRequest();
+
+  const now = Date.now();
+  const sourceKey = await hmac(env.SESSION_SECRET, `pairing-source\0${requestSource(request)}`);
+  for (const [name, maximum] of [[`source-${sourceKey}`, MAX_REDEMPTIONS_PER_SOURCE_PER_MINUTE], ["redemption-global", MAX_REDEMPTIONS_PER_MINUTE]] as const) {
+    const allowed = await consumeLimit(exports, name, now, maximum);
+    if (allowed === "unavailable") return unavailable();
+    if (!allowed) return rateLimited();
+  }
 
   const input = parsed.data;
   const codeVerifier = await hmac(env.SESSION_SECRET, `pairing-code\0${input.code}`);
