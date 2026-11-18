@@ -183,7 +183,9 @@ def _provisioning_profile(rctx, name, team, bundle_id):
             if not profile.basename.endswith(".mobileprovision"):
                 continue
             rctx.watch(profile)
-            decoded = _run(rctx, ["/usr/bin/security", "cms", "-D", "-i", str(profile)])
+            # Discovery must not import certificates into the login Keychain (security cms can).
+            # Verify the content signature here; distribution_preflight owns Apple trust/scope checks.
+            decoded = _run(rctx, ["/usr/bin/openssl", "smime", "-verify", "-noverify", "-inform", "DER", "-in", str(profile)])
             if decoded == None:
                 continue
             rctx.file("profile.plist", decoded)
