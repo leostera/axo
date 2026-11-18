@@ -36,7 +36,7 @@ final class AppEnvironment: ObservableObject {
     companion = PhoneCompanionSignIn(authentication: {
       guard !account.hasEndedSession else { return .signedOut }
       let token: SessionToken?
-      do { token = try KeychainTokenStore().loadForCompanion() }
+      do { token = try KeychainTokenStore().load() }
       catch let error as KeychainError { throw CompanionError.storage(error.status) }
       guard let token else { return .signedOut }
       return .signedIn(try CompanionSession(token: token.value))

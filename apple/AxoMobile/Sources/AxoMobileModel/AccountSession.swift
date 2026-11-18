@@ -4,7 +4,9 @@ import Observation
 
 /// Where the session token is kept between launches: the Keychain on a phone.
 public protocol SessionTokenStoring: Sendable {
-  func load() -> SessionToken?
+  /// The kept token, or nil when there is none (signed out). Throws when one may be kept but
+  /// cannot be read now, such as while the device is locked: that is not a sign-out.
+  func load() throws -> SessionToken?
   /// Fails if the token could not be kept; the caller must not treat the phone as signed in.
   func save(_ token: SessionToken) throws
   func delete() throws
@@ -40,7 +42,9 @@ public final class AccountSession {
     let access = StoredSessionToken(store: store)
     tokenAccess = access
     tokens = access
-    state = store.load() == nil ? .signedOut : .signedIn
+    // Unreadable storage starts signed out without deleting anything; `restoreStoredSession`
+    // signs back in once it can be read.
+    state = (try? store.load()) == nil ? .signedOut : .signedIn
   }
 
   /// Keeps `token` and signs in. If it cannot be kept the phone stays signed out: a token that
@@ -84,12 +88,13 @@ public final class AccountSession {
   /// A background launch can occur while the Keychain is locked. Restore on foreground once
   /// available, but never undo a sign-out made in this app process.
   public func restoreStoredSession() {
-    guard state == .signedOut, !hasEndedSession, store.load() != nil else { return }
+    guard state == .signedOut, !hasEndedSession, (try? store.load()) != nil else { return }
     state = .signedIn
     credentialRevision = UUID()
   }
 
-  /// Call with any error from a relay request; returns whether it signed the phone out.
+  /// Call with any error from a relay request; returns whether it signed the phone out. Only the
+  /// relay refusing the session does: a token this device cannot read now is still the session.
   @discardableResult
   public func noteFailure(_ error: Error) -> Bool {
     guard (error as? RelayError) == .signInRequired else { return false }
@@ -107,7 +112,10 @@ private final class StoredSessionToken: SessionTokenProvider, @unchecked Sendabl
 
   func sessionToken() async throws -> SessionToken {
     try lock.withLock {
-      guard !ended, let token = store.load() else { throw RelayError.signInRequired }
+      guard !ended else { throw RelayError.signInRequired }
+      let token: SessionToken?
+      do { token = try store.load() } catch { throw RelayError.credentialUnavailable }
+      guard let token else { throw RelayError.signInRequired }
       return token
     }
   }

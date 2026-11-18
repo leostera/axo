@@ -32,7 +32,7 @@ enum MobileTransferRuntime {
         let snapshot = try MobileIdentityTransfer.parse(bytes, expectedID: id)
         status = snapshot.session == nil ? .exportedSignedOut : .exported
       } else {
-        let token = try KeychainTokenStore().loadForCompanion()
+        let token = try KeychainTokenStore().load()
         let bytes = try MobileIdentityTransfer.export(defaults: .standard, token: token, transferID: id)
         try bridge.prepare(bytes, id: id)
         status = token == nil ? .exportedSignedOut : .exported
@@ -101,7 +101,7 @@ enum MobileTransferRuntime {
       let fence = try bridge.fence()
       if expected != nil && expected != receipt.transferID { status = .conflict }
       else if receipt.sessionOwnership != .transferred || fence != .consumed(receipt.transferID) { status = .revoked }
-      else { status = try KeychainTokenStore().loadForCompanion() == nil ? .completedSignedOut : .completed }
+      else { status = try KeychainTokenStore().load() == nil ? .completedSignedOut : .completed }
       write(Report(runID: runID, sourceRunID: receipt.transferID, bundleID: "dev.leostera.axo", status: status))
     } catch { /* Never resurrect a credential or overwrite a valid report because storage is locked. */ }
   }
@@ -138,7 +138,7 @@ enum MobileTransferRuntime {
 private struct TransferDestination: MobileIdentityTransfer.Destination {
   let defaults = UserDefaults.standard
   let journalStore: MobileTransferJournal
-  func token() throws -> SessionToken? { try KeychainTokenStore().loadForCompanion() }
+  func token() throws -> SessionToken? { try KeychainTokenStore().load() }
   func saveToken(_ token: SessionToken) throws { try KeychainTokenStore().save(token) }
   func journal() throws -> Data? { try journalStore.load() }
   func saveJournal(_ data: Data) throws { try journalStore.save(data) }

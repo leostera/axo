@@ -13,11 +13,9 @@ struct KeychainTokenStore: SessionTokenStoring {
   }
   private let account = "session-token"
 
-  func load() -> SessionToken? { try? loadForCompanion() }
-
-  /// A locked Keychain is unavailable, not sign-out. A durably revoked transferred credential
-  /// is absent even if a locked original item has not yet been physically removed.
-  func loadForCompanion() throws -> SessionToken? {
+  /// A locked Keychain throws: it is unavailable, not a sign-out. A durably revoked transferred
+  /// credential is absent even if a locked original item has not yet been physically removed.
+  func load() throws -> SessionToken? {
     guard let token = try savedToken() else { return nil }
     return try migrationRevoked(token) ? nil : token
   }

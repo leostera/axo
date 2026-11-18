@@ -590,7 +590,7 @@ public final class PhoneWorkbench {
     }
     if let relay = error as? RelayError {
       switch relay {
-      case .unreachable: return true
+      case .unreachable, .credentialUnavailable: return true
       case .httpStatus(let status): return status == 408 || (500...599).contains(status)
       case .signInRequired: return false
       }

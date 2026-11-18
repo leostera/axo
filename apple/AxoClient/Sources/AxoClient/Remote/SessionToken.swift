@@ -35,7 +35,8 @@ public struct SessionToken: Equatable, Sendable {
 /// Where the current session token comes from: the sign-in on a phone, a test fixture
 /// elsewhere. Asked for before every request, so a fresh sign-in is used at once.
 public protocol SessionTokenProvider: Sendable {
-  /// Fails with `RelayError.signInRequired` when there is no signed-in session.
+  /// Fails with `RelayError.signInRequired` when there is no signed-in session, and with
+  /// `RelayError.credentialUnavailable` when there is one this device cannot read right now.
   func sessionToken() async throws -> SessionToken
 }
 

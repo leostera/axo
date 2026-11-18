@@ -27,7 +27,7 @@ final class AccountSessionTests: XCTestCase {
     XCTAssertEqual(token.value, SessionToken.fixture(1).value)
     session.signOut()
     XCTAssertEqual(session.state, .signedOut)
-    XCTAssertNil(store.load())
+    XCTAssertNil(try store.load())
   }
 
   func testATokenThatCannotBeKeptDoesNotSignThePhoneIn() {
@@ -59,14 +59,32 @@ final class AccountSessionTests: XCTestCase {
     XCTAssertFalse(session.hasEndedSession)
   }
 
-  func testFailedDurableSignOutIsNotReportedAsCompleted() {
+  func testALockedStoreIsUnavailableNotSignedOutAndKeepsTheToken() async throws {
+    let store = MemoryTokenStore(SessionToken.fixture())
+    let session = AccountSession(store: store)
+    store.isLocked = true
+    do {
+      _ = try await session.tokens.sessionToken()
+      XCTFail("a locked store has no readable token")
+    } catch {
+      XCTAssertEqual(error as? RelayError, .credentialUnavailable)
+      XCTAssertFalse(session.noteFailure(error), "being locked is not a sign-out")
+    }
+    XCTAssertEqual(session.state, .signedIn)
+    store.isLocked = false
+    XCTAssertEqual(try store.load(), SessionToken.fixture(), "the token survives")
+    let token = try await session.tokens.sessionToken()
+    XCTAssertEqual(token, SessionToken.fixture())
+  }
+
+  func testFailedDurableSignOutIsNotReportedAsCompleted() throws {
     let store = MemoryTokenStore(SessionToken.fixture())
     let session = AccountSession(store: store), revision = session.credentialRevision
     store.failsToDelete = true
     XCTAssertFalse(session.signOut())
     XCTAssertEqual(session.state, .signedIn)
     XCTAssertEqual(session.credentialRevision, revision)
-    XCTAssertNotNil(store.load())
+    XCTAssertNotNil(try store.load())
     XCTAssertNotNil(session.signInFailure)
   }
 
