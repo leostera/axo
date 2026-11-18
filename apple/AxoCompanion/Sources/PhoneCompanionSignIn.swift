@@ -55,13 +55,19 @@ public final class PhoneCompanionSignIn: NSObject, WCSessionDelegate {
   private let session: WCSession?
   private let voice: PhoneVoiceTranscription
 
+  public var hasPendingVoiceWork: Bool {
+    voice.hasPendingWork || !(session?.outstandingFileTransfers.isEmpty ?? true)
+      || !(session?.outstandingUserInfoTransfers.isEmpty ?? true)
+  }
+
   public init(authentication: @escaping @MainActor () async throws -> CompanionAuthentication,
+    enabled: Bool = true,
     transcribeAudio: @escaping @Sendable (URL) async throws -> String = { _ in throw CompanionVoiceFailure.unsupported }
   ) {
     self.authentication = authentication
     voice = PhoneVoiceTranscription(authentication: authentication, transcribe: transcribeAudio)
     publisher = CompanionSnapshotPublisher()
-    session = WCSession.isSupported() ? WCSession.default : nil
+    session = enabled && WCSession.isSupported() ? WCSession.default : nil
     super.init()
     session?.delegate = self
     session?.activate()

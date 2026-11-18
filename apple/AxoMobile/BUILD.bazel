@@ -304,6 +304,53 @@ sh_test(
     tags = ["manual", "no-sandbox", "no-remote"],
 )
 
+genrule(
+    name = "mobile_transfer_scope",
+    outs = ["mobile-transfer-scope.plist"],
+    cmd = select({
+        "//bazel/config:identity_mobile_transfer_enabled": "printf '%s' '<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>AXOIdentityMigrationScope</key><string>mobile-only</string></dict></plist>' > $@",
+        "//conditions:default": "echo 'Mobile transfer requires identity_mobile_transfer=true' >&2; exit 1",
+    }),
+    tags = ["manual"],
+)
+
+ios_application(
+    name = "AxoMobileMigrationDevice",
+    app_icons = ["//assets:ios_app_icon"],
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    entitlements = "AxoMobile-migration.entitlements",
+    families = ["iphone", "ipad"],
+    infoplists = ["Info.plist", ":phone_probe_info", ":mobile_transfer_scope"],
+    minimum_os_version = AXO["apple"]["ios_min"],
+    resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
+    version = ":build_version",
+    provisioning_profile = ":AxoMobileProfile",
+    tags = ["manual"],
+    deps = [":AxoMobileMain"],
+) if CAN.phone_device else None
+
+ios_device_app(
+    name = "AxoMobileMigration_ipa",
+    app = ":AxoMobileMigrationDevice",
+    tags = ["manual"],
+) if CAN.phone_device else status_line(
+    name = "AxoMobileMigration_ipa",
+    line = "AxoMobileMigrationDevice: skipped: " + REASONS.get("phone_device", ""),
+)
+
+sh_test(
+    name = "mobile_transfer_archive_test",
+    srcs = ["//bazel/apple:distribution_preflight.sh"],
+    args = [
+        "$(rootpath //bazel/apple:distribution_preflight.py)",
+        "$(rootpath //:config.json)",
+        "--channel", "development", "--migration", "--mobile-transfer", "--require-apns",
+        "$(rootpath :AxoMobileMigration_ipa)",
+    ],
+    data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":AxoMobileMigration_ipa"],
+    tags = ["manual", "no-sandbox", "no-remote"],
+)
+
 # These signed graph gates fail rather than report a successful skip without local profiles.
 sh_test(
     name = "distribution_archive_test",

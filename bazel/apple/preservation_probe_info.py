@@ -8,7 +8,7 @@ import re
 import sys
 
 
-def probe_info(profile, *, bundle_id, mode, team):
+def probe_info(profile, *, bundle_id, mode, team, operation="probe"):
     pairs = {
         "source": {"dev.leostera.axo.phone", "dev.leostera.axo.phone.watchkitapp"},
         "destination": {"dev.leostera.axo", "dev.leostera.axo.watch"},
@@ -43,6 +43,12 @@ def probe_info(profile, *, bundle_id, mode, team):
     platforms = profile.get("Platform", [])
     if not isinstance(platforms, list) or not all(isinstance(value, str) for value in platforms) or not any(value in ("iOS", "watchOS") for value in platforms):
         raise ValueError("Unexpected preservation platform")
+    if operation == "mobile-transfer":
+        if bundle_id not in {"dev.leostera.axo.phone", "dev.leostera.axo"}:
+            raise ValueError("Mobile transfer cannot change Watch startup")
+        return {"AXOIdentityMigrationMode": mode, "AXOIdentityMigrationAccessGroup": group}
+    if operation != "probe":
+        raise ValueError("Unexpected preservation operation")
     return {"AXOIdentityProbeMode": mode, "AXOIdentityProbeAccessGroup": group}
 
 
@@ -53,6 +59,7 @@ def main():
     parser.add_argument("--bundle-id", required=True)
     parser.add_argument("--mode", choices=["source", "destination"], required=True)
     parser.add_argument("--team", required=True)
+    parser.add_argument("--operation", choices=["probe", "mobile-transfer"], default="probe")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     phase = "load-policy"
@@ -65,7 +72,7 @@ def main():
             raise policy.GateError("Selected profile file is unavailable")
         profile = policy.read_provisioning_profile(args.profile)
         phase = "validate-metadata"
-        info = probe_info(profile, bundle_id=args.bundle_id, mode=args.mode, team=args.team)
+        info = probe_info(profile, bundle_id=args.bundle_id, mode=args.mode, team=args.team, operation=args.operation)
         phase = "write-metadata"
         args.output.write_bytes(plistlib.dumps(info))
     except Exception as error:

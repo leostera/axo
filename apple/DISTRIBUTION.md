@@ -131,6 +131,31 @@ phone build graph. Source-idle confirmation is required before an update that co
 dictation. A verified probe is **not** token/preferences migration and is not authority to
 remove the canonical startup gate, sign out/delete the source, or claim the move complete.
 
+## Mobile token/preferences transfer
+
+After physical preservation checks, the separate default-off switch
+`--//bazel/config:identity_mobile_transfer=true` builds the signed source exporter and isolated
+mobile importer. Do not combine it with `identity_preservation_probe`. Gates:
+
+```sh
+bazel test //apple/ExistingPhoneUpdate:mobile_transfer_archive_test \
+  //apple/AxoMobile:mobile_transfer_archive_test \
+  --//bazel/config:identity_mobile_transfer=true --watchos_cpus=device_arm64
+```
+
+`//apple/AxoMobile:AxoMobileMigration_ipa` contains no Watch/widget update. Its canonical-root
+sandbox APNs entitlement does not by itself enable enrollment or delivery. Startup remains gated
+until live account verification, exact key/absence and preferences checks, and the durable journal
+commit. Source/destination launch correlations are `AXO_IDENTITY_TRANSFER_RUN_ID` and destination
+`AXO_IDENTITY_TRANSFER_SOURCE_RUN_ID`. Read only `Documents/axo-identity-transfer.json`; no source
+snapshot, defaults or Keychain dump may cross the harness. Keep original apps installed and never
+sign them out as cleanup. A source-idle checkpoint is still required before updates.
+
+The temporary migration package deliberately fails the ordinary distribution gate. Inspect it
+with `--channel development --migration --mobile-transfer --require-apns`; add
+`--existing-installation` and omit `--require-apns` only for its old-ID source. A completed mobile
+transfer does not authorize replacing an unresolved pre-existing canonical Watch app.
+
 ## Canonical identity migration
 
 `PhoneDeviceKey.stored` now fails closed on an unavailable or malformed existing identity.

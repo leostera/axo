@@ -9,6 +9,7 @@ final class PhoneVoiceTranscription {
   private let transcribe: @Sendable (URL) async throws -> String
   private let publisher = CompanionSnapshotPublisher()
   private var active: (request: CompanionVoiceRequest, task: Task<Void, Never>)?
+  var hasPendingWork: Bool { active != nil }
   private var replies: [UUID: CompanionVoiceReply] = [:]
   private var cancelled: [UUID: Date] = [:]
 

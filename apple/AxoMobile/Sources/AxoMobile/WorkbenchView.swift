@@ -63,6 +63,7 @@ struct WorkbenchView: View {
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
   /// Pins, seen marks and how to group, kept on this phone (Settings › Chats).
   @State private var chatPrefs = ChatListPreferences(defaults: Self.chatListDefaults())
+  @State private var signOutFailed = false
   /// The groups as they were when the chats showed, so a chat that just finished a message does
   /// not move under a finger reaching for a row; it moves into place the next time they show.
   /// Held, not observed: taking hold as the menu opens is what that redraw just showed, so it
@@ -259,10 +260,15 @@ struct WorkbenchView: View {
     .sheet(item: $settings) { opening in
       SettingsView(account: environment.account, hosts: workbench.hosts, apps: apps, chatList: chatPrefs, opening: opening,
         openAppsInWorkbench: usesAppsPane ? { openApps() } : nil) {
+        let revision = environment.account.credentialRevision
         Task {
-          // End it at the relay too, so a copied token stops working; then forget it here.
-          try? await AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens).signOut()
-          environment.account.signOut()
+          let token = try? await environment.account.tokens.sessionToken()
+          guard environment.account.credentialRevision == revision else { return }
+          // Durably invalidate any staged/shared import before ending the local credential.
+          guard environment.account.signOut() else { signOutFailed = true; return }
+          if let token {
+            try? await AccountClient(endpoint: environment.endpoint, tokens: StaticSessionToken(token)).signOut()
+          }
         }
       }
     }
@@ -303,6 +309,11 @@ struct WorkbenchView: View {
         #endif
       }
       await PreviewFixture.attach(to: workbench)
+    }
+    .alert("Could not sign out", isPresented: $signOutFailed) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text(environment.account.signInFailure ?? "Unlock this device and try again.")
     }
     .onDisappear { keepInterruptedVoice() }
     .onChange(of: workbench.selection) { keepInterruptedVoice() }
@@ -839,7 +850,7 @@ private struct SessionStatusDot: View {
       Circle().fill(Color.orange).frame(width: 7, height: 7)
         .phaseAnimator([1.0, 0.35]) { dot, opacity in dot.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.8) }
     case .needsAttention:
-      Circle().fill(Color.blue).frame(width: 8, height: 8)
+      Circle().fill(Color.red).frame(width: 8, height: 8)
     case .unavailable:
       Image(systemName: "exclamationmark.triangle.fill").font(.caption2).foregroundStyle(.secondary)
     case .starting, .ready, nil:

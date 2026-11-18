@@ -14,7 +14,7 @@ final class AppEnvironment: ObservableObject {
   let companion: PhoneCompanionSignIn
 
   init() {
-    precondition(!EnclaveProbeRuntime.requestsDestinationGate(role: .mobile),
+    precondition(!EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) && !MobileTransferConfiguration.requiresDestinationGate,
       "A preservation destination cannot create account services")
     // A local Worker for development: AXO_RELAY_URL=http://127.0.0.1:8787
     if let text = ProcessInfo.processInfo.environment["AXO_RELAY_URL"], let url = URL(string: text),
@@ -39,10 +39,21 @@ final class AppEnvironment: ObservableObject {
       catch let error as KeychainError { throw CompanionError.storage(error.status) }
       guard let token else { return .signedOut }
       return .signedIn(try CompanionSession(token: token.value))
-    }, transcribeAudio: { url in
+    }, enabled: !(MobileTransferConfiguration.requested && Bundle.main.bundleIdentifier == "dev.leostera.axo"), transcribeAudio: { url in
       guard #available(iOS 26, *) else { throw CompanionVoiceFailure.unsupported }
       return try await CompanionAudioTranscriber().transcribe(url)
     })
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+      Unmanaged.passUnretained(self).toOpaque(), { _, observer, _, _, _ in
+        guard let observer else { return }
+        let environment = Unmanaged<AppEnvironment>.fromOpaque(observer).takeUnretainedValue()
+        Task { @MainActor in environment.checkTransferredSession() }
+      }, MobileTransferKeychain.changeNotification as CFString, nil, .deliverImmediately)
+  }
+
+  func checkTransferredSession() {
+    guard (try? KeychainTokenStore().migrationSessionRevoked()) == true else { return }
+    account.noteTransferredSessionRevoked()
   }
 }
 
@@ -51,16 +62,21 @@ final class AppEnvironment: ObservableObject {
 @MainActor
 public final class AxoMobileLifecycle: NSObject, UIApplicationDelegate {
   public func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-    if !EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) { _ = AppEnvironment.shared }
+    if !EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) && !MobileTransferConfiguration.requiresDestinationGate {
+      _ = AppEnvironment.shared
+    }
     return true
   }
 }
 
 public struct AxoMobileRoot: View {
+  @State private var transferCompleted = false
   public init() {}
 
   public var body: some View {
-    if EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) {
+    if MobileTransferConfiguration.requiresDestinationGate && !transferCompleted {
+      MobileTransferView(onCompleted: { transferCompleted = true })
+    } else if EnclaveProbeRuntime.requestsDestinationGate(role: .mobile) {
       IdentityPreservationView(role: .mobile)
     } else {
       AxoMobileAccountRoot()
@@ -83,11 +99,18 @@ private struct AxoMobileAccountRoot: View {
       }
     }
     .environment(sidewaysScrolling)
-    .task { _ = EnclaveProbeRuntime.runIfRequested(role: .mobile) }
+    .task {
+      _ = EnclaveProbeRuntime.runIfRequested(role: .mobile)
+      MobileTransferRuntime.exportIfRequested(pendingWork: environment.companion.hasPendingVoiceWork)
+      MobileTransferRuntime.reportCommittedIfRequested()
+    }
     .task(id: environment.account.credentialRevision) { await environment.companion.refresh() }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active {
         _ = EnclaveProbeRuntime.runIfRequested(role: .mobile)
+        environment.checkTransferredSession()
+        MobileTransferRuntime.exportIfRequested(pendingWork: environment.companion.hasPendingVoiceWork)
+        MobileTransferRuntime.reportCommittedIfRequested()
         environment.account.restoreStoredSession()
         Task { await environment.companion.refresh() }
       }

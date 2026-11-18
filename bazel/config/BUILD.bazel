@@ -11,6 +11,18 @@ identity_preservation_probe_flag(
     visibility = ["//visibility:public"],
 )
 
+identity_preservation_probe_flag(
+    name = "identity_mobile_transfer",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "identity_mobile_transfer_enabled",
+    flag_values = {":identity_mobile_transfer": "true"},
+    visibility = ["//visibility:public"],
+)
+
 config_setting(
     name = "identity_preservation_probe_enabled",
     flag_values = {":identity_preservation_probe": "true"},

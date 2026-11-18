@@ -87,6 +87,7 @@ ios_application(
     app_icons = ["//assets:ios_app_icon"],
     entitlements = select({
         "//bazel/config:identity_preservation_probe_enabled": "PhoneProbe.entitlements",
+        "//bazel/config:identity_mobile_transfer_enabled": "PhoneProbe.entitlements",
         "//conditions:default": "ExistingPhone.entitlements",
     }),
     # The same universal development build runs on both owned devices without migrating the phone.
@@ -125,6 +126,19 @@ sh_test(
         "development",
         "--existing-installation",
         "--migration",
+        "$(rootpath :ipa)",
+    ],
+    data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":ipa"],
+    tags = ["manual", "no-sandbox", "no-remote"],
+)
+
+sh_test(
+    name = "mobile_transfer_archive_test",
+    srcs = ["//bazel/apple:distribution_preflight.sh"],
+    args = [
+        "$(rootpath //bazel/apple:distribution_preflight.py)",
+        "$(rootpath //:config.json)",
+        "--channel", "development", "--existing-installation", "--migration", "--mobile-transfer",
         "$(rootpath :ipa)",
     ],
     data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":ipa"],

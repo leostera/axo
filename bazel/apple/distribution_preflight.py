@@ -20,7 +20,7 @@ def require(condition, message):
         raise GateError(message)
 
 
-def mobile_policy(info, entitlements, profile, *, bundle_id, team, channel, apns=False, migration=False, now=None):
+def mobile_policy(info, entitlements, profile, *, bundle_id, team, channel, apns=False, migration=False, transfer=False, now=None):
     """Actual profile prefix matters: it is not necessarily the Team ID."""
     require(info.get("CFBundleIdentifier") == bundle_id, "Unexpected bundle identity")
     platforms = profile.get("Platform")
@@ -68,11 +68,22 @@ def mobile_policy(info, entitlements, profile, *, bundle_id, team, channel, apns
         destination_ids = {"dev.leostera.axo", "dev.leostera.axo.watch"}
         require(bundle_id in source_ids or bundle_id in destination_ids, "Unexpected preservation probe identity")
         expected_mode = "source" if bundle_id in source_ids else "destination"
-        require(info.get("AXOIdentityProbeMode") == expected_mode and
-                info.get("AXOIdentityProbeAccessGroup") == shared_group, "Missing or mismatched preservation gate metadata")
+        if transfer:
+            require(bundle_id in {"dev.leostera.axo", "dev.leostera.axo.phone"}, "Mobile transfer cannot change Watch startup")
+            require(info.get("AXOIdentityMigrationMode") == expected_mode and
+                    info.get("AXOIdentityMigrationAccessGroup") == shared_group,
+                    "Missing or mismatched mobile transfer gate metadata")
+            require("AXOIdentityProbeMode" not in info and "AXOIdentityProbeAccessGroup" not in info,
+                    "Transfer and probe modes are exclusive")
+        else:
+            require(info.get("AXOIdentityProbeMode") == expected_mode and
+                    info.get("AXOIdentityProbeAccessGroup") == shared_group, "Missing or mismatched preservation gate metadata")
+            require("AXOIdentityMigrationMode" not in info and "AXOIdentityMigrationAccessGroup" not in info,
+                    "Transfer requires its explicit signing gate")
     else:
-        require("AXOIdentityProbeMode" not in info and "AXOIdentityProbeAccessGroup" not in info,
-                "Preservation probes require the explicit migration signing gate")
+        require(not transfer and not any(key in info for key in ("AXOIdentityProbeMode", "AXOIdentityProbeAccessGroup",
+                "AXOIdentityMigrationMode", "AXOIdentityMigrationAccessGroup", "AXOIdentityMigrationScope")),
+                "Preservation builds require the explicit migration signing gate")
     groups = entitlements.get("keychain-access-groups")
     # These already-installed development companions shipped with the profile's wildcard.
     # Preserve that namespace until an approved Watch migration; never waive canonical or
@@ -182,14 +193,14 @@ def read_provisioning_profile(path):
     return profile
 
 
-def mobile_bundle(app, *, team, identifier, channel, apns, migration, root):
+def mobile_bundle(app, *, team, identifier, channel, apns, migration, root, transfer=False):
     info = plist(app / "Info.plist")
     supported = info.get("CFBundleSupportedPlatforms", [])
     require(supported == (["iPhoneOS"] if root else ["WatchOS"]), "Unexpected device platform or simulator artifact")
     entitlements, _ = evidence(app, team, identifier)
     profile = read_provisioning_profile(app / "embedded.mobileprovision")
     mobile_policy(info, entitlements, profile, bundle_id=identifier, team=team, channel=channel,
-                  apns=apns, migration=migration)
+                  apns=apns, migration=migration, transfer=transfer)
     # A valid Apple signature alone is insufficient: it must use a certificate in this profile.
     with tempfile.TemporaryDirectory(prefix="axo-signature-evidence-") as directory:
         prefix = Path(directory) / "certificate"
@@ -217,8 +228,20 @@ def unpack_ipa(path, directory):
     return apps[0]
 
 
-def mobile_children(info, *, watch, channel, migration, existing, apns, mobile_only):
-    """Parse the signed probe scope; a mobile-only exception is never a delivery graph."""
+def mobile_children(info, *, watch, channel, migration, existing, apns, mobile_only, transfer=False):
+    """Parse signed staging scope without weakening the ordinary full-family distribution gate."""
+    if transfer:
+        require(channel == "development" and migration and not mobile_only,
+                "Mobile transfer is an exclusive development migration operation")
+        if existing:
+            require(not apns and "AXOIdentityMigrationScope" not in info,
+                    "Source transfer cannot enable push or replace its companion graph")
+            return frozenset({watch, watch + ".complications"})
+        require(info.get("AXOIdentityMigrationScope") == "mobile-only" and
+                info.get("AXOIdentityMigrationMode") == "destination", "Missing isolated mobile transfer scope")
+        return frozenset()
+    require(not any(key in info for key in ("AXOIdentityMigrationMode", "AXOIdentityMigrationAccessGroup",
+                "AXOIdentityMigrationScope")), "Mobile transfer requires its explicit scope gate")
     if mobile_only:
         require(channel == "development" and migration and not existing and not apns,
                 "Mobile-only scope requires a canonical development preservation probe")
@@ -237,8 +260,9 @@ def inspect(args, config):
     for identifier in apple["bundle_ids"].values():
         require(bool(re.fullmatch(r"[A-Za-z0-9.-]+", identifier)), "Invalid configured bundle identity")
     mobile_only = getattr(args, "mobile_probe_only", False)
+    transfer = getattr(args, "mobile_transfer", False)
     if args.channel == "developer-id":
-        require(not args.existing_installation and not args.migration and not args.require_apns and not mobile_only, "Incompatible Mac preflight options")
+        require(not args.existing_installation and not args.migration and not args.require_apns and not mobile_only and not transfer, "Incompatible Mac preflight options")
         app = args.artifact
         info = plist(app / "Contents" / "Info.plist")
         require(info.get("CFBundleSupportedPlatforms") == ["MacOSX"], "Developer ID requires a Mac app bundle")
@@ -267,8 +291,9 @@ def inspect(args, config):
         app = unpack_ipa(args.artifact, directory)
         expected = mobile_children(plist(app / "Info.plist"), watch=watch, channel=args.channel,
                                    migration=args.migration, existing=args.existing_installation,
-                                   apns=args.require_apns, mobile_only=mobile_only)
-        mobile_bundle(app, team=team, identifier=identifier, channel=args.channel, apns=args.require_apns, migration=args.migration, root=True)
+                                   apns=args.require_apns, mobile_only=mobile_only, transfer=transfer)
+        mobile_bundle(app, team=team, identifier=identifier, channel=args.channel, apns=args.require_apns,
+                      migration=args.migration, root=True, transfer=transfer)
         children = sorted(path for path in app.rglob("*") if path.suffix in (".app", ".appex") and path.is_dir())
         found = set()
         for child in children:
@@ -276,7 +301,7 @@ def inspect(args, config):
             require(child_id in expected and child_id not in found, "Unexpected nested app identity")
             found.add(child_id)
             mobile_bundle(child, team=team, identifier=child_id, channel=args.channel, apns=False,
-                          migration=args.migration and child_id == watch, root=False)
+                          migration=args.migration and not transfer and child_id == watch, root=False)
         require(found == expected, "Missing watch app or complication")
 
 
@@ -289,6 +314,7 @@ def main():
     parser.add_argument("--require-apns", action="store_true")
     parser.add_argument("--migration", action="store_true")
     parser.add_argument("--mobile-probe-only", action="store_true")
+    parser.add_argument("--mobile-transfer", action="store_true")
     parser.add_argument("artifact", type=Path)
     args = parser.parse_args()
     try:

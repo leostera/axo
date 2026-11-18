@@ -97,6 +97,42 @@ it is not Enclave restoration evidence. Do not create a key merely to make that 
 source with a saved Enclave reference still requires the exact-key fresh-signature proof. A
 conflicting destination, malformed/locked reference or software identity remains a stop condition.
 
+## Mobile credential/preferences transfer
+
+`identity_mobile_transfer` is separate from the read-only probe switch; enabling both is an
+ambiguous build configuration and must fail. Signed `AXOIdentityMigrationMode`/access-group
+metadata identifies the exact mobile source/destination. The mobile-only destination retains
+an exclusive startup root until its private journal is complete. Even removing the build flag
+must not allow an existing staged journal to fall through to ordinary account/signer creation.
+
+The source exports one bounded, device-only Keychain snapshot: the existing token, the already
+proved opaque Enclave reference/public identity (or absence), and strictly allowlisted preferences.
+Include host input-key pins and companion ordering metadata, but not installation/client IDs,
+commands, drafts, transcripts or audio. Software identities, malformed values, pending source
+voice work/files/transfers and unavailable storage stop the export; no work is cancelled or deleted.
+The harness receives only fixed statuses and exact attempt UUIDs, never snapshot bytes.
+
+A separate non-secret, after-first-unlock fence is ready, consumed or revoked for that attempt.
+The destination validates the token against the live account, checks key possession/conflicts,
+then durably stages a private journal before any destination write. It rechecks persisted values
+and atomically renames the ready fence account to consumed before writing a sanitized completion
+receipt. Crashes can resume the same staged snapshot; a different attempt cannot overwrite it.
+The completed receipt contains no token, key reference or preferences; the shared temporary
+payload is removed after completion. A completed receipt can never re-import after local sign-out.
+
+Credential replacement/deletion first durably revokes the fence, then mutates the original
+credential item. Failure is reported, never delete-first or a false successful sign-out. The
+fence binds a non-replayable session fingerprint; explicit new logins remain independent. Darwin
+change notifications and a locked in-memory token-access gate deny a revoked transferred session
+without re-importing its credential. A temporarily locked Keychain is still unavailable, not a
+false companion sign-out.
+
+The isolated destination does not activate WatchConnectivity, even after mobile completion.
+The original phone app remains installed and owns its existing Watch and recording transport.
+This permits mobile sandbox enrollment and ordinary iPhone-to-Watch alert mirroring without
+rewriting either pre-existing Watch app. It does not complete Watch credential/companion migration
+or qualify the package for normal full-family/production distribution.
+
 ## Validation and rollout
 
 Before installation, inspect the actual installed identity and Keychain scope on each device.

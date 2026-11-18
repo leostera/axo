@@ -7,7 +7,7 @@ public protocol SessionTokenStoring: Sendable {
   func load() -> SessionToken?
   /// Fails if the token could not be kept; the caller must not treat the phone as signed in.
   func save(_ token: SessionToken) throws
-  func delete()
+  func delete() throws
 }
 
 /// Whether this phone is signed in, and the token its requests carry.
@@ -30,13 +30,16 @@ public final class AccountSession {
   /// Why the last sign-in did not take, for the sign-in screen to show.
   public private(set) var signInFailure: String?
   private let store: any SessionTokenStoring
+  private let tokenAccess: StoredSessionToken
 
   /// For clients: always reads the current token, so a fresh sign-in is used at once.
   public nonisolated let tokens: any SessionTokenProvider
 
   public init(store: any SessionTokenStoring) {
     self.store = store
-    tokens = StoredSessionToken(store: store)
+    let access = StoredSessionToken(store: store)
+    tokenAccess = access
+    tokens = access
     state = store.load() == nil ? .signedOut : .signedIn
   }
 
@@ -51,13 +54,29 @@ public final class AccountSession {
     }
     signInFailure = nil
     hasEndedSession = false
+    tokenAccess.setEnded(false)
     state = .signedIn
     credentialRevision = UUID()
   }
 
-  public func signOut() {
+  @discardableResult
+  public func signOut() -> Bool {
+    do { try store.delete() }
+    catch {
+      signInFailure = "Could not end this sign-in securely. Unlock this device and try again."
+      return false
+    }
     hasEndedSession = true
-    store.delete()
+    tokenAccess.setEnded(true)
+    state = .signedOut
+    credentialRevision = UUID()
+    return true
+  }
+
+  /// A transferred session was durably revoked in the other app. No credential is re-imported.
+  public func noteTransferredSessionRevoked() {
+    hasEndedSession = true
+    tokenAccess.setEnded(true)
     state = .signedOut
     credentialRevision = UUID()
   }
@@ -74,16 +93,22 @@ public final class AccountSession {
   @discardableResult
   public func noteFailure(_ error: Error) -> Bool {
     guard (error as? RelayError) == .signInRequired else { return false }
-    signOut()
-    return true
+    return signOut()
   }
 }
 
-private struct StoredSessionToken: SessionTokenProvider {
-  let store: any SessionTokenStoring
+private final class StoredSessionToken: SessionTokenProvider, @unchecked Sendable {
+  private let store: any SessionTokenStoring
+  private let lock = NSLock()
+  private var ended = false
+
+  init(store: any SessionTokenStoring) { self.store = store }
+  func setEnded(_ value: Bool) { lock.withLock { ended = value } }
 
   func sessionToken() async throws -> SessionToken {
-    guard let token = store.load() else { throw RelayError.signInRequired }
-    return token
+    try lock.withLock {
+      guard !ended, let token = store.load() else { throw RelayError.signInRequired }
+      return token
+    }
   }
 }

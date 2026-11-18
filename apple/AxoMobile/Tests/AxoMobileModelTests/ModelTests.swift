@@ -59,6 +59,29 @@ final class AccountSessionTests: XCTestCase {
     XCTAssertFalse(session.hasEndedSession)
   }
 
+  func testFailedDurableSignOutIsNotReportedAsCompleted() {
+    let store = MemoryTokenStore(SessionToken.fixture())
+    let session = AccountSession(store: store), revision = session.credentialRevision
+    store.failsToDelete = true
+    XCTAssertFalse(session.signOut())
+    XCTAssertEqual(session.state, .signedIn)
+    XCTAssertEqual(session.credentialRevision, revision)
+    XCTAssertNotNil(store.load())
+    XCTAssertNotNil(session.signInFailure)
+  }
+
+  func testTransferredRevocationImmediatelyDeniesTokenAccessWithoutReimport() async throws {
+    let store = MemoryTokenStore(SessionToken.fixture()), session = AccountSession(store: store)
+    session.noteTransferredSessionRevoked()
+    session.restoreStoredSession()
+    XCTAssertEqual(session.state, .signedOut)
+    do { _ = try await session.tokens.sessionToken(); XCTFail("revoked token was exposed") }
+    catch { XCTAssertEqual(error as? RelayError, .signInRequired) }
+    session.signIn(with: SessionToken.fixture(2))
+    let token = try await session.tokens.sessionToken()
+    XCTAssertEqual(token, SessionToken.fixture(2))
+  }
+
   func testOnlyAnAccessRefusalSignsThePhoneOut() {
     let session = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
     XCTAssertFalse(session.noteFailure(RelayError.httpStatus(503)))

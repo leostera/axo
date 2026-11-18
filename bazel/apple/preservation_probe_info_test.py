@@ -40,6 +40,15 @@ class ProbeInfoTests(unittest.TestCase):
                     "AXOIdentityProbeAccessGroup": PREFIX + ".dev.leostera.axo.migration",
                 })
 
+    def test_mobile_transfer_is_separate_from_read_only_probe_and_excludes_watch(self):
+        for mode, bundle in [("source", "dev.leostera.axo.phone"), ("destination", "dev.leostera.axo")]:
+            info = module.probe_info(fixture(bundle), bundle_id=bundle, mode=mode, team=TEAM, operation="mobile-transfer")
+            self.assertEqual(info, {"AXOIdentityMigrationMode": mode,
+                                   "AXOIdentityMigrationAccessGroup": PREFIX + ".dev.leostera.axo.migration"})
+        for mode, bundle in [("source", "dev.leostera.axo.phone.watchkitapp"), ("destination", "dev.leostera.axo.watch")]:
+            with self.assertRaises(ValueError):
+                module.probe_info(fixture(bundle), bundle_id=bundle, mode=mode, team=TEAM, operation="mobile-transfer")
+
     def test_wrong_role_profile_team_prefix_or_group_is_refused(self):
         bundle = "dev.leostera.axo.phone"
         with self.assertRaises(ValueError):

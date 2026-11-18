@@ -64,6 +64,20 @@ class MobileGraphScopeTests(unittest.TestCase):
             with self.assertRaises(policy.GateError):
                 self.parse(info)
 
+    def test_transfer_scope_cannot_be_used_for_production_or_to_drop_source_companions(self):
+        info = {"AXOIdentityMigrationScope": "mobile-only", "AXOIdentityMigrationMode": "destination"}
+        self.assertEqual(self.parse(info, mobile_only=False, transfer=True, apns=True), frozenset())
+        for change in [dict(channel="ad-hoc"), dict(channel="app-store-connect"), dict(migration=False),
+                       dict(mobile_only=True), dict(existing=True)]:
+            args = dict(mobile_only=False, transfer=True)
+            args.update(change)
+            with self.assertRaises(policy.GateError):
+                self.parse(info, **args)
+        self.assertEqual(self.parse({}, mobile_only=False, transfer=True, existing=True),
+                         frozenset({BUNDLE + ".watch", BUNDLE + ".watch.complications"}))
+        with self.assertRaises(policy.GateError):
+            self.parse(info, mobile_only=False)
+
     def test_normal_and_full_preservation_graphs_still_require_watch_and_widget(self):
         for migration in [False, True]:
             self.assertEqual(self.parse({}, mobile_only=False, migration=migration),

@@ -13,5 +13,9 @@ final class MemoryTokenStore: SessionTokenStoring, @unchecked Sendable {
     if failsToSave { throw NSError(domain: "keychain", code: -34018) }
     lock.withLock { self.token = token }
   }
-  func delete() { lock.withLock { token = nil } }
+  var failsToDelete = false
+  func delete() throws {
+    if failsToDelete { throw NSError(domain: "keychain", code: -25308) }
+    lock.withLock { token = nil }
+  }
 }
