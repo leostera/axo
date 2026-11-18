@@ -4,6 +4,16 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.72 (Mac app build 344, axod 88)
+
+### Added
+
+- Pi shows the agent’s own questions as a bold heading, full description and keyboard-selectable Yes/No list. Other-device answers dismiss the prompt. Protected computer-use and secret-input approvals remain on the trusted app/device path.
+- Elicitations accept a separate, optional short title. Notifications and Pi use it as their heading; all request details remain in the message. Existing callers need not supply a title.
+- Agent socket calls are bound to their owning Session. Local socket trust, device allow-listing, confirmed input keys, keyed secrets, revoked-credential handling and sign-in leases strengthen the person/agent boundary. New remote approval devices must be allowed in Mac Settings → Devices; no device is silently trusted.
+- Update archives gain exact size/SHA-256 integrity checks before extraction. Older apps cannot silently downgrade a newer daemon.
+- Development iPhone/iPad notifications open their originating conversation. Inline requests use a neutral, flat layout, always show their full message, and have right-aligned actions. Informational updates use the distinct, bounded `codemode.notify` tool. No Watch identity replacement, production APNs or App Store submission is included.
+
 ### Fixed
 
 - Mobile approval-key restoration fails closed instead of replacing an unavailable or damaged existing identity with a new key. Preserve existing software identities; only simulators may create new software keys. Token replacement updates the Keychain item instead of deleting the old credential before a potentially failing write.
@@ -17,16 +27,16 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
-- Canonical development iPhone request-push wiring: native permission/token callbacks, person-owned sandbox enrollment, durable request dispatch, rotation/revocation fencing and inbox-only notification taps. Provider credentials and actual foreground/background/locked-device delivery remain explicit rollout gates; there is no production push or Watch app replacement.
-- Stage explicit phone/Watch identity-preservation probes with device-only shared Keychain references, fresh source-attempt fencing, signing-scope checks and a canonical startup gate that cannot create account services or replacement keys. These probes do not transfer sign-in/preferences or complete the installed-family migration; physical validation and coordinated rollout remain required.
-- Apple distribution foundations: injected APNs provider protocol tests, exact-key migration restoration/proof checks and read-only channel-specific signing preflight. This does not enable live push, transfer credentials, switch the installed identity, configure Apple accounts or submit apps.
+- Canonical sandbox push is working on the owned iPhone and iPad, with native permission/token callbacks, durable dispatch, rotation/revocation fencing and conversation-linked notification taps. Production push and Watch app replacement remain out of scope.
+- Completed the development iPhone/iPad identity transfer while preserving sign-in, preferences and the existing iPhone approval key. Original source apps and both Watch installations remain untouched; bounded transfer journals, exact-role checks and signing preflight prevent silent credential replacement.
+- Apple distribution preflight checks signing scope, exact-key restoration and sandbox push entitlement. No certificate replacement, production APNs or app submission is performed.
 - Conversations pinned on their host Mac are exempt from axod's idle timeout and idle-count limit. Pins on other clients do not count; there is no synchronization. Unpinning restores ordinary sleep eligibility on the next scan.
 - iPad keeps conversations beside a collapsible sidebar: chats by default, swipe right inside the sidebar for connected hosts on their left, and swipe back or tap Back to chats without navigating the conversation or losing its draft. Wide transcripts and composers share a centered readable column; Command-N, Command-K and Command-backslash cover creation, search and sidebar visibility.
 - iPad Apps uses the web-style adaptive card grid with search, connection-status and category filters. Sidebar safe areas match the pane background, and footer controls sit closer to the container edges without reducing their hit targets.
 - On iPad, Apps opens in the main detail pane, including when reached from Settings; selecting a conversation restores its draft. Chat info opens as a nonmodal trailing pane, keeping the composer interactive. Browsing Apps retires pending Send admission without changing the selected conversation or sending later on return.
 - Mobile Settings becomes a grouped-card directory with account identity, live connected-app status, and dedicated Appearance/Chats pages. iPad uses a contained form sheet; existing preferences and app connections are preserved, and sign-out requires confirmation. Reference screenshots inform the design, not unsupported product capabilities.
 - Choose a model and its supported thinking level in a new mobile draft, using a read-only catalog reported by the selected host. Confirm availability and configuration before its first prompt; failures preserve the same chat and draft for explicit retry. No existing Pi is reconfigured or restarted. Empty hosts without a reported catalog show an actionable limitation rather than guessed models.
-- AxoMobile is one universal iPhone/iPad app, replacing the AxoPhone source modules and build targets. Regular-width windows show chats beside the conversation; compact windows retain the phone's layered navigation. iPad supports all orientations, with shared drafts, voice and approval behavior. Canonical app installation and credential migration remain separate rollout steps.
+- AxoMobile is one universal iPhone/iPad app, replacing the AxoPhone source modules and build targets. Regular-width windows show chats beside the conversation; compact windows retain the phone's layered navigation. iPad supports all orientations, with shared drafts, voice and approval behavior. Owned iPhone/iPad development installation and preservation have been validated; Watch identity migration and store distribution remain separate rollout steps.
 
 ## 0.71 (Mac app build 342, iPhone build 54, axod 86)
 
