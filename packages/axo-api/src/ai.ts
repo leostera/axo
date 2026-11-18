@@ -106,12 +106,15 @@ const answer = z.union([
   z.object({ type: z.literal("choice"), choice: z.string(), probabilities: z.record(z.string(), probability) }).passthrough(),
   z.object({ type: z.literal("score"), score: z.number().min(0) }).passthrough(),
 ]);
+/** The accelerator llama.cpp was compiled for (third_party/llama.cpp/repository.bzl). */
+const compiledAccelerator = z.enum(["cpu", "metal", "cuda"]);
 export const aiResults = {
   capabilities: z.object({
     apiVersion: z.union([z.literal(2), z.literal(3), z.literal(4)]), available: z.boolean(),
-    runtime: z.object({ name: z.literal("llama.cpp"), commit: z.string().regex(/^[a-f0-9]{40}$/), build: z.number().int(), recognizedArchitectures: z.array(z.string()).min(1) }).strict(),
+    // compiledAccelerator is what the runtime was built for, not a claim that a GPU is present; older Macs omit it.
+    runtime: z.object({ name: z.literal("llama.cpp"), commit: z.string().regex(/^[a-f0-9]{40}$/), build: z.number().int(), compiledAccelerator: compiledAccelerator.optional(), recognizedArchitectures: z.array(z.string()).min(1) }).strict(),
     runtimes: z.array(z.object({
-      name: backend, available: z.boolean(), version: z.string().optional(), commit: gitBlob.optional(), build: z.number().int().optional(),
+      name: backend, available: z.boolean(), version: z.string().optional(), commit: gitBlob.optional(), build: z.number().int().optional(), compiledAccelerator: compiledAccelerator.optional(),
       formats: z.array(z.enum(["gguf", "safetensors", "mlmodel", "mlpackage"])),  tasks: z.array(task),
       recognizedArchitectures: z.array(z.string().max(128)).max(512), inputs: z.array(z.enum(["text", "image", "json", "features"])).optional(),
       devices: z.array(z.object({kind: z.enum(["cpu", "gpu", "neural-engine", "unknown"]), nativeClass: z.string().max(128)}).strict()).max(16).optional(),

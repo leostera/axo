@@ -447,5 +447,7 @@ export const computerStatusSchema = z.object({
   accessibility: z.boolean(),
   screenRecording: z.boolean(),
   locked: z.boolean().optional(),
+  /** Whether the Mac can take typed values past the agent (`request_input`); absent from older Macs. */
+  requestInput: z.boolean().optional(),
 }).strict();
 export type ComputerStatus = z.infer<typeof computerStatusSchema>;

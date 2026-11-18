@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { APPS_LIMITS, APPS_METHODS, appsParams, appsRunLimitsSchema, DEFAULT_APPS_RUN_LIMITS } from "../src/apps.ts";
+import { APPS_LIMITS, APPS_METHODS, appsParams, appsRunLimitsSchema, computerStatusSchema, DEFAULT_APPS_RUN_LIMITS } from "../src/apps.ts";
 
 test("run limits have existing defaults and explicit independent ceilings", () => {
   assert.deepEqual(appsRunLimitsSchema.parse({}), { timeoutMs: APPS_LIMITS.scriptWallMs, maxToolCalls: 100, maxConcurrentCalls: 4, maxOutputBytes: APPS_LIMITS.resultBytes });
@@ -15,4 +15,14 @@ test("run limits have existing defaults and explicit independent ceilings", () =
     }
   }
   for (const invalid of [{ timeout: 10 }, [], null, { maxToolCalls: 1, unknown: 1 }]) assert.equal(appsRunLimitsSchema.safeParse(invalid).success, false);
+});
+
+test("a Mac's computer-use status parses with every field axod sends, and from older Macs", () => {
+  // What axo-computer-use's `ComputerUse::status` answers today.
+  const current = { available: true, accessibility: true, screenRecording: true, locked: false, requestInput: true };
+  assert.deepEqual(computerStatusSchema.parse(current), current);
+  // An older Mac sends neither `locked` nor `requestInput`.
+  const older = { available: false, accessibility: false, screenRecording: true };
+  assert.deepEqual(computerStatusSchema.parse(older), older);
+  assert.equal(computerStatusSchema.safeParse({ ...current, extra: 1 }).success, false);
 });

@@ -57,3 +57,20 @@ test("native source resources distinguish Git integrity from a known SHA-256", (
   delete (source.files[1] as { gitBlob?: string }).gitBlob;
   assert.equal(aiResults.run.safeParse(result).success, false, "unknown SHA-256 without Git integrity is not provenance");
 });
+
+test("capabilities name the accelerator llama.cpp was compiled for, and older Macs may omit it", () => {
+  const runtime = { name: "llama.cpp", commit: "a".repeat(40), build: 11960, recognizedArchitectures: ["llama"] };
+  const llama = { name: "llama.cpp", available: true, commit: "a".repeat(40), build: 11960, recognizedArchitectures: ["llama"], formats: ["gguf"], tasks: ["generate"] };
+  const limits = { physicalMemoryBytes: 1, maxModelBytes: 1, freeDiskBytes: 1, maxDownloadBytes: 1, maxArtifacts: 1, maxImages: 1, maxImageBytes: 1, maxTotalImageBytes: 1, maxTextBytes: 1, contextTokens: 1, maxOutputTokens: 1, maxOperationMs: 1, concurrentOperations: 1 };
+  const answer = (accelerator?: string) => ({
+    apiVersion: 4, available: true,
+    runtime: accelerator ? { ...runtime, compiledAccelerator: accelerator } : runtime,
+    runtimes: [accelerator ? { ...llama, compiledAccelerator: accelerator } : llama],
+    formats: ["gguf"], tasks: ["generate"], inputs: { generate: ["text"], classify: [], embed: [] },
+    architectureCheck: "", modelSource: "", selection: "", customCode: false, privateRepositories: false, backends: ["llama.cpp"], limits, unsupported: [],
+  });
+  for (const accelerator of ["cpu", "metal", "cuda", undefined]) {
+    assert.equal(aiResults.capabilities.safeParse(answer(accelerator)).success, true, String(accelerator));
+  }
+  assert.equal(aiResults.capabilities.safeParse(answer("vulkan")).success, false);
+});
