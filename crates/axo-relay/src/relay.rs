@@ -136,6 +136,14 @@ impl RelayWorker {
         runtime: tokio::runtime::Handle,
         stop: Stop,
     ) -> io::Result<Self> {
+        if let Some(directory) = dependencies.assets_directory.clone() {
+            // What an older Axo left readable by other users is closed (see `assets`).
+            runtime.spawn_blocking(move || {
+                if let Err(error) = crate::assets::make_private(&directory) {
+                    log::warn!("event=assets.make_private_failed error={error}");
+                }
+            });
+        }
         let observed_host = Arc::downgrade(&dependencies.host);
         let control = Arc::new(
             RelayControl::new(host_label(), HostKind::current()).with_observer(Box::new(

@@ -5,8 +5,14 @@
 //! to `~/.axo/assets/<hex>/<name>`: written to a temporary file while its SHA-256 is computed,
 //! and renamed into place only if the bytes match the name and the size. A prompt gets all its
 //! attachments or none: the first that can't be fetched refuses the whole prompt.
+//!
+//! They are the person's files (screenshots, photos, documents), so only the person's user may
+//! read them: every folder is `0700` and every file `0600`, and what an older Axo left more open
+//! is closed when the relay starts ([`make_private`]). A file reaches its name only by a rename,
+//! so a name never holds a torn copy.
 
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +39,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long one attachment may take in all.
 const FETCH_DEADLINE: Duration = Duration::from_secs(5 * 60);
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+/// Only the person's user may open the assets' folders, or read their files.
+const PRIVATE_FOLDER: u32 = 0o700;
+const PRIVATE_FILE: u32 = 0o600;
 
 /// Where attachments come from and go to.
 #[derive(Clone)]
@@ -113,12 +122,13 @@ async fn fetch_one(
         mime_type: attachment.mime_type,
         size: attachment.size,
     };
-    // Only checked bytes are ever renamed into the folder, so a file there is the asset.
-    if fs::metadata(&path).await.is_ok_and(|meta| meta.is_file()) {
+    // Only checked bytes are ever renamed into the folder, so a file there of the asset's size
+    // is the asset. Its size still guards against a copy an older Axo wrote in place.
+    if is_copy(&path, attachment.size).await {
         return Ok((fetched, true));
     }
-    fs::create_dir_all(&folder).await?;
-    if let Some(sibling) = existing_file(&folder).await? {
+    private_folder(&folder).await?;
+    if let Some(sibling) = existing_copy(&folder, attachment.size).await? {
         copy_into_place(&sibling, &path).await?;
         return Ok((fetched, true));
     }
@@ -155,15 +165,22 @@ async fn within<T>(operation: impl std::future::Future<Output = io::Result<T>>) 
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "asset transfer stalled"))?
 }
 
-/// A file already fetched under another name.
-async fn existing_file(folder: &Path) -> io::Result<Option<PathBuf>> {
+/// Whether `path` is a whole copy of an asset of `size` bytes.
+async fn is_copy(path: &Path, size: u64) -> bool {
+    fs::metadata(path)
+        .await
+        .is_ok_and(|meta| meta.is_file() && meta.len() == size)
+}
+
+/// A copy already fetched under another name.
+async fn existing_copy(folder: &Path, size: u64) -> io::Result<Option<PathBuf>> {
     let mut entries = fs::read_dir(folder).await?;
     while let Some(entry) = entries.next_entry().await? {
         if !entry
             .file_name()
             .to_string_lossy()
             .starts_with(".download-")
-            && entry.file_type().await?.is_file()
+            && is_copy(&entry.path(), size).await
         {
             return Ok(Some(entry.path()));
         }
@@ -173,8 +190,62 @@ async fn existing_file(folder: &Path) -> io::Result<Option<PathBuf>> {
 
 async fn copy_into_place(from: &Path, to: &Path) -> io::Result<()> {
     let temporary = to.with_file_name(format!(".download-{}", axo_protocol::new_uuid_v4()?));
+    let _cleanup = DownloadFile(temporary.clone());
     fs::copy(from, &temporary).await?;
+    fs::set_permissions(&temporary, std::fs::Permissions::from_mode(PRIVATE_FILE)).await?;
     fs::rename(&temporary, to).await
+}
+
+/// Creates `folder` (and what it is in) for the person's user alone.
+async fn private_folder(folder: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(PRIVATE_FOLDER)
+        .create(folder)
+        .await?;
+    fs::set_permissions(folder, std::fs::Permissions::from_mode(PRIVATE_FOLDER)).await
+}
+
+/// A new file only the person's user may read.
+async fn private_file(path: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PRIVATE_FILE)
+        .open(path)
+        .await
+}
+
+/// Closes what an older Axo left readable by others: `directory` and its asset folders `0700`,
+/// their files `0600`. Links are left alone, never followed. Blocking; run it off the runtime.
+pub fn make_private(directory: &Path) -> io::Result<()> {
+    use std::fs;
+    let set = |path: &Path, mode: u32| fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    match fs::symlink_metadata(directory) {
+        Ok(meta) if meta.is_dir() => set(directory, PRIVATE_FOLDER)?,
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    for folder in fs::read_dir(directory)? {
+        let folder = folder?;
+        let kind = folder.file_type()?;
+        if kind.is_file() {
+            set(&folder.path(), PRIVATE_FILE)?;
+            continue;
+        }
+        if !kind.is_dir() {
+            continue;
+        }
+        set(&folder.path(), PRIVATE_FOLDER)?;
+        for file in fs::read_dir(folder.path())? {
+            let file = file?;
+            if file.file_type()?.is_file() {
+                set(&file.path(), PRIVATE_FILE)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Downloads the asset to `temporary`, checking its size and hash as it goes.
@@ -190,7 +261,7 @@ async fn download(
     );
     let headers = authorization(source).await?;
     let deadline = Instant::now() + FETCH_DEADLINE;
-    let mut file = fs::File::create(temporary).await?;
+    let mut file = private_file(temporary).await?;
     let digest = get(&url, &headers, attachment.size, deadline, &mut file).await?;
     file.sync_all().await?;
     if digest != attachment.asset {
@@ -273,10 +344,13 @@ pub async fn upload(
             )));
         }
     }
-    // A copy where a fetch would put it, so this Mac never downloads its own image again.
-    let folder = source.directory.join(asset.hex());
-    if fs::create_dir_all(&folder).await.is_ok() {
-        let _ = fs::write(folder.join(name.as_str()), bytes).await;
+    // A copy where a fetch would put it, so this Mac never downloads its own image again. Only a
+    // cache: the upload stands without it.
+    if let Err(error) = keep_copy(&source.directory, &asset, &name, bytes).await {
+        log::warn!(
+            "event=assets.copy_failed hash={} error={error}",
+            asset.hex()
+        );
     }
     Ok(Attachment {
         asset,
@@ -284,6 +358,23 @@ pub async fn upload(
         mime_type,
         size: bytes.len() as u64,
     })
+}
+
+/// Writes `bytes` under `name` in the asset's folder, whole or not at all.
+async fn keep_copy(
+    directory: &Path,
+    asset: &AssetHash,
+    name: &AssetName,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let folder = directory.join(asset.hex());
+    private_folder(&folder).await?;
+    let temporary = folder.join(format!(".download-{}", axo_protocol::new_uuid_v4()?));
+    let _cleanup = DownloadFile(temporary.clone());
+    let mut file = private_file(&temporary).await?;
+    file.write_all(bytes).await?;
+    file.sync_all().await?;
+    fs::rename(&temporary, folder.join(name.as_str())).await
 }
 
 /// A header value as `encodeURIComponent` writes it, which the Worker decodes.
@@ -775,6 +866,91 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(&again[0].path).unwrap(), bytes);
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[tokio::test]
+    async fn only_the_persons_user_may_read_what_is_fetched_or_kept() {
+        let directory = temporary_directory().join("assets");
+        let fetched_bytes = b"a private photo".as_slice();
+        let (origin, _) = relay(vec![
+            ok(fetched_bytes),
+            b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        ]);
+        let source = source(&origin, &directory);
+        let fetched = fetch_all(&source, &attachments(&[(fetched_bytes, "photo.png")]))
+            .await
+            .unwrap();
+        let again = fetch_all(&source, &attachments(&[(fetched_bytes, "copy.png")]))
+            .await
+            .unwrap();
+        let kept = upload(
+            &source,
+            b"a screenshot",
+            AssetName::parse("screen.png".into()).unwrap(),
+            AssetType::parse("image/png").unwrap(),
+        )
+        .await
+        .unwrap();
+        let kept = directory.join(kept.asset.hex()).join("screen.png");
+        assert_eq!(mode(&directory), 0o700);
+        for file in [&fetched[0].path, &again[0].path, &kept] {
+            assert_eq!(mode(file.parent().unwrap()), 0o700, "{}", file.display());
+            assert_eq!(mode(file), 0o600, "{}", file.display());
+        }
+        let _ = fs::remove_dir_all(directory.parent().unwrap());
+    }
+
+    #[test]
+    fn what_an_older_axo_left_open_is_closed_and_links_are_not_followed() {
+        let root = temporary_directory();
+        let directory = root.join("assets");
+        let folder = directory.join("abc");
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("photo.png");
+        fs::write(&file, b"x").unwrap();
+        let outside = root.join("outside.txt");
+        fs::write(&outside, b"y").unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("link")).unwrap();
+        for path in [&directory, &folder] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for path in [&file, &outside] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        make_private(&directory).unwrap();
+        assert_eq!(mode(&directory), 0o700);
+        assert_eq!(mode(&folder), 0o700);
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(
+            mode(&outside),
+            0o644,
+            "a link's target is not ours to change"
+        );
+        make_private(&root.join("missing")).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_torn_copy_is_never_taken_for_the_asset() {
+        let directory = temporary_directory();
+        let bytes = b"the whole screenshot".as_slice();
+        let wanted = attachments(&[(bytes, "screen.png")]);
+        let folder = directory.join(wanted.iter().next().unwrap().asset.hex());
+        fs::create_dir_all(&folder).unwrap();
+        // What a killed in-place write left: under the name, and under another name.
+        fs::write(folder.join("screen.png"), &bytes[..5]).unwrap();
+        fs::write(folder.join("other.png"), &bytes[..7]).unwrap();
+        let (origin, seen) = relay(vec![ok(bytes)]);
+        let fetched = fetch_all(&source(&origin, &directory), &wanted)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(&fetched[0].path).unwrap(), bytes);
+        assert_eq!(seen.lock().unwrap().len(), 1, "fetched again, not copied");
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[tokio::test]
