@@ -303,13 +303,17 @@ export class AxoHostDO extends AxoHostRelay {
     super.webSocketError(socket);
   }
 
+  /** The Mac's credential is checked before anything is written: a refused socket leaves nothing behind. */
   protected override async authorizeRelayPeer(request: Request, peer: Peer): Promise<boolean> {
-    if (!this.bind(peer.identity, peer.machineId)) return false;
-    return this.account().authorizeHost(
+    const identity = this.identity();
+    if (identity && (identity.account_id !== peer.identity || identity.host_id !== peer.machineId)) return false;
+    const account = this.ctx.exports.AxoAccountDirectory.getByName(peer.identity) as unknown as AccountStub;
+    const authorized = await account.authorizeHost(
       peer.machineId,
       request.headers.get("X-Axo-Credential-Id") ?? "",
       request.headers.get("X-Axo-Credential") ?? "",
     );
+    return authorized && this.bind(peer.identity, peer.machineId);
   }
 
   protected override async storeHostRegistration(registration: unknown): Promise<HostSnapshot> {

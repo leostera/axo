@@ -55,6 +55,8 @@ export async function revokeAccountHost(
   }
 }
 
+type HostAuthorizer = { authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean> };
+
 /**
  * The host's socket (RFD0018): authenticated with the host credential, and served by that host's
  * HostDO, which checks the credential with the account before it upgrades.
@@ -75,6 +77,14 @@ export async function upgradeHostDaemon(
   const credential = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get("Authorization") ?? "")?.[1];
   const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
   if (!credential || !uuid.safeParse(credentialId).success) return json({ error: "Host authentication required" }, 401);
+  // Checked here, before the HostDO, so a refused socket does not make one (the HostDO checks again).
+  // A refused credential answers 403, as the HostDO did: axod's contract for a revoked Mac.
+  try {
+    const account = ctx.exports.AxoAccountDirectory.getByName(accountId.data) as unknown as HostAuthorizer;
+    if (!(await account.authorizeHost(hostId.data, credentialId, credential))) return json({ error: "Host is not authorized" }, 403);
+  } catch {
+    return unavailable();
+  }
   return ctx.exports.AxoHostDO.getByName(hostDOName(accountId.data, hostId.data)).fetch(new Request("https://host.internal/daemon", {
     headers: {
       Upgrade: "websocket",
@@ -90,8 +100,6 @@ export async function upgradeHostDaemon(
 
 /** How long a Mac's peers socket stays signed in; it signs in again with its credential, so a revoked Mac is refused within this. */
 const PEERS_SIGN_IN_MS = 60 * 60 * 1000;
-
-type HostAuthorizer = { authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean> };
 
 /**
  * A paired Mac following the account's other Macs (RFD0022): the same client socket a browser
