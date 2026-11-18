@@ -213,6 +213,19 @@ impl ComputerHost for Core {
         Box::pin(self.input_keys.get())
     }
 
+    #[cfg(target_os = "linux")]
+    fn sudo_context(&self, session: SessionId) -> Option<axo_computer_use::SudoContext> {
+        let directory = self
+            .catalog
+            .view()
+            .sessions
+            .get(&session)?
+            .record
+            .folder
+            .clone();
+        let executable = std::env::current_exe().ok()?;
+        axo_computer_use::SudoContext::new(directory, executable.parent()?.join("axo-askpass")).ok()
+    }
     fn agent_socket(&self) -> Option<PathBuf> {
         Some(self.agent_socket.clone())
     }

@@ -1,4 +1,5 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/js:defs.bzl", "node_test")
 
 # Feynman needs Bun; this focused gate uses the installed owned-Mac runtime, never npx/npm.
 sh_test(
@@ -11,4 +12,16 @@ sh_test(
         "//:node_modules/@leostera/feynman",
     ],
     target_compatible_with = ["@platforms//os:macos"],
+)
+
+node_test(
+    name = "linux_sudo_input",
+    tests = ["linux-sudo-input.test.ts"],
+    tsx = True,
+    data = [
+        "elicitations/linux-sudo-input.ts",
+        "//:node_modules/@leostera/feynman",
+        "//:node_modules/tsx",
+    ],
+    timeout = "short",
 )

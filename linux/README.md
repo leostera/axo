@@ -13,7 +13,7 @@ bazel build //linux:axod //linux:runtime
 - Daemon: `bazel-bin/crates/axod/axod`
 - Runtime archive: `bazel-bin/linux/axo-linux.tar.gz`
 
-The archive contains `axod`, the pinned `axod-infer` sidecar, and the compiled Pi extension under `AxoPi/`. Keep that layout when extracting it. Install both executables beside one another: the daemon discovers its helper relative to its own executable. Linux defaults to CPU inference; MLX and Core ML remain Apple-only.
+The archive contains `axod`, the pinned `axod-infer` sidecar, `axo-askpass` for sudo input, and the compiled Pi extension under `AxoPi/`. Keep that layout when extracting it. Install all three executables beside one another: the daemon discovers its helpers relative to its own executable. Linux defaults to CPU inference; MLX and Core ML remain Apple-only.
 
 ### CUDA
 
@@ -75,7 +75,9 @@ Start from the graphical user's session or its systemd user manager so the daemo
 
 **GNOME 50 limitation:** the pinned WinRects helper is deliberately disabled because of session-ending native crashes. Do not bypass that guard or enable an older helper on GNOME 50. An active helper on an unsupported/unverifiable GNOME version is refused before desktop dispatch. Without it, Cua can return an AT-SPI tree with a typed `screenshot_error`; per-window capture and verified focus-bound input remain unavailable. Compositor-specific behavior beyond the tested X11 path needs separate acceptance. Linux capture/input may require portal consent. The `screenRecording` status field is an observed capture capability on Linux, not an Apple TCC grant.
 
-**Secure input:** Linux `request_input` is not advertised and refuses before asking for values. Its native field/origin binding is still macOS-only; never substitute generic typing for this protection.
+**Sudo input:** Linux `request_input` runs an explicitly approved noninteractive command with `args: { target: { kind: "sudo", argv: ["/absolute/program", ...] } }`. The calling Session selects the directory. The person first approves the exact command and, if sudo asks, enters one password on their own device. `axo-askpass` hands it to sudo’s private pipe, never a terminal or tool result. Only an exit receipt returns; command stdout/stderr are discarded. Cancellation after authorization cannot roll back a command—never retry an uncertain invocation automatically. Sudo policy is unchanged; this does not enable passwordless sudo. See [RFD0059](../docs/rfds/RFD0059-linux-sudo-input.md).
+
+Existing terminal prompts and generic Linux GUI fields remain unsupported. Their native field/origin binding is still macOS-only; never substitute generic typing for that protection.
 
 For an isolated desktop acceptance test, install Xvfb, Openbox, xauth, D-Bus, system Python GI and GTK 4 introspection data (`xvfb openbox xauth dbus-x11 python3-gi gir1.2-gtk-4.0` on Ubuntu). Then:
 

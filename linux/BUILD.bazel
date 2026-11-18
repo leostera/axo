@@ -6,20 +6,21 @@ alias(
     target_compatible_with = ["@platforms//os:linux"],
 )
 
-# Both executables must be installed together: axod locates its helper beside itself.
+# Runtime programs are installed together; axod locates its helpers beside itself.
 genrule(
     name = "runtime",
-    srcs = [":axod", "@llama_server//:axod-infer", "//packages/pi-axo:extension_js"],
+    srcs = [":axod", "//crates/axod:axo-askpass", "@llama_server//:axod-infer", "//packages/pi-axo:extension_js"],
     outs = ["axo-linux.tar.gz"],
     cmd = """
         staging=$$(mktemp -d)
         trap 'rm -rf "$$staging"' EXIT
         cp $(location :axod) "$$staging/axod"
+        cp $(location //crates/axod:axo-askpass) "$$staging/axo-askpass"
         cp $(location @llama_server//:axod-infer) "$$staging/axod-infer"
-        chmod 755 "$$staging/axod" "$$staging/axod-infer"
+        chmod 755 "$$staging/axod" "$$staging/axod-infer" "$$staging/axo-askpass"
         mkdir -p "$$staging/AxoPi"
         cp $(locations //packages/pi-axo:extension_js) "$$staging/AxoPi/"
-        tar -czf "$@" -C "$$staging" axod axod-infer AxoPi
+        tar -czf "$@" -C "$$staging" axod axod-infer axo-askpass AxoPi
     """,
     target_compatible_with = ["@platforms//os:linux"],
 )

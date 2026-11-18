@@ -67,8 +67,24 @@ fn our_name(tool: &str) -> &str {
 pub const REQUEST_INPUT: &str = "request_input";
 
 /// Secure form binding still uses native macOS AX handles; Linux must not advertise parity.
-pub const INPUT_AVAILABLE: bool = cfg!(target_os = "macos");
+pub const FORM_INPUT_AVAILABLE: bool = cfg!(target_os = "macos");
+pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
+#[cfg(target_os = "linux")]
+fn request_input_definition() -> Value {
+    json!({
+        "name": REQUEST_INPUT,
+        "description": "Run one noninteractive sudo command with the person's explicit consent and, if needed, a password entered on their own device. Passwords go only through sudo's private askpass pipe, never a terminal, transcript or tool result. The calling Session determines the directory. Returns only an exit receipt; stdout/stderr are discarded. This does not fill existing terminal prompts or GUI fields. Never pass passwords or approval claims, and never automatically retry an uncertain command.",
+        "inputSchema": {
+            "type":"object", "additionalProperties":false, "required":["target"],
+            "properties":{"target":{"type":"object","additionalProperties":false,"required":["kind","argv"],
+                "properties":{"kind":{"const":"sudo"},"argv":{"type":"array","minItems":1,"maxItems":32,
+                    "items":{"type":"string"},"description":"Exact command argument array; first item is an absolute executable path. No shell wrapping is added."}}}}
+        }
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
 fn request_input_definition() -> Value {
     json!({
         "name": REQUEST_INPUT,
@@ -291,7 +307,11 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn secure_linux_form_input_refuses_before_collecting_values() {
-        assert!(!INPUT_AVAILABLE);
+        assert!(!FORM_INPUT_AVAILABLE);
+        assert!(INPUT_AVAILABLE);
+        let definition = request_input_definition();
+        assert_eq!(definition["inputSchema"]["required"], json!(["target"]));
+        assert!(definition["inputSchema"]["properties"].get("pid").is_none());
         assert!(form::Form::read(std::process::id() as i32, 0).is_err());
     }
 

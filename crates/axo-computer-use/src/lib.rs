@@ -36,8 +36,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "linux")]
+mod sudo_input;
+
 use axo_ipc::Extension;
 use axo_questions::{Answer, Values};
+#[cfg(target_os = "linux")]
+pub use axo_sudo::Context as SudoContext;
 use jsonrpc_core::Error as RpcError;
 
 /// Values remembered for redaction at most; the oldest go first.
@@ -237,6 +242,11 @@ pub trait ComputerHost: Send + Sync {
     ) -> HostFuture<'a, Result<Answer, RpcError>>;
     /// This Mac's input key, which forms are sealed to; read or made on first use.
     fn input_key(&self) -> HostFuture<'_, Option<&axo_seal::InputKey>>;
+    /// Optional daemon-owned sudo context. Callers never choose its directory/helper.
+    #[cfg(target_os = "linux")]
+    fn sudo_context(&self, _session: SessionId) -> Option<SudoContext> {
+        None
+    }
     /// axod's socket, where the gate's state lives (`axo_computer::gate`).
     fn agent_socket(&self) -> Option<std::path::PathBuf>;
 }
@@ -387,6 +397,10 @@ impl ComputerUse {
         args: Value,
         timeout: Duration,
     ) -> Value {
+        #[cfg(target_os = "linux")]
+        if args.get("target").is_some() {
+            return sudo_input::request(host, session_id, args, timeout).await;
+        }
         let args: InputArgs = match serde_json::from_value(args) {
             Ok(args) => args,
             Err(error) => {
@@ -579,24 +593,30 @@ impl Extension for ComputerExtension {
 
     fn register(&self, handler: &mut IoHandler) {
         let (asking, host) = (Arc::clone(&self.computer), Arc::clone(&self.host));
+        let input = move |request: ComputerInput| {
+            let (asking, host) = (Arc::clone(&asking), Arc::clone(&host));
+            async move {
+                Ok(asking
+                    .request_input(
+                        host.as_ref(),
+                        request.session_id,
+                        None,
+                        request.args,
+                        Duration::from_millis(TIMEOUT_MS),
+                    )
+                    .await)
+            }
+        };
+        // Linux exposes only a receipt-only intent, not tool identity or answer authority.
+        // GUI forms remain unsupported. Other signed-caller gates are unchanged.
+        #[cfg(target_os = "linux")]
+        handler.add_typed(COMPUTER_INPUT, "expected {sessionId, args}", input);
+        #[cfg(not(target_os = "linux"))]
         handler.add_typed_only(
             AXOD_ONLY,
             COMPUTER_INPUT,
             "expected {sessionId, args}",
-            move |request: ComputerInput| {
-                let (asking, host) = (Arc::clone(&asking), Arc::clone(&host));
-                async move {
-                    Ok(asking
-                        .request_input(
-                            host.as_ref(),
-                            request.session_id,
-                            None,
-                            request.args,
-                            Duration::from_millis(TIMEOUT_MS),
-                        )
-                        .await)
-                }
-            },
+            input,
         );
         let hiding = Arc::clone(&self.computer);
         handler.add_typed_only(
@@ -640,7 +660,9 @@ impl ComputerUse {
                     "Not done: no time left to ask the person.",
                 ));
             }
-            if !axo_computer::INPUT_AVAILABLE {
+            if !axo_computer::FORM_INPUT_AVAILABLE
+                && !(cfg!(target_os = "linux") && request.args.get("target").is_some())
+            {
                 return Err(MethodError::new(
                     NOT_ALLOWED,
                     "Secure request_input form binding is not implemented on this platform; no values were requested or filled.",
@@ -1051,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn the_extension_offers_input_and_redactions_to_axod_alone() {
+    fn the_extension_registers_daemon_input_and_private_redactions() {
         let extension = ComputerExtension::new(
             Arc::default(),
             Arc::new(Host::answering(Ok(ElicitationAction::Accept))),
@@ -1062,6 +1084,39 @@ mod tests {
         let mut methods: Vec<_> = handler.iter().map(|(name, _)| name.clone()).collect();
         methods.sort();
         assert_eq!(methods, [COMPUTER_INPUT, COMPUTER_REDACTIONS]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_intents_do_not_grant_answer_or_redaction_authority() {
+        let host = Arc::new(Host::answering(Ok(ElicitationAction::Accept)));
+        let extension = ComputerExtension::new(Arc::default(), host.clone());
+        let mut handler = IoHandler::new();
+        extension.register(&mut handler);
+        let request = |method, params| {
+            let wire = json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}).to_string();
+            serde_json::from_str::<Value>(&block(handler.handle_request(&wire)).unwrap()).unwrap()
+        };
+        let result = request(
+            COMPUTER_INPUT,
+            json!({"sessionId":SESSION,"args":{"target":{"kind":"sudo","argv":["/usr/bin/true"]}}}),
+        );
+        assert!(
+            result.get("error").is_none(),
+            "an intent is not a signed caller claim: {result}"
+        );
+        assert_eq!(result["result"]["isError"], true); // Mock host has no local sudo context.
+        let invalid = request(
+            COMPUTER_INPUT,
+            json!({"sessionId":SESSION,"args":{"target":{"kind":"sudo","argv":["/usr/bin/true"]},"values":{"f0":"never accepted"}}}),
+        );
+        assert_eq!(invalid["result"]["isError"], true);
+        let private = request(COMPUTER_REDACTIONS, json!({}));
+        assert_eq!(
+            private["error"]["code"],
+            axo_protocol::rpc::error_code::REFUSED
+        );
+        assert!(host.asked().is_empty());
     }
 
     #[test]

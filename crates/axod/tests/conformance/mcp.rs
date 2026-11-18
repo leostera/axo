@@ -376,6 +376,51 @@ fn request_input_refuses_what_it_cannot_fill_without_asking() {
     );
 }
 
+/// The real MCP→daemon route asks for intent consent before starting sudo. No
+/// approval is supplied, no password is entered, and no privileged command runs.
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_sudo_intent_withdraws_on_caller_cancel_before_any_password() {
+    use std::os::unix::fs::MetadataExt;
+    let axod = Axod::start();
+    let (session, id) = first_session(&axod);
+    let mut events = axod.subscribe(json!({"includeTerminalOutput":false}));
+    let mut mcp = Mcp::start(&axod, &id);
+    let args =
+        json!({"tool":"request_input","args":{"target":{"kind":"sudo","argv":["/usr/bin/true"]}}});
+    let installed = std::fs::metadata("/usr/bin/sudo").is_ok_and(|m| {
+        m.is_file() && m.uid() == 0 && m.mode() & 0o4000 != 0 && m.mode() & 0o022 == 0
+    });
+    if !installed {
+        let refused = mcp.tool("computer", args);
+        assert_eq!(refused["isError"], true);
+        assert_eq!(refused["structuredContent"]["may_have_run"], false);
+        assert!(waiting_questions(&axod).is_empty());
+        return;
+    }
+    let call = mcp.send_tool("computer", args);
+    let asked = events.wait_for_type("elicitation.requested");
+    let question = &asked["elicitation"];
+    assert_eq!(question["askedBy"], "computerUse");
+    assert_eq!(question["sessionId"], json!(id));
+    assert!(
+        question["input"].is_null(),
+        "command consent must precede password input: {question}"
+    );
+    let message = question["message"].as_str().unwrap();
+    assert!(message.contains("/usr/bin/true"), "{message}");
+    assert!(
+        message.contains(session["folder"].as_str().unwrap()),
+        "{message}"
+    );
+    mcp.notify("notifications/cancelled", json!({"requestId":call}));
+    let resolved = events.wait_for_type("elicitation.resolved");
+    assert_eq!(resolved["id"], question["id"]);
+    assert_eq!(resolved["action"], "cancel");
+    assert!(waiting_questions(&axod).is_empty());
+    assert_eq!(mcp.ok("whoami", json!({}))["sessionId"], json!(id));
+}
+
 fn waiting_questions(axod: &Axod) -> Vec<Value> {
     axod.ok("axo.elicitation.list", json!({}))["elicitations"]
         .as_array()

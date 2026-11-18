@@ -1,0 +1,38 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "axo_sudo",
+    target_compatible_with = ["@platforms//os:linux"],
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    deps = [
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+        "@crates//:zeroize",
+    ],
+)
+
+rust_test(
+    name = "test",
+    crate = ":axo_sudo",
+    edition = "2024",
+    data = [":fake_sudo", "//crates/axod:axo-askpass"],
+    env = {
+        "RUST_TEST_THREADS": "1",
+        "AXO_TEST_SUDO": "$(rootpath :fake_sudo)",
+        "AXO_TEST_ASKPASS": "$(rootpath //crates/axod:axo-askpass)",
+    },
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+rust_binary(
+    name = "fake_sudo",
+    testonly = True,
+    srcs = ["testdata/fake_sudo.rs"],
+    edition = "2024",
+)
