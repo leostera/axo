@@ -34,8 +34,11 @@ use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
 use crate::link::AccountLink;
 
-/// How long one read may wait before the download is given up.
+/// How long one read or write may wait before the transfer is given up: a transfer is bounded by
+/// its progress, not its size, so a 100 MiB upload on a slow link goes on while bytes move.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bytes of an upload's body written at once, each within [`READ_TIMEOUT`].
+const UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
 /// How long one attachment may take in all.
 const FETCH_DEADLINE: Duration = Duration::from_secs(5 * 60);
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -160,7 +163,15 @@ impl Drop for DownloadFile {
 }
 
 async fn within<T>(operation: impl std::future::Future<Output = io::Result<T>>) -> io::Result<T> {
-    tokio::time::timeout(READ_TIMEOUT, operation)
+    within_for(READ_TIMEOUT, operation).await
+}
+
+/// `operation`, given up if it makes no progress for `stall`.
+async fn within_for<T>(
+    stall: Duration,
+    operation: impl std::future::Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    tokio::time::timeout(stall, operation)
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "asset transfer stalled"))?
 }
@@ -299,6 +310,17 @@ pub async fn upload(
     name: AssetName,
     mime_type: AssetType,
 ) -> io::Result<Attachment> {
+    upload_within(source, bytes, name, mime_type, READ_TIMEOUT).await
+}
+
+/// [`upload`], given up when the connection makes no progress for `stall`.
+async fn upload_within(
+    source: &AssetSource,
+    bytes: &[u8],
+    name: AssetName,
+    mime_type: AssetType,
+    stall: Duration,
+) -> io::Result<Attachment> {
     if bytes.len() as u64 > MAX_ASSET_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -319,12 +341,10 @@ pub async fn upload(
     );
     let started = Instant::now();
     let status = async {
-        let stream = request(&url, "PUT", &headers, bytes).await?;
-        Ok::<_, io::Error>(read_head(&mut BufReader::new(stream)).await?.status)
-    };
-    let status = tokio::time::timeout(READ_TIMEOUT, status)
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "asset upload took too long"))?;
+        let stream = request(&url, "PUT", &headers, bytes, stall).await?;
+        Ok::<_, io::Error>(read_head(&mut BufReader::new(stream), stall).await?.status)
+    }
+    .await;
     log::info!(
         "event=assets.upload hash={} bytes={} ms={} outcome={}",
         asset.hex(),
@@ -432,15 +452,18 @@ async fn request(
     method: &str,
     extra_headers: &str,
     body: &[u8],
+    stall: Duration,
 ) -> io::Result<Box<dyn ReadWrite>> {
-    let (mut stream, host_header) = within(connect(url)).await?;
+    let (mut stream, host_header) = within_for(stall, connect(url)).await?;
     let headers = format!(
         "{method} {} HTTP/1.1\r\nHost: {host_header}\r\n{extra_headers}Accept-Encoding: identity\r\nConnection: close\r\n\r\n",
         url.path()
     );
-    within(stream.write_all(headers.as_bytes())).await?;
-    within(stream.write_all(body)).await?;
-    within(stream.flush()).await?;
+    within_for(stall, stream.write_all(headers.as_bytes())).await?;
+    for chunk in body.chunks(UPLOAD_CHUNK_BYTES) {
+        within_for(stall, stream.write_all(chunk)).await?;
+    }
+    within_for(stall, stream.flush()).await?;
     Ok(stream)
 }
 
@@ -453,7 +476,7 @@ async fn get(
     deadline: Instant,
     out: &mut (impl AsyncWrite + Unpin),
 ) -> Result<axo_protocol::asset::AssetHash, FetchError> {
-    let mut stream = request(url, "GET", extra_headers, &[]).await?;
+    let mut stream = request(url, "GET", extra_headers, &[], READ_TIMEOUT).await?;
     receive(&mut *stream, expected, deadline, out).await
 }
 
@@ -465,7 +488,7 @@ async fn receive(
     out: &mut (impl AsyncWrite + Unpin),
 ) -> Result<AssetHash, FetchError> {
     let mut reader = BufReader::new(stream);
-    let head = read_head(&mut reader).await?;
+    let head = read_head(&mut reader, READ_TIMEOUT).await?;
     if head.status == 404 {
         return Err(FetchError::NotFound);
     }
@@ -502,10 +525,11 @@ struct Head {
     chunked: bool,
 }
 
-async fn read_head(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Head> {
+async fn read_head(reader: &mut (impl AsyncBufRead + Unpin), stall: Duration) -> io::Result<Head> {
     let mut raw = Vec::new();
     loop {
-        let read = within(
+        let read = within_for(
+            stall,
             reader
                 .take((MAX_HEADER_BYTES + 1 - raw.len()) as u64)
                 .read_until(b'\n', &mut raw),
@@ -776,7 +800,7 @@ mod tests {
     async fn response_headers_are_bounded_even_without_a_newline() {
         let oversized = vec![b'x'; MAX_HEADER_BYTES + 2];
         let mut reader = BufReader::new(oversized.as_slice());
-        let error = read_head(&mut reader).await.err().unwrap();
+        let error = read_head(&mut reader, READ_TIMEOUT).await.err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
@@ -810,6 +834,80 @@ mod tests {
             .join(attachment.asset.hex())
             .join("Mail — Inbox.png");
         assert_eq!(fs::read(kept).unwrap(), bytes);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// A relay that takes an upload's body slowly, `pace` bytes a tenth of a second, and answers
+    /// 201 once it has it all.
+    fn slow_relay(pace: usize) -> String {
+        use std::io::{BufRead, Read, Write};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(value) = line.strip_prefix("Content-Length: ") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut chunk = vec![0_u8; pace];
+            while length > 0 {
+                let take = pace.min(length);
+                reader.read_exact(&mut chunk[..take]).unwrap();
+                length -= take;
+                thread::sleep(Duration::from_millis(100));
+            }
+            let _ = reader
+                .get_mut()
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n");
+        });
+        origin
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_upload_that_keeps_moving_is_not_cut_off_by_its_size() {
+        let directory = temporary_directory();
+        // About 1.6 s in all, never a pause near the one-second stall.
+        let bytes = vec![7_u8; 8 * 1024 * 1024];
+        let origin = slow_relay(512 * 1024);
+        let uploaded = upload_within(
+            &source(&origin, &directory),
+            &bytes,
+            AssetName::parse("big.png".into()).unwrap(),
+            AssetType::parse("image/png").unwrap(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(uploaded.size, bytes.len() as u64);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_upload_that_stops_moving_is_given_up() {
+        let directory = temporary_directory();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        // Accepts, then never reads: the body fills the buffers and stops.
+        let held = thread::spawn(move || listener.accept().unwrap());
+        let error = upload_within(
+            &source(&origin, &directory),
+            &vec![7_u8; 32 * 1024 * 1024],
+            AssetName::parse("big.png".into()).unwrap(),
+            AssetType::parse("image/png").unwrap(),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
+        drop(held.join());
         let _ = fs::remove_dir_all(&directory);
     }
 
