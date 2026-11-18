@@ -1434,6 +1434,49 @@ fn pty_size(master: &OwnedFd) -> (u16, u16) {
 }
 
 #[test]
+fn each_viewport_version_takes_only_its_own_geometry() {
+    let directory = unique_test_directory("axo-vp2");
+    let socket = directory.join("axod.sock");
+    let legacy = json!({
+        "terminalArea": { "width": 1000.0, "height": 600.0 },
+        "backingScale": 2.0,
+        "cell": { "width": 16, "height": 34 },
+        "padding": { "top": 10, "bottom": 10, "left": 2, "right": 2 },
+        "dividerThickness": 1.0
+    });
+    // Native geometry adds the renderer's own pixels (RFD0055): its origin and exact padding.
+    let mut native = legacy.clone();
+    native["rasterization"] = json!({
+        "origin": { "x": 0.0, "y": 0.0 },
+        "paddingPixels": { "top": 20, "bottom": 20, "left": 4, "right": 4 },
+        "splitRounding": "logicalFloor"
+    });
+
+    let mut daemon = start_axod(&directory.join("server"), &socket);
+    wait_for_socket(&socket, &mut daemon);
+    // Version 1 never takes native geometry, so an old reader can't drop it unnoticed, and
+    // version 2 never takes legacy geometry.
+    assert_eq!(
+        rpc_with_params(&socket, "axo.client.viewport.set", native.clone())["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        rpc_with_params(&socket, "axo.client.viewport.set.v2", legacy)["error"]["code"],
+        -32602
+    );
+    let mut invalid = native.clone();
+    invalid["rasterization"]["origin"]["x"] = json!(f64::MAX);
+    assert_eq!(
+        rpc_with_params(&socket, "axo.client.viewport.set.v2", invalid)["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        rpc_with_params(&socket, "axo.client.viewport.set.v2", native)["result"]["accepted"],
+        true
+    );
+}
+
+#[test]
 fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
     let mut cleanup = SessionProcessCleanup::default();
     let directory = unique_test_directory("axo-vp");
