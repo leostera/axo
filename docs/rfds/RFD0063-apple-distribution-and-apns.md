@@ -189,6 +189,12 @@ registration, account switching, replay, native route parsing, client wire forma
 UI gates are separate executable tests. These cannot certify deployed HTTP/2 or OS delivery.
 The opt-in native `AXO_PUSH_TEST_RUN_ID` report contains only schema, run correlation and a fixed
 status in `Documents/axo-push-test.json`; it never exports a token or notification body.
+Schema 2 additionally reports only allowlisted authorization/presentation flags. Receipt callbacks
+and notification taps are distinct from evidence of a visible banner. A provisional grant is quiet,
+so native enrollment can request full alert authorization without silently changing the user's choice.
+Fresh delivered alerts get a ten-second grace before absence from a connected snapshot can remove
+them: socket catch-up must not erase a just-arrived push. Foreground presentation requests both
+a banner and a Notification Center entry, still subject to the person's OS settings and Focus.
 
 ## First live iPhone rollout
 

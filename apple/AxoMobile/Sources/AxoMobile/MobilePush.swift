@@ -21,7 +21,9 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   private var registering = false
   private var refreshAgain = false
   private var requestedDeviceToken = false
+  private var requestedFullAuthorization = false
   private var testReceived = false
+  private var presentation: PresentationSnapshot?
   private let launchedAt = Date()
   private let defaults = UserDefaults.standard
 
@@ -95,11 +97,15 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     guard let session else { return }
     lastSession = session
     let settings = await center.notificationSettings()
-    if settings.authorizationStatus == .notDetermined {
+    if settings.authorizationStatus == .notDetermined
+      || (settings.authorizationStatus == .provisional && !requestedFullAuthorization)
+    {
+      requestedFullAuthorization = true
       reportTest(.awaitingPermission)
       _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
     }
     let current = await center.notificationSettings()
+    presentation = PresentationSnapshot(current)
     guard !Task.isCancelled, (try? await account.tokens.sessionToken()) == session else { return }
     let allowed = current.authorizationStatus == .authorized || current.authorizationStatus == .provisional
     guard allowed else {
@@ -160,7 +166,8 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     guard (try? await account.tokens.sessionToken()) == session else { return }
     let obsolete = delivered.filter { notification in
       guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo) else { return false }
-      return route.accountID != session.accountID || !pending.contains(route.requestID)
+      return RequestNotificationCleanup.shouldRemove(receivedAt: notification.date,
+        belongsToCurrentAccount: route.accountID == session.accountID, isPending: pending.contains(route.requestID))
     }.map { $0.request.identifier }
     UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: obsolete)
   }
@@ -171,7 +178,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo) else { return [] }
     guard await shouldPresent(route) else { return [] }
     await reportReceivedTest(route)
-    return [.banner, .sound]
+    return [.banner, .list, .sound]
   }
 
   private func shouldPresent(_ route: RequestNotificationRoute) async -> Bool {
@@ -190,19 +197,51 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
 
   enum TestStatus: String, Encodable {
     case awaitingPermission, permissionDenied, awaitingDeviceToken, enrolled, registrationUnavailable
-    case receivedForeground, receivedInNotificationCenter
+    case receivedForeground, receivedInNotificationCenter, receivedFromTap
   }
 
   /// A deliberately fixed, opt-in development report. Never copies the OS notification or token.
   private func reportTest(_ status: TestStatus) {
     guard let text = ProcessInfo.processInfo.environment["AXO_PUSH_TEST_RUN_ID"], let runID = UUID(uuidString: text) else { return }
-    let received = status == .receivedForeground || status == .receivedInNotificationCenter
+    let received = status == .receivedForeground || status == .receivedInNotificationCenter || status == .receivedFromTap
     guard !testReceived || received else { return }
     if received { testReceived = true }
-    struct Report: Encodable { let schema = 1; let runID: UUID; let status: TestStatus }
+    struct Report: Encodable {
+      let schema = 2
+      let runID: UUID
+      let status: TestStatus
+      let presentation: PresentationSnapshot?
+    }
     guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-      let data = try? JSONEncoder().encode(Report(runID: runID, status: status)) else { return }
+      let data = try? JSONEncoder().encode(Report(runID: runID, status: status, presentation: presentation)) else { return }
     try? data.write(to: documents.appendingPathComponent("axo-push-test.json"), options: .atomic)
+  }
+
+  private struct PresentationSnapshot: Encodable {
+    let authorization: String
+    let alertsEnabled: Bool
+    let bannerStyleEnabled: Bool
+    let lockScreenEnabled: Bool
+    let notificationCenterEnabled: Bool
+    let soundEnabled: Bool
+    let scheduledDeliveryEnabled: Bool
+
+    init(_ settings: UNNotificationSettings) {
+      switch settings.authorizationStatus {
+      case .notDetermined: authorization = "notDetermined"
+      case .denied: authorization = "denied"
+      case .authorized: authorization = "authorized"
+      case .provisional: authorization = "provisional"
+      case .ephemeral: authorization = "ephemeral"
+      @unknown default: authorization = "unknown"
+      }
+      alertsEnabled = settings.alertSetting == .enabled
+      bannerStyleEnabled = settings.alertStyle != .none
+      lockScreenEnabled = settings.lockScreenSetting == .enabled
+      notificationCenterEnabled = settings.notificationCenterSetting == .enabled
+      soundEnabled = settings.soundSetting == .enabled
+      scheduledDeliveryEnabled = settings.scheduledDeliverySetting == .enabled
+    }
   }
 
   private var testRequestID: UUID? {
@@ -225,6 +264,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
 
   private func openInbox(_ route: RequestNotificationRoute) async {
     guard await shouldPresent(route) else { return }
+    if testRequestID == nil || route.requestID == testRequestID { reportTest(.receivedFromTap) }
     inboxRoute = route
     inboxRevision = UUID()
   }
