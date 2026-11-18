@@ -70,12 +70,14 @@ fn our_name(tool: &str) -> &str {
 pub const REQUEST_INPUT: &str = "request_input";
 
 /// Secure form binding still uses native macOS AX handles; Linux must not advertise parity.
-pub const FORM_INPUT_AVAILABLE: bool = cfg!(target_os = "macos");
+pub const FORM_INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
 #[cfg(target_os = "linux")]
 fn request_input_definition() -> Value {
-    json!({
+    let mut definition = form_input_definition();
+    let gui = definition["inputSchema"].take();
+    let sudo = json!({
         "name": REQUEST_INPUT,
         "description": "Run one noninteractive sudo command with the person's explicit consent and, if needed, a password entered on their own device. Passwords go only through sudo's private askpass pipe, never a terminal, transcript or tool result. The calling Session determines the directory. Returns only an exit receipt; stdout/stderr are discarded. This does not fill existing terminal prompts or GUI fields. Never pass passwords or approval claims, and never automatically retry an uncertain command.",
         "inputSchema": {
@@ -84,11 +86,20 @@ fn request_input_definition() -> Value {
                 "properties":{"kind":{"const":"sudo"},"argv":{"type":"array","minItems":1,"maxItems":32,
                     "items":{"type":"string"},"description":"Exact command argument array; first item is an absolute executable path. No shell wrapping is added."}}}}
         }
-    })
+    });
+    definition["inputSchema"] = json!({"oneOf":[gui,sudo["inputSchema"]]});
+    definition["description"] = json!(
+        "Ask for person-only input into bound Linux AT-SPI GUI fields using pid, 64-bit accessibility window_id, fields and optional submit. Passwords require a verified secure field; changed, unsupported or unconfirmed targets fail without keyboard/clipboard fallback. Browser origins come from document metadata, never the address bar. Plain text is redacted and screenshots are withheld after GUI fills; protection survives daemon restarts. Native compositor window IDs are not AT-SPI handles. Alternatively use target:{kind:\"sudo\",argv:[\"/absolute/program\",...]} for private sudo askpass input. Never pass values or approvals, or retry an uncertain fill automatically."
+    );
+    definition
 }
 
 #[cfg(not(target_os = "linux"))]
 fn request_input_definition() -> Value {
+    form_input_definition()
+}
+
+fn form_input_definition() -> Value {
     json!({
         "name": REQUEST_INPUT,
         "description": "Asks the person for values you must not see, such as a password, a login or a one-time code, and fills them into a window's fields; you get a receipt, never the values. Read the window first with get_window_state. The person is shown Axo's own reading of the app, the page's address and the fields, on their phone, in the browser or on the Mac, and can use their password manager. Name each field by what it is for (`kind`) and, when there is more than one candidate, by its `label` as the read shows it. `submit` names a button to press once filled, such as \"Sign in\". Later reads show the filled values as •••• (filled by you). If the page changed before they answered, nothing is filled: read it again and ask again.",
@@ -311,11 +322,17 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn secure_linux_form_input_refuses_before_collecting_values() {
-        assert!(!FORM_INPUT_AVAILABLE);
+        assert!(FORM_INPUT_AVAILABLE);
         assert!(INPUT_AVAILABLE);
         let definition = request_input_definition();
-        assert_eq!(definition["inputSchema"]["required"], json!(["target"]));
-        assert!(definition["inputSchema"]["properties"].get("pid").is_none());
+        assert_eq!(
+            definition["inputSchema"]["oneOf"][0]["required"],
+            json!(["pid", "window_id", "fields"])
+        );
+        assert_eq!(
+            definition["inputSchema"]["oneOf"][1]["required"],
+            json!(["target"])
+        );
         assert!(form::Form::read(std::process::id() as i32, 0).is_err());
     }
 

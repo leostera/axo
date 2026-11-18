@@ -396,10 +396,7 @@ fn request_input_refuses_what_it_cannot_fill_without_asking() {
     #[cfg(target_os = "linux")]
     {
         let reason = mcp.err("computer", json!({"tool":"request_input","args":{"pid":1}}));
-        assert!(
-            reason.contains("only a daemon-owned sudo target"),
-            "{reason}"
-        );
+        assert!(reason.contains("request_input takes"), "{reason}");
         for args in [
             json!({"target":{"kind":"sudo","argv":[]}}),
             json!({"target":{"kind":"sudo","argv":["relative"]}}),

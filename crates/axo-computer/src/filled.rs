@@ -12,6 +12,33 @@ use std::sync::Mutex;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "linux")]
+#[path = "filled_linux_privacy.rs"]
+mod gui_privacy;
+#[cfg(target_os = "linux")]
+static GUI_PRIVACY: Mutex<Option<gui_privacy::Privacy>> = Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+fn gui_privacy() -> std::sync::MutexGuard<'static, Option<gui_privacy::Privacy>> {
+    GUI_PRIVACY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Load durable protection before this daemon serves any computer observations.
+#[cfg(target_os = "linux")]
+pub fn keep_gui_privacy(path: std::path::PathBuf) {
+    *gui_privacy() = Some(gui_privacy::Privacy::new(Some(path)));
+}
+
+/// Register before a GUI write; refuse delivery if durability or capacity is unavailable.
+#[cfg(target_os = "linux")]
+pub fn remember_gui(value: &str) -> Result<(), ()> {
+    gui_privacy()
+        .get_or_insert_with(Default::default)
+        .remember(value)
+}
+
 /// What a hidden value reads as.
 pub const FILLED: &str = "\u{2022}\u{2022}\u{2022}\u{2022} (filled by you)";
 /// Values remembered at most; the oldest go first.
@@ -48,6 +75,10 @@ pub fn remember(value: &str) {
 
 /// Hides every remembered value in a result, image data excepted.
 pub fn hide(result: &mut Value) {
+    #[cfg(target_os = "linux")]
+    if let Some(privacy) = gui_privacy().as_ref() {
+        privacy.apply(result);
+    }
     let values = values();
     if values.is_empty() {
         return;
@@ -59,6 +90,16 @@ pub fn hide(result: &mut Value) {
 
 /// Hides the values in one string; `true` if anything was hidden.
 pub fn hide_text(text: &mut String) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Some(privacy) = gui_privacy().as_ref() {
+        let mut wrapped = Value::String(text.clone());
+        privacy.apply(&mut wrapped);
+        let sanitized = wrapped.as_str().unwrap_or(FILLED);
+        if sanitized != text.as_str() {
+            *text = sanitized.to_owned();
+            return true;
+        }
+    }
     let values = values();
     let mut longest_first: Vec<&str> = values.iter().map(|value| value.as_str()).collect();
     longest_first.sort_by_key(|value| std::cmp::Reverse(value.len()));

@@ -49,7 +49,7 @@ use jsonrpc_core::Error as RpcError;
 #[serde(deny_unknown_fields)]
 struct InputArgs {
     pid: i32,
-    window_id: u32,
+    window_id: u64,
     fields: Vec<WantedField>,
     /// The label of the button to press once filled, such as "Sign in".
     #[serde(default)]
@@ -299,6 +299,11 @@ impl FillPlan {
 pub struct ComputerUse;
 
 impl ComputerUse {
+    #[cfg(target_os = "linux")]
+    pub fn with_privacy_file(path: std::path::PathBuf) -> Self {
+        axo_computer::filled::keep_gui_privacy(path);
+        Self
+    }
     /// `request_input`, for an agent's Session here or another Mac's script (`from` names its
     /// Mac). Answers like a computer tool: a receipt, or an error saying why nothing was filled.
     pub async fn request_input(
@@ -337,7 +342,9 @@ impl ComputerUse {
             from,
             timeout,
         };
-        self.ask_and_fill(host, &asking, &args, key, window).await
+        let mut result = self.ask_and_fill(host, &asking, &args, key, window).await;
+        axo_computer::filled::hide(&mut result);
+        result
     }
 
     /// Picks the fields asked for in `window`, asks the person for them and fills them in.
@@ -403,11 +410,22 @@ fn fill(window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
         submit,
         place,
     } = plan;
+    if values.len() != picked.len()
+        || (0..picked.len()).any(|position| values.get(&format!("f{position}")).is_none())
+    {
+        return refused("Not filled: a value is missing.");
+    }
     let indices: Vec<usize> = picked.iter().map(|field| field.index).collect();
     if let Err(error) = window.check_unchanged(&indices, *submit) {
         return refused(format!(
             "Not filled: {error}. Read the window again and ask again."
         ));
+    }
+    #[cfg(target_os = "linux")]
+    for value in values.values() {
+        if axo_computer::filled::remember_gui(value).is_err() {
+            return refused("Not filled: privacy protection could not be durably registered.");
+        }
     }
     // Hidden before they are filled, so no read can catch one in between.
     for value in values.values() {
@@ -506,14 +524,6 @@ impl Extension for ComputerExtension {
         let input = move |request: ComputerInput| {
             let (asking, host) = (Arc::clone(&asking), Arc::clone(&host));
             async move {
-                #[cfg(target_os = "linux")]
-                if request.args.get("target").is_none() {
-                    return Err(RpcError {
-                        code: jsonrpc_core::ErrorCode::ServerError(error_code::REFUSED),
-                        message: "Linux request_input accepts only a daemon-owned sudo target; GUI form input is unavailable.".into(),
-                        data: None,
-                    });
-                }
                 Ok(asking
                     .request_input(
                         host.as_ref(),
@@ -526,7 +536,7 @@ impl Extension for ComputerExtension {
             }
         };
         // Linux exposes only a receipt-only intent, not tool identity or answer authority.
-        // GUI forms remain unsupported. Other signed-caller gates are unchanged.
+        // GUI forms use the same receipt-only route. Other caller gates are unchanged.
         #[cfg(target_os = "linux")]
         handler.add_typed(COMPUTER_INPUT, "expected {sessionId, args}", input);
         #[cfg(not(target_os = "linux"))]
@@ -651,7 +661,13 @@ pub async fn consent(
     host: &dyn ComputerHost,
     request: &axo_relay::consent::ConsentParams,
 ) -> Result<(), MethodError> {
-    ask_person(host, request.session_id, &request.message, request.timeout_ms).await
+    ask_person(
+        host,
+        request.session_id,
+        &request.message,
+        request.timeout_ms,
+    )
+    .await
 }
 
 /// Asks `message` in `session_id` within `timeout_ms`, less a margin for the answer to travel
@@ -950,16 +966,17 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn unsupported_linux_secure_input_never_asks_for_values() {
+    fn malformed_linux_secure_input_never_asks_for_values() {
         let host = Host::answering(Ok(ElicitationAction::Accept));
         let result =
             block(ComputerUse::default().remote(&host, &call(axo_computer::REQUEST_INPUT, 60_000)));
-        assert_eq!(
-            result,
-            Err(MethodError::new(
-                NOT_ALLOWED,
-                "Secure request_input form binding is not implemented on this platform; no values were requested or filled.",
-            ))
+        let result = result.unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("request_input takes")
         );
         assert!(host.asked().is_empty());
     }
@@ -1039,7 +1056,7 @@ mod tests {
         );
         assert_eq!(invalid["result"]["isError"], true);
         let form = request(COMPUTER_INPUT, json!({"sessionId":SESSION,"args":{}}));
-        assert_eq!(form["error"]["code"], error_code::REFUSED);
+        assert_eq!(form["result"]["isError"], true);
         assert!(host.asked().is_empty());
     }
 

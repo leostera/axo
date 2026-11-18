@@ -106,6 +106,16 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Core {
     pub(crate) fn new(parts: CoreParts) -> Self {
+        #[cfg(target_os = "linux")]
+        let computer = Arc::new(axo_computer_use::ComputerUse::with_privacy_file(
+            parts
+                .agent_socket
+                .parent()
+                .unwrap_or(&parts.home)
+                .join("gui-privacy.json"),
+        ));
+        #[cfg(not(target_os = "linux"))]
+        let computer = Arc::default();
         Self {
             store: parts.store,
             events: Events::default(),
@@ -135,7 +145,7 @@ impl Core {
             peers: Peers::default(),
             agent_servers: Arc::default(),
             questions: Arc::default(),
-            computer: Arc::default(),
+            computer,
             assets: Arc::default(),
             input_keys: Default::default(),
             pending_focus: Mutex::default(),

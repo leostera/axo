@@ -34,7 +34,7 @@ run=$2
 export GDK_BACKEND=x11 GTK_A11Y=atspi NO_AT_BRIDGE=0
 openbox --sm-disable >"$run/wm.log" 2>&1 &
 wm=$!
-"$gtk_python" "$here/computer-fixture.py" >"$run/fixture.log" 2>&1 &
+"$gtk_python" "${AXO_LINUX_FIXTURE_SCRIPT:-$here/computer-fixture.py}" >"$run/fixture.log" 2>&1 &
 fixture=$!
 cleanup() {
     kill "$fixture" "$wm" 2>/dev/null || true
@@ -42,4 +42,4 @@ cleanup() {
 }
 trap cleanup EXIT
 export AXO_LINUX_FIXTURE_PID=$fixture
-"$test_binary" --ignored real_linux_desktop_reads_captures_edits_and_checks_nested_lock_state --nocapture
+"$test_binary" --ignored "${AXO_LINUX_TEST_FILTER:-real_linux_desktop_reads_captures_edits_and_checks_nested_lock_state}" --nocapture

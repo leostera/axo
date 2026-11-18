@@ -218,7 +218,7 @@ mod imp {
     /// A window's form as axod read it.
     pub struct Form {
         pub pid: i32,
-        pub window_id: u32,
+        pub window_id: u64,
         /// The app's name, from the running-apps list.
         pub app: String,
         pub window_title: String,
@@ -323,8 +323,10 @@ mod imp {
 
     impl Form {
         /// Reads the form in `window_id` of `pid`.
-        pub fn read(pid: i32, window_id: u32) -> Result<Form, FormError> {
-            let window = window(pid, window_id)?;
+        pub fn read(pid: i32, window_id: u64) -> Result<Form, FormError> {
+            let native_id = u32::try_from(window_id)
+                .map_err(|_| FormError("invalid macOS window ID".into()))?;
+            let window = window(pid, native_id)?;
             let mut found = Walk {
                 visited: 0,
                 web_area: None,
@@ -422,13 +424,17 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+#[path = "form_linux.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod imp {
     use super::{FieldReading, FormError, fail};
 
     pub struct Form {
         pub pid: i32,
-        pub window_id: u32,
+        pub window_id: u64,
         pub app: String,
         pub window_title: String,
         pub origin: Option<String>,
@@ -439,7 +445,7 @@ mod imp {
     const UNAVAILABLE: &str = "Secure request_input form binding is not implemented on this platform; values will not be requested or filled.";
 
     impl Form {
-        pub fn read(_pid: i32, _window_id: u32) -> Result<Form, FormError> {
+        pub fn read(_pid: i32, _window_id: u64) -> Result<Form, FormError> {
             fail(UNAVAILABLE)
         }
         pub fn check_unchanged(&self, _: &[usize], _: Option<usize>) -> Result<(), FormError> {
