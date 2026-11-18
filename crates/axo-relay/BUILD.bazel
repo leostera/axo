@@ -10,7 +10,6 @@ rust_library(
         "//crates/axo-agent:axo_agent",
         "//crates/axo-ipc:axo_ipc",
         "//crates/axo-protocol:axo_protocol",
-        "//crates/axo-pty:axo_pty",
         "//crates/axo-signin:axo_signin",
         "@crates//:httparse",
         "@crates//:native-tls",

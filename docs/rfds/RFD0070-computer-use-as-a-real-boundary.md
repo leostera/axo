@@ -9,9 +9,8 @@
 
 ## Summary
 
-RFD0028 says an action reaches an app only if the gate passed it or the person allowed it. RFD0029 says what the person fills in never reaches the agent. A review found both claims held only for an agent that chose to use the `computer` tool and to read its results as given. This RFD makes them hold for an agent that tries to get around them:
+RFD0028 says an action reaches an app only if the gate passed it or the person allowed it. RFD0029 says what the person fills in never reaches the agent. A review found both claims held only for an agent that chose to use the `computer` tool and to read its results as given. This RFD makes them hold for an agent that tries to get around them through Axo's own tools; what its shell can do with axod's grants stays as RFD0029 describes (see Drawbacks):
 
-- Processes the agent starts stop inheriting axod's Accessibility and Screen Recording grants.
 - Every action inside `run_script` goes through the gate.
 - An element the gate cannot name is checked rather than passed.
 - Key names are read the way Cua reads them.
@@ -24,7 +23,7 @@ RFD0028 says an action reaches an app only if the gate passed it or the person a
 
 The agent is the adversary in RFD0029's model: it may follow instructions found in a web page, an email or a file. A review of the computer-use and apps code found these ways past the boundary:
 
-1. **Inherited grants.** Pi is a child of axod, and so is every shell the agent runs, so macOS treats axod as their responsible process for privacy (TCC). From the agent's bash, `AXIsProcessTrusted()` and `CGPreflightScreenCaptureAccess()` both return true. A ten-line program can therefore press Mail's Send button without the gate seeing it. Remote `bash.run` has the same reach on every Mac.
+1. **Inherited grants.** Pi is a child of axod, and so is every shell the agent runs, so macOS treats axod as their responsible process for privacy (TCC). From the agent's bash, `AXIsProcessTrusted()` and `CGPreflightScreenCaptureAccess()` both return true. A ten-line program can therefore press Mail's Send button without the gate seeing it. Remote `bash.run` has the same reach on every Mac. This RFD keeps it (see Drawbacks and Alternatives); items 2 to 8 are what it changes.
 2. **Unnamed elements.** Cua's `get_window_state` returns only Markdown by default and removes `elements` from `structuredContent`. The gate learns labels from `elements`, so after a normal read, `click {element_token}` is described as `click element s1:4`. That description contains no risk word, so the click runs unchecked.
 3. **Scripts.** `run_script` is checked only by searching its source for risk words. Its actions run straight through Cua's registry, so `["S","e","n","d"].join("")` gets past the check.
 4. **Key names.** Cua folds `re-turn`, `Re Turn`, `e_n_t_e_r` and `numpad_enter` into Return. The gate does not. Backspace, delete and cmd+backspace (Move to Trash) are not checked at all.
@@ -37,7 +36,6 @@ The agent is the adversary in RFD0029's model: it may follow instructions found 
 
 The agent still drives apps through `computer`, scripts through `run_script`, and services through `codemode.apps`. What changes is what it meets:
 
-- **A shell is just a shell.** Pi, the Session's terminal, and every command `bash.run` runs are started *disclaimed*: each is its own responsible process, so none of them holds axod's Accessibility or Screen Recording grant. `osascript` UI scripting, `CGEventPost` and `screencapture` fail or prompt for their own grant, as they would in any app the person never trusted. Only axod's `computer` tool can operate apps.
 - **Every element has a name.** axod reads every window with its elements, remembers each element's role and label for the gate, then gives the agent Cua's usual Markdown read. A token the gate never saw (a stale one, or one remembered before the store evicted it) is checked as if it were risky.
 - **A script's actions are checked one by one.** Inside `run_script`, every click, key and typed text goes through the gate. An action the gate passes runs. One it would ask about fails in the script with *Not done in a script: "click AXButton "Send"" needs the person. Do it as its own computer call, so they can be asked.* The script's source is no longer searched for words.
 - **The question leads with why.** The card says why the gate stopped first, then each flagged action, then the rest, summarised when they don't fit:
@@ -55,16 +53,6 @@ The agent still drives apps through `computer`, scripts through `run_script`, an
   A decline fails the call with *Not done: the person declined.*
 
 ## Reference-level explanation
-
-### Disclaimed children (`crates/axo-pty`)
-
-- `axo_pty::disclaim::exec_disclaimed(&mut Command)` installs a last `pre_exec` step. It replaces the forked child with the target program by `posix_spawn(POSIX_SPAWN_SETEXEC)` with `responsibility_spawnattrs_setdisclaim(attr, 1)`, the attribute LLDB and Chromium use for the same purpose.
-  - The program, argv and envp are built in the parent: the parent's environment with the command's changes applied.
-  - In the child only the attribute and the prepared pointers are used.
-  - If the exec fails, the spawn fails. It never falls back to an ordinary exec.
-- `axo_pty::process::spawn` (Pi, terminal panes) and `axo_relay::bash` (remote `bash.run`) use it.
-- Invariant: a process axod starts for the agent or the person's shell is its own responsible process (`responsibility_get_pid_responsible_for_pid(child) == child`), so a TCC check from it or its descendants never uses axod's grants.
-- Unsupported: `Command::env_clear` on these commands. Nothing in axod uses it, and the parent-built environment would not honour it.
 
 ### The gate (`crates/axo-computer`)
 
@@ -110,7 +98,6 @@ The agent still drives apps through `computer`, scripts through `run_script`, an
 
 ## Invariants
 
-- No process axod starts for an agent, a terminal pane or `bash.run` holds axod's TCC grants.
 - An unconfirmed action whose description is flagged runs only if Clef answers p < 0.5. Inside a script, it never runs.
 - An element token the gate can't name is flagged.
 - A question to the person always contains why the gate stopped and the first flagged action.
@@ -119,7 +106,6 @@ The agent still drives apps through `computer`, scripts through `run_script`, an
 
 ## Testing
 
-- `axo-pty`: a spawned child's responsible pid is its own pid, and the same for `bash.run`'s shell.
 - `axo-computer`:
   - a default Markdown read still names the element;
   - an unknown token asks;
@@ -138,11 +124,12 @@ The agent still drives apps through `computer`, scripts through `run_script`, an
 
 - Reads ask Cua for both formats: about twice the work in Cua, for the same text to the agent. The Markdown-only "element_token for row [N]" hint line is lost from the header. The tool description still explains tokens.
 - Scripts can no longer include a flagged action. The agent splits the risky step out into its own call. That is the point, but it means more round trips.
-- A terminal the person opens in Axo no longer inherits axod's grants. Anything they run there that needs Accessibility asks for it as a new app would.
+- Pi, terminal panes and `bash.run` stay children of axod and keep its Accessibility and Screen Recording grants, so a program the agent writes and runs in its shell can still operate apps without the gate (review finding 1). Accepted: the gate binds Axo's own tools, not the agent's shell.
 - App consent asks on the calling Mac. A Session whose Mac is offline cannot use ask tools.
 
 ## Alternatives
 
+- **Start the agent's processes disclaimed** (`responsibility_spawnattrs_setdisclaim`), so none holds axod's grants. Built and reverted: a disclaimed tree also loses axod's Developer Tools exemption, so Gatekeeper scans every executable it runs for the first time, one at a time across the Mac (about 200 ms each; 10 freshly built binaries took 2.2 s instead of 0.16 s). Agents run new build outputs constantly. A signed helper app holding only Developer Tools would avoid both costs; not pursued.
 - **Always ask before `run_script`.** Simpler, but every script, even a read-only loop, would wait on the person. Rejected.
 - **Parse Cua's Markdown for labels.** Brittle, and diff reads show only changed rows. Rejected in favour of asking Cua for elements.
 - **Keep hashes and add more candidate splits.** A transform still leaks. Hiding at the source closes it.

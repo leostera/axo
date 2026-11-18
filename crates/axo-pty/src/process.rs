@@ -7,8 +7,6 @@
 //! - Every descriptor Axod creates is close-on-exec; a child inherits only its PTY and the
 //!   descriptors listed in `SpawnOptions::inherit`.
 //! - Output is drained from the moment of spawn by the process's `TerminalOutput` pump.
-//! - A spawned child is its own responsible process for macOS privacy checks: it never uses
-//!   axod's Accessibility or Screen Recording grants (RFD0070, `crate::disclaim`).
 
 #[cfg(target_os = "linux")]
 pub(crate) use crate::linux::open_pty;
@@ -180,8 +178,6 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
             Ok(())
         });
     }
-    // Last, since it replaces the process: the child uses none of axod's privacy grants.
-    crate::disclaim::exec_disclaimed(&mut command)?;
     let mut child = WatchedChild::new(command.spawn()?)?;
     drop(slave);
     match TerminalOutput::start(&master) {
@@ -787,25 +783,6 @@ mod tests {
         // 1 + 2 + ... + 19 ms: a stuck allocator fails the launch within a fifth of a second.
         assert_eq!(paused, Duration::from_millis(190));
         assert!(error.to_string().starts_with("posix_openpt: "), "{error}");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_pty_child_holds_none_of_axods_privacy_grants() {
-        let mut command = Command::new("/bin/sleep");
-        command.arg("5");
-        let mut process = spawn(
-            command,
-            WindowSize {
-                rows: 24,
-                columns: 80,
-            },
-            &[],
-        )
-        .unwrap();
-        let pid = process.child.id();
-        assert_eq!(crate::disclaim::responsible_pid(pid), Some(pid));
-        stop(&mut process.child, SHELL_STOP_GRACE);
     }
 
     #[test]

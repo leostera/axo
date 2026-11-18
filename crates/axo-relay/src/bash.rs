@@ -131,14 +131,6 @@ pub(crate) async fn run_cancellable(
     } else if let Some(home) = std::env::var_os("HOME") {
         command.current_dir(home);
     }
-    // Another Mac's command uses none of axod's privacy grants (RFD0070): it cannot drive this
-    // Mac's apps or read its screen except through computer use and its gate.
-    axo_pty::disclaim::exec_disclaimed(command.as_std_mut()).map_err(|error| {
-        MethodError::new(
-            COMMAND_NOT_STARTED,
-            format!("could not start the command: {error}"),
-        )
-    })?;
     let mut child = command.spawn().map_err(|error| {
         MethodError::new(
             COMMAND_NOT_STARTED,
@@ -309,27 +301,6 @@ mod tests {
             "acct",
         )
         .unwrap()
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_command_holds_none_of_axods_privacy_grants() {
-        let marker = std::env::temp_dir().join(format!("axo-bash-pid-{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
-        let command = format!("echo $$ > {}; sleep 3", marker.display());
-        let running = std::thread::spawn(move || block_on(run(&params(&command))).unwrap());
-        let pid: u32 = loop {
-            if let Some(pid) = std::fs::read_to_string(&marker)
-                .ok()
-                .and_then(|text| text.trim().parse().ok())
-            {
-                break pid;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        assert_eq!(axo_pty::disclaim::responsible_pid(pid), Some(pid));
-        running.join().unwrap();
-        let _ = std::fs::remove_file(marker);
     }
 
     #[test]
