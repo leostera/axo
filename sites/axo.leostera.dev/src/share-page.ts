@@ -5,7 +5,7 @@
  * request with nothing to wait for, and with a title and description for link previews.
  * `/s/<shareId>/<slug>.jsonl` is the same conversation as an ATXF transcript.
  */
-import { ATXF_EXTENSION, ATXF_MEDIA_TYPE, shareSlug, shareToAtxf, sharedSnapshotSchema, type SharedSnapshot } from "@axo/protocol";
+import { ATXF_EXTENSION, ATXF_MEDIA_TYPE, SHARE_LIMITS, shareSlug, shareToAtxf, sharedSnapshotSchema, type SharedSnapshot } from "@axo/protocol";
 
 export type ShareRoute =
   | { kind: "page"; shareId: string }
@@ -27,6 +27,20 @@ export function readSnapshot(text: string): SharedSnapshot | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a stored share is one the cloud would have taken: no larger than SHARE_LIMITS allows.
+ * A larger one (from before the limit) is treated as missing without reading it, so a page view
+ * never makes the Worker hold and inline more than a share may be.
+ */
+export function servableShare(stored: { size: number }): boolean {
+  return stored.size <= SHARE_LIMITS.snapshotBytes;
+}
+
+/** Reads a stored share's snapshot, or null when it is missing, too large or unreadable. */
+export async function readStoredSnapshot(stored: { size: number; text(): Promise<string> } | null): Promise<SharedSnapshot | null> {
+  return stored && servableShare(stored) ? readSnapshot(await stored.text()) : null;
 }
 
 const REDACTED = /\[redacted:[^\]]*\]/g;

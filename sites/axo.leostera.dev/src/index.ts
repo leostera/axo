@@ -1,6 +1,6 @@
 import api from "@axo/api-worker";
 import { installScriptResponse, macAppManifestResponse, macAppResponse, latestReleaseResponse, releaseArtifactResponse } from "./install.ts";
-import { readSnapshot, sharePageHtml, shareRoute, transcriptResponse, type ShareRoute } from "./share-page.ts";
+import { readStoredSnapshot, servableShare, sharePageHtml, shareRoute, transcriptResponse, type ShareRoute } from "./share-page.ts";
 
 export {
   AxoAccountDirectory,
@@ -34,7 +34,7 @@ async function publicSessionSnapshot(request: Request, env: WorkerEnvironment): 
   if (!SHARE_ID.test(id)) return new Response("Not found", { status: 404 });
 
   const snapshot = await env.PUBLIC_SESSIONS.get(`shares/${id}.json`);
-  if (!snapshot) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  if (!snapshot || !servableShare(snapshot)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
   const headers = new Headers({
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": SHARE_CACHE_CONTROL,
@@ -52,8 +52,7 @@ async function sharePage(request: Request, env: WorkerEnvironment, route: ShareR
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
   }
-  const stored = await env.PUBLIC_SESSIONS.get(`shares/${route.shareId}.json`);
-  const snapshot = stored ? readSnapshot(await stored.text()) : null;
+  const snapshot = await readStoredSnapshot(await env.PUBLIC_SESSIONS.get(`shares/${route.shareId}.json`));
   if (route.kind === "transcript") {
     return snapshot
       ? transcriptResponse(route.shareId, snapshot, request.method)

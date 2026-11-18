@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readSnapshot, sharePageHtml, shareRoute, transcriptResponse, SNAPSHOT_ELEMENT_ID } from "../src/share-page.ts";
+import { SHARE_LIMITS } from "@axo/protocol";
+import { readSnapshot, readStoredSnapshot, sharePageHtml, shareRoute, transcriptResponse, SNAPSHOT_ELEMENT_ID } from "../src/share-page.ts";
 
 const shareId = "fuVgs7XzUJNX7wpVhCTqWg";
 const snapshot = {
@@ -67,4 +68,12 @@ test("the transcript downloads as an ATXF file named after the share", async () 
   const [header] = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
   assert.equal(header.type, "transcript");
   assert.equal(header.id, shareId);
+});
+
+test("a stored share larger than a share may be is treated as missing, without being read", async () => {
+  const text = JSON.stringify(snapshot);
+  const stored = (size) => ({ size, text: async () => { if (size > SHARE_LIMITS.snapshotBytes) throw new Error("read"); return text; } });
+  assert.deepEqual(await readStoredSnapshot(stored(text.length)), readSnapshot(text));
+  assert.equal(await readStoredSnapshot(stored(SHARE_LIMITS.snapshotBytes + 1)), null);
+  assert.equal(await readStoredSnapshot(null), null);
 });
