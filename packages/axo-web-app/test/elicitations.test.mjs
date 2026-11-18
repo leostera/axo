@@ -24,7 +24,7 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
           static permission = "granted";
           static async requestPermission() { window.__permissionRequests++; return "granted"; }
           constructor(title, options) {
-            this.entry = { title, ...options, closed: false };
+            this.entry = { title, ...options, closed: false, open: () => this.onclick?.() };
             window.__notices.push(this.entry);
           }
           close() { this.entry.closed = true; }
@@ -51,7 +51,8 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     cloud.ask(question);
     cloud.ask(question); // replay is not another request or native notification
     for (const page of pages) {
-      await page.getByRole("button", { name: "Requests, 1 pending", exact: true }).waitFor();
+      await page.waitForFunction(() => document.querySelector('[data-testid="elicitation-bell"]')?.getAttribute("aria-label") === "Requests, 1 pending");
+      assert.equal(await page.locator('.chats-panel .panel-footer [data-testid="elicitation-bell"]').count(), 1);
       await page.waitForFunction(() => window.__notices.length === 1);
       assert.equal(await page.evaluate(() => window.__permissionRequests), 0);
       assert.ok(!(await page.evaluate(() => JSON.stringify(window.__notices))).includes("private request"));
@@ -63,12 +64,36 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     assert.equal(cloud.prompts.length, 1);
     assert.notEqual(cloud.prompts[0].delivery, "interrupt");
 
-    // The phone is in another Session, but its global inbox still contains this request.
-    await phone.getByTestId("elicitation-bell").click();
+    // No floating conversation bell. Notifications still open the global inbox while the
+    // sidebar is hidden/inert, without changing this device's selected conversation.
+    assert.equal(await phone.getByTestId("elicitation-bell").evaluate(element => Boolean(element.closest("[inert]"))), true);
+    await phone.evaluate(() => window.__notices[0].open());
     const phoneInbox = phone.getByRole("dialog", { name: "Requests", exact: true });
     await phoneInbox.getByText(question.message, { exact: true }).waitFor();
     assert.ok(phone.url().endsWith(sid(2)));
+    await phoneInbox.getByRole("button", { name: "Close requests" }).click();
+
+    await phone.getByRole("button", { name: "Chats menu", exact: true }).click();
+    const sidebarBell = phone.getByRole("navigation", { name: "Chats", exact: true }).getByTestId("elicitation-bell");
+    await phone.waitForFunction(() => {
+      const sidebar = document.querySelector(".chats-panel").getBoundingClientRect();
+      const conversation = document.querySelector(".layer-conversation").getBoundingClientRect();
+      return sidebar.left >= 0 && Math.abs(conversation.left - sidebar.right) < 1;
+    });
+    const placement = await sidebarBell.evaluate(element => {
+      const bell = element.getBoundingClientRect();
+      const footer = element.closest("footer").getBoundingClientRect();
+      return { position: getComputedStyle(element).position, contained: bell.left >= footer.left && bell.right <= footer.right && bell.top >= footer.top && bell.bottom <= footer.bottom };
+    });
+    assert.equal(placement.position, "relative");
+    assert.ok(placement.contained, "the bell belongs to the sidebar footer, not the conversation overlay");
     const output = process.env.TEST_UNDECLARED_OUTPUTS_DIR;
+    if (output) {
+      await phone.screenshot({ path: resolve(output, "web-requests-sidebar-phone.png") });
+      await desktop.screenshot({ path: resolve(output, "web-requests-sidebar-desktop.png") });
+    }
+    await sidebarBell.click();
+    await phoneInbox.getByText(question.message, { exact: true }).waitFor();
     if (output) await phone.screenshot({ path: resolve(output, "web-requests-phone.png") });
 
     await desktop.getByTestId("elicitation-bell").click();
@@ -88,19 +113,21 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     assert.notEqual(cloud.prompts[1].delivery, "interrupt");
     for (const page of pages) {
       await page.waitForFunction(() => window.__notices.every(notice => notice.closed));
-      await page.getByRole("button", { name: "Requests, 0 pending", exact: true }).waitFor();
+      await page.waitForFunction(() => document.querySelector('[data-testid="elicitation-bell"]')?.getAttribute("aria-label") === "Requests, 0 pending");
     }
     cloud.ask(question); // a late replay after settlement must not resurrect the bell
     // A distinct request is an ordering fence: both replay and marker have now been processed.
     const marker = { ...question, id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f82", sessionId: sid(2), message: "A short-lived request.", createdAt: Date.now(), expiresAt: Date.now() + 2_000 };
     cloud.ask(marker);
     await phoneInbox.getByText(marker.message, { exact: true }).waitFor();
-    for (const page of pages) {
+    // Observe each device concurrently: waiting for one to expire before observing the next
+    // would miss that next device's short-lived pending state.
+    await Promise.all(pages.map(async page => {
       await page.waitForFunction(() => window.__notices.length === 2);
-      await page.getByRole("button", { name: "Requests, 1 pending", exact: true }).waitFor();
-      await page.getByRole("button", { name: "Requests, 0 pending", exact: true }).waitFor();
+      await page.waitForFunction(() => document.querySelector('[data-testid="elicitation-bell"]')?.getAttribute("aria-label") === "Requests, 1 pending");
+      await page.waitForFunction(() => document.querySelector('[data-testid="elicitation-bell"]')?.getAttribute("aria-label") === "Requests, 0 pending");
       await page.waitForFunction(() => window.__notices.every(notice => notice.closed));
-    }
+    }));
   } finally {
     if (app) await app.close(); else { cloud.wss.close(); cloud.http.close(); }
   }

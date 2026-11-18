@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "./icons.tsx";
 import { ElicitationCard } from "./message-views.tsx";
 import { chatTitle, type ChatWorkbench } from "./workbench.ts";
@@ -52,7 +53,8 @@ export function ElicitationInbox({ workbench }: { workbench: ChatWorkbench }) {
       <Icon name="bell" size={19} />
       {questions.length ? <span className="elicitation-count" aria-live="polite">{questions.length}</span> : null}
     </button>
-    <dialog ref={dialog} className="elicitation-inbox" aria-label="Requests"
+    {/* Keep notification-opened requests usable while the sidebar is hidden or inert. */}
+    {createPortal(<dialog ref={dialog} className="elicitation-inbox" aria-label="Requests"
       onClose={() => setOpen(false)} onCancel={() => setOpen(false)} onKeyDown={event => event.stopPropagation()}
       onClick={event => { if (event.target === event.currentTarget) setOpen(false); }}>
       {open ? <section onClick={event => event.stopPropagation()}>
@@ -75,6 +77,6 @@ export function ElicitationInbox({ workbench }: { workbench: ChatWorkbench }) {
           })}
         </div>
       </section> : null}
-    </dialog>
+    </dialog>, document.body)}
   </>;
 }

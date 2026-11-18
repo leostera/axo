@@ -359,7 +359,7 @@ button:disabled { cursor: default; }
 .composer textarea::placeholder { color: var(--tertiary); }
 
 /* Sheets */
-.elicitation-bell { position: fixed; z-index: 40; right: 68px; top: max(12px, env(safe-area-inset-top)); background: var(--bg); }
+.elicitation-bell { position: relative; }
 .elicitation-bell.has-requests { color: var(--green); }
 .elicitation-count { position: absolute; right: -5px; top: -5px; min-width: 16px; padding: 1px 4px; border-radius: 10px; font-size: 10px; background: var(--green); color: white; }
 .elicitation-inbox { padding: 0; border: 1px solid var(--separator); border-radius: 18px; background: var(--bg); color: var(--text); width: min(600px, calc(100vw - 24px)); max-height: calc(100dvh - 40px); overflow-y: auto; box-shadow: 0 20px 80px var(--shadow); }

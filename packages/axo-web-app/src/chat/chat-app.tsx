@@ -221,7 +221,6 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
 
   return (
     <main className="chat-app">
-      <ElicitationInbox workbench={workbench} />
       <div className={stackClass} inert={settings !== null}>
         <div className="layer layer-account" inert={wide ? sidebar !== "account" : layer !== "account"}>
           <AccountPanel
@@ -339,6 +338,7 @@ function ChatsPanel({ workbench, navigationEnabled, onSelect, onNewChat, onAccou
       <footer className="layer-bar bottom panel-footer">
         <button className="pill-button primary" onClick={onNewChat} aria-label="New chat"><Icon name="compose" size={18} /> Chat</button>
         <span className="spacer" />
+        <ElicitationInbox workbench={workbench} />
         <button className="circle-button" onClick={onSettings} aria-label="Settings"><Icon name="gear" /></button>
       </footer>
     </nav>
