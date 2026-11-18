@@ -44,18 +44,30 @@ pub const MODEL_FILE: &str = "Clef-Flash-Q4_K_M.gguf";
 pub const VISION_FILE: &str = "mmproj-Clef-Flash-Q8_0.gguf";
 
 /// Where the model files come from: ggml-org/Clef-Flash-GGUF (Apache-2.0) at a pinned revision,
-/// each checked against its SHA-256 before use. The small one first.
+/// each checked against its size and SHA-256 before use. The small one first.
 const MODEL_SOURCE: &str = "https://huggingface.co/ggml-org/Clef-Flash-GGUF/resolve/a5a18a6e13bb36573a5f11385a1e7b9a0c868e9e";
-const MODEL_FILES: &[(&str, &str)] = &[
-    (
-        VISION_FILE,
-        "9dd8bc279f57d33b0697d4d0fe900fe751a24c9e3d30ab90969d4714ffc0722d",
-    ),
-    (
-        MODEL_FILE,
-        "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
-    ),
+const MODEL_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: VISION_FILE,
+        sha256: "9dd8bc279f57d33b0697d4d0fe900fe751a24c9e3d30ab90969d4714ffc0722d",
+        bytes: 624_229_728,
+    },
+    ModelFile {
+        name: MODEL_FILE,
+        sha256: "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
+        bytes: 6_732_781_824,
+    },
 ];
+
+/// One pinned model file: what it is called, and what it must hash to and weigh.
+struct ModelFile {
+    name: &'static str,
+    sha256: &'static str,
+    bytes: u64,
+}
+
+/// A download that moves less than 1 KiB/s for this long is stopped, and gives up its lock.
+const DOWNLOAD_STALL_SECONDS: u32 = 120;
 /// The model holds about 7 GB while loaded; macOS lets the GPU use about 70% of RAM.
 const MINIMUM_RAM: u64 = 16 << 30;
 /// The 7.4 GB of files, and room to spare.
@@ -63,12 +75,20 @@ const MINIMUM_FREE_DISK: u64 = 10 << 30;
 
 /// Downloads the files one by one into `.part`, checks each, and only then renames it; exits
 /// non-zero on the first failure. `curl -C -` resumes a download a previous attempt left.
+/// Arguments: the directory, the stall time in seconds, then `file sha256 bytes url` per file.
+/// curl stops a file past its size (counting what an earlier attempt left) or one that stalls,
+/// so a bad mirror can neither fill the disk nor hold the download lock forever (RFD0070).
 const DOWNLOAD_SCRIPT: &str = r#"set -eu
-cd "$1"; shift
+cd "$1"; stall=$2; shift 2
 while [ $# -gt 0 ]; do
-  file=$1 sha=$2 url=$3; shift 3
+  file=$1 sha=$2 size=$3 url=$4; shift 4
   [ -f "$file" ] && continue
-  /usr/bin/curl -fL --retry 3 --silent --show-error -C - -o "$file.part" "$url"
+  have=0; [ -f "$file.part" ] && have=$(/usr/bin/stat -f %z "$file.part")
+  [ "$have" -le "$size" ] || { rm -f "$file.part"; have=0; }
+  /usr/bin/curl -fL --retry 3 --silent --show-error --connect-timeout 30 \
+    --speed-limit 1024 --speed-time "$stall" --max-filesize $((size - have)) \
+    -C - -o "$file.part" "$url" || { status=$?; [ "$status" -eq 63 ] && rm -f "$file.part"; exit "$status"; }
+  [ "$(/usr/bin/stat -f %z "$file.part")" -eq "$size" ] || { rm -f "$file.part"; echo "$file: size mismatch" >&2; exit 1; }
   echo "$sha  $file.part" | /usr/bin/shasum -a 256 -c - >/dev/null || { rm -f "$file.part"; echo "$file: checksum mismatch" >&2; exit 1; }
   mv "$file.part" "$file"
   echo "event=infer.model_downloaded file=$file"
@@ -296,9 +316,15 @@ impl Infer {
             .arg("-c")
             .arg(DOWNLOAD_SCRIPT)
             .arg("sh")
-            .arg(&self.models);
-        for (file, sha) in MODEL_FILES {
-            command.args([*file, *sha, &format!("{MODEL_SOURCE}/{file}")]);
+            .arg(&self.models)
+            .arg(DOWNLOAD_STALL_SECONDS.to_string());
+        for file in MODEL_FILES {
+            command.args([
+                file.name,
+                file.sha256,
+                &file.bytes.to_string(),
+                &format!("{MODEL_SOURCE}/{}", file.name),
+            ]);
         }
         command.stderr(log);
         let child = command.spawn().map_err(failed)?;
@@ -742,6 +768,103 @@ mod tests {
         ));
         std::fs::create_dir_all(&run).unwrap();
         run
+    }
+
+    /// Serves every connection with `respond`, and counts the body bytes it wrote.
+    fn serve(
+        respond: fn(&mut std::net::TcpStream) -> io::Result<u64>,
+    ) -> (String, Arc<std::sync::atomic::AtomicU64>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counted = sent.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let counted = counted.clone();
+                std::thread::spawn(move || {
+                    let mut request = [0; 4096];
+                    let _ = io::Read::read(&mut stream, &mut request);
+                    if let Ok(bytes) = respond(&mut stream) {
+                        counted.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        (url, sent)
+    }
+
+    /// Runs the download script for one file of `bytes`, hashing to `abcd`'s, with a 2 s stall.
+    fn download(url: &str, bytes: u64) -> (std::process::Output, PathBuf, Duration) {
+        let models = run_directory();
+        let started = Instant::now();
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(DOWNLOAD_SCRIPT)
+            .arg("sh")
+            .arg(&models)
+            .arg("2")
+            .args([
+                "model.gguf",
+                "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589",
+                &bytes.to_string(),
+                url,
+            ])
+            .output()
+            .unwrap();
+        (output, models, started.elapsed())
+    }
+
+    #[test]
+    fn a_download_of_the_pinned_size_and_hash_is_kept() {
+        let (url, _) = serve(|stream| {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd")?;
+            Ok(4)
+        });
+        let (output, models, _) = download(&url, 4);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(std::fs::read(models.join("model.gguf")).unwrap(), b"abcd");
+        std::fs::remove_dir_all(models).unwrap();
+    }
+
+    #[test]
+    fn a_download_larger_than_its_file_stops_before_its_body() {
+        // 64 MiB announced for a file of 4 bytes: curl refuses it from the headers.
+        let (url, sent) = serve(|stream| {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 67108864\r\nConnection: close\r\n\r\n")?;
+            let chunk = [0u8; 65536];
+            let mut sent = 0;
+            for _ in 0..1024 {
+                if stream.write_all(&chunk).is_err() {
+                    break;
+                }
+                sent += chunk.len() as u64;
+            }
+            Ok(sent)
+        });
+        let (output, models, _) = download(&url, 4);
+        assert!(!output.status.success());
+        // Only what was in flight when curl hung up, never the whole body.
+        let sent = sent.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(sent < 16 << 20, "the server sent {sent} bytes");
+        assert!(!models.join("model.gguf").exists());
+        assert!(!models.join("model.gguf.part").exists());
+        std::fs::remove_dir_all(models).unwrap();
+    }
+
+    #[test]
+    fn a_stalled_download_ends_and_gives_up_its_lock() {
+        let (url, _) = serve(|stream| {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na")?;
+            std::thread::sleep(Duration::from_secs(600));
+            Ok(1)
+        });
+        let (output, models, took) = download(&url, 4);
+        assert!(!output.status.success());
+        // Four tries of a 2 s stall and curl's back-off between them, nowhere near forever.
+        assert!(took < Duration::from_secs(60), "{took:?}");
+        assert!(!models.join("model.gguf").exists());
+        std::fs::remove_dir_all(models).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
