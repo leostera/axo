@@ -112,6 +112,7 @@ fn produced_session_records_conform_to_the_schema() {
         ],
         layout: Some(Layout::single(ShellId::new(13).unwrap())),
         pi: None,
+        agent: Default::default(),
     };
     let value = serde_json::to_value(&session).unwrap();
     conforms_to("LocalSession", &value);

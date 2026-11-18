@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axo_protocol::commands::{CommandId, StopTarget};
-use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -542,7 +541,7 @@ fn log_rejection(rejection: &Rejection, context: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::net::UnixListener;
 

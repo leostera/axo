@@ -4,6 +4,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use axo_agent::AgentKind;
 use axo_agent::pi::BridgeSocketPath;
 use axo_protocol::rpc::ArchivedSessionRecord;
 use axo_protocol::{Layout, PaneRole, SessionId, ShellId};
@@ -204,6 +205,47 @@ pub fn bind_pi_session_id(
     expect_one_row(changed, "Pi Session binding changed")
 }
 
+fn stored_agent(agent: String) -> rusqlite::Result<AgentKind> {
+    agent.parse::<AgentKind>().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+/// The agent an open Session runs and its name for the conversation, once it has one.
+pub fn open_session_agent(
+    database: &Connection,
+    id: SessionId,
+) -> io::Result<(AgentKind, Option<String>)> {
+    let (agent, conversation) = database
+        .query_row(
+            "SELECT agent, agent_conversation FROM sessions WHERE id = ?1 AND state = 'open'",
+            params![id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(io::Error::other)?;
+    let agent = agent
+        .parse::<AgentKind>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok((agent, conversation))
+}
+
+/// Records the agent's own name for an open Session's conversation (a Codex thread id), once
+/// the agent has made it; it never changes after.
+pub fn bind_agent_conversation(
+    database: &Connection,
+    id: SessionId,
+    conversation: &str,
+) -> io::Result<()> {
+    let changed = database
+        .execute(
+            "UPDATE sessions SET agent_conversation = ?1
+             WHERE id = ?2 AND state = 'open' AND (agent_conversation IS NULL OR agent_conversation = ?1)",
+            params![conversation, id.to_string()],
+        )
+        .map_err(io::Error::other)?;
+    expect_one_row(changed, "Session conversation binding changed")
+}
+
 /// Sessions a person closed, most recently closed first, at most `limit`: what reopening a
 /// closed Session offers. Sessions that ended any other way (their shell exited, Pi failed to
 /// start) are not offered.
@@ -296,6 +338,9 @@ pub struct NewSession<'a> {
     pub pane_id: &'a str,
     /// The UUID of the split between the Pi and terminal panes.
     pub split_id: &'a str,
+    /// The agent the Session runs, for good (RFD0072). A Session of another agent still
+    /// records Pi's paths, unused, so everything keyed on them keeps one shape.
+    pub agent: AgentKind,
 }
 
 /// The panes a new Session starts with.
@@ -316,8 +361,8 @@ pub fn insert_new_session(
     transaction
         .execute(
             "INSERT INTO sessions
-                (id, initial_pwd, state, created_at, name, manual_name, pi_session_file, pi_bridge_socket_path)
-             VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
+                (id, initial_pwd, state, created_at, name, manual_name, pi_session_file, pi_bridge_socket_path, agent)
+             VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?)",
             params![
                 new.session_id.to_string(),
                 new.folder.to_string_lossy(),
@@ -326,6 +371,7 @@ pub fn insert_new_session(
                 new.manual_name.map(|name| name.as_str()),
                 new.pi_session_file.to_string_lossy(),
                 new.bridge_socket.as_str(),
+                new.agent.as_str(),
             ],
         )
         .map_err(io::Error::other)?;
@@ -367,6 +413,10 @@ pub struct StoredSessionRow {
     /// Unix seconds.
     pub created_at: i64,
     pub layout: Option<Layout>,
+    /// The agent the Session runs (RFD0072).
+    pub agent: AgentKind,
+    /// The agent's own name for the conversation, for agents other than Pi, once it has one.
+    pub agent_conversation: Option<String>,
 }
 
 /// One cached query per Session: this runs for every listing and snapshot, under the catalog
@@ -375,7 +425,7 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
     let (row, stored_layout) = database
         .prepare_cached(
             "SELECT initial_pwd, name, manual_name, emoji, pi_session_file, pi_session_id,
-                    layout_json, last_message_at, created_at
+                    layout_json, last_message_at, created_at, agent, agent_conversation
              FROM sessions
              WHERE id = ?1 AND state = 'open'",
         )
@@ -392,6 +442,8 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
                         last_message_at: row.get(7)?,
                         created_at: row.get(8)?,
                         layout: None,
+                        agent: stored_agent(row.get::<_, String>(9)?)?,
+                        agent_conversation: row.get(10)?,
                     },
                     row.get::<_, Option<String>>(6)?,
                 ))
@@ -586,6 +638,7 @@ mod tests {
                 bridge_socket: &socket,
                 pane_id: "pane",
                 split_id: &split,
+                agent: AgentKind::Pi,
             },
         )
         .unwrap();
@@ -624,5 +677,45 @@ mod tests {
         let pi = open_pi_session(database, session).unwrap();
         assert_eq!(pi.session_file.as_deref(), Some(Path::new("/h.jsonl")));
         assert_eq!(pi.bridge_socket_path.as_deref(), Some(socket.as_str()));
+        assert_eq!(open_session_agent(database, session).unwrap(), (AgentKind::Pi, None));
+    }
+
+    #[test]
+    fn a_session_keeps_its_agent_and_binds_its_conversation_once() {
+        let database = &mut database();
+        let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
+        let split = new_uuid_v4().unwrap();
+        let session = insert_new_session(
+            database,
+            &NewSession {
+                session_id: SessionId::new_v4().unwrap(),
+                folder: Path::new("/w"),
+                name: "Session 1",
+                manual_name: None,
+                pi_session_file: Path::new("/h.jsonl"),
+                bridge_socket: &socket,
+                pane_id: "pane",
+                split_id: &split,
+                agent: AgentKind::Codex,
+            },
+        )
+        .unwrap()
+        .session_id;
+        assert_eq!(open_session_agent(database, session).unwrap(), (AgentKind::Codex, None));
+        bind_agent_conversation(database, session, "thread-1").unwrap();
+        bind_agent_conversation(database, session, "thread-1").unwrap();
+        assert!(bind_agent_conversation(database, session, "thread-2").is_err(), "it never changes");
+        assert_eq!(
+            open_session_agent(database, session).unwrap(),
+            (AgentKind::Codex, Some("thread-1".into()))
+        );
+        // A row from before RFD0072 reads as Pi; an agent this axod does not know is an error.
+        database
+            .execute("UPDATE sessions SET agent = 'gemini' WHERE id = ?1", params![session.to_string()])
+            .unwrap();
+        assert_eq!(
+            open_session_agent(database, session).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

@@ -127,7 +127,9 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
             pi_session_file TEXT,
             pi_session_id TEXT,
             pi_bridge_socket_path TEXT,
-            emoji TEXT
+            emoji TEXT,
+            agent TEXT NOT NULL DEFAULT 'pi',
+            agent_conversation TEXT
         );
         CREATE TABLE IF NOT EXISTS shells (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

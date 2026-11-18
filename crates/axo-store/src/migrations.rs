@@ -217,6 +217,10 @@ pub fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusq
         ("sessions", "pi_session_file", "TEXT"),
         ("sessions", "pi_session_id", "TEXT"),
         ("sessions", "pi_bridge_socket_path", "TEXT"),
+        // RFD0072: the agent a Session runs, and its own name for the conversation where that
+        // is not Pi's session id.
+        ("sessions", "agent", "TEXT NOT NULL DEFAULT 'pi'"),
+        ("sessions", "agent_conversation", "TEXT"),
         (
             "shells",
             "role",

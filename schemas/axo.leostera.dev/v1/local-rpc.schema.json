@@ -285,11 +285,12 @@
               "type": "object",
               "additionalProperties": false,
               "not": { "properties": { "folder": {}, "like": {} }, "required": ["folder", "like"] },
-              "description": "Optional explicit name, set before startup. Folder and like are mutually exclusive; neither means home.",
+              "description": "Optional explicit name, set before startup. Folder and like are mutually exclusive; neither means home. The agent is fixed for the Session's life; pi when absent (RFD0072).",
               "properties": {
                 "folder": { "type": "string", "minLength": 1 },
                 "like": { "$ref": "common.schema.json#/$defs/SessionId" },
-                "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "1–80 UTF-16 units, without controls or surrounding whitespace. Sets the manual name." }
+                "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "1–80 UTF-16 units, without controls or surrounding whitespace. Sets the manual name." },
+                "agent": { "enum": ["pi", "codex", "opencode", "claude-code"] }
               }
             }
           }

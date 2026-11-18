@@ -498,6 +498,8 @@ pub enum SessionLocation {
 pub struct CreateSession {
     pub location: SessionLocation,
     pub name: Option<SessionName>,
+    /// The agent the Session runs, for good (RFD0072). Pi when unsaid.
+    pub agent: crate::agent::AgentKind,
 }
 
 impl From<SessionLocation> for CreateSession {
@@ -505,6 +507,7 @@ impl From<SessionLocation> for CreateSession {
         Self {
             location,
             name: None,
+            agent: crate::agent::AgentKind::Pi,
         }
     }
 }
@@ -518,6 +521,8 @@ struct CreateSessionWire {
     like: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<SessionName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<crate::agent::AgentKind>,
 }
 
 impl TryFrom<CreateSessionWire> for CreateSession {
@@ -540,6 +545,7 @@ impl TryFrom<CreateSessionWire> for CreateSession {
         Ok(Self {
             location,
             name: wire.name,
+            agent: wire.agent.unwrap_or_default(),
         })
     }
 }
@@ -555,6 +561,8 @@ impl From<CreateSession> for CreateSessionWire {
             folder,
             like,
             name: create.name,
+            // Pi is left unsaid, so a request reads as it did before other agents.
+            agent: Some(create.agent).filter(|agent| *agent != crate::agent::AgentKind::Pi),
         }
     }
 }

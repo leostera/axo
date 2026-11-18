@@ -9,9 +9,11 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// A coding agent Axo can run, named as ATXF's `source.agent` names it.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// A coding agent Axo can run, named as ATXF's `source.agent` names it. Pi when unsaid: every
+/// Session before RFD0072 runs Pi.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum AgentKind {
+    #[default]
     Pi,
     Codex,
     OpenCode,
@@ -25,6 +27,11 @@ impl AgentKind {
         AgentKind::OpenCode,
         AgentKind::ClaudeCode,
     ];
+
+    /// For `skip_serializing_if`: Pi is what an unsaid agent means.
+    pub fn is_pi(&self) -> bool {
+        *self == AgentKind::Pi
+    }
 
     pub const fn as_str(self) -> &'static str {
         match self {

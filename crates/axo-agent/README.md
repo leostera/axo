@@ -6,7 +6,7 @@ Today it holds Pi processes for axod: launching Pi for a Session, the transcript
 
 | Module | Owns |
 | --- | --- |
-| `kind` | `AgentKind` (`pi`, `codex`, `opencode`, `claude-code`, as ATXF names them) and the `Capabilities` each declares |
+| (re-exported) | `AgentKind` (`pi`, `codex`, `opencode`, `claude-code`, as ATXF names them) and the `Capabilities` each declares, from `axo_protocol::agent`: clients name the agent when they create a Session |
 | `runtime` | The one shape every running agent presents to its Session: `AgentCommands` in, `CommandResult` back, `AgentEvent` out, in the event vocabulary pi-axo defined |
 | `command` | The configured `agent.command` |
 | `discovery` | Finding each agent's executable without relying on `PATH` (launchd gives axod almost none): an override variable, the configured command, `PATH`, the installers' directories, then the system's; each checked with `--version` against the oldest version its adapter supports |

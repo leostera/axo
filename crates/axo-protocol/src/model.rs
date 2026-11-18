@@ -137,6 +137,9 @@ pub struct SessionRecord {
     /// What the Session's Pi runs, once it has said (RFD0033).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi: Option<PiRuntime>,
+    /// The agent the Session runs (RFD0072); left out for Pi, so a Pi Session reads as before.
+    #[serde(default, skip_serializing_if = "crate::agent::AgentKind::is_pi")]
+    pub agent: crate::agent::AgentKind,
 }
 
 /// What a Session's Pi runs, as pi-axo publishes it in `pi.state` (RFD0033).
@@ -408,6 +411,7 @@ mod tests {
             shells: vec![shell(11, PaneRole::Pi), shell(12, PaneRole::Terminal)],
             layout: Some(Layout::single(ShellId::new(12).unwrap())),
             pi: None,
+            agent: Default::default(),
         };
         let remote = RemoteSessionSnapshot::from_record(&record, "host", "now");
         let wire = serde_json::to_value(&remote).unwrap();
@@ -468,6 +472,7 @@ mod tests {
             shells: vec![shell(12, PaneRole::Terminal)],
             layout: None,
             pi: None,
+            agent: Default::default(),
         };
         assert_eq!(
             RemoteSessionSnapshot::from_record(&record, "h", "t").name,

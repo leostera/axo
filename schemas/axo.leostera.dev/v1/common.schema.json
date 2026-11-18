@@ -100,7 +100,8 @@
         "folder": { "type": "string", "minLength": 1 },
         "shells": { "type": "array", "items": { "$ref": "#/$defs/LocalShell" } },
         "layout": { "anyOf": [{ "$ref": "#/$defs/Layout" }, { "type": "null" }] },
-        "pi": { "$ref": "#/$defs/PiRuntime" }
+        "pi": { "$ref": "#/$defs/PiRuntime" },
+        "agent": { "enum": ["codex", "opencode", "claude-code"], "description": "The agent the Session runs (RFD0072); absent for Pi." }
       }
     },
     "SessionSnapshot": {
