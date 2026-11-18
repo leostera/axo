@@ -1,7 +1,7 @@
 # RFD0072 - Axo: more coding agents
 
 - Feature Name: `more-coding-agents`
-- Status: Proposal (slices 1 to 4 in progress)
+- Status: Implemented (all eight slices; see As built)
 - Author: leostera
 - Start Date: 2026-11-18
 - Updated: 2026-11-18
@@ -123,11 +123,11 @@ Approvals stay in Codex's TUI: axod sees each request but never answers it (Open
 
 ### OpenCode
 
-`opencode serve --hostname 127.0.0.1 --port 0` under the guard with `OPENCODE_SERVER_PASSWORD` and `OPENCODE_CONFIG_CONTENT` (the `axo` MCP server as a local server, the brief as instructions); axod reads the port from its `server listening on` line. axod creates the session (`POST /api/session` with the folder) or reuses the stored one, subscribes to `/api/event`, and starts `opencode --server <url> --session <id>` on the PTY with `OPENCODE_PASSWORD`. Deliveries map to `delivery: steer` and `queue`; stop is `interrupt`; models are `GET /api/model` and `POST …/model`. Events resume from the last durable `seq` after a reconnect.
+`opencode serve --hostname 127.0.0.1` under the guard with `OPENCODE_SERVER_PASSWORD` and `OPENCODE_CONFIG_CONTENT` (the `axo` MCP server as a local server, the brief as instructions); axod reads the port from its `server listening on` line. axod creates the session (`POST /api/session` with the folder) or reuses the stored one, subscribes to `/api/event`, and starts `opencode --server <url> --session <id>` on the PTY with `OPENCODE_PASSWORD`. Deliveries map to `delivery: steer` and `queue`; stop is `interrupt`; models are `GET /api/model` and `POST …/model`. Events resume from the last durable `seq` after a reconnect.
 
 ### Claude Code
 
-`claude --session-id <uuid> --settings <hooks> --mcp-config <axo> --append-system-prompt <brief>` on the PTY (`--resume <uuid>` after the first launch). The hooks are command hooks running `axod agent-hook`, which forwards each hook's JSON to axod's socket with the Session's id and a per-launch token: `SessionStart` binds the conversation, `UserPromptSubmit` and `Stop` are `agent.start` and `agent.settled`, `Notification` is `ui.prompt.start`, `PreToolUse`/`PostToolUse` are tool events. The transcript is `transcript_path`, tailed as Pi's file is. A client prompt is typed into the PTY as a bracketed paste and Enter, only when Claude is idle; a follow-up waits for `Stop`; steering is not offered; stop is Escape. Its capabilities say so (Open question 2).
+`claude --session-id <uuid> --settings <hooks> --mcp-config <axo> --append-system-prompt <brief>` on the PTY (`--resume <uuid>` after the first launch). The hooks are HTTP hooks posting to a loopback listener axod opens for the launch, at a path with a per-launch secret: `SessionStart` binds the conversation, `UserPromptSubmit` and `Stop` are `agent.start` and `agent.settled`, `Notification` is `ui.prompt.start`, `PreToolUse`/`PostToolUse` are tool events. The transcript is `transcript_path`, tailed as Pi's file is. A client prompt is typed into the PTY as a bracketed paste and Enter, only when Claude is idle; a follow-up waits for `Stop`; steering is not offered; stop is Escape. Its capabilities say so (Open question 2).
 
 ### Discovery
 
@@ -138,6 +138,18 @@ An agent's executable is found, in order, from: `AXO_<KIND>_EXECUTABLE`; the con
 - `sessions.agent TEXT NOT NULL DEFAULT 'pi'` and `sessions.agent_conversation TEXT`, added by a migration; every existing row is a Pi Session with its conversation in `pi_session_file`, as before.
 - `CreateSession` takes an optional `agent`; `SessionRecord` and the remote snapshot carry `agent` (absent means `pi`, so older clients and older hosts agree).
 - The uploader skips Sessions whose agent is not Pi until slice 5.
+
+### As built
+
+Where the build differs from the design above, the build wins; each point names the code.
+
+- **One channel, three servers.** Codex, OpenCode and Claude Code links take axod's commands on one command channel (`axo_agent::channel`); `AgentCommands` is `Pi | Codex | OpenCode | ClaudeCode`. The lock takeover (kill the previous axod's process only if it still holds the Session's lock, `lock::take_server_lock`) is shared by all three.
+- **The brief.** Codex gets it as `developerInstructions`; Claude Code as `--append-system-prompt`; OpenCode has no launch option for it, so `axod mcp` opens its instructions with the brief for an OpenCode Session (`axo_mcp::McpServer::instructions`, with the account's apps when the account answers).
+- **Transcripts (Open question 1).** Built as (a), not (b): axod converts each agent's native conversation through ATXF (`atxf` pinned by git rev) to Pi lines with a fixed header and keeps the Session's Pi file, so the uploader, the phone and the web work unchanged (`axo_agent::transcript`, the Session's `Mirror`). Codex: the rollout file. OpenCode: the session's export (`GET /api/experimental/session/<id>/export`), saved beside the lock after every execution. Claude Code: `transcript_path` from its hooks. Moving the wire to ATXF stays with RFD0043.
+- **OpenCode.** HTTP through `reqwest` (no TLS), the event stream parsed by `opencode::sse`; the port is whatever the server prints. A session the server does not have ends the link instead of retrying. Thinking levels are not offered (OpenCode chooses reasoning by model variant). After a reconnect the link reads the session's state again rather than replaying `seq`.
+- **Claude Code.** HTTP hooks, not `axod agent-hook`: Claude Code posts hooks itself, so no subcommand or socket method is needed. `PermissionRequest` (immediate) rather than `Notification` marks an approval. Claude runs no hook for a turn the person interrupts, so axod settles the turn when it sends Escape, and on `idle_prompt`. The conversation id is the Session's own id; a launch resumes it only once `<config>/projects/*/<id>.jsonl` exists (`CLAUDE_CONFIG_DIR` honoured).
+- **Pickers.** `axo.agents.list` (`axo agents`) lists every agent with path, version or the reason it cannot run, and capabilities; `axo session create --agent`. `axo.remote.session.create` takes an optional `agent`, Pi when absent; the web's new-chat composer, the phone's new chat and the Mac's Terminal menu (New Session with Agent) pick it. The phone and the web offer all four: they do not yet learn which a Mac has, and a Mac without the agent refuses the Session.
+- **Not built.** Approvals on the phone (Open question 4), `pi.` prefix removal (5), Claude Code channels (2b), and a launch-time cache for discovery.
 
 ### Slice order
 
