@@ -132,7 +132,10 @@ impl axo_relay::RelayHost for RelayHostAdapter {
 
     fn subscribe_remote_events(&self) -> io::Result<String> {
         let core = &self.core;
-        core.events.subscribe(None, true, || core.catalog.records())
+        core.events
+            .subscribe(crate::events::Subscriber::Relay, None, true, || {
+                core.catalog.records()
+            })
     }
 
     fn next_remote_events<'a>(

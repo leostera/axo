@@ -18,7 +18,11 @@ use tokio::sync::broadcast;
 
 /// Events held for the slowest subscriber before it lags.
 const CAPACITY: usize = 4096;
-const MAX_SUBSCRIPTIONS: usize = 64;
+/// Subscriptions local clients may hold at once.
+const MAX_CLIENT_SUBSCRIPTIONS: usize = 64;
+/// The relay holds one per connection; a few more allow for one not yet reclaimed. Counted apart
+/// from clients', so local clients holding every slot never cut the phone and web off.
+const MAX_RELAY_SUBSCRIPTIONS: usize = 4;
 /// A subscription nobody waits on and nobody read for this long is reclaimed; one being waited on
 /// never is, however long the wait.
 pub(crate) const SUBSCRIPTION_IDLE_EXPIRY: Duration = Duration::from_secs(60);
@@ -31,7 +35,26 @@ pub(crate) struct Events {
     next_id: AtomicU64,
 }
 
+/// Who holds a subscription, for its capacity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Subscriber {
+    /// A local client: the Mac app, a CLI, an event stream.
+    Client,
+    /// The relay, forwarding events to the account's phones and browsers.
+    Relay,
+}
+
+impl Subscriber {
+    fn capacity(self) -> usize {
+        match self {
+            Self::Client => MAX_CLIENT_SUBSCRIPTIONS,
+            Self::Relay => MAX_RELAY_SUBSCRIPTIONS,
+        }
+    }
+}
+
 struct Subscription {
+    subscriber: Subscriber,
     receiver: tokio::sync::Mutex<broadcast::Receiver<Arc<Event>>>,
     /// Read before the channel: the snapshots of the Sessions open when it began.
     initial: Mutex<VecDeque<Arc<Event>>>,
@@ -99,6 +122,7 @@ impl Events {
     /// subscription listens, so nothing that changes in between is missed.
     pub(crate) fn subscribe(
         &self,
+        subscriber: Subscriber,
         session_id: Option<SessionId>,
         include_streams: bool,
         open: impl FnOnce() -> Vec<SessionRecord>,
@@ -121,7 +145,11 @@ impl Events {
                 expired.len()
             );
         }
-        if subscriptions.len() >= MAX_SUBSCRIPTIONS {
+        let held = subscriptions
+            .values()
+            .filter(|subscription| subscription.subscriber == subscriber)
+            .count();
+        if held >= subscriber.capacity() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "session subscription capacity reached",
@@ -147,6 +175,7 @@ impl Events {
         subscriptions.insert(
             subscription_id.clone(),
             Arc::new(Subscription {
+                subscriber,
                 receiver: tokio::sync::Mutex::new(receiver),
                 initial: Mutex::new(initial),
                 session_id,
@@ -245,7 +274,9 @@ mod tests {
     async fn a_subscription_reads_what_was_published_after_it_began_in_order() {
         let events = Events::default();
         events.publish(removed(1));
-        let id = events.subscribe(None, false, Vec::new).unwrap();
+        let id = events
+            .subscribe(Subscriber::Client, None, false, Vec::new)
+            .unwrap();
         events.publish(removed(2));
         events.publish(removed(3));
         let read = events.next(&id, Duration::from_secs(1), 10).await.unwrap();
@@ -265,10 +296,17 @@ mod tests {
     async fn a_subscription_to_one_session_sees_only_it_and_streams_only_if_asked() {
         let events = Events::default();
         let one = events
-            .subscribe(Some(SessionId::from_u128(2)), false, Vec::new)
+            .subscribe(
+                Subscriber::Client,
+                Some(SessionId::from_u128(2)),
+                false,
+                Vec::new,
+            )
             .unwrap();
         assert!(!events.wants_terminal_output());
-        let streaming = events.subscribe(None, true, Vec::new).unwrap();
+        let streaming = events
+            .subscribe(Subscriber::Client, None, true, Vec::new)
+            .unwrap();
         assert!(events.wants_terminal_output());
         events.publish(removed(1));
         events.publish(removed(2));
@@ -280,10 +318,44 @@ mod tests {
         assert!(events.unsubscribe(&streaming).is_err());
     }
 
+    #[test]
+    fn local_clients_holding_every_slot_never_lock_the_relay_out() {
+        let events = Events::default();
+        for _ in 0..MAX_CLIENT_SUBSCRIPTIONS {
+            events
+                .subscribe(Subscriber::Client, None, true, Vec::new)
+                .unwrap();
+        }
+        assert_eq!(
+            events
+                .subscribe(Subscriber::Client, None, true, Vec::new)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        let relay = events
+            .subscribe(Subscriber::Relay, None, true, Vec::new)
+            .expect("the relay has slots of its own");
+        events.unsubscribe(&relay).unwrap();
+        for _ in 0..MAX_RELAY_SUBSCRIPTIONS {
+            events
+                .subscribe(Subscriber::Relay, None, true, Vec::new)
+                .unwrap();
+        }
+        assert!(
+            events
+                .subscribe(Subscriber::Relay, None, true, Vec::new)
+                .is_err(),
+            "the relay is bounded too"
+        );
+    }
+
     #[tokio::test]
     async fn a_subscription_that_falls_behind_is_told_so() {
         let events = Events::default();
-        let id = events.subscribe(None, false, Vec::new).unwrap();
+        let id = events
+            .subscribe(Subscriber::Client, None, false, Vec::new)
+            .unwrap();
         for n in 0..(CAPACITY as u128 + 10) {
             events.publish(removed(n));
         }

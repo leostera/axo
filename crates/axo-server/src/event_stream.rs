@@ -52,10 +52,12 @@ pub(crate) async fn serve(core: Arc<Core>, mut upgraded: Upgraded) {
         _ => Ok(()),
     }
     .and_then(|()| {
-        core.events
-            .subscribe(request.session_id, request.include_terminal_output, || {
-                core.catalog.records()
-            })
+        core.events.subscribe(
+            crate::events::Subscriber::Client,
+            request.session_id,
+            request.include_terminal_output,
+            || core.catalog.records(),
+        )
     });
     let subscription_id = match subscribed {
         Ok(id) => id,
