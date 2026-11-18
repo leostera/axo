@@ -205,8 +205,7 @@ test("the account owns pairing and hosts; each host's socket lives in its own Ho
   const afterRevocation = hostListResultSchema.parse(await (await fetch(
     new URL("api/v1/account/hosts", h.url), { headers },
   )).json()).hosts.find((host) => host.hostId === first.hostId);
-  assert.equal(afterRevocation?.status, "offline");
-  assert.equal(afterRevocation?.stale, true);
+  assert.equal(afterRevocation, undefined, "a revoked host is not listed");
   await assert.rejects(Peer.connectHostDaemon(
     h.url,
     accountId,

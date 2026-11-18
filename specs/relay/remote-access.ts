@@ -520,13 +520,13 @@ export const Manager = defineActor({
     },
     listHosts: {
       on: ListHosts,
-      description: "Lists the account's hosts and whether each is online. It never mentions other accounts' hosts.",
+      description: "Lists the account's hosts and whether each is online. A revoked host is not listed, and other accounts' hosts never are.",
       sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.listHosts"],
       sends: [HostList],
       run(state, m, ctx) {
         const person = ctx.all(Person).find((x) => x.id === m.person);
         const hosts = Object.entries(state.hosts)
-          .filter(([, h]) => h.account === m.account)
+          .filter(([, h]) => h.account === m.account && !h.revoked)
           .map(([key]) => ({ host: key.split("/")[1]!, status: statusOf(state, key) }));
         if (person) ctx.send(person, HostList, { hosts });
       },

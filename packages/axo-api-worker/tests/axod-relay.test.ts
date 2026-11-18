@@ -148,16 +148,14 @@ test("an isolated axod pairs with an account, then the account drives it through
       /Stale host|-32002/,
     );
 
-    // Revoking the host closes its relay; its clients see it go offline, its Sessions stay listed.
+    // Revoking the host closes its relay and takes it off the account's list; its clients see it go offline.
     const revoked = await fetch(new URL(`api/v1/account/hosts/${hostId}/revoke`, api.url), {
       method: "POST",
       headers: account.headers,
     });
     assert.equal(revoked.status, 204);
-    await waitFor("the revoked host to be offline", 10_000, async () => {
-      const host = (await listHosts(api.url, account)).find((item) => item.hostId === hostId);
-      return host && host.status !== "online" ? host : undefined;
-    });
+    await waitFor("the revoked host to leave the list", 10_000, async () =>
+      (await listHosts(api.url, account)).some((item) => item.hostId === hostId) ? undefined : true);
     await waitFor("the client to see the host offline", 10_000, async () =>
       client!.hosts.some((host) => host.hostId === hostId && !host.online) ? true : undefined);
     // axod retries with its revoked credential and is refused.
@@ -166,7 +164,7 @@ test("an isolated axod pairs with an account, then the account drives it through
       return /event=relay\.connection_retry reason=HTTP error: 403/.test(log) ? true : undefined;
     }, daemon);
     const afterRetry = (await listHosts(api.url, account)).find((item) => item.hostId === hostId);
-    assert.notEqual(afterRetry?.status, "online", "a revoked host credential cannot reconnect");
+    assert.equal(afterRetry, undefined, "a revoked host credential cannot reconnect");
   } finally {
     client?.close();
     if (daemon) await terminate(daemon);

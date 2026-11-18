@@ -274,7 +274,8 @@ export class AxoAccountManager extends DurableObject<Env> {
       ).toArray()[0];
       if (credentialOwner && credentialOwner.host_id !== input.hostId)
         return { status: "invalid" } as const;
-      if (!sqlHost) {
+      // A revoked host linked again takes a place among the account's Macs, as a new one does.
+      if (!sqlHost || sqlHost.revoked_at !== null) {
         const activeHosts = sql.exec<{ count: number }>(
           "SELECT COUNT(*) AS count FROM account_hosts WHERE revoked_at IS NULL",
         ).one().count;
@@ -316,7 +317,9 @@ export class AxoAccountManager extends DurableObject<Env> {
   }
 
   async listHosts(): Promise<{ hosts: HostSnapshot[] }> {
-    const rows = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts ORDER BY host_id LIMIT ?", LIMITS.machines).toArray();
+    // A revoked host's row is kept, not listed: revoking takes the Mac off the list.
+    const rows = this.ctx.storage.sql.exec<AccountHostRow>(
+      "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY host_id LIMIT ?", LIMITS.machines).toArray();
     return { hosts: await Promise.all(rows.map((row) => this.hostSnapshot(row))) };
   }
 
