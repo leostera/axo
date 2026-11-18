@@ -154,7 +154,7 @@ impl<'de> Deserialize<'de> for AgentKind {
 }
 
 /// What an agent can do. Declared per kind; never discovered from a running agent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     /// How a working agent can take a prompt. Every agent takes one when it is idle.
@@ -176,7 +176,7 @@ pub struct Capabilities {
 }
 
 /// The deliveries a working agent takes, beside a new turn when it is idle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Deliveries {
     /// Added to the running turn.

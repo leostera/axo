@@ -134,8 +134,7 @@ impl Extension for Remote {
                             .like
                             .map_or(rpc::SessionLocation::AtHome, rpc::SessionLocation::Like),
                         name: request.name,
-                        // Another agent from the phone or the web waits for its picker (RFD0072).
-                        agent: axo_agent::AgentKind::Pi,
+                        agent: request.agent,
                     },
                 )
                 .await
@@ -536,7 +535,12 @@ macro_rules! params {
 
 params! {
     SessionTargetParams { session_id: SessionId }
-    CreateSessionParams { like: Option<SessionId> = default, name: Option<rpc::SessionName> = default }
+    CreateSessionParams {
+        like: Option<SessionId> = default,
+        name: Option<rpc::SessionName> = default,
+        // Pi when absent, as from a phone or a browser older than the picker (RFD0072).
+        agent: axo_agent::AgentKind = default,
+    }
     RenameSessionParams { session_id: SessionId, name: String }
     ShellTargetParams { session_id: SessionId, shell_id: ShellId }
     LayoutSetParams { session_id: SessionId, layout: LayoutNode }
@@ -648,6 +652,23 @@ mod tests {
                 "{answer}"
             );
         }
+
+        // The phone and the web pick the agent (RFD0072).
+        let codex = as_account(
+            &handler,
+            "axo.remote.session.create",
+            json!({ "target": target(&fixture), "agent": "codex" }),
+        )
+        .await;
+        let id = codex["result"]["session"]["sessionId"].as_str().expect(&codex.to_string()).parse().unwrap();
+        assert_eq!(fixture.listed(id).unwrap().agent, axo_agent::AgentKind::Codex);
+        let unknown = as_account(
+            &handler,
+            "axo.remote.session.create",
+            json!({ "target": target(&fixture), "agent": "gemini" }),
+        )
+        .await;
+        assert!(unknown.get("error").is_some(), "{unknown}");
 
         let stale = as_account(
             &handler,

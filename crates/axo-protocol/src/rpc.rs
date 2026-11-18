@@ -136,6 +136,8 @@ pub mod method {
     pub const DEVICE_DECIDE: &str = "axo.device.decide";
     /// Axo.app stops taking an allowed device's answers.
     pub const DEVICE_REVOKE: &str = "axo.device.revoke";
+    /// The coding agents this Mac has, and what each can do (RFD0072).
+    pub const AGENTS_LIST: &str = "axo.agents.list";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -191,6 +193,7 @@ pub mod method {
         DEVICE_LIST,
         DEVICE_DECIDE,
         DEVICE_REVOKE,
+        AGENTS_LIST,
     ];
 }
 
@@ -692,6 +695,29 @@ pub struct ProtocolNegotiated {
 #[serde(rename_all = "camelCase")]
 pub enum DaemonStatus {
     Running,
+}
+
+/// `axo.agents.list`'s answer: every agent Axo can run, in [`AgentKind::ALL`]'s order.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsList {
+    pub agents: Vec<AgentAvailability>,
+}
+
+/// One agent on this Mac: found and runnable, or why not.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAvailability {
+    pub agent: crate::agent::AgentKind,
+    pub installed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Why it cannot run: not installed, or a version the adapter does not support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    pub capabilities: crate::agent::Capabilities,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

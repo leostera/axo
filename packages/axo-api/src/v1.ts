@@ -185,6 +185,9 @@ export const hostSessionsPublishSchema = z.object({
 });
 const emptyParamsSchema = z.object({}).strict();
 const subscriptionIdSchema = z.object({ subscriptionId: z.uuid() }).strict();
+export const agentKindSchema = z.enum(["pi", "codex", "opencode", "claude-code"]);
+export type AgentKind = z.infer<typeof agentKindSchema>;
+
 const creationNameSchema = z.string().min(1).max(80)
   .regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u)
   .refine(name => !/^\p{White_Space}|\p{White_Space}$/u.test(name), "No surrounding whitespace");
@@ -205,6 +208,8 @@ export const hostV1Methods = {
   "axo.remote.session.create": targetSchema.extend({
     like: sessionIdSchema.optional(),
     name: creationNameSchema.optional(),
+    // The coding agent the Session runs (RFD0072); Pi when absent.
+    agent: agentKindSchema.optional(),
   }).strict(),
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,

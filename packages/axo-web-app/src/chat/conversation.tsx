@@ -7,7 +7,7 @@ import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
-import { chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
+import { CODING_AGENTS, chatTitle, type ChatWorkbench, type CodingAgent, type DraftAttachment } from "./workbench.ts";
 import { SendButton, SlashMenu } from "./composer-controls.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
@@ -510,6 +510,7 @@ function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, on
               else onApps?.();
             }} plugins={Boolean(onApps)} />
             {wide ? <HostPicker workbench={workbench} /> : null}
+            <AgentPicker workbench={workbench} />
             <span className="spacer" />
             {session ? <ModelPicker workbench={workbench} session={session} disabled={!canSend} /> : null}
             {voice ? (
@@ -675,6 +676,22 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Which coding agent a new chat runs. Shown only while starting one: a chat keeps its agent.
+ */
+function AgentPicker({ workbench }: { workbench: ChatWorkbench }) {
+  if (workbench.selection?.kind !== "new") return null;
+  return (
+    <label className="agent-picker" title="The coding agent this chat runs">
+      <span className="visually-hidden">Agent</span>
+      <select value={workbench.newChatAgent} aria-label="Agent"
+        onChange={event => workbench.chooseAgent(event.currentTarget.value as CodingAgent)}>
+        {CODING_AGENTS.map(choice => <option key={choice.agent} value={choice.agent}>{choice.label}</option>)}
+      </select>
+    </label>
   );
 }
 

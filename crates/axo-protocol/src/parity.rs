@@ -261,6 +261,12 @@ pub const PARITY: &[Parity] = &[
         method::DEVICE_REVOKE,
         Remote::LocalOnly("only the person at the Mac removes a device"),
     ),
+    row(
+        method::AGENTS_LIST,
+        Remote::LocalOnly(
+            "the phone and the web offer every agent; a Mac without one refuses the Session"
+        ),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

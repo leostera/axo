@@ -539,6 +539,11 @@ button.grouped-row:disabled { color: var(--tertiary); background: transparent; }
 .host-picker-button.static { background: transparent; padding-right: 4px; }
 .host-picker.floating .host-picker-button { height: 28px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6); border: 0.5px solid color-mix(in srgb, var(--text) 6%, transparent); }
 .host-picker-label { overflow: hidden; text-overflow: ellipsis; }
+.agent-picker { flex: none; align-self: center; }
+.agent-picker select {
+  height: 36px; padding: 0 10px; border: 0; border-radius: 18px; color: var(--secondary); background: var(--fill); font: inherit; font-size: 13px;
+}
+.agent-picker select:hover { background: var(--fill-strong); color: var(--text); }
 .host-menu {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 20; display: flex; min-width: 220px; flex-direction: column; padding: 5px;
   border: 0.5px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 14px; background: var(--surface); box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);

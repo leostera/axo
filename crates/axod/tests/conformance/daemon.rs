@@ -54,6 +54,26 @@ fn negotiation_offers_every_method_and_only_version_2() {
     );
 }
 
+/// Every agent Axo can run is listed, found or not, with what it can do (RFD0072). Which are
+/// installed depends on the Mac; only the shape is checked.
+#[test]
+fn agents_lists_every_agent_with_its_capabilities() {
+    let axod = Axod::start();
+    let listed = axod.ok("axo.agents.list", json!({}));
+    let agents = listed["agents"].as_array().expect("an agents array");
+    let names: Vec<&str> = agents.iter().filter_map(|agent| agent["agent"].as_str()).collect();
+    assert_eq!(names, ["pi", "codex", "opencode", "claude-code"], "{listed}");
+    for agent in agents {
+        let installed = agent["installed"].as_bool().expect("installed");
+        assert_eq!(agent["version"].is_string(), installed, "{agent}");
+        assert_eq!(agent["problem"].is_string(), !installed, "{agent}");
+        assert!(agent["capabilities"]["deliveries"]["followUp"].is_boolean(), "{agent}");
+    }
+    assert_eq!(agents[3]["capabilities"]["deliveries"]["steer"], false);
+    let refused = axod.err("axo.agents.list", json!({ "surprise": true }));
+    assert_eq!(refused.code, INVALID_PARAMS, "{refused:?}");
+}
+
 #[test]
 fn health_says_running_and_ready_with_this_build() {
     let axod = Axod::start();

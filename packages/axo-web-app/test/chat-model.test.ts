@@ -843,6 +843,19 @@ test("a new chat's first message starts it in the Mac's home folder and moves th
   workbench.dispose();
 });
 
+test("a new chat starts with the agent picked for it, and Pi is left unsaid for older Macs", async () => {
+  const { workbench, account } = await workbenchWith();
+  assert.equal(workbench.newChatAgent, "pi");
+  workbench.chooseAgent("codex");
+  workbench.chooseAgent("gemini" as never);
+  assert.equal(workbench.newChatAgent, "codex", "only an agent Axo knows");
+  workbench.setDraft("Fix the bug");
+  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  const created = account.commands.filter(call => call.method === "axo.remote.session.create");
+  assert.deepEqual(created[0]?.params, { target: { hostId, hostGeneration }, agent: "codex" });
+  workbench.dispose();
+});
+
 test("a refused message comes back to the box; one whose delivery is uncertain stays, marked", async () => {
   const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));

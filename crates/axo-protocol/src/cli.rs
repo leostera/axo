@@ -215,7 +215,7 @@ pub static OPERATIONS: &[Operation] = &[
     op!(
         &["session", "create"],
         method::SESSION_CREATE,
-        "Start Pi and a terminal at home, in a folder or beside a Session",
+        "Start an agent and a terminal at home, in a folder or beside a Session",
         Write,
         Create,
         Identity,
@@ -240,6 +240,13 @@ pub static OPERATIONS: &[Operation] = &[
                 ValueKind::Text,
                 false,
                 "Explicit Session name, preserved over automatic titles"
+            ),
+            p(
+                "agent",
+                "agent",
+                ValueKind::Text,
+                false,
+                "pi (default), codex, opencode or claude-code"
             )
         ]
     ),
@@ -310,6 +317,15 @@ pub static OPERATIONS: &[Operation] = &[
         Shell,
         Identity,
         [SID, SHELL]
+    ),
+    op!(
+        &["agents"],
+        method::AGENTS_LIST,
+        "List the coding agents this Mac has, with each one's version and capabilities",
+        Read,
+        Empty,
+        Identity,
+        []
     ),
     op!(
         &["session", "brief"],

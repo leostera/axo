@@ -17,6 +17,15 @@ import { keyFingerprint, sealInput, type DeviceProof } from "@axo/app";
 import { browserDevice, type AnswerDevice } from "./device.ts";
 import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
+
+/** The coding agents a chat can run, as a Mac names them (RFD0072). */
+export type CodingAgent = "pi" | "codex" | "opencode" | "claude-code";
+export const CODING_AGENTS: readonly { agent: CodingAgent; label: string }[] = [
+  { agent: "pi", label: "Pi" },
+  { agent: "codex", label: "Codex" },
+  { agent: "opencode", label: "OpenCode" },
+  { agent: "claude-code", label: "Claude Code" },
+];
 import { ChatTranscript, type Delivery, type TranscriptRecord } from "./transcript.ts";
 
 /**
@@ -77,7 +86,7 @@ export interface AccountLink {
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
   resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof, sealed?: Sealed): Promise<void>;
-  command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
+  command(method: "axo.remote.session.create", params: { target: HostRef; agent?: CodingAgent }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
   command(method: "axo.remote.session.commands", params: { target: HostRef; sessionId: string }): Promise<{ commands: PiCommand[] }>;
@@ -380,6 +389,8 @@ export class ChatWorkbench {
   openHostId: string | null = null;
   link: Link = "idle";
   selection: Selection | null = null;
+  /** The coding agent a new chat starts with (RFD0072); a Mac without it refuses the chat. */
+  newChatAgent: CodingAgent = "pi";
   failure: string | null = null;
   isSending = false;
   /** Bumped on every change, for `useSyncExternalStore`. */
@@ -967,6 +978,13 @@ export class ChatWorkbench {
     this.changed();
   }
 
+  /** The coding agent the new chat starts with. */
+  chooseAgent(agent: CodingAgent): void {
+    if (agent === this.newChatAgent || !CODING_AGENTS.some(choice => choice.agent === agent)) return;
+    this.newChatAgent = agent;
+    this.changed();
+  }
+
   dismissFailure(): void {
     this.failure = null;
     this.changed();
@@ -1080,7 +1098,10 @@ export class ChatWorkbench {
       const target = this.reference(host);
       let created: CreatedSession;
       try {
-        ({ session: created } = await this.connection!.command("axo.remote.session.create", { target }));
+        // Pi is left unsaid, so that a Mac older than the picker still takes the chat.
+        const agent = this.newChatAgent;
+        ({ session: created } = await this.connection!.command("axo.remote.session.create",
+          agent === "pi" ? { target } : { target, agent }));
       } catch (error) {
         return this.report(`Could not start the chat: ${describe(error)}`);
       }

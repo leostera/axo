@@ -12,6 +12,7 @@ use axo_ipc::{ErrorCode, Extension, Methods, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
+mod agents;
 mod ai;
 mod attachments;
 mod brief;
@@ -514,6 +515,7 @@ fn rpc_handler(
         &remote::Remote::new(Arc::clone(&core)),
         &apps,
         &brief,
+        &agents::Agents,
         &assets,
         &questions,
         &computer,
