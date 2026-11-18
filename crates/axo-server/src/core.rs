@@ -71,6 +71,8 @@ pub(crate) struct Core {
     pub(crate) assets: Arc<axo_assets::AssetSlot>,
     /// This Mac's input key (RFD0029).
     pub(crate) input_keys: crate::input_key::InputKeys,
+    /// The phones and browsers the person allowed to answer here (RFD0069).
+    pub(crate) devices: crate::devices::AllowedDevices,
     /// The focus a Pi's `/resume` asked for, for clients that list rather than stream.
     pending_focus: Mutex<Option<(SessionId, Instant)>>,
     /// Set once axod has started its Pis (see `registry::Launch`).
@@ -92,6 +94,7 @@ pub(crate) struct CoreParts {
     pub(crate) settings: Settings,
     pub(crate) viewport: Option<Viewport>,
     pub(crate) lifeline: axo_agent::Lifeline,
+    pub(crate) devices: crate::devices::AllowedDevices,
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -132,6 +135,7 @@ impl Core {
             computer: Arc::default(),
             assets: Arc::default(),
             input_keys: Default::default(),
+            devices: parts.devices,
             pending_focus: Mutex::default(),
             ready: AtomicBool::new(false),
             stopping: AtomicBool::new(false),

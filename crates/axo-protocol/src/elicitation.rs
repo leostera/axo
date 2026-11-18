@@ -171,7 +171,8 @@ pub struct ResolveElicitation {
 }
 
 /// What a phone or a browser sends with every answer: its key, its name, and its signature over
-/// that answer alone (`axo_seal::answer_message`).
+/// that answer alone (`axo_seal::answer_message`). axod takes it only from a key the person
+/// allowed in Axo.app on this Mac (RFD0069).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceProof {
@@ -180,6 +181,58 @@ pub struct DeviceProof {
     pub name: String,
     /// Base64 of the raw 64-byte r‖s ECDSA signature over SHA-256.
     pub signature: String,
+}
+
+/// A device that may answer this Mac's questions, or wants to (RFD0069).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Device {
+    /// Base64 of its uncompressed P-256 public key.
+    pub key: String,
+    pub name: String,
+    /// As the device shows it, for the person to compare (`axo_seal::fingerprint`).
+    pub fingerprint: String,
+    /// Unix milliseconds: when it was allowed, or first asked.
+    pub at: u64,
+}
+
+/// `axo.device.list`'s result.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Devices {
+    pub allowed: Vec<Device>,
+    pub waiting: Vec<Device>,
+    /// This Mac's input key's fingerprint, which a client compares before it first seals typed
+    /// values to the key. `None` when the key store did not answer.
+    pub input_key: Option<String>,
+}
+
+/// `axo.device.decide`'s parameters, from Axo.app.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecideDevice {
+    pub key: String,
+    /// False turns a waiting device away.
+    pub allow: bool,
+}
+
+/// `axo.device.decide`'s result: false when the device was not waiting.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeviceDecided {
+    pub decided: bool,
+}
+
+/// `axo.device.revoke`'s parameters, from Axo.app.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeDevice {
+    pub key: String,
+}
+
+/// `axo.device.revoke`'s result: false when the device was not allowed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeviceRevoked {
+    pub revoked: bool,
 }
 
 /// What comes with a person's answer to an input request.
@@ -217,6 +270,9 @@ pub const NOT_A_TOOL: i64 = -32013;
 pub const BAD_INPUT: i64 = -32014;
 /// An answer without its device's signature over it: the request still waits.
 pub const BAD_SIGNATURE: i64 = -32015;
+/// An answer from a device the person has not allowed at this Mac, or one it signed before it was
+/// allowed (RFD0069): the request still waits, and the device waits in Axo.app's Settings.
+pub const UNKNOWN_DEVICE: i64 = -32016;
 
 /// `axo.elicitation.request`'s result: how it ended.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

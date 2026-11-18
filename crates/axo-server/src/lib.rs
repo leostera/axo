@@ -379,6 +379,7 @@ fn open_core(
         settings,
         viewport,
         lifeline: axo_agent::Lifeline::new()?,
+        devices: devices::AllowedDevices::open(server_directory.join(devices::DEVICES_FILE))?,
     }));
     Ok((core, previous_stop))
 }
@@ -485,12 +486,13 @@ fn rpc_handler(
         &daemon as &dyn Extension,
         &Relay(relay),
         &handlers::Sessions(Arc::clone(&core)),
-        &remote::Remote::new(core),
+        &remote::Remote::new(Arc::clone(&core)),
         &apps,
         &brief,
         &assets,
         &questions,
         &computer,
+        &devices::DevicesExtension(Arc::clone(&core)),
     ] {
         if let Err(conflict) = methods.add(extension) {
             panic!("{conflict}");

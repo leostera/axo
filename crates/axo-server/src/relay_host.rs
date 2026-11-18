@@ -150,7 +150,13 @@ impl axo_relay::RelayHost for RelayHostAdapter {
             sealed,
             device,
         } = answer;
-        crate::devices::check_answer(&elicitation_id, answer, sealed.as_ref(), device.as_ref())?;
+        crate::devices::check_answer(
+            self.core.as_ref(),
+            &elicitation_id,
+            answer,
+            sealed.as_ref(),
+            device.as_ref(),
+        )?;
         let reply = sealed.map_or(
             axo_protocol::elicitation::Reply::Bare,
             axo_protocol::elicitation::Reply::Sealed,

@@ -249,6 +249,18 @@ pub const PARITY: &[Parity] = &[
         method::SESSION_BRIEF,
         Remote::LocalOnly("the system prompt of an agent running on this Mac"),
     ),
+    row(
+        method::DEVICE_LIST,
+        Remote::LocalOnly("devices are allowed at the Mac, in Axo.app (RFD0069)"),
+    ),
+    row(
+        method::DEVICE_DECIDE,
+        Remote::LocalOnly("only the person at the Mac allows a device"),
+    ),
+    row(
+        method::DEVICE_REVOKE,
+        Remote::LocalOnly("only the person at the Mac removes a device"),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

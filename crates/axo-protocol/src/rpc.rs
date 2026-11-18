@@ -127,6 +127,13 @@ pub mod method {
     pub const COMPUTER_INPUT: &str = "axo.computer.input";
     /// What a Session's agent can do through Axo, for pi-axo to put in its system prompt.
     pub const SESSION_BRIEF: &str = "axo.session.brief";
+    /// The phones and browsers allowed to answer this Mac's questions, those waiting to, and
+    /// this Mac's input key's fingerprint (RFD0069).
+    pub const DEVICE_LIST: &str = "axo.device.list";
+    /// Axo.app allows a waiting device, or turns it away.
+    pub const DEVICE_DECIDE: &str = "axo.device.decide";
+    /// Axo.app stops taking an allowed device's answers.
+    pub const DEVICE_REVOKE: &str = "axo.device.revoke";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -179,6 +186,9 @@ pub mod method {
         ASSETS_FETCH,
         COMPUTER_INPUT,
         SESSION_BRIEF,
+        DEVICE_LIST,
+        DEVICE_DECIDE,
+        DEVICE_REVOKE,
     ];
 }
 

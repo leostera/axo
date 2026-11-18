@@ -758,6 +758,18 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ),
     (method::ASSETS_FETCH, "Restricted to axod's own binary"),
     (method::COMPUTER_INPUT, "Restricted protected-input channel"),
+    (
+        method::DEVICE_LIST,
+        "Axo.app's Settings › Devices; which devices answer is decided there",
+    ),
+    (
+        method::DEVICE_DECIDE,
+        "Only the person at the Mac, in signed Axo.app, allows a device",
+    ),
+    (
+        method::DEVICE_REVOKE,
+        "Only the person at the Mac, in signed Axo.app, removes a device",
+    ),
 ];
 
 fn typed<T: for<'de> Deserialize<'de> + Serialize>(

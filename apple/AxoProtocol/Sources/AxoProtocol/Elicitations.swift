@@ -133,6 +133,9 @@ public enum ElicitationError {
   public static let badInput = -32014
   /// Not signed by its device for this answer; it still waits.
   public static let badSignature = -32015
+  /// From a device the person has not allowed at that Mac, or signed before it was (RFD0069);
+  /// it still waits.
+  public static let unknownDevice = -32016
 }
 
 /// `axo.elicitation.list`: what waits for the person on this Mac, oldest first.
