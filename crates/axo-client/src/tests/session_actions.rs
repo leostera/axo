@@ -35,14 +35,21 @@ async fn typed_payload_failure_closes_an_otherwise_aligned_connection() {
 #[tokio::test]
 async fn creation_encodes_home_folder_and_current_context_once() {
     for (create, params) in [
-        (rpc::CreateSession::AtHome, json!({})),
+        (rpc::CreateSession::default(), json!({})),
         (
-            rpc::CreateSession::InFolder("/tmp/fixture".into()),
+            rpc::SessionLocation::InFolder("/tmp/fixture".into()).into(),
             json!({"folder":"/tmp/fixture"}),
         ),
         (
-            rpc::CreateSession::Like(SessionId::from_u128(2)),
+            rpc::SessionLocation::Like(SessionId::from_u128(2)).into(),
             json!({"like":SessionId::from_u128(2)}),
+        ),
+        (
+            rpc::CreateSession {
+                location: rpc::SessionLocation::Like(SessionId::from_u128(2)),
+                name: Some(rpc::SessionName::parse("named fixture".into()).unwrap()),
+            },
+            json!({"like":SessionId::from_u128(2),"name":"named fixture"}),
         ),
     ] {
         let (mut client, mut server) = pair();
@@ -71,7 +78,7 @@ async fn relative_folder_and_unadvertised_auto_wake_send_nothing_and_never_force
     ];
     assert!(matches!(
         client
-            .create_session(rpc::CreateSession::InFolder("relative".into()))
+            .create_session(rpc::SessionLocation::InFolder("relative".into()).into())
             .await,
         Err(Error::Input(_))
     ));
@@ -135,7 +142,9 @@ async fn malformed_or_misdirected_action_results_are_fenced_not_replayed() {
             assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
         });
         let error = if variant == 8 {
-            client.create_session(rpc::CreateSession::Like(sid())).await
+            client
+                .create_session(rpc::SessionLocation::Like(sid()).into())
+                .await
         } else {
             client.wake_pi(sid(), pane()).await
         };
@@ -157,7 +166,7 @@ async fn admitted_creation_with_lost_ack_is_not_replayed() {
     });
     assert!(
         client
-            .create_session(rpc::CreateSession::AtHome)
+            .create_session(rpc::CreateSession::default())
             .await
             .is_err()
     );
@@ -175,7 +184,7 @@ async fn cancelling_creation_after_dispatch_closes_without_replay() {
         sent.send(()).unwrap();
         assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
     });
-    let mut create = Box::pin(client.create_session(rpc::CreateSession::AtHome));
+    let mut create = Box::pin(client.create_session(rpc::CreateSession::default()));
     tokio::select! {
         _ = &mut create => panic!("no reply was sent"),
         _ = received => {},

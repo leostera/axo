@@ -9,13 +9,13 @@ impl Client {
         &mut self,
         request: rpc::CreateSession,
     ) -> Result<SessionRecord, Error> {
-        let source = match &request {
-            rpc::CreateSession::InFolder(path) if !path.is_absolute() => {
+        let source = match &request.location {
+            rpc::SessionLocation::InFolder(path) if !path.is_absolute() => {
                 return Err(Error::Input(
                     "a Session's folder must be an absolute path".into(),
                 ));
             }
-            rpc::CreateSession::Like(id) => Some(*id),
+            rpc::SessionLocation::Like(id) => Some(*id),
             _ => None,
         };
         let params = serde_json::to_value(request)

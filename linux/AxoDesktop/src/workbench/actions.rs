@@ -1,7 +1,7 @@
 //! Explicit creation intent, separate from the read-only catalog and viewport owners.
 use super::*;
 use crate::task::MainThreadTask;
-use axo_protocol::rpc::{self, CreateSession};
+use axo_protocol::rpc::{self, SessionLocation};
 use std::io;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -135,7 +135,7 @@ impl Workbench {
                     let Some(model) = weak.upgrade() else { return };
                     match name.as_str() {
                         "new-folder-session" => model.choose_creation_folder(),
-                        "new-home-session" => model.create_session(CreateSession::AtHome),
+                        "new-home-session" => model.create_session(SessionLocation::AtHome),
                         _ => {
                             let request = model
                                 .selected
@@ -147,7 +147,7 @@ impl Workbench {
                                         .as_ref()
                                         .is_some_and(|catalog| catalog.session(*id).is_some())
                                 })
-                                .map(CreateSession::Like)
+                                .map(SessionLocation::Like)
                                 .unwrap_or_default();
                             model.create_session(request);
                         }
@@ -211,7 +211,7 @@ impl Workbench {
                 match result {
                     Ok(file) => {
                         if let Some(folder) = file.path() {
-                            model.create_session(CreateSession::InFolder(folder));
+                            model.create_session(SessionLocation::InFolder(folder));
                         } else {
                             model
                                 .creation
@@ -235,7 +235,7 @@ impl Workbench {
             && self.creation.phase.get() == Phase::Ready
             && self.creation.folder.borrow().is_none()
     }
-    fn create_session(self: &Rc<Self>, request: CreateSession) {
+    fn create_session(self: &Rc<Self>, request: SessionLocation) {
         if !self.can_create() {
             if !self.closing.get()
                 && !self.online.get()
@@ -336,12 +336,12 @@ mod tests {
 
 fn execute_creation(
     socket: &std::path::Path,
-    request: CreateSession,
+    request: SessionLocation,
 ) -> io::Result<Result<SessionRecord, Failure>> {
     execute_action(
         socket,
         rpc::method::SESSION_CREATE,
-        |mut client| async move { client.create_session(request).await },
+        |mut client| async move { client.create_session(request.into()).await },
     )
 }
 
