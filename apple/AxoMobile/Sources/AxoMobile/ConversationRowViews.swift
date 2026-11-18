@@ -129,9 +129,9 @@ struct WaitingQuestions: View {
     if !questions.isEmpty {
       VStack(alignment: .leading, spacing: 10) {
         ElicitationCards(phone: phone, questions: Array(questions.prefix(Self.shown)), canAnswer: canAnswer)
-          // The cards are tinted to sit in the transcript; over it, they need the screen behind them.
-          .background(ChatColors.background, in: RoundedRectangle(cornerRadius: 18))
-          .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+          // An opaque transcript surface keeps scrolling text from bleeding through without
+          // introducing a second rounded card around the flat inline request.
+          .background(ChatColors.background)
         if questions.count > Self.shown {
           Text("\(questions.count - Self.shown) more waiting")
             .font(.caption.weight(.medium))

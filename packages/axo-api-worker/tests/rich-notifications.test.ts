@@ -4,6 +4,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { harness, signIn, signInNative } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { ApnsRequestNotice } from "../src/push/apns";
+import { notificationContentSchema, notifyInputSchema } from "../src/push/content";
 
 async function eventually(predicate: () => boolean) {
   for (let n = 0; n < 150; n++) {
@@ -40,18 +41,25 @@ const question = (sessionId: string, message = "Install the tested development b
   createdAt: Date.now(), expiresAt: Date.now() + 60_000,
 });
 
+test("new updates are concise without invalidating retained notification content", () => {
+  assert.ok(notifyInputSchema.safeParse({ title: "Build ready", message: "🦎".repeat(140) }).success);
+  assert.equal(notifyInputSchema.safeParse({ title: "Build ready", message: "x".repeat(141) }).success, false);
+  assert.equal(notifyInputSchema.safeParse({ title: "x".repeat(49), message: "Ready" }).success, false);
+  assert.ok(notificationContentSchema.safeParse({ title: "Old update", message: "x".repeat(240) }).success);
+});
+
 test("short complete questions carry authenticated-action metadata; truncated questions never do", async () => {
   const route = { accountId: crypto.randomUUID(), hostId: crypto.randomUUID(), sessionId: crypto.randomUUID(), requestId: crypto.randomUUID() };
-  for (const message of ["Approve the harmless test?", "🦎".repeat(240)]) {
+  for (const message of ["Approve the harmless test?", "🦎".repeat(140)]) {
     const body = JSON.parse((await ApnsRequestNotice.withQuestion(route, Date.now() + 60_000, message)).body);
     assert.equal(body.aps.alert.body, message);
     assert.equal(body.aps.category, "AXO_CONFIRM_V1");
     assert.equal(body.axoRequest.digest, createHash("sha256").update(message).digest("hex"));
     assert.deepEqual(Object.keys(body.axo).sort(), ["accountId", "hostId", "requestId", "sessionId", "version"]);
   }
-  const long = JSON.parse((await ApnsRequestNotice.withQuestion(route, Date.now() + 60_000, "a".repeat(241))).body);
+  const long = JSON.parse((await ApnsRequestNotice.withQuestion(route, Date.now() + 60_000, "a".repeat(141))).body);
   assert.equal(long.aps.category, "AXO_REVIEW_V1");
-  assert.equal(Array.from(long.aps.alert.body).length, 240);
+  assert.equal(Array.from(long.aps.alert.body).length, 140);
   assert.equal(long.axoRequest, undefined);
 });
 

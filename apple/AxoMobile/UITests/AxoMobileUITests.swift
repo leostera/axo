@@ -404,7 +404,7 @@ final class AxoMobileUITests: XCTestCase {
     XCTAssertTrue(menuClosed(app))
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "Explain the relay")
     bell.tapWhereItIs()
-    XCTAssertTrue(app.navigationBars["Notifications"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.navigationBars["Requests"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.staticTexts["Delete the branch feat/old-ui? It has 3 unmerged commits."].waitForExistence(timeout: 5))
     capture(app, named: "phone-global-requests")
     app.buttons["notification-settings"].tapWhereItIs()
@@ -635,6 +635,27 @@ final class AxoMobileUITests: XCTestCase {
     XCTAssertTrue(app.staticTexts["Stopping…"].waitForExistence(timeout: 2), "stopping at once")
     XCTAssertEqual(app.alerts.count, 0, "nothing asks first")
     XCTAssertFalse(stop.isEnabled, "one stop at a time")
+  }
+
+  @MainActor
+  func testNotificationOpensConversationRatherThanNotificationInbox() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_MOBILE_PREVIEW_NOTIFICATION": "1"])
+    XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 10))
+    XCTAssertTrue(waitUntil(5) { app.staticTexts["conversation-title"].label == "Explain the relay" })
+    XCTAssertFalse(app.navigationBars["Requests"].exists)
+    capture(app, named: "notification-conversation")
+  }
+
+  @MainActor
+  func testLongRequestsAreCompactAndRequireReviewBeforeApproval() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "elicitation", "AXO_MOBILE_PREVIEW_LONG_QUESTION": "1"])
+    let card = element(app, "elicitationCard")
+    XCTAssertTrue(card.waitForExistence(timeout: 15))
+    XCTAssertLessThan(card.frame.height, 240)
+    XCTAssertFalse(app.buttons["elicitationYes"].exists, "never approve hidden scope")
+    capture(app, named: "compact-neutral-request")
+    app.buttons["elicitationReview"].tapWhereItIs()
+    XCTAssertTrue(app.buttons["elicitationYes"].waitForExistence(timeout: 5))
   }
 
   @MainActor

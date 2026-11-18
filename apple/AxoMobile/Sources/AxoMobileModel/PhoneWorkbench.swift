@@ -414,6 +414,22 @@ public final class PhoneWorkbench {
     navigationRevision += 1
   }
 
+  /// A notification is navigation, never execution authority. Resolve only a listed conversation
+  /// in the live account; a removed host/session must not silently select an unrelated chat.
+  public func openNotification(_ route: RequestNotificationRoute) async -> Bool {
+    let revision = account.credentialRevision
+    guard let token = try? await account.tokens.sessionToken(), token.accountID == route.accountID,
+      let session = SessionID(rawValue: route.sessionID.uuidString.lowercased()) else { return false }
+    func destinationExists() -> Bool {
+      guard let host = hosts.hosts.first(where: { $0.hostId == route.hostID }) else { return false }
+      return sessions(of: host).contains { $0.sessionId == session }
+    }
+    if !destinationExists() { await refresh() }
+    guard account.credentialRevision == revision, destinationExists() else { return false }
+    select(host: route.hostID, session: session)
+    return true
+  }
+
   public func select(host hostID: UUID, session: SessionID?) {
     guard let remote = hosts.hosts.first(where: { $0.hostId == hostID }) else { return }
     if current?.reference.hostId != hostID {

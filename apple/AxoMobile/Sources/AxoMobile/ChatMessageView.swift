@@ -365,6 +365,9 @@ struct AgentActivityView: View {
 /// What a Mac's agent asks the person (RFD0029). Only the person answers: the agent waits for Yes
 /// or No, and an answer from any of their devices settles it everywhere.
 struct ElicitationCard: View {
+  @State private var showingDetails = false
+  private var copy: ApprovalCopy { ApprovalCopy(question.elicitation.message) }
+  private var needsReview: Bool { copy.requiresReview }
   let question: AskedQuestion
   let canAnswer: Bool
   /// Why the last answer did not go.
@@ -372,19 +375,32 @@ struct ElicitationCard: View {
   let answer: (ElicitationAnswer) -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      AskedHeader(
-        title: question.elicitation.askedBy == .computerUse ? "Axo asks before acting on your Mac" : "The agent asks you",
-        symbol: question.elicitation.askedBy == .computerUse ? "desktopcomputer" : "questionmark.bubble",
-        answering: question.answering != nil)
-      Text(question.elicitation.message)
-        .font(.body)
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 10) {
-        AnswerButton(title: "Yes", prominent: true) { answer(.accept) }
-          .accessibilityIdentifier("elicitationYes")
-        AnswerButton(title: "No", prominent: false) { answer(.decline) }
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        Text(question.elicitation.askedBy == .computerUse ? "Mac action · approval required" : "Approval required")
+          .font(.caption).foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+        if question.answering != nil { ProgressView().controlSize(.small) }
+      }
+      VStack(alignment: .leading, spacing: 4) {
+        Text(copy.headline).font(.subheadline.weight(.semibold))
+          .lineLimit(needsReview && !showingDetails ? 3 : nil)
+        if let detail = copy.detail {
+          Text(detail).font(.subheadline).foregroundStyle(.secondary)
+            .lineLimit(needsReview && !showingDetails ? 2 : nil)
+        }
+      }
+      .textSelection(.enabled)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      HStack(spacing: 8) {
+        if needsReview && !showingDetails {
+          AnswerButton(title: "Review request", prominent: true, fill: false) { showingDetails = true }
+            .accessibilityIdentifier("elicitationReview")
+        } else {
+          AnswerButton(title: "Yes", prominent: true, fill: false) { answer(.accept) }
+            .accessibilityIdentifier("elicitationYes")
+        }
+        AnswerButton(title: "No", prominent: false, fill: false) { answer(.decline) }
           .accessibilityIdentifier("elicitationNo")
       }
       .disabled(!canAnswer || question.answering != nil)
@@ -392,7 +408,9 @@ struct ElicitationCard: View {
         Text(failure).font(.caption).foregroundStyle(.secondary)
       }
     }
-    .askedCard()
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .overlay(alignment: .bottom) { Divider() }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("elicitationCard")
   }
@@ -406,7 +424,7 @@ private struct AskedHeader: View {
 
   var body: some View {
     HStack(spacing: 8) {
-      Image(systemName: symbol).font(.footnote.weight(.semibold)).foregroundStyle(.orange)
+      Image(systemName: symbol).font(.caption.weight(.medium)).foregroundStyle(.secondary)
       Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
       Spacer(minLength: 0)
       if answering { ProgressView().controlSize(.small) }
@@ -440,12 +458,12 @@ struct AnswerButton: View {
 }
 
 extension View {
-  /// A question's card: the tool blocks' surface, with an orange edge that says it waits on you.
+  /// A compact, neutral surface; the question and action supply the emphasis, not a warning colour.
   func askedCard() -> some View {
-    padding(16)
+    padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 18))
-      .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.orange.opacity(0.45), lineWidth: 1))
+      .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 14))
+      .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
   }
 }
 

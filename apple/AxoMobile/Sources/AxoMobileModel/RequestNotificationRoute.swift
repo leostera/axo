@@ -1,6 +1,6 @@
 import Foundation
 
-/// A banner is only an inbox link. It contains no answer, question, or execution authority.
+/// A banner links to its originating conversation. It carries no execution authority.
 public struct RequestNotificationRoute: Equatable, Sendable {
   public let accountID: UUID
   public let hostID: UUID

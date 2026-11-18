@@ -3,7 +3,7 @@ import UIKit
 
 /// Shared by Axo Settings and the notification inbox, never confused with iOS system permissions.
 struct NotificationPreferencesView: View {
-  @AppStorage(MobilePush.previewPreference) private var richPreviews = false
+  @AppStorage(MobilePush.previewPreference) private var richPreviews = true
 
   var body: some View {
     ScrollView {

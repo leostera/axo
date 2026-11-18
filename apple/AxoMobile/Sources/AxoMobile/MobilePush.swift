@@ -35,6 +35,8 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   private var presentation: PresentationSnapshot?
   private let launchedAt = Date()
   private let defaults = UserDefaults.standard
+  // Request text is useful by default; explicit opt-out and iOS preview settings still win.
+  private var richPreviews: Bool { defaults.object(forKey: Self.previewPreference) as? Bool ?? true }
 
   private var enabled: Bool {
     #if targetEnvironment(simulator)
@@ -60,6 +62,14 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
       UNNotificationCategory(identifier: Self.reviewCategory, actions: [], intentIdentifiers: [], options: []),
     ])
   }
+
+  #if DEBUG && targetEnvironment(simulator)
+    /// Inject only a navigation intent; the same account/catalog admission still runs in the model.
+    func queueNavigationForPreview(_ route: RequestNotificationRoute) {
+      inboxRoute = route
+      inboxRevision = UUID()
+    }
+  #endif
 
   func previewsChanged() { Task { await refresh() } }
 
@@ -140,7 +150,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     }
     guard let deviceToken else { return }
     if lastSubmitted == deviceToken && submittedSession == session
-      && submittedPreviews == defaults.bool(forKey: Self.previewPreference) {
+      && submittedPreviews == richPreviews {
       reportTest(.enrolled)
       return
     }
@@ -160,7 +170,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     let previous = defaults.object(forKey: "push.revision.v1") as? NSNumber
     guard let revision = RequestNotificationRevision.next(after: previous?.int64Value) else { return }
     defaults.set(revision, forKey: "push.revision.v1")
-    let previews = defaults.bool(forKey: Self.previewPreference)
+    let previews = richPreviews
     do {
       try await AccountClient(endpoint: endpoint, tokens: StaticSessionToken(session))
         .setRequestNotifications(installationID: installation, revision: revision, deviceToken: token, richPreviews: previews)
@@ -297,7 +307,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   private func refreshUpdates() { updatesRevision = UUID() }
 
   private func answer(_ route: RequestNotificationRoute, metadata: RequestNotificationAction, displayedMessage: String, action: ElicitationAnswer) async {
-    guard defaults.bool(forKey: Self.previewPreference), let account,
+    guard richPreviews, let account,
       let session = try? await account.tokens.sessionToken(), session.accountID == route.accountID,
       !answersInFlight.contains(route.requestID) else { return }
     answersInFlight.insert(route.requestID)

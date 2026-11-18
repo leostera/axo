@@ -362,7 +362,7 @@ const TOOLS: &[Tool] = &[
         description: "Asks the person a yes-or-no question and waits for their answer, up to 5 minutes. It shows on their phone, in the browser, and on every client they have open; only they can answer. Returns { action }: \"accept\" (yes), \"decline\" (no), or \"cancel\" (nobody answered in time). Ask before anything that sends, posts, pays or deletes, and act only on \"accept\".",
         properties: || {
             json!({
-                "message": { "type": "string", "description": "The question, as the person reads it, e.g. \"Delete the branch feat/old-ui? It has 3 unmerged commits.\" At most 1000 characters." }
+                "message": { "type": "string", "description": "Lead with the exact decision in one short sentence, ideally at most 140 characters. Put background in the conversation, not a wall of text here. Include every material approval restriction; never hide scope to meet the length target. The question, as the person reads it, e.g. \"Delete the branch feat/old-ui? It has 3 unmerged commits.\" At most 1000 characters." }
             })
         },
         required: &["message"],

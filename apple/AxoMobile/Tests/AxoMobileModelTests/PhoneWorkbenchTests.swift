@@ -135,6 +135,48 @@ final class PhoneWorkbenchTests: XCTestCase {
     workbench.setDraft(text, for: try XCTUnwrap(workbench.selection))
   }
 
+  private func notification(account: UUID, host: UUID, session: SessionID) throws -> RequestNotificationRoute {
+    try XCTUnwrap(RequestNotificationRoute(userInfo: ["axo": ["version": 1,
+      "accountId": account.uuidString, "hostId": host.uuidString,
+      "sessionId": session.rawValue, "requestId": UUID().uuidString]]))
+  }
+
+  func testNotificationOpensOriginatingConversationAndPreservesDraftWithoutSending() async throws {
+    let first = Mac("First", online: true, sessions: [1])
+    let second = Mac("Second", online: true, sessions: [2])
+    let world = PhoneWorld([first, second])
+    try await world.start()
+    let phone = world.workbench!
+    phone.select(host: first.id, session: 1)
+    let origin = try XCTUnwrap(phone.selection)
+    phone.setDraft("Keep these unsent words", for: origin)
+    let token = try await world.account.tokens.sessionToken()
+    let route = try notification(account: token.accountID, host: second.id, session: 2)
+    let opened = await phone.openNotification(route)
+    XCTAssertTrue(opened)
+    XCTAssertEqual(phone.selection, .init(host: second.id, session: 2))
+    XCTAssertEqual(phone.draft(for: origin), "Keep these unsent words")
+    XCTAssertTrue(world.creations.prompts.isEmpty)
+    XCTAssertTrue(world.creations.places.isEmpty)
+  }
+
+  func testNotificationCannotOpenAnotherAccountOrAnUnlistedConversation() async throws {
+    let mac = Mac("Studio", online: true, sessions: [1])
+    let world = PhoneWorld([mac])
+    try await world.start()
+    let phone = world.workbench!
+    let original = phone.selection
+    let token = try await world.account.tokens.sessionToken()
+    let foreign = try notification(account: UUID(), host: mac.id, session: 1)
+    let foreignOpened = await phone.openNotification(foreign)
+    XCTAssertFalse(foreignOpened)
+    let missing = try notification(account: token.accountID, host: mac.id, session: 999)
+    let missingOpened = await phone.openNotification(missing)
+    XCTAssertFalse(missingOpened)
+    XCTAssertEqual(phone.selection, original)
+    XCTAssertTrue(world.creations.prompts.isEmpty)
+  }
+
   func testStartingLandsOnANewChatOnTheFirstOnlineMacAndOpensNoExistingChat() async throws {
     let empty = Mac("Empty", online: false)
     let studio = Mac("Studio", online: true, sessions: [3, 2])

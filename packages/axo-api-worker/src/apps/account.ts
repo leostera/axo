@@ -324,9 +324,9 @@ export class AccountApps {
   /** Every tool a script can reach, as `codemode.tools()` shows them. */
   tools(): ToolDefinition[] {
     return [...(this.deps.notify ? [{ service: "notify", name: "send", title: "Notify the person", call: "codemode.notify",
-      description: "Send a short informational push update to this account. Never approval or an answer. Do not include secrets. Rich lock-screen text depends on the person’s preview preference. Returns queued, not delivery. Use a stable UUID idempotencyKey to reconcile uncertain calls; never retry blindly. At most six new updates per minute and 1,000 retained for seven days.",
-      inputSchema: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 60 },
-        message: { type: "string", minLength: 1, maxLength: 240 }, idempotencyKey: { type: "string", format: "uuid" } },
+      description: "Send a concise, bottom-line-first update to this account. Title: the result or decision. Message: one short sentence with the next action, at most 140 characters. No preamble, audit narrative, or repeated context. Opens the originating conversation when tapped. Never approval or an answer. Do not include secrets. Rich lock-screen text depends on the person’s preview preference. Returns queued, not delivery. Use a stable UUID idempotencyKey to reconcile uncertain calls; never retry blindly. At most six new updates per minute and 1,000 retained for seven days.",
+      inputSchema: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 48 },
+        message: { type: "string", minLength: 1, maxLength: 140 }, idempotencyKey: { type: "string", format: "uuid" } },
         required: ["title", "message"], additionalProperties: false } }] : []), ...this.hostTools(), ...this.aiTools(), ...(this.deps.assets ? assetToolDefinitions() : []), ...this.thirdParty.tools(), ...this.apps.tools()];
   }
 
@@ -517,7 +517,7 @@ export class AccountApps {
   private async sendNotification(from: Caller, tool: string, input: unknown, run: RunScope): Promise<unknown> {
     if (tool !== "send" || !this.deps.notify) throw new Error("Notify is unavailable");
     const parsed = notifyInputSchema.safeParse(input);
-    if (!parsed.success) throw new Error("notify needs a title (60 characters) and message (240 characters); no secrets or actions");
+    if (!parsed.success) throw new Error("notify needs a bottom-line title (48 characters) and one short sentence (140 characters); no secrets or actions");
     if (!this.deps.hosts().some(host => host.hostId === from.hostId)) throw new Error("Notification source is no longer paired");
     const command = { ...parsed.data, idempotencyKey: parsed.data.idempotencyKey ?? crypto.randomUUID() };
     const callId = crypto.randomUUID();

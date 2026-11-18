@@ -54,6 +54,7 @@ struct WorkbenchView: View {
   /// Settings › Apps: what the account's Sessions can use.
   @State private var apps: AppsModel
   @State private var showingRequests = false
+  @State private var notificationUnavailable = false
   @State private var showingSearch = false
   @State private var showingPairing = false
   /// Asks the relay for codes that link a Mac (the preview's stand-in in the simulator preview).
@@ -182,9 +183,13 @@ struct WorkbenchView: View {
     .background(ChatColors.background.ignoresSafeArea())
     .environment(\.assetLoader, assetLoader)
     .sheet(isPresented: $showingRequests) {
-      RequestsInbox(phone: workbench, client: AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens))
+      RequestsInbox(phone: workbench) { host, session in
+        workbench.select(host: host, session: session)
+        showingRequests = false
+        show(.conversation)
+      }
     }
-    .modifier(RequestNotificationsModifier(phone: workbench, account: environment.account, showingRequests: $showingRequests))
+    .modifier(RequestNotificationsModifier(phone: workbench, openConversation: openNotification))
     .onChange(of: layer) { _, layer in
       // The keyboard belongs to the conversation's box; it goes when the conversation does.
       if layer != .conversation {
@@ -304,7 +309,9 @@ struct WorkbenchView: View {
               workbench.askForPreview(
                 Elicitation(
                   id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f5a", sessionId: id,
-                  message: "Delete the branch feat/old-ui? It has 3 unmerged commits.",
+                  message: ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_LONG_QUESTION"] == "1"
+                    ? "Ship the tested relay only? Keep mailbox activation, public-history removal, billing changes, and native releases disabled until their separate checks pass. No real mail is sent."
+                    : "Delete the branch feat/old-ui? It has 3 unmerged commits.",
                   createdAt: now, expiresAt: now + 300_000),
                 host: selection.host)
             }
@@ -312,6 +319,22 @@ struct WorkbenchView: View {
         #endif
       }
       await PreviewFixture.attach(to: workbench)
+      #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_NOTIFICATION"] == "1",
+          let token = try? await environment.account.tokens.sessionToken(),
+          let host = workbench.hosts.hosts.first(where: { host in workbench.sessions(of: host).contains { $0.displayName == "Explain the relay" } }),
+          let session = workbench.sessions(of: host).first(where: { $0.displayName == "Explain the relay" }),
+          let route = RequestNotificationRoute(userInfo: ["axo": ["version": 1,
+            "accountId": token.accountID.uuidString, "hostId": host.hostId.uuidString,
+            "sessionId": session.sessionId.rawValue, "requestId": UUID().uuidString]]) {
+          MobilePush.shared.queueNavigationForPreview(route)
+        }
+      #endif
+    }
+    .alert("Conversation unavailable", isPresented: $notificationUnavailable) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text("This conversation is no longer available in the current account. Reconnect and try again.")
     }
     .alert("Could not sign out", isPresented: $signOutFailed) {
       Button("OK", role: .cancel) {}
@@ -393,6 +416,16 @@ struct WorkbenchView: View {
           RequestsBell(phone: workbench, open: { showingRequests = true })
         }
       }
+  }
+
+  private func openNotification(_ route: RequestNotificationRoute) async {
+    guard await workbench.openNotification(route) else { notificationUnavailable = true; return }
+    showingRequests = false
+    showingSearch = false
+    showingPairing = false
+    settings = nil
+    showingInfo = false
+    show(.conversation)
   }
 
   private func toggleInfo() {
