@@ -335,7 +335,7 @@ fn computer_confirmation_preserves_platform_caller_authority() {
     {
         // No Linux code-signature identity is invented for this legacy gate.
         let reason = mcp.err("computer", json!({"tool":"list_apps","confirm":true}));
-        assert!(reason.contains("only axod"), "{reason}");
+        assert!(reason.contains("code -32013"), "{reason}");
         assert!(waiting_questions(&axod).is_empty());
     }
     #[cfg(not(target_os = "linux"))]

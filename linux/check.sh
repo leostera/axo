@@ -29,10 +29,9 @@ staging=$(mktemp -d /tmp/axo-linux-runtime.XXXXXX)
 trap 'rm -rf "$staging"' EXIT
 tar -xzf bazel-bin/linux/axo-linux.tar.gz -C "$staging"
 test -x "$staging/axo-askpass"
-# Exercise helper discovery from the extracted runtime, not the Bazel output tree.
-# Native Rust tests take their filter as an argument, not --test_filter.
+# Exercise the complete MCP route and helper discovery from the extracted runtime.
 bazel test //crates/axod:conformance_mcp \
-  --test_arg=linux_sudo_intent_withdraws_on_caller_cancel_before_any_password \
   --test_env=AXOD_BINARY_OVERRIDE="$staging/axod" \
+  --test_env=RUST_TEST_THREADS=1 \
   --jobs=8 --local_test_jobs=1 --test_timeout=60 "$@"
 python3 linux/smoke.py --bundled-resources "$staging/axod"
