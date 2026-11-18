@@ -1060,27 +1060,33 @@ test("an answer that came too late removes the card; another failure lets the pe
   assert.equal(workbench.questions().length, 0);
 });
 
-test("a form's values leave only sealed, and only to the key first seen for that Mac", async () => {
+test("a form's values leave only sealed, and only to a Mac key the person confirmed", async () => {
   const { workbench, account } = await workbenchWith();
   const vectors = JSON.parse(readFileSync(new URL("../../../crates/axo-seal/testdata/vectors.json", import.meta.url), "utf8"));
   const input = { app: "Safari", window: "Sign in", origin: "https://github.com", fields: [{ id: "f0", label: "Password", kind: "password" as const }], key: vectors.publicKey };
-  const ask = (id: string, key = input.key) => account.events.elicitationRequested?.(hostId, { id, sessionId: sid(1), kind: "input" as const, askedBy: "computerUse" as const, message: "Fill Password in Safari.", input: { ...input, key }, createdAt: 1, expiresAt: 2 });
+  const ask = (id: string, key = input.key, host = hostId) => account.events.elicitationRequested?.(host, { id, sessionId: sid(1), kind: "input" as const, askedBy: "computerUse" as const, message: "Fill Password in Safari.", input: { ...input, key }, createdAt: 1, expiresAt: 2 });
   inputKeyPins.memory.clear();
+  // Not confirmed yet, even as the first key seen for this Mac: nothing goes (RFD0069).
   ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60");
+  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60", "accept", { f0: "hunter2" });
+  assert.equal(account.resolves.length, 0);
+  assert.match(workbench.failure ?? "", /Check this Mac’s key first/);
+  inputKeyPins.confirm(input.key);
   await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60", "accept", { f0: "hunter2" });
   const [sent] = account.resolves;
   assert.equal(sent!.action, "accept");
   assert.ok(sent!.sealed && !JSON.stringify(sent).includes("hunter2"));
 
-  // Another key for the same Mac gets nothing.
+  // The cloud's own key, under a host id never seen before, gets nothing.
   const other = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=";
-  ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", other);
+  ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", other, crypto.randomUUID());
   await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "accept", { f0: "hunter2" });
   assert.equal(account.resolves.length, 1);
-  assert.match(workbench.failure ?? "", /key changed/);
+  assert.match(workbench.failure ?? "", /Check this Mac’s key first/);
   // Cancelling needs no key.
   await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "decline");
-  assert.deepEqual(account.resolves[1], { hostId, elicitationId: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", action: "decline" });
+  assert.equal(account.resolves[1]!.action, "decline");
+  assert.equal(account.resolves[1]!.sealed, undefined);
 });
 
 test("every answer goes signed by this browser's key, each with its own signature", async () => {

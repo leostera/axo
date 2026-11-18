@@ -13,7 +13,7 @@ import type {
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
-import { sealInput, type DeviceProof } from "@axo/app";
+import { keyFingerprint, sealInput, type DeviceProof } from "@axo/app";
 import { browserDevice, type AnswerDevice } from "./device.ts";
 import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
@@ -103,21 +103,32 @@ export type Link = "connecting" | "connected" | "reconnecting" | "idle";
 
 /** What a Mac's agent asks the person (RFD0029), until it is resolved. */
 /**
- * Each Mac's input key, as first seen (trust on first use, RFD0029): values are sealed only to
- * that key, so a key the cloud swapped in gets nothing.
+ * The Macs' input keys the person confirmed (RFD0069): values are sealed only to one of them. A
+ * key counts once the person saw its fingerprint here and in Axo on the Mac (Settings › Devices),
+ * so a key the cloud swapped in, under any host id, gets nothing until the person confirms it.
+ * The confirmation belongs to the key alone: host ids come from the cloud.
  */
 export const inputKeyPins = {
-  memory: new Map<string, string>(),
-  check(hostId: string, key: string): "pinned" | "same" | "changed" {
-    const name = `axo.inputKey.${hostId}`;
+  NAME: "axo.inputKeys.confirmed.v1",
+  LIMIT: 256,
+  memory: new Set<string>(),
+  confirmed(): string[] {
     const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    const known = storage?.getItem(name) ?? this.memory.get(name);
-    if (known === undefined || known === null) {
-      storage?.setItem(name, key);
-      this.memory.set(name, key);
-      return "pinned";
-    }
-    return known === key ? "same" : "changed";
+    try {
+      const kept: unknown = JSON.parse(storage?.getItem(this.NAME) ?? "[]");
+      if (Array.isArray(kept)) return [...kept.filter((key): key is string => typeof key === "string"), ...this.memory];
+    } catch { /* unreadable: nothing confirmed */ }
+    return [...this.memory];
+  },
+  isConfirmed(key: string): boolean {
+    return this.confirmed().includes(key);
+  },
+  /** The person saw the same fingerprint for `key` here and on the Mac. */
+  confirm(key: string): void {
+    if (this.isConfirmed(key)) return;
+    this.memory.add(key);
+    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
+    storage?.setItem(this.NAME, JSON.stringify(this.confirmed().slice(-this.LIMIT)));
   },
 };
 
@@ -1397,10 +1408,10 @@ export class ChatWorkbench {
     const input = question.elicitation.input;
     let sealed: Sealed | undefined;
     if (input && action === "accept") {
-      // The values leave this tab only sealed to the Mac's key, and only to the key first seen
-      // for that Mac: a different one may be the cloud's, not the Mac's.
-      if (inputKeyPins.check(question.hostId, input.key) === "changed") {
-        this.failure = "This Mac's encryption key changed. Nothing was sent; check the key in Axo on that Mac.";
+      // The values leave this tab only sealed to a Mac key the person confirmed against Axo on
+      // that Mac (RFD0069): any other may be the cloud's, whichever host the request names.
+      if (!inputKeyPins.isConfirmed(input.key)) {
+        this.failure = `Check this Mac’s key first: compare ${await keyFingerprint(input.key)} with Axo on the Mac, in Settings › Devices. Nothing was sent.`;
         this.changed();
         return false;
       }

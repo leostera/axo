@@ -1,7 +1,8 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
 import type { ChatMessage, ChatQuestion } from "./transcript.ts";
-import type { AskedQuestion, WaitingPrompt } from "./workbench.ts";
+import { inputKeyPins, type AskedQuestion, type WaitingPrompt } from "./workbench.ts";
+import { keyFingerprint } from "@axo/app";
 import { pendingLabel } from "./pi-controls.ts";
 import { Icon } from "./icons.tsx";
 import { highlight } from "./highlight.ts";
@@ -310,8 +311,16 @@ function InputCard({ question, canAnswer, onAnswer }: {
   const { elicitation, answering } = question;
   const input = elicitation.input!;
   const [values, setValues] = useState<Record<string, string>>({});
+  // A Mac key goes in only once the person compared it with Axo on the Mac (RFD0069).
+  const [confirmed, setConfirmed] = useState(() => inputKeyPins.isConfirmed(input.key));
+  const [fingerprint, setFingerprint] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void keyFingerprint(input.key).then(value => { if (current) setFingerprint(value); });
+    return () => { current = false; };
+  }, [input.key]);
   const disabled = !canAnswer || answering !== null;
-  const complete = input.fields.every(field => (values[field.id] ?? "") !== "");
+  const complete = confirmed && input.fields.every(field => (values[field.id] ?? "") !== "");
   const title = "Axo asks you to sign in on your Mac";
   return (
     <form
@@ -352,7 +361,16 @@ function InputCard({ question, canAnswer, onAnswer }: {
           </label>
         );
       })}
-      <p className="elicitation-note">Goes straight to your Mac, encrypted for it. The agent never sees it.</p>
+      {confirmed ? (
+        <p className="elicitation-note">Goes straight to your Mac, encrypted for it. The agent never sees it.</p>
+      ) : (
+        <div className="elicitation-note">
+          <p>Before your values go to this Mac, check that Axo there (Settings › Devices) shows this key:</p>
+          <p><strong className="elicitation-fingerprint">{fingerprint ?? "…"}</strong></p>
+          <button type="button" className="elicitation-button" disabled={disabled || fingerprint === null}
+            onClick={() => { inputKeyPins.confirm(input.key); setConfirmed(true); }}>It matches</button>
+        </div>
+      )}
       <div className="elicitation-actions">
         <button type="submit" className="elicitation-button primary" disabled={disabled || !complete}>Fill in</button>
         <button type="button" className="elicitation-button" disabled={disabled} onClick={() => onAnswer("decline")}>Cancel</button>
