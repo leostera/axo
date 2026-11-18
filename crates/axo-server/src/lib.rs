@@ -239,6 +239,9 @@ pub fn serve_ipc(
     remote_access: RemoteAccess,
 ) -> Result<(), Box<dyn std::error::Error>> {
     prepare_server_directory(server_directory)?;
+    // First, before anything reads or changes what the directory holds: a second axod must not
+    // take the stop record, move transcripts or start Pis that the running one owns.
+    let _owner = ServerLock::acquire(server_directory)?;
     let socket_path = match socket_override {
         Some(path) => SocketPath::parse(path.to_path_buf())?,
         None => default_socket_path()?,
@@ -898,6 +901,47 @@ fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
     fs::remove_file(socket_path)
 }
 
+/// The one axod serving a server directory: an exclusive `flock` on `axod.lock` in it, held for
+/// the process's lifetime and released by the kernel however it ends.
+struct ServerLock {
+    _held: fs::File,
+}
+
+impl ServerLock {
+    const FILE: &'static str = "axod.lock";
+
+    /// Takes the directory, or fails with `AddrInUse` while another axod has it.
+    fn acquire(server_directory: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(server_directory.join(Self::FILE))?;
+        // SAFETY: flock on a descriptor this File owns; it only changes an advisory lock.
+        if unsafe {
+            libc::flock(
+                std::os::fd::AsRawFd::as_raw_fd(&file),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        } == 0
+        {
+            return Ok(Self { _held: file });
+        }
+        let error = io::Error::last_os_error();
+        Err(if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "another axod already serves this server directory",
+            )
+        } else {
+            error
+        })
+    }
+}
+
 struct PidFile {
     path: PathBuf,
     process_id: u32,
@@ -1031,6 +1075,65 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn one_axod_serves_a_server_directory_at_a_time() {
+        let directory = temporary_directory();
+        prepare_server_directory(&directory).unwrap();
+        let owner = ServerLock::acquire(&directory).unwrap();
+        assert_eq!(
+            ServerLock::acquire(&directory)
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        drop(owner);
+        // Another test forking a child at that instant shares the descriptor until the child
+        // execs (close-on-exec), so the release is awaited, briefly.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while let Err(error) = ServerLock::acquire(&directory) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "released when its owner goes: {error}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A second axod stops before it opens the store: it never takes the running one's stop
+    /// record, moves its transcripts or starts its Pis.
+    #[test]
+    fn a_second_axod_leaves_the_directory_untouched() {
+        let directory = temporary_directory();
+        prepare_server_directory(&directory).unwrap();
+        let _running = ServerLock::acquire(&directory).unwrap();
+        let socket = directory.join("axod.sock");
+        let (done, result) = std::sync::mpsc::channel();
+        let server_directory = directory.clone();
+        std::thread::spawn(move || {
+            let served = serve_ipc(
+                Some(&socket),
+                &server_directory,
+                "test",
+                RemoteAccess {
+                    endpoint: RelayEndpoint::parse("http://127.0.0.1:9").unwrap(),
+                    credential_storage: HostCredentialStorage::Files,
+                },
+            )
+            .map_err(|error| error.to_string());
+            let _ = done.send(served);
+        });
+        let served = result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the second axod gave up at once");
+        assert!(served.unwrap_err().contains("another axod"));
+        assert!(
+            !directory.join(axo_store::DATABASE_FILE).exists(),
+            "the store was never opened"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
