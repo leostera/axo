@@ -82,8 +82,8 @@ are not treated as a reason to mint tokens repeatedly or switch endpoints.
 
 The approved canonical, topic-specific sandbox key is configured in server secrets. The Worker
 and iPhone 0.71 (69) are deployed: native enrollment and a fixed foreground receipt prove APNs
-transport to the device; the person confirmed a native lock-screen notification. A visible
-foreground banner was not observed and remains subject to OS presentation policy. The iPad
+transport to the device. The person reports that no notification was visible; neither a banner
+nor lock-screen presentation is verified. Receipt must not be reported as visible delivery. The iPad
 remains on build 68; neither Watch app was changed. Other-device rollout, Watch forwarding and
 production distribution remain independent gates. Local fake-APNs tests alone are never delivery proof.
 

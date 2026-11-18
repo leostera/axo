@@ -1,7 +1,7 @@
 # RFD0063 - Axo: Apple distribution and request push
 
 - Feature Name: `apple-distribution-and-apns`
-- Status: In progress — sandbox delivery live on iPhone; other-device and production rollout remain separate
+- Status: In progress — iPhone sandbox transport verified; visible notifications not verified
 - Author: leostera
 - Start Date: 2026-11-16
 - Document Type: Proposal
@@ -195,9 +195,10 @@ status in `Documents/axo-push-test.json`; it never exports a token or notificati
 Created an APNs-only, topic-specific key restricted to the canonical root and sandbox, retaining
 all existing keys/certificates. Its private material is held in server secrets, not source or apps.
 The integrated Worker and mobile-only iPhone build 0.71 (69) are deployed. Native enrollment and
-a device-local `receivedForeground` report established real APNs receipt; the person separately
-confirmed a native notification on the locked iPhone. Foreground receipt does not promise a
-visible foreground banner, which the person did not observe. OS presentation policy still applies.
+a device-local `receivedForeground` report established APNs receipt. The person subsequently
+clarified that no notification was visible. The earlier interpretation of a confirmation as
+lock-screen visibility was incorrect: neither visible banners nor lock-screen presentation are
+verified. OS presentation settings and policy still need diagnosis.
 
 The iPad remains on build 68; neither installed Watch app was replaced. No production key/topic,
 app submission, credential reset, source sign-out or Mac runtime restart occurred. These results
