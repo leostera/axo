@@ -221,10 +221,27 @@ pub(super) fn start_cancel(id: Value, params: &Value, context: &RelaySessionCont
     });
 }
 
-/// Starts a loopback sign-in; its reply goes back on this socket only.
+/// Starts a loopback sign-in; its reply goes back on this socket only. Like every job it belongs
+/// to the socket: a cancel or the socket's end gives it up and frees its redirect port.
 pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionContext) {
+    start_sign_in_with(id, params, context, axo_signin::open_in_browser);
+}
+
+/// [`start_sign_in`], opening the sign-in page with `open_browser`.
+fn start_sign_in_with<F>(
+    id: Value,
+    params: &Value,
+    context: &RelaySessionContext,
+    open_browser: impl FnOnce(String) -> F + Send + 'static,
+) where
+    F: std::future::Future<Output = std::io::Result<()>> + Send + 'static,
+{
     let request = match crate::signin::parse(params, &context.account_id) {
         Ok(request) => request,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    let mut job = match context.jobs.start(&request.call_id) {
+        Ok(job) => job,
         Err(error) => return context.replies.reply(&id, Err(error)),
     };
     let place = match SIGN_INS.admit() {
@@ -236,7 +253,11 @@ pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionCon
         // The code and the URL's parameters are never logged.
         let call_id = &request.call_id;
         log::info!("event=apps.sign_in_started call={call_id}");
-        let outcome = crate::signin::run(&request, axo_signin::open_in_browser).await;
+        let outcome = tokio::select! {
+            biased;
+            _ = job.cancelled() => Err(MethodError::new(-32004, "Sign-in cancelled")),
+            outcome = crate::signin::run(&request, open_browser) => outcome,
+        };
         drop(place);
         log::info!(
             "event=apps.sign_in_finished call={call_id} outcome={}",
@@ -244,4 +265,96 @@ pub(super) fn start_sign_in(id: Value, params: &Value, context: &RelaySessionCon
         );
         replies.reply(&id, outcome);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::super::test_support::{ACCOUNT, RecordingHost, context, sent};
+    use super::*;
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn sign_in(call_id: &str, port: u16) -> Value {
+        json!({
+            "accountId": ACCOUNT,
+            "callId": call_id,
+            "authorizeUrl": "https://example.com/oauth/authorize?state=0123456789abcdef",
+            "ports": [port],
+            "path": "/callback",
+            "state": "0123456789abcdef",
+            "timeoutMs": 600_000,
+        })
+    }
+
+    /// The port is free again: nothing answers on it.
+    async fn released(port: u16) {
+        for _ in 0..100 {
+            if tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("port {port} is still held");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_or_the_sockets_end_gives_a_sign_in_up_and_frees_its_port() {
+        let (context, mut outgoing) = context(RecordingHost::new(|_| Duration::ZERO));
+        let (opened, mut browser) = tokio::sync::mpsc::unbounded_channel();
+
+        let port = free_port();
+        let opening = opened.clone();
+        start_sign_in_with(
+            json!(1),
+            &sign_in("kraken-1", port),
+            &context,
+            move |url| async move { opening.send(url).map_err(std::io::Error::other) },
+        );
+        browser.recv().await.unwrap();
+        start_cancel(
+            json!(2),
+            &json!({ "accountId": ACCOUNT, "callId": "kraken-1" }),
+            &context,
+        );
+        let (first, second) = (sent(&mut outgoing).await, sent(&mut outgoing).await);
+        let (cancelled, receipt) = if first["id"] == 1 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        assert_eq!(receipt["result"]["cancelRequested"], true, "{receipt}");
+        assert_eq!(
+            cancelled["error"]["message"], "Sign-in cancelled",
+            "{cancelled}"
+        );
+        released(port).await;
+
+        let port = free_port();
+        start_sign_in_with(
+            json!(3),
+            &sign_in("kraken-2", port),
+            &context,
+            move |url| async move { opened.send(url).map_err(std::io::Error::other) },
+        );
+        browser.recv().await.unwrap();
+        context.jobs.close();
+        assert_eq!(
+            sent(&mut outgoing).await["error"]["message"],
+            "Sign-in cancelled"
+        );
+        released(port).await;
+    }
 }
