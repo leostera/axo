@@ -189,6 +189,14 @@ public final class AxodConnection: Sendable {
     try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: nil, like: sessionID, name: name))
   }
 
+  /// A new Session running `agent`, beside the open Session `sessionID` or at home (RFD0072).
+  /// Pi is left unsaid, so that an older axod still takes it.
+  public func createSession(agent: CodingAgent, like sessionID: SessionID?) async throws -> TerminalSession {
+    try await call(
+      AxodMethods.sessionCreate,
+      SessionCreateRequest(folder: nil, like: sessionID, name: nil, agent: agent == .pi ? nil : agent))
+  }
+
   public func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
     try await call(AxodMethods.sessionClose, CloseTerminalSessionRequest(sessionId: sessionID))
   }

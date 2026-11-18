@@ -664,6 +664,20 @@ final class TerminalSessionsModel {
     }
   }
 
+  /// A new Session running `agent` (RFD0072), beside the selected one as New Session does.
+  func createSession(agent: CodingAgent) async {
+    let interval = AxoTrace.beginInterval("command.session.create")
+    defer { AxoTrace.endInterval(interval) }
+    let selected = selectedSessionID.flatMap { id in
+      session(for: id) != nil && !isPeerSession(id) ? id : nil
+    }
+    do {
+      adopt(try await requireClient().createSession(agent: agent, like: selected))
+    } catch {
+      report(error)
+    }
+  }
+
   /// Brings back the Session most recently closed (⌘W on its Pi pane or last pane, or Close
   /// Session) and shows it. Repeating it reopens the one closed before that.
   @discardableResult

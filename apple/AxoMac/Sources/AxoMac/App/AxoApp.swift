@@ -202,6 +202,14 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         }
         .keyboardShortcut("t", modifiers: .command)
 
+        Menu("New Session with Agent") {
+          ForEach(CodingAgent.allCases) { agent in
+            Button(agent.displayName) {
+              Task { await sessions.createSession(agent: agent) }
+            }
+          }
+        }
+
         Button("Reopen Closed Session") {
           Task {
             if await sessions.reopenClosedSession() == .nothingToReopen { NSSound.beep() }

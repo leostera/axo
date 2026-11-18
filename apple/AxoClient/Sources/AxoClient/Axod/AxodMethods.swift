@@ -11,10 +11,12 @@ struct ConfigSetRequest: Encodable {
 }
 
 /// `axo.session.create`: in `folder`, beside the open Session `like`, or, with neither, at home.
+/// Pi when `agent` is absent (RFD0072).
 struct SessionCreateRequest: Encodable {
   let folder: String?
   let like: SessionID?
   let name: String?
+  var agent: CodingAgent? = nil
 }
 
 struct SessionRenameRequest: Encodable {

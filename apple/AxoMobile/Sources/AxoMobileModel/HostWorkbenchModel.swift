@@ -483,14 +483,16 @@ public final class HostWorkbenchModel {
   /// Starts a chat in `place` and opens it. A chat is a Session, running the agent in its folder
   /// on the Mac: the Mac's home folder unless it is started beside another chat (RFD0038).
   @discardableResult
-  public func createChat(in place: NewChatPlace) async -> SessionID? {
+  public func createChat(in place: NewChatPlace, agent: CodingAgent = .pi) async -> SessionID? {
     var createdID: SessionID?
     let previousSelection = selectedSessionID
     await attempt {
       let session =
-        switch place {
-        case .home: try await connection.createSession()
-        case .beside(let sessionID): try await connection.createSession(like: sessionID)
+        switch (place, agent) {
+        case (.home, .pi): try await connection.createSession()
+        case (.beside(let sessionID), .pi): try await connection.createSession(like: sessionID)
+        case (.home, _): try await connection.createSession(agent: agent, like: nil)
+        case (.beside(let sessionID), _): try await connection.createSession(agent: agent, like: sessionID)
         }
       created[session.sessionId] = session
       update([session])

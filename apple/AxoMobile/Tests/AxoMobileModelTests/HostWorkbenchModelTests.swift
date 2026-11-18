@@ -407,4 +407,17 @@ final class HostWorkbenchModelTests: XCTestCase {
     world.model.adopt(listing: world.host)
     XCTAssertTrue(world.model.sessions.contains { $0.sessionId == 5 })
   }
+
+  func testANewChatAsksForTheAgentPickedForIt() async throws {
+    let world = HostWorld()
+    world.model.selectedSessionID = nil
+    let creating = Task { await world.model.createChat(in: .home, agent: .codex) }
+    let channel = try await world.channel()
+    let create = try await channel.nextRequest()
+    XCTAssertEqual(create.method, "axo.remote.session.create")
+    XCTAssertEqual(create.params["agent"] as? String, "codex")
+    channel.reply(to: create.id, result: #"{"session":\#(sessionJSON(host: world.host.hostId, id: 6, name: "Codex", shells: []))}"#)
+    _ = await creating.value
+    XCTAssertEqual(world.model.selectedSessionID, 6)
+  }
 }

@@ -63,7 +63,10 @@ public final class PhoneWorkbench {
   private struct DraftTarget: Hashable {
     let host: RemoteHostRef
     let place: NewChatPlace
+    let agent: CodingAgent
   }
+  /// The coding agent a new chat starts with (RFD0072); a Mac without it refuses the chat.
+  public var newChatAgent: CodingAgent = .pi
   private var preparedChats: [DraftTarget: RemoteSession] = [:]
   @ObservationIgnored private var navigationRevision = 0
 
@@ -682,14 +685,15 @@ public final class PhoneWorkbench {
   private func startChat(in place: NewChatPlace, from draft: Selection) async -> SendOutcome {
     guard let workbench = await openNewChatHost(for: draft) else { return .failed }
     let revision = navigationRevision
-    let target = DraftTarget(host: workbench.reference, place: place)
+    let agent = newChatAgent
+    let target = DraftTarget(host: workbench.reference, place: place, agent: agent)
     let choice = draftModels[workbench.reference]
     let id: SessionID
     if let prepared = preparedChats[target] {
       id = prepared.sessionId
       if !workbench.sessions.contains(where: { $0.sessionId == id }) { workbench.update([prepared]) }
     } else {
-      guard let created = await workbench.createChat(in: place) else { return .failed }
+      guard let created = await workbench.createChat(in: place, agent: agent) else { return .failed }
       preparedChats[target] = workbench.sessions.first { $0.sessionId == created }
       id = created
     }

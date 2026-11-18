@@ -35,6 +35,15 @@ public struct HostConnection: Sendable {
       from: call("axo.remote.session.create", SessionCreateTarget(target: host, like: sessionID, name: name)))
   }
 
+  /// A new Session running `agent`, beside the Mac's open Session `sessionID` or at home
+  /// (RFD0072). Pi is left unsaid, so that a Mac older than the picker still takes it.
+  public func createSession(agent: CodingAgent, like sessionID: SessionID?) async throws -> RemoteSession {
+    try await session(
+      from: call(
+        "axo.remote.session.create",
+        SessionCreateTarget(target: host, like: sessionID, name: nil, agent: agent == .pi ? nil : agent)))
+  }
+
   /// Closes a Session; nothing opens in its place.
   public func closeSession(_ id: SessionID) async throws {
     let closed: ClosedSession = try await call(
@@ -222,6 +231,7 @@ private struct SessionCreateTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let like: SessionID?
   let name: String?
+  var agent: CodingAgent? = nil
 }
 private struct SessionTarget: Encodable, Sendable {
   let target: RemoteHostRef

@@ -226,6 +226,7 @@ struct ConversationView: View {
         WaitingQuestions(phone: phone, session: id, canAnswer: workbench?.status == .online)
       }
       HostPicker(phone: phone)
+      AgentPicker(phone: phone)
       DraftComposer(
         phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, showApps: showApps,
         workbench: workbench, session: session?.sessionId, send: sendDraft)

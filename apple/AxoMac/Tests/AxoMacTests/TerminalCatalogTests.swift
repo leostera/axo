@@ -119,6 +119,9 @@ final class FakeAxodClient: AxodClient {
   func createSession(like sessionID: SessionID) async throws -> TerminalSession {
     throw Unsupported()
   }
+  func createSession(agent: CodingAgent, like sessionID: SessionID?) async throws -> TerminalSession {
+    throw Unsupported()
+  }
   func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
     throw Unsupported()
   }
