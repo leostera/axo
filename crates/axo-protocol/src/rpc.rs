@@ -64,6 +64,8 @@ pub mod error_code {
     pub const TIMED_OUT: i64 = -32008;
     /// This Mac is not connected to its account, so what needs the account cannot be done.
     pub const NOT_CONNECTED: i64 = -32024;
+    /// A caller named a Session it does not belong to: a Session acts only as itself (RFD0073).
+    pub const NOT_THAT_SESSION: i64 = -32099;
 }
 
 /// Method names, in the order `axo.protocol.negotiate` advertises them.

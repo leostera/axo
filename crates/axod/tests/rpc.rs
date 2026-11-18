@@ -473,7 +473,11 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
         first_master.as_raw_fd(),
         b"printf '%s%s\\n' AXO_REPLAY_ SCREEN_9971\n",
     );
-    assert!(stream_contains(&first, b"AXO_REPLAY_SCREEN_9971", READY_WAIT));
+    assert!(stream_contains(
+        &first,
+        b"AXO_REPLAY_SCREEN_9971",
+        READY_WAIT
+    ));
     let (second, _second_master) = open_shell(shell);
     assert!(
         stream_contains(&second, b"AXO_REPLAY_SCREEN_9971", READY_WAIT),
@@ -996,7 +1000,7 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
 }
 
 #[test]
-fn axod_mcp_serves_one_sessions_agent_over_stdio() {
+fn axod_mcp_serves_only_a_session_that_is_open_and_its_own() {
     let directory = unique_test_directory("axo-mcp");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
@@ -1016,105 +1020,21 @@ fn axod_mcp_serves_one_sessions_agent_over_stdio() {
         .unwrap();
     assert!(!refused.status.success());
 
-    let mut mcp = Command::new(axod_binary())
+    // An open Session's tools are not served to a process outside it, as this test is
+    // (RFD0073); `conformance_mcp` calls every tool from inside a Session's Pi.
+    let outside = Command::new(axod_binary())
         .arg("mcp")
         .env("AXO_SOCKET", &socket)
         .env("AXO_SESSION_ID", session["id"].as_str().unwrap())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stdin(Stdio::null())
+        .output()
         .unwrap();
-    let mut input = mcp.stdin.take().unwrap();
-    let mut output = BufReader::new(mcp.stdout.take().unwrap());
-    let mut next_id = 0;
-    let mut request = |method: &str, params: Value| -> Value {
-        next_id += 1;
-        let message =
-            json!({ "jsonrpc": "2.0", "id": next_id, "method": method, "params": params });
-        writeln!(input, "{message}").unwrap();
-        let mut line = String::new();
-        output.read_line(&mut line).unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(response["id"], next_id, "{response}");
-        response["result"].clone()
-    };
-
-    let initialized = request(
-        "initialize",
-        json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }),
-    );
+    assert!(!outside.status.success());
     assert!(
-        initialized["instructions"]
-            .as_str()
-            .unwrap()
-            .contains("piSessionFile")
+        String::from_utf8_lossy(&outside.stderr).contains("acts only as itself"),
+        "{}",
+        String::from_utf8_lossy(&outside.stderr)
     );
-    let tools = request("tools/list", json!({}));
-    let names: Vec<&str> = tools["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap())
-        .collect();
-    for name in [
-        "whoami",
-        "session_catalog",
-        "session_prompt",
-        "terminal_write",
-        "terminal_screen",
-    ] {
-        assert!(names.contains(&name), "{names:?}");
-    }
-
-    let call = |request: &mut dyn FnMut(&str, Value) -> Value, name: &str, arguments: Value| {
-        let result = request(
-            "tools/call",
-            json!({ "name": name, "arguments": arguments }),
-        );
-        assert_ne!(result["isError"], true, "{name}: {result}");
-        result["structuredContent"].clone()
-    };
-    let me = call(&mut request, "whoami", json!({}));
-    assert_eq!(me["sessionId"], session["id"]);
-    assert_eq!(me["folder"], session["folder"]);
-
-    // "self" reaches this Session's own terminal pane.
-    let terminal = terminal_shell(&session)["id"].clone();
-    call(
-        &mut request,
-        "terminal_write",
-        json!({ "sessionId": "self", "shellId": terminal, "text": "echo mcp-$((40+2))\r" }),
-    );
-    let deadline = Instant::now() + READY_WAIT;
-    loop {
-        let screen = call(
-            &mut request,
-            "terminal_screen",
-            json!({ "sessionId": "self", "shellId": terminal }),
-        );
-        if screen["text"].as_str().unwrap().contains("mcp-42") {
-            break;
-        }
-        assert!(Instant::now() < deadline, "{screen}");
-        thread::sleep(Duration::from_millis(50));
-    }
-
-    // A prompt always names this Session as its sender.
-    let prompted = call(
-        &mut request,
-        "session_prompt",
-        json!({ "sessionId": "self", "text": "remind me" }),
-    );
-    assert_eq!(prompted["accepted"], true, "{prompted}");
-    let refused = request(
-        "tools/call",
-        json!({ "name": "session_prompt", "arguments": { "sessionId": "self", "text": "" } }),
-    );
-    assert_eq!(refused["isError"], true, "{refused}");
-
-    drop(input);
-    assert!(wait_for_exit(&mut mcp, READY_WAIT).success());
     daemon.stop();
     let _ = std::fs::remove_dir_all(directory);
 }

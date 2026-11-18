@@ -54,6 +54,37 @@ fn an_unknown_session_is_refused_at_startup() {
     assert!(!refused.status.success());
 }
 
+/// `axod mcp` serves a Session's tools only to that Session's own processes (RFD0073): started
+/// elsewhere (here, by the test) for an open Session, it is refused, as it is from inside
+/// another Session.
+#[test]
+fn only_a_sessions_own_processes_open_its_tools() {
+    let axod = Axod::start();
+    let (_, id) = first_session(&axod);
+    let (other, _) = first_session(&axod);
+    let open = |socket: std::path::PathBuf| {
+        std::process::Command::new(support::axod_binary())
+            .arg("mcp")
+            .env("HOME", axod.home())
+            .env("AXO_SOCKET", socket)
+            .env("AXO_SESSION_ID", &id)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let outside = open(axod.socket());
+    assert!(!outside.status.success());
+    assert!(
+        String::from_utf8_lossy(&outside.stderr).contains("acts only as itself"),
+        "{}",
+        String::from_utf8_lossy(&outside.stderr)
+    );
+    let from_another = open(axod.agent_socket(other["id"].as_str().unwrap()));
+    assert!(!from_another.status.success());
+    // Its own Pi's process opens it; stdin is closed, so it ends as soon as it has opened.
+    assert!(open(axod.agent_socket(&id)).status.success());
+}
+
 #[test]
 fn an_agent_finds_itself_and_the_sessions_around_it() {
     let axod = Axod::start();
@@ -151,7 +182,9 @@ fn agent_timer_helpers_use_own_identity_and_outlive_the_mcp_connection() {
         json!({"delayMs":3600000,"text":"not owned by the MCP transport"}),
     );
     assert_eq!(mcp.close().code(), Some(0));
-    let active = axod.ok("axo.session.timer.list", json!({"fromSessionId":id}));
+    let active = axod
+        .agent(&json!(id))
+        .ok("axo.session.timer.list", json!({"fromSessionId":id}));
     assert!(
         active["timers"]
             .as_array()

@@ -15,6 +15,7 @@ use jsonrpc_core::IoHandler;
 mod ai;
 mod attachments;
 mod brief;
+mod callers;
 mod catalog;
 mod core;
 mod devices;
@@ -327,9 +328,27 @@ pub fn serve_ipc(
     log::info!("event=daemon.ready pid={}", std::process::id());
     // `axod mcp` opens the MCP server for its Session on its connection (RFD0034).
     let mut upgrades = axo_ipc::Upgrades::default();
+    // Only from that Session's own processes: no caller serves itself another's tools (RFD0073).
     let mcp_socket = socket_path.0.clone();
-    upgrades.add(axo_mcp::OPEN, move |upgraded| {
-        axo_mcp::upgrade(upgraded, mcp_socket.clone())
+    let opening = Arc::clone(&core);
+    upgrades.add(axo_mcp::OPEN, move |mut upgraded| {
+        let (core, socket) = (Arc::clone(&opening), mcp_socket.clone());
+        async move {
+            let claimed = upgraded.params["sessionId"]
+                .as_str()
+                .and_then(axo_protocol::SessionId::parse);
+            let refused = match claimed {
+                Some(claimed) => callers::act_as(&core, &upgraded.local.peer(), claimed).err(),
+                // Not a Session ID: the MCP server says so itself.
+                None => None,
+            };
+            match refused {
+                Some(refusal) => {
+                    let _ = upgraded.answer(Err(refusal)).await;
+                }
+                None => axo_mcp::upgrade(upgraded, socket).await,
+            }
+        }
     });
     // Clients hear of events on a connection of their own, pushed as they happen (RFD0037).
     let streaming = Arc::clone(&core);
