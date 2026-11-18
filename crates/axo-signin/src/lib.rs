@@ -23,8 +23,10 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// How long one connection may take to send its request; a browser's idle preconnect must not
 /// hold up the real redirect.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Apps answered in one sign-in; past this many, more are dropped.
-const MAX_APPS: usize = 64;
+/// Connections answered at once; more are dropped until one ends. Bounds what a flood of stray
+/// requests (a page fetching the port, preconnects) holds, without ever turning away the
+/// redirect that comes after them.
+const MAX_CONNECTIONS: usize = 64;
 
 /// One sign-in: where to send the person, and where they come back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,7 +119,6 @@ pub async fn sign_in<F: Future<Output = io::Result<()>>>(
         // A browser's idle preconnect must not hold up the real redirect. This set owns every
         // connection task: a callback, timeout or cancelled sign-in drops and aborts them all.
         let mut serving = tokio::task::JoinSet::new();
-        let mut accepted = 0;
         loop {
             tokio::select! {
                 completed = serving.join_next(), if !serving.is_empty() => {
@@ -128,8 +129,7 @@ pub async fn sign_in<F: Future<Output = io::Result<()>>>(
                 incoming = listeners.accept() => {
                     match incoming {
                         Ok(stream) => {
-                            if accepted >= MAX_APPS { continue; }
-                            accepted += 1;
+                            if serving.len() >= MAX_CONNECTIONS { continue; }
                             let request = request.clone();
                             let redirect_uri = redirect_uri.clone();
                             serving.spawn(async move {
@@ -177,7 +177,13 @@ async fn listen(ports: &[u16]) -> Result<Listeners, SignInError> {
             continue;
         };
         let port = v4.local_addr().map_err(SignInError::Io)?.port();
-        let v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok();
+        // `localhost` may resolve to ::1 first: a port another program holds there would get the
+        // redirect, so it is not free. A Mac without IPv6 loopback listens on IPv4 alone.
+        let v6 = match TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+            Ok(v6) => Some(v6),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => continue,
+            Err(_) => None,
+        };
         return Ok(Listeners { v4, v6, port });
     }
     Err(SignInError::NoFreePort(ports.to_vec()))
@@ -494,6 +500,40 @@ mod tests {
         assert!(
             matches!(ended, Ok(0) | Err(_)),
             "an idle callback survived cancellation"
+        );
+    }
+
+    #[test]
+    fn stray_requests_never_turn_away_the_redirect_that_follows_them() {
+        let port = free_port();
+        let (opened, handle) = start(request(vec![port]));
+        opened.recv().unwrap();
+        for _ in 0..(2 * MAX_CONNECTIONS) {
+            assert!(get(port, "/favicon.ico").starts_with("HTTP/1.1 404"));
+        }
+        let answer = get(port, "/callback?code=late&state=s3cr3t-state");
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert_eq!(
+            handle.join().unwrap().unwrap().outcome,
+            Outcome::Code("late".into())
+        );
+    }
+
+    #[test]
+    fn a_port_another_program_holds_on_ipv6_loopback_is_not_free() {
+        let Ok(taken) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) else {
+            return; // No IPv6 loopback here: nothing to take.
+        };
+        let busy = taken.local_addr().unwrap().port();
+        let free = free_port();
+        let (opened, handle) = start(request(vec![busy, free]));
+        assert!(opened.recv().unwrap().contains(&percent_encode(&format!(
+            "http://localhost:{free}/callback"
+        ))));
+        get(free, "/callback?code=x&state=s3cr3t-state");
+        assert_eq!(
+            handle.join().unwrap().unwrap().outcome,
+            Outcome::Code("x".into())
         );
     }
 
