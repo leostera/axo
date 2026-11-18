@@ -186,7 +186,7 @@ enum SidebarSessionStatus: Equatable {
     case .ready: .green
     case .sleeping: Color(nsColor: .tertiaryLabelColor)
     case .working: .accentColor
-    case .needsAttention: .yellow
+    case .needsAttention: .orange
     }
   }
 

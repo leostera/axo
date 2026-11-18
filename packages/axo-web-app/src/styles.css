@@ -134,7 +134,7 @@ button:disabled { cursor: default; }
 .chat-row-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .status-dot.working { background: var(--orange); animation: breathe 1.6s ease-in-out infinite; }
-.status-dot.attention { width: 8px; height: 8px; background: var(--blue); }
+.status-dot.attention { width: 8px; height: 8px; background: var(--red); }
 .status-unavailable { color: var(--secondary); }
 @keyframes breathe { 50% { opacity: 0.35; } }
 .panel-note { margin: 8px 10px; color: var(--secondary); font-size: 14px; line-height: 1.4; }
@@ -360,8 +360,8 @@ button:disabled { cursor: default; }
 
 /* Sheets */
 .elicitation-bell { position: relative; }
-.elicitation-bell.has-requests { color: var(--green); }
-.elicitation-count { position: absolute; right: -5px; top: -5px; min-width: 16px; padding: 1px 4px; border-radius: 10px; font-size: 10px; background: var(--green); color: white; }
+.elicitation-bell.has-requests { color: var(--orange); }
+.elicitation-count { position: absolute; right: -5px; top: -5px; min-width: 16px; padding: 1px 4px; border-radius: 10px; font-size: 10px; background: var(--red); color: white; }
 .elicitation-inbox { padding: 0; border: 1px solid var(--separator); border-radius: 18px; background: var(--bg); color: var(--text); width: min(600px, calc(100vw - 24px)); max-height: calc(100dvh - 40px); overflow-y: auto; box-shadow: 0 20px 80px var(--shadow); }
 .elicitation-inbox::backdrop { background: rgba(0, 0, 0, .35); }
 .elicitation-inbox > section { padding: 18px; }

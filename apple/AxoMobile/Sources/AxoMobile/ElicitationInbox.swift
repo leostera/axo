@@ -12,9 +12,9 @@ struct RequestsBell: View {
       Button(action: open) {
         Image(systemName: count > 0 ? "bell.badge.fill" : "bell")
           .frame(width: 44, height: 44)
-          .foregroundStyle(count > 0 ? Color.green : .primary)
+          .foregroundStyle(count > 0 ? Color.orange : .primary)
           .overlay(alignment: .topTrailing) {
-            if count > 0 { Text("\(count)").font(.caption2.bold()).padding(4).background(.green, in: Capsule()).foregroundStyle(.white) }
+            if count > 0 { Text("\(count)").font(.caption2.bold()).padding(4).background(.red, in: Capsule()).foregroundStyle(.white) }
           }
       }
       .buttonStyle(.plain)

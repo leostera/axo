@@ -56,6 +56,21 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
       await page.waitForFunction(() => window.__notices.length === 1);
       assert.equal(await page.evaluate(() => window.__permissionRequests), 0);
       assert.ok(!(await page.evaluate(() => JSON.stringify(window.__notices))).includes("private request"));
+      const colors = await page.getByTestId("elicitation-bell").evaluate(element => {
+        const root = getComputedStyle(document.documentElement);
+        const resolve = name => {
+          const probe = document.createElement("span");
+          probe.style.color = root.getPropertyValue(name);
+          document.body.append(probe);
+          const color = getComputedStyle(probe).color;
+          probe.remove();
+          return color;
+        };
+        return { bell: getComputedStyle(element).color, badge: getComputedStyle(element.querySelector(".elicitation-count")).backgroundColor,
+          orange: resolve("--orange"), red: resolve("--red") };
+      });
+      assert.equal(colors.bell, colors.orange);
+      assert.equal(colors.badge, colors.red);
     }
     // Sending from a second device before Yes cannot bypass the same-Session fence.
     await otherDevice.locator("textarea").fill("A detail from the other device");

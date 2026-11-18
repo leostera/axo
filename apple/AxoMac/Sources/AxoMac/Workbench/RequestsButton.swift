@@ -10,10 +10,11 @@ struct RequestsButton: View {
         Image(systemName: count > 0 ? "bell.badge.fill" : "bell")
           .font(.system(size: 11, weight: .medium))
         Text(count > 0 ? "\(count)" : " ")
+          .foregroundStyle(count > 0 ? Color.red : Color.secondary)
           .font(.system(size: 9, weight: .semibold).monospacedDigit())
           .frame(width: 12)
       }
-      .foregroundStyle(count > 0 ? Color.green : Color.secondary)
+      .foregroundStyle(count > 0 ? Color.orange : Color.secondary)
       .frame(width: 34, height: 20)
       .contentShape(Rectangle())
     }
