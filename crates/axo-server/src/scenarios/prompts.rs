@@ -69,13 +69,26 @@ async fn an_agents_prompt_names_its_sender_and_prompting_itself_is_limited() {
         from_session_id: Some(record.id),
     };
     for _ in 0..10 {
-        let accepted = sessions::prompt(&fixture.core, to_self("again"), None, Vec::new())
-            .await
-            .unwrap();
+        let accepted = sessions::prompt(
+            &fixture.core,
+            to_self("again"),
+            None,
+            Vec::new(),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
         assert!(!accepted.queued);
     }
     assert!(matches!(
-        sessions::prompt(&fixture.core, to_self("again"), None, Vec::new()).await,
+        sessions::prompt(
+            &fixture.core,
+            to_self("again"),
+            None,
+            Vec::new(),
+            Duration::ZERO
+        )
+        .await,
         Err(PromptError::RateLimited)
     ));
     let named = format!("SENT:[From Axo Session {} {:?}]", record.id, record.name);
@@ -104,6 +117,7 @@ async fn prompts_refused_as_busy_do_not_use_up_the_senders_limit() {
         to_self("start a long turn", PromptDelivery::FollowUp),
         None,
         Vec::new(),
+        Duration::ZERO,
     )
     .await
     .unwrap();
@@ -118,7 +132,8 @@ async fn prompts_refused_as_busy_do_not_use_up_the_senders_limit() {
                 &fixture.core,
                 to_self("only if idle", PromptDelivery::Turn),
                 None,
-                Vec::new()
+                Vec::new(),
+                Duration::ZERO
             )
             .await,
             Err(PromptError::Busy)
@@ -129,9 +144,63 @@ async fn prompts_refused_as_busy_do_not_use_up_the_senders_limit() {
         to_self("after it", PromptDelivery::FollowUp),
         None,
         Vec::new(),
+        Duration::ZERO,
     )
     .await
     .expect("refused prompts did not count");
+}
+
+/// An agent's prompt to a Pi that never comes up is not answered as accepted and then lost: the
+/// sender waits for it, and hears that it was dropped when the Pi stopped first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_prompt_whose_pi_stops_first_is_reported_dropped() {
+    let fixture = Fixture::new().await;
+    let record = fixture.new_session().await;
+    let to_self = PromptSession {
+        session_id: record.id,
+        text: prompt_text("are you there"),
+        delivery: PromptDelivery::FollowUp,
+        from_session_id: Some(record.id),
+    };
+    let core = std::sync::Arc::clone(&fixture.core);
+    let waiting = tokio::spawn(async move {
+        sessions::prompt(&core, to_self, None, Vec::new(), Duration::from_secs(10)).await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !waiting.is_finished(),
+        "a queued prompt is not yet an answer"
+    );
+    let pi = crate::test_support::pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+    // SAFETY: signals the silent stand-in this test's Session started.
+    unsafe { libc::kill(pi, libc::SIGKILL) };
+    let answer = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("answered once its Pi stopped")
+        .unwrap();
+    assert!(matches!(answer, Err(PromptError::Dropped)), "{answer:?}");
+}
+
+/// Waiting has a bound: a prompt still queued when it passes is answered as queued.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_still_queued_after_its_wait_says_so() {
+    let fixture = Fixture::new().await;
+    let record = fixture.new_session().await;
+    let accepted = sessions::prompt(
+        &fixture.core,
+        PromptSession {
+            session_id: record.id,
+            text: prompt_text("later"),
+            delivery: PromptDelivery::FollowUp,
+            from_session_id: Some(record.id),
+        },
+        None,
+        Vec::new(),
+        Duration::from_millis(100),
+    )
+    .await
+    .unwrap();
+    assert!(accepted.queued);
 }
 
 /// A prompt from a Session that is not open is refused, and so is one to a Session with no Pi.
@@ -147,7 +216,14 @@ async fn a_prompt_names_open_sessions_only() {
         from_session_id: Some(unknown),
     };
     assert!(matches!(
-        sessions::prompt(&fixture.core, from_unknown, None, Vec::new()).await,
+        sessions::prompt(
+            &fixture.core,
+            from_unknown,
+            None,
+            Vec::new(),
+            Duration::ZERO
+        )
+        .await,
         Err(PromptError::Invalid(_))
     ));
     let to_unknown = PromptSession {
@@ -157,7 +233,7 @@ async fn a_prompt_names_open_sessions_only() {
         from_session_id: None,
     };
     assert!(matches!(
-        sessions::prompt(&fixture.core, to_unknown, None, Vec::new()).await,
+        sessions::prompt(&fixture.core, to_unknown, None, Vec::new(), Duration::ZERO).await,
         Err(PromptError::NoPi)
     ));
 }
@@ -199,6 +275,7 @@ async fn a_send_queues_behind_a_human_question_and_the_work_approved_by_yes() {
         send("while Yes is on its way"),
         None,
         Vec::new(),
+        Duration::ZERO,
     )
     .await
     .unwrap();
@@ -232,6 +309,7 @@ async fn a_send_queues_behind_a_human_question_and_the_work_approved_by_yes() {
         send("voice message after Yes"),
         None,
         Vec::new(),
+        Duration::ZERO,
     )
     .await
     .unwrap();

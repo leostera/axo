@@ -16,9 +16,13 @@ use axo_protocol::SessionId;
 use axo_protocol::asset::FetchedAttachment;
 use axo_protocol::commands::{CommandId, StopTarget};
 use axo_protocol::rpc::{PromptDelivery, PromptText};
+use tokio::sync::oneshot;
 
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
 pub(crate) const MAX_QUEUED_PI_PROMPTS: usize = 8;
+/// How long an agent's prompt waits for a starting Pi to take it before the answer says it is
+/// still queued: as long as a client's prompt waits for a starting Pi.
+pub(crate) const QUEUED_PROMPT_WAIT: Duration = Duration::from_secs(4);
 /// Prompts one Session's agent may send per [`RATE_WINDOW`], to anyone and to itself.
 const MAX_AGENT_PROMPTS_PER_WINDOW: usize = 30;
 const MAX_SELF_PROMPTS_PER_WINDOW: usize = 10;
@@ -99,6 +103,59 @@ pub(crate) struct Admitted {
     to_self: bool,
 }
 
+/// A prompt waiting for its Pi to come up, and whoever waits to hear what became of it. Every
+/// way it can leave the queue tells them: delivered, refused, or dropped with its Pi (in `Drop`,
+/// so no path that clears a queue can lose one silently).
+pub(crate) struct QueuedPrompt {
+    prompt: Prompt,
+    target: SessionId,
+    receipt: Option<oneshot::Sender<Result<(), PromptError>>>,
+}
+
+/// What became of a queued prompt.
+pub(crate) type Receipt = oneshot::Receiver<Result<(), PromptError>>;
+
+impl QueuedPrompt {
+    pub(crate) fn new(prompt: Prompt, target: SessionId) -> (Self, Receipt) {
+        let (receipt, outcome) = oneshot::channel();
+        (
+            Self {
+                prompt,
+                target,
+                receipt: Some(receipt),
+            },
+            outcome,
+        )
+    }
+
+    /// Sends it on `link`, oldest first, and tells whoever waits.
+    pub(crate) async fn deliver(mut self, link: &LinkCommands) {
+        let sent = send(link, &self.prompt).await;
+        if let Err(error) = &sent {
+            log::warn!(
+                "event=session.pi_prompt_lost session_id={} reason={}",
+                self.target,
+                refusal(error)
+            );
+        }
+        if let Some(receipt) = self.receipt.take() {
+            let _ = receipt.send(sent);
+        }
+    }
+}
+
+impl Drop for QueuedPrompt {
+    fn drop(&mut self) {
+        if let Some(receipt) = self.receipt.take() {
+            log::warn!(
+                "event=session.pi_prompt_dropped session_id={} reason=pi_stopped",
+                self.target
+            );
+            let _ = receipt.send(Err(PromptError::Dropped));
+        }
+    }
+}
+
 /// Why a prompt was not delivered.
 #[derive(Debug)]
 pub(crate) enum PromptError {
@@ -113,6 +170,8 @@ pub(crate) enum PromptError {
     QueueFull,
     /// Pi refused or could not be reached.
     Unavailable(String),
+    /// It waited for a Pi that stopped, or failed to start, before taking it.
+    Dropped,
 }
 
 impl PromptError {
@@ -121,7 +180,12 @@ impl PromptError {
     pub(crate) fn not_taken(&self) -> bool {
         matches!(
             self,
-            Self::Invalid(_) | Self::NoPi | Self::RateLimited | Self::Busy | Self::QueueFull
+            Self::Invalid(_)
+                | Self::NoPi
+                | Self::RateLimited
+                | Self::Busy
+                | Self::QueueFull
+                | Self::Dropped
         )
     }
 }
@@ -141,6 +205,7 @@ impl fmt::Display for PromptError {
                 formatter.write_str("Pi is still starting and already has prompts waiting")
             }
             Self::Unavailable(reason) => write!(formatter, "Pi did not take the prompt: {reason}"),
+            Self::Dropped => formatter.write_str("Pi stopped before it took the prompt"),
         }
     }
 }
@@ -152,7 +217,7 @@ impl From<PromptError> for io::Error {
             PromptError::NoPi => io::ErrorKind::NotFound,
             PromptError::RateLimited | PromptError::QueueFull => io::ErrorKind::WouldBlock,
             PromptError::Busy => io::ErrorKind::ResourceBusy,
-            PromptError::Unavailable(_) => io::ErrorKind::Other,
+            PromptError::Unavailable(_) | PromptError::Dropped => io::ErrorKind::Other,
         };
         io::Error::new(kind, error.to_string())
     }
@@ -222,6 +287,7 @@ pub(crate) fn refusal(error: &PromptError) -> &'static str {
         PromptError::Busy => "busy",
         PromptError::QueueFull => "queue_full",
         PromptError::Unavailable(_) => "unavailable",
+        PromptError::Dropped => "dropped",
     }
 }
 

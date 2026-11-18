@@ -56,7 +56,8 @@ fn prompt_rpc_error(error: PromptError) -> RpcError {
         PromptError::NoPi
         | PromptError::Busy
         | PromptError::QueueFull
-        | PromptError::Unavailable(_) => ErrorCode::ServerError(-32004),
+        | PromptError::Unavailable(_)
+        | PromptError::Dropped => ErrorCode::ServerError(-32004),
     };
     RpcError {
         code,
@@ -362,9 +363,15 @@ impl Extension for Sessions {
             method::SESSION_PROMPT,
             "expected {sessionId, text, delivery?: steer|followUp|turn|interrupt, fromSessionId?}",
             |core, request: rpc::PromptSession| async move {
-                crate::sessions::prompt(&core, request, None, Vec::new())
-                    .await
-                    .map_err(prompt_rpc_error)
+                crate::sessions::prompt(
+                    &core,
+                    request,
+                    None,
+                    Vec::new(),
+                    crate::session::prompts::QUEUED_PROMPT_WAIT,
+                )
+                .await
+                .map_err(prompt_rpc_error)
             },
         );
         add(

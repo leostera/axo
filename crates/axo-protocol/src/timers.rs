@@ -128,7 +128,10 @@ pub enum TimerState {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TimerOutcome {
+    /// Pi took it.
     Accepted,
+    /// Its Pi is still starting: it is sent when Pi comes up, or dropped if Pi stops first.
+    Queued,
     Refused,
     Uncertain,
 }

@@ -667,11 +667,15 @@ pub(crate) async fn set_viewport(core: &Core, viewport: Viewport) -> io::Result<
 
 /// Sends a prompt to the Session's Pi: from an agent of another Session (`from_session_id`) or
 /// from a person. A Pi still starting queues it; a dormant one starts for it.
+///
+/// A queued prompt is waited for up to `wait_if_queued`: the answer then says it was delivered,
+/// or why not (its Pi stopped first), and `queued: true` only while it still waits.
 pub(crate) async fn prompt(
     core: &Core,
     request: PromptSession,
     command_id: Option<CommandId>,
     attachments: Vec<FetchedAttachment>,
+    wait_if_queued: Duration,
 ) -> Result<PromptAccepted, PromptError> {
     let PromptSession {
         session_id: target,
@@ -731,12 +735,20 @@ pub(crate) async fn prompt(
         .map_err(refund)
         .map_err(refused)?;
     match admission {
-        Admission::Queued { delivery } => {
+        Admission::Queued { delivery, receipt } => {
             prompts::log_prompt(target, from, delivery, "queued");
-            Ok(PromptAccepted {
-                accepted: true,
-                queued: true,
-            })
+            match tokio::time::timeout(wait_if_queued, receipt).await {
+                Ok(Ok(Ok(()))) => Ok(PromptAccepted {
+                    accepted: true,
+                    queued: false,
+                }),
+                Ok(Ok(Err(error))) => Err(refused(refund(error))),
+                Ok(Err(_)) => Err(refused(refund(PromptError::Dropped))),
+                Err(_) => Ok(PromptAccepted {
+                    accepted: true,
+                    queued: true,
+                }),
+            }
         }
         Admission::Send { link, delivery } => {
             let mut prompt = prompt;
@@ -785,6 +797,8 @@ pub(crate) async fn prompt_from_client(
         },
         Some(command_id),
         attachments,
+        // It already waited for Pi; a client retries with the same commandId (RFD0024).
+        Duration::ZERO,
     )
     .await
     .map_err(io::Error::from)?;

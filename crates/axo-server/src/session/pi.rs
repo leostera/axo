@@ -27,7 +27,7 @@ use tokio::sync::oneshot;
 
 use super::controls::{PiCatalogEvent, PiControlEvent, PiControls};
 use super::panes::{Running, RuntimeId, pi_environment};
-use super::prompts::{self, MAX_QUEUED_PI_PROMPTS, Prompt, PromptError};
+use super::prompts::{MAX_QUEUED_PI_PROMPTS, Prompt, PromptError, QueuedPrompt, Receipt};
 use super::{Message, Session};
 use crate::catalog::PiPhase;
 use crate::core::Core;
@@ -118,7 +118,10 @@ pub(crate) struct Pi {
     /// What it last said it runs; kept across Pis, the next one says its own.
     pub(crate) controls: PiControls,
     /// Prompts waiting for it to come up, oldest first.
-    queued: Vec<Prompt>,
+    queued: Vec<QueuedPrompt>,
+    /// The queue is being sent to the running Pi: new prompts queue behind it, so they reach Pi
+    /// in the order they were taken.
+    flushing: bool,
     /// Start again once the running one exits.
     restart: bool,
     /// Become dormant once the running one exits (RFD0045).
@@ -145,6 +148,7 @@ impl Pi {
             activity: None,
             controls: PiControls::default(),
             queued: Vec::new(),
+            flushing: false,
             restart: false,
             sleep: false,
             active_at: Instant::now(),
@@ -215,7 +219,9 @@ impl Pi {
         }
         self.state = PiState::Unavailable;
         self.activity = None;
+        // Each dropped prompt tells whoever waits for it (`QueuedPrompt`'s `Drop`).
         self.queued.clear();
+        self.flushing = false;
     }
 }
 
@@ -312,6 +318,8 @@ pub(crate) enum Admission {
     /// It waits for Pi to come up.
     Queued {
         delivery: axo_protocol::rpc::PromptDelivery,
+        /// What became of it, once Pi took it or stopped first.
+        receipt: Receipt,
     },
     /// Send it on this link.
     Send {
@@ -723,6 +731,7 @@ impl Session {
             || activity.working
             || activity.ui_waits > 0
             || !pi.queued.is_empty()
+            || pi.flushing
             || pi.restart
             || pi.sleep;
         if busy {
@@ -789,7 +798,7 @@ impl Session {
         if std::mem::take(&mut pi.sleep) {
             pi.restart = true;
         }
-        let taking = pi.connected() && !pi.restart;
+        let taking = pi.connected() && !pi.restart && !pi.flushing;
         let admitted = match &pi.state {
             PiState::Running { link, .. } if taking => {
                 pi.recovery = Recovery::None;
@@ -803,9 +812,10 @@ impl Session {
                     return Err(PromptError::QueueFull);
                 }
                 let delivery = prompt.delivery;
-                pi.queued.push(prompt);
+                let (queued, receipt) = QueuedPrompt::new(prompt, self.id);
+                pi.queued.push(queued);
                 pi.recovery = Recovery::None;
-                Ok(Admission::Queued { delivery })
+                Ok(Admission::Queued { delivery, receipt })
             }
             PiState::Dormant | PiState::Unavailable => Err(PromptError::NoPi),
         };
@@ -1001,8 +1011,9 @@ impl Session {
         }
         let Some(pi) = &mut self.pi else { return };
         pi.activity.get_or_insert_default().connected = true;
-        // Never deliver replacement-runtime work back to the old Pi while it exits.
-        if pi.restart || self.core.is_stopping() {
+        // Never deliver replacement-runtime work back to the old Pi while it exits. A flush
+        // still running takes what queued behind it when it ends.
+        if pi.restart || pi.flushing || self.core.is_stopping() {
             return;
         }
         let queued = std::mem::take(&mut pi.queued);
@@ -1033,21 +1044,55 @@ impl Session {
         if queued.is_empty() {
             return;
         }
+        // Pi has finished starting: it takes what was sent to it meanwhile, oldest first.
+        if let Some(runtime_id) = self.running_runtime() {
+            self.flush(runtime_id, link, queued);
+        }
+    }
+
+    fn running_runtime(&self) -> Option<RuntimeId> {
+        match self.pi.as_ref().map(|pi| &pi.state) {
+            Some(PiState::Running { runtime_id, .. }) => Some(*runtime_id),
+            _ => None,
+        }
+    }
+
+    /// Sends `queued` to the running Pi in order, then takes whatever queued behind it meanwhile.
+    fn flush(&mut self, runtime_id: RuntimeId, link: LinkCommands, queued: Vec<QueuedPrompt>) {
+        let Some(pi) = &mut self.pi else { return };
+        pi.flushing = true;
         log::info!(
-            "event=session.pi_prompts_flushed session_id={id} count={}",
+            "event=session.pi_prompts_flushed session_id={} count={}",
+            self.id,
             queued.len()
         );
-        // Pi has finished starting: it takes what was sent to it meanwhile, oldest first.
+        let mailbox = self.mailbox();
         tokio::spawn(async move {
             for prompt in queued {
-                if let Err(error) = prompts::send(&link, &prompt).await {
-                    log::warn!(
-                        "event=session.pi_prompt_lost session_id={id} reason={}",
-                        prompts::refusal(&error)
-                    );
-                }
+                prompt.deliver(&link).await;
+            }
+            if let Some(mailbox) = mailbox.upgrade() {
+                let _ = mailbox.send(Message::Job(Box::new(move |session| {
+                    session.flushed(runtime_id, link);
+                    Box::pin(async {})
+                })));
             }
         });
+    }
+
+    /// A flush ended: what queued behind it goes next, unless that Pi is going.
+    fn flushed(&mut self, runtime_id: RuntimeId, link: LinkCommands) {
+        if !self.pi_is_current(runtime_id) {
+            return;
+        }
+        let stopping = self.core.is_stopping();
+        let Some(pi) = &mut self.pi else { return };
+        pi.flushing = false;
+        if pi.queued.is_empty() || pi.restart || stopping {
+            return;
+        }
+        let queued = std::mem::take(&mut pi.queued);
+        self.flush(runtime_id, link, queued);
     }
 
     async fn pi_event(&mut self, runtime_id: RuntimeId, name: &str, data: &Value) {

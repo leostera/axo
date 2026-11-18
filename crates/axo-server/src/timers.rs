@@ -201,9 +201,13 @@ enum NextTick {
 /// of creating one rejected prompt/log per second for every short-period timer.
 fn tick_result(result: Result<rpc::PromptAccepted, PromptError>) -> (TimerOutcome, NextTick) {
     match result {
-        Ok(_) => (TimerOutcome::Accepted, NextTick::Cadence),
+        Ok(rpc::PromptAccepted { queued: false, .. }) => {
+            (TimerOutcome::Accepted, NextTick::Cadence)
+        }
+        // Still waiting for its Pi to start: delivered when it does, or dropped if it never does.
+        Ok(rpc::PromptAccepted { queued: true, .. }) => (TimerOutcome::Queued, NextTick::Cadence),
         Err(PromptError::RateLimited) => (TimerOutcome::Refused, NextTick::AfterRateWindow),
-        Err(PromptError::Busy | PromptError::QueueFull) => {
+        Err(PromptError::Busy | PromptError::QueueFull | PromptError::Dropped) => {
             (TimerOutcome::Refused, NextTick::Cadence)
         }
         Err(PromptError::Unavailable(_)) => (TimerOutcome::Uncertain, NextTick::Stop),
@@ -269,6 +273,7 @@ async fn run(core: Weak<Core>, id: TimerId, mut cancel: watch::Receiver<bool>) {
                 },
                 None,
                 Vec::new(),
+                prompts::QUEUED_PROMPT_WAIT,
             ),
             SEND_WAIT,
             || {
@@ -540,6 +545,7 @@ mod tests {
                 },
                 None,
                 vec![],
+                Duration::ZERO,
             )
             .await
             .unwrap();
@@ -594,6 +600,19 @@ mod tests {
             "A deadline-uncertain interval never resumes automatically"
         );
         assert!(!timers.completed(&id, outcome));
+    }
+
+    #[test]
+    fn a_send_still_queued_is_reported_queued_not_accepted() {
+        let queued = tick_result(Ok(rpc::PromptAccepted {
+            accepted: true,
+            queued: true,
+        }));
+        assert!(matches!(queued.0, TimerOutcome::Queued));
+        assert_eq!(queued.1, NextTick::Cadence);
+        let dropped = tick_result(Err(PromptError::Dropped));
+        assert!(matches!(dropped.0, TimerOutcome::Refused));
+        assert_eq!(dropped.1, NextTick::Cadence);
     }
 
     #[test]

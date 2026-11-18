@@ -30,6 +30,7 @@ async fn prompt(fixture: &Fixture, id: SessionId, text: &str) -> bool {
         },
         None,
         Vec::new(),
+        Duration::ZERO,
     )
     .await
     .unwrap();

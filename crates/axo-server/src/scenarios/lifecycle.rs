@@ -400,6 +400,7 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
         },
         None,
         Vec::new(),
+        Duration::ZERO,
     )
     .await
     .unwrap();
@@ -483,6 +484,7 @@ async fn working_session(fixture: &Fixture) -> axo_protocol::SessionRecord {
         },
         None,
         vec![],
+        Duration::ZERO,
     )
     .await
     .unwrap();
@@ -621,6 +623,7 @@ async fn a_new_real_prompt_supersedes_unclaimed_restart_recovery() {
         },
         None,
         vec![],
+        Duration::ZERO,
     )
     .await
     .unwrap();

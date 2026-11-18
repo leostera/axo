@@ -63,3 +63,30 @@ async fn settlement_releases_protection_but_unconfirmed_stop_does_not() {
         .await
         .unwrap();
 }
+
+/// While the queue is being sent to a Pi that just came up, new prompts queue behind it instead
+/// of overtaking it on the link.
+#[tokio::test(flavor = "multi_thread")]
+async fn prompts_taken_during_a_flush_queue_behind_it() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    fixture
+        .core
+        .registry
+        .get(record.id)
+        .unwrap()
+        .call(|session| {
+            Box::pin(async move {
+                session.pi.as_mut().unwrap().flushing = true;
+                let mut later = prompt();
+                later.delivery = PromptDelivery::FollowUp;
+                assert!(matches!(
+                    session.admit_prompt(later).await.unwrap(),
+                    Admission::Queued { .. }
+                ));
+            })
+        })
+        .await
+        .unwrap();
+}
