@@ -378,7 +378,9 @@ async fn launch_codex(
         home: request.home,
         thread_id: request.thread_id,
         thread_name: request.thread_name,
-        instructions: None,
+        instructions: Some(agent_brief()),
+        mcp: Some(request.mcp),
+        previous: request.previous,
         size: request.size,
     };
     let (lock, server) = {
@@ -398,7 +400,8 @@ async fn launch_codex(
 /// A launched agent's pane process, with the link that follows it.
 struct Followed {
     running: Running,
-    /// Who the Pi is, for a later axod to kill should it outlive this one.
+    /// Who the agent's process is (Pi, or Codex's server), for a later axod to kill should it
+    /// outlive this one.
     identity: Option<ProcessIdentity>,
     link: AgentCommands,
     link_task: tokio::task::AbortHandle,
@@ -416,6 +419,29 @@ struct CodexRequest {
     /// The Session's thread, once it has one.
     thread_id: Option<String>,
     thread_name: String,
+    mcp: axo_agent::axo_mcp::AxoMcp,
+    /// The server an earlier axod started, if it said.
+    previous: Option<ProcessIdentity>,
+}
+
+/// Axo's brief for an agent that is not Pi, given once at launch. pi-axo asks for it again
+/// after every turn to keep the account's apps current; an agent configured at launch cannot,
+/// so its brief names the account without listing it and the agent asks (`apps_list`).
+fn agent_brief() -> String {
+    axo_mcp::brief::brief(&axo_mcp::brief::Reach {
+        calls: axo_mcp::brief::ToolCalls::Direct,
+        computer: axo_computer::AVAILABLE,
+        account: axo_mcp::brief::Account::Unreachable,
+    })
+}
+
+/// Axo's MCP server for the Session's agent, as pi-axo registers it for Pi.
+fn axo_mcp_server(core: &Core, session_id: axo_protocol::SessionId) -> io::Result<axo_agent::axo_mcp::AxoMcp> {
+    Ok(axo_agent::axo_mcp::AxoMcp {
+        axod: std::env::current_exe()?,
+        socket: core.agent_socket.clone(),
+        session_id: session_id.to_string(),
+    })
 }
 
 fn invalid_data(message: &str) -> io::Error {
@@ -522,14 +548,26 @@ impl Session {
         );
         self.publish();
         if self.row.agent == AgentKind::Codex {
-            let request = crate::current_user_home_directory().map(|home| CodexRequest {
-                folder: self.row.folder.clone(),
-                home,
-                session_uuid: self.id.to_string(),
-                pane_id,
-                size: self.pane_size(shell_id),
-                thread_id: self.row.agent_conversation.clone(),
-                thread_name: self.row.manual_name.clone().unwrap_or_else(|| self.row.name.clone()),
+            let id = self.id;
+            let previous = core
+                .store
+                .call(move |database| axo_store::load_pi_process(database, id))
+                .await
+                .ok()
+                .flatten()
+                .and_then(|stored| ProcessIdentity::parse(&stored).ok());
+            let request = crate::current_user_home_directory().and_then(|home| {
+                Ok(CodexRequest {
+                    folder: self.row.folder.clone(),
+                    home,
+                    session_uuid: self.id.to_string(),
+                    pane_id,
+                    size: self.pane_size(shell_id),
+                    thread_id: self.row.agent_conversation.clone(),
+                    thread_name: self.row.manual_name.clone().unwrap_or_else(|| self.row.name.clone()),
+                    mcp: axo_mcp_server(&core, self.id)?,
+                    previous,
+                })
             });
             let request = match request {
                 Ok(request) => request,
@@ -762,6 +800,7 @@ impl Session {
                     pty,
                     writer_lock,
                     server,
+                    identity,
                     thread_id,
                 } = launched;
                 let socket = axo_agent::codex::CodexPaths::new(
@@ -780,7 +819,7 @@ impl Session {
                 let config = axo_agent::codex::LinkConfig {
                     socket: socket.socket().to_owned(),
                     thread_id: thread_id.clone(),
-                    instructions: None,
+                    instructions: Some(agent_brief()),
                     log_context,
                 };
                 let mailbox = self.mailbox();
@@ -798,7 +837,7 @@ impl Session {
                 .abort_handle();
                 Ok(Followed {
                     running,
-                    identity: None,
+                    identity,
                     link: AgentCommands::Codex(link),
                     link_task,
                     thread_id: Some(thread_id),

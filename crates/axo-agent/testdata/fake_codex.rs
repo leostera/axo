@@ -22,7 +22,12 @@ fn log(line: &str) {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let mut arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    // Root config overrides come first, `-c key=value` each.
+    while let ["-c", value, ..] = arguments.as_slice() {
+        log(&format!("config {value}"));
+        arguments.drain(..2);
+    }
     match arguments.as_slice() {
         ["--version"] => println!("codex-cli 0.170.0"),
         ["app-server", "--listen", address] => serve(address.strip_prefix("unix://").unwrap()),

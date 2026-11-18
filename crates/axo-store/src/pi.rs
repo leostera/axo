@@ -17,7 +17,8 @@ pub fn ensure_pi_bridge_socket_paths(
     let records = {
         let mut statement = database
             .prepare(
-                "SELECT id, pi_bridge_socket_path FROM sessions WHERE pi_session_file IS NOT NULL",
+                "SELECT id, pi_bridge_socket_path FROM sessions
+                 WHERE pi_session_file IS NOT NULL AND agent = 'pi'",
             )
             .map_err(io::Error::other)?;
         statement

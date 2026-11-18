@@ -10,9 +10,20 @@ use serde_json::Value;
 
 /// What this Session's agent can reach through Axo.
 pub struct Reach {
+    /// How the agent calls Axo's tools.
+    pub calls: ToolCalls,
     /// This build of axod has computer use (`axo_computer::AVAILABLE`).
     pub computer: bool,
     pub account: Account,
+}
+
+/// How an agent calls the `axo` MCP server's tools.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolCalls {
+    /// From codemode scripts, as Pi does (`tools.mcp__axo__<tool>`).
+    Codemode,
+    /// As tools of their own, as Codex, OpenCode and Claude Code do (RFD0072).
+    Direct,
 }
 
 /// The person's Axo account, as far as this Mac knows it now.
@@ -82,6 +93,8 @@ impl AccountApps {
     }
 }
 
+const DIRECT_INTRODUCTION: &str = "You run inside Axo, as the agent of one of its Sessions. Axo's tools are the `axo` MCP server's; each answers JSON in `structuredContent`. These are the ones to reach for first; the server's instructions have the full guide.";
+
 const INTRODUCTION: &str = "You run inside Axo, as the agent of one of its Sessions. Call Axo's tools from a codemode script as `tools.mcp__axo__<tool>(args)`; each answers JSON in `structuredContent`. These are the ones to reach for first; `describeNamespace(\"axo\")` has the full guide.";
 
 const SESSIONS: &str = "- Sessions on this Mac: `whoami` (your own Session; \"self\" works wherever a Session ID goes), `session_catalog` (open and archived Sessions, with the path of each one's Pi transcript), `session_prompt`, `self` (current Session ID), `sendAfter` and `sendInterval` (runtime-only messages; `listTimers` lists them and `cancelTimer` cancels future ticks), `session_create` (optional `name` is fixed before startup), `terminal_write` and `terminal_screen` (type into your own Session's terminal panes, and read any Session's).";
@@ -99,7 +112,11 @@ const ACCOUNT_UNREACHABLE: &str = "- The person's Axo account, if this Mac is li
 
 /// The brief for `reach`, as plain text with one line per thing the agent can use.
 pub fn brief(reach: &Reach) -> String {
-    let mut lines = vec![INTRODUCTION.to_string(), SESSIONS.into(), ASKING.into()];
+    let introduction = match reach.calls {
+        ToolCalls::Codemode => INTRODUCTION,
+        ToolCalls::Direct => DIRECT_INTRODUCTION,
+    };
+    let mut lines = vec![introduction.to_string(), SESSIONS.into(), ASKING.into()];
     if reach.computer {
         lines.push(COMPUTER.into());
     }
@@ -205,6 +222,7 @@ mod tests {
     #[test]
     fn a_linked_mac_with_computer_use_hears_of_everything_by_name() {
         let text = brief(&Reach {
+            calls: ToolCalls::Codemode,
             computer: true,
             account: Account::Listed(AccountApps::parse(&listed()).unwrap()),
         });
@@ -225,8 +243,20 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_with_the_tools_as_its_own_is_not_told_of_codemode() {
+        let text = brief(&Reach {
+            calls: ToolCalls::Direct,
+            computer: false,
+            account: Account::Absent,
+        });
+        assert_eq!(text, [DIRECT_INTRODUCTION, SESSIONS, ASKING].join("\n"));
+        assert!(!text.contains("tools.mcp__axo__"));
+    }
+
+    #[test]
     fn what_is_not_there_is_not_mentioned() {
         let text = brief(&Reach {
+            calls: ToolCalls::Codemode,
             computer: false,
             account: Account::Absent,
         });
@@ -238,6 +268,7 @@ mod tests {
     #[test]
     fn an_account_that_does_not_answer_is_still_pointed_at() {
         let text = brief(&Reach {
+            calls: ToolCalls::Codemode,
             computer: false,
             account: Account::Unreachable,
         });
@@ -247,6 +278,7 @@ mod tests {
     #[test]
     fn an_account_with_nothing_yet_gets_the_tools_and_no_empty_lists() {
         let text = brief(&Reach {
+            calls: ToolCalls::Codemode,
             computer: false,
             account: Account::Listed(AccountApps::default()),
         });
@@ -260,6 +292,7 @@ mod tests {
         moved["apps"][1]["state"] = json!("online");
         let render = |listed: &Value| {
             brief(&Reach {
+                calls: ToolCalls::Codemode,
                 computer: true,
                 account: Account::Listed(AccountApps::parse(listed).unwrap()),
             })
@@ -270,6 +303,7 @@ mod tests {
     #[test]
     fn every_tool_the_brief_names_is_one_the_server_offers() {
         let text = brief(&Reach {
+            calls: ToolCalls::Codemode,
             computer: true,
             account: Account::Listed(AccountApps::default()),
         });

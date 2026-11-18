@@ -50,6 +50,7 @@ impl Extension for Brief {
                     let account = account(route.as_ref(), request.session_id).await;
                     Ok(rpc::SessionBrief {
                         brief: brief(&Reach {
+                            calls: axo_mcp::brief::ToolCalls::Codemode,
                             computer: axo_computer::AVAILABLE,
                             account,
                         }),

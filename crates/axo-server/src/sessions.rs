@@ -244,7 +244,14 @@ async fn create_in(
         .pi_directories
         .transcripts
         .join(format!("{session_uuid}.jsonl"));
-    let bridge_socket = BridgeSocketPath::for_session(&core.pi_directories.bridges, &session_uuid)?;
+    // Only Pi has a bridge; another agent's link goes another way (RFD0072).
+    let bridge_socket = match agent {
+        axo_agent::AgentKind::Pi => Some(BridgeSocketPath::for_session(
+            &core.pi_directories.bridges,
+            &session_uuid,
+        )?),
+        _ => None,
+    };
     if let Some(source) = import.clone() {
         let (destination, workspace) = (transcript.clone(), folder.clone());
         tokio::task::spawn_blocking(move || copy_pi_transcript(&source, &destination, &workspace))
@@ -263,11 +270,13 @@ async fn create_in(
                         folder: &folder,
                         name: &format!("Session {ordinal}"),
                         manual_name: name.as_ref(),
-                        pi_session_file: &transcript,
-                        bridge_socket: &bridge_socket,
+                        transcript: &transcript,
                         pane_id: &pane_id,
                         split_id: &split_id,
-                        agent,
+                        agent: match &bridge_socket {
+                            Some(bridge_socket) => axo_store::NewAgent::Pi { bridge_socket },
+                            None => axo_store::NewAgent::Other(agent),
+                        },
                     },
                 )
             })

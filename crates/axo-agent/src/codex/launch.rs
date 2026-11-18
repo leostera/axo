@@ -15,9 +15,13 @@ use axo_pty::lifeline::Lifeline;
 use axo_pty::process::{self, PtyProcess, WindowSize};
 
 use crate::WriterLock;
+use crate::axo_mcp::AxoMcp;
+use crate::process::ProcessIdentity;
 use crate::codex::link::{ServerProcess, create_thread};
 use crate::lock::FORK_EXEC_WINDOW;
 
+/// How long a killed earlier server gets to let go of the lock.
+const KILLED_RELEASE: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest socket path macOS takes (`sun_path` is 104 bytes, with its terminator).
 const MAX_SOCKET_PATH: usize = 103;
 
@@ -77,6 +81,11 @@ pub struct CodexLaunch {
     pub thread_name: String,
     /// Axo's brief, as the thread's developer instructions.
     pub instructions: Option<String>,
+    /// Axo's MCP server, configured on the app-server.
+    pub mcp: Option<AxoMcp>,
+    /// The server an earlier axod started for this Session, if it said: killed if it still
+    /// holds the Session's lock.
+    pub previous: Option<ProcessIdentity>,
     pub size: WindowSize,
 }
 
@@ -86,6 +95,8 @@ pub struct CodexProcess {
     /// Axod's own hold on the agent lock, released when the Session lets the Codex go.
     pub writer_lock: WriterLock,
     pub server: ServerProcess,
+    /// Who the server is, for a later axod to kill should it outlive this one.
+    pub identity: Option<ProcessIdentity>,
     pub thread_id: String,
 }
 
@@ -96,9 +107,12 @@ pub fn start_server(
     launch: &CodexLaunch,
     lifeline: &Lifeline,
 ) -> io::Result<(WriterLock, ServerProcess)> {
-    let writer_lock = WriterLock::acquire_within(&launch.paths.lock_base, FORK_EXEC_WINDOW)?;
+    let writer_lock = take_lock(launch)?;
     remove_abandoned_socket(launch.paths.socket())?;
     let mut guard = lifeline.guarded(&launch.executable, Some(&writer_lock.shared_file()?))?;
+    if let Some(mcp) = &launch.mcp {
+        guard.args(mcp.codex_overrides());
+    }
     guard
         .args(["app-server", "--listen"])
         .arg(format!("unix://{}", launch.paths.socket().display()))
@@ -107,6 +121,30 @@ pub fn start_server(
     environment(&mut guard, launch);
     let child = guard.spawn()?;
     Ok((writer_lock, ServerProcess::new(child)))
+}
+
+/// Takes the Session's lock. A server an earlier axod started that still holds it is killed
+/// (it and its process group), and the lock taken once it lets go; any other holder is not
+/// signalled and the launch fails.
+fn take_lock(launch: &CodexLaunch) -> io::Result<WriterLock> {
+    match WriterLock::acquire_within(&launch.paths.lock_base, FORK_EXEC_WINDOW) {
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            let Some(previous) = launch.previous.filter(|previous| previous.is_running()) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "another process holds this Session's Codex",
+                ));
+            };
+            log::warn!(
+                "event=codex.previous_killed session_id={} pid={}",
+                launch.session_uuid,
+                previous.pid
+            );
+            previous.kill();
+            WriterLock::acquire_within(&launch.paths.lock_base, KILLED_RELEASE)
+        }
+        acquired => acquired,
+    }
 }
 
 /// The second half: once the server listens, starts or confirms the thread and starts the TUI
@@ -138,6 +176,7 @@ pub async fn attach(
     Ok(CodexProcess {
         pty,
         writer_lock,
+        identity: ProcessIdentity::of(server.id()),
         server,
         thread_id,
     })

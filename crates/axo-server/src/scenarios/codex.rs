@@ -53,6 +53,11 @@ async fn a_codex_session_runs_the_tui_on_its_own_thread_and_takes_prompts_as_tur
     let log = codex_log(&fixture);
     assert_eq!(requests(&log, "thread/start"), 1, "{log}");
     assert_eq!(requests(&log, "thread/name/set"), 1, "{log}");
+    // Axo's brief and MCP server, as pi-axo gives them to Pi.
+    assert!(log.contains("config mcp_servers.axo.args=[\"mcp\"]"), "{log}");
+    assert!(log.contains(&format!("AXO_SESSION_ID = \"{}\"", record.id)), "{log}");
+    assert!(log.contains("\"developerInstructions\":\"You run inside Axo"), "{log}");
+    assert_eq!(fixture.listed(record.id).unwrap().shells.len(), 2);
     // The agent pane is Codex's TUI, resuming the thread the server started.
     let _ = (pane(&record, PaneRole::Pi), pane(&record, PaneRole::Terminal));
     fixture

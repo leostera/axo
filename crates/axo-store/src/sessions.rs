@@ -333,14 +333,37 @@ pub struct NewSession<'a> {
     pub folder: &'a Path,
     pub name: &'a str,
     pub manual_name: Option<&'a axo_protocol::rpc::SessionName>,
-    pub pi_session_file: &'a Path,
-    pub bridge_socket: &'a BridgeSocketPath,
+    /// The Session's transcript as Pi lines, which sync to the cloud: Pi's own session file, or
+    /// the one axod writes from another agent's conversation (RFD0072, Transcripts).
+    pub transcript: &'a Path,
     pub pane_id: &'a str,
-    /// The UUID of the split between the Pi and terminal panes.
+    /// The UUID of the split between the agent and terminal panes.
     pub split_id: &'a str,
-    /// The agent the Session runs, for good (RFD0072). A Session of another agent still
-    /// records Pi's paths, unused, so everything keyed on them keeps one shape.
-    pub agent: AgentKind,
+    pub agent: NewAgent<'a>,
+}
+
+/// The agent a new Session runs, for good (RFD0072), with what only that agent has.
+#[derive(Clone, Copy, Debug)]
+pub enum NewAgent<'a> {
+    Pi { bridge_socket: &'a BridgeSocketPath },
+    /// An agent other than Pi: nothing of Pi's is recorded for it.
+    Other(AgentKind),
+}
+
+impl NewAgent<'_> {
+    pub fn kind(&self) -> AgentKind {
+        match self {
+            NewAgent::Pi { .. } => AgentKind::Pi,
+            NewAgent::Other(kind) => *kind,
+        }
+    }
+
+    fn bridge_socket(&self) -> Option<&str> {
+        match self {
+            NewAgent::Pi { bridge_socket } => Some(bridge_socket.as_str()),
+            NewAgent::Other(_) => None,
+        }
+    }
 }
 
 /// The panes a new Session starts with.
@@ -369,9 +392,9 @@ pub fn insert_new_session(
                 unix_timestamp(),
                 new.name,
                 new.manual_name.map(|name| name.as_str()),
-                new.pi_session_file.to_string_lossy(),
-                new.bridge_socket.as_str(),
-                new.agent.as_str(),
+                new.transcript.to_string_lossy(),
+                new.agent.bridge_socket(),
+                new.agent.kind().as_str(),
             ],
         )
         .map_err(io::Error::other)?;
@@ -634,11 +657,10 @@ mod tests {
                 folder,
                 name: "Session 1",
                 manual_name: Some(&preset),
-                pi_session_file: Path::new("/h.jsonl"),
-                bridge_socket: &socket,
+                transcript: Path::new("/h.jsonl"),
                 pane_id: "pane",
                 split_id: &split,
-                agent: AgentKind::Pi,
+                agent: NewAgent::Pi { bridge_socket: &socket },
             },
         )
         .unwrap();
@@ -683,7 +705,6 @@ mod tests {
     #[test]
     fn a_session_keeps_its_agent_and_binds_its_conversation_once() {
         let database = &mut database();
-        let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
         let split = new_uuid_v4().unwrap();
         let session = insert_new_session(
             database,
@@ -692,16 +713,20 @@ mod tests {
                 folder: Path::new("/w"),
                 name: "Session 1",
                 manual_name: None,
-                pi_session_file: Path::new("/h.jsonl"),
-                bridge_socket: &socket,
+                transcript: Path::new("/h.jsonl"),
                 pane_id: "pane",
                 split_id: &split,
-                agent: AgentKind::Codex,
+                agent: NewAgent::Other(AgentKind::Codex),
             },
         )
         .unwrap()
         .session_id;
         assert_eq!(open_session_agent(database, session).unwrap(), (AgentKind::Codex, None));
+        // Nothing of Pi's: no bridge socket, and none is made up for it at the next open.
+        assert_eq!(open_pi_session(database, session).unwrap().bridge_socket_path, None);
+        crate::ensure_pi_bridge_socket_paths(database, Path::new("/tmp")).unwrap();
+        assert_eq!(open_pi_session(database, session).unwrap().bridge_socket_path, None);
+        assert!(crate::pi_bridge_sockets(database).unwrap().is_empty());
         bind_agent_conversation(database, session, "thread-1").unwrap();
         bind_agent_conversation(database, session, "thread-1").unwrap();
         assert!(bind_agent_conversation(database, session, "thread-2").is_err(), "it never changes");
