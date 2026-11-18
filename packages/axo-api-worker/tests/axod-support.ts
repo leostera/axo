@@ -174,7 +174,7 @@ export function browserWebSocketFactory(headers: Record<string, string>) {
 
 
 /**
- * A phone already allowed at the Mac (RFD0069): its key goes into `devices.json` before axod
+ * A phone already allowed at the Mac (RFD0077): its key goes into `devices.json` before axod
  * starts, as Axo.app's `axo.device.decide` would have put it. `answer` signs each answer with it.
  */
 export async function trustedDevice(serverDirectory: string, name = "Leo's iPhone") {

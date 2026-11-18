@@ -1,4 +1,4 @@
-//! The devices allowed to answer this Mac's questions (RFD0069). A phone or a browser signs each
+//! The devices allowed to answer this Mac's questions (RFD0077). A phone or a browser signs each
 //! answer with its own key, over that request's id, the action and the sealed values, and axod
 //! takes it only from a key the person allowed here, in Axo.app, after comparing its fingerprint
 //! with the one the device shows. So the cloud, or a bug in it, cannot forge an answer with a key

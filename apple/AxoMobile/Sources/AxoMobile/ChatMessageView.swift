@@ -470,7 +470,7 @@ struct InputCard: View {
   let question: AskedQuestion
   let canAnswer: Bool
   var failure: String?
-  /// Whether the person confirmed this Mac's key before (RFD0069).
+  /// Whether the person confirmed this Mac's key before (RFD0077).
   let keyConfirmed: Bool
   let confirmKey: () -> Void
   let answer: (ElicitationAnswer, [String: String]?) -> Void

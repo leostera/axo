@@ -30,7 +30,7 @@ export const ELICITATION_ERRORS = {
   badInput: -32014,
   /** Not signed by its device for this answer; it still waits. */
   badSignature: -32015,
-  /** From a device the person has not allowed at that Mac, or signed before it was (RFD0069); it still waits. */
+  /** From a device the person has not allowed at that Mac, or signed before it was (RFD0077); it still waits. */
   unknownDevice: -32016,
   /** Answered already, expired, or never asked. */
   notPending: -32011,
@@ -79,7 +79,7 @@ export type Sealed = z.infer<typeof sealedSchema>;
 /**
  * What a phone or a browser sends with every answer (RFD0029): its key, its name and its ECDSA
  * P-256 signature over that answer alone. The Mac takes it only from a key the person allowed in
- * Axo there (RFD0069).
+ * Axo there (RFD0077).
  */
 export const deviceProofSchema = z.object({
   key: z.base64().length(88),

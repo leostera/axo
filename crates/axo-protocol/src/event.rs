@@ -71,7 +71,7 @@ pub enum Event {
         action: ElicitationAction,
     },
     /// A phone or a browser answered without being allowed at this Mac yet: Axo.app asks the
-    /// person (RFD0069). Never forwarded to the relay.
+    /// person (RFD0077). Never forwarded to the relay.
     #[serde(rename = "device.requested")]
     DeviceRequested {
         device: crate::elicitation::Device,

@@ -38,7 +38,7 @@ public final class TerminalAttachment: @unchecked Sendable {
   }
 
   /// Opens an attachment. Blocks for at most `timeout` per step; call it off the main thread.
-  /// Nothing is sent until the listener is checked to be `peer` (RFD0069): the PTY carries what
+  /// Nothing is sent until the listener is checked to be `peer` (RFD0077): the PTY carries what
   /// the person types.
   public static func open(
     socketPath: UnixSocketPath,

@@ -39,7 +39,7 @@ public enum InputSeal {
   }
 }
 
-/// The Macs' input keys the person confirmed (RFD0069): values are sealed only to one of them. A
+/// The Macs' input keys the person confirmed (RFD0077): values are sealed only to one of them. A
 /// key counts once the person saw its fingerprint here and in Axo on the Mac (Settings › Devices),
 /// so a key the cloud swapped in, under any host ID, gets nothing until the person confirms it.
 /// The confirmation belongs to the key alone: host IDs come from the cloud.

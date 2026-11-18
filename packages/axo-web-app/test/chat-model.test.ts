@@ -1066,7 +1066,7 @@ test("a form's values leave only sealed, and only to a Mac key the person confir
   const input = { app: "Safari", window: "Sign in", origin: "https://github.com", fields: [{ id: "f0", label: "Password", kind: "password" as const }], key: vectors.publicKey };
   const ask = (id: string, key = input.key, host = hostId) => account.events.elicitationRequested?.(host, { id, sessionId: sid(1), kind: "input" as const, askedBy: "computerUse" as const, message: "Fill Password in Safari.", input: { ...input, key }, createdAt: 1, expiresAt: 2 });
   inputKeyPins.memory.clear();
-  // Not confirmed yet, even as the first key seen for this Mac: nothing goes (RFD0069).
+  // Not confirmed yet, even as the first key seen for this Mac: nothing goes (RFD0077).
   ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60");
   await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60", "accept", { f0: "hunter2" });
   assert.equal(account.resolves.length, 0);

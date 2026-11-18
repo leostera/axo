@@ -1,7 +1,7 @@
 import AxoProtocol
 import SwiftUI
 
-/// Settings › Devices (RFD0069): the phones and browsers that answer for this Mac, those waiting
+/// Settings › Devices (RFD0077): the phones and browsers that answer for this Mac, those waiting
 /// to, and this Mac's key for them to compare.
 struct DevicesSettingsView: View {
   @State private var model: DevicesModel

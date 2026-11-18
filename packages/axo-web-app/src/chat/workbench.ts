@@ -103,7 +103,7 @@ export type Link = "connecting" | "connected" | "reconnecting" | "idle";
 
 /** What a Mac's agent asks the person (RFD0029), until it is resolved. */
 /**
- * The Macs' input keys the person confirmed (RFD0069): values are sealed only to one of them. A
+ * The Macs' input keys the person confirmed (RFD0077): values are sealed only to one of them. A
  * key counts once the person saw its fingerprint here and in Axo on the Mac (Settings › Devices),
  * so a key the cloud swapped in, under any host id, gets nothing until the person confirms it.
  * The confirmation belongs to the key alone: host ids come from the cloud.
@@ -1409,7 +1409,7 @@ export class ChatWorkbench {
     let sealed: Sealed | undefined;
     if (input && action === "accept") {
       // The values leave this tab only sealed to a Mac key the person confirmed against Axo on
-      // that Mac (RFD0069): any other may be the cloud's, whichever host the request names.
+      // that Mac (RFD0077): any other may be the cloud's, whichever host the request names.
       if (!inputKeyPins.isConfirmed(input.key)) {
         this.failure = `Check this Mac’s key first: compare ${await keyFingerprint(input.key)} with Axo on the Mac, in Settings › Devices. Nothing was sent.`;
         this.changed();

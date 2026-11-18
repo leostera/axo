@@ -1,4 +1,4 @@
-# RFD0069 - Axo: a root of trust for the person's answers and typed secrets
+# RFD0077 - Axo: a root of trust for the person's answers and typed secrets
 
 - Feature Name: `answers-root-of-trust`
 - Status: Accepted

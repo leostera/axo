@@ -1,6 +1,6 @@
 import { atMost, defineActor, defineMessage, defineProperty, defineRule, defineScenario, defineSpec, defineZone, input, nullable, oneOf } from "@leostera/feynman";
 
-// RFD0069, devices are allowed at the Mac (amending RFD0029, every remote answer is signed). The
+// RFD0077, devices are allowed at the Mac (amending RFD0029, every remote answer is signed). The
 // phone (and the browser) holds a device key and signs each answer over the request's id, the
 // action and the sealed values. axod takes an answer only with a good signature from a key the
 // person allowed at the Mac, in Axo.app, after seeing the same fingerprint there as on the device.

@@ -311,7 +311,7 @@ function InputCard({ question, canAnswer, onAnswer }: {
   const { elicitation, answering } = question;
   const input = elicitation.input!;
   const [values, setValues] = useState<Record<string, string>>({});
-  // A Mac key goes in only once the person compared it with Axo on the Mac (RFD0069).
+  // A Mac key goes in only once the person compared it with Axo on the Mac (RFD0077).
   const [confirmed, setConfirmed] = useState(() => inputKeyPins.isConfirmed(input.key));
   const [fingerprint, setFingerprint] = useState<string | null>(null);
   useEffect(() => {

@@ -260,7 +260,7 @@ fn thirty_two_pending_questions_do_not_allocate_a_thread_each() {
     });
 }
 
-/// Which devices answer this Mac is the person's to say, at the Mac, in Axo.app (RFD0069): any
+/// Which devices answer this Mac is the person's to say, at the Mac, in Axo.app (RFD0077): any
 /// client may read the list, and only Axo.app, by code signature, allows or removes a device.
 /// The same uid is no such identity, on macOS or on Linux.
 #[test]

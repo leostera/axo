@@ -12,7 +12,7 @@ public enum AxoClientError: Error, Equatable, LocalizedError {
   /// The host answered with a JSON-RPC error.
   case serverRejected(code: Int, message: String)
   case requestTimedOut
-  /// The program listening on axod's socket is not axod, or could not be checked (RFD0069).
+  /// The program listening on axod's socket is not axod, or could not be checked (RFD0077).
   case untrustedPeer(String)
 
   public var errorDescription: String? {

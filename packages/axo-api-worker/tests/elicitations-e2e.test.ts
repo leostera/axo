@@ -138,7 +138,7 @@ test("an agent's question reaches the person's phone, their answer returns to th
     const next = await waitFor("the second question", 15_000, async () =>
       asked.find((entry) => entry.elicitation.message === "Push to main?"), daemon);
     assert.equal(next.elicitation.askedBy, "agent");
-    // Only devices allowed at the Mac answer, each signature for its own answer (RFD0069): a key
+    // Only devices allowed at the Mac answer, each signature for its own answer (RFD0077): a key
     // the cloud makes up is refused and waits for the person there; the allowed phone's signature
     // replayed onto this question, or changed to a Yes, is refused too.
     const { newDeviceKey, signAnswer } = await import("@axo/app");

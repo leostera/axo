@@ -1,7 +1,7 @@
 import Foundation
 
 /// Apps to a local axod: newline-delimited JSON over a Unix socket, to a listener checked to be
-/// axod before anything is sent (RFD0069).
+/// axod before anything is sent (RFD0077).
 public struct UnixSocketTransport: AxoTransport {
   public let socketPath: UnixSocketPath
   /// Who must be listening.

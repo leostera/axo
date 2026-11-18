@@ -172,7 +172,7 @@ pub struct ResolveElicitation {
 
 /// What a phone or a browser sends with every answer: its key, its name, and its signature over
 /// that answer alone (`axo_seal::answer_message`). axod takes it only from a key the person
-/// allowed in Axo.app on this Mac (RFD0069).
+/// allowed in Axo.app on this Mac (RFD0077).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceProof {
@@ -183,7 +183,7 @@ pub struct DeviceProof {
     pub signature: String,
 }
 
-/// A device that may answer this Mac's questions, or wants to (RFD0069).
+/// A device that may answer this Mac's questions, or wants to (RFD0077).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Device {
@@ -271,7 +271,7 @@ pub const BAD_INPUT: i64 = -32014;
 /// An answer without its device's signature over it: the request still waits.
 pub const BAD_SIGNATURE: i64 = -32015;
 /// An answer from a device the person has not allowed at this Mac, or one it signed before it was
-/// allowed (RFD0069): the request still waits, and the device waits in Axo.app's Settings.
+/// allowed (RFD0077): the request still waits, and the device waits in Axo.app's Settings.
 pub const UNKNOWN_DEVICE: i64 = -32016;
 
 /// `axo.elicitation.request`'s result: how it ended.

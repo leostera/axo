@@ -26,7 +26,7 @@ final class InputSealTests: XCTestCase {
   func testOnlyAKeyThePersonConfirmedIsTrustedWhateverHostNamesIt() {
     let defaults = UserDefaults(suiteName: "axo-input-pins-\(UUID())")!
     let pins = InputKeyPins(defaults: defaults)
-    // Seeing a key, for a host never seen before, trusts nothing (RFD0069).
+    // Seeing a key, for a host never seen before, trusts nothing (RFD0077).
     XCTAssertFalse(pins.isConfirmed("A"))
     XCTAssertFalse(pins.isConfirmed("A"))
     pins.confirm("A")

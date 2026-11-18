@@ -130,7 +130,7 @@ pub mod method {
     /// What a Session's agent can do through Axo, for pi-axo to put in its system prompt.
     pub const SESSION_BRIEF: &str = "axo.session.brief";
     /// The phones and browsers allowed to answer this Mac's questions, those waiting to, and
-    /// this Mac's input key's fingerprint (RFD0069).
+    /// this Mac's input key's fingerprint (RFD0077).
     pub const DEVICE_LIST: &str = "axo.device.list";
     /// Axo.app allows a waiting device, or turns it away.
     pub const DEVICE_DECIDE: &str = "axo.device.decide";

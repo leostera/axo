@@ -251,7 +251,7 @@ pub const PARITY: &[Parity] = &[
     ),
     row(
         method::DEVICE_LIST,
-        Remote::LocalOnly("devices are allowed at the Mac, in Axo.app (RFD0069)"),
+        Remote::LocalOnly("devices are allowed at the Mac, in Axo.app (RFD0077)"),
     ),
     row(
         method::DEVICE_DECIDE,

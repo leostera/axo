@@ -95,7 +95,7 @@ public final class PhoneWorkbench {
   @ObservationIgnored private var protectedInteractions: Set<Selection> = []
   /// Why the last answer did not go, until the next one does.
   public private(set) var answerFailure: String?
-  /// The Macs' input keys the person confirmed (RFD0069).
+  /// The Macs' input keys the person confirmed (RFD0077).
   public var inputKeyPins = InputKeyPins()
   /// This phone's key, which signs every answer; made on first use.
   public var device: (any DeviceSigner)?
@@ -250,7 +250,7 @@ public final class PhoneWorkbench {
     questions.filter { $0.elicitation.sessionId == session }
   }
 
-  /// Whether the person confirmed this Mac key, so values may be sealed to it (RFD0069).
+  /// Whether the person confirmed this Mac key, so values may be sealed to it (RFD0077).
   public func isInputKeyConfirmed(_ key: String) -> Bool {
     inputKeyPins.isConfirmed(key)
   }
@@ -279,7 +279,7 @@ public final class PhoneWorkbench {
     var sealed: SealedInput?
     if let input = questions[index].elicitation.input, action == .accept {
       // The values leave the phone only sealed to a Mac key the person confirmed against Axo on
-      // that Mac (RFD0069): any other may be the cloud's, whichever host the request names.
+      // that Mac (RFD0077): any other may be the cloud's, whichever host the request names.
       guard inputKeyPins.isConfirmed(input.key) else {
         answerFailure = "Check this Mac’s key first: compare \(InputSeal.fingerprint(of: input.key)) with Axo on the Mac, in Settings › Devices. Nothing was sent."
         return false

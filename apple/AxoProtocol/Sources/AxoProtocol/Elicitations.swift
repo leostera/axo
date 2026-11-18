@@ -133,12 +133,12 @@ public enum ElicitationError {
   public static let badInput = -32014
   /// Not signed by its device for this answer; it still waits.
   public static let badSignature = -32015
-  /// From a device the person has not allowed at that Mac, or signed before it was (RFD0069);
+  /// From a device the person has not allowed at that Mac, or signed before it was (RFD0077);
   /// it still waits.
   public static let unknownDevice = -32016
 }
 
-/// A phone or a browser that may answer this Mac's questions, or wants to (RFD0069).
+/// A phone or a browser that may answer this Mac's questions, or wants to (RFD0077).
 public struct AnsweringDevice: Codable, Equatable, Hashable, Sendable, Identifiable {
   /// Base64 of its public key.
   public let key: String

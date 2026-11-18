@@ -3,7 +3,7 @@ import AxoProtocol
 import Foundation
 import Observation
 
-/// The daemon operations for the devices that answer this Mac's questions (RFD0069). axod takes
+/// The daemon operations for the devices that answer this Mac's questions (RFD0077). axod takes
 /// `decideDevice` and `revokeDevice` only from Axo.app, by code signature.
 @MainActor
 protocol AxodDevicesClient: AnyObject {

@@ -5,7 +5,7 @@ import XCTest
 import AxoProtocol
 @testable import AxoClient
 
-/// RFD0069: Axo.app sends nothing on axod's socket until the listener is checked to be axod.
+/// RFD0077: Axo.app sends nothing on axod's socket until the listener is checked to be axod.
 final class AxodPeerTests: XCTestCase {
   func testAxodIsNamedBySameCertificateAndItsOwnIdentifier() {
     let own = #"identifier "dev.leostera.axo" and anchor apple generic and certificate leaf[subject.OU] = "TEAM1234""#

@@ -127,7 +127,7 @@ public final class AxodConnection: Sendable {
   /// The person's answer, from this app. axod takes it only from Axo.app, by code signature;
   /// a question answered already fails with `ElicitationError.notPending`.
   /// An input request's `values` go in the clear: this socket is axod's own, and it takes answers
-  /// on it only from Axo.app. They go only to a listener checked to be axod (RFD0069); a build
+  /// on it only from Axo.app. They go only to a listener checked to be axod (RFD0077); a build
   /// that cannot check one sends none.
   public func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]? = nil) async throws {
     if values != nil, let local = transport as? UnixSocketTransport, !local.peer.isVerified {
@@ -141,7 +141,7 @@ public final class AxodConnection: Sendable {
   }
 
   /// The phones and browsers that answer for this Mac, those asking to, and this Mac's input
-  /// key's fingerprint (RFD0069).
+  /// key's fingerprint (RFD0077).
   public func answeringDevices() async throws -> AnsweringDevices {
     try await call(AxodMethods.deviceList)
   }

@@ -5,7 +5,7 @@ import Foundation
   import Security
 #endif
 
-/// Who must be listening on axod's sockets (RFD0069). Any program running as the person can
+/// Who must be listening on axod's sockets (RFD0077). Any program running as the person can
 /// unlink `axod.sock` and listen in its place, an agent's scripts included, so Axo.app checks the
 /// listener's code signature before it sends anything: the same audit-token check axod makes of
 /// Axo.app, the other way round.
