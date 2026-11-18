@@ -37,7 +37,6 @@ version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist
 target=$(release_target "$(lipo -archs "$app/Contents/MacOS/Axo")")
 filename=$(release_filename "$version" "$commit" "$target")
 manifest=$work/latest.json
-release_manifest "$manifest" "$version" "$build" "$axod_build" "$commit" "$target"
 # Only a missing pointer is a bootstrap case. Network/server/malformed-data errors fail closed.
 status=$(curl -sS -o "$work/current.json" -w '%{http_code}' "$cdn/latest.json")
 if [[ "$status" == 404 ]]; then
@@ -60,12 +59,17 @@ if [[ "$status" == 200 ]]; then
   codesign --verify --deep --strict "$work/existing/Axo.app"
   [[ "$(cdhash "$app")" == "$(cdhash "$work/existing/Axo.app")" ]] || { echo "Immutable artifact already exists with different content" >&2; exit 1; }
   echo "Reusing verified immutable archive: $filename"
+  # The bytes clients will download are that object's, which may differ from this zip's.
+  served=$work/existing.zip
 elif [[ "$status" == 404 ]]; then
   "$cf" r2 objects put "releases/$filename" --bucket-name "$bucket" --file "$zip" \
     --content-type application/zip --content-length "$(stat -L -f %z "$zip")" --quiet >/dev/null
+  served=$zip
 else
   echo "Could not inspect immutable artifact (HTTP $status)" >&2; exit 1
 fi
+release_manifest "$manifest" "$version" "$build" "$axod_build" "$commit" "$target" \
+  "$(release_digest "$served")" "$(release_size "$served")"
 # Last write: a failed archive upload cannot make latest point to absent data.
 "$cf" r2 objects put latest.json --bucket-name "$bucket" --file "$manifest" \
   --content-type application/json --content-length "$(stat -f %z "$manifest")" --quiet >/dev/null

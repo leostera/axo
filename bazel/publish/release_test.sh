@@ -12,8 +12,20 @@ commit=0123456789abcdef0123456789abcdef01234567
 [[ "$(release_filename 0.71 "$commit" aarch64-apple-darwin)" == axo-0.71-0123456789ab-aarch64-apple-darwin.zip ]]
 if release_filename 0.71 short aarch64-apple-darwin || release_filename 0.71 "$commit" ../escape; then exit 1; fi
 file="${TEST_TMPDIR:-${TMPDIR:-/tmp}}/release-manifest-$$.json"
-trap 'rm -f "$file"' EXIT
-release_manifest "$file" 0.71 342 94 "$commit" aarch64-apple-darwin
+trap 'rm -f "$file" "$file.bad" "$file.data"' EXIT
+digest=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+release_manifest "$file" 0.71 342 94 "$commit" aarch64-apple-darwin "$digest" 104857600
+[[ "$(/usr/bin/plutil -extract integrity.aarch64-apple-darwin.sha256 raw -o - "$file")" == "$digest" ]]
+[[ "$(/usr/bin/plutil -extract integrity.aarch64-apple-darwin.size raw -o - "$file")" == 104857600 ]]
+# A JSON number, not a string.
+[[ "$(/usr/bin/plutil -extract integrity.aarch64-apple-darwin json -o - "$file")" == *'"size":104857600'* ]]
+upper=$(printf %s "$digest" | tr a-f A-F)
+for bad in "short 1" "$digest 0" "$upper 1" "$digest x"; do
+  if release_manifest "$file.bad" 0.71 342 94 "$commit" aarch64-apple-darwin $bad; then exit 1; fi
+done
+printf abc > "$file.data"
+[[ "$(release_digest "$file.data")" == ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad ]]
+[[ "$(release_size "$file.data")" == 3 ]]
 [[ "$(/usr/bin/plutil -extract version raw -o - "$file")" == 0.71 ]]
 [[ "$(/usr/bin/plutil -extract commit raw -o - "$file")" == "$commit" ]]
 [[ "$(/usr/bin/plutil -extract artifacts.aarch64-apple-darwin raw -o - "$file")" == axo-0.71-0123456789ab-aarch64-apple-darwin.zip ]]

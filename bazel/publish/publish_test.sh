@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
   if [[ "$1" == --file ]]; then file=$2; break; fi
   shift
 done
-if [[ "$key" == latest.json ]]; then cp "$file" "$FIXTURE_ROOT/result.json"; fi
+if [[ "$key" == latest.json ]]; then cp "$file" "$FIXTURE_ROOT/result.json"; else cp "$file" "$FIXTURE_ROOT/uploaded.zip"; fi
 SH
 chmod +x "$root/bin/"*
 export PATH="$root/bin:$PATH" FIXTURE_ROOT=$root BUILD_WORKSPACE_DIRECTORY=$root
@@ -69,9 +69,16 @@ expected='releases/axo-0.71-aaaaaaaaaaaa-aarch64-apple-darwin.zip
 latest.json'
 [[ "$(<"$root/uploads")" == "$expected" ]]
 [[ "$(/usr/bin/plutil -extract artifacts.aarch64-apple-darwin raw -o - "$root/result.json")" == axo-0.71-aaaaaaaaaaaa-aarch64-apple-darwin.zip ]]
+# The pointer describes the bytes it points at.
+integrity() { /usr/bin/plutil -extract "integrity.aarch64-apple-darwin.$1" raw -o - "$root/result.json"; }
+[[ "$(integrity sha256)" == "$(shasum -a 256 "$root/uploaded.zip" | cut -d' ' -f1)" ]]
+[[ "$(integrity size)" == "$(stat -f %z "$root/uploaded.zip")" ]]
 rm "$root/uploads" "$root/result.json"
 EXISTING=matching publish
 [[ "$(<"$root/uploads")" == latest.json ]]
+# Reusing an archive describes the existing object, not the zip it was compared with.
+[[ "$(integrity sha256)" == "$(shasum -a 256 "$root/input.zip" | cut -d' ' -f1)" ]]
+[[ "$(integrity size)" == "$(stat -f %z "$root/input.zip")" ]]
 rm "$root/uploads" "$root/result.json"
 unset EXISTING
 if FAIL_ARCHIVE=1 publish; then echo 'archive failure must stop publication' >&2; exit 1; fi

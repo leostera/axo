@@ -18,10 +18,15 @@ release_filename() {
   release_version "$1" && [[ "$2" =~ ^[a-f0-9]{40}$ ]] && [[ "$3" =~ ^[a-z0-9_]+(-[a-z0-9]+){2,4}$ ]] || return 1
   printf 'axo-%s-%.12s-%s.zip\n' "$1" "$2" "$3"
 }
+# The SHA-256 (lowercase hex) and size in bytes of an archive, as `release_manifest` takes them.
+release_digest() { /usr/bin/shasum -a 256 "$1" | cut -d' ' -f1; }
+release_size() { stat -L -f %z "$1"; }
+# `sha256` and `size` describe the exact bytes served at the artifact's URL (RFD0075).
 release_manifest() {
-  local output=$1 version=$2 build=$3 axod=$4 commit=$5 target=$6 filename
+  local output=$1 version=$2 build=$3 axod=$4 commit=$5 target=$6 sha256=$7 size=$8 filename
   filename=$(release_filename "$version" "$commit" "$target") || return 1
   [[ "$build" =~ ^[1-9][0-9]{0,8}$ && "$axod" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+  [[ "$sha256" =~ ^[a-f0-9]{64}$ && "$size" =~ ^[1-9][0-9]{0,15}$ ]] || return 1
   /usr/bin/plutil -create xml1 "$output"
   /usr/bin/plutil -insert version -string "$version" "$output"
   /usr/bin/plutil -insert build -integer "$build" "$output"
@@ -29,5 +34,7 @@ release_manifest() {
   /usr/bin/plutil -insert commit -string "$commit" "$output"
   /usr/bin/plutil -insert artifacts -json '{}' "$output"
   /usr/bin/plutil -insert "artifacts.$target" -string "$filename" "$output"
+  /usr/bin/plutil -insert integrity -json '{}' "$output"
+  /usr/bin/plutil -insert "integrity.$target" -json "{\"sha256\":\"$sha256\",\"size\":$size}" "$output"
   /usr/bin/plutil -convert json "$output"
 }
