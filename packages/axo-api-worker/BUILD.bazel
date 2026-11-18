@@ -149,7 +149,7 @@ node_test(
     tsx = True,
 )
 
-# Focused tests of who is signed in, and to which of the account's Macs.
+# Focused tests of who is signed in, to which of the account's Macs, and for how long (RFD0071).
 node_test(
     name = "sign_in_test",
     concurrency = 1,

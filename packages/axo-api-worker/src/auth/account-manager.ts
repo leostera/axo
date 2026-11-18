@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { accountAssets } from "../assets/store";
+import { signInSchema, type SignIn } from "./sign-in-lease";
 import { LIMITS, SHARE_LIMITS, type AccountShare, type ClientHost } from "@axo/protocol";
 import { hostModelSchema, hostRegisterSchema, hostSnapshotSchema, type HostModel, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
@@ -163,6 +164,19 @@ export class AxoAccountManager extends DurableObject<Env> {
   /** Push enrollment never accepts host credentials or browser sessions. */
   verifyPushSession(digest: string, now: number): boolean {
     return this.ctx.storage.sql.exec("SELECT 1 FROM sessions WHERE digest=? AND kind='native' AND expires_at>?", digest, now).toArray().length === 1;
+  }
+
+  /**
+   * Whether an open socket's sign-in still stands (RFD0071): the session is not signed out,
+   * evicted or expired, or the Mac is still linked with that credential. A socket on a host's
+   * HostDO also needs that host still linked.
+   */
+  confirmSignIn(signIn: SignIn, now: number, onHost?: string): boolean {
+    const parsed = signInSchema.safeParse(signIn);
+    if (!parsed.success || !this.accountId()) return false;
+    if (onHost !== undefined && !this.activeHost(onHost)) return false;
+    if (parsed.data.kind === "session") return this.verifySession(parsed.data.digest, now) !== null;
+    return this.activeHost(parsed.data.hostId)?.credential_id === parsed.data.credentialId;
   }
 
   revokeSession(digest: string): void {

@@ -1,7 +1,7 @@
 # RFD0032 - Axo: Push Delivery
 
 - Feature Name: `axo-push-delivery`
-- Status: Implemented (2026-11-08): host sync from the index, release P, and release 3 in the Worker, the web app, axod's peer sync and the phone. Removing protocol 2 is [RFD0036](RFD0036-retiring-protocol-2.md)'s, still a Draft, gated on a week of evidence.
+- Status: Implemented (2026-11-08): host sync from the index, release P, and release 3 in the Worker, the web app, axod's peer sync and the phone. Removing protocol 2 is [RFD0036](RFD0036-retiring-protocol-2.md)'s, still a Draft, gated on a week of evidence. Amended by [RFD0071](RFD0071-socket-sign-in-leases.md) (sign-in leases for open sockets).
 - Author: leostera
 - Start Date: 2026-11-05
 - Updated: 2026-11-10 (reconciled with the code)

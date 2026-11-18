@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { ElicitationReplay } from "./elicitation-replay";
 import { HTTPClientMailbox, closedHTTPClient, readHTTPClientRequest, type ClientConnection } from "./client-http";
 import { json } from "./auth/account-access";
+import { leaseFrom, signInLeaseMs, signInOf, signInSchema, type SignIn } from "./auth/sign-in-lease";
 import {
   CLIENT_METHODS,
   ELICITATION_ERRORS,
@@ -81,6 +82,12 @@ const attachmentSchema = z.object({
   accountId: uuid,
   clientId: z.string(),
   expiresAt: z.number(),
+  /**
+   * What the socket is signed in with, and until when the account last confirmed it (RFD0071).
+   * A socket accepted before leases has neither, and closes at its next frame, in or out.
+   */
+  signIn: signInSchema.optional(),
+  leaseUntil: z.number().default(0),
   window: z.number(),
   calls: z.number(),
   /**
@@ -105,6 +112,7 @@ type AccountStub = {
   clientHosts(clientDO?: string): Promise<Array<Omit<ClientHost, "online">>>;
   unfollow(clientDO: string): Promise<void>;
   renameHost(hostId: string, name: string): Promise<string | null>;
+  confirmSignIn(signIn: SignIn, now: number): Promise<boolean>;
 };
 type HostStub = {
   subscribe(clientDO: string): Promise<HostSubscription>;
@@ -152,16 +160,23 @@ export class AxoClientDO extends DurableObject<Env> {
   // ─── Socket ────────────────────────────────────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
+    const now = Date.now();
+    const http = new URL(request.url).pathname === "/http";
+    const expiresAt = Number(request.headers.get("X-Axo-Expiry"));
     const attachment = attachmentSchema.safeParse({
       accountId: request.headers.get("X-Axo-Account"),
       clientId: request.headers.get("X-Axo-Client"),
-      expiresAt: Number(request.headers.get("X-Axo-Expiry")),
-      window: Date.now(),
+      expiresAt,
+      signIn: signInOf(request) ?? undefined,
+      // Every HTTPS request is signed in on its own, so an HTTP client's sign-in needs no lease.
+      leaseUntil: http ? expiresAt : leaseFrom(now, expiresAt, signInLeaseMs(this.env)),
+      window: now,
       calls: 0,
     });
-    if (!attachment.success || attachment.data.expiresAt <= Date.now() || !this.bind(attachment.data.accountId, attachment.data.clientId))
+    if (!attachment.success || !attachment.data.signIn || attachment.data.expiresAt <= now ||
+        !this.bind(attachment.data.accountId, attachment.data.clientId))
       return new Response("Invalid internal identity", { status: 403 });
-    if (new URL(request.url).pathname === "/http") return this.httpTransport(request, attachment.data);
+    if (http) return this.httpTransport(request, attachment.data);
     this.httpMailbox.end();
     // One socket per client: a reconnect replaces the old one and starts afresh.
     for (const old of this.ctx.getWebSockets()) old.close(4000, "Replaced");
@@ -179,6 +194,7 @@ export class AxoClientDO extends DurableObject<Env> {
   private async processMessage(socket: ClientConnection, raw: string | ArrayBuffer): Promise<void> {
     const peer = this.peer(socket);
     if (!peer || peer.expiresAt <= Date.now()) return socket.close(4001, "Sign-in expired");
+    if (peer.leaseUntil <= Date.now() && !(await this.renewSignIn(socket, peer))) return;
     if (typeof raw !== "string") return socket.close(1003, "Text required");
     if (Date.now() - peer.window >= 1000) Object.assign(peer, { window: Date.now(), calls: 0 });
     peer.calls += 1;
@@ -221,7 +237,7 @@ export class AxoClientDO extends DurableObject<Env> {
     await this.webSocketClose(socket);
   }
 
-  /** Only HTTP clients need lease cleanup; WebSocket clients still never schedule an alarm. */
+  /** Only HTTP clients need lease cleanup; WebSocket clients never schedule an alarm (RFD0031). */
   async alarm(): Promise<void> {
     const deadline = this.httpMailbox.deadline();
     if (deadline === undefined) return;
@@ -234,11 +250,38 @@ export class AxoClientDO extends DurableObject<Env> {
   }
 
   /**
+   * Asks the account whether the socket's sign-in still stands, and renews its lease if so. A
+   * sign-out, an eviction, a revoked Mac, or an account that cannot be asked closes it.
+   */
+  private async renewSignIn(socket: ClientConnection, peer: Attachment): Promise<boolean> {
+    const confirmed = peer.signIn !== undefined &&
+      await this.account().confirmSignIn(peer.signIn, Date.now()).catch(() => false);
+    if (!confirmed) {
+      socket.close(4001, "Signed out");
+      return false;
+    }
+    peer.leaseUntil = leaseFrom(Date.now(), peer.expiresAt, signInLeaseMs(this.env));
+    socket.serializeAttachment(peer);
+    return true;
+  }
+
+  /**
+   * The socket to write to, its sign-in confirmed within its lease (RFD0071): nothing reaches a
+   * socket whose sign-in has ended. Undefined if there is none, or it was just closed.
+   */
+  private async signedInSocket(): Promise<ClientConnection | undefined> {
+    const socket = this.socket();
+    const peer = socket && this.peer(socket);
+    if (!socket || !peer) return undefined;
+    return peer.leaseUntil > Date.now() || await this.renewSignIn(socket, peer) ? socket : undefined;
+  }
+
+  /**
    * The account's hosts changed (a Mac paired or revoked): list them again and follow any new
    * one. False tells the account this client is gone.
    */
   async hostsChanged(): Promise<boolean> {
-    const socket = this.socket();
+    const socket = await this.signedInSocket();
     if (!socket || !this.identity()) return false;
     if (this.peer(socket)?.protocol === 3) {
       this.send(socket, { jsonrpc: "2.0", method: CLIENT_METHODS.hosts, params: { hosts: await this.listHosts() } });
@@ -282,7 +325,7 @@ export class AxoClientDO extends DurableObject<Env> {
 
   /** Notices from a HostDO; false tells it this client no longer follows it. */
   async notify(hostId: string, notices: HostNotice[]): Promise<boolean> {
-    const socket = this.socket();
+    const socket = await this.signedInSocket();
     const host = this.host(hostId);
     if (!socket || !host) return false;
     const sessions: ClientSession[] = [];

@@ -2,6 +2,7 @@ import { deliverHostNoticeBatch } from "./host-notice-delivery";
 import type { PushRoute } from "./push/registry";
 import { questionDigest } from "./push/content";
 import type { ShareAdmission } from "./auth/account-manager";
+import { signInLeaseMs, type SignIn } from "./auth/sign-in-lease";
 import {
   APPS_LIMITS,
   ELICITATION_ERRORS,
@@ -120,6 +121,7 @@ type AccountStub = {
   touchHost(hostId: string, hostGeneration: string, now: number): Promise<{ acknowledged: true; lastSeenAt: string }>;
   appsCall(call: AppsCall): Promise<HostCommandOutcome>;
   admitShare(hostId: string, shareId: string, bytes: number, now: number): Promise<ShareAdmission>;
+  confirmSignIn(signIn: SignIn, now: number, onHost?: string): Promise<boolean>;
   forgetShare(shareId: string): Promise<void>;
 };
 
@@ -265,6 +267,8 @@ export class AxoHostDO extends AxoHostRelay {
       elicitations: () => this.pendingElicitations(),
       command: (method, params) => this.command(method, params),
       resolveElicitation: (params) => this.resolveElicitation(params),
+      confirmSignIn: (signIn) => this.account().confirmSignIn(signIn, Date.now(), this.identity()!.host_id),
+      leaseMs: () => signInLeaseMs(this.env),
     });
     this.reconcile();
   }

@@ -36,6 +36,7 @@ import { z } from "zod";
 import type { HostCommandOutcome, HostNotice } from "./host-do";
 import type { ReadRequest, ReadResult } from "./session-store";
 import { recordApiEvent } from "./observability";
+import { leaseFrom, signInOf, signInSchema, type SignIn } from "./auth/sign-in-lease";
 
 /**
  * Protocol 3 (RFD0032): the client sockets a HostDO serves itself. A client opens one on each
@@ -69,6 +70,12 @@ const attachmentSchema = z.object({
    */
   person: z.boolean().default(true),
   expiresAt: z.number().finite(),
+  /**
+   * What the socket is signed in with, and until when the account last confirmed it (RFD0071).
+   * A socket accepted before leases has neither, and closes at its next frame, in or out.
+   */
+  signIn: signInSchema.optional(),
+  leaseUntil: z.number().default(0),
   window: z.number(),
   calls: z.number().int().nonnegative(),
 }).strict();
@@ -106,6 +113,10 @@ export interface HostClientsHost {
   elicitations(): Elicitation[];
   command(method: string, params: unknown): Promise<HostCommandOutcome>;
   resolveElicitation(params: unknown): Promise<HostCommandOutcome>;
+  /** Whether a sign-in still stands, and this host is still the account's (RFD0071). */
+  confirmSignIn(signIn: SignIn): Promise<boolean>;
+  /** How long a sign-in lease lasts (signInLeaseMs). */
+  leaseMs(): number;
 }
 
 /**
@@ -204,10 +215,13 @@ export class HostClients {
       connection: -1,
       person: request.headers.get("X-Axo-Person") !== "0",
       expiresAt: Number(request.headers.get("X-Axo-Expiry")),
+      signIn: signInOf(request) ?? undefined,
+      leaseUntil: leaseFrom(Date.now(), Number(request.headers.get("X-Axo-Expiry")), this.host.leaseMs()),
       window: Date.now(),
       calls: 0,
     });
-    if (!attachment.success || attachment.data.expiresAt <= Date.now()) return new Response("Invalid internal identity", { status: 403 });
+    if (!attachment.success || !attachment.data.signIn || attachment.data.expiresAt <= Date.now())
+      return new Response("Invalid internal identity", { status: 403 });
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server!);
     server!.serializeAttachment(attachment.data);
@@ -220,7 +234,9 @@ export class HostClients {
 
   async receive(socket: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const peer = this.attachment(socket);
-    if (!peer || !this.admit(socket, peer, raw)) return;
+    if (!peer) return;
+    if (peer.expiresAt > Date.now() && peer.leaseUntil <= Date.now() && !(await this.renewSignIn(socket, peer))) return;
+    if (!this.admit(socket, peer, raw)) return;
     const call = this.callIn(socket, peer, raw as string);
     if (!call) return;
     const answer = await this.answer(socket, peer, call);
@@ -280,6 +296,7 @@ export class HostClients {
    */
   async committed(sessionId: string, epoch: number, records: ClientRecord[]): Promise<void> {
     this.recent.add(sessionId, epoch, records);
+    await this.renewLapsed();
     await Promise.all(this.rowsOf(sessionId).map((row) => this.pump(row.socket_id, sessionId)));
   }
 
@@ -296,7 +313,9 @@ export class HostClients {
     this.recent.drop(sessionId);
     for (const row of this.rowsOf(sessionId)) {
       const socket = this.socket(row.socket_id);
-      if (socket && row.epoch === epoch - 1) this.reset(socket, row, { kind: "reset", epoch, keep });
+      // One whose lease lapsed learns of the cut with a read, once its sign-in is confirmed.
+      const leased = socket && this.attachment(socket)!.leaseUntil > Date.now();
+      if (socket && leased && row.epoch === epoch - 1) this.reset(socket, row, { kind: "reset", epoch, keep });
     }
   }
 
@@ -304,6 +323,7 @@ export class HostClients {
   async deliver(notices: HostNotice[]): Promise<void> {
     const hostId = this.host.hostId();
     if (!hostId) return;
+    await this.renewLapsed();
     await Promise.all(this.sockets().map((socket) => {
       const peer = this.attachment(socket)!;
       return peer.connection < 0 ? undefined : this.deliverTo(socket, peer, hostId, notices);
@@ -579,6 +599,32 @@ export class HostClients {
 
   private requested(elicitation: Elicitation) {
     return { jsonrpc: "2.0", method: ELICITATION_METHODS.requested, params: { hostId: this.host.hostId(), elicitation } };
+  }
+
+  // ─── Sign-in leases (RFD0071) ──────────────────────────────────────────────
+
+  /**
+   * Closes every socket whose sign-in ended, and asks again about each whose lease did: called
+   * before anything is written to the sockets, so nothing reaches one whose sign-in has ended.
+   */
+  private async renewLapsed(): Promise<void> {
+    const now = Date.now();
+    for (const socket of this.sockets()) {
+      const peer = this.attachment(socket)!;
+      if (peer.expiresAt <= now) this.close(socket, 4001, "Sign-in expired");
+      else if (peer.leaseUntil <= now) await this.renewSignIn(socket, peer);
+    }
+  }
+
+  private async renewSignIn(socket: WebSocket, peer: Attachment): Promise<boolean> {
+    const confirmed = peer.signIn !== undefined && await this.host.confirmSignIn(peer.signIn).catch(() => false);
+    if (!confirmed) {
+      this.close(socket, 4001, "Signed out");
+      return false;
+    }
+    peer.leaseUntil = leaseFrom(Date.now(), peer.expiresAt, this.host.leaseMs());
+    socket.serializeAttachment(peer);
+    return true;
   }
 
   private sockets(): WebSocket[] {

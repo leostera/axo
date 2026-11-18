@@ -5,6 +5,7 @@ import { hostDOName } from "../host-do";
 import { DIRECT_CLIENT_ROLE } from "../host-clients";
 import { requireAccount, type AuthExports } from "../auth/account-access";
 import type { AuthEnvironment } from "../auth/config";
+import { signInHeader } from "../auth/sign-in-lease";
 
 const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache" };
 
@@ -98,7 +99,10 @@ export async function upgradeHostDaemon(
   }));
 }
 
-/** How long a Mac's peers socket stays signed in; it signs in again with its credential, so a revoked Mac is refused within this. */
+/**
+ * How long a Mac's peers socket stays signed in before it signs in again with its credential. A
+ * revoked Mac's sockets end sooner, at their sign-in lease (RFD0071).
+ */
 const PEERS_SIGN_IN_MS = 60 * 60 * 1000;
 
 /**
@@ -135,6 +139,7 @@ export async function upgradeHostPeers(
       "X-Axo-Account": accountId.data,
       "X-Axo-Client": clientId,
       "X-Axo-Expiry": String(Date.now() + PEERS_SIGN_IN_MS),
+      ...signInHeader({ kind: "host", hostId: hostId.data, credentialId }),
     },
   }));
 }
@@ -162,6 +167,7 @@ export async function upgradeAccountClient(
       "X-Axo-Account": caller.accountId,
       "X-Axo-Client": clientId,
       "X-Axo-Expiry": String(caller.expiresAt),
+      ...signInHeader({ kind: "session", digest: caller.sessionDigest }),
     },
   }));
 }
@@ -183,6 +189,7 @@ export async function serveAccountHTTPClient(
       "X-Axo-Client": clientId,
       "X-Axo-Expiry": String(caller.expiresAt),
       "X-Axo-SignIn": caller.sessionDigest,
+      ...signInHeader({ kind: "session", digest: caller.sessionDigest }),
     },
   }));
 }
@@ -226,6 +233,7 @@ export async function upgradePeerHostClient(
       "X-Axo-Client": peerClientId(hostId.data),
       "X-Axo-Person": "0",
       "X-Axo-Expiry": String(Date.now() + PEERS_SIGN_IN_MS),
+      ...signInHeader({ kind: "host", hostId: hostId.data, credentialId }),
     },
   }));
 }
@@ -266,6 +274,7 @@ export async function upgradeHostClient(
       "X-Axo-Client": clientId,
       "X-Axo-Person": "1",
       "X-Axo-Expiry": String(caller.expiresAt),
+      ...signInHeader({ kind: "session", digest: caller.sessionDigest }),
     },
   }));
 }
