@@ -11,6 +11,7 @@ npm_link_all_packages(name = "node_modules")
 
 _CONFIG = [
     "cloudflare.config.ts",
+    "deployment.ts",
     "package.json",
     "vite.config.ts",
 ]
