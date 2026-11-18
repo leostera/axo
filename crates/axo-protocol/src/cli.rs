@@ -158,7 +158,7 @@ pub static OPERATIONS: &[Operation] = &[
     op!(
         &["relay", "link"],
         method::RELAY_LINK,
-        "Link this computer and keep it connected automatically",
+        "Link this computer to a local relay (development); link to your account from Axo, Settings, Remote Access",
         Write,
         Link,
         Identity,

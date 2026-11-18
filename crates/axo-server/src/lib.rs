@@ -22,8 +22,8 @@ mod event_stream;
 mod events;
 mod handlers;
 mod idle_pis;
-mod local_pins;
 mod input_key;
+mod local_pins;
 mod ops;
 mod peers;
 pub mod permissions;
@@ -536,6 +536,22 @@ impl Extension for Relay {
     }
 }
 
+/// Linking hands this Mac to an account, which may then run commands here and receives every
+/// Session's transcript, so only the person links it: from Axo.app, never from an agent's shell or
+/// script (the agent-vs-person rule, RFD0068). A loopback relay is exempt: it never leaves this
+/// Mac, so whoever runs it already runs as the person (local Workers and the e2e tests).
+fn admit_link(endpoint: &RelayEndpoint) -> Result<(), RpcError> {
+    if endpoint.is_loopback() {
+        return Ok(());
+    }
+    axo_ipc::Only {
+        caller: axo_ipc::peer::Caller::Signed(axo_ipc::peer::Signer::AxoApp),
+        code: axo_protocol::elicitation::NOT_A_PERSON,
+        message: "only the person links this Mac: in Axo, Settings, Remote Access",
+    }
+    .admit(method::RELAY_LINK)
+}
+
 fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
     let context = relay.clone();
     handler.add_typed(
@@ -547,6 +563,7 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
                 let context = context
                     .as_ref()
                     .ok_or_else(|| internal_error("host relay is unavailable"))?;
+                admit_link(&context.endpoint)?;
                 let context = context.clone();
                 let guard = Arc::clone(&context.link_operations)
                     .try_lock_owned()

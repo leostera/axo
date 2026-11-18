@@ -42,7 +42,6 @@ axo session show --sid <session-id> --json
 axo terminal screen --sid <session-id> --shell <shell-id> --lines 200
 axo session watch --sid <session-id>
 
-axo relay link ABCD-1234
 axo relay status
 axo relay unlink --yes
 axo daemon status
@@ -50,7 +49,7 @@ axo daemon permissions       # Live OS observations; never prompts
 axo daemon restart --yes
 ```
 
-A link means “keep connected whenever possible.” There are no CLI `connect` or `disconnect` states. Unlink clears the saved account and any pending redemption before deleting unused credentials and closing relay admission. It works offline, is idempotent, and survives daemon restarts. A lost CLI receipt does not abandon an admitted link/unlink operation halfway. The transport closes asynchronously; already-dispatched work may have run. This does not delete cloud transcripts, other devices or the account's historical host record, or claim remote revocation of previously copied credentials.
+Only the person links this Mac to their account, in Axo under **Settings › Remote Access**: a link gives the account commands on this Mac and every Session's transcript, so axod refuses `axo relay link` from anything but Axo.app. The CLI's `relay link` reaches only a loopback relay, for local Workers and tests. A link means “keep connected whenever possible.” There are no CLI `connect` or `disconnect` states. Unlink clears the saved account and any pending redemption before deleting unused credentials and closing relay admission. It works offline, is idempotent, and survives daemon restarts. A lost CLI receipt does not abandon an admitted link/unlink operation halfway. The transport closes asynchronously; already-dispatched work may have run. This does not delete cloud transcripts, other devices or the account's historical host record, or claim remote revocation of previously copied credentials.
 
 Daemon restart is explicit macOS LaunchAgent coordination: it restarts terminal processes and uses the registered service definition, not a new daemon binary chosen by the CLI. It refuses custom sockets and does not register/re-register services or grant Login Items approval. Open Axo to enable/repair the service when needed.
 

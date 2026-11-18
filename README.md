@@ -45,7 +45,7 @@ Axo.app ships the `axo` CLI. The installer sets up `/usr/local/bin/axo`; a downl
 axo session list
 axo session create --folder . --name "axo: tests"
 axo session prompt --sid <session-id> --message "Run the tests"
-axo relay link ABCD-1234
+axo relay status
 ```
 
 Use `--json` for scripts, `axo capabilities` for the generated command catalog, and `--help` on any group. See [`crates/axo-cli`](crates/axo-cli/README.md) for setup, deadlines, supported operations and safety boundaries.

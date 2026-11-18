@@ -16,6 +16,7 @@ use support::{Axod, Options};
 
 const NOT_CONNECTED: i64 = -32024;
 const INVALID_PARAMS: i64 = -32602;
+const NOT_A_PERSON: i64 = -32012;
 
 #[test]
 fn an_unlinked_mac_says_so_and_connecting_finds_no_account() {
@@ -78,6 +79,29 @@ fn linking_with_a_relay_that_is_not_there_fails_and_leaves_the_mac_unlinked() {
 
     let malformed = axod.err("axo.relay.link", json!({}));
     assert_eq!(malformed.code, INVALID_PARAMS, "{malformed:?}");
+}
+
+#[test]
+fn only_the_person_links_this_mac_to_an_account() {
+    // The account's relay, not a loopback one: linking to it gives an account this Mac, so a
+    // program on the socket that is not Axo.app (an agent's shell, a script) is refused before
+    // any code is redeemed.
+    let axod = Axod::with(Options {
+        relay_url: Some("https://axo.example.test".into()),
+        ..Options::default()
+    });
+    let refused = axod.err("axo.relay.link", json!({ "code": "ABCD-EFGH" }));
+    assert_eq!(refused.code, NOT_A_PERSON, "{refused:?}");
+    assert!(refused.message.contains("Remote Access"), "{refused:?}");
+    assert_eq!(axod.ok("axo.relay.status", json!({}))["linked"], false);
+    let credentials = axod.server_directory().join("host-credentials");
+    assert_eq!(
+        std::fs::read_dir(&credentials)
+            .map(|rows| rows.count())
+            .unwrap_or(0),
+        0,
+        "no credential is made for a refused link"
+    );
 }
 
 #[test]

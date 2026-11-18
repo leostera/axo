@@ -44,6 +44,11 @@ impl RelayEndpoint {
         Ok(Self { origin })
     }
 
+    /// Whether the relay is on this Mac: a local Worker or a test's, never the account's.
+    pub fn is_loopback(&self) -> bool {
+        is_loopback(&self.origin)
+    }
+
     pub fn production() -> Self {
         Self::parse(DEFAULT_RELAY_URL).expect("the production relay URL is valid")
     }
@@ -139,6 +144,13 @@ mod tests {
         );
         assert!(RelayEndpoint::parse("ws://[::1]:9").is_ok());
         assert!(RelayEndpoint::parse("http://localhost:9").is_ok());
+        assert!(local.is_loopback());
+        assert!(!production.is_loopback());
+        assert!(
+            RelayEndpoint::parse("https://127.0.0.1:8443")
+                .unwrap()
+                .is_loopback()
+        );
     }
 
     #[test]
