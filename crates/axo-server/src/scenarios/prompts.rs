@@ -219,7 +219,9 @@ async fn a_local_program_is_labelled_and_limited_not_taken_for_the_person() {
                 from_session_id: None,
             },
             &axo_ipc::peer::Peer::default(),
+            None,
         )
+        .unwrap()
     };
     sessions::prompt(
         &fixture.core,

@@ -54,13 +54,20 @@ pub(crate) enum Origin {
 }
 
 impl Origin {
-    /// The origin of a local `axo.session.prompt`: the Session it names, else the person only if
-    /// `peer` is the signed Axo.app. Anything else is a local program, whatever it claims.
-    pub(crate) fn of_local_request(from_session_id: Option<SessionId>, peer: &Peer) -> Self {
-        match from_session_id {
-            Some(id) => Self::Session(id),
-            None if peer.is(Signer::AxoApp) => Self::Person,
-            None => Self::LocalProgram,
+    /// The origin of a local `axo.session.prompt` from `peer`, which runs in `caller`'s Session
+    /// if any: that Session, which a sender it names must be; else the person only if `peer` is
+    /// the signed Axo.app. Anything else is a local program, whatever it claims.
+    pub(crate) fn of_local_request(
+        from_session_id: Option<SessionId>,
+        peer: &Peer,
+        caller: Option<SessionId>,
+    ) -> Result<Self, PromptError> {
+        match (from_session_id, caller) {
+            (Some(named), Some(caller)) if named == caller => Ok(Self::Session(caller)),
+            (Some(_), _) => Err(PromptError::NotThatSession),
+            (None, Some(caller)) => Ok(Self::Session(caller)),
+            (None, None) if peer.is(Signer::AxoApp) => Ok(Self::Person),
+            (None, None) => Ok(Self::LocalProgram),
         }
     }
 
@@ -95,14 +102,18 @@ pub(crate) struct Outgoing {
 }
 
 impl Outgoing {
-    /// A local `axo.session.prompt` from `peer`.
-    pub(crate) fn from_local(request: PromptSession, peer: &Peer) -> Self {
-        Self {
+    /// A local `axo.session.prompt` from `peer`, which runs in `caller`'s Session if any.
+    pub(crate) fn from_local(
+        request: PromptSession,
+        peer: &Peer,
+        caller: Option<SessionId>,
+    ) -> Result<Self, PromptError> {
+        Ok(Self {
             session_id: request.session_id,
             text: request.text,
             delivery: request.delivery,
-            origin: Origin::of_local_request(request.from_session_id, peer),
-        }
+            origin: Origin::of_local_request(request.from_session_id, peer, caller)?,
+        })
     }
 }
 
@@ -260,6 +271,8 @@ pub(crate) enum PromptError {
     Unavailable(String),
     /// It waited for a Pi that stopped, or failed to start, before taking it.
     Dropped,
+    /// It names a sending Session its caller does not run in (RFD0073).
+    NotThatSession,
 }
 
 impl PromptError {
@@ -274,6 +287,7 @@ impl PromptError {
                 | Self::Busy
                 | Self::QueueFull
                 | Self::Dropped
+                | Self::NotThatSession
         )
     }
 }
@@ -294,6 +308,9 @@ impl fmt::Display for PromptError {
             }
             Self::Unavailable(reason) => write!(formatter, "Pi did not take the prompt: {reason}"),
             Self::Dropped => formatter.write_str("Pi stopped before it took the prompt"),
+            Self::NotThatSession => formatter.write_str(
+                "a Session acts only as itself: this caller does not run in the sending Session",
+            ),
         }
     }
 }
@@ -302,6 +319,7 @@ impl From<PromptError> for io::Error {
     fn from(error: PromptError) -> Self {
         let kind = match error {
             PromptError::Invalid(_) => io::ErrorKind::InvalidInput,
+            PromptError::NotThatSession => io::ErrorKind::PermissionDenied,
             PromptError::NoPi => io::ErrorKind::NotFound,
             PromptError::RateLimited | PromptError::QueueFull => io::ErrorKind::WouldBlock,
             PromptError::Busy => io::ErrorKind::ResourceBusy,
@@ -376,6 +394,7 @@ pub(crate) fn refusal(error: &PromptError) -> &'static str {
         PromptError::QueueFull => "queue_full",
         PromptError::Unavailable(_) => "unavailable",
         PromptError::Dropped => "dropped",
+        PromptError::NotThatSession => "not_that_session",
     }
 }
 
@@ -443,21 +462,37 @@ mod tests {
 
     #[test]
     fn only_axo_app_speaks_for_the_person_on_the_socket() {
-        let me = SessionId::from_u128(1);
         let unverified = Peer::default();
         assert_eq!(
-            Origin::of_local_request(None, &unverified),
+            Origin::of_local_request(None, &unverified, None).unwrap(),
             Origin::LocalProgram
-        );
-        assert_eq!(
-            Origin::of_local_request(Some(me), &unverified),
-            Origin::Session(me)
         );
         // The account's calls never come as a local request; were one to, it is not the person.
         assert_eq!(
-            Origin::of_local_request(None, &Peer::Relay),
+            Origin::of_local_request(None, &Peer::Relay, None).unwrap(),
             Origin::LocalProgram
         );
+    }
+
+    #[test]
+    fn a_caller_sends_only_as_the_session_it_runs_in() {
+        let (me, other) = (SessionId::from_u128(1), SessionId::from_u128(2));
+        let peer = Peer::default();
+        let origin = |named, caller| Origin::of_local_request(named, &peer, caller);
+        assert_eq!(origin(Some(me), Some(me)).unwrap(), Origin::Session(me));
+        assert_eq!(
+            origin(None, Some(me)).unwrap(),
+            Origin::Session(me),
+            "a Session's tool that names no sender still sends as it"
+        );
+        assert!(matches!(
+            origin(Some(other), Some(me)),
+            Err(PromptError::NotThatSession)
+        ));
+        assert!(matches!(
+            origin(Some(me), None),
+            Err(PromptError::NotThatSession)
+        ));
     }
 
     #[test]

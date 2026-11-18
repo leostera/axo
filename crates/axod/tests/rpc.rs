@@ -956,11 +956,18 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
         "{one_line}"
     );
 
+    // The test runs in no Session, so it cannot send as one (RFD0073).
+    let posing = rpc_with_params(
+        &socket,
+        "axo.session.prompt",
+        json!({ "sessionId": session["id"], "text": "hello", "fromSessionId": session["id"] }),
+    );
+    assert_eq!(posing["error"]["code"], -32099, "{posing}");
     // A prompt for a Pi whose bridge never binds waits for it, and says so.
     let prompted = rpc_with_params(
         &socket,
         "axo.session.prompt",
-        json!({ "sessionId": session["id"], "text": "hello", "fromSessionId": session["id"] }),
+        json!({ "sessionId": session["id"], "text": "hello" }),
     );
     assert_eq!(
         prompted["result"],

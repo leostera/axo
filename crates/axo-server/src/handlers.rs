@@ -58,6 +58,7 @@ fn prompt_rpc_error(error: PromptError) -> RpcError {
         | PromptError::QueueFull
         | PromptError::Unavailable(_)
         | PromptError::Dropped => ErrorCode::ServerError(-32004),
+        PromptError::NotThatSession => ErrorCode::ServerError(error_code::NOT_THAT_SESSION),
     };
     RpcError {
         code,
@@ -364,10 +365,10 @@ impl Extension for Sessions {
             "expected {sessionId, text, delivery?: steer|followUp|turn|interrupt, fromSessionId?}",
             |core, request: rpc::PromptSession| async move {
                 // Who sent it is decided here, from the connection, not from the request alone.
-                let request = crate::session::prompts::Outgoing::from_local(
-                    request,
-                    &axo_ipc::peer::current(),
-                );
+                let peer = axo_ipc::peer::current();
+                let caller = crate::callers::session_of(&core, &peer);
+                let request = crate::session::prompts::Outgoing::from_local(request, &peer, caller)
+                    .map_err(prompt_rpc_error)?;
                 crate::sessions::prompt(
                     &core,
                     request,
