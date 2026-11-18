@@ -29,8 +29,7 @@ final class MobileIdentityTransferTests: XCTestCase {
     source.set(Data([1, 2, 3]), forKey: Transfer.enclaveKey)
     source.set("dark", forKey: "appearance")
     let hostPin = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
-    let hostKey = "axo.inputKey.\(UUID().uuidString.lowercased())"
-    source.set(hostPin, forKey: hostKey)
+    source.set([hostPin], forKey: InputKeyPins.defaultsKey)
     source.set("not-transferable", forKey: "axo.clientID")
     source.set("unrelated fixture", forKey: "private.unrelated")
     let bytes = try Transfer.export(defaults: source, token: token, transferID: id, enclave: enclave)
@@ -41,7 +40,7 @@ final class MobileIdentityTransferTests: XCTestCase {
     try Transfer.apply(snapshot: snapshot, bytes: bytes, bridge: bridge, destination: destination, enclave: enclave)
     XCTAssertEqual(destination.savedToken, token)
     XCTAssertEqual(destination.defaults.data(forKey: Transfer.enclaveKey), Data([1, 2, 3]))
-    XCTAssertEqual(destination.defaults.string(forKey: hostKey), hostPin)
+    XCTAssertEqual(destination.defaults.stringArray(forKey: InputKeyPins.defaultsKey), [hostPin])
     XCTAssertEqual(destination.defaults.string(forKey: "appearance"), "dark")
     XCTAssertEqual(bridge.state, .consumed(id))
     XCTAssertNil(bridge.bytes)

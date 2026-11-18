@@ -509,7 +509,7 @@ final class PhoneWorkbenchTests: XCTestCase {
     try await eventually { workbench.questions.isEmpty }
   }
 
-  func testAFormsValuesLeaveOnlySealedAndOnlyToTheKeyFirstSeen() async throws {
+  func testAFormsValuesLeaveOnlySealedAndOnlyToAKeyThePersonConfirmed() async throws {
     let a = Mac("A", online: true, sessions: [1])
     let world = PhoneWorld([a], answers: false)
     try await world.start()
@@ -517,14 +517,23 @@ final class PhoneWorkbenchTests: XCTestCase {
     workbench.inputKeyPins = InputKeyPins(defaults: UserDefaults(suiteName: "axo-phone-pins-\(UUID())")!)
     let channel = try await world.transport.channel()
     let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
-    func ask(_ id: String, key: String) {
+    func ask(_ id: String, key: String, host: UUID) {
       channel.notify(
         "axo.elicitation.requested",
-        #"{"hostId":"\#(a.id.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"input","askedBy":"computerUse","message":"Fill Password in Safari.","input":{"app":"Safari","window":"Sign in","origin":"https://github.com","fields":[{"id":"f0","label":"Password","kind":"password"}],"key":"\#(key)"},"createdAt":1,"expiresAt":2}}"#)
+        #"{"hostId":"\#(host.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"input","askedBy":"computerUse","message":"Fill Password in Safari.","input":{"app":"Safari","window":"Sign in","origin":"https://github.com","fields":[{"id":"f0","label":"Password","kind":"password"}],"key":"\#(key)"},"createdAt":1,"expiresAt":2}}"#)
     }
+
+    // A key the person has not confirmed gets nothing, even the first one seen for a Mac.
     let first = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60"
-    ask(first, key: key)
+    ask(first, key: key, host: a.id)
     try await eventually { workbench.questions.count == 1 }
+    XCTAssertFalse(workbench.isInputKeyConfirmed(key))
+    await workbench.answer(first, .accept, values: ["f0": "hunter2"])
+    XCTAssertFalse(channel.hasRequest)
+    XCTAssertEqual(workbench.answerFailure?.contains(InputSeal.fingerprint(of: key)), true)
+
+    // Confirmed against the Mac: sealed to it alone.
+    workbench.confirmInputKey(key)
     let answering = Task { await workbench.answer(first, .accept, values: ["f0": "hunter2"]) }
     let request = try await channel.nextRequest("axo.elicitation.resolve")
     let sealed = request.params["sealed"] as? [String: Any]
@@ -533,13 +542,14 @@ final class PhoneWorkbenchTests: XCTestCase {
     channel.reply(to: request.id, result: #"{"resolved":true}"#)
     await answering.value
 
-    // Another key for the same Mac gets nothing.
+    // The cloud swaps in its own key, under a host ID the phone has never seen: nothing goes.
     let second = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61"
-    ask(second, key: P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString())
+    let cloudKey = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
+    ask(second, key: cloudKey, host: UUID())
     try await eventually { workbench.questions.count == 2 }
     await workbench.answer(second, .accept, values: ["f0": "hunter2"])
     XCTAssertFalse(channel.hasRequest)
-    XCTAssertEqual(workbench.answerFailure?.contains("key changed"), true)
+    XCTAssertFalse(workbench.isInputKeyConfirmed(cloudKey))
   }
 
   func testAnAnswerThatCameTooLateRemovesTheCard() async throws {

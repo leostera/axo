@@ -72,6 +72,7 @@ public enum MobileIdentityTransfer {
     "appearance", "accentColor", "sidebar.pinnedSessions.v1", "sidebar.seenSessions.v1",
     "sidebar.seenSessionsBaseline.v1", "sidebar.grouping.v1", "axo.companion.v1.authority",
     "axo.companion.v1.revision", "axo.companion.v1.fingerprint", "axo.companion.v1.account",
+    InputKeyPins.defaultsKey,
   ]
 
   public static func export(
@@ -89,9 +90,8 @@ public enum MobileIdentityTransfer {
       guard defaults.object(forKey: softwareKey) == nil else { throw Failure.conflict }
       identity = nil
     }
-    let keys = preferenceKeys.union(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("axo.inputKey.") })
     var preferences: [String: Data] = [:]
-    for key in keys {
+    for key in preferenceKeys {
       guard let value = defaults.object(forKey: key) else { continue }
       try checkPreference(key, value: value)
       preferences[key] = try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0)
@@ -208,12 +208,14 @@ public enum MobileIdentityTransfer {
   }
 
   private static func checkPreference(_ key: String, value: Any) throws {
-    guard preferenceKeys.contains(key) || key.hasPrefix("axo.inputKey.") else { throw Failure.invalid }
-    if key.hasPrefix("axo.inputKey.") {
-      let suffix = String(key.dropFirst("axo.inputKey.".count))
-      guard let host = UUID(uuidString: suffix), host.uuidString.lowercased() == suffix,
-        let key = value as? String, let point = Data(base64Encoded: key), point.base64EncodedString() == key,
-        (try? P256.KeyAgreement.PublicKey(x963Representation: point)) != nil else { throw Failure.invalid }
+    guard preferenceKeys.contains(key) else { throw Failure.invalid }
+    if key == InputKeyPins.defaultsKey {
+      guard let keys = value as? [String], keys.count <= InputKeyPins.limit, Set(keys).count == keys.count,
+        keys.allSatisfy({ key in
+          guard let point = Data(base64Encoded: key), point.base64EncodedString() == key else { return false }
+          return (try? P256.KeyAgreement.PublicKey(x963Representation: point)) != nil
+        })
+      else { throw Failure.invalid }
     } else if key == "sidebar.pinnedSessions.v1" {
       guard let values = value as? [String], values.count <= 256, Set(values).count == values.count,
         values.allSatisfy({ UUID(uuidString: $0) != nil }) else { throw Failure.invalid }

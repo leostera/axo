@@ -95,7 +95,7 @@ public final class PhoneWorkbench {
   @ObservationIgnored private var protectedInteractions: Set<Selection> = []
   /// Why the last answer did not go, until the next one does.
   public private(set) var answerFailure: String?
-  /// Each Mac's input key as first seen.
+  /// The Macs' input keys the person confirmed (RFD0069).
   public var inputKeyPins = InputKeyPins()
   /// This phone's key, which signs every answer; made on first use.
   public var device: (any DeviceSigner)?
@@ -250,6 +250,16 @@ public final class PhoneWorkbench {
     questions.filter { $0.elicitation.sessionId == session }
   }
 
+  /// Whether the person confirmed this Mac key, so values may be sealed to it (RFD0069).
+  public func isInputKeyConfirmed(_ key: String) -> Bool {
+    inputKeyPins.isConfirmed(key)
+  }
+
+  /// The person saw the same fingerprint for `key` here and in Axo on the Mac.
+  public func confirmInputKey(_ key: String) {
+    inputKeyPins.confirm(key)
+  }
+
   /// Answers what a Mac's agent asks. The card stays until the Mac says it is settled; an answer
   /// that came too late (another device answered, or it expired) removes it.
   public func answer(_ id: String, _ action: ElicitationAnswer, values: [String: String]? = nil) async {
@@ -268,10 +278,10 @@ public final class PhoneWorkbench {
     let host = questions[index].hostID
     var sealed: SealedInput?
     if let input = questions[index].elicitation.input, action == .accept {
-      // The values leave the phone only sealed to the Mac's key, and only to the key first seen
-      // for that Mac: a different one may be the cloud's, not the Mac's.
-      guard inputKeyPins.check(host: host, key: input.key) != .changed else {
-        answerFailure = "This Mac's encryption key changed. Nothing was sent; check the key in Axo on that Mac."
+      // The values leave the phone only sealed to a Mac key the person confirmed against Axo on
+      // that Mac (RFD0069): any other may be the cloud's, whichever host the request names.
+      guard inputKeyPins.isConfirmed(input.key) else {
+        answerFailure = "Check this Mac’s key first: compare \(InputSeal.fingerprint(of: input.key)) with Axo on the Mac, in Settings › Devices. Nothing was sent."
         return false
       }
       guard let values else { return false }

@@ -153,7 +153,11 @@ struct ElicitationCards: View {
   var body: some View {
     ForEach(questions) { question in
       if question.elicitation.input != nil {
-        InputCard(question: question, canAnswer: canAnswer, failure: phone.answerFailure) { action, values in
+        InputCard(
+          question: question, canAnswer: canAnswer, failure: phone.answerFailure,
+          keyConfirmed: question.elicitation.input.map { phone.isInputKeyConfirmed($0.key) } ?? false,
+          confirmKey: { if let key = question.elicitation.input?.key { phone.confirmInputKey(key) } }
+        ) { action, values in
           Task { await phone.answer(question.id, action, values: values) }
         }
       } else {

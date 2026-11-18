@@ -23,13 +23,16 @@ final class InputSealTests: XCTestCase {
     XCTAssertEqual(InputSeal.fingerprint(of: key).count, 19)
   }
 
-  func testTheFirstKeySeenForAMacIsTheOneUsed() {
+  func testOnlyAKeyThePersonConfirmedIsTrustedWhateverHostNamesIt() {
     let defaults = UserDefaults(suiteName: "axo-input-pins-\(UUID())")!
     let pins = InputKeyPins(defaults: defaults)
-    let host = UUID()
-    XCTAssertEqual(pins.check(host: host, key: "A"), .pinned)
-    XCTAssertEqual(pins.check(host: host, key: "A"), .same)
-    XCTAssertEqual(pins.check(host: host, key: "B"), .changed)
+    // Seeing a key, for a host never seen before, trusts nothing (RFD0069).
+    XCTAssertFalse(pins.isConfirmed("A"))
+    XCTAssertFalse(pins.isConfirmed("A"))
+    pins.confirm("A")
+    XCTAssertTrue(pins.isConfirmed("A"))
+    XCTAssertFalse(pins.isConfirmed("B"))
+    XCTAssertTrue(InputKeyPins(defaults: defaults).isConfirmed("A"), "kept")
   }
 
   func testAnInputRequestDecodes() throws {

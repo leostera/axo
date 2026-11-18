@@ -39,12 +39,15 @@ public enum InputSeal {
   }
 }
 
-/// Each Mac's input key as first seen (trust on first use): values are sealed only to it, so a
-/// key the cloud swapped in gets nothing.
+/// The Macs' input keys the person confirmed (RFD0069): values are sealed only to one of them. A
+/// key counts once the person saw its fingerprint here and in Axo on the Mac (Settings › Devices),
+/// so a key the cloud swapped in, under any host ID, gets nothing until the person confirms it.
+/// The confirmation belongs to the key alone: host IDs come from the cloud.
 public struct InputKeyPins: Sendable {
-  public enum Check: Equatable, Sendable {
-    case pinned, same, changed
-  }
+  /// Where the confirmed keys are kept, in the app's defaults.
+  public static let defaultsKey = "axo.inputKeys.confirmed.v1"
+  /// Confirmed keys at most; the oldest is forgotten first.
+  public static let limit = 256
 
   private let defaults: UserDefaults
 
@@ -52,13 +55,18 @@ public struct InputKeyPins: Sendable {
     self.defaults = defaults
   }
 
-  public func check(host: UUID, key: String) -> Check {
-    let name = "axo.inputKey.\(host.uuidString.lowercased())"
-    guard let known = defaults.string(forKey: name) else {
-      defaults.set(key, forKey: name)
-      return .pinned
-    }
-    return known == key ? .same : .changed
+  public func isConfirmed(_ key: String) -> Bool {
+    confirmed.contains(key)
+  }
+
+  /// The person saw the same fingerprint for `key` here and on the Mac.
+  public func confirm(_ key: String) {
+    guard !isConfirmed(key) else { return }
+    defaults.set(Array((confirmed + [key]).suffix(Self.limit)), forKey: Self.defaultsKey)
+  }
+
+  private var confirmed: [String] {
+    defaults.stringArray(forKey: Self.defaultsKey) ?? []
   }
 }
 
