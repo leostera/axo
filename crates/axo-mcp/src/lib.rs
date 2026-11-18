@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use std::thread;
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use axo_ipc::{Local, LocalError, Upgraded};
 use axo_protocol::SessionId;
@@ -34,6 +34,11 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const AXOD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Tool calls an agent may have running at once (`McpServer::serve`).
 const MAX_CALLS_IN_FLIGHT: usize = 16;
+/// The longest MCP message axod reads, as on its socket: a longer line ends the connection.
+const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Answers waiting for the agent to read them. When the agent stops reading, this fills and the
+/// server stops reading its requests, so an agent that never reads cannot grow axod's memory.
+const MAX_UNREAD_ANSWERS: usize = 2 * MAX_CALLS_IN_FLIGHT;
 const SELF: &str = "self";
 
 const INSTRUCTIONS: &str = r#"Axo runs this agent inside a Session: a Pi conversation (the "pi" pane) with a terminal pane beside it, working in a folder. These tools see and drive every Session on this Mac.
@@ -441,6 +446,27 @@ pub async fn upgrade(mut upgraded: Upgraded, socket: PathBuf) {
     );
 }
 
+/// Reads the next newline-delimited message into `line`: `false` when the input ends, an error
+/// for one longer than [`MAX_MESSAGE_BYTES`], which is never buffered whole.
+async fn read_message(
+    input: &mut (impl AsyncBufRead + Unpin),
+    line: &mut Vec<u8>,
+) -> io::Result<bool> {
+    line.clear();
+    let read = (&mut *input)
+        .take(MAX_MESSAGE_BYTES as u64 + 1)
+        .read_until(b'\n', line)
+        .await?;
+    if line.len() > MAX_MESSAGE_BYTES {
+        log::warn!("event=mcp.message_rejected reason=too_large");
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "an MCP message is at most 8 MiB",
+        ));
+    }
+    Ok(read > 0)
+}
+
 /// The MCP server for one Session.
 pub struct McpServer {
     axod: Local,
@@ -482,7 +508,7 @@ impl McpServer {
         input: impl AsyncBufRead + Unpin,
         output: impl AsyncWrite + Unpin + Send + 'static,
     ) -> io::Result<()> {
-        let (responses, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let (responses, mut outgoing) = tokio::sync::mpsc::channel::<Value>(MAX_UNREAD_ANSWERS);
         let writing = tokio::spawn(async move {
             let mut output = output;
             while let Some(response) = outgoing.recv().await {
@@ -495,21 +521,24 @@ impl McpServer {
         });
         let in_flight = Arc::new(tokio::sync::Semaphore::new(MAX_CALLS_IN_FLIGHT));
         let mut running = tokio::task::JoinSet::new();
-        let mut lines = input.lines();
+        let mut input = input;
+        let mut line = Vec::new();
         let read = loop {
             while running.try_join_next().is_some() {}
-            let line = match lines.next_line().await {
-                Ok(Some(line)) => line,
-                Ok(None) => break Ok(()),
+            match read_message(&mut input, &mut line).await {
+                Ok(true) => {}
+                Ok(false) => break Ok(()),
                 Err(error) => break Err(error),
-            };
-            if line.trim().is_empty() {
+            }
+            if line.trim_ascii().is_empty() {
                 continue;
             }
-            let message = match serde_json::from_str::<Value>(&line) {
+            let message = match serde_json::from_slice::<Value>(&line) {
                 Ok(message) => message,
                 Err(_) => {
-                    let _ = responses.send(error_response(&Value::Null, -32700, "parse error"));
+                    let _ = responses
+                        .send(error_response(&Value::Null, -32700, "parse error"))
+                        .await;
                     continue;
                 }
             };
@@ -522,7 +551,7 @@ impl McpServer {
             }
             if message["method"] != "tools/call" || message.get("id").is_none() {
                 if let Some(response) = self.handle(&message).await {
-                    let _ = responses.send(response);
+                    let _ = responses.send(response).await;
                 }
                 continue;
             }
@@ -536,7 +565,7 @@ impl McpServer {
                 // A call given up is not answered (MCP's cancellation); nor is one whose agent
                 // left, as its output has gone with it.
                 if let Some(Some(response)) = server.calls.run(id, server.handle(&message)).await {
-                    let _ = responses.send(response);
+                    let _ = responses.send(response).await;
                 }
             });
         };
@@ -1488,6 +1517,72 @@ mod tests {
             started.elapsed() < Duration::from_secs(4),
             "the questions waited for each other"
         );
+    }
+
+    /// A message longer than axod's 8 MiB request limit ends the connection instead of being
+    /// buffered whole, however long the client keeps sending.
+    #[test]
+    fn a_message_past_the_request_limit_ends_the_connection() {
+        let server = serving(IoHandler::new());
+        let (mut to_server, server_input) = UnixStream::pair().unwrap();
+        let (server_output, _from_server) = UnixStream::pair().unwrap();
+        let client = thread::spawn(move || {
+            let chunk = vec![b'x'; 1 << 20];
+            // Twice the limit and no newline; writing stops once the server hangs up.
+            for _ in 0..16 {
+                if to_server.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+        });
+        let served = server.serve(server_input, server_output);
+        assert_eq!(
+            served.unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "an oversized message is refused"
+        );
+        client.join().unwrap();
+    }
+
+    /// An agent that stops reading its answers stops the server reading its requests: answers
+    /// wait in a bounded queue, so a flood of pings never read cannot grow axod's memory.
+    #[test]
+    fn an_agent_that_never_reads_its_answers_is_not_read_from_either() {
+        let server = serving(IoHandler::new());
+        let (mut to_server, server_input) = UnixStream::pair().unwrap();
+        let (server_output, from_server) = UnixStream::pair().unwrap();
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&sent);
+        let ping = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "id": "x".repeat(4096), "method": "ping" })
+        );
+        let client = thread::spawn(move || {
+            for _ in 0..20_000 {
+                if to_server.write_all(ping.as_bytes()).is_err() {
+                    return;
+                }
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        let serving = thread::spawn(move || server.serve(server_input, server_output));
+        // Let the server run until the client is blocked.
+        let mut last = usize::MAX;
+        loop {
+            thread::sleep(Duration::from_millis(300));
+            let now = sent.load(std::sync::atomic::Ordering::Relaxed);
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        assert!(
+            last < 20_000,
+            "the server kept reading {last} pings nobody read the answers to"
+        );
+        drop(from_server);
+        let _ = client.join();
+        let _ = serving.join();
     }
 
     /// Pi leaving (its end of stdin closing) gives up the calls still waiting: axod withdraws
