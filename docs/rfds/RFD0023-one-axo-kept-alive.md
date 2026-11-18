@@ -7,7 +7,7 @@
 - Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Related: [RFD0019](RFD0019-planned-restarts.md)
-- Amended By: [RFD0048](RFD0048-release-artifacts.md) (published updates come from `latest.json` and immutable archives, checked against that release's metadata; supersedes `Axo.app.json`/`Axo.app.zip` under Upgrading from the menu bar), [RFD0059](RFD0059-automatic-mac-updates.md) (opt-in automatic installation)
+- Amended By: [RFD0048](RFD0048-release-artifacts.md) (published updates come from `latest.json` and immutable archives, checked against that release's metadata; supersedes `Axo.app.json`/`Axo.app.zip` under Upgrading from the menu bar), [RFD0059](RFD0059-automatic-mac-updates.md) (opt-in automatic installation), [RFD0075](RFD0075-no-silent-downgrades-and-archive-integrity.md) (no silent downgrades of axod or the login Axo)
 
 ## Summary
 

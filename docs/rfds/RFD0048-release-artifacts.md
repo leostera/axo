@@ -7,6 +7,7 @@
 - Updated: 2026-11-14
 - Document Type: Proposal
 - Amends: [RFD0021](RFD0021-bazel-only-build.md) (publication and updater contract)
+- Amended By: [RFD0059](RFD0059-automatic-mac-updates.md) (installation consent), [RFD0075](RFD0075-no-silent-downgrades-and-archive-integrity.md) (per-artifact SHA-256 and size in `latest.json`)
 
 ## Summary
 
