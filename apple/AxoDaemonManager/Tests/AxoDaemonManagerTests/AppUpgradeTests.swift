@@ -8,7 +8,8 @@ final class AppUpgradeTests: XCTestCase {
     target: String = PublishedBuild.targetTriplet) -> PublishedBuild {
     let commit = String(repeating: "a", count: 40)
     return try! PublishedBuild(build: build, axodBuild: axodBuild, commit: commit, version: version,
-      artifacts: [target: "axo-\(version)-\(commit.prefix(12))-\(target).zip"])
+      artifacts: [target: "axo-\(version)-\(commit.prefix(12))-\(target).zip"],
+      integrity: [target: try! ArchiveIntegrity(sha256: String(repeating: "c", count: 64), size: 1024)])
   }
   private func choose(
     running: Int = 260, installed: Int? = 260, published: Int? = nil, canVerify: Bool = true
@@ -53,12 +54,38 @@ final class AppUpgradeTests: XCTestCase {
   }
 
   func testTheManifestParsesAsPublishWritesIt() throws {
-    let data = Data(#"{"version":"0.71","build":342,"axodBuild":94,"commit":"0123456789abcdef0123456789abcdef01234567","artifacts":{"aarch64-apple-darwin":"axo-0.71-0123456789ab-aarch64-apple-darwin.zip"}}"#.utf8)
+    let data = Data(#"{"version":"0.71","build":342,"axodBuild":94,"commit":"0123456789abcdef0123456789abcdef01234567","artifacts":{"aarch64-apple-darwin":"axo-0.71-0123456789ab-aarch64-apple-darwin.zip"},"integrity":{"aarch64-apple-darwin":{"sha256":"\#(String(repeating: "d", count: 64))","size":104857600}}}"#.utf8)
     let parsed = try JSONDecoder().decode(PublishedBuild.self, from: data)
     XCTAssertEqual(parsed.build, 342)
-    XCTAssertEqual(try parsed.archiveURL(origin: URL(string: "https://axo.leostera.dev")!, target: "aarch64-apple-darwin").absoluteString,
-      "https://axo.leostera.dev/cdn/axo-0.71-0123456789ab-aarch64-apple-darwin.zip")
-    XCTAssertThrowsError(try parsed.archiveURL(origin: URL(string: "https://axo.leostera.dev")!, target: "x86_64-apple-darwin"))
+    let archive = try parsed.archive(origin: URL(string: "https://axo.leostera.dev")!, target: "aarch64-apple-darwin")
+    XCTAssertEqual(archive.url.absoluteString, "https://axo.leostera.dev/cdn/axo-0.71-0123456789ab-aarch64-apple-darwin.zip")
+    XCTAssertEqual(archive.integrity, try ArchiveIntegrity(sha256: String(repeating: "d", count: 64), size: 104857600))
+    XCTAssertThrowsError(try parsed.archive(origin: URL(string: "https://axo.leostera.dev")!, target: "x86_64-apple-darwin"))
+  }
+
+  func testAReleaseThatDoesNotNameItsArchivesBytesIsNeverDownloaded() throws {
+    let older = Data(#"{"version":"0.71","build":342,"axodBuild":94,"commit":"0123456789abcdef0123456789abcdef01234567","artifacts":{"aarch64-apple-darwin":"axo-0.71-0123456789ab-aarch64-apple-darwin.zip"}}"#.utf8)
+    let parsed = try JSONDecoder().decode(PublishedBuild.self, from: older)
+    XCTAssertThrowsError(try parsed.archive(origin: URL(string: "https://axo.leostera.dev")!, target: "aarch64-apple-darwin"))
+    let commit = String(repeating: "a", count: 40)
+    let file = "axo-0.3-aaaaaaaaaaaa-aarch64-apple-darwin.zip"
+    let entry = try ArchiveIntegrity(sha256: String(repeating: "c", count: 64), size: 1)
+    XCTAssertThrowsError(try PublishedBuild(build: 261, axodBuild: 24, commit: commit, version: "0.3",
+      artifacts: ["aarch64-apple-darwin": file], integrity: ["x86_64-apple-darwin": entry]))
+    for (sha256, size) in [(String(repeating: "C", count: 64), Int64(1)), ("short", 1), (String(repeating: "c", count: 64), 0)] {
+      XCTAssertThrowsError(try ArchiveIntegrity(sha256: sha256, size: size))
+    }
+  }
+
+  func testAnArchiveIsCheckedAgainstItsSizeAndSHA256BeforeAnythingReadsIt() throws {
+    let archive = FileManager.default.temporaryDirectory.appendingPathComponent("axo-integrity-\(UUID().uuidString).zip")
+    defer { try? FileManager.default.removeItem(at: archive) }
+    try Data("abc".utf8).write(to: archive)
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    XCTAssertNoThrow(try AppUpgradeInstaller.checkIntegrity(of: archive, is: ArchiveIntegrity(sha256: abc, size: 3)))
+    XCTAssertThrowsError(try AppUpgradeInstaller.checkIntegrity(of: archive, is: ArchiveIntegrity(sha256: abc, size: 4)))
+    XCTAssertThrowsError(
+      try AppUpgradeInstaller.checkIntegrity(of: archive, is: ArchiveIntegrity(sha256: String(repeating: "0", count: 64), size: 3)))
   }
 
   func testURLsPinOneSnapshotAndUniversalFallback() throws {
@@ -66,12 +93,12 @@ final class AppUpgradeTests: XCTestCase {
     XCTAssertEqual(PublishedBuild.manifestURL(origin: origin).absoluteString, "https://axo.leostera.dev/cdn/latest.json")
     let selected = release(build: 261)
     let later = release(build: 262, version: "0.4")
-    XCTAssertNotEqual(try selected.archiveURL(origin: origin), try later.archiveURL(origin: origin))
-    XCTAssertTrue(try selected.archiveURL(origin: origin).lastPathComponent.hasPrefix("axo-0.3-"))
+    XCTAssertNotEqual(try selected.archive(origin: origin).url, try later.archive(origin: origin).url)
+    XCTAssertTrue(try selected.archive(origin: origin).url.lastPathComponent.hasPrefix("axo-0.3-"))
     let intel = release(build: 261, target: "x86_64-apple-darwin")
-    XCTAssertTrue(try intel.archiveURL(origin: origin, target: "x86_64-apple-darwin").lastPathComponent.hasSuffix("x86_64-apple-darwin.zip"))
+    XCTAssertTrue(try intel.archive(origin: origin, target: "x86_64-apple-darwin").url.lastPathComponent.hasSuffix("x86_64-apple-darwin.zip"))
     let universal = release(build: 261, target: "universal-apple-darwin")
-    XCTAssertTrue(try universal.archiveURL(origin: origin, target: "x86_64-apple-darwin").lastPathComponent.hasSuffix("universal-apple-darwin.zip"))
+    XCTAssertTrue(try universal.archive(origin: origin, target: "x86_64-apple-darwin").url.lastPathComponent.hasSuffix("universal-apple-darwin.zip"))
   }
 
   func testMalformedReleaseIdentityAndPathsAreRejected() throws {

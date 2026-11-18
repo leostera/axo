@@ -1,6 +1,34 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Security
+
+/// The exact bytes served for one artifact: its SHA-256 and size (RFD0075).
+public struct ArchiveIntegrity: Decodable, Equatable, Sendable {
+  /// 64 lowercase hex digits.
+  public let sha256: String
+  public let size: Int64
+
+  public init(sha256: String, size: Int64) throws {
+    guard sha256.count == 64, sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }), size > 0 else {
+      throw AppUpgradeError.download("invalid artifact integrity in latest.json")
+    }
+    self.sha256 = sha256
+    self.size = size
+  }
+
+  private enum CodingKeys: String, CodingKey { case sha256, size }
+  public init(from decoder: Decoder) throws {
+    let value = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(sha256: value.decode(String.self, forKey: .sha256), size: value.decode(Int64.self, forKey: .size))
+  }
+}
+
+/// The archive a release names for this Mac, and the bytes it must be.
+public struct PublishedArchive: Equatable, Sendable {
+  public let url: URL
+  public let integrity: ArchiveIntegrity
+}
 
 /// One captured latest.json snapshot. Artifact names bind version, commit and target.
 public struct PublishedBuild: Decodable, Equatable, Sendable {
@@ -9,8 +37,14 @@ public struct PublishedBuild: Decodable, Equatable, Sendable {
   public let commit: String
   public let version: String
   public let artifacts: [String: String]
+  /// One entry per artifact, or none in a pointer published before RFD0075, whose archives this
+  /// updater never downloads.
+  public let integrity: [String: ArchiveIntegrity]
 
-  public init(build: Int, axodBuild: Int, commit: String, version: String, artifacts: [String: String]) throws {
+  public init(
+    build: Int, axodBuild: Int, commit: String, version: String, artifacts: [String: String],
+    integrity: [String: ArchiveIntegrity] = [:]
+  ) throws {
     func matches(_ value: String, _ pattern: String) -> Bool {
       value.range(of: pattern, options: .regularExpression) == value.startIndex..<value.endIndex
     }
@@ -24,20 +58,25 @@ public struct PublishedBuild: Decodable, Equatable, Sendable {
         file == "\(prefix)\(target).zip" || (!target.hasSuffix("apple-darwin") && file == "\(prefix)\(target).tar.gz")
       else { throw AppUpgradeError.download("artifact does not match its release/target") }
     }
+    guard integrity.isEmpty || Set(integrity.keys) == Set(artifacts.keys) else {
+      throw AppUpgradeError.download("latest.json integrity does not match its artifacts")
+    }
+    self.integrity = integrity
     self.build = build
     self.axodBuild = axodBuild
     self.commit = commit
     self.version = version
     self.artifacts = artifacts
   }
-  private enum CodingKeys: String, CodingKey { case build, axodBuild, commit, version, artifacts }
+  private enum CodingKeys: String, CodingKey { case build, axodBuild, commit, version, artifacts, integrity }
   public init(from decoder: Decoder) throws {
     let value = try decoder.container(keyedBy: CodingKeys.self)
     try self.init(build: value.decode(Int.self, forKey: .build),
       axodBuild: value.decode(Int.self, forKey: .axodBuild),
       commit: value.decode(String.self, forKey: .commit),
       version: value.decode(String.self, forKey: .version),
-      artifacts: value.decode([String: String].self, forKey: .artifacts))
+      artifacts: value.decode([String: String].self, forKey: .artifacts),
+      integrity: value.decodeIfPresent([String: ArchiveIntegrity].self, forKey: .integrity) ?? [:])
   }
   public static var targetTriplet: String {
     #if arch(arm64)
@@ -51,11 +90,17 @@ public struct PublishedBuild: Decodable, Equatable, Sendable {
   public static func manifestURL(origin: URL) -> URL {
     origin.appendingPathComponent("cdn/latest.json")
   }
-  public func archiveURL(origin: URL, target: String = Self.targetTriplet) throws -> URL {
-    guard let file = artifacts[target] ?? artifacts["universal-apple-darwin"] else {
+  /// This Mac's archive: its own target's, or the universal one. Throws when there is none, or
+  /// when the release does not say what its bytes must be.
+  public func archive(origin: URL, target: String = Self.targetTriplet) throws -> PublishedArchive {
+    let selected = artifacts[target] != nil ? target : "universal-apple-darwin"
+    guard let file = artifacts[selected] else {
       throw AppUpgradeError.download("this release has no artifact for \(target)")
     }
-    return origin.appendingPathComponent("cdn").appendingPathComponent(file)
+    guard let integrity = integrity[selected] else {
+      throw AppUpgradeError.download("this release does not give \(file)'s SHA-256")
+    }
+    return PublishedArchive(url: origin.appendingPathComponent("cdn").appendingPathComponent(file), integrity: integrity)
   }
 }
 
@@ -166,7 +211,7 @@ public enum AppUpgradeInstaller {
     }
     guard data.count <= 65536 else { throw AppUpgradeError.download("latest.json exceeds 64 KiB") }
     let published = try JSONDecoder().decode(PublishedBuild.self, from: data)
-    _ = try published.archiveURL(origin: origin) // Do not offer an unsupported target.
+    _ = try published.archive(origin: origin) // Do not offer an unsupported or unchecked archive.
     return published
   }
 
@@ -179,13 +224,17 @@ public enum AppUpgradeInstaller {
     session: URLSession = .shared,
     authorizeInstallation: @escaping @MainActor @Sendable () throws -> Void = {}
   ) async throws -> Int {
-    let archiveURL = try published.archiveURL(origin: origin)
+    let selected = try published.archive(origin: origin)
     let work = try FileManager.default.url(
       for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: bundle, create: true)
     defer { try? FileManager.default.removeItem(at: work) }
 
     let archive = work.appendingPathComponent("Axo.app.zip")
-    try await downloadArchive(archiveURL, to: archive, configuration: session.configuration)
+    try await downloadArchive(
+      selected.url, to: archive, maximumBytes: min(selected.integrity.size, maximumArchiveBytes),
+      configuration: session.configuration)
+    // Nothing reads the archive until it is exactly the bytes the release names.
+    try checkIntegrity(of: archive, is: selected.integrity)
 
     let unpacked = work.appendingPathComponent("unpacked")
     try run("/usr/bin/ditto", ["-x", "-k", archive.path, unpacked.path]) {
@@ -217,8 +266,8 @@ public enum AppUpgradeInstaller {
     return found
   }
 
-  /// The largest archive an update downloads: several times a release's (about 100 MB), and
-  /// far short of filling a disk, since nothing checks the bytes until they are unzipped.
+  /// The largest archive an update downloads, whatever size a release names: several times a
+  /// release's (about 100 MB), and far short of filling a disk.
   static let maximumArchiveBytes: Int64 = 1 << 30
 
   static func downloadArchive(
@@ -233,6 +282,23 @@ public enum AppUpgradeInstaller {
       throw AppUpgradeError.download("the archive is larger than \(limit / (1 << 20)) MiB")
     } catch CappedDownload.Failure.transport(let reason) {
       throw AppUpgradeError.download(reason)
+    }
+  }
+
+  static func checkIntegrity(of archive: URL, is expected: ArchiveIntegrity) throws {
+    let size = (try? FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? Int64) ?? -1
+    guard size == expected.size else {
+      throw AppUpgradeError.badArchive("it is \(size) bytes, not the \(expected.size) the release names")
+    }
+    guard let file = FileHandle(forReadingAtPath: archive.path) else {
+      throw AppUpgradeError.badArchive("it cannot be read")
+    }
+    defer { try? file.close() }
+    var hasher = SHA256()
+    while let chunk = try file.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    guard digest == expected.sha256 else {
+      throw AppUpgradeError.badArchive("its SHA-256 is not the release's")
     }
   }
 
