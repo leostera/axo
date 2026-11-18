@@ -6,6 +6,7 @@ import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } 
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
 import { revokeAccountHost, serveAccountHosts, serveAccountHTTPClient, upgradeAccountClient, upgradeHostClient, upgradeHostDaemon, upgradeHostPeers, upgradePeerHostClient } from "./account-hosts";
 import { serveAccountAssets, serveHostAssets, type AssetRoute } from "./assets";
+import { revokeHostCredential } from "./host-credential";
 import { completeConnectionSignIn, serveApps, startConnectionSignIn, type AppsRoute } from "./apps";
 
 type Api = { Bindings: Env };
@@ -190,6 +191,15 @@ app.all("/api/v1/accounts/:account/hosts/:host/assets/:hash", context =>
     context.req.param("account"),
     context.req.param("host"),
     context.req.param("hash"),
+  ),
+);
+// A Mac revokes a credential it stopped using, with that credential (RFD0074).
+app.all("/api/v1/accounts/:account/hosts/:host/credential/revoke", context =>
+  revokeHostCredential(
+    context.req.raw,
+    context.executionCtx as ExecutionContext,
+    context.req.param("account"),
+    context.req.param("host"),
   ),
 );
 app.all("/api/v1/connections/oauth/start", context =>

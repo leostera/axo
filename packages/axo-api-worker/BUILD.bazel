@@ -118,6 +118,16 @@ node_test(
     tsx = True,
 )
 
+# A Mac revoking the credential it stopped using (RFD0074).
+node_test(
+    name = "host_credential_test",
+    concurrency = 1,
+    data = _DEPS + [":node_modules/tsx", ":test_files"],
+    tests = ["tests/host-credential.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
 # Focused person-request fanout across relayed and direct clients.
 node_test(
     name = "elicitations_test",
