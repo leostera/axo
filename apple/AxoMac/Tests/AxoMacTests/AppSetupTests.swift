@@ -264,8 +264,14 @@ final class AppSetupTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(30))
       content.layoutSubtreeIfNeeded()
       XCTAssertEqual(window.contentLayoutRect.width, 820, accuracy: 1)
-      XCTAssertEqual(content.bounds.height, AppSetupWindowController.preferredSize(for: model.step).height,
-        accuracy: 1, "Only the explicit step size may change the window")
+      // A step change re-centers the window on the primary screen, which also keeps it on that
+      // screen: the permissions step's 1000 points shrink on a short display (a 14" MacBook's).
+      let stepSize = AppSetupWindowController.preferredSize(for: model.step)
+      let expectedHeight = NSScreen.screens.first.map {
+        AppWindowPlacement.centered(size: stepSize, in: $0.visibleFrame).height
+      } ?? stepSize.height
+      XCTAssertEqual(content.bounds.height, step == 0 ? stepSize.height : expectedHeight,
+        accuracy: 1, "Only the explicit step size, bounded by the screen, may change the window")
       XCTAssertFalse(window.isVisible, "Fixture must never steal the person's focus")
       if step == 1 {
         try renderWindowContent(content, name: "axo-setup-real-window")
