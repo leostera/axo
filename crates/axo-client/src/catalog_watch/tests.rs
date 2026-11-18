@@ -27,9 +27,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!(
-            "axo-watch-{}",
-            axo_protocol::new_uuid_v4().unwrap()
+        // A Unix socket path is at most 104 bytes on macOS, and Bazel's temp_dir() is longer:
+        // keep sockets under /tmp, as the other crates' tests do.
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "axo-w-{}",
+            &axo_protocol::new_uuid_v4().unwrap()[..12]
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("rpc.sock");
