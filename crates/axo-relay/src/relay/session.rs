@@ -21,7 +21,7 @@ use super::elicitation::{
 };
 use super::forward;
 use super::jobs::{
-    start_ai, start_bash, start_cancel, start_computer, start_consent, start_prompt, start_sign_in,
+    start_ai, start_bash, start_cancel, start_computer, start_consent, start_sign_in,
 };
 use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
@@ -128,6 +128,8 @@ pub(super) struct RelaySessionContext {
     pub(super) account_id: String,
     /// Where a prompt's attachments come from (RFD0030).
     pub(super) assets: Option<crate::assets::AssetSource>,
+    /// The account's prompts, delivered in order per Session.
+    pub(super) prompts: super::prompts::PromptLanes,
 }
 
 /// A request from the cloud that the host answers at once, in the order they came.
@@ -286,10 +288,10 @@ fn take_message(
             return Ok(());
         }
         // A prompt is answered once Pi has it in its log, after its attachments are fetched
-        // (RFD0030) and Pi has started (RFD0033): on a task of its own.
+        // (RFD0030) and Pi has started (RFD0033): in its Session's lane, in the order it came.
         Some("axo.remote.session.prompt") => {
             if id.is_some() {
-                start_prompt(value.clone(), context);
+                context.prompts.deliver(value.clone());
             }
             return Ok(());
         }

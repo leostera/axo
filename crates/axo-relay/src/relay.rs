@@ -10,7 +10,8 @@
 //! nothing polls, and whatever blocks (the Keychain, the host's answers, jobs) runs on the
 //! blocking pool.
 //! - `dispatch`: answering `axo.remote.*` requests through the host.
-//! - `jobs`: bash, prompts with attachments and sign-ins, each on a thread of its own.
+//! - `jobs`: bash, computer use, inference and sign-ins, each on a task of its own.
+//! - `prompts`: the account's prompts, in the order they came, one Session at a time.
 //! - `elicitation`: a person's answers to an agent's questions (RFD0029).
 //! - `wire`: the JSON-RPC message types.
 
@@ -18,9 +19,12 @@ mod elicitation;
 mod forward;
 mod jobs;
 mod owned_jobs;
+mod prompts;
 mod session;
 mod socket;
 mod status;
+#[cfg(test)]
+mod test_support;
 mod wire;
 
 pub use session::current_timestamp;
@@ -428,12 +432,13 @@ async fn connect_and_serve(
         stop: stop.clone(),
         control: Arc::clone(control),
         channel: Arc::clone(channel),
-        replies: socket.replies,
+        replies: socket.replies.clone(),
         waker: waker.clone(),
         socket_id: format!("axod-{}-{}", std::process::id(), socket.epoch),
         account_id: account.account_id().to_owned(),
         assets,
         jobs: Arc::new(owned_jobs::OwnedJobs::default()),
+        prompts: prompts::PromptLanes::new(Arc::clone(sessions), socket.replies),
     });
     // The host\'s answers, in order, beside the loop, so a slow one never holds up the socket.
     let (requests, waiting) = tokio::sync::mpsc::unbounded_channel();

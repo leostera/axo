@@ -1,4 +1,4 @@
-//! Requests that outlive a single reply: shell commands, computer use, prompts, and sign-ins.
+//! Requests that outlive a single reply: shell commands, computer use, inference and sign-ins.
 //! Each runs as a task of its own, bounded per Mac, and replies on the socket it came from.
 
 use std::sync::Arc;
@@ -218,22 +218,6 @@ pub(super) fn start_cancel(id: Value, params: &Value, context: &RelaySessionCont
     tokio::spawn(async move {
         let requested = jobs.cancel(&request.call_id).await;
         replies.reply(&id, Ok(serde_json::json!({ "cancelRequested": requested })));
-    });
-}
-
-/// Gives a prompt to the host on a task of its own: it is answered once its attachments are
-/// fetched and Pi has it in its log, which may take seconds, so it must not hold up the calls
-/// answered in order. The reply goes back on this socket only.
-pub(super) fn start_prompt(request: Value, context: &RelaySessionContext) {
-    let replies = context.replies.clone();
-    let sessions = Arc::clone(&context.sessions);
-    tokio::spawn(async move {
-        if let Some(reply) = super::forward::answer(&request, sessions.as_ref()).await {
-            match serde_json::to_string(&reply) {
-                Ok(text) => replies.send(text),
-                Err(error) => log::warn!("event=relay.reply_unserializable error={error}"),
-            }
-        }
     });
 }
 
