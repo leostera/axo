@@ -213,7 +213,7 @@ final class AppsClientTests: XCTestCase {
   }
 
   func testADownloadAsksForTheAssetByItsHashSignedIn() async throws {
-    let hex = String(repeating: "ab", count: 32)
+    let hex = "2cea274d0bedc39ec4ab6ba9e59ec889e3ed6fb56a1cf088a64d9b383378dc97" // SHA-256 of "picture"
     let loader = StubLoader(status: 200, body: "picture")
     let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
     let data = try await assets.download(hex: hex)
@@ -227,6 +227,41 @@ final class AppsClientTests: XCTestCase {
       XCTFail("only an asset's name is asked for")
     } catch {}
     XCTAssertEqual(loader.requests.count, 1)
+  }
+
+  func testADownloadIsOnlyTheBytesItsNameIsTheHashOf() async throws {
+    let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: StubLoader(status: 200, body: "picture"))
+    do {
+      _ = try await assets.download(hex: String(repeating: "ab", count: 32))
+      XCTFail("other bytes are not this asset")
+    } catch {
+      XCTAssertEqual(error as? AxoClientError, .invalidResponse("the asset's bytes do not match its name"))
+    }
+  }
+
+  func testADownloadLargerThanAnyFileIsRefused() async throws {
+    let huge = DataLoader(body: Data(count: Attachment.maxBytes + 1))
+    let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: huge)
+    do {
+      _ = try await assets.download(hex: String(repeating: "ab", count: 32))
+      XCTFail("a body over the limit is refused")
+    } catch {
+      XCTAssertEqual(error as? AxoClientError, .invalidResponse("the asset is larger than any file can be"))
+    }
+  }
+
+  func testAnUploadTheAccountKeptUnderAnotherNameIsRefused() async throws {
+    let other = #"{"asset":"sha256:\#(String(repeating: "ab", count: 32))","name":"x","mimeType":"image/png","size":5}"#
+    let wrongSize = #"{"asset":"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824","name":"x","mimeType":"image/png","size":6}"#
+    for answer in [other, wrongSize] {
+      let assets = AssetsClient(tokens: StaticSessionToken(SessionToken.fixture()), loader: StubLoader(status: 201, body: answer))
+      do {
+        _ = try await assets.upload(Data("hello".utf8), name: "x", mimeType: "image/png")
+        XCTFail("\(answer) is not what was sent")
+      } catch {
+        XCTAssertEqual(error as? AxoClientError, .invalidResponse("the account kept something other than this file"))
+      }
+    }
   }
 
   func testAnUploadIsNamedByItsHashAndCarriesItsTypeAndASafeName() async throws {
@@ -336,6 +371,14 @@ final class AppsClientTests: XCTestCase {
       client.webPage(for: AppConnection(name: "apps.gmail", title: "Gmail")).absoluteString,
       "https://axo.leostera.dev/app/settings/apps/gmail")
     XCTAssertEqual(client.webPage(for: nil).absoluteString, "https://axo.leostera.dev/app/settings/apps/mcp")
+  }
+}
+
+/// Answers 200 with `body`, whatever it holds.
+private struct DataLoader: HTTPDataLoading {
+  let body: Data
+  func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
   }
 }
 

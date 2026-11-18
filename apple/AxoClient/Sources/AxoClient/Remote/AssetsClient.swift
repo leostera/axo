@@ -66,7 +66,8 @@ public struct AssetsClient: Sendable {
   }
 
   /// The bytes of the asset whose SHA-256 is `hex` (64 hex digits): a picture a tool came back
-  /// with, kept in the account's assets.
+  /// with, kept in the account's assets. Only bytes that hash to `hex`, and no more than
+  /// `Attachment.maxBytes` of them, are ever returned.
   public func download(hex: String) async throws -> Data {
     guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
       throw AxoClientError.invalidResponse("not an asset's name")
@@ -76,18 +77,25 @@ public struct AssetsClient: Sendable {
     request = try await RelayCredentials.authorize(request, with: tokens)
     let (body, response): (Data, HTTPURLResponse)
     do {
-      (body, response) = try await loader.load(request)
+      (body, response) = try await loader.load(request, maximumBytes: Attachment.maxBytes)
     } catch is CancellationError {
       throw CancellationError()
     } catch let error as URLError where error.code == .cancelled {
       throw CancellationError()
     } catch let error as AxoClientError {
       throw error
+    } catch is HTTPBodyTooLarge {
+      throw AxoClientError.invalidResponse("the asset is larger than any file can be")
     } catch {
       throw RelayError.unreachable(error.localizedDescription)
     }
     switch response.statusCode {
-    case 200..<300: return body
+    case 200..<300:
+      // Content addressing: the name is the bytes' hash, so any other bytes are not this asset.
+      guard Self.hex(of: body) == hex else {
+        throw AxoClientError.invalidResponse("the asset's bytes do not match its name")
+      }
+      return body
     case 401: throw RelayError.signInRequired
     default: throw AppsRefusal(status: response.statusCode, message: "Download failed (\(response.statusCode))")
     }
@@ -99,7 +107,7 @@ public struct AssetsClient: Sendable {
     guard data.count <= Attachment.maxBytes else {
       throw AppsRefusal(status: 413, message: "Files can be at most 100 MB.")
     }
-    let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    let hex = Self.hex(of: data)
     let name = Attachment.safeName(name)
     var request = URLRequest(url: endpoint.assetURL(hex: hex))
     request.httpMethod = "PUT"
@@ -125,16 +133,26 @@ public struct AssetsClient: Sendable {
     struct Refusal: Decodable { let error: String }
     switch response.statusCode {
     case 200..<300:
+      let kept: Attachment
       do {
-        return try JSONDecoder().decode(Attachment.self, from: body)
+        kept = try JSONDecoder().decode(Attachment.self, from: body)
       } catch {
         throw AxoClientError.invalidResponse("the account did not say what it kept")
       }
+      // A prompt names the asset by what the account says it kept: it must be these bytes.
+      guard kept.asset == "sha256:\(hex)", kept.size == data.count else {
+        throw AxoClientError.invalidResponse("the account kept something other than this file")
+      }
+      return kept
     case 401:
       throw RelayError.signInRequired
     default:
       let message = (try? JSONDecoder().decode(Refusal.self, from: body).error) ?? "Upload failed (\(response.statusCode))"
       throw AppsRefusal(status: response.statusCode, message: message)
     }
+  }
+
+  private static func hex(of data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
   }
 }

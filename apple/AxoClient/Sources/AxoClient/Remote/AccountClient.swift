@@ -4,15 +4,52 @@ import Foundation
 /// How `AccountClient` fetches: `URLSession` in the app, a stub in tests.
 public protocol HTTPDataLoading: Sendable {
   func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
+  /// Like `load`, but fails with `HTTPBodyTooLarge` instead of holding a body longer than
+  /// `maximumBytes`.
+  func load(_ request: URLRequest, maximumBytes: Int) async throws -> (Data, HTTPURLResponse)
+}
+
+/// A response body was longer than the caller accepts.
+public struct HTTPBodyTooLarge: Error, Equatable {
+  public let maximumBytes: Int
+}
+
+extension HTTPDataLoading {
+  /// For loaders whose bodies are already in memory, such as test stubs.
+  public func load(_ request: URLRequest, maximumBytes: Int) async throws -> (Data, HTTPURLResponse) {
+    let (data, response) = try await load(request)
+    guard data.count <= maximumBytes else { throw HTTPBodyTooLarge(maximumBytes: maximumBytes) }
+    return (data, response)
+  }
 }
 
 extension URLSession: HTTPDataLoading {
   public func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
     let (data, response) = try await data(for: request)
+    return (data, try Self.http(response))
+  }
+
+  /// Streams the body and stops reading at `maximumBytes`, so a huge or endless response never
+  /// fills memory.
+  public func load(_ request: URLRequest, maximumBytes: Int) async throws -> (Data, HTTPURLResponse) {
+    let (bytes, response) = try await bytes(for: request)
+    let http = try Self.http(response)
+    let tooLarge = HTTPBodyTooLarge(maximumBytes: maximumBytes)
+    if response.expectedContentLength > Int64(maximumBytes) { throw tooLarge }
+    var data = Data()
+    if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
+    for try await byte in bytes {
+      guard data.count < maximumBytes else { throw tooLarge }
+      data.append(byte)
+    }
+    return (data, http)
+  }
+
+  private static func http(_ response: URLResponse) throws -> HTTPURLResponse {
     guard let http = response as? HTTPURLResponse else {
       throw AxoClientError.invalidResponse("the relay did not answer over HTTP")
     }
-    return (data, http)
+    return http
   }
 }
 
