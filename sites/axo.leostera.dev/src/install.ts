@@ -120,6 +120,14 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+/** Nothing reads the archive until it is exactly the bytes the release names (RFD0075). */
+export function archiveCheckScript(): string {
+  return `verify_archive() {
+  [ "$(stat -f %z "$1")" = "$2" ] || fail "the download is not the size the release names"
+  [ "$(shasum -a 256 "$1" | cut -d' ' -f1)" = "$3" ] || fail "the download does not match the release's SHA-256"
+}`;
+}
+
 /** Run only after the verified app reaches its stable installation path, never in staging. */
 export function cliSetupScript(): string {
   return `install_cli() {
@@ -165,6 +173,8 @@ fail() { printf '\\033[31maxo install:\\033[0m %s\\n' "$*" >&2; exit 1; }
 
 ${cliSetupScript()}
 
+${archiveCheckScript()}
+
 # One function, so sh reads the whole script before running any of it: a cut-off download runs
 # nothing, and no command can read the rest of the script from the pipe as its input.
 main() {
@@ -203,6 +213,17 @@ case "$status" in
       || fail "This release has no artifact for $target"
     case "$artifact" in *[!a-zA-Z0-9._-]*|*..*) fail "Invalid release artifact filename" ;; esac
     case "$artifact" in axo-*.zip) ;; *) fail "Invalid Mac archive" ;; esac
+    # The digest and size of the artifact selected above (RFD0075): of its own target, or the
+    # universal one it fell back to.
+    selected=$target
+    /usr/bin/plutil -extract "artifacts.$target" raw -o - "$stage/latest.json" >/dev/null 2>&1 || selected=universal-apple-darwin
+    expected_sha256=$(/usr/bin/plutil -extract "integrity.$selected.sha256" raw -o - "$stage/latest.json" 2>/dev/null) \
+      || fail "This release has no integrity for $selected"
+    expected_size=$(/usr/bin/plutil -extract "integrity.$selected.size" raw -o - "$stage/latest.json" 2>/dev/null) \
+      || fail "This release has no integrity for $selected"
+    case "$expected_sha256" in *[!a-f0-9]*|'') fail "Invalid release digest" ;; esac
+    [ "\${#expected_sha256}" -eq 64 ] || fail "Invalid release digest"
+    case "$expected_size" in *[!0-9]*|''|0*) fail "Invalid release size" ;; esac
     expected_build=$(/usr/bin/plutil -extract build raw -o - "$stage/latest.json") || fail "Missing release build"
     ;;
   404)
@@ -211,12 +232,20 @@ case "$status" in
     [ "$target" = aarch64-apple-darwin ] || fail "No release for $target yet"
     artifact=Axo.app.zip
     expected_build=
+    expected_sha256=
+    expected_size=
     ;;
   *) fail "Could not inspect latest release (HTTP $status)" ;;
 esac
 say "Downloading $artifact"
-curl -fL --progress-bar -o "$stage/Axo.app.zip" "$AXO_ORIGIN/cdn/$artifact" \\
-  || fail "could not download $artifact"
+if [ -n "$expected_size" ]; then
+  curl -fL --progress-bar --max-filesize "$expected_size" -o "$stage/Axo.app.zip" "$AXO_ORIGIN/cdn/$artifact" \\
+    || fail "could not download $artifact"
+  verify_archive "$stage/Axo.app.zip" "$expected_size" "$expected_sha256"
+else
+  curl -fL --progress-bar -o "$stage/Axo.app.zip" "$AXO_ORIGIN/cdn/$artifact" \\
+    || fail "could not download $artifact"
+fi
 ditto -x -k "$stage/Axo.app.zip" "$stage/unpacked" || fail "the download is not a readable zip"
 new_app=$stage/unpacked/Axo.app
 [ -d "$new_app" ] || fail "the download has no Axo.app in it"

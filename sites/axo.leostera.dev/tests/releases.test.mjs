@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { parseRelease, macArtifact } from "../src/releases.ts";
-import { latestReleaseResponse, releaseArtifactResponse, macAppManifestResponse, macAppResponse, installScript, MAC_APP_KEY, MAC_APP_MANIFEST_KEY } from "../src/install.ts";
+import { latestReleaseResponse, releaseArtifactResponse, macAppManifestResponse, macAppResponse, installScript, archiveCheckScript, MAC_APP_KEY, MAC_APP_MANIFEST_KEY } from "../src/install.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
 const arm = "axo-0.71-0123456789ab-aarch64-apple-darwin.zip";
 const universal = "axo-0.71-0123456789ab-universal-apple-darwin.zip";
-const release = { version: "0.71", build: 342, axodBuild: 94, commit, artifacts: { "aarch64-apple-darwin": arm } };
+const digest = "a".repeat(64);
+const release = { version: "0.71", build: 342, axodBuild: 94, commit, artifacts: { "aarch64-apple-darwin": arm }, integrity: { "aarch64-apple-darwin": { sha256: digest, size: 1024 } } };
 function bucket(entries) {
   const reads = [];
   const objects = new Map(Object.entries(entries));
@@ -23,13 +28,47 @@ test("release parsing binds every basename to version, full commit and target", 
   assert.equal(macArtifact(parsed), arm);
   assert.equal(macArtifact(parsed, "x86_64-apple-darwin"), undefined);
   const intel = arm.replace("aarch64", "x86_64");
-  assert.equal(macArtifact(parseRelease({ ...release, artifacts: { "x86_64-apple-darwin": intel } }), "x86_64-apple-darwin"), intel);
-  assert.equal(macArtifact(parseRelease({ ...release, artifacts: { "universal-apple-darwin": universal } }), "x86_64-apple-darwin"), universal);
+  const intelIntegrity = { "x86_64-apple-darwin": { sha256: digest, size: 1024 } };
+  const universalIntegrity = { "universal-apple-darwin": { sha256: digest, size: 1024 } };
+  assert.equal(macArtifact(parseRelease({ ...release, artifacts: { "x86_64-apple-darwin": intel }, integrity: intelIntegrity }), "x86_64-apple-darwin"), intel);
+  assert.equal(macArtifact(parseRelease({ ...release, artifacts: { "universal-apple-darwin": universal }, integrity: universalIntegrity }), "x86_64-apple-darwin"), universal);
   for (const change of [{ build: 0 }, { commit: "short" }, { artifacts: {} }, { version: "0.72" },
     { artifacts: { "aarch64-apple-darwin": "../bad.zip" } },
     { artifacts: { "aarch64-apple-darwin": "https://evil.test/app.zip" } },
     { artifacts: { "x86_64-apple-darwin": arm } }, { ignored: true }])
     assert.throws(() => parseRelease({ ...release, ...change }));
+});
+test("integrity names every artifact's exact bytes, and only pointers from before it may lack it", () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(parseRelease(release).integrity)), release.integrity);
+  const { integrity: _, ...older } = release;
+  assert.equal(parseRelease(older).integrity, undefined);
+  const entry = release.integrity["aarch64-apple-darwin"];
+  for (const integrity of [{}, [], { "x86_64-apple-darwin": entry },
+    { ...release.integrity, "x86_64-apple-darwin": entry },
+    { "aarch64-apple-darwin": { ...entry, sha256: "A".repeat(64) } },
+    { "aarch64-apple-darwin": { ...entry, sha256: "short" } },
+    { "aarch64-apple-darwin": { ...entry, size: 0 } },
+    { "aarch64-apple-darwin": { ...entry, size: "1024" } },
+    { "aarch64-apple-darwin": { ...entry, extra: true } }])
+    assert.throws(() => parseRelease({ ...release, integrity }), JSON.stringify(integrity));
+});
+test("the installer reads nothing it downloaded until its size and SHA-256 match", () => {
+  const root = mkdtempSync(join(tmpdir(), "axo-archive-check-"));
+  try {
+    const file = join(root, "Axo.app.zip");
+    writeFileSync(file, "archive bytes");
+    const sha = createHash("sha256").update("archive bytes").digest("hex");
+    const check = (size, sha256) => spawnSync("sh", ["-c",
+      `set -eu\nfail() { printf '%s\\n' "$*" >&2; exit 1; }\n${archiveCheckScript()}\nverify_archive "$1" "$2" "$3"\nprintf ok`,
+      "sh", file, String(size), sha256], { encoding: "utf8" });
+    assert.equal(check(13, sha).stdout, "ok");
+    assert.match(check(14, sha).stderr, /size/);
+    assert.match(check(13, "b".repeat(64)).stderr, /SHA-256/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  const script = installScript("https://axo.test", null);
+  assert.ok(script.indexOf('verify_archive "$stage/Axo.app.zip"') < script.indexOf('ditto -x -k "$stage/Axo.app.zip"'));
+  assert.ok(script.includes('--max-filesize "$expected_size"'));
+  assert.ok(script.includes('fail "This release has no integrity for $selected"'));
 });
 test("latest pointer is uncached and old manifest/archive views derive from it", async () => {
   const store = bucket({ "latest.json": JSON.stringify(release), ["releases/" + arm]: "archive", [MAC_APP_KEY]: "stale" });
