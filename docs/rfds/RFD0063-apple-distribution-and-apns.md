@@ -1,7 +1,7 @@
 # RFD0063 - Axo: Apple distribution and request push
 
 - Feature Name: `apple-distribution-and-apns`
-- Status: Draft — native enrollment and durable sandbox dispatch implemented; live iPhone rollout pending
+- Status: In progress — sandbox delivery live on iPhone; other-device and production rollout remain separate
 - Author: leostera
 - Start Date: 2026-11-16
 - Document Type: Proposal
@@ -189,6 +189,19 @@ registration, account switching, replay, native route parsing, client wire forma
 UI gates are separate executable tests. These cannot certify deployed HTTP/2 or OS delivery.
 The opt-in native `AXO_PUSH_TEST_RUN_ID` report contains only schema, run correlation and a fixed
 status in `Documents/axo-push-test.json`; it never exports a token or notification body.
+
+## First live iPhone rollout
+
+Created an APNs-only, topic-specific key restricted to the canonical root and sandbox, retaining
+all existing keys/certificates. Its private material is held in server secrets, not source or apps.
+The integrated Worker and mobile-only iPhone build 0.71 (69) are deployed. Native enrollment and
+a device-local `receivedForeground` report established real APNs receipt; the person separately
+confirmed a native notification on the locked iPhone. Foreground receipt does not promise a
+visible foreground banner, which the person did not observe. OS presentation policy still applies.
+
+The iPad remains on build 68; neither installed Watch app was replaced. No production key/topic,
+app submission, credential reset, source sign-out or Mac runtime restart occurred. These results
+do not establish iPad delivery or Watch forwarding, nor complete Watch identity migration.
 
 ## Alternatives and open questions
 

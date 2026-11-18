@@ -80,11 +80,12 @@ Apple's current response guidance defers 5xx retries for 15 minutes; a short-liv
 usually expire before then. `TooManyRequests` defers at least a minute. Provider-auth errors
 are not treated as a reason to mint tokens repeatedly or switch endpoints.
 
-Before claiming live push, still provision the approved scoped sandbox key in the unlocked
-Apple portal, deploy integrated server/client code, enroll the owned iPhone and verify actual
-foreground/background/locked delivery. Local fake-APNs integration cannot prove deployed HTTP/2
-or OS delivery. The first authorized live rollout is iPhone-only; do not update the iPad or either
-Watch app as a side effect.
+The approved canonical, topic-specific sandbox key is configured in server secrets. The Worker
+and iPhone 0.71 (69) are deployed: native enrollment and a fixed foreground receipt prove APNs
+transport to the device; the person confirmed a native lock-screen notification. A visible
+foreground banner was not observed and remains subject to OS presentation policy. The iPad
+remains on build 68; neither Watch app was changed. Other-device rollout, Watch forwarding and
+production distribution remain independent gates. Local fake-APNs tests alone are never delivery proof.
 
 Focused executable gates:
 
