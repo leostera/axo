@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { builtinModules } from "node:module";
 import { Miniflare, Response as MiniflareResponse, convertV4MiniflareOptions } from "miniflare";
 import { createHash, randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -177,28 +178,47 @@ export type Harness = Awaited<ReturnType<typeof harness>>;
 export type Outbound = (request: Request) => Promise<Response | undefined> | Response | undefined;
 
 /**
+ * The Worker, bundled once per test process and entry: every harness runs the same code, and
+ * bundling it took seconds of each one.
+ */
+const bundles = new Map<string, Promise<string>>();
+function bundleOf(entry: string): Promise<string> {
+  let bundled = bundles.get(entry);
+  if (!bundled) {
+    bundled = (async () => {
+      const directory = await mkdtemp(join(tmpdir(), "axo-api-bundle-"));
+      process.once("exit", () => rmSync(directory, { recursive: true, force: true }));
+      await build({
+        entryPoints: [entry],
+        outfile: join(directory, "worker.mjs"),
+        bundle: true,
+        format: "esm",
+        platform: "neutral",
+        // As Workers' build resolves packages: their workerd or browser builds.
+        conditions: ["workerd", "worker", "browser"],
+        mainFields: ["module", "main"],
+        // Node's modules (GramJS's sockets, Telegram's) are workerd's own under nodejs_compat, as in production.
+        external: ["cloudflare:workers", "node:*", ...builtinModules],
+        // CommonJS packages require them; production's build turns those into imports, esbuild needs a `require`.
+        banner: { js: 'import { createRequire as __axoRequire } from "node:module"; const require = __axoRequire("/");' },
+        // WhatsApp's Baileys, as the site's build bundles it: its WebAssembly beside the bundle.
+        plugins: [whatsappEsbuild({ wasmDir: directory })],
+      });
+      return directory;
+    })();
+    bundles.set(entry, bundled);
+  }
+  return bundled;
+}
+
+/**
  * `entry` replaces the Worker's entry module, for a test that runs another release's code (a
  * fixture under `tests/fixtures/`).
  */
 export async function harness(configuration: { bindings?: Record<string, string>; outbound?: Outbound; entry?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
-  const bundle = join(directory, "worker.mjs");
-  await build({
-    entryPoints: [configuration.entry ?? resolve(root, "packages/axo-api-worker/src/index.ts")],
-    outfile: bundle,
-    bundle: true,
-    format: "esm",
-    platform: "neutral",
-    // As Workers' build resolves packages: their workerd or browser builds.
-    conditions: ["workerd", "worker", "browser"],
-    mainFields: ["module", "main"],
-    // Node's modules (GramJS's sockets, Telegram's) are workerd's own under nodejs_compat, as in production.
-    external: ["cloudflare:workers", "node:*", ...builtinModules],
-    // CommonJS packages require them; production's build turns those into imports, esbuild needs a `require`.
-    banner: { js: 'import { createRequire as __axoRequire } from "node:module"; const require = __axoRequire("/");' },
-    // WhatsApp's Baileys, as the site's build bundles it: its WebAssembly beside the bundle.
-    plugins: [whatsappEsbuild({ wasmDir: directory })],
-  });
+  const modules = await bundleOf(configuration.entry ?? resolve(root, "packages/axo-api-worker/src/index.ts"));
+  const bundle = join(modules, "worker.mjs");
   const provider = new Provider();
   const options = convertV4MiniflareOptions({
     name: "api-test",
@@ -210,10 +230,10 @@ export async function harness(configuration: { bindings?: Record<string, string>
     },
     // The Worker's outbound requests go to the identity provider, or to what a test adds.
     outboundService: async (request: Request) => (await configuration.outbound?.(request)) ?? provider.handle(request),
-    modulesRoot: directory,
+    modulesRoot: modules,
     modules: [
       { type: "ESModule", path: bundle },
-      { type: "CompiledWasm", path: join(directory, "whatsapp-bridge.wasm") },
+      { type: "CompiledWasm", path: join(modules, "whatsapp-bridge.wasm") },
     ],
     compatibilityDate: "2026-10-09",
     compatibilityFlags: ["nodejs_compat", "enable_ctx_exports"],
