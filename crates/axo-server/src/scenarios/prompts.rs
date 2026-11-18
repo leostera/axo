@@ -4,11 +4,11 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use axo_ipc::cancel::{self, Cancellation};
-use axo_protocol::rpc::{PromptDelivery, PromptSession, PromptText, TerminalBytes};
+use axo_protocol::rpc::{PromptDelivery, PromptText, TerminalBytes};
 use axo_protocol::{PaneRole, SessionId};
 
 use crate::ops::{self, TERMINAL_INPUT_WRITE_TIMEOUT};
-use crate::session::prompts::PromptError;
+use crate::session::prompts::{Origin, Outgoing, PromptError};
 use crate::sessions;
 use crate::test_support::{Fixture, Pi, pane};
 
@@ -62,11 +62,11 @@ async fn an_agents_prompt_names_its_sender_and_prompting_itself_is_limited() {
     let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
     let record = fixture.new_session().await;
     fixture.wait_for_pi(record.id).await;
-    let to_self = |text: &str| PromptSession {
+    let to_self = |text: &str| Outgoing {
         session_id: record.id,
         text: prompt_text(text),
         delivery: PromptDelivery::FollowUp,
-        from_session_id: Some(record.id),
+        origin: Origin::Session(record.id),
     };
     for _ in 0..10 {
         let accepted = sessions::prompt(
@@ -106,11 +106,11 @@ async fn prompts_refused_as_busy_do_not_use_up_the_senders_limit() {
     let fixture = Fixture::with(Pi::Fake { turn_ms: 10_000 }).await;
     let record = fixture.new_session().await;
     fixture.wait_for_pi(record.id).await;
-    let to_self = |text: &str, delivery| PromptSession {
+    let to_self = |text: &str, delivery| Outgoing {
         session_id: record.id,
         text: prompt_text(text),
         delivery,
-        from_session_id: Some(record.id),
+        origin: Origin::Session(record.id),
     };
     sessions::prompt(
         &fixture.core,
@@ -156,11 +156,11 @@ async fn prompts_refused_as_busy_do_not_use_up_the_senders_limit() {
 async fn a_queued_prompt_whose_pi_stops_first_is_reported_dropped() {
     let fixture = Fixture::new().await;
     let record = fixture.new_session().await;
-    let to_self = PromptSession {
+    let to_self = Outgoing {
         session_id: record.id,
         text: prompt_text("are you there"),
         delivery: PromptDelivery::FollowUp,
-        from_session_id: Some(record.id),
+        origin: Origin::Session(record.id),
     };
     let core = std::sync::Arc::clone(&fixture.core);
     let waiting = tokio::spawn(async move {
@@ -188,11 +188,11 @@ async fn a_prompt_still_queued_after_its_wait_says_so() {
     let record = fixture.new_session().await;
     let accepted = sessions::prompt(
         &fixture.core,
-        PromptSession {
+        Outgoing {
             session_id: record.id,
             text: prompt_text("later"),
             delivery: PromptDelivery::FollowUp,
-            from_session_id: Some(record.id),
+            origin: Origin::Session(record.id),
         },
         None,
         Vec::new(),
@@ -203,17 +203,67 @@ async fn a_prompt_still_queued_after_its_wait_says_so() {
     assert!(accepted.queued);
 }
 
+/// A prompt from a program on the socket that is neither Axo.app nor a Session's agent never
+/// passes for the person's (RFD0073): Pi sees it labelled, and all such programs share one limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_program_is_labelled_and_limited_not_taken_for_the_person() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let from_a_script = |text: &str| {
+        Outgoing::from_local(
+            axo_protocol::rpc::PromptSession {
+                session_id: record.id,
+                text: prompt_text(text),
+                delivery: PromptDelivery::FollowUp,
+                from_session_id: None,
+            },
+            &axo_ipc::peer::Peer::default(),
+        )
+    };
+    sessions::prompt(
+        &fixture.core,
+        from_a_script("ship it"),
+        None,
+        Vec::new(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    fixture
+        .until("the labelled prompt to reach Pi", || {
+            fixture.pi_log().contains("SENT:[From a local program]")
+        })
+        .await;
+    let mut limited = false;
+    for _ in 0..30 {
+        if let Err(PromptError::RateLimited) = sessions::prompt(
+            &fixture.core,
+            from_a_script("again"),
+            None,
+            Vec::new(),
+            Duration::ZERO,
+        )
+        .await
+        {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "local programs are held to an agent's limit");
+}
+
 /// A prompt from a Session that is not open is refused, and so is one to a Session with no Pi.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_prompt_names_open_sessions_only() {
     let fixture = Fixture::new().await;
     let record = fixture.new_session().await;
     let unknown = SessionId::from_u128(987_654);
-    let from_unknown = PromptSession {
+    let from_unknown = Outgoing {
         session_id: record.id,
         text: prompt_text("hi"),
         delivery: PromptDelivery::FollowUp,
-        from_session_id: Some(unknown),
+        origin: Origin::Session(unknown),
     };
     assert!(matches!(
         sessions::prompt(
@@ -226,11 +276,11 @@ async fn a_prompt_names_open_sessions_only() {
         .await,
         Err(PromptError::Invalid(_))
     ));
-    let to_unknown = PromptSession {
+    let to_unknown = Outgoing {
         session_id: unknown,
         text: prompt_text("hi"),
         delivery: PromptDelivery::FollowUp,
-        from_session_id: None,
+        origin: Origin::Person,
     };
     assert!(matches!(
         sessions::prompt(&fixture.core, to_unknown, None, Vec::new(), Duration::ZERO).await,
@@ -264,11 +314,11 @@ async fn a_send_queues_behind_a_human_question_and_the_work_approved_by_yes() {
         })
         .await;
     let question = fixture.core.questions.pending().pop().unwrap();
-    let send = |text: &str| PromptSession {
+    let send = |text: &str| Outgoing {
         session_id: record.id,
         text: prompt_text(text),
         delivery: PromptDelivery::Interrupt,
-        from_session_id: None,
+        origin: Origin::Person,
     };
     sessions::prompt(
         &fixture.core,

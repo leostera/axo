@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
-use axo_protocol::rpc::{PromptDelivery, PromptSession, PromptText};
+use axo_protocol::rpc::{PromptDelivery, PromptText};
 use axo_protocol::{Availability, PaneRole, SessionId};
+
+use crate::session::prompts::{Origin, Outgoing};
 
 use crate::idle_pis::{self, Policy};
 use crate::sessions;
@@ -22,11 +24,11 @@ const SLEEP_ALL: Policy = Policy {
 async fn prompt(fixture: &Fixture, id: SessionId, text: &str) -> bool {
     let accepted = sessions::prompt(
         &fixture.core,
-        PromptSession {
+        Outgoing {
             session_id: id,
             text: PromptText::parse(text.into()).unwrap(),
             delivery: PromptDelivery::FollowUp,
-            from_session_id: None,
+            origin: Origin::Person,
         },
         None,
         Vec::new(),

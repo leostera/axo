@@ -8,6 +8,7 @@ use axo_protocol::rpc::CreateSession;
 use axo_protocol::{Layout, LayoutDirection, LayoutNode};
 use axo_protocol::{PaneRole, ShellId, Viewport, new_uuid_v4};
 
+use crate::session::prompts::Origin;
 use crate::sessions;
 use crate::test_support::{Fixture, Pi, alive, pane, pid};
 
@@ -392,11 +393,11 @@ async fn a_pi_working_when_axod_stops_is_told_once_the_next_axod_restores_it() {
     fixture.wait_for_pi(record.id).await;
     sessions::prompt(
         &fixture.core,
-        axo_protocol::rpc::PromptSession {
+        crate::session::prompts::Outgoing {
             session_id: record.id,
             text: axo_protocol::rpc::PromptText::parse("a long job".into()).unwrap(),
             delivery: axo_protocol::rpc::PromptDelivery::FollowUp,
-            from_session_id: None,
+            origin: Origin::Person,
         },
         None,
         Vec::new(),
@@ -476,11 +477,11 @@ async fn working_session(fixture: &Fixture) -> axo_protocol::SessionRecord {
     fixture.wait_for_pi(record.id).await;
     sessions::prompt(
         &fixture.core,
-        axo_protocol::rpc::PromptSession {
+        crate::session::prompts::Outgoing {
             session_id: record.id,
             text: axo_protocol::rpc::PromptText::parse("original interrupted work".into()).unwrap(),
             delivery: axo_protocol::rpc::PromptDelivery::FollowUp,
-            from_session_id: None,
+            origin: Origin::Person,
         },
         None,
         vec![],
@@ -615,11 +616,11 @@ async fn a_new_real_prompt_supersedes_unclaimed_restart_recovery() {
         .unwrap();
     sessions::prompt(
         &fixture.core,
-        axo_protocol::rpc::PromptSession {
+        crate::session::prompts::Outgoing {
             session_id: record.id,
             text: axo_protocol::rpc::PromptText::parse("new real request".into()).unwrap(),
             delivery: axo_protocol::rpc::PromptDelivery::FollowUp,
-            from_session_id: None,
+            origin: Origin::Person,
         },
         None,
         vec![],

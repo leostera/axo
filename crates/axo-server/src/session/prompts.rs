@@ -12,10 +12,11 @@ use std::time::{Duration, Instant};
 
 use axo_agent::pi::link::LinkCommands;
 use axo_agent::pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
+use axo_ipc::peer::{Peer, Signer};
 use axo_protocol::SessionId;
 use axo_protocol::asset::FetchedAttachment;
 use axo_protocol::commands::{CommandId, StopTarget};
-use axo_protocol::rpc::{PromptDelivery, PromptText};
+use axo_protocol::rpc::{PromptDelivery, PromptSession, PromptText};
 use tokio::sync::oneshot;
 
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
@@ -23,7 +24,8 @@ pub(crate) const MAX_QUEUED_PI_PROMPTS: usize = 8;
 /// How long an agent's prompt waits for a starting Pi to take it before the answer says it is
 /// still queued: as long as a client's prompt waits for a starting Pi.
 pub(crate) const QUEUED_PROMPT_WAIT: Duration = Duration::from_secs(4);
-/// Prompts one Session's agent may send per [`RATE_WINDOW`], to anyone and to itself.
+/// Prompts one Session's agent may send per [`RATE_WINDOW`], to anyone and to itself. Every local
+/// program that is neither Axo.app nor a Session's agent shares one such allowance.
 const MAX_AGENT_PROMPTS_PER_WINDOW: usize = 30;
 const MAX_SELF_PROMPTS_PER_WINDOW: usize = 10;
 pub(crate) const RATE_WINDOW: Duration = Duration::from_secs(60);
@@ -39,23 +41,109 @@ pub(crate) struct Prompt {
     pub(crate) attachments: Vec<FetchedAttachment>,
 }
 
-/// What each Session's agent has sent, for rate limits.
+/// Who sent a prompt (RFD0073), decided once where it enters axod and never taken from the
+/// request alone: only the person's own clients send a prompt that reaches Pi unlabelled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Origin {
+    /// Axo.app on this Mac, or the account through the relay.
+    Person,
+    /// The agent of this Session.
+    Session(SessionId),
+    /// Any other program on the socket: a script, a CLI outside a Session, an agent's shell.
+    LocalProgram,
+}
+
+impl Origin {
+    /// The origin of a local `axo.session.prompt`: the Session it names, else the person only if
+    /// `peer` is the signed Axo.app. Anything else is a local program, whatever it claims.
+    pub(crate) fn of_local_request(from_session_id: Option<SessionId>, peer: &Peer) -> Self {
+        match from_session_id {
+            Some(id) => Self::Session(id),
+            None if peer.is(Signer::AxoApp) => Self::Person,
+            None => Self::LocalProgram,
+        }
+    }
+
+    /// Whose allowance a prompt from here uses; the person has no limit.
+    fn sender(self) -> Option<Sender> {
+        match self {
+            Self::Person => None,
+            Self::Session(id) => Some(Sender::Session(id)),
+            Self::LocalProgram => Some(Sender::LocalProgram),
+        }
+    }
+}
+
+impl fmt::Display for Origin {
+    /// As logged in `from_session_id=`.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Person => formatter.write_str("person"),
+            Self::Session(id) => write!(formatter, "{id}"),
+            Self::LocalProgram => formatter.write_str("local_program"),
+        }
+    }
+}
+
+/// A prompt on its way to a Session's Pi, with who sent it.
+#[derive(Debug)]
+pub(crate) struct Outgoing {
+    pub(crate) session_id: SessionId,
+    pub(crate) text: PromptText,
+    pub(crate) delivery: PromptDelivery,
+    pub(crate) origin: Origin,
+}
+
+impl Outgoing {
+    /// A local `axo.session.prompt` from `peer`.
+    pub(crate) fn from_local(request: PromptSession, peer: &Peer) -> Self {
+        Self {
+            session_id: request.session_id,
+            text: request.text,
+            delivery: request.delivery,
+            origin: Origin::of_local_request(request.from_session_id, peer),
+        }
+    }
+}
+
+/// Whose allowance a prompt uses.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum Sender {
+    Session(SessionId),
+    LocalProgram,
+}
+
+/// What each sender has sent, for rate limits.
 #[derive(Default)]
 pub(crate) struct PromptProvenance {
-    /// When each Session's agent sent prompts in the last window, and whether to itself.
-    sent: std::collections::HashMap<SessionId, VecDeque<(Instant, bool)>>,
+    /// When each sender sent prompts in the last window, and whether to itself.
+    sent: std::collections::HashMap<Sender, VecDeque<(Instant, bool)>>,
 }
 
 impl PromptProvenance {
     pub(crate) fn forget(&mut self, session_id: SessionId) {
-        self.sent.remove(&session_id);
+        self.sent.remove(&Sender::Session(session_id));
+    }
+
+    /// Counts a prompt from `origin` to `target`, unless it is the person's, which has no limit.
+    pub(crate) fn admit_from(
+        &mut self,
+        origin: Origin,
+        target: SessionId,
+        now: Instant,
+    ) -> Result<Option<Admitted>, PromptError> {
+        let Some(sender) = origin.sender() else {
+            return Ok(None);
+        };
+        let to_self = origin == Origin::Session(target);
+        self.admit(sender, to_self, now).map(Some)
     }
 
     /// Counts one prompt from `from` against its limits, or refuses it. The count stands unless
     /// the prompt is then definitely not taken: see [`Self::refund`].
     pub(crate) fn admit(
         &mut self,
-        from: SessionId,
+        from: Sender,
         to_self: bool,
         now: Instant,
     ) -> Result<Admitted, PromptError> {
@@ -98,7 +186,7 @@ impl PromptProvenance {
 /// One prompt counted against its sender's limits, until refunded.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Admitted {
-    from: SessionId,
+    from: Sender,
     at: Instant,
     to_self: bool,
 }
@@ -291,16 +379,9 @@ pub(crate) fn refusal(error: &PromptError) -> &'static str {
     }
 }
 
-pub(crate) fn log_prompt(
-    target: SessionId,
-    from: Option<SessionId>,
-    delivery: PromptDelivery,
-    outcome: &str,
-) {
+pub(crate) fn log_prompt(target: SessionId, from: Origin, delivery: PromptDelivery, outcome: &str) {
     log::info!(
-        "event=session.prompt target_session_id={} from_session_id={} delivery={delivery:?} outcome={outcome}",
-        target,
-        from.map_or_else(|| "person".to_owned(), |from| from.to_string()),
+        "event=session.prompt target_session_id={target} from_session_id={from} delivery={delivery:?} outcome={outcome}"
     );
 }
 
@@ -311,7 +392,10 @@ mod tests {
     #[test]
     fn an_agent_may_prompt_others_and_itself_within_its_limits() {
         let mut provenance = PromptProvenance::default();
-        let (me, other) = (SessionId::from_u128(1), SessionId::from_u128(2));
+        let (me, other) = (
+            Sender::Session(SessionId::from_u128(1)),
+            Sender::Session(SessionId::from_u128(2)),
+        );
         let now = Instant::now();
         for _ in 0..MAX_SELF_PROMPTS_PER_WINDOW {
             provenance.admit(me, true, now).unwrap();
@@ -334,7 +418,7 @@ mod tests {
     #[test]
     fn a_prompt_definitely_not_taken_does_not_count_against_its_sender() {
         let mut provenance = PromptProvenance::default();
-        let me = SessionId::from_u128(1);
+        let me = Sender::Session(SessionId::from_u128(1));
         let now = Instant::now();
         // An interval timer refused as busy every tick never uses up its agent's prompts.
         for _ in 0..MAX_AGENT_PROMPTS_PER_WINDOW * 2 {
@@ -355,5 +439,43 @@ mod tests {
         let text = |text: &str| PromptText::parse(text.to_owned()).unwrap();
         assert!(check_prompt(&text("hello"), &[]).is_ok());
         assert!(check_prompt(&text(" \n"), &[]).is_err());
+    }
+
+    #[test]
+    fn only_axo_app_speaks_for_the_person_on_the_socket() {
+        let me = SessionId::from_u128(1);
+        let unverified = Peer::default();
+        assert_eq!(
+            Origin::of_local_request(None, &unverified),
+            Origin::LocalProgram
+        );
+        assert_eq!(
+            Origin::of_local_request(Some(me), &unverified),
+            Origin::Session(me)
+        );
+        // The account's calls never come as a local request; were one to, it is not the person.
+        assert_eq!(
+            Origin::of_local_request(None, &Peer::Relay),
+            Origin::LocalProgram
+        );
+    }
+
+    #[test]
+    fn local_programs_share_one_allowance_and_the_person_has_none() {
+        let mut provenance = PromptProvenance::default();
+        let (target, now) = (SessionId::from_u128(1), Instant::now());
+        for _ in 0..MAX_AGENT_PROMPTS_PER_WINDOW {
+            provenance
+                .admit_from(Origin::LocalProgram, target, now)
+                .unwrap();
+        }
+        assert!(matches!(
+            provenance.admit_from(Origin::LocalProgram, target, now),
+            Err(PromptError::RateLimited)
+        ));
+        assert!(matches!(
+            provenance.admit_from(Origin::Person, target, now),
+            Ok(None)
+        ));
     }
 }

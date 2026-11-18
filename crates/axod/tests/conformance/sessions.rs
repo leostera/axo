@@ -106,6 +106,7 @@ fn a_prompt_reaches_pi_and_its_turn_streams_back_and_is_recorded() {
     let id = created["id"].clone();
     let mut events = axod.subscribe(json!({ "sessionId": id }));
 
+    // From the test, neither Axo.app nor a Session's agent: Pi sees it labelled (RFD0073).
     let accepted = axod.ok(
         "axo.session.prompt",
         json!({ "sessionId": id, "text": "run the tests" }),
@@ -145,7 +146,8 @@ fn a_prompt_reaches_pi_and_its_turn_streams_back_and_is_recorded() {
     );
 
     assert!(
-        axod.pi_log().contains("SENT:run the tests\n"),
+        axod.pi_log()
+            .contains("SENT:[From a local program]\n\nrun the tests\n"),
         "{}",
         axod.pi_log()
     );
@@ -155,7 +157,7 @@ fn a_prompt_reaches_pi_and_its_turn_streams_back_and_is_recorded() {
     });
     let recorded = transcript(&after);
     assert!(
-        recorded.contains("run the tests") && recorded.contains("Done: run the tests"),
+        recorded.contains("run the tests") && recorded.contains("Done: [From a local program]"),
         "{recorded}"
     );
     assert_eq!(
@@ -202,11 +204,11 @@ fn a_prompt_while_working_follows_up_by_default_and_is_refused_as_a_turn() {
         (ended == 2).then_some(())
     });
     let log = axod.pi_log();
-    let first = log.find("SENT:first").unwrap();
-    let second = log.find("SENT:second").unwrap();
+    let first = log.find("SENT:[From a local program]\n\nfirst").unwrap();
+    let second = log.find("SENT:[From a local program]\n\nsecond").unwrap();
     assert!(first < second, "{log}");
     assert!(
-        log.contains("BUSY:now"),
+        log.contains("BUSY:[From a local program]\n\nnow"),
         "Pi itself refuses a turn while working: {log}"
     );
 }
@@ -243,7 +245,9 @@ fn a_prompt_sent_while_pi_starts_waits_for_it() {
     );
     assert_eq!(accepted["accepted"], true, "{accepted}");
     axod.wait_for("the early prompt to reach Pi", || {
-        axod.pi_log().contains("SENT:early").then_some(())
+        axod.pi_log()
+            .contains("SENT:[From a local program]\n\nearly")
+            .then_some(())
     });
 }
 
@@ -377,7 +381,9 @@ fn a_forced_restart_also_recovers_a_dead_pi() {
         json!({ "sessionId": id, "text": "back" }),
     );
     axod.wait_for("the new Pi to take the prompt", || {
-        axod.pi_log().contains("SENT:back").then_some(())
+        axod.pi_log()
+            .contains("SENT:[From a local program]\n\nback")
+            .then_some(())
     });
 }
 
@@ -425,7 +431,9 @@ fn a_prompt_to_a_dead_pi_is_refused_not_lost() {
             // If axod takes it, it must start a Pi to deliver it.
             assert_eq!(accepted["accepted"], true, "{accepted}");
             axod.wait_for("the prompt to reach a new Pi", || {
-                axod.pi_log().contains("SENT:anyone?").then_some(())
+                axod.pi_log()
+                    .contains("SENT:[From a local program]\n\nanyone?")
+                    .then_some(())
             });
         }
     }
@@ -461,7 +469,9 @@ fn sessions_and_conversations_survive_restarting_axod() {
         json!({ "sessionId": id, "text": "after restart" }),
     );
     axod.wait_for("the prompt after the restart", || {
-        axod.pi_log().contains("SENT:after restart").then_some(())
+        axod.pi_log()
+            .contains("SENT:[From a local program]\n\nafter restart")
+            .then_some(())
     });
 }
 

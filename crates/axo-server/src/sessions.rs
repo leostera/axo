@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use axo_agent::pi::BridgeSocketPath;
 use axo_protocol::asset::FetchedAttachment;
 use axo_protocol::commands::CommandId;
-use axo_protocol::rpc::{self, PromptAccepted, PromptDelivery, PromptSession, PromptText};
+use axo_protocol::rpc::{self, PromptAccepted, PromptDelivery, PromptText};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, Viewport, new_uuid_v4};
 use axo_store::{PiHistoryOwner, StoredLifecycle, StoredSession};
 use tokio::sync::oneshot;
@@ -23,7 +23,7 @@ use crate::catalog::PiPhase;
 use crate::core::{Core, lock};
 use crate::session::panes::RuntimeId;
 use crate::session::pi::Admission;
-use crate::session::prompts::{self, Prompt, PromptError};
+use crate::session::prompts::{self, Origin, Prompt, PromptError};
 use crate::session::{self, PiStart, SessionHandle};
 use crate::stop_notice::{self, DaemonStop};
 
@@ -665,23 +665,23 @@ pub(crate) async fn set_viewport(core: &Core, viewport: Viewport) -> io::Result<
     Ok(())
 }
 
-/// Sends a prompt to the Session's Pi: from an agent of another Session (`from_session_id`) or
-/// from a person. A Pi still starting queues it; a dormant one starts for it.
+/// Sends a prompt to the Session's Pi from its [`Origin`]: the person, a Session's agent (labelled
+/// with that Session) or another local program (labelled as one). A Pi still starting queues it; a dormant one starts for it.
 ///
 /// A queued prompt is waited for up to `wait_if_queued`: the answer then says it was delivered,
 /// or why not (its Pi stopped first), and `queued: true` only while it still waits.
 pub(crate) async fn prompt(
     core: &Core,
-    request: PromptSession,
+    request: prompts::Outgoing,
     command_id: Option<CommandId>,
     attachments: Vec<FetchedAttachment>,
     wait_if_queued: Duration,
 ) -> Result<PromptAccepted, PromptError> {
-    let PromptSession {
+    let prompts::Outgoing {
         session_id: target,
         text,
         delivery,
-        from_session_id: from,
+        origin: from,
     } = request;
     let refused = |error: PromptError| {
         prompts::log_prompt(target, from, delivery, prompts::refusal(&error));
@@ -694,22 +694,24 @@ pub(crate) async fn prompt(
         .ok_or(PromptError::NoPi)
         .map_err(refused)?;
     // The receiving agent, and whoever reads its transcript, sees who sent the prompt.
-    let mut admitted = None;
-    let text = match from {
-        Some(from) => {
+    let label = match from {
+        Origin::Person => None,
+        Origin::Session(id) => {
             let sender = core
                 .catalog
-                .record(from)
+                .record(id)
                 .ok_or(PromptError::Invalid("the sending Session is not open"))
                 .map_err(refused)?;
             let name = sender.manual_name.unwrap_or(sender.name);
-            admitted = Some(
-                lock(&core.provenance)
-                    .admit(from, from == target, Instant::now())
-                    .map_err(refused)?,
-            );
-            format!("[From Axo Session {from} {name:?}]\n\n{}", text.as_str())
+            Some(format!("[From Axo Session {id} {name:?}]"))
         }
+        Origin::LocalProgram => Some("[From a local program]".to_owned()),
+    };
+    let admitted = lock(&core.provenance)
+        .admit_from(from, target, Instant::now())
+        .map_err(refused)?;
+    let text = match label {
+        Some(label) => format!("{label}\n\n{}", text.as_str()),
         None => text.into_string(),
     };
     let prompt = Prompt {
@@ -789,11 +791,11 @@ pub(crate) async fn prompt_from_client(
     wait_for_pi(core, session_id, CLIENT_PROMPT_START_WAIT).await?;
     let accepted = prompt(
         core,
-        PromptSession {
+        prompts::Outgoing {
             session_id,
             text,
             delivery,
-            from_session_id: None,
+            origin: Origin::Person,
         },
         Some(command_id),
         attachments,

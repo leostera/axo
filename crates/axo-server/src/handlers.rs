@@ -363,6 +363,11 @@ impl Extension for Sessions {
             method::SESSION_PROMPT,
             "expected {sessionId, text, delivery?: steer|followUp|turn|interrupt, fromSessionId?}",
             |core, request: rpc::PromptSession| async move {
+                // Who sent it is decided here, from the connection, not from the request alone.
+                let request = crate::session::prompts::Outgoing::from_local(
+                    request,
+                    &axo_ipc::peer::current(),
+                );
                 crate::sessions::prompt(
                     &core,
                     request,

@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::core::{Core, lock};
-use crate::session::prompts::{self, PromptError};
+use crate::session::prompts::{self, Origin, PromptError};
 
 const MAX_TIMERS: usize = 128;
 const MAX_OWNER_TIMERS: usize = 32;
@@ -265,9 +265,9 @@ async fn run(core: Weak<Core>, id: TimerId, mut cancel: watch::Receiver<bool>) {
         let (outcome, next_tick) = owned_send(
             crate::sessions::prompt(
                 &core,
-                rpc::PromptSession {
+                crate::session::prompts::Outgoing {
                     session_id: request.session_id,
-                    from_session_id: Some(request.from_session_id),
+                    origin: Origin::Session(request.from_session_id),
                     text: request.text,
                     delivery: request.delivery.into(),
                 },
@@ -537,9 +537,9 @@ mod tests {
         for _ in 0..10 {
             crate::sessions::prompt(
                 &fixture.core,
-                rpc::PromptSession {
+                crate::session::prompts::Outgoing {
                     session_id: record.id,
-                    from_session_id: Some(record.id),
+                    origin: Origin::Session(record.id),
                     text: rpc::PromptText::parse("immediate".into()).unwrap(),
                     delivery: rpc::PromptDelivery::FollowUp,
                 },

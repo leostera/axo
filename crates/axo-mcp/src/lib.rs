@@ -5,8 +5,8 @@
 //! server runs in axod, on that connection. Each tool is one `axo.*` method, called in process
 //! as the connection's peer (`axo_ipc::Local`); this server only translates. It
 //! knows which Session it serves, so tools accept `"self"` for a Session ID and
-//! every prompt it sends names its Session as the sender. There is no authentication: Axo
-//! trusts everything running as the person's user.
+//! every prompt it sends names its Session as the sender. Which Session that is, is still the
+//! opener's word; RFD0073 derives it from the process instead (its slice 2).
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
