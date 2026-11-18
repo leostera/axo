@@ -496,6 +496,7 @@ export class AxoAccountManager extends DurableObject<Env> {
       // Each linked WhatsApp device is a Durable Object of its own, named by the account and the device.
       linked: (_app, device) => this.ctx.exports.AxoWhatsAppDO.getByName(`${accountId}:${device}`) as unknown as LinkedDevice,
       assets: accountAssets(this.env.AXO_ASSETS, this.ctx.exports.AxoAssetsDO, accountId),
+      notify: (from, input) => this.ctx.exports.AxoPushRegistry.getByName("sandbox-v1").notify({ accountId, ...from }, input),
     });
   }
 

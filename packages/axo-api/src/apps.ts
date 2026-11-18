@@ -123,7 +123,7 @@ export const BASH_NAMESPACE = "bash";
 /** The account's assets (RFD0030): `codemode.assets.list()`, `.get()`, `.read()` and `.save()`. */
 export const ASSETS_NAMESPACE = "assets";
 /** Names no app may take. */
-export const RESERVED_NAMES: readonly string[] = [APPS_NAMESPACE, HOSTS_NAMESPACE, COMPUTER_NAMESPACE, BASH_NAMESPACE, ASSETS_NAMESPACE, AI_NAMESPACE];
+export const RESERVED_NAMES: readonly string[] = [APPS_NAMESPACE, HOSTS_NAMESPACE, COMPUTER_NAMESPACE, BASH_NAMESPACE, ASSETS_NAMESPACE, AI_NAMESPACE, "notify"];
 export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise", "telegram", "kraken", "github", "discord", "unifi", "spotify", "withings", "whatsapp"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */

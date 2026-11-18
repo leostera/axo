@@ -404,7 +404,7 @@ final class AxoMobileUITests: XCTestCase {
     XCTAssertTrue(menuClosed(app))
     XCTAssertEqual(app.staticTexts["conversation-title"].label, "Explain the relay")
     bell.tapWhereItIs()
-    XCTAssertTrue(app.navigationBars["Requests"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.navigationBars["Notifications"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.staticTexts["Delete the branch feat/old-ui? It has 3 unmerged commits."].waitForExistence(timeout: 5))
     capture(app, named: "phone-global-requests")
     app.buttons["Done"].tap()

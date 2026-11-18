@@ -1,4 +1,5 @@
 import AxoMobileModel
+import AxoClient
 import SwiftUI
 
 /// Available on every layer, not just in the requesting Session.
@@ -26,6 +27,9 @@ struct RequestsBell: View {
 
 struct RequestsInbox: View {
   var phone: PhoneWorkbench
+  var client: AccountClient
+  @State private var updates: [AgentNotification] = []
+  @State private var updatesUnavailable = false
   @Environment(\.dismiss) private var dismiss
 
   var body: some View {
@@ -34,7 +38,7 @@ struct RequestsInbox: View {
         let pending = phone.questions.filter { Double($0.elicitation.expiresAt) > context.date.timeIntervalSince1970 * 1_000 }
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 18) {
-            if pending.isEmpty { Text("You’re all caught up.").foregroundStyle(.secondary) }
+            if pending.isEmpty && updates.isEmpty { Text("You’re all caught up.").foregroundStyle(.secondary) }
             ForEach(pending) { question in
               let host = phone.hosts.hosts.first { $0.hostId == question.hostID }
               let session = host.flatMap { phone.sessions(of: $0).first { $0.sessionId == question.elicitation.sessionId } }
@@ -45,13 +49,33 @@ struct RequestsInbox: View {
                   canAnswer: phone.link == .connected && host?.status == .online)
               }
             }
+            if !updates.isEmpty {
+              Text("Updates").font(.headline)
+              ForEach(updates) { update in
+                VStack(alignment: .leading, spacing: 6) {
+                  Text(update.title).font(.headline)
+                  Text(update.message).textSelection(.enabled)
+                  HStack {
+                    Text(phone.hosts.hosts.first(where: { $0.hostId == update.hostId })?.label ?? "Host")
+                    Spacer()
+                    Text(Date(timeIntervalSince1970: Double(update.createdAt) / 1000), style: .relative)
+                  }.font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                  .accessibilityIdentifier("notification-update")
+              }
+            }
+            if updatesUnavailable { Text("Updates couldn’t be loaded.").font(.footnote).foregroundStyle(.secondary) }
           }
           .padding(16)
         }
       }
-      .navigationTitle("Requests")
+      .navigationTitle("Notifications")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+      .task(id: MobilePush.shared.updatesRevision) {
+        do { updates = try await client.notifications(); updatesUnavailable = false }
+        catch is CancellationError {} catch { updatesUnavailable = true }
+      }
     }
   }
 }

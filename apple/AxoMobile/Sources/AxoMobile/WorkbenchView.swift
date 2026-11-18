@@ -181,7 +181,9 @@ struct WorkbenchView: View {
     }
     .background(ChatColors.background.ignoresSafeArea())
     .environment(\.assetLoader, assetLoader)
-    .sheet(isPresented: $showingRequests) { RequestsInbox(phone: workbench) }
+    .sheet(isPresented: $showingRequests) {
+      RequestsInbox(phone: workbench, client: AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens))
+    }
     .modifier(RequestNotificationsModifier(phone: workbench, account: environment.account, showingRequests: $showingRequests))
     .onChange(of: layer) { _, layer in
       // The keyboard belongs to the conversation's box; it goes when the conversation does.

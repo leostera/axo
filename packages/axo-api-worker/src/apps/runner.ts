@@ -104,6 +104,10 @@ export default class extends WorkerEntrypoint {
     const codemode = new Proxy({}, {
       get(_, service) {
         if (service === "tools") return () => structuredClone(tools);
+        if (service === "notify") return async (input = {}) => {
+          await flushLogs();
+          return JSON.parse(await dispatcher.call("notify", "send", JSON.stringify(input)));
+        };
         if (service === "apps") return apps;
         if (typeof service !== "string" || service === "then") return undefined;
         return toolsOf(service);

@@ -1,5 +1,6 @@
 import { importPKCS8, SignJWT } from "jose";
 import { z } from "zod";
+import { notificationContentSchema, questionDigest, questionPreview, NOTIFICATION_CONFIRM_CATEGORY, NOTIFICATION_REVIEW_CATEGORY, type NotificationContent } from "./content";
 
 /** Topics are installed identities, not aliases. Never send an old-ID token to the new topic. */
 export const apnsTopicSchema = z.enum(["dev.leostera.axo.phone", "dev.leostera.axo"]);
@@ -16,12 +17,12 @@ const routeSchema = z.strictObject({
   accountId: z.uuid(), hostId: z.uuid(), sessionId: z.uuid(), requestId: z.uuid(),
 });
 
-/** Built from authoritative pending state, never from agent-provided notification text. */
+/** Built from authoritative pending state; rich text requires the person's installation preference. */
 export class ApnsRequestNotice {
   readonly #route: z.infer<typeof routeSchema>;
   readonly expiresAt: number;
 
-  constructor(route: unknown, expiresAt: number) {
+  constructor(route: unknown, expiresAt: number, private readonly preview?: { body: string; digest: string | null }) {
     this.#route = routeSchema.parse(route);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error("Invalid push expiry");
     this.expiresAt = expiresAt;
@@ -29,16 +30,43 @@ export class ApnsRequestNotice {
 
   get collapseId(): string { return this.#route.requestId.toLowerCase(); }
 
-  /** No question, field value, transcript, device proof or approval action enters this payload. */
+  static async withQuestion(route: unknown, expiresAt: number, message: string): Promise<ApnsRequestNotice> {
+    const preview = questionPreview(message);
+    return new ApnsRequestNotice(route, expiresAt, { body: preview.body,
+      digest: preview.complete ? await questionDigest(message) : null });
+  }
+
+  /** Sensitive input always uses the generic constructor. No fields, values or proofs enter APNs. */
   get body(): string {
     return JSON.stringify({
       aps: {
-        alert: { title: "Axo", body: "A request needs your attention." },
+        alert: this.preview ? { title: "Axo request", body: this.preview.body }
+          : { title: "Axo", body: "A request needs your attention." },
+        ...(this.preview ? { category: this.preview.digest ? NOTIFICATION_CONFIRM_CATEGORY : NOTIFICATION_REVIEW_CATEGORY } : {}),
         sound: "default",
         "thread-id": "axo.requests",
       },
       axo: { version: 1, ...this.#route },
+      ...(this.preview?.digest ? { axoRequest: { version: 1, digest: this.preview.digest, expiresAt: this.expiresAt } } : {}),
     });
+  }
+}
+
+export interface ApnsNotice { readonly expiresAt: number; readonly collapseId: string; readonly body: string }
+
+export class ApnsInformationNotice implements ApnsNotice {
+  readonly #route: z.infer<typeof routeSchema>;
+  readonly #content: NotificationContent;
+  constructor(route: unknown, readonly expiresAt: number, content: unknown, private readonly rich: boolean) {
+    this.#route = routeSchema.parse(route);
+    this.#content = notificationContentSchema.parse(content);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error("Invalid push expiry");
+  }
+  get collapseId(): string { return this.#route.requestId.toLowerCase(); }
+  get body(): string {
+    return JSON.stringify({ aps: { alert: this.rich ? { title: this.#content.title, body: this.#content.message }
+      : { title: "Axo", body: "A Session sent you an update." }, sound: "default", "thread-id": "axo.updates" },
+      axo: { version: 1, ...this.#route }, axoNotice: { version: 1, kind: "information" } });
   }
 }
 
@@ -114,7 +142,7 @@ export class ApnsProvider {
     return new ApnsProvider(scope, key, effects.transport ?? ((url, init) => fetch(url, init)), effects.now ?? Date.now);
   }
 
-  async send(destination: ApnsDestination, notice: ApnsRequestNotice, signal?: AbortSignal): Promise<ApnsResult> {
+  async send(destination: ApnsDestination, notice: ApnsNotice, signal?: AbortSignal): Promise<ApnsResult> {
     if (destination.environment !== this.#environment || !this.#topics.has(destination.topic)) return { kind: "scope-mismatch" };
     if (signal?.aborted) return { kind: "cancelled" };
     if (this.expired(notice)) return { kind: "expired" };
@@ -162,7 +190,7 @@ export class ApnsProvider {
     }
   }
 
-  private expired(notice: ApnsRequestNotice): boolean {
+  private expired(notice: ApnsNotice): boolean {
     return Math.floor(notice.expiresAt / 1000) <= Math.floor(this.#now() / 1000);
   }
 

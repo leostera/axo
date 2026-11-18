@@ -1,5 +1,6 @@
 import AxoClient
 import AxoMobileModel
+import AxoProtocol
 import Foundation
 import Observation
 import UIKit
@@ -18,6 +19,14 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   private var lastSession: SessionToken?
   private var lastSubmitted: Data?
   private var submittedSession: SessionToken?
+  private var submittedPreviews: Bool?
+  private var answersInFlight: Set<UUID> = []
+  private(set) var updatesRevision = UUID()
+  nonisolated static let previewPreference = "push.richPreviews.v1"
+  private nonisolated static let confirmCategory = "AXO_CONFIRM_V1"
+  private nonisolated static let reviewCategory = "AXO_REVIEW_V1"
+  private nonisolated static let yesAction = "AXO_CONFIRM_YES_V1"
+  private nonisolated static let noAction = "AXO_CONFIRM_NO_V1"
   private var registering = false
   private var refreshAgain = false
   private var requestedDeviceToken = false
@@ -41,8 +50,18 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     guard enabled else { return }
     self.account = account
     self.endpoint = endpoint
-    UNUserNotificationCenter.current().delegate = self
+    let center = UNUserNotificationCenter.current()
+    center.delegate = self
+    center.setNotificationCategories([
+      UNNotificationCategory(identifier: Self.confirmCategory, actions: [
+        UNNotificationAction(identifier: Self.yesAction, title: "Yes", options: [.authenticationRequired]),
+        UNNotificationAction(identifier: Self.noAction, title: "No", options: [.authenticationRequired]),
+      ], intentIdentifiers: [], options: []),
+      UNNotificationCategory(identifier: Self.reviewCategory, actions: [], intentIdentifiers: [], options: []),
+    ])
   }
+
+  func previewsChanged() { Task { await refresh() } }
 
   func receive(deviceToken: Data) {
     guard enabled, !deviceToken.isEmpty, deviceToken.count <= 1024 else { return }
@@ -120,7 +139,8 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
       UIApplication.shared.registerForRemoteNotifications()
     }
     guard let deviceToken else { return }
-    if lastSubmitted == deviceToken && submittedSession == session {
+    if lastSubmitted == deviceToken && submittedSession == session
+      && submittedPreviews == defaults.bool(forKey: Self.previewPreference) {
       reportTest(.enrolled)
       return
     }
@@ -140,11 +160,13 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     let previous = defaults.object(forKey: "push.revision.v1") as? NSNumber
     guard let revision = RequestNotificationRevision.next(after: previous?.int64Value) else { return }
     defaults.set(revision, forKey: "push.revision.v1")
+    let previews = defaults.bool(forKey: Self.previewPreference)
     do {
       try await AccountClient(endpoint: endpoint, tokens: StaticSessionToken(session))
-        .setRequestNotifications(installationID: installation, revision: revision, deviceToken: token)
+        .setRequestNotifications(installationID: installation, revision: revision, deviceToken: token, richPreviews: previews)
       lastSubmitted = token
       submittedSession = session
+      submittedPreviews = previews
       if token != nil { reportTest(.enrolled) }
     } catch {
       reportTest(.registrationUnavailable)
@@ -166,6 +188,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     guard (try? await account.tokens.sessionToken()) == session else { return }
     let obsolete = delivered.filter { notification in
       guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo) else { return false }
+      if Self.isInformation(notification.request.content.userInfo) { return route.accountID != session.accountID }
       return RequestNotificationCleanup.shouldRemove(receivedAt: notification.date,
         belongsToCurrentAccount: route.accountID == session.accountID, isPending: pending.contains(route.requestID))
     }.map { $0.request.identifier }
@@ -177,7 +200,8 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   {
     guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo) else { return [] }
     guard await shouldPresent(route) else { return [] }
-    await reportReceivedTest(route)
+    if notification.request.trigger is UNPushNotificationTrigger { await reportReceivedTest(route) }
+    await refreshUpdates()
     return [.banner, .list, .sound]
   }
 
@@ -189,21 +213,29 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
     didReceive response: UNNotificationResponse) async
   {
-    guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-      let route = RequestNotificationRoute(userInfo: response.notification.request.content.userInfo)
-    else { return }
-    await openInbox(route)
+    guard let route = RequestNotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+    let remote = response.notification.request.trigger is UNPushNotificationTrigger
+    if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+      await openInbox(route, remoteReceipt: remote)
+    } else if remote && response.notification.request.content.categoryIdentifier == Self.confirmCategory,
+      let metadata = RequestNotificationAction(userInfo: response.notification.request.content.userInfo),
+      let action = Self.answer(for: response.actionIdentifier)
+    {
+      await answer(route, metadata: metadata, displayedMessage: response.notification.request.content.body, action: action)
+    }
   }
 
   enum TestStatus: String, Encodable {
     case awaitingPermission, permissionDenied, awaitingDeviceToken, enrolled, registrationUnavailable
     case receivedForeground, receivedInNotificationCenter, receivedFromTap
+    case actionAccepted, actionDeclined, actionNotConfirmed
   }
 
   /// A deliberately fixed, opt-in development report. Never copies the OS notification or token.
   private func reportTest(_ status: TestStatus) {
     guard let text = ProcessInfo.processInfo.environment["AXO_PUSH_TEST_RUN_ID"], let runID = UUID(uuidString: text) else { return }
     let received = status == .receivedForeground || status == .receivedInNotificationCenter || status == .receivedFromTap
+      || status == .actionAccepted || status == .actionDeclined || status == .actionNotConfirmed
     guard !testReceived || received else { return }
     if received { testReceived = true }
     struct Report: Encodable {
@@ -244,6 +276,56 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     }
   }
 
+  private static func isInformation(_ userInfo: [AnyHashable: Any]) -> Bool {
+    let notice = userInfo["axoNotice"] as? [String: Any]
+    return notice?["kind"] as? String == "information" && notice?["version"] as? Int == 1
+  }
+
+  private nonisolated static func answer(for identifier: String) -> ElicitationAnswer? {
+    switch identifier {
+    case yesAction: .accept
+    case noAction: .decline
+    default: nil
+    }
+  }
+
+  private func refreshUpdates() { updatesRevision = UUID() }
+
+  private func answer(_ route: RequestNotificationRoute, metadata: RequestNotificationAction, displayedMessage: String, action: ElicitationAnswer) async {
+    guard defaults.bool(forKey: Self.previewPreference), let account,
+      let session = try? await account.tokens.sessionToken(), session.accountID == route.accountID,
+      !answersInFlight.contains(route.requestID) else { return }
+    answersInFlight.insert(route.requestID)
+    defer { answersInFlight.remove(route.requestID) }
+    let credentialRevision = account.credentialRevision
+    let client = AccountClient(endpoint: endpoint, tokens: StaticSessionToken(session))
+    do {
+      let current = try await client.notificationQuestion(hostID: route.hostID, requestID: route.requestID)
+      guard (try? await account.tokens.sessionToken()) == session,
+        metadata.matches(current.elicitation, route: route, displayedMessage: displayedMessage) else { throw RelayError.httpStatus(409) }
+      let signer = try PhoneDeviceKey.existing()
+      let proof = try signer.prove(requestID: route.requestID.uuidString.lowercased(), action: action,
+        sealed: nil, name: UIDevice.current.model)
+      guard !account.hasEndedSession, account.credentialRevision == credentialRevision else { return }
+      try await client.answerNotification(hostID: route.hostID, requestID: route.requestID, digest: metadata.digest,
+        expiresAt: metadata.expiresAt, action: action, device: proof)
+      reportTest(action == .accept ? .actionAccepted : .actionDeclined)
+      updatesRevision = UUID()
+    } catch {
+      reportTest(.actionNotConfirmed)
+      // An uncertain answer is never retried. The next explicit action must review live state.
+      let content = UNMutableNotificationContent()
+      content.title = "Review in Axo"
+      content.body = "The answer was not confirmed. Open Axo before trying again."
+      content.categoryIdentifier = Self.reviewCategory
+      content.userInfo = ["axo": ["version": 1, "accountId": route.accountID.uuidString.lowercased(),
+        "hostId": route.hostID.uuidString.lowercased(), "sessionId": route.sessionID.uuidString.lowercased(),
+        "requestId": route.requestID.uuidString.lowercased()]]
+      try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+        identifier: "axo-answer-review-" + route.requestID.uuidString, content: content, trigger: nil))
+    }
+  }
+
   private var testRequestID: UUID? {
     ProcessInfo.processInfo.environment["AXO_PUSH_TEST_REQUEST_ID"].flatMap(UUID.init(uuidString:))
   }
@@ -262,9 +344,10 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
     }) { reportTest(.receivedInNotificationCenter) }
   }
 
-  private func openInbox(_ route: RequestNotificationRoute) async {
+  private func openInbox(_ route: RequestNotificationRoute, remoteReceipt: Bool) async {
     guard await shouldPresent(route) else { return }
-    if testRequestID == nil || route.requestID == testRequestID { reportTest(.receivedFromTap) }
+    if remoteReceipt && (testRequestID == nil || route.requestID == testRequestID) { reportTest(.receivedFromTap) }
+    updatesRevision = UUID()
     inboxRoute = route
     inboxRevision = UUID()
   }

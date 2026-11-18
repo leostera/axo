@@ -8,7 +8,7 @@ const installation = {
 
 /** A durable device-local revision fences late registration, rotation and sign-out requests. */
 export const pushRegistrationSchema = z.discriminatedUnion("action", [
-  z.strictObject({ ...installation, action: z.literal("enable"), destination: apnsDestinationSchema
+  z.strictObject({ ...installation, action: z.literal("enable"), previews: z.enum(["generic", "message"]).default("generic"), destination: apnsDestinationSchema
     .refine(value => value.topic === "dev.leostera.axo" && value.environment === "sandbox") }),
   z.strictObject({ ...installation, action: z.literal("disable") }),
 ]);

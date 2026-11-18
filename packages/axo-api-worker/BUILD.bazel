@@ -103,8 +103,17 @@ node_test(
 node_test(
     name = "apns_test",
     data = _DEPS + [":node_modules/tsx", ":test_files"],
-    tests = ["tests/apns.test.ts", "tests/apns-registration.test.ts", "tests/apns-feedback.test.ts"],
+    tests = ["tests/apns.test.ts", "tests/apns-registration.test.ts", "tests/apns-feedback.test.ts", "tests/rich-notifications.test.ts"],
     concurrency = 1,
+    tests_in_data = True,
+    tsx = True,
+)
+
+node_test(
+    name = "notify_test",
+    concurrency = 1,
+    data = _DEPS + [":node_modules/tsx", ":test_files"],
+    tests = ["tests/rich-notifications.test.ts", "tests/apps.test.ts", "tests/gateway.test.ts"],
     tests_in_data = True,
     tsx = True,
 )

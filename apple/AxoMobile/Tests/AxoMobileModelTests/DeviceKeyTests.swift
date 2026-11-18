@@ -16,6 +16,19 @@ final class DeviceKeyTests: XCTestCase {
     try body(defaults, suite)
   }
 
+  func testNotificationRestorationNeverCreatesAMissingIdentity() throws {
+    try withDefaults { defaults, suite in
+      var creations = 0
+      let before = defaults.persistentDomain(forName: suite)
+      let enclave = PhoneDeviceKey.Enclave(restore: { _ in throw TestFailure.unavailable },
+        create: { creations += 1; throw TestFailure.unavailable })
+      XCTAssertThrowsError(try PhoneDeviceKey.existing(in: defaults, enclave: enclave))
+      XCTAssertEqual(creations, 0)
+      XCTAssertEqual(defaults.persistentDomain(forName: suite) as NSDictionary?, before as NSDictionary?)
+      XCTAssertNil(defaults.object(forKey: softwareName))
+    }
+  }
+
   func testUnavailableExistingEnclaveDoesNotCreateOrFallBack() throws {
     try withDefaults { defaults, _ in
       defaults.set(reference, forKey: enclaveName)

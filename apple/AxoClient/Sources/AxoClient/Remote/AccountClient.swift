@@ -38,6 +38,20 @@ public struct SignedInAccount: Decodable, Equatable, Sendable {
   }
 }
 
+public struct AgentNotification: Decodable, Identifiable, Sendable {
+  public let id: UUID
+  public let hostId: UUID
+  public let sessionId: SessionID
+  public let title: String
+  public let message: String
+  public let createdAt: Int64
+}
+
+public struct NotificationQuestion: Decodable, Sendable {
+  public let elicitation: Elicitation
+  public let hostGeneration: UUID
+}
+
 /// A code that links one more Mac to the account, until it expires. The Mac redeems it: typed
 /// into Axo's Remote Access settings, or opened as `link`.
 public struct HostPairing: Equatable, Sendable {
@@ -88,13 +102,14 @@ public struct AccountClient: HostPairingIssuing, Sendable {
 
   /// Development APNs registration belongs to this native sign-in, not a host credential.
   /// A nil token durably disables this installation; revisions fence late enable requests.
-  public func setRequestNotifications(installationID: UUID, revision: Int64, deviceToken: Data?) async throws {
+  public func setRequestNotifications(installationID: UUID, revision: Int64, deviceToken: Data?, richPreviews: Bool = false) async throws {
     guard revision > 0, revision <= 9_007_199_254_740_991,
       deviceToken.map({ !$0.isEmpty && $0.count <= 1024 }) ?? true
     else { throw AxoClientError.invalidResponse("invalid notification registration") }
     var body: [String: Any] = ["installationId": installationID.uuidString.lowercased(), "revision": revision,
       "action": deviceToken == nil ? "disable" : "enable"]
     if let deviceToken {
+      body["previews"] = richPreviews ? "message" : "generic"
       body["destination"] = ["topic": "dev.leostera.axo", "environment": "sandbox",
         "token": deviceToken.map { String(format: "%02x", $0) }.joined()]
     }
@@ -107,6 +122,38 @@ public struct AccountClient: HostPairingIssuing, Sendable {
     struct Receipt: Decodable { let revision: Int64 }
     let receipt: Receipt = try await send(request)
     guard receipt.revision == revision else { throw AxoClientError.invalidResponse("notification revision mismatch") }
+  }
+
+  public func notifications() async throws -> [AgentNotification] {
+    struct History: Decodable { let notifications: [AgentNotification] }
+    let history: History = try await get(endpoint.webURL("/api/v1/account/notifications"))
+    return history.notifications
+  }
+
+  public func notificationQuestion(hostID: UUID, requestID: UUID) async throws -> NotificationQuestion {
+    try await notificationOperation(["operation": "read", "hostId": hostID.uuidString.lowercased(),
+      "requestId": requestID.uuidString.lowercased()])
+  }
+
+  public func answerNotification(hostID: UUID, requestID: UUID, digest: String, expiresAt: Int64,
+    action: ElicitationAnswer, device: DeviceProof) async throws
+  {
+    struct Result: Decodable { let resolved: Bool }
+    let proof = try JSONSerialization.jsonObject(with: JSONEncoder().encode(device))
+    let result: Result = try await notificationOperation(["operation": "answer", "hostId": hostID.uuidString.lowercased(),
+      "requestId": requestID.uuidString.lowercased(), "digest": digest, "expiresAt": expiresAt,
+      "action": action.rawValue, "device": proof])
+    guard result.resolved else { throw AxoClientError.invalidResponse("notification answer was not confirmed") }
+  }
+
+  private func notificationOperation<Value: Decodable>(_ body: [String: Any]) async throws -> Value {
+    var request = URLRequest(url: endpoint.webURL("/api/v1/account/push/request"))
+    request.httpMethod = "POST"
+    request.timeoutInterval = 10
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    request = try await RelayCredentials.authorize(request, with: tokens)
+    return try await send(request)
   }
 
   /// Ends this phone's sign-in at the relay. Other devices stay signed in.

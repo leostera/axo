@@ -16,13 +16,14 @@ struct SettingsView: View {
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
   @State private var path = NavigationPath()
   @State private var confirmingSignOut = false
+  @AppStorage(MobilePush.previewPreference) private var richNotificationPreviews = false
 
   enum Opening: String, Identifiable {
     case settings, apps
     var id: String { rawValue }
   }
 
-  private enum Page: Hashable { case account, apps, appearance, chats }
+  private enum Page: Hashable { case account, apps, appearance, chats, notifications }
 
   private var accountName: String {
     hosts.signedIn?.profile?.name ?? hosts.signedIn?.profile?.email ?? "Signed in"
@@ -50,6 +51,7 @@ struct SettingsView: View {
           case .apps: AppsView(model: apps)
           case .appearance: appearancePage
           case .chats: chatsPage
+          case .notifications: notificationsPage
           }
         }
         .toolbar {
@@ -102,6 +104,9 @@ struct SettingsView: View {
           divider
           destination(.chats, "Chats", icon: "bubble.left.and.bubble.right",
             subtitle: "Pinned, Active and Earlier")
+          divider
+          destination(.notifications, "Notifications", icon: "bell",
+            subtitle: "Previews and request actions")
         }
         SettingsCard { signOutButton }
         Text(version).font(.footnote).foregroundStyle(.secondary)
@@ -112,6 +117,28 @@ struct SettingsView: View {
     }
     .background(ChatColors.background)
     .accessibilityIdentifier("settings-home")
+  }
+
+  private var notificationsPage: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        SettingsCard {
+          Toggle("Show request and update text", isOn: $richNotificationPreviews)
+            .padding(16)
+            .accessibilityIdentifier("notification-rich-previews")
+        }
+        Text("Agent messages can appear in notifications and on your lock screen, subject to iOS preview settings. Short confirmations include Yes and No after unlocking. Sensitive input always opens Axo.")
+          .font(.footnote).foregroundStyle(.secondary)
+        SettingsCard {
+          Button("iOS notification settings") {
+            if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
+          }.padding(16)
+        }
+      }.padding(20).frame(maxWidth: 640).frame(maxWidth: .infinity)
+    }
+    .background(ChatColors.background)
+    .navigationTitle("Notifications")
+    .onChange(of: richNotificationPreviews) { _, _ in MobilePush.shared.previewsChanged() }
   }
 
   private var divider: some View { Divider().padding(.leading, 56) }

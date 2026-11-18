@@ -58,6 +58,15 @@ public enum PhoneDeviceKey {
   }
 
   public static func stored(in defaults: UserDefaults = .standard, enclave: Enclave? = .current) throws -> any DeviceSigner {
+    try load(in: defaults, enclave: enclave, create: true)
+  }
+
+  /// Notification actions may restore an enrolled identity, never silently enroll a new one.
+  public static func existing(in defaults: UserDefaults = .standard, enclave: Enclave? = .current) throws -> any DeviceSigner {
+    try load(in: defaults, enclave: enclave, create: false)
+  }
+
+  private static func load(in defaults: UserDefaults, enclave: Enclave?, create: Bool) throws -> any DeviceSigner {
     if let saved = defaults.object(forKey: enclaveName) {
       guard let representation = saved as? Data, !representation.isEmpty else { throw StorageError.cannotRestore }
       guard let enclave else { throw StorageError.unavailable }
@@ -71,6 +80,7 @@ public enum PhoneDeviceKey {
       else { throw StorageError.cannotRestore }
       return SoftwareDeviceSigner(key: key)
     }
+    guard create else { throw StorageError.unavailable }
     if let enclave {
       do {
         let created = try enclave.create()

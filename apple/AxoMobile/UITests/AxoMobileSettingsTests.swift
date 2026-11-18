@@ -12,6 +12,22 @@ final class AxoMobileSettingsTests: XCTestCase {
   }
 
   @MainActor
+  func testRichNotificationPreviewsAreAnExplicitPreference() {
+    let app = launch("light")
+    app.buttons["settings-notifications"].tapWhereItIs()
+    XCTAssertTrue(app.navigationBars["Notifications"].waitForExistence(timeout: 5))
+    let toggle = app.switches["notification-rich-previews"]
+    XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+    let before = toggle.value as? String
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "settings-notifications")
+    toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+    XCTAssertTrue(NSPredicate(format: "value != %@", before ?? "0").evaluate(with: toggle))
+    XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Sensitive input always opens Axo")).firstMatch.exists)
+    toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+    XCTAssertEqual(toggle.value as? String, before)
+  }
+
+  @MainActor
   func testAppearanceHasVisibleLabelsAndTrailingPickers() {
     let app = launch("light")
     app.buttons["settings-appearance"].tapWhereItIs()
