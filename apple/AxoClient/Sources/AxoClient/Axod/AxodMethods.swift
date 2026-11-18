@@ -134,4 +134,7 @@ enum AxodMethods {
   static let clientViewportSet = AxodMethod<ClientViewport, ViewportAcknowledgement>(.clientViewportSet)
   static let elicitationList = AxodMethod<NoParams, PendingElicitations>(.elicitationList)
   static let elicitationResolve = AxodMethod<LocalElicitationAnswer, ElicitationResolution>(.elicitationResolve)
+  static let deviceList = AxodMethod<NoParams, AnsweringDevices>(.deviceList)
+  static let deviceDecide = AxodMethod<DecideDevice, DeviceDecided>(.deviceDecide)
+  static let deviceRevoke = AxodMethod<RevokeDevice, DeviceRevoked>(.deviceRevoke)
 }

@@ -138,6 +138,71 @@ public enum ElicitationError {
   public static let unknownDevice = -32016
 }
 
+/// A phone or a browser that may answer this Mac's questions, or wants to (RFD0069).
+public struct AnsweringDevice: Codable, Equatable, Hashable, Sendable, Identifiable {
+  /// Base64 of its public key.
+  public let key: String
+  public let name: String
+  /// As the device shows it, for the person to compare.
+  public let fingerprint: String
+  /// Unix milliseconds: when it was allowed, or first asked.
+  public let at: Int64
+
+  public var id: String { key }
+
+  public init(key: String, name: String, fingerprint: String, at: Int64) {
+    self.key = key
+    self.name = name
+    self.fingerprint = fingerprint
+    self.at = at
+  }
+}
+
+/// `axo.device.list`.
+public struct AnsweringDevices: Codable, Equatable, Sendable {
+  public let allowed: [AnsweringDevice]
+  public let waiting: [AnsweringDevice]
+  /// This Mac's input key's fingerprint, which a phone or a browser asks the person to compare
+  /// before it first seals typed values to it. Nil when axod could not read the key.
+  public let inputKey: String?
+
+  public init(allowed: [AnsweringDevice], waiting: [AnsweringDevice], inputKey: String?) {
+    self.allowed = allowed
+    self.waiting = waiting
+    self.inputKey = inputKey
+  }
+}
+
+/// `axo.device.decide`, from Axo.app.
+public struct DecideDevice: Encodable, Sendable {
+  public let key: String
+  public let allow: Bool
+
+  public init(key: String, allow: Bool) {
+    self.key = key
+    self.allow = allow
+  }
+}
+
+/// `axo.device.decide`'s result: false if the device was no longer waiting.
+public struct DeviceDecided: Decodable, Sendable {
+  public let decided: Bool
+}
+
+/// `axo.device.revoke`, from Axo.app.
+public struct RevokeDevice: Encodable, Sendable {
+  public let key: String
+
+  public init(key: String) {
+    self.key = key
+  }
+}
+
+/// `axo.device.revoke`'s result: false if it was not allowed.
+public struct DeviceRevoked: Decodable, Sendable {
+  public let revoked: Bool
+}
+
 /// `axo.elicitation.list`: what waits for the person on this Mac, oldest first.
 public struct PendingElicitations: Decodable, Sendable {
   public let elicitations: [Elicitation]

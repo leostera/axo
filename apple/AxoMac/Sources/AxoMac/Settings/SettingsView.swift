@@ -34,6 +34,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   case sessions
   case agent
   case remoteAccess
+  case devices
   case about
 
   var id: String { rawValue }
@@ -46,6 +47,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .sessions: "Sessions"
     case .agent: "Agent"
     case .remoteAccess: "Remote Access"
+    case .devices: "Devices"
     case .about: "About"
     }
   }
@@ -58,6 +60,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .sessions: "sidebar.left"
     case .agent: "terminal"
     case .remoteAccess: "network"
+    case .devices: "iphone"
     case .about: "info.circle"
     }
   }
@@ -120,6 +123,8 @@ struct SettingsView: View {
         case .remoteAccess:
           RemoteAccessSettingsView(
             daemon: daemon, remoteAccess: remoteAccess, pairingCode: $pairingLink.pendingCode)
+        case .devices:
+          DevicesSettingsView(client: settingsClient as? AxodDevicesClient)
         case .about:
           AboutSettingsView(daemon: daemon)
         }
