@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createConnection, type Socket } from "node:net";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { ELICITATION_ERRORS, type Elicitation, type ElicitationResolved } from "@axo/protocol";
 import { harness, signInNative } from "./harness";
-import { accountApi, listHosts, localCall, terminate, waitFor, trustedDevice } from "./axod-support";
+import { accountApi, agentsDirectory, listHosts, localCall, terminate, waitFor, trustedDevice } from "./axod-support";
 
 /**
  * An agent asks its person a yes-or-no question (RFD0029), with nothing faked but the sign-in
@@ -31,15 +32,16 @@ test("an agent's question reaches the person's phone, their answer returns to th
   const pi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
   const device = await trustedDevice(serverDirectory);
+  const agents = await agentsDirectory();
 
   let daemon: ChildProcess | undefined;
-  let mcp: ChildProcess | undefined;
+  let mcp: Socket | undefined;
   const apps: Array<{ close(): void }> = [];
   try {
     daemon = spawn(axodBinary, [
       "--server-dir", serverDirectory, "--socket", socketPath, "--relay-url", api.url, "--host-credentials", "files",
     ], { stdio: "ignore", env: {
-      ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi, AXO_FAKE_PI_STARTUP_MS: "200",
+      ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi, AXO_FAKE_PI_STARTUP_MS: "200", AXO_FAKE_PI_AGENTS: agents.path,
       AXO_PI_EXTENSION_PATH: fileURLToPath(new URL("../../../crates/axo-server/testdata/pi-extension.js", import.meta.url)),
     } });
     await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
@@ -67,19 +69,33 @@ test("an agent's question reaches the person's phone, their answer returns to th
 
     const { id: sessionId } = (await localCall(socketPath, "axo.session.create", {})) as { id: string };
 
-    // The agent's MCP server, as Pi starts it for this Session.
-    mcp = spawn(axodBinary, ["mcp"], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, AXO_SOCKET: socketPath, AXO_SESSION_ID: sessionId } });
-    const replies = createInterface({ input: mcp.stdout! });
-    const answers = new Map<number, (value: { result?: { structuredContent?: { action: string; id: string }; isError?: boolean } }) => void>();
+    // The agent's MCP server, as Pi starts it for this Session: axod serves it only to that
+    // Session's own processes (RFD0073), so it runs as the fake Pi's child.
+    const mcpSocket = await agents.socket(sessionId, "mcp", daemon);
+    mcp = createConnection(mcpSocket);
+    const replies = createInterface({ input: mcp });
+    type Answer = { result?: { structuredContent?: { action: string; id: string }; isError?: boolean; tools?: Array<{ name: string }> } };
+    const answers = new Map<number, { done: (value: Answer) => void; failed: (error: Error) => void }>();
     replies.on("line", (line) => {
       const reply = JSON.parse(line) as { id: number };
-      answers.get(reply.id)?.(reply as never);
+      answers.get(reply.id)?.done(reply as never);
+      answers.delete(reply.id);
     });
+    // An MCP server that ends fails what it had not answered, at once: never a hang.
+    let ended: Error | undefined;
+    const end = (error: Error) => {
+      ended ??= error;
+      for (const pending of answers.values()) pending.failed(ended);
+      answers.clear();
+    };
+    mcp.on("error", end);
+    mcp.on("close", () => end(new Error("the agent's MCP server ended")));
     let nextId = 0;
-    const callMcp = (method: string, params: unknown) => new Promise<{ result?: { structuredContent?: { action: string; id: string }; isError?: boolean; tools?: Array<{ name: string }> } }>((done) => {
+    const callMcp = (method: string, params: unknown) => new Promise<Answer>((done, failed) => {
+      if (ended) return failed(ended);
       const id = ++nextId;
-      answers.set(id, done as never);
-      mcp!.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      answers.set(id, { done, failed });
+      mcp!.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
     const listed = await callMcp("tools/list", {});
     assert.ok(listed.result?.tools?.some((tool) => tool.name === "elicitation_request"));
@@ -164,9 +180,10 @@ test("an agent's question reaches the person's phone, their answer returns to th
     assert.equal(text(declined), "Not done: the person declined.");
   } finally {
     for (const connection of apps) connection.close();
-    mcp?.kill();
+    mcp?.destroy();
     if (daemon) await terminate(daemon);
     await api.close();
     await rm(root, { recursive: true, force: true });
+    await agents.remove();
   }
 });

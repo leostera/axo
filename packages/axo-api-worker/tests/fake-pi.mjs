@@ -10,14 +10,47 @@
 // grows (`message.update`, once with a payload too large to forward), the whole message ends,
 // and the run ends. Like Pi, it records the conversation in its session file
 // ($AXO_PI_SESSION_FILE) before it says so over the bridge: that file is what axod uploads.
+//
+// axod lets only a Session's own processes act as it (RFD0073), so a test reaches axod as this
+// Pi's Session through it. With $AXO_FAKE_PI_AGENTS, from the moment it starts it serves, named
+// by its Session (AXO_SESSION_ID, or AXO_REMOTE_SESSION_ID in a pane showing another Mac's):
+//   <AXO_FAKE_PI_AGENTS>/<session>.sock      relays each connection to axod ($AXO_SOCKET);
+//   <AXO_FAKE_PI_AGENTS>/<session>.mcp.sock  runs `$AXOD mcp` as this Pi's child, as Pi starts
+//                                            its MCP server, wired to each connection.
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { createServer } from "node:net";
+import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { createConnection, createServer } from "node:net";
 
 const log = process.env.AXO_FAKE_PI_LOG;
 const startupMs = Number(process.env.AXO_FAKE_PI_STARTUP_MS ?? "1500");
-if (!log) throw new Error("AXO_FAKE_PI_LOG is required");
+/** What it was typed or sent, for a test that reads $AXO_FAKE_PI_LOG. */
+const note = (text) => { if (log) appendFileSync(log, text); };
+
+const agents = process.env.AXO_FAKE_PI_AGENTS;
+const session = process.env.AXO_SESSION_ID ?? process.env.AXO_REMOTE_SESSION_ID;
+if (agents && session) {
+  const serve = (name, connected) => {
+    const path = join(agents, name);
+    rmSync(path, { force: true });
+    createServer(connected).listen(path);
+  };
+  serve(`${session}.sock`, (client) => {
+    const upstream = createConnection(process.env.AXO_SOCKET);
+    client.pipe(upstream).pipe(client);
+    client.on("error", () => upstream.destroy());
+    upstream.on("error", () => client.destroy());
+  });
+  serve(`${session}.mcp.sock`, (client) => {
+    const mcp = spawn(process.env.AXOD, ["mcp"], { stdio: ["pipe", "pipe", "ignore"] });
+    client.pipe(mcp.stdin);
+    mcp.stdout.pipe(client);
+    client.on("error", () => mcp.kill());
+    client.on("close", () => mcp.kill());
+    mcp.on("exit", () => client.end());
+  });
+}
 
 let ready = false;
 let bridge;
@@ -64,7 +97,7 @@ const reply = async (prompt) => {
 // held back waiting for the end of a line.
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdin.on("data", (chunk) => {
-  appendFileSync(log, ready ? chunk : `IGNORED:${chunk.toString("utf8")}`);
+  note(ready ? chunk : `IGNORED:${chunk.toString("utf8")}`);
 });
 
 setTimeout(() => {
@@ -85,9 +118,9 @@ setTimeout(() => {
         const record = JSON.parse(buffer.slice(0, newline));
         buffer = buffer.slice(newline + 1);
         if (record.type === "command" && record.action?.kind === "send" && socket === bridge) {
-          appendFileSync(log, `SENT:${record.action.text}\n`);
+          note(`SENT:${record.action.text}\n`);
           // A prompt's attachments (RFD0030): where axod put each file.
-          if (record.action.attachments) appendFileSync(log, `ATTACHED:${JSON.stringify(record.action.attachments)}\n`);
+          if (record.action.attachments) note(`ATTACHED:${JSON.stringify(record.action.attachments)}\n`);
           socket.write(`${JSON.stringify({ type: "commandResult", requestId: record.requestId, result: { accepted: true } })}\n`);
           if (!replied) {
             replied = true;
@@ -105,5 +138,6 @@ setTimeout(() => {
     });
     socket.on("error", () => {});
   });
-  server.listen(process.env.AXO_PI_BRIDGE_SOCKET);
+  // A pane showing another Mac's Session has no bridge.
+  if (process.env.AXO_PI_BRIDGE_SOCKET) server.listen(process.env.AXO_PI_BRIDGE_SOCKET);
 }, startupMs);

@@ -2,6 +2,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { RemoteAxoApi, type AccountConnection, type AccountEvents, type ClientHost, type ClientRecord, type ClientSession, type WebSocketLike } from "@axo/app";
 import WebSocket from "ws";
 import { createConnection } from "node:net";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 
 
 export const sleep = (milliseconds: number) =>
@@ -40,6 +43,24 @@ export async function terminate(child: ChildProcess, processGroup = false): Prom
     signal("SIGKILL");
     await Promise.race([exited, sleep(2_000)]);
   }
+}
+
+/**
+ * Where each fake Pi (fake-pi.mjs, given `AXO_FAKE_PI_AGENTS: path`) serves its Session's
+ * sockets: a test acts as a Session only through that Session's own Pi (RFD0073). Under /tmp,
+ * as Unix socket paths are short.
+ */
+export async function agentsDirectory() {
+  const path = await mkdtemp("/tmp/axo-agents-");
+  return {
+    path,
+    /** A socket of `sessionId`'s Pi (`kind` "mcp" for its MCP server), once it listens. */
+    socket: (sessionId: string, kind: "agent" | "mcp" = "agent", child?: ChildProcess) => {
+      const socket = join(path, kind === "mcp" ? `${sessionId}.mcp.sock` : `${sessionId}.sock`);
+      return waitFor(`the Pi of ${sessionId} to listen`, 15_000, async () => (existsSync(socket) ? socket : undefined), child);
+    },
+    remove: () => rm(path, { recursive: true, force: true }),
+  };
 }
 
 /** One JSON-RPC call over axod's local socket (newline-delimited JSON). */

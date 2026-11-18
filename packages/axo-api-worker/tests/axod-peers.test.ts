@@ -9,7 +9,7 @@ import { test, type TestContext } from "node:test";
 import { SYNC, appendResultSchema } from "@axo/protocol";
 import type { Peer } from "../testing/client";
 import { harness, signIn } from "./harness";
-import { listHosts, localCall, terminate, waitFor } from "./axod-support";
+import { agentsDirectory, listHosts, localCall, terminate, waitFor } from "./axod-support";
 import { FakeTranscript, assistantMessage, connectClient, connectHost, pairHost, userMessage } from "./account-support";
 
 async function append(daemon: Peer, transcript: FakeTranscript, from: number, header = false) {
@@ -28,7 +28,8 @@ function piFile(transcript: FakeTranscript): string {
 }
 
 /** A real axod on a scratch home, against the Worker; stopped when the test ends. */
-async function startAxod(t: TestContext, configuration: { entry?: string } = {}) {
+async function startAxod(t: TestContext, configuration: { entry?: string; fakePi?: boolean } = {}) {
+  const agents = await agentsDirectory();
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
   const api = await harness(configuration);
@@ -44,6 +45,7 @@ async function startAxod(t: TestContext, configuration: { entry?: string } = {})
     if (daemon) await terminate(daemon);
     await api.close();
     await rm(root, { recursive: true, force: true });
+    await agents.remove();
   });
 
   daemon = spawn(resolve(process.cwd(), binary), [
@@ -54,11 +56,15 @@ async function startAxod(t: TestContext, configuration: { entry?: string } = {})
       ...process.env,
       HOME: root,
       AXO_PI_EXTENSION_PATH: fileURLToPath(new URL("../../../crates/axo-server/testdata/pi-extension.js", import.meta.url)),
-      AXO_PI_EXECUTABLE: fileURLToPath(new URL("../../../crates/axod/testdata/pi-fixture.sh", import.meta.url)),
+      // The fake Pi takes a test's calls as its pane's Session (RFD0073).
+      AXO_PI_EXECUTABLE: configuration.fakePi
+        ? fileURLToPath(new URL("./fake-pi.mjs", import.meta.url))
+        : fileURLToPath(new URL("../../../crates/axod/testdata/pi-fixture.sh", import.meta.url)),
+      AXO_FAKE_PI_AGENTS: agents.path,
     },
   });
   await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
-  return { api, root, serverDirectory, socketPath, daemon, log: () => readFile(join(serverDirectory, "stderr.log"), "utf8").catch(() => ""), setStudio: (peer: Peer) => { studio = peer; } };
+  return { api, root, serverDirectory, socketPath, daemon, agents, log: () => readFile(join(serverDirectory, "stderr.log"), "utf8").catch(() => ""), setStudio: (peer: Peer) => { studio = peer; } };
 }
 
 /** Pairs the axod with the account: pairing is all it takes (RFD0022). */
@@ -193,7 +199,7 @@ test("a Mac follows over protocol 2 while the cloud can't serve it a Mac's HostD
 });
 
 test("a Mac's command reaches the Mac it names through that Mac's HostDO, and the answer comes back (RFD0024, RFD0032)", async (t) => {
-  const { api, socketPath, daemon, log, setStudio } = await startAxod(t);
+  const { api, socketPath, daemon, agents, log, setStudio } = await startAxod(t, { fakePi: true });
   const account = await signIn(api);
   const studioHost = await pairHost(api, account, "Mac Studio");
   const studio = await connectHost(api, account, studioHost);
@@ -207,7 +213,14 @@ test("a Mac's command reaches the Mac it names through that Mac's HostDO, and th
   await waitFor("axod on protocol 3", 20_000, async () => ((await log()).includes("event=peers.direct_ready hosts=1") ? true : undefined), daemon);
 
   const params = { sessionId: transcript.sessionId, text: "and test it" };
-  const prompt = localCall(socketPath, "axo.peer.command", { hostId: studioHost.hostId, method: "axo.remote.session.prompt", params });
+  const command = { hostId: studioHost.hostId, method: "axo.remote.session.prompt", params };
+  // What a person at the Studio could type is sent only by the person here (Axo.app) or by the
+  // pane showing that Session (RFD0073): not by any other local process, as this test is.
+  await assert.rejects(localCall(socketPath, "axo.peer.command", command), /a Session acts only as itself/u);
+  // The pane showing the Studio's Session sends it, as pi-axo's remote view does.
+  await localCall(socketPath, "axo.peer.session.open", { hostId: studioHost.hostId, sessionId: transcript.sessionId });
+  const pane = await agents.socket(transcript.sessionId, "agent", daemon);
+  const prompt = localCall(pane, "axo.peer.command", command);
   let forwarded: { id: string; method: string; params: unknown } | undefined;
   while (forwarded?.method !== "axo.remote.session.prompt") forwarded = (await studio.next()) as typeof forwarded;
   assert.deepEqual(forwarded.params, { ...params, target: { hostId: studioHost.hostId, hostGeneration: studioHost.hostGeneration } });
