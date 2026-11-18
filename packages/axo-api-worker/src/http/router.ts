@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { registerPush } from "./push";
 import { uuid } from "@axo/protocol";
 import { authExports } from "../auth/account-access";
 import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
@@ -93,6 +94,10 @@ app.all("/api/auth/logout", context =>
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
   ),
+);
+
+app.all("/api/v1/account/push", context =>
+  registerPush(context.req.raw, context.env, context.executionCtx as ExecutionContext),
 );
 
 app.all("/api/v1/account/host-pairings", context =>

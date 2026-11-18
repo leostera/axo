@@ -32,6 +32,7 @@ final class AppEnvironment: ObservableObject {
       account = AccountSession(store: KeychainTokenStore())
     #endif
     let account = self.account
+    MobilePush.shared.attach(account: account, endpoint: endpoint)
     companion = PhoneCompanionSignIn(authentication: {
       guard !account.hasEndedSession else { return .signedOut }
       let token: SessionToken?
@@ -66,6 +67,14 @@ public final class AxoMobileLifecycle: NSObject, UIApplicationDelegate {
       _ = AppEnvironment.shared
     }
     return true
+  }
+
+  public func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    MobilePush.shared.receive(deviceToken: deviceToken)
+  }
+
+  public func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+    MobilePush.shared.registrationFailed()
   }
 }
 
@@ -104,7 +113,10 @@ private struct AxoMobileAccountRoot: View {
       MobileTransferRuntime.exportIfRequested(pendingWork: environment.companion.hasPendingVoiceWork)
       MobileTransferRuntime.reportCommittedIfRequested()
     }
-    .task(id: environment.account.credentialRevision) { await environment.companion.refresh() }
+    .task(id: environment.account.credentialRevision) {
+      await MobilePush.shared.refresh()
+      await environment.companion.refresh()
+    }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active {
         _ = EnclaveProbeRuntime.runIfRequested(role: .mobile)
@@ -112,7 +124,10 @@ private struct AxoMobileAccountRoot: View {
         MobileTransferRuntime.exportIfRequested(pendingWork: environment.companion.hasPendingVoiceWork)
         MobileTransferRuntime.reportCommittedIfRequested()
         environment.account.restoreStoredSession()
-        Task { await environment.companion.refresh() }
+        Task {
+          await MobilePush.shared.becameActive()
+          await environment.companion.refresh()
+        }
       }
     }
   }

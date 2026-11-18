@@ -92,6 +92,35 @@ final class AccountClientTests: XCTestCase {
     XCTAssertFalse(request.httpShouldHandleCookies)
   }
 
+  func testPushRegistrationKeepsTokensOutOfURLsAndUsesRevisionFencing() async throws {
+    let loader = StubLoader(status: 200, body: #"{"revision":42}"#)
+    let installation = UUID()
+    try await makeClient(loader).setRequestNotifications(installationID: installation, revision: 42, deviceToken: Data([0xaa, 0xbb]))
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.url?.path, "/api/v1/account/push")
+    XCTAssertNil(request.url?.query)
+    XCTAssertFalse(request.httpShouldHandleCookies)
+    let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+    XCTAssertEqual(body["installationId"] as? String, installation.uuidString.lowercased())
+    XCTAssertEqual((body["destination"] as? [String: String])?["token"], "aabb")
+    XCTAssertEqual((body["destination"] as? [String: String])?["environment"], "sandbox")
+    XCTAssertEqual(body["action"] as? String, "enable")
+    let disable = StubLoader(status: 200, body: #"{"revision":43}"#)
+    try await makeClient(disable).setRequestNotifications(installationID: installation, revision: 43, deviceToken: nil)
+    let disabled = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(disable.requests.first?.httpBody)) as? [String: Any])
+    XCTAssertEqual(disabled["action"] as? String, "disable")
+    XCTAssertNil(disabled["destination"])
+  }
+
+  func testInvalidPushInputNeverReachesTransport() async {
+    let loader = StubLoader(status: 200, body: #"{"revision":1}"#)
+    do {
+      try await makeClient(loader).setRequestNotifications(installationID: UUID(), revision: 1, deviceToken: Data())
+      XCTFail("empty token must be rejected")
+    } catch {}
+    XCTAssertTrue(loader.requests.isEmpty)
+  }
+
   func testAPairingCodeIsAskedForWithAPostAndParsed() async throws {
     let loader = StubLoader(status: 200, body: #"{"code":"7kq2-m4xd","expiresAt":"2026-10-27T10:10:00.000Z"}"#)
     let pairing = try await makeClient(loader).createHostPairing()

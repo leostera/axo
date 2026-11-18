@@ -10,3 +10,4 @@ export { AxoClientDO } from "./client-do";
 export { AxoAssetsDO } from "./assets/assets-do";
 export { AxoWhatsAppDO } from "./apps/whatsapp-do";
 export { AxoAssetCache } from "./assets/cache";
+export { AxoPushRegistry } from "./push/registry";

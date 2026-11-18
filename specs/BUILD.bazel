@@ -1,0 +1,13 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Feynman needs Bun; this focused gate uses the installed owned-Mac runtime, never npx/npm.
+sh_test(
+    name = "push_test",
+    srcs = ["check-push.sh"],
+    data = [
+        "check-push.ts",
+        "elicitations/push.ts",
+        "//:node_modules/@leostera/feynman",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)

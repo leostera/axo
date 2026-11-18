@@ -149,6 +149,15 @@ export class AxoAccountManager extends DurableObject<Env> {
     return { profile: { email: profile?.email ?? null, name: profile?.name ?? null }, expiresAt: row.expires_at };
   }
 
+  isPushHostActive(hostId: string): boolean {
+    return this.ctx.storage.sql.exec("SELECT 1 FROM account_hosts WHERE host_id=? AND revoked_at IS NULL", hostId).toArray().length === 1;
+  }
+
+  /** Push enrollment never accepts host credentials or browser sessions. */
+  verifyPushSession(digest: string, now: number): boolean {
+    return this.ctx.storage.sql.exec("SELECT 1 FROM sessions WHERE digest=? AND kind='native' AND expires_at>?", digest, now).toArray().length === 1;
+  }
+
   revokeSession(digest: string): void {
     this.ctx.storage.sql.exec("DELETE FROM sessions WHERE digest = ?", digest);
   }

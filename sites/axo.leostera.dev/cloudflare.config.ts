@@ -17,13 +17,13 @@ export default defineConfig(({ isPreview }) => ({
     },
     observability: {
       enabled: true,
-      // Telemetry is sampled at 1% across every Worker: logs and traces alike.
+      // Keep sampled structured logs; automatic traces are disabled below for token privacy.
       headSamplingRate: 0.01,
       redactQueryString: true,
       logs: { enabled: true, headSamplingRate: 0.01 },
-      // Every SQL statement in a Durable Object is a span (~16 per request): at 1.0 that was ~13 GB/day,
-      // about $98/month under Observability pricing from 2026-12-01. 1% keeps traces for debugging.
-      traces: { enabled: true, headSamplingRate: 0.01 },
+      // APNs URLs necessarily contain private device tokens. Automatic fetch spans capture paths;
+      // query redaction cannot protect them. Keep sampled structured logs, but no automatic traces.
+      traces: { enabled: false },
     },
     // Sign-in with Cloudflare OAuth. The values are set on the Worker, never in this file.
     env: {
@@ -37,6 +37,9 @@ export default defineConfig(({ isPreview }) => ({
       OAUTH_CLIENT_ID: bindings.secret(),
       OAUTH_CLIENT_SECRET: bindings.secret(),
       SESSION_SECRET: bindings.secret(),
+      APNS_PRIVATE_KEY: bindings.secret(),
+      APNS_KEY_ID: bindings.secret(),
+      APNS_TEAM_ID: bindings.secret(),
       // Axo's Google OAuth client, for the Gmail app (codemode.apps.gmail.*). Optional: without it apps are unavailable.
       GOOGLE_CLIENT_ID: bindings.secret(),
       GOOGLE_CLIENT_SECRET: bindings.secret(),
@@ -48,6 +51,7 @@ export default defineConfig(({ isPreview }) => ({
       AxoAccountDirectory: exports.durableObject({ storage: "sqlite" }),
       AxoPairingIndex: exports.durableObject({ storage: "sqlite" }),
       AxoPairingRateLimit: exports.durableObject({ storage: "sqlite" }),
+      AxoPushRegistry: exports.durableObject({ storage: "sqlite" }),
       AxoSessionDO: exports.durableObject({ storage: "sqlite" }),
       AxoHostDO: exports.durableObject({ storage: "sqlite" }),
       AxoClientDO: exports.durableObject({ storage: "sqlite" }),

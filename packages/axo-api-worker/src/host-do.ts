@@ -1,4 +1,5 @@
 import { deliverHostNoticeBatch } from "./host-notice-delivery";
+import type { PushRoute } from "./push/registry";
 import {
   APPS_LIMITS,
   ELICITATION_ERRORS,
@@ -51,10 +52,8 @@ import { z } from "zod";
  * handshake, keeps the host's index of Sessions, routes appends to SessionDOs, forwards commands
  * from ClientDOs, and sends change notices to the ClientDOs following it.
  *
- * Nothing here wakes it on a timer (RFD0031): a ClientDO follows it from hello until its socket
- * closes, progress goes only to the ClientDOs watching that Session, and a failed notice is sent
- * again at once, then as the whole index with the next one. Its only alarm is the base class's:
- * a host route whose heartbeats stopped.
+ * ClientDOs follow it from hello until their socket closes; progress goes only to watchers.
+ * Its alarm composes transport leases with bounded request-push work. There is no idle polling.
  *
  * The socket transport (negotiation, registration, heartbeats, fragments, shares) is the daemon
  * side of AxoHostRelay. Account state lives in AxoAccountManager, reached by RPC.
@@ -187,6 +186,9 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
     sql.exec(`CREATE TABLE IF NOT EXISTS session_statuses (session_id TEXT PRIMARY KEY, status TEXT NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS progress_slots (
       session_id TEXT NOT NULL, slot TEXT NOT NULL, snapshot_json TEXT NOT NULL, PRIMARY KEY (session_id, slot))`);
+  },
+  (sql) => {
+    sql.exec("CREATE TABLE IF NOT EXISTS request_push (id TEXT PRIMARY KEY, next_at INTEGER, attempts INTEGER NOT NULL DEFAULT 0)");
   },
 ];
 /** How long a progress snapshot may wait to be saved; an idle object is evicted after longer. */
@@ -384,6 +386,7 @@ export class AxoHostDO extends AxoHostRelay {
       const parsed = elicitationSchema.safeParse(call.params);
       if (!parsed.success || !this.ready(peer)) return true;
       if (!this.rememberElicitation(parsed.data)) return true;
+      await this.schedule();
       recordApiEvent({ event: "elicitation_requested", kind: parsed.data.kind });
       this.queue({ kind: "elicitationRequested", elicitation: parsed.data }, true);
       return true;
@@ -885,10 +888,48 @@ export class AxoHostDO extends AxoHostRelay {
     const sql = this.ctx.storage.sql;
     const known = sql.exec("SELECT 1 FROM pending_elicitations WHERE id = ?", elicitation.id).toArray().length > 0;
     if (!known && this.pendingElicitations().length >= ELICITATION_LIMITS.pendingPerHost) return false;
-    sql.exec(`INSERT INTO pending_elicitations (id, elicitation_json, expires_at) VALUES (?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET elicitation_json = excluded.elicitation_json, expires_at = excluded.expires_at`,
-      elicitation.id, JSON.stringify(elicitation), elicitation.expiresAt);
+    this.ctx.storage.transactionSync(() => {
+      sql.exec(`INSERT INTO pending_elicitations (id, elicitation_json, expires_at) VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET elicitation_json = excluded.elicitation_json, expires_at = excluded.expires_at`,
+        elicitation.id, JSON.stringify(elicitation), elicitation.expiresAt);
+      // A replay updates pending state but never re-arms an already attempted request.
+      sql.exec("INSERT OR IGNORE INTO request_push (id, next_at) VALUES (?, ?)", elicitation.id, Date.now() + 1);
+    });
     return true;
+  }
+
+  /** Generic routing data from current authoritative state; no question text crosses to APNs. */
+  async pendingPush(requestId: string): Promise<PushRoute | null> {
+    const identity = this.identity();
+    if (!identity) return null;
+    const account = this.ctx.exports.AxoAccountDirectory.getByName(identity.account_id);
+    if (!await account.isPushHostActive(identity.host_id)) return null;
+    const pending = this.pendingElicitations().find(value => value.id === requestId);
+    if (!pending) return null;
+    return { accountId: identity.account_id, hostId: identity.host_id, sessionId: pending.sessionId,
+      requestId: pending.id, expiresAt: pending.expiresAt };
+  }
+
+  protected override nextWorkDeadline(): number | null {
+    return this.ctx.storage.sql.exec<{ deadline: number | null }>(
+      "SELECT MIN(next_at) AS deadline FROM request_push").one().deadline;
+  }
+
+  protected override async runScheduledWork(): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM request_push WHERE id NOT IN (SELECT id FROM pending_elicitations WHERE expires_at>?)", Date.now());
+    const due = sql.exec<{ id: string; attempts: number }>(
+      "SELECT id, attempts FROM request_push WHERE next_at<=? LIMIT 4", Date.now()).toArray();
+    for (const work of due) {
+      const route = await this.pendingPush(work.id);
+      let next: number | null = null;
+      if (route && work.attempts < 8) {
+        try { next = await this.ctx.exports.AxoPushRegistry.getByName("sandbox-v1").dispatch(route); }
+        catch { next = Date.now() + 30_000; }
+      }
+      if (route && next !== null && next >= route.expiresAt) next = null;
+      sql.exec("UPDATE request_push SET next_at=?, attempts=attempts+1 WHERE id=?", next, work.id);
+    }
   }
 
   // ─── Notices ───────────────────────────────────────────────────────────────

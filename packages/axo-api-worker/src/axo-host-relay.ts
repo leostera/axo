@@ -513,9 +513,15 @@ export abstract class AxoHostRelay extends DurableObject<Env> {
     if (this.isOwned(socket)) this.drop(socket, 1011, "Transport failed");
   }
 
-  /** Wakes the object at the next lease end, access expiry, or partial message timeout. */
+  /** Subclasses compose durable work with transport deadlines; never overwrite the lease alarm. */
+  protected nextWorkDeadline(): number | null { return null; }
+  protected async runScheduledWork(): Promise<void> {}
+
+  /** Wakes the object at the next lease end, access expiry, partial message or durable work timeout. */
   protected async schedule(): Promise<void> {
     const deadlines = this.sockets().map((socket) => this.peer(socket).expiresAt);
+    const work = this.nextWorkDeadline();
+    if (work !== null) deadlines.push(work);
     for (const route of this.routes()) deadlines.push(route.lease_until);
     const stale = this.ctx.storage.sql
       .exec<{ last: number | null }>("SELECT MIN(last) AS last FROM (SELECT MAX(received_at) AS last FROM fragments_in GROUP BY connection_id, message_id)")
@@ -536,6 +542,7 @@ export abstract class AxoHostRelay extends DurableObject<Env> {
         Date.now() - FRAGMENTS.partialTimeoutMs,
       ).toArray())
       this.partials(row.connection_id).discard(row.message_id);
+    await this.runScheduledWork();
     await this.schedule();
   }
 }

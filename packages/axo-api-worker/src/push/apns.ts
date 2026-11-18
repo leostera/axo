@@ -127,7 +127,8 @@ export class ApnsProvider {
     const bounded = signal ? AbortSignal.any([timeout, signal]) : timeout;
     try {
       const response = await this.#transport(`https://${host}/3/device/${destination.token}`, {
-        method: "POST", redirect: "error", signal: bounded,
+        // workerd supports manual/follow, not error. Never follow a token-bearing redirect.
+        method: "POST", redirect: "manual", signal: bounded,
         headers: {
           authorization: `bearer ${token}`, "content-type": "application/json",
           "apns-topic": destination.topic, "apns-push-type": "alert", "apns-priority": "10",

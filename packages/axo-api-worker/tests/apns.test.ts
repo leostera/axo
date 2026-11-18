@@ -49,7 +49,7 @@ test("one sandbox attempt has the correct headers and a verifiable ES256 provide
     transport: async (url, init) => {
       assert.equal(url, `https://api.sandbox.push.apple.com/3/device/${"ab".repeat(32)}`);
       assert.equal(init.method, "POST");
-      assert.equal(init.redirect, "error");
+      assert.equal(init.redirect, "manual");
       assert.ok(init.signal instanceof AbortSignal);
       const headers = new Headers(init.headers);
       assert.equal(headers.get("apns-topic"), "dev.leostera.axo.phone");

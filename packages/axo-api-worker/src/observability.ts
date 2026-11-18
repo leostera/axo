@@ -9,6 +9,7 @@ export function clientKind(clientId: string): ClientKind {
 // Deliberately excludes identity, URLs, credentials, payloads, paths and arbitrary error text.
 type ApiEvent =
   | { event: "host_registered" }
+  | { event: "request_push"; outcome: "unconfigured" | "ineligible" | "attempting" | "accepted" | "expired" | "cancelled" | "scope-mismatch" | "invalid-token" | "deferred" | "rejected" | "uncertain"; destinations?: number }
   | { event: "share_published"; messages: number }
   | { event: "sign_in"; client: "web" | "native"; outcome: "started" | "completed" | "refused" | "failed"; stage?: string }
   /** `unowned`: a socket another release accepted, closed when the object woke (RFD0032, Release P). */

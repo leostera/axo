@@ -57,12 +57,21 @@ to avoid an unapproved Watch credential-namespace change. Canonical and producti
 must have exact groups. Changing the old companions needs its own preservation proof, not a
 quiet entitlement edit.
 
-## APNs provider, not yet delivery
+## Sandbox request push
 
-`packages/axo-api-worker/src/push/apns.ts` implements a single bounded attempt with
-ES256 provider JWT reuse, explicit topic/environment scope, generic private request payloads,
-expiry, request-specific collapse IDs, bounded feedback parsing and injectable transport.
-No live registration endpoint, dispatch path or provider secret is enabled by this module.
+The canonical native client enrolls through authenticated `POST /api/v1/account/push` with a
+device-local installation/revision. `push/registry.ts` enforces account ownership, token uniqueness,
+rotation, disable and feedback fencing. HostDO request intent commits with authoritative pending
+state and composes its deadline with the existing transport alarm. `push/apns.ts` supplies bounded
+ES256-signed attempts, generic routing-only alerts, expiry and request-specific collapse IDs.
+Native banners and taps grant no approval authority.
+
+The current pilot deliberately accepts only `dev.leostera.axo` / sandbox. Its provider requires
+private server secrets `APNS_PRIVATE_KEY`, `APNS_KEY_ID` and `APNS_TEAM_ID`. Never put these in
+Git, app bundles, CLI arguments, harness output or logs. Provisioning alone does not create them.
+APNs URL paths contain device tokens, so automatic Worker traces are disabled; sampled structured
+outcome/count events remain enabled. Do not re-enable tracing without isolating/redacting the
+provider's token-bearing fetch spans.
 
 Cancellation before dispatch sends nothing. Transport loss after dispatch is uncertain;
 there is no hidden retry. `accepted` means Apple accepted the request, not device delivery.
@@ -71,18 +80,25 @@ Apple's current response guidance defers 5xx retries for 15 minutes; a short-liv
 usually expire before then. `TooManyRequests` defers at least a minute. Provider-auth errors
 are not treated as a reason to mint tokens repeatedly or switch endpoints.
 
-Still required before live push:
+Before claiming live push, still provision the approved scoped sandbox key in the unlocked
+Apple portal, deploy integrated server/client code, enroll the owned iPhone and verify actual
+foreground/background/locked delivery. Local fake-APNs integration cannot prove deployed HTTP/2
+or OS delivery. The first authorized live rollout is iPhone-only; do not update the iPad or either
+Watch app as a side effect.
 
-- Explicitly approved Push Notification capabilities, replacement development profiles and
-  scoped provider credentials in a secret store, never the app or source.
-- Authenticated person-owned installation/token registration, rotation, sign-out/revocation,
-  cross-account ownership and late-update/feedback fencing. Push enrollment grants no approval authority.
-- A durable outbox committed with authoritative pending state, bounded owned dispatch and
-  pending/ownership/expiry rechecks before attempts, including crash/uncertain-receipt behavior.
-- Native permission/registration callbacks, current-account inbox-only taps and best-effort
-  reconciliation; no notification action may approve a request.
-- Explicit deployed HTTP/2 validation and real owned-device foreground/background/locked tests.
-  Local fake-transport tests cannot prove Workers-to-APNs compatibility or OS delivery.
+Focused executable gates:
+
+```sh
+bazel test //specs:push_test //packages/axo-api-worker:apns_test \
+  //packages/axo-api-worker:elicitations_test //apple/AxoMobile:AxoMobileModelTests \
+  //apple/AxoClient:AxoClientTests //bazel/apple:distribution_preflight_test
+```
+
+`//specs:push_test` explicitly uses the installed owned-Mac Bun runtime; it fails if unavailable.
+Native development launch may set `AXO_PUSH_TEST_RUN_ID` to copy only the fixed non-secret
+`Documents/axo-push-test.json` report. An `enrolled` status is not delivery: only a received status
+or direct on-device observation establishes receipt. Do not export the OS notification contents,
+private defaults, credential containers or raw device tokens through the harness.
 
 ## Preservation probes before migration
 

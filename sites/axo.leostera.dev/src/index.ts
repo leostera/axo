@@ -11,6 +11,7 @@ export {
   AxoIdentityIndex,
   AxoPairingIndex,
   AxoPairingRateLimit,
+  AxoPushRegistry,
   AxoSessionDO,
   AxoWhatsAppDO,
 } from "@axo/api-worker";

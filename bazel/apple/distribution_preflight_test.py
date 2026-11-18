@@ -88,6 +88,15 @@ class MobilePolicyTests(unittest.TestCase):
     def check(self, values, channel="development", apns=False, migration=False):
         policy.mobile_policy(*values, bundle_id=BUNDLE, team=TEAM, channel=channel, apns=apns, migration=migration, now=NOW)
 
+    def test_signed_push_routing_cannot_cross_environments(self):
+        for channel, environment in [("development", "sandbox"), ("ad-hoc", "production")]:
+            values = fixture(channel, apns=True)
+            values[0]["AXOPushEnvironment"] = environment
+            self.check(values, channel, apns=True)
+            values[0]["AXOPushEnvironment"] = "production" if environment == "sandbox" else "sandbox"
+            with self.assertRaises(policy.GateError):
+                self.check(values, channel, apns=True)
+
     def test_all_channels_use_actual_prefix_not_team(self):
         for channel in ["development", "ad-hoc", "app-store-connect"]:
             for apns in [False, True]:

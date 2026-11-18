@@ -17,6 +17,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Added
 
+- Canonical development iPhone request-push wiring: native permission/token callbacks, person-owned sandbox enrollment, durable request dispatch, rotation/revocation fencing and inbox-only notification taps. Provider credentials and actual foreground/background/locked-device delivery remain explicit rollout gates; there is no production push or Watch app replacement.
 - Stage explicit phone/Watch identity-preservation probes with device-only shared Keychain references, fresh source-attempt fencing, signing-scope checks and a canonical startup gate that cannot create account services or replacement keys. These probes do not transfer sign-in/preferences or complete the installed-family migration; physical validation and coordinated rollout remain required.
 - Apple distribution foundations: injected APNs provider protocol tests, exact-key migration restoration/proof checks and read-only channel-specific signing preflight. This does not enable live push, transfer credentials, switch the installed identity, configure Apple accounts or submit apps.
 - Conversations pinned on their host Mac are exempt from axod's idle timeout and idle-count limit. Pins on other clients do not count; there is no synchronization. Unpinning restores ordinary sleep eligibility on the next scan.

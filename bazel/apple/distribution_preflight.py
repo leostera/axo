@@ -94,6 +94,9 @@ def mobile_policy(info, entitlements, profile, *, bundle_id, team, channel, apns
     allowed = granted.get("keychain-access-groups", [])
     require(isinstance(allowed, list) and all(group in allowed or prefix + "*" in allowed for group in groups),
             "Profile does not authorize the required Keychain groups")
+    if bundle_id == "dev.leostera.axo" and "aps-environment" in entitlements and "AXOPushEnvironment" in info:
+        require(info["AXOPushEnvironment"] == ("sandbox" if development else "production"),
+                "Signed push routing does not match the distribution channel")
     if apns:
         expected_environment = "development" if development else "production"
         require(granted.get("aps-environment") == expected_environment and

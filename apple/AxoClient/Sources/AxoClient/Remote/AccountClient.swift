@@ -86,6 +86,29 @@ public struct AccountClient: HostPairingIssuing, Sendable {
     try await get(endpoint.meURL)
   }
 
+  /// Development APNs registration belongs to this native sign-in, not a host credential.
+  /// A nil token durably disables this installation; revisions fence late enable requests.
+  public func setRequestNotifications(installationID: UUID, revision: Int64, deviceToken: Data?) async throws {
+    guard revision > 0, revision <= 9_007_199_254_740_991,
+      deviceToken.map({ !$0.isEmpty && $0.count <= 1024 }) ?? true
+    else { throw AxoClientError.invalidResponse("invalid notification registration") }
+    var body: [String: Any] = ["installationId": installationID.uuidString.lowercased(), "revision": revision,
+      "action": deviceToken == nil ? "disable" : "enable"]
+    if let deviceToken {
+      body["destination"] = ["topic": "dev.leostera.axo", "environment": "sandbox",
+        "token": deviceToken.map { String(format: "%02x", $0) }.joined()]
+    }
+    var request = URLRequest(url: endpoint.webURL("/api/v1/account/push"))
+    request.httpMethod = "POST"
+    request.timeoutInterval = 15
+    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request = try await RelayCredentials.authorize(request, with: tokens)
+    struct Receipt: Decodable { let revision: Int64 }
+    let receipt: Receipt = try await send(request)
+    guard receipt.revision == revision else { throw AxoClientError.invalidResponse("notification revision mismatch") }
+  }
+
   /// Ends this phone's sign-in at the relay. Other devices stay signed in.
   public func signOut() async throws {
     var request = URLRequest(url: endpoint.logoutURL)

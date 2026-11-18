@@ -1,7 +1,7 @@
 # RFD0063 - Axo: Apple distribution and request push
 
 - Feature Name: `apple-distribution-and-apns`
-- Status: Draft — namespace approved; provider, key-restoration and signing-preflight foundations implemented; live rollout pending
+- Status: Draft — native enrollment and durable sandbox dispatch implemented; live iPhone rollout pending
 - Author: leostera
 - Start Date: 2026-11-16
 - Document Type: Proposal
@@ -109,7 +109,7 @@ companion identities; canonical/production artifacts require exact groups, with 
 group first. Do not silently narrow an existing companion's namespace and claim sign-in was
 preserved.
 
-Remaining rollout gates:
+Historical rollout gates at that foundation checkpoint (see the later sandbox implementation below):
 
 - [ ] Approved capabilities, scoped provider secret and matching development profiles.
 - [ ] Authenticated person-owned registration and account/install ownership, rotation,
@@ -137,6 +137,58 @@ The earlier canceled account prompts above are historical, not the current autho
 [RFD0067](RFD0067-preserving-apple-identity-migration.md) governs that staged rollout. It does not
 authorize uninstall/reset, certificate replacement, production push or app submissions; APNs is
 restricted to the canonical root. Source implementation and physical completion remain distinct.
+
+## Sandbox enrollment and dispatch
+
+The canonical development app asks for OS alert permission after sign-in and registers the
+opaque token through `POST /api/v1/account/push`. Only an authenticated native person session
+can enroll. An enable carries an installation UUID, a persisted monotonic revision and the exact
+canonical/sandbox destination; a disable carries only the installation and revision. Responses
+contain only a revision. Cookie sessions, host credentials, old topics, production destinations,
+malformed input and oversized bodies are refused. Registration grants no approval authority.
+
+The private `AxoPushRegistry` pilot coordinator enforces token uniqueness across accounts and
+fences late enable/disable/account-switch requests by installation revision. A different
+installation cannot steal an existing token. It retains revision tombstones, bounds active
+registrations to twenty per account and total retained installation records to 1,024 per account.
+An installation UUID is private device-local routing state, excluded from identity transfer.
+It is not an approval identity or a substitute for native-session authorization.
+
+A HostDO commits its request-push intent in the same SQLite transaction as pending state.
+Its work deadlines compose with transport leases, access and fragment timeouts. Replayed requests
+do not re-arm dispatch. The registry rechecks host ownership, current pending/expiry state,
+native sign-in lifetime and exact registration generation before claiming an attempt. Claims are
+atomic after all asynchronous admission checks. A crash or uncertain transport cannot replay that
+claim. Explicit provider deferrals are bounded by request expiry and eight HostDO work passes;
+feedback compares both the registration revision and Apple's invalidation timestamp. Revocation
+cannot recall an already-admitted/in-flight generic alert; a later tap still requires live state.
+
+Native taps only open the signed-in account's current Requests inbox. They neither approve nor
+force a Session selection. Foreground alerts check account ownership; connected inbox state
+removes obsolete delivered notices on a best-effort basis. Local sign-out attempts to disable the
+installation; the server independently rejects revoked/expired sessions at every dispatch.
+Offline sign-out cannot synchronously withdraw alerts already accepted by Apple. No background
+execution or immediate locked-device withdrawal is promised.
+
+APNs tokens necessarily appear in the outbound URL path. Cloudflare automatic fetch spans record
+paths, so query-string redaction alone is insufficient. This delivery Worker disables automatic
+traces while retaining sampled, allowlisted structured events with counts/outcome enums only.
+A separately deployed untraced provider Worker would restore tracing isolation later; introducing
+that additional deployment is not required for this owned-device pilot. Neither raw tokens,
+provider JWTs, credentials, notification payloads nor arbitrary network exceptions are logged.
+
+The sandbox key belongs only in `APNS_PRIVATE_KEY`, with scoped `APNS_KEY_ID`/`APNS_TEAM_ID`
+server secrets. No credentials means no attempt, not a fallback topic or production environment.
+The person approved key creation and an iPhone-only first live test; account provisioning still
+requires the unlocked, signed-in portal. Local integration tests use ephemeral signing keys and
+a fake APNs endpoint. They caught the Worker's unsupported `redirect: error` mode: dispatch now
+uses `manual` and refuses rather than follows redirects.
+
+`//specs:push_test` exhaustively checks the finite registration/claim admission model. Provider,
+registration, account switching, replay, native route parsing, client wire format and phone/tablet
+UI gates are separate executable tests. These cannot certify deployed HTTP/2 or OS delivery.
+The opt-in native `AXO_PUSH_TEST_RUN_ID` report contains only schema, run correlation and a fixed
+status in `Documents/axo-push-test.json`; it never exports a token or notification body.
 
 ## Alternatives and open questions
 

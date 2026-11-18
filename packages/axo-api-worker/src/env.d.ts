@@ -13,6 +13,9 @@ interface Env {
   OAUTH_CLIENT_ID: string;
   OAUTH_CLIENT_SECRET: string;
   SESSION_SECRET: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
 }
@@ -29,6 +32,7 @@ declare namespace Cloudflare {
       | "AxoIdentityIndex"
       | "AxoPairingIndex"
       | "AxoPairingRateLimit"
+      | "AxoPushRegistry"
       | "AxoSessionDO"
       | "AxoWhatsAppDO";
   }
