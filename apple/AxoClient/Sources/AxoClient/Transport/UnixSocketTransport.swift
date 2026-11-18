@@ -21,7 +21,7 @@ public struct UnixSocketTransport: AxoTransport {
 
 /// One Unix-socket connection, framing messages by newline.
 ///
-/// `@unchecked Sendable` invariants: `pendingData` is touched only from the connection's read
+/// `@unchecked Sendable` invariants: `framer` is touched only from the connection's read
 /// callbacks on the serial `queue`; `UnixSocketConnection` and the stream continuation are
 /// themselves thread-safe.
 final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
@@ -36,7 +36,7 @@ final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   private let connection = UnixSocketConnection()
   private let queue = DispatchQueue(label: "dev.leostera.axo.rpc")
   private let dataContinuation: AsyncStream<Data>.Continuation
-  private var pendingData = Data()
+  private var framer = NewlineFramer(maximumMessageBytes: UnixSocketChannel.maximumMessageBytes)
 
   let messages: AsyncStream<Data>
 
@@ -73,22 +73,9 @@ final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   }
 
   private func receive(_ data: Data) {
-    pendingData.append(data)
-
-    while let newline = pendingData.firstIndex(of: 0x0A) {
-      let message = Data(pendingData[..<newline])
-      pendingData.removeSubrange(pendingData.startIndex...newline)
-      guard message.count <= Self.maximumMessageBytes else {
-        dataContinuation.finish()
-        connection.cancel()
-        return
-      }
-      if !message.isEmpty {
-        dataContinuation.yield(message)
-      }
-    }
-
-    if pendingData.count > Self.maximumMessageBytes {
+    do {
+      try framer.append(data) { dataContinuation.yield($0) }
+    } catch {
       dataContinuation.finish()
       connection.cancel()
     }
