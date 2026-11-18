@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+/// How often a running axod checks its logs' size: axod runs for weeks (RFD0023).
+const LOG_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Parser)]
 #[command(name = "axod", about = "Axo daemon command-line entrypoint")]
@@ -112,6 +114,7 @@ fn main() {
         axo_server::build_number()
     );
     raise_open_file_limit();
+    keep_process_logs_bounded(server_directory.clone());
     if let Err(error) = axo_server::serve_ipc(
         cli.socket.as_deref(),
         &server_directory,
@@ -164,26 +167,69 @@ fn raise_open_file_limit() {
     }
 }
 
+/// The process's standard streams and the logs they write to.
+fn process_logs(server_directory: &Path) -> [(libc::c_int, PathBuf); 2] {
+    [
+        (libc::STDOUT_FILENO, server_directory.join("stdout.log")),
+        (libc::STDERR_FILENO, server_directory.join("stderr.log")),
+    ]
+}
+
 fn configure_process_logs(server_directory: &Path) -> io::Result<()> {
     axo_server::prepare_server_directory(server_directory)?;
-    let stdout_path = server_directory.join("stdout.log");
-    let stderr_path = server_directory.join("stderr.log");
-    rotate_if_oversized(&stdout_path)?;
-    rotate_if_oversized(&stderr_path)?;
-
-    redirect_standard_stream(libc::STDOUT_FILENO, &stdout_path)?;
-    redirect_standard_stream(libc::STDERR_FILENO, &stderr_path)?;
+    for (stream, path) in process_logs(server_directory) {
+        rotate_if_oversized(&path)?;
+        redirect_standard_stream(stream, &path)?;
+    }
     Ok(())
 }
 
-fn rotate_if_oversized(path: &Path) -> io::Result<()> {
+/// Keeps each log under [`MAX_LOG_BYTES`] (plus one interval's writes) while axod runs: an
+/// oversized log moves to `.log.1` and the stream reopens a fresh one.
+fn keep_process_logs_bounded(server_directory: PathBuf) {
+    std::thread::Builder::new()
+        .name("axod-logs".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(LOG_CHECK_INTERVAL);
+                for (stream, path) in process_logs(&server_directory) {
+                    if let Err(error) = rotate_open_log(stream, &path) {
+                        log::warn!(
+                            "event=daemon.log_rotation_failed error_kind={:?}",
+                            error.kind()
+                        );
+                    }
+                }
+            }
+        })
+        .map(drop)
+        .unwrap_or_else(|error| {
+            log::warn!(
+                "event=daemon.log_rotation_unavailable error_kind={:?}",
+                error.kind()
+            )
+        });
+}
+
+/// Rotates the log `stream` writes to if it is oversized, then points `stream` at a fresh one.
+/// Lines written in between land in the rotated file. Whether it rotated.
+fn rotate_open_log(stream: libc::c_int, path: &Path) -> io::Result<bool> {
+    if !rotate_if_oversized(path)? {
+        return Ok(false);
+    }
+    redirect_standard_stream(stream, path)?;
+    Ok(true)
+}
+
+/// Moves an oversized log to `.log.1`, replacing the previous one. Whether it moved.
+fn rotate_if_oversized(path: &Path) -> io::Result<bool> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
     if metadata.len() <= MAX_LOG_BYTES {
-        return Ok(());
+        return Ok(false);
     }
 
     let previous_path = path.with_extension("log.1");
@@ -192,7 +238,8 @@ fn rotate_if_oversized(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    fs::rename(path, previous_path)
+    fs::rename(path, previous_path)?;
+    Ok(true)
 }
 
 fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Result<()> {
@@ -209,4 +256,42 @@ fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Re
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// A log that grows past its limit while axod runs moves aside, and what is written next
+    /// goes to a fresh log.
+    #[test]
+    fn a_running_log_past_its_limit_moves_aside_and_writing_continues_in_a_fresh_one() {
+        let directory = std::env::temp_dir().join(format!("axod-logs-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("stderr.log");
+        // A stream of this test's own, standing in for stderr.
+        // SAFETY: duplicates a descriptor this process holds; the copy is owned below.
+        let stream = unsafe { libc::dup(libc::STDERR_FILENO) };
+        assert!(stream >= 0);
+        redirect_standard_stream(stream, &path).unwrap();
+        // SAFETY: a fresh duplicate, owned only by this File.
+        let mut writer =
+            unsafe { <fs::File as std::os::fd::FromRawFd>::from_raw_fd(libc::dup(stream)) };
+        assert!(!rotate_open_log(stream, &path).unwrap(), "small logs stay");
+        writer
+            .write_all(&vec![b'x'; MAX_LOG_BYTES as usize + 1])
+            .unwrap();
+        assert!(rotate_open_log(stream, &path).unwrap());
+        // SAFETY: `stream` is ours and owned only by this File from here on.
+        let mut fresh = unsafe { <fs::File as std::os::fd::FromRawFd>::from_raw_fd(stream) };
+        fresh.write_all(b"after\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "after\n");
+        assert_eq!(
+            fs::metadata(path.with_extension("log.1")).unwrap().len(),
+            MAX_LOG_BYTES + 1
+        );
+        drop(writer);
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

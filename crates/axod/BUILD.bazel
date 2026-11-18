@@ -35,6 +35,12 @@ rust_binary(
 )
 
 rust_test(
+    name = "axod_unit_tests",
+    crate = ":axod",
+    timeout = "short",
+)
+
+rust_test(
     name = "rpc_tests",
     srcs = ["tests/rpc.rs"],
     edition = "2024",
