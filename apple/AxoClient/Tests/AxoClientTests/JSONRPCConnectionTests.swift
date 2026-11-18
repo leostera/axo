@@ -127,6 +127,54 @@ final class JSONRPCConnectionTests: XCTestCase {
     XCTAssertNotNil(lostAgain)
   }
 
+  func testAConnectionThatEndsDuringItsHandshakeIsNeverUsed() async throws {
+    let transport = FakeTransport(hello: #"{"ok":true}"#)
+    let rpc = JSONRPCConnection(transport: transport) { link in
+      let _: [String: Bool] = try await link.call("axo.client.hello", params: [String: Int](), timeout: .seconds(15))
+      // The peer hangs up right after its reply, and the reader sees it before the handshake ends.
+      try await transport.channel(0).endFromPeer()
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    do {
+      try await rpc.connect()
+      XCTFail("expected the connect to fail")
+    } catch {
+      XCTAssertEqual(error as? AxoClientError, .connectionClosed)
+    }
+
+    // The next call opens a fresh connection instead of failing on the dead one.
+    async let next: Echo = rpc.call("echo", params: Echo(value: "n"), timeout: Self.wait)
+    let second = try await transport.channel(1)
+    second.reply(to: try await second.requests(count: 1)[0].id, result: #"{"value":"n"}"#)
+    let result = try await next
+    XCTAssertEqual(result.value, "n")
+  }
+
+  func testAFailedSendEndsTheConnectionSoTheNextCallReconnects() async throws {
+    let transport = FakeTransport()
+    let rpc = JSONRPCConnection(transport: transport)
+    var losses = rpc.connectionLost.makeAsyncIterator()
+    async let warmup: Echo = rpc.call("echo", params: Echo(value: "w"), timeout: Self.wait)
+    let first = try await transport.channel(0)
+    first.reply(to: try await first.requests(count: 1)[0].id, result: #"{"value":"w"}"#)
+    _ = try await warmup
+
+    first.failSends()
+    do {
+      let _: Echo = try await rpc.call("echo", params: Echo(value: "a"), timeout: Self.wait)
+      XCTFail("expected the send to fail")
+    } catch {
+      XCTAssertEqual(error as? AxoClientError, .connectionClosed)
+    }
+    let lost: Void? = await losses.next()
+    XCTAssertNotNil(lost, "a connection that cannot be written to is lost")
+
+    async let again: Echo = rpc.call("echo", params: Echo(value: "b"), timeout: Self.wait)
+    let second = try await transport.channel(1)
+    second.reply(to: try await second.requests(count: 1)[0].id, result: #"{"value":"b"}"#)
+    _ = try await again
+  }
+
   func testACallWhoseRequestCannotBeSentFailsAtOnce() async throws {
     let transport = FakeTransport()
     let rpc = JSONRPCConnection(transport: transport)

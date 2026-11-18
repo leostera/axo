@@ -11,7 +11,10 @@ import Foundation
 ///   connection closes once its last call has ended.
 /// - At most one connect is in progress; concurrent first calls share it.
 /// - A connection's handshake (if any) runs on each new connection before any other call can use
-///   it, and a connection whose handshake fails is closed, never used.
+///   it, and a connection whose handshake fails, or that ends before its handshake returns, is
+///   closed, never used.
+/// - A connection that has ended (its reader finished, a write to it failed, or `disconnect()`) is
+///   never current, so the next call connects again.
 /// - Ids are unique across connections, so a late reply can only match its own call, which
 ///   has already ended, and is dropped.
 public actor JSONRPCConnection {
@@ -120,6 +123,8 @@ public actor JSONRPCConnection {
     let channel: any AxoMessageChannel
     var inFlight = 0
     var isRetired = false
+    /// Its channel closed or broke; nothing more can be sent or received on it.
+    var hasEnded = false
     /// It passed its handshake and served calls (and notifications).
     var wasCurrent = false
 
@@ -159,6 +164,8 @@ public actor JSONRPCConnection {
         throw error
       }
     }
+    // The handshake's awaits let the reader see the peer hang up after its last reply.
+    guard !link.hasEnded else { throw AxoClientError.connectionClosed }
     current = link
     link.wasCurrent = true
     return link
@@ -179,7 +186,9 @@ public actor JSONRPCConnection {
     do {
       try await link.channel.send(request)
     } catch {
+      // A write that fails means the connection is broken, whether or not its reader noticed.
       end(id, with: .failure(AxoClientError.connectionClosed))
+      linkEnded(link)
     }
   }
 
@@ -218,6 +227,7 @@ public actor JSONRPCConnection {
     // Once only: a link ends by being closed here and again when its reader sees the close.
     let lost = link.wasCurrent && (current == nil || current === link)
     link.wasCurrent = false
+    link.hasEnded = true
     retire(link)
     if lost { lossSink.yield() }
     for (id, call) in calls where call.link === link {
