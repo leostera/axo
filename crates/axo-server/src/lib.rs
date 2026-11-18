@@ -575,12 +575,25 @@ fn admit_link(endpoint: &RelayEndpoint) -> Result<(), RpcError> {
     if endpoint.is_loopback() {
         return Ok(());
     }
+    admit_the_person()
+}
+
+#[cfg(target_os = "macos")]
+fn admit_the_person() -> Result<(), RpcError> {
     axo_ipc::Only {
         caller: axo_ipc::peer::Caller::Signed(axo_ipc::peer::Signer::AxoApp),
         code: axo_protocol::elicitation::NOT_A_PERSON,
         message: "only the person links this Mac: in Axo, Settings, Remote Access",
     }
     .admit(method::RELAY_LINK)
+}
+
+/// Elsewhere there is no signed app to tell the person from an agent, and the CLI is the only
+/// way to pair, so linking stays open to local callers as before. RFD0074 leaves it open: it
+/// needs a consent path in the Linux desktop (RFD0054).
+#[cfg(not(target_os = "macos"))]
+fn admit_the_person() -> Result<(), RpcError> {
+    Ok(())
 }
 
 fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {

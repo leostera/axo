@@ -16,6 +16,7 @@ use support::{Axod, Options};
 
 const NOT_CONNECTED: i64 = -32024;
 const INVALID_PARAMS: i64 = -32602;
+#[cfg(target_os = "macos")]
 const NOT_A_PERSON: i64 = -32012;
 
 #[test]
@@ -81,6 +82,8 @@ fn linking_with_a_relay_that_is_not_there_fails_and_leaves_the_mac_unlinked() {
     assert_eq!(malformed.code, INVALID_PARAMS, "{malformed:?}");
 }
 
+// Only macOS can tell Axo.app by its signature (RFD0074, Linux).
+#[cfg(target_os = "macos")]
 #[test]
 fn only_the_person_links_this_mac_to_an_account() {
     // The account's relay, not a loopback one: linking to it gives an account this Mac, so a

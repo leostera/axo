@@ -19,6 +19,8 @@ Two things a Mac kept after the account had stopped wanting them:
 
 `axo.relay.link` hands this Mac to an account, so under RFD0073 only the person may call it, from Axo.app (`Signer::AxoApp`). Any other caller gets `-32012`. There is one exception. A relay endpoint on loopback (`localhost`, `127.0.0.1`, `::1`) may be linked by any local caller, because that account never leaves this Mac: it is a local Worker or an end-to-end test, run by someone already acting as the person. `axo.relay.unlink` stays open to every caller, because it only takes access away. RFD0073 does not list these, so they are recorded here.
 
+**Linux is not covered yet.** It has no signed app, so axod cannot tell the person from an agent there. Today the CLI is the only way to pair a Linux host, and it may run in a Session's own pane. So on Linux, linking stays open to local callers, as it was before this change. Closing it needs a consent path in the Linux desktop (RFD0054), for example confirming the code in its settings window. That is left open here.
+
 ## Retired credentials
 
 ### The rule
