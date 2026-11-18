@@ -210,6 +210,10 @@ impl QuestionsHost for Core {
     fn input_key(&self) -> Option<&axo_seal::InputKey> {
         self.input_keys.loaded()
     }
+
+    fn act_as(&self, session: SessionId) -> Result<(), jsonrpc_core::Error> {
+        crate::callers::act_as(self, &axo_ipc::peer::current(), session)
+    }
 }
 
 impl ComputerHost for Core {

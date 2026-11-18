@@ -651,7 +651,10 @@ fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves()
     let (axod, _target) = linked(&hub, Pi::Fake);
     let session = axod.new_session()["id"].clone();
     {
-        let mut stream = std::os::unix::net::UnixStream::connect(axod.socket()).unwrap();
+        // Asked as the Session's agent, from inside its Pi (RFD0073).
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(axod.agent_socket(session.as_str().unwrap()))
+                .unwrap();
         use std::io::Write;
         writeln!(
             stream,

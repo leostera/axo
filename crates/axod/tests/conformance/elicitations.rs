@@ -15,14 +15,16 @@ const INVALID_PARAMS: i64 = -32602;
 const NOT_A_PERSON: i64 = -32012;
 const NOT_A_TOOL: i64 = -32013;
 const NOT_PENDING: i64 = -32011;
+/// A caller named a Session it does not run in (RFD0073).
+const NOT_THAT_SESSION: i64 = -32099;
 
-/// Asks on a connection of its own, which stays open (and the question pending) until axod
-/// answers or the connection is dropped.
+/// Asks as the Session's agent on a connection of its own, which stays open (and the question
+/// pending) until axod answers or the connection is dropped.
 fn ask_in_background(
     axod: &Axod,
     params: Value,
 ) -> thread::JoinHandle<std::io::Result<Result<Value, support::RpcError>>> {
-    let socket = axod.socket();
+    let socket = axod.agent_socket(params["sessionId"].as_str().unwrap());
     thread::spawn(move || support::call(&socket, "axo.elicitation.request", params))
 }
 
@@ -113,17 +115,33 @@ fn questions_are_checked_before_anyone_sees_them() {
     let axod = Axod::start();
     let session = axod.new_session()["id"].clone();
     for message in ["", "   ", "x".repeat(5_000).as_str()] {
-        let refused = axod.err(
+        let refused = axod.agent(&session).err(
             "axo.elicitation.request",
             json!({ "sessionId": session, "message": message }),
         );
         assert_eq!(refused.code, INVALID_PARAMS, "{message:.20}: {refused:?}");
     }
-    let nobody = axod.err(
-        "axo.elicitation.request",
-        json!({ "sessionId": "00000000-0000-4000-8000-000000000000", "message": "Go?" }),
-    );
-    assert_eq!(nobody.code, INVALID_PARAMS, "{nobody:?}");
+    assert!(pending(&axod).is_empty());
+}
+
+/// An agent asks only as its own Session (RFD0073): not as another, nor from outside any.
+#[test]
+fn an_agent_asks_only_as_its_own_session() {
+    let axod = Axod::start();
+    let session = axod.new_session()["id"].clone();
+    let other = axod.new_session()["id"].clone();
+    let ask = json!({ "sessionId": session, "message": "Go?" });
+    for refused in [
+        axod.err("axo.elicitation.request", ask.clone()),
+        axod.agent(&other)
+            .err("axo.elicitation.request", ask.clone()),
+        axod.agent(&session).err(
+            "axo.elicitation.request",
+            json!({ "sessionId": "00000000-0000-4000-8000-000000000000", "message": "Go?" }),
+        ),
+    ] {
+        assert_eq!(refused.code, NOT_THAT_SESSION, "{refused:?}");
+    }
     assert!(pending(&axod).is_empty());
 }
 
@@ -152,7 +170,9 @@ fn an_asker_that_goes_away_withdraws_its_question() {
     let session = axod.new_session()["id"].clone();
     let mut events = axod.subscribe(json!({ "includeTerminalOutput": false }));
     {
-        let mut stream = std::os::unix::net::UnixStream::connect(axod.socket()).unwrap();
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(axod.agent_socket(session.as_str().unwrap()))
+                .unwrap();
         use std::io::Write;
         writeln!(
             stream,
@@ -204,11 +224,12 @@ fn thirty_two_pending_questions_do_not_allocate_a_thread_each() {
     // Warm the permission probe before taking the baseline. Allow two incidental OS/runtime
     // threads, but not one thread per question (the old implementation added 32).
     axod.ok("axo.daemon.health", json!({}));
+    let agent = axod.agent_socket(session.as_str().unwrap());
     let baseline = daemon_threads(&axod);
     let mut askers = Vec::new();
     let mut peak = baseline;
     for count in 1..=32 {
-        let mut socket = UnixStream::connect(axod.socket()).unwrap();
+        let mut socket = UnixStream::connect(&agent).unwrap();
         writeln!(
             socket,
             "{}",

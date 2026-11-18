@@ -41,6 +41,9 @@ pub trait QuestionsHost: Send + Sync {
     fn publish(&self, event: Event);
     /// This Mac's input key, which forms are sealed to; made on first use.
     fn input_key(&self) -> Option<&axo_seal::InputKey>;
+    /// Refuses the request being handled unless its caller runs in `session` (RFD0073): an
+    /// agent asks only as its own Session.
+    fn act_as(&self, session: SessionId) -> Result<(), RpcError>;
 }
 
 /// Error codes shared with `@axo/protocol`'s `ELICITATION_ERRORS`, and the limit of the relay's.
@@ -476,8 +479,10 @@ impl Extension for QuestionsExtension {
             move |request: RequestElicitation| {
                 let (questions, host) = (Arc::clone(&questions), Arc::clone(&host));
                 async move {
-                    // Anyone may ask as the agent; only axod's own tools ask as a tool.
-                    if request.asked_by != Asker::Agent {
+                    // An agent asks as its own Session; only axod's own tools ask as a tool.
+                    if request.asked_by == Asker::Agent {
+                        host.act_as(request.session_id)?;
+                    } else {
                         Only {
                             caller: Caller::Signed(Signer::ThisBinary),
                             code: NOT_A_TOOL,
@@ -580,6 +585,9 @@ mod tests {
         }
         fn input_key(&self) -> Option<&axo_seal::InputKey> {
             Some(self.key.get_or_init(axo_seal::InputKey::generate))
+        }
+        fn act_as(&self, _: SessionId) -> Result<(), RpcError> {
+            Ok(())
         }
     }
 
