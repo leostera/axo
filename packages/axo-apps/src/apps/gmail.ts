@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { quoted, ProviderError, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * Gmail as an app: `codemode.apps.gmail.<tool>({ account, ... })` over the Gmail REST API, as
@@ -162,6 +162,7 @@ const tools: AppTool[] = [
     description: "Sends an email from the signed-in account and returns { id, threadId, labelIds }. Give replyToMessageId to reply in a thread. A call that may have run is not safe to repeat: check the Sent label first.",
     input: composeSchema,
     idempotent: false,
+    consent: (input) => `Send an email to ${[input.to, input.cc, input.bcc].filter(Boolean).join(", ") || "the thread"}: ${quoted(input.subject ?? "(reply)")}`,
     async run(api, input) {
       const { raw, threadId } = await compose(api, input);
       return api.request("POST", `${BASE}/messages/send`, { body: { raw, ...(threadId ? { threadId } : {}) } });
@@ -205,6 +206,7 @@ const tools: AppTool[] = [
     description: "Deletes a message for good, skipping the trash; it cannot be recovered. Prefer trash_message unless asked to delete permanently. Returns { deleted: true }.",
     input: z.object({ id }).strict(),
     idempotent: true,
+    consent: (input) => `Delete message ${input.id} for good`,
     async run(api, input) {
       await api.request("DELETE", `${BASE}/messages/${input.id}`);
       return { deleted: true };
@@ -227,6 +229,7 @@ const tools: AppTool[] = [
       "action: { addLabelIds, removeLabelIds, forward } (remove \"INBOX\" to archive, add \"TRASH\" to delete, remove \"UNREAD\" to mark read).",
     input: z.object({ criteria: z.record(z.string(), z.unknown()), action: z.record(z.string(), z.unknown()) }).strict(),
     idempotent: false,
+    consent: (input) => `Create a mail filter${typeof input.action.forward === "string" ? ` forwarding to ${input.action.forward}` : ""}: ${quoted(JSON.stringify(input), 200)}`,
     run: (api, input) => api.request("POST", `${BASE}/settings/filters`, { body: input }),
   }),
   tool({
@@ -234,6 +237,7 @@ const tools: AppTool[] = [
     description: "Deletes a filter by its id. Returns { deleted: true }.",
     input: z.object({ id }).strict(),
     idempotent: true,
+    consent: (input) => `Delete mail filter ${input.id}`,
     async run(api, input) {
       await api.request("DELETE", `${BASE}/settings/filters/${input.id}`);
       return { deleted: true };
@@ -260,6 +264,7 @@ const tools: AppTool[] = [
       restrictToDomain: z.boolean().optional(),
     }).strict(),
     idempotent: true,
+    consent: (input) => (input.enableAutoReply ? `Turn on the auto-reply: ${quoted(input.responseSubject ?? input.responseBodyPlainText ?? "")}` : null),
     run: (api, input) => api.request("PUT", `${BASE}/settings/vacation`, { body: { ...input, startTime: input.startTime?.toString(), endTime: input.endTime?.toString() } }),
   }),
   tool({

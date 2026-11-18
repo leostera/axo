@@ -124,6 +124,14 @@ pub trait RelayHost: Send + Sync {
     ) -> HostFuture<'_, Result<serde_json::Value, MethodError>> {
         Box::pin(std::future::ready(Err(MethodError::method_not_found())))
     }
+    /// Whether an app call may run (RFD0070): asks the person in the calling Session. `Ok` only
+    /// on their accept; `Err` is declined, not answered, or not asked.
+    fn remote_consent(
+        &self,
+        _request: crate::consent::ConsentParams,
+    ) -> HostFuture<'_, Result<(), MethodError>> {
+        Box::pin(std::future::ready(Err(MethodError::method_not_found())))
+    }
     /// Local model inference from an account script. The host owns model/runtime policy.
     fn remote_ai(
         &self,

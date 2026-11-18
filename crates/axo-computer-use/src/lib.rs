@@ -639,7 +639,30 @@ async fn ask_for_computer(
     request: &ComputerParams,
     question: &str,
 ) -> Result<(), MethodError> {
-    let available = Duration::from_millis(request.timeout_ms).saturating_sub(ANSWER_MARGIN);
+    let from = format!("\nAsked from {}'s Session.", request.from);
+    let room = MAX_MESSAGE_CHARS.saturating_sub(from.chars().count());
+    let message: String = question.chars().take(room).collect::<String>() + &from;
+    ask_person(host, request.session_id, &message, request.timeout_ms).await
+}
+
+/// Whether an app call may run (RFD0070): the account's question, asked in the calling Session
+/// as Axo, as the gate asks. `Ok` only on the person's Accept.
+pub async fn consent(
+    host: &dyn ComputerHost,
+    request: &axo_relay::consent::ConsentParams,
+) -> Result<(), MethodError> {
+    ask_person(host, request.session_id, &request.message, request.timeout_ms).await
+}
+
+/// Asks `message` in `session_id` within `timeout_ms`, less a margin for the answer to travel
+/// back; `Ok` only on Accept.
+async fn ask_person(
+    host: &dyn ComputerHost,
+    session_id: SessionId,
+    message: &str,
+    timeout_ms: u64,
+) -> Result<(), MethodError> {
+    let available = Duration::from_millis(timeout_ms).saturating_sub(ANSWER_MARGIN);
     let timeout = available.min(Duration::from_millis(TIMEOUT_MS));
     if timeout < SHORTEST_QUESTION {
         return Err(MethodError::new(
@@ -647,17 +670,8 @@ async fn ask_for_computer(
             "Not done: no time left to ask the person.",
         ));
     }
-    let from = format!("\nAsked from {}'s Session.", request.from);
-    let room = MAX_MESSAGE_CHARS.saturating_sub(from.chars().count());
-    let message: String = question.chars().take(room).collect::<String>() + &from;
     let answer = host
-        .ask_with(
-            request.session_id,
-            &message,
-            Asker::ComputerUse,
-            None,
-            timeout,
-        )
+        .ask_with(session_id, message, Asker::ComputerUse, None, timeout)
         .await
         .map_err(|error| {
             MethodError::new(
@@ -822,6 +836,42 @@ mod tests {
                 Err(MethodError::new(NOT_ALLOWED, said))
             );
         }
+    }
+
+    #[test]
+    fn an_app_call_is_allowed_only_by_the_persons_accept_in_its_session() {
+        let request = |timeout_ms: u64| {
+            axo_relay::consent::parse(
+                &json!({
+                    "accountId": "a1",
+                    "callId": "c1",
+                    "sessionId": "82cfd1e8-1cc6-4473-a16d-6f0e77476311",
+                    "message": "Gmail (ada@example.com): Send an email to eve@example.com: \"Hi\"",
+                    "timeoutMs": timeout_ms,
+                }),
+                "a1",
+            )
+            .unwrap()
+        };
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        assert_eq!(block(consent(&host, &request(60_000))), Ok(()));
+        let (message, _, form) = host.asked().remove(0);
+        assert_eq!(
+            message,
+            "Gmail (ada@example.com): Send an email to eve@example.com: \"Hi\""
+        );
+        assert!(!form, "consent asks yes or no");
+        for answer in [
+            Ok(ElicitationAction::Decline),
+            Ok(ElicitationAction::Cancel),
+            Err("no such Session"),
+        ] {
+            let host = Host::answering(answer);
+            assert!(block(consent(&host, &request(60_000))).is_err());
+        }
+        let host = Host::answering(Ok(ElicitationAction::Accept));
+        assert!(block(consent(&host, &request(1_000))).is_err());
+        assert!(host.asked().is_empty(), "no time: nobody is asked");
     }
 
     #[test]

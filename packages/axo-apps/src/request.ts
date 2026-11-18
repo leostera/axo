@@ -39,6 +39,8 @@ export function requestTool(definition: Pick<HttpApp, "title" | "apiOrigin" | "h
       }).optional(),
     }).strict(),
     idempotent: false,
+    // A read needs no one; anything else may send, pay or delete, and the path says what.
+    consent: (input) => (input.method === "GET" ? null : `${input.method} ${input.path}`),
     async run(api, input) {
       if (input.body !== undefined && input.text) throw new Error("pass `body` or `text`, not both");
       const answer = await api.requestRaw(input.method, input.path, {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomToken } from "../src/auth/crypto";
 import { Peer } from "../testing/client";
 import { hostPairingCreateResultSchema, hostPairingRedeemResultSchema } from "@axo/protocol/v1";
-import { Pi3Transcript, type AppendRecord, type ManifestRow, type SessionMetadata } from "@axo/protocol";
+import { CONSENT_METHOD, Pi3Transcript, type AppendRecord, type ManifestRow, type SessionMetadata } from "@axo/protocol";
 import type { AccountSession, Harness } from "./harness";
 
 export type PairedHost = {
@@ -54,6 +54,8 @@ export async function connectHost(
     ...registration,
   });
   assert.ok("result" in registered, JSON.stringify(registered));
+  // The person allows every app call unless a test answers otherwise (RFD0070).
+  daemon.answer(CONSENT_METHOD, () => ({ outcome: "accept" }));
   return daemon;
 }
 

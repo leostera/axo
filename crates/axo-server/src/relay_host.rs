@@ -172,6 +172,13 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         })
     }
 
+    fn remote_consent(
+        &self,
+        request: axo_relay::consent::ConsentParams,
+    ) -> HostFuture<'_, Result<(), MethodError>> {
+        Box::pin(async move { axo_computer_use::consent(self.core.as_ref(), &request).await })
+    }
+
     fn remote_ai(
         &self,
         request: axo_relay::ai::AiParams,

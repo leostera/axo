@@ -121,6 +121,7 @@ const tools: AppTool[] = [
     description: "Deletes a contact and returns { deleted: true }.",
     input: z.object({ resourceName }).strict(),
     idempotent: true,
+    consent: (input) => `Delete contact ${input.resourceName}`,
     async run(api, input) {
       await api.request("DELETE", `/v1/${input.resourceName}:deleteContact`);
       return { deleted: true };

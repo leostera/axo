@@ -68,8 +68,21 @@ export type AppTool<Input = any, Api = ProviderApi> = {
   input: z.ZodObject;
   /** Whether running it twice is harmless. A call that got no answer is reported as may-have-run only when it is not. */
   idempotent: boolean;
+  /**
+   * What to ask the person before this call runs, or null when it needs no one (RFD0070). Tools
+   * that send, post, pay, trade, delete, share, revoke or reveal a secret declare it; the call
+   * runs only on the person's accept, in the Session that made it. Built from the call's own
+   * input, as the person should see it: who it sends to, what it deletes.
+   */
+  consent?(input: Input): string | null;
   run(api: Api, input: Input): Promise<unknown>;
 };
+
+/** Part of a call's input in a consent question: on one line, and at most `max` characters. */
+export function quoted(text: string, max = 120): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return `"${line.length > max ? `${line.slice(0, max - 1)}…` : line}"`;
+}
 
 /** A tool whose `run` gets its input as its schema parses it. */
 export function tool<S extends z.ZodObject>(definition: Omit<AppTool<z.infer<S>>, "input"> & { input: S }): AppTool {

@@ -9,7 +9,7 @@ import {
   type RESTPostAPIChannelMessageJSONBody,
   type RESTPostAPIChannelMessageResult,
 } from "discord-api-types/v10";
-import { tool, type AppDefinition, type AppTool, type Authorized, type ProviderApi } from "../app";
+import { quoted, tool, type AppDefinition, type AppTool, type Authorized, type ProviderApi } from "../app";
 
 /**
  * A Discord bot as an app: `codemode.apps.discord.<tool>({ account, ... })`, with the bot token
@@ -72,6 +72,7 @@ const tools: AppTool[] = [
     description: "Posts a message as the bot in a channel, or replies to one. Returns { id }.",
     input: z.object({ channel: snowflake, content: z.string().min(1).max(2000), replyTo: snowflake.optional() }).strict(),
     idempotent: false,
+    consent: (input) => `Post in channel ${input.channel}: ${quoted(input.content)}`,
     async run(api, input) {
       const body: RESTPostAPIChannelMessageJSONBody = { content: input.content, message_reference: input.replyTo ? { message_id: input.replyTo } : undefined, allowed_mentions: { parse: [] } };
       const sent = (await rest(api).post(Routes.channelMessages(input.channel), { body })) as RESTPostAPIChannelMessageResult;

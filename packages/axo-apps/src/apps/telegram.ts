@@ -4,7 +4,7 @@ import { RPCError } from "telegram/errors/index.js";
 import { computeCheck } from "telegram/Password.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { z } from "zod";
-import { clientTool, PhoneRefused, ProviderError, type AppDefinition, type AppTool, type PhoneClient, type PhoneFailure, type PhoneSignIn, type PhoneStep } from "../app";
+import { quoted, clientTool, PhoneRefused, ProviderError, type AppDefinition, type AppTool, type PhoneClient, type PhoneFailure, type PhoneSignIn, type PhoneStep } from "../app";
 
 /**
  * The person's own Telegram account as an app: `codemode.apps.telegram.<tool>({ account, ... })`.
@@ -222,6 +222,7 @@ const tools: AppTool<any, TelegramClient>[] = [
     description: "Sends a message as you, or a reply to one. Returns { id, date }.",
     input: z.object({ chat, text: z.string().min(1).max(4096), replyTo: z.number().int().positive().optional(), silent: z.boolean().optional().describe("Without a notification sound.") }).strict(),
     idempotent: false,
+    consent: (input) => `Send a Telegram message to ${input.chat}: ${quoted(input.text)}`,
     async run(telegram, input: { chat: string | number; text: string; replyTo?: number; silent?: boolean }) {
       const sent = await telegram.sendMessage(await resolve(telegram, input.chat), { message: input.text, replyTo: input.replyTo, silent: input.silent });
       return { id: sent.id, date: new Date(sent.date * 1000).toISOString() };

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool, type AppDefinition, type AppTool } from "../app";
+import { quoted, tool, type AppDefinition, type AppTool } from "../app";
 
 /**
  * Google Calendar as an app: `codemode.apps.calendar.<tool>({ account, ... })` over the Calendar
@@ -105,6 +105,7 @@ const tools: AppTool[] = [
       sendUpdates,
     }).strict(),
     idempotent: false,
+    consent: (input) => (input.sendUpdates && input.sendUpdates !== "none" ? `Create ${quoted(input.summary)} and email its guests` : null),
     async run(api, input) {
       const body = {
         ...eventBody(input),
@@ -121,6 +122,7 @@ const tools: AppTool[] = [
     description: "Changes the fields given on an event (others are kept) and returns it. `attendees` replaces the guest list.",
     input: eventFields.extend({ calendarId, eventId, sendUpdates }).strict(),
     idempotent: true,
+    consent: (input) => (input.sendUpdates && input.sendUpdates !== "none" ? `Change event ${input.eventId} and email its guests` : null),
     async run(api, input) {
       return event((await api.request("PATCH", eventPath(input.calendarId, input.eventId), {
         query: { sendUpdates: input.sendUpdates ?? "none" },
@@ -133,6 +135,7 @@ const tools: AppTool[] = [
     description: "Deletes an event and returns { deleted: true }.",
     input: z.object({ calendarId, eventId, sendUpdates }).strict(),
     idempotent: true,
+    consent: (input) => `Delete event ${input.eventId}${input.sendUpdates && input.sendUpdates !== "none" ? " and email its guests" : ""}`,
     async run(api, input) {
       await api.request("DELETE", eventPath(input.calendarId, input.eventId), { query: { sendUpdates: input.sendUpdates ?? "none" } });
       return { deleted: true };

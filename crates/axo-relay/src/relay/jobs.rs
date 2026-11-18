@@ -149,6 +149,41 @@ pub(super) fn start_computer(id: Value, params: &Value, context: &RelaySessionCo
     });
 }
 
+/// Asks the person whether an app call may run (RFD0070): the host asks in the calling Session.
+/// Replies `{ outcome: "accept" }` only on their accept, on this socket only.
+pub(super) fn start_consent(id: Value, params: &Value, context: &RelaySessionContext) {
+    let params = match crate::consent::parse(params, &context.account_id) {
+        Ok(params) => params,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    let mut job = match context.jobs.start(&params.call_id) {
+        Ok(job) => job,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    // Waiting on the person, as a computer call does.
+    let place = match COMPUTER_JOBS.admit() {
+        Ok(place) => place,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    let replies = context.replies.clone();
+    let sessions = Arc::clone(&context.sessions);
+    tokio::spawn(async move {
+        let call_id = params.call_id.clone();
+        log::info!("event=apps.consent_asked call={call_id}");
+        let outcome = tokio::select! {
+            biased;
+            _ = job.cancelled() => Err(MethodError::new(-32004, "Cancelled before the person answered")),
+            outcome = sessions.remote_consent(params) => outcome,
+        };
+        drop(place);
+        log::info!(
+            "event=apps.consent_answered call={call_id} outcome={}",
+            if outcome.is_ok() { "accept" } else { "refused" }
+        );
+        replies.reply(&id, outcome.map(|()| serde_json::json!({ "outcome": "accept" })));
+    });
+}
+
 /// A cancellation is scoped to the linked account and this relay session's own call IDs.
 /// Bash/AI retain ownership through cleanup. A receipt never proves rollback of an action;
 /// non-interruptible computer work may already have been dispatched.

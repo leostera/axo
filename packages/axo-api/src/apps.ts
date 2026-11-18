@@ -30,6 +30,12 @@ export const BASH_METHOD = "axo.apps.bash";
  * anywhere). The Mac's gate checks it and, if it must, asks the person in the calling Session.
  */
 export const COMPUTER_METHOD = "axo.apps.computer";
+/**
+ * Whether an app call may run (RFD0070): sent to the calling Mac, whose axod asks the person in
+ * the calling Session and answers `{ outcome: "accept" }` only on their accept; anything else is
+ * an error, and the call does not run.
+ */
+export const CONSENT_METHOD = "axo.apps.consent";
 /** Whether a Mac can do computer use now, for `codemode.hosts.list()`. */
 export const COMPUTER_STATUS_METHOD = "axo.apps.computer.status";
 /**

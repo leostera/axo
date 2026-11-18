@@ -93,6 +93,7 @@ const tools: AppTool[] = [
       "Returns the action: { action: { id, command, status, progress } }; poll get_action until its status is success or error. Prefer shutdown and reboot to poweroff and reset.",
     input: z.object({ id, action: z.enum(["poweron", "poweroff", "shutdown", "reboot", "reset"]) }).strict(),
     idempotent: false,
+    consent: (input) => (input.action === "poweron" ? null : `${input.action} server ${input.id}`),
     async run(api, input) {
       return api.request("POST", `/v1/servers/${input.id}/actions/${input.action}`);
     },
@@ -151,6 +152,7 @@ const tools: AppTool[] = [
       "Returns { records: { name, type, ttl, records } }.",
     input: z.object({ zone, name: rrName, type: rrType, records, ttl: z.number().int().min(60).max(2_147_483_647).optional().describe("Seconds; the zone's default when left out.") }).strict(),
     idempotent: true,
+    consent: (input) => `Set the ${input.type} records of ${input.name} in ${input.zone}`,
     async run(api, input) {
       const base = `/v1/zones/${encodeURIComponent(input.zone)}/rrsets`;
       const at = `${base}/${encodeURIComponent(input.name)}/${input.type}`;
@@ -170,6 +172,7 @@ const tools: AppTool[] = [
     description: "Deletes every DNS record of one name and type in a zone. Returns { deleted: true }.",
     input: z.object({ zone, name: rrName, type: rrType }).strict(),
     idempotent: true,
+    consent: (input) => `Delete the ${input.type} records of ${input.name} in ${input.zone}`,
     async run(api, input) {
       await api.request("DELETE", `/v1/zones/${encodeURIComponent(input.zone)}/rrsets/${encodeURIComponent(input.name)}/${input.type}`);
       return { deleted: true };

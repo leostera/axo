@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { macTool, ProviderError, type AppDefinition, type AppTool, type MacShell } from "../app";
+import { quoted, macTool, ProviderError, type AppDefinition, type AppTool, type MacShell } from "../app";
 
 /**
  * 1Password as an app: `codemode.apps.onepassword.<tool>({ account, ... })`, where the account is
@@ -102,6 +102,7 @@ const tools: AppTool<any, MacShell>[] = [
       "Secret fields (passwords, keys) are hidden unless `reveal` is true; a field's `reference` (op://vault/item/field) reads it later with `read`.",
     input: z.object({ opAccount, item, vault, reveal: z.boolean().optional() }).strict(),
     idempotent: true,
+    consent: (input) => (input.reveal ? `Show the agent the secrets of ${quoted(input.item)}` : null),
     async run(shell, input) {
       const found = (await op(shell, ["item", "get", input.item, ...(input.vault ? ["--vault", input.vault] : []), ...(input.reveal ? ["--reveal"] : [])], { account: input.opAccount })) as Item;
       return shown(found);
@@ -112,6 +113,7 @@ const tools: AppTool<any, MacShell>[] = [
     description: "Reads one field by its secret reference, such as \"op://Private/GitHub/password\" or \"op://Private/GitHub/one-time password?attribute=otp\": { value }.",
     input: z.object({ opAccount, reference: z.string().regex(/^op:\/\/[^\r\n]{3,1024}$/, "a reference starts with op://") }).strict(),
     idempotent: true,
+    consent: (input) => `Show the agent ${quoted(input.reference, 200)}`,
     async run(shell, input) {
       const value = (await op(shell, ["read", "--no-newline", input.reference], { account: input.opAccount, json: false })) as string;
       return { value };
@@ -122,6 +124,7 @@ const tools: AppTool<any, MacShell>[] = [
     description: "The current one-time password (TOTP) of an item that has one: { otp }.",
     input: z.object({ opAccount, item, vault }).strict(),
     idempotent: true,
+    consent: (input) => `Show the agent the one-time password of ${quoted(input.item)}`,
     async run(shell, input) {
       const otp = (await op(shell, ["item", "get", input.item, "--otp", ...(input.vault ? ["--vault", input.vault] : [])], { account: input.opAccount, json: false })) as string;
       return { otp: otp.trim() };
@@ -203,6 +206,7 @@ const tools: AppTool<any, MacShell>[] = [
     description: "Moves an item to the archive, where it can be restored; `permanently` deletes it for good instead. Prefer the archive unless asked. Returns { deleted: true }.",
     input: z.object({ opAccount, item, vault, permanently: z.boolean().optional() }).strict(),
     idempotent: true,
+    consent: (input) => `${input.permanently ? "Delete for good" : "Archive"} ${quoted(input.item)}`,
     async run(shell, input) {
       await op(shell, ["item", "delete", input.item, ...(input.vault ? ["--vault", input.vault] : []), ...(input.permanently ? [] : ["--archive"])], { account: input.opAccount, json: false });
       return { deleted: true };
@@ -219,6 +223,7 @@ const tools: AppTool<any, MacShell>[] = [
       stdin: z.string().max(1_000_000).optional().describe("Fed to the command's standard input, such as an item template."),
     }).strict(),
     idempotent: false,
+    consent: (input) => `Run op ${quoted(input.args.join(" "), 200)}`,
     async run(shell, input) {
       const [command, sub] = input.args;
       if (command === "signin" || command === "signout" || (command === "account" && (sub === "forget" || sub === "add")))

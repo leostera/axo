@@ -98,14 +98,15 @@ The agent still drives apps through `computer`, scripts through `run_script`, an
 
 ### App tools that ask (`packages/axo-apps`, `packages/axo-api-worker`)
 
-- `AppTool` gains `consent?: (input) => string | null`. It returns what to ask about the call, or null when the call needs no one.
+- `AppTool` gains `consent?: (input) => string | null`. It returns what to ask about the call, or null when the call needs no one. `packages/axo-apps/tests/catalog.test.ts` pins which tools ask.
   - Tools that send, post, pay, trade, delete, share, revoke or reveal a secret declare it. The general `request` tool asks for every method but GET, and Mac apps' raw `op` asks always.
   - Read-only tools declare nothing.
 - The account runner asks before running such a tool. It sends `axo.apps.consent` down the calling Mac's relay socket, with `{ accountId, callId, sessionId, message, timeoutMs }`. The calling Mac's axod asks the person in the calling Session, as the gate does, with `askedBy: computerUse`, which clients show as Axo asking.
   - The message names the app, the account and the call's own description, never the agent's words.
   - Only `accept` runs the tool.
   - A call that can't ask (an older Axo, the Mac offline, no time left) fails. It never runs unasked.
-- Every app call already goes through the call log. The consent outcome is logged with it (`consent=accepted|declined|unavailable`).
+- Every app call already goes through the call log. A call the person did not allow is logged as an error, with why; axod logs `event=apps.consent_asked` and `event=apps.consent_answered outcome=accept|refused`.
+- A caller of `BuiltinApps.call` that cannot ask (no `ask`) gets an error for an `ask` tool, never a run.
 
 ## Invariants
 
@@ -130,6 +131,8 @@ The agent still drives apps through `computer`, scripts through `run_script`, an
   - a script's flagged action is refused while an unflagged one runs, through a script registry over fake tools.
 - `specs/elicitations/tools-ask.ts`: a script's action is gated, and a flagged one never runs.
 - Worker: an `ask` tool runs only on accept, and a decline or an unreachable Mac fails it.
+- pi-axo: a connection that never authenticates is closed and does not keep Axod out of the bridge.
+- axod-infer: a model download past its pinned size stops before its body, and a stalled one ends.
 
 ## Drawbacks
 

@@ -24,6 +24,9 @@ export class Peer {
     timer: ReturnType<typeof setTimeout>;
   }> = [];
 
+  /** Requests from the server this peer answers itself, by method, as a daemon would. */
+  private readonly answers = new Map<string, (params: unknown) => unknown>();
+
   /** The server sends messages larger than a frame as fragments (RFD0016, Transport). */
   private readonly partials = new MemoryPartialStore();
   private constructor(socket: WebSocket) {
@@ -66,8 +69,9 @@ export class Peer {
         this.rpc.receive(parsed.data);
       else unmatched.push(response);
     }
-    if (!unmatched.length) return;
-    value = Array.isArray(value) ? unmatched : unmatched[0];
+    const unanswered = unmatched.filter((request) => !this.answerRequest(request));
+    if (!unanswered.length) return;
+    value = Array.isArray(value) ? unanswered : unanswered[0];
     const waiter = this.waiters.shift();
     if (waiter) {
       clearTimeout(waiter.timer);
@@ -79,6 +83,27 @@ export class Peer {
       return;
     }
     this.queued.push(value);
+  }
+  /**
+   * Answers every later request for `method` with what `handler` returns, or with its error when
+   * it throws `{ code, message }`; the request never reaches `next()`.
+   */
+  answer(method: string, handler: (params: unknown) => unknown) {
+    this.answers.set(method, handler);
+  }
+  private answerRequest(request: unknown): boolean {
+    const { id, method, params } = (request ?? {}) as { id?: unknown; method?: unknown; params?: unknown };
+    const handler = typeof method === "string" ? this.answers.get(method) : undefined;
+    if (!handler || (typeof id !== "string" && typeof id !== "number")) return false;
+    void (async () => {
+      try {
+        this.send({ jsonrpc: "2.0", id, result: await handler(params) });
+      } catch (error) {
+        const { code = -32000, message = String(error) } = error as { code?: number; message?: string };
+        this.send({ jsonrpc: "2.0", id, error: { code, message } });
+      }
+    })();
+    return true;
   }
   private rejectWaiters() {
     this.rpc.rejectAllPendingRequests(

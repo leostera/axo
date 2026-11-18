@@ -6,6 +6,9 @@ import { AppAccountRefused, BuiltinApps } from "../src/apps/builtin";
 import { FakeHetzner } from "./fake-hetzner";
 import { sqlStorage } from "./sql-storage";
 
+/** The person allows every call that asks (RFD0070). */
+const allow = async () => {};
+
 /**
  * RFD0016, token apps: an app whose account is a token the person pasted (Hetzner), sealed like a
  * grant, checked before it is stored, sent only to the app's own hosts, and dropped when the
@@ -88,7 +91,7 @@ test("each call acts as the project it names; the token is sealed, goes only to 
     'invalid input: "server" is not an input. It takes { account, id, type, start, end, step? }. ✖ Unrecognized key: "server"\n✖ Invalid input: expected number, received undefined\n  → at id');
   assert.match(await refused(apps.call("hetzner", "list_servers", { account: "personal", label: "x" })), /^invalid input: "label" is not an input: did you mean "labelSelector"\? It takes \{ account, /);
 
-  const rebooted = (await apps.call("hetzner", "server_action", { account: "personal", id: 2, action: "reboot" })) as { action: { command: string } };
+  const rebooted = (await apps.call("hetzner", "server_action", { account: "personal", id: 2, action: "reboot" }, undefined, allow)) as { action: { command: string } };
   assert.equal(rebooted.action.command, "reboot_server");
   const boxes = (await apps.call("hetzner", "list_storage_boxes", { account: "personal" })) as { storageBoxes: Array<{ usedGb: number; sizeGb: number }> };
   assert.deepEqual(boxes.storageBoxes.map((b) => [b.usedGb, b.sizeGb]), [[25, 1000]]);
@@ -109,15 +112,15 @@ test("each call acts as the project it names; the token is sealed, goes only to 
 test("set_records creates a record set when there is none, and otherwise replaces its records", async () => {
   const { apps, hetzner } = fixture();
   await apps.addToken("hetzner", "personal", { token: "hz-personal-token" });
-  const created = await apps.call("hetzner", "set_records", { account: "personal", zone: "example.com", name: "api", type: "A", records: [{ value: "198.51.100.7" }] });
+  const created = await apps.call("hetzner", "set_records", { account: "personal", zone: "example.com", name: "api", type: "A", records: [{ value: "198.51.100.7" }] }, undefined, allow);
   assert.deepEqual(created, { records: { name: "api", type: "A", ttl: null, records: [{ value: "198.51.100.7", comment: null }] } });
-  const replaced = await apps.call("hetzner", "set_records", { account: "personal", zone: "example.com", name: "www", type: "A", records: [{ value: "198.51.100.9", comment: "new" }], ttl: 300 });
+  const replaced = await apps.call("hetzner", "set_records", { account: "personal", zone: "example.com", name: "www", type: "A", records: [{ value: "198.51.100.9", comment: "new" }], ttl: 300 }, undefined, allow);
   assert.deepEqual(replaced, { records: { name: "www", type: "A", ttl: 300, records: [{ value: "198.51.100.9", comment: "new" }] } });
   const listed = (await apps.call("hetzner", "list_records", { account: "personal", zone: "example.com" })) as { records: Array<{ name: string }> };
   assert.deepEqual(listed.records.map((r) => r.name), ["www", "api"]);
-  assert.deepEqual(await apps.call("hetzner", "delete_records", { account: "personal", zone: "example.com", name: "api", type: "A" }), { deleted: true });
+  assert.deepEqual(await apps.call("hetzner", "delete_records", { account: "personal", zone: "example.com", name: "api", type: "A" }, undefined, allow), { deleted: true });
   assert.deepEqual(hetzner.rrsets.get("example.com")!.map((r) => r.name), ["www"]);
-  assert.match(await refused(apps.call("hetzner", "set_records", { account: "personal", zone: "example.com", name: "WWW", type: "A", records: [{ value: "x" }] })), /lowercase/);
+  assert.match(await refused(apps.call("hetzner", "set_records", { account: "personal", zone: "example.com", name: "WWW", type: "A", records: [{ value: "x" }] }, undefined, allow)), /lowercase/);
 });
 
 test("a token Hetzner refuses is dropped: the project stays listed, needing a new token, until one is added", async () => {
@@ -237,7 +240,7 @@ test("Kraken signs every private call with an increasing nonce, and checks the k
   assert.deepEqual(await apps.addToken("kraken", "Main", { key: "kraken-key", secret: krakenSecret }), { name: "apps.kraken", account: "main" });
   assert.deepEqual(await apps.call("kraken", "get_balance", { account: "main" }), { ZEUR: { balance: "120.50" } });
   assert.deepEqual(await apps.call("kraken", "get_balance", { account: "main" }), { ZEUR: { balance: "120.50" } }, "a second call's nonce is larger");
-  assert.deepEqual(await apps.call("kraken", "add_order", { account: "main", pair: "XBTEUR", side: "buy", type: "market", volume: "0.001", validate: true }),
+  assert.deepEqual(await apps.call("kraken", "add_order", { account: "main", pair: "XBTEUR", side: "buy", type: "market", volume: "0.001", validate: true }, undefined, allow),
     { descr: { order: "buy 0.001 XBTEUR @ market" }, validate: "true" });
   assert.deepEqual(await apps.call("kraken", "get_ticker", { account: "main", pairs: ["XBTEUR"] }), { XXBTZEUR: { c: ["60000.0", "0.1"] } });
 });
@@ -295,7 +298,7 @@ function moreServices() {
 test("a Discord bot goes as `Bot <token>`, is named by its username, and posts without pinging anyone", async () => {
   const { apps, seen } = moreServices();
   assert.deepEqual(await apps.addToken("discord", null, { token: "discord-token" }), { name: "apps.discord", account: "adabot" });
-  assert.deepEqual(await apps.call("discord", "send_message", { account: "adabot", channel: "123456789012345678", content: "hi @everyone" }), { id: "999999999999999999" });
+  assert.deepEqual(await apps.call("discord", "send_message", { account: "adabot", channel: "123456789012345678", content: "hi @everyone" }, undefined, allow), { id: "999999999999999999" });
   assert.deepEqual(JSON.parse(seen.at(-1)!.body).allowed_mentions, { parse: [] });
   assert.match(await refused(apps.call("discord", "read_messages", { account: "adabot", channel: "123456789012345679" })), /Discord: Unknown Channel/);
 });

@@ -160,6 +160,12 @@ const PHONE_FLOW_ATTEMPTS = 5;
 const accountInput = z.string().min(3).max(320)
   .describe("The account to act as: one of this app's accounts, by its name in apps_list (an email, a username, an account number or a Mac, depending on the app).");
 
+/**
+ * Asks the person whether a call may run, in the Session that made it. Resolves only on their
+ * accept; throws on decline, on no answer, and when they cannot be asked. Nothing runs on a throw.
+ */
+export type AskPerson = (question: string) => Promise<void>;
+
 export class BuiltinApps {
   private readonly refreshing = new Map<string, Promise<Grant | null>>();
 
@@ -637,7 +643,7 @@ export class BuiltinApps {
    * renews the grant once and the call is sent again, since it did not run. A call to a tool
    * that is not idempotent and got no answer fails as may-have-run.
    */
-  async call(app: AppName, toolName: string, input: unknown, run?: RunScope): Promise<unknown> {
+  async call(app: AppName, toolName: string, input: unknown, run?: RunScope, ask?: AskPerson): Promise<unknown> {
     run?.check();
     const definition = APP_DEFINITIONS[app];
     const tool = toolsOf(app).find((t) => t.name === toolName);
@@ -646,6 +652,13 @@ export class BuiltinApps {
     const parsed = inputOf(tool).safeParse(input ?? {});
     if (!parsed.success) throw new Error(invalidInput(inputOf(tool), parsed.error));
     const { account: named, ...rest } = parsed.data as { account: string } & Record<string, unknown>;
+    // A tool that sends, pays, deletes or reveals a secret runs only on the person's accept (RFD0070).
+    const question = tool.consent?.(rest);
+    if (question) {
+      if (!ask) throw new Error("needs the person's consent, and nobody can be asked from here; nothing was done");
+      await ask(`${definition.title} (${named}): ${question}`);
+      run?.check();
+    }
     if (definition.signIn === "mac") return this.callOnMac(definition, tool as AppTool<any, MacShell>, named, rest, run);
     const account = named.toLowerCase();
     // Errors reach the Session in at most 256 characters, so a sign-in link comes first.

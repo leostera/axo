@@ -5,6 +5,9 @@ import { BuiltinApps, macCommand } from "../src/apps/builtin";
 import { ProviderOutcomeUnknown } from "@axo/apps";
 import { sqlStorage } from "./sql-storage";
 
+/** The person allows every call that asks (RFD0070). */
+const allow = async () => {};
+
 /**
  * RFD0016, Mac apps: 1Password runs its CLI on the Mac a call names (its account), signed in
  * through the 1Password app there. Arguments are quoted for the shell; values a command takes on
@@ -97,16 +100,16 @@ test("1Password's accounts are the account's Macs; it is listed only where Macs 
 
 test("each call runs op on the Mac it names; secrets stay hidden unless asked for, and values go in on standard input", async () => {
   const { apps, ran } = fixture();
-  const item = (await apps.call("onepassword", "get_item", { account: "studio", item: "GitHub", vault: "Private" })) as { fields: Array<{ label: string; value: string | null }> };
+  const item = (await apps.call("onepassword", "get_item", { account: "studio", item: "GitHub", vault: "Private" }, undefined, allow)) as { fields: Array<{ label: string; value: string | null }> };
   assert.deepEqual(item.fields.map((f) => [f.label, f.value]), [["username", "leostera"], ["password", null]]);
   assert.deepEqual(ran.at(-1), { mac: "studio", args: ["op", "item", "get", "GitHub", "--vault", "Private", "--format", "json"], stdin: null });
-  const revealed = (await apps.call("onepassword", "get_item", { account: "leo_s_laptop", item: "GitHub", reveal: true, opAccount: "my.1password.com" })) as { fields: Array<{ value: string | null }> };
+  const revealed = (await apps.call("onepassword", "get_item", { account: "leo_s_laptop", item: "GitHub", reveal: true, opAccount: "my.1password.com" }, undefined, allow)) as { fields: Array<{ value: string | null }> };
   assert.equal(revealed.fields[1]!.value, "hunter2");
   assert.deepEqual(ran.at(-1)!.args, ["op", "item", "get", "GitHub", "--reveal", "--account", "my.1password.com", "--format", "json"]);
   assert.equal(ran.at(-1)!.mac, "leo_s_laptop");
 
-  assert.deepEqual(await apps.call("onepassword", "read", { account: "studio", reference: "op://Private/GitHub/password" }), { value: "hunter2" });
-  assert.match(await refused(apps.call("onepassword", "read", { account: "studio", reference: "Private/GitHub" })), /op:\/\//);
+  assert.deepEqual(await apps.call("onepassword", "read", { account: "studio", reference: "op://Private/GitHub/password" }, undefined, allow), { value: "hunter2" });
+  assert.match(await refused(apps.call("onepassword", "read", { account: "studio", reference: "Private/GitHub" }, undefined, allow)), /op:\/\//);
 
   const created = (await apps.call("onepassword", "create_item", {
     account: "studio", vault: "Private", category: "API Credential", title: "Hetzner", fields: [{ label: "credential", value: "s3cret", type: "concealed" }],
@@ -118,7 +121,28 @@ test("each call runs op on the Mac it names; secrets stay hidden unless asked fo
   assert.equal(JSON.parse(sent.stdin!).category, "API_CREDENTIAL");
 
   assert.match(await refused(apps.call("onepassword", "list_vaults", { account: "eve" })), /no Mac named eve; the account's Macs: studio, leo_s_laptop/);
-  assert.match(await refused(apps.call("onepassword", "op", { account: "studio", args: ["signout"] })), /for the person/);
+  assert.match(await refused(apps.call("onepassword", "op", { account: "studio", args: ["signout"] }, undefined, allow)), /for the person/);
+});
+
+test("a call that reveals a secret runs only on the person's accept; nothing runs when nobody can be asked (RFD0070)", async () => {
+  const { apps, ran } = fixture();
+  const asked: string[] = [];
+  const decline = async (question: string) => {
+    asked.push(question);
+    throw new Error("Not done: the person declined.");
+  };
+  const reference = { account: "studio", reference: "op://Private/GitHub/password" };
+  await assert.rejects(apps.call("onepassword", "read", reference, undefined, decline), /declined/);
+  await assert.rejects(apps.call("onepassword", "read", reference), /nobody can be asked/);
+  await assert.rejects(apps.call("onepassword", "get_otp", { account: "studio", item: "GitHub" }, undefined, decline), /declined/);
+  assert.equal(ran.length, 0, "op never ran");
+  assert.deepEqual(asked, [
+    `1Password (studio): Show the agent "op://Private/GitHub/password"`,
+    `1Password (studio): Show the agent the one-time password of "GitHub"`,
+  ]);
+  // Hidden secrets need no one.
+  await apps.call("onepassword", "get_item", { account: "studio", item: "GitHub", vault: "Private" });
+  assert.equal(asked.length, 2);
 });
 
 test("op's failures say what to do on the Mac; a lost answer to a write may have run, to a read is only a failure", async () => {

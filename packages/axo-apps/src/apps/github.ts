@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Octokit as Core } from "@octokit/core";
 import { paginateRest } from "@octokit/plugin-paginate-rest";
 import { restEndpointMethods, type RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods";
-import { tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
+import { quoted, tool, type AppDefinition, type AppTool, type ProviderApi } from "../app";
 
 /**
  * GitHub as an app: `codemode.apps.github.<tool>({ account, ... })`, signed in with an OAuth app
@@ -94,6 +94,7 @@ const tools: AppTool[] = [
     description: "Opens an issue. Returns { number, url }.",
     input: z.object({ owner, repo, title: z.string().min(1).max(256), body: z.string().max(65536).optional(), labels: z.array(z.string().max(50)).max(20).optional() }).strict(),
     idempotent: false,
+    consent: (input) => `Open an issue in ${input.owner}/${input.repo}: ${quoted(input.title)}`,
     async run(api, input) {
       const created = (await octokit(api).issues.create({ owner: input.owner, repo: input.repo, title: input.title, body: input.body, labels: input.labels })).data;
       return { number: created.number, url: created.html_url };
@@ -104,6 +105,7 @@ const tools: AppTool[] = [
     description: "Comments on an issue or pull request. Returns { id, url }.",
     input: z.object({ owner, repo, number, body: z.string().min(1).max(65536) }).strict(),
     idempotent: false,
+    consent: (input) => `Comment on ${input.owner}/${input.repo}#${input.number}: ${quoted(input.body)}`,
     async run(api, input) {
       const created = (await octokit(api).issues.createComment({ owner: input.owner, repo: input.repo, issue_number: input.number, body: input.body })).data;
       return { id: created.id, url: created.html_url };

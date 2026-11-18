@@ -214,6 +214,7 @@ const tools: AppTool[] = [
       message: z.string().max(4096).optional(),
     }).strict(),
     idempotent: false,
+    consent: (input) => `Share file ${input.id} with ${input.email} as ${input.role}`,
     async run(api, input) {
       const answer = (await api.request("POST", `${BASE}/files/${input.id}/permissions`, {
         query: { sendNotificationEmail: String(input.notify ?? true), emailMessage: input.message, supportsAllDrives: "true" },
@@ -236,6 +237,7 @@ const tools: AppTool[] = [
     description: "Deletes a file for good, skipping the trash. Prefer trash_file unless asked to delete permanently. Returns { deleted: true }.",
     input: z.object({ id }).strict(),
     idempotent: true,
+    consent: (input) => `Delete file ${input.id} for good`,
     async run(api, input) {
       await api.request("DELETE", `${BASE}/files/${input.id}`, { query: { supportsAllDrives: "true" } });
       return { deleted: true };

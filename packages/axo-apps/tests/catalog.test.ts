@@ -90,3 +90,36 @@ test("Withings: commas between scopes, no PKCE, `action=requesttoken`, and an an
   assert.deepEqual(APP_DEFINITIONS.withings.signIn === "oauth" && APP_DEFINITIONS.withings.answerError?.({ status: 401 }), { unauthorized: true });
   assert.equal(APP_DEFINITIONS.withings.signIn === "oauth" && APP_DEFINITIONS.withings.answerError?.({ status: 0, body: {} }), null);
 });
+
+test("the tools that send, post, pay, trade, delete, share or reveal a secret ask the person first (RFD0070)", () => {
+  const asking = APPS.flatMap((app) => toolsOf(app).filter((t) => t.consent).map((t) => `${app}.${t.name}`)).filter((name) => !name.endsWith(".request"));
+  assert.deepEqual(asking.sort(), [
+    "calendar.create_event", "calendar.delete_event", "calendar.update_event",
+    "contacts.delete_contact",
+    "discord.send_message",
+    "drive.delete_file", "drive.share_file",
+    "github.comment", "github.create_issue",
+    "gmail.create_filter", "gmail.delete_filter", "gmail.delete_message", "gmail.send_message", "gmail.set_vacation",
+    "hetzner.delete_records", "hetzner.server_action", "hetzner.set_records",
+    "kraken.add_order", "kraken.call", "kraken.cancel_order",
+    "onepassword.delete_item", "onepassword.get_item", "onepassword.get_otp", "onepassword.op", "onepassword.read",
+    "slides.delete_slide",
+    "tasks.delete_task",
+    "telegram.send_message",
+  ]);
+  const tool = (app: (typeof APPS)[number], name: string) => toolsOf(app).find((t) => t.name === name)!;
+  // Every HTTP app's `request` asks for anything but a read.
+  const request = tool("gmail", "request");
+  assert.equal(request.consent!({ method: "GET", path: "/gmail/v1/users/me/messages" }), null);
+  assert.equal(request.consent!({ method: "POST", path: "/gmail/v1/users/me/messages/send" }), "POST /gmail/v1/users/me/messages/send");
+  // What only checks, or reveals nothing, asks no one.
+  assert.equal(tool("kraken", "add_order").consent!({ pair: "XBTEUR", side: "buy", type: "market", volume: "1", validate: true }), null);
+  assert.equal(tool("kraken", "add_order").consent!({ pair: "XBTEUR", side: "buy", type: "market", volume: "1" }), "Place a market order: buy 1 XBTEUR");
+  assert.equal(tool("kraken", "call").consent!({ method: "Ticker", private: false }), null);
+  assert.equal(tool("onepassword", "get_item").consent!({ item: "GitHub" }), null);
+  assert.equal(tool("calendar", "create_event").consent!({ summary: "Sync" }), null);
+  assert.equal(tool("hetzner", "server_action").consent!({ id: 1, action: "poweron" }), null);
+  // A long body is cut, on one line.
+  const said = tool("telegram", "send_message").consent!({ chat: "@grace", text: `a\n${"b".repeat(500)}` })!;
+  assert.ok(said.length < 200 && !said.includes("\n"), said);
+});

@@ -21,7 +21,7 @@ use super::elicitation::{
 };
 use super::forward;
 use super::jobs::{
-    start_ai, start_bash, start_cancel, start_computer, start_prompt, start_sign_in,
+    start_ai, start_bash, start_cancel, start_computer, start_consent, start_prompt, start_sign_in,
 };
 use super::socket::{RelaySink, RelayStream, receive, send_json};
 use super::status::RelayControl;
@@ -264,6 +264,12 @@ fn take_message(
         Some(crate::computer::METHOD) => {
             if let Some(id) = id {
                 start_computer(id, params, context);
+            }
+            return Ok(());
+        }
+        Some(crate::consent::METHOD) => {
+            if let Some(id) = id {
+                start_consent(id, params, context);
             }
             return Ok(());
         }

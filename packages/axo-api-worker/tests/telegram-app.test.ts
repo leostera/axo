@@ -5,6 +5,9 @@ import { PhoneRefused, ProviderOutcomeUnknown, type PhoneClient, type PhoneSignI
 import { BuiltinApps } from "../src/apps/builtin";
 import { sqlStorage } from "./sql-storage";
 
+/** The person allows every call that asks (RFD0070). */
+const allow = async () => {};
+
 /**
  * RFD0016, phone apps: the person's own Telegram account, signed in with their number, the code
  * Telegram sends and their password, through an API client of their own. The fake stands in for
@@ -170,7 +173,7 @@ test("a call opens the account's session, runs the tool, and keeps the session T
   const { apps, telegram } = await signedIn();
   assert.deepEqual(await apps.call("telegram", "get_me", { account: "@ada" }), { id: "7", username: "Ada", firstName: "Ada", lastName: null, phone: "447700900123" });
   telegram.move = true;
-  assert.deepEqual(await apps.call("telegram", "send_message", { account: "@Ada", chat: "@grace", text: "hello" }), { id: 99, date: "2023-11-14T22:13:20.000Z" });
+  assert.deepEqual(await apps.call("telegram", "send_message", { account: "@Ada", chat: "@grace", text: "hello" }, undefined, allow), { id: 99, date: "2023-11-14T22:13:20.000Z" });
   assert.deepEqual(telegram.sent, [{ chat: "@grace", message: "hello" }]);
   assert.deepEqual([...telegram.sessions], ["session-1-moved"]);
   assert.equal((await apps.call("telegram", "get_me", { account: "@ada" }) as { id: string }).id, "7", "the moved session is the one opened next");
@@ -181,7 +184,7 @@ test("a dropped connection fails a read, and leaves a send may-have-run", async 
   const { apps, telegram } = await signedIn();
   telegram.fail = "dropped";
   assert.match((await refused(apps.call("telegram", "get_me", { account: "@ada" }))).message, /Telegram did not answer$/);
-  const send = await refused(apps.call("telegram", "send_message", { account: "@ada", chat: "me", text: "hi" }));
+  const send = await refused(apps.call("telegram", "send_message", { account: "@ada", chat: "me", text: "hi" }, undefined, allow));
   assert.ok(send instanceof ProviderOutcomeUnknown, send.message);
 });
 

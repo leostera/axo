@@ -5,6 +5,7 @@ pub mod ai;
 pub mod assets;
 pub mod bash;
 pub mod computer;
+pub mod consent;
 pub mod credential;
 mod endpoint;
 pub mod fragments;

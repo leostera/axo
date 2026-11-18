@@ -15,6 +15,7 @@ import {
   BASH_NAMESPACE,
   COMPUTER_METHOD,
   COMPUTER_NAMESPACE,
+  CONSENT_METHOD,
   COMPUTER_STATUS_METHOD,
   HOSTS_NAMESPACE,
   RESERVED_NAMES,
@@ -54,7 +55,7 @@ import type { RunScope } from "./run-scope";
 import { ThirdPartyApps, type OpenedFlow } from "./third-party";
 import { McpOutcomeUnknown } from "./mcp-client";
 import type { Client } from "./oauth";
-import { AppAccountRefused, BuiltinApps, appPage, type DeviceSignIn, type MacSignInCallback } from "./builtin";
+import { AppAccountRefused, BuiltinApps, appPage, type AskPerson, type DeviceSignIn, type MacSignInCallback } from "./builtin";
 import { ProviderError, ProviderOutcomeUnknown, type LinkedDevice } from "@axo/apps";
 import type { GoogleClient } from "./builtin/google";
 
@@ -107,6 +108,8 @@ const STATUS_DEADLINE_MS = 3_000;
 const COMPUTER_MAX_MS = 5 * 60_000 + 30_000;
 /** Below this much script time left, a computer call is not started. */
 const COMPUTER_MIN_MS = 5_000;
+/** The longest the person is given to allow an app call (RFD0070), as for a computer call. */
+const CONSENT_MAX_MS = 5 * 60_000;
 
 /** `"self"` names the Mac the script was started from. */
 const hostField = z.string().min(1).max(64).describe('A Mac\'s name from codemode.hosts.list(), or "self" for the Mac this script was started from.');
@@ -750,7 +753,7 @@ export class AccountApps {
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
     try {
       run.check();
-      const output = await this.apps.call(app, tool, input, run);
+      const output = await this.apps.call(app, tool, input, run, this.askPerson(from, callId, run));
       await this.log.finish(callId, "ok", null);
       return output;
     } catch (error) {
@@ -758,6 +761,34 @@ export class AccountApps {
       await this.log.finish(callId, error instanceof ProviderOutcomeUnknown || run.closed ? "unknown" : "error", message);
       throw new Error(`${service}.${tool}: ${message}`);
     }
+  }
+
+  /**
+   * Asks the person in the calling Session, through the calling Mac (RFD0070). Resolves only on
+   * their accept; a decline, no answer, an offline Mac or an Axo too old to ask all throw.
+   */
+  private askPerson(from: Caller, callId: string, run: RunScope): AskPerson {
+    return async (message) => {
+      const remaining = run.remainingMs();
+      if (remaining < COMPUTER_MIN_MS) throw new LimitError("timeoutMs", "limits.timeoutMs leaves no time to ask the person; nothing was done");
+      const timeoutMs = Math.min(CONSENT_MAX_MS, remaining);
+      let outcome: CallOutcome;
+      try {
+        outcome = await this.callOwnedHost(run, from.hostId, {
+          method: CONSENT_METHOD,
+          params: { accountId: this.deps.accountId, callId, sessionId: from.sessionId, message, timeoutMs },
+          deadlineMs: timeoutMs + BASH_GRACE_MS,
+        });
+      } catch {
+        throw new Error("needs the person's consent, and they could not be asked; nothing was done");
+      }
+      if ("error" in outcome) {
+        if (outcome.error.code === -32601) throw new Error("needs the person's consent, and this Mac's Axo is too old to ask; update Axo; nothing was done");
+        throw new Error(outcome.error.message);
+      }
+      const answer = outcome.result as { outcome?: unknown } | null;
+      if (answer?.outcome !== "accept") throw new Error("the person did not allow it; nothing was done");
+    };
   }
 
   /** A `codemode.assets` call, logged as the others are. Saves are made as the calling Mac. */

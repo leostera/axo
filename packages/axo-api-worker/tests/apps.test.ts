@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { APPS, appsResults } from "@axo/protocol";
+import { APPS, CONSENT_METHOD, appsResults } from "@axo/protocol";
 import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
 import { connectHost, pairHost } from "./account-support";
 import { FakeGoogle } from "./fake-google";
@@ -30,7 +30,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   const sessionId = crypto.randomUUID();
   const call = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params }) as Promise<Reply>;
   const execute = (code: string) => call("axo.apps.run", { code });
-  return { google, h, session, call, execute };
+  return { google, h, session, call, execute, daemon, sessionId };
 }
 
 function result(reply: Reply): any {
@@ -200,6 +200,43 @@ test("send_message builds the MIME message, threads a reply, and is logged under
     ["apps.gmail", "send_message", "error"],
     ["apps.gmail", "send_message", "ok"],
     ["apps.gmail", "send_message", "ok"],
+  ]);
+});
+
+test("a send runs only on the person's accept, asked through the calling Mac in the calling Session (RFD0070)", async (t) => {
+  const { google, call, execute, daemon, sessionId } = await signedIn(t);
+  const asked: Array<Record<string, unknown>> = [];
+  daemon.answer(CONSENT_METHOD, (params) => {
+    asked.push(params as Record<string, unknown>);
+    throw { code: -32003, message: "Not done: the person declined." };
+  });
+  const send = `async () => codemode.apps.gmail.send_message({ account: "ada@example.com", to: "eve@example.com", subject: "Your invoice", text: "t" })`;
+  assert.match(failure(await execute(send)), /Not done: the person declined\./);
+  assert.equal(google.sent.length, 0, "nothing is sent on a decline");
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.sessionId, sessionId);
+  assert.equal(asked[0]!.message, `Gmail (ada@example.com): Send an email to eve@example.com: "Your invoice"`);
+
+  // An Axo too old to ask, or one that cannot reach the person, runs nothing either.
+  daemon.answer(CONSENT_METHOD, () => { throw { code: -32601, message: "Method not found" }; });
+  assert.match(failure(await execute(send)), /too old to ask/);
+  daemon.answer(CONSENT_METHOD, () => ({ outcome: "decline" }));
+  assert.match(failure(await execute(send)), /did not allow it/);
+  assert.equal(google.sent.length, 0);
+
+  // Reads ask no one; an accepted send runs once.
+  daemon.answer(CONSENT_METHOD, (params) => {
+    asked.push(params as Record<string, unknown>);
+    return { outcome: "accept" };
+  });
+  result(await execute(`async () => codemode.apps.gmail.get_message({ account: "ada@example.com", id: "m1" })`));
+  assert.equal(asked.length, 1);
+  result(await execute(send));
+  assert.equal(asked.length, 2);
+  assert.equal(google.sent.length, 1);
+  const records = result(await call("axo.apps.log")).records as Array<{ tool: string; outcome: string }>;
+  assert.deepEqual(records.slice(0, 5).map((r) => [r.tool, r.outcome]), [
+    ["send_message", "ok"], ["get_message", "ok"], ["send_message", "error"], ["send_message", "error"], ["send_message", "error"],
   ]);
 });
 

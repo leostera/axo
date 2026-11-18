@@ -102,6 +102,7 @@ const tools: AppTool[] = [
     description: "Deletes a task. Returns { deleted: true }.",
     input: z.object({ list: listId.optional(), id: taskId }).strict(),
     idempotent: true,
+    consent: (input) => `Delete task ${input.id}`,
     async run(api, input) {
       await api.request("DELETE", `${BASE}/lists/${input.list ?? "@default"}/tasks/${input.id}`);
       return { deleted: true };

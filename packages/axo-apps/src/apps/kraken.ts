@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { krakenMacSignIn } from "../oauth/kraken";
-import { ProviderError, tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest, type ProviderApi } from "../app";
+import { quoted, ProviderError, tool, type AppDefinition, type AppTool, type Authorized, type OutgoingRequest, type ProviderApi } from "../app";
 
 /**
  * Kraken as an app: `codemode.apps.kraken.<tool>({ account, ... })`, with an API key and its
@@ -137,6 +137,7 @@ const tools: AppTool[] = [
       validate: z.boolean().optional(),
     }).strict(),
     idempotent: false,
+    consent: (input) => (input.validate ? null : `Place a ${input.type} order: ${input.side} ${input.volume} ${input.pair}${input.price ? ` at ${input.price}` : ""}`),
     async run(api, input) {
       if (input.type === "limit" && !input.price) throw new ProviderError(400, "a limit order needs a price");
       return privateCall(api, "AddOrder", { pair: input.pair, type: input.side, ordertype: input.type, volume: input.volume, price: input.price, validate: input.validate || undefined });
@@ -147,6 +148,7 @@ const tools: AppTool[] = [
     description: "Cancels an open order by its ID: { count }.",
     input: z.object({ id: z.string().regex(/^[A-Z0-9-]{6,40}$/) }).strict(),
     idempotent: true,
+    consent: (input) => `Cancel order ${input.id}`,
     run: (api, input) => privateCall(api, "CancelOrder", { txid: input.id }),
   }),
   tool({
@@ -154,6 +156,7 @@ const tools: AppTool[] = [
     description: "Any other Kraken REST method: `private: true` for the account's own (signed), otherwise a public one. Returns its `result`. See docs.kraken.com/api.",
     input: z.object({ method: z.string().regex(/^[A-Za-z]{3,64}$/), params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(), private: z.boolean() }).strict(),
     idempotent: false,
+    consent: (input) => (input.private ? `Call ${input.method} on the account: ${quoted(JSON.stringify(input.params ?? {}), 200)}` : null),
     run: (api, input) => input.private
       ? privateCall(api, input.method, input.params)
       : publicCall(api, input.method, Object.fromEntries(Object.entries(input.params ?? {}).map(([k, v]) => [k, String(v)]))),

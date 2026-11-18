@@ -8,6 +8,9 @@ import { FakeSpotify } from "./fake-spotify";
 import { FakeWithings } from "./fake-withings";
 import { sqlStorage } from "./sql-storage";
 
+/** The person allows every call that asks (RFD0070). */
+const allow = async () => {};
+
 /**
  * RFD0016, OAuth apps of providers other than Google: each signs in with a client the person
  * registered with its provider and entered on the app's page, kept sealed in the account's
@@ -272,7 +275,7 @@ test("Withings signs in without PKCE through its requesttoken action, is named b
   assert.equal(fake.oauth.tokenRequests[0]!.form.get("action"), "requesttoken");
   assert.deepEqual(apps.accounts("withings").map((a) => a.account), ["31337001"]);
 
-  const call = (tool: string, input: Record<string, unknown> = {}) => apps.call("withings", tool, { account: "31337001", ...input });
+  const call = (tool: string, input: Record<string, unknown> = {}) => apps.call("withings", tool, { account: "31337001", ...input }, undefined, allow);
   assert.deepEqual(await call("get_measures", { types: ["weight", "fat_ratio", "systolic"], start: "2026-10-01" }), {
     measures: [
       { date: "2026-10-26T07:33:20.000Z", type: "weight", value: 72.35, unit: "kg", device: "scale1" },

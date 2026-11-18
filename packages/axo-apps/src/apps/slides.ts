@@ -112,6 +112,7 @@ const tools: AppTool[] = [
     description: "Deletes a slide by its id. Returns { deleted: true }.",
     input: z.object({ id: presentationId, slideId: objectId }).strict(),
     idempotent: false,
+    consent: (input) => `Delete slide ${input.slideId}`,
     async run(api, input) {
       await api.request("POST", `${BASE}/${input.id}:batchUpdate`, { body: { requests: [{ deleteObject: { objectId: input.slideId } }] } });
       return { deleted: true };
