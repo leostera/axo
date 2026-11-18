@@ -5,6 +5,8 @@
 //! - `Axod::start()` runs one with the fake Pi (`testdata/fake_pi.rs`), a home of its own and no
 //!   account. `Axod::with(Options)` chooses the Pi, its environment and the relay.
 //! - `call` answers `Ok(result)` or `Err(RpcError)`; `ok` and `err` assert which.
+//! - `agent(session)` calls it as that Session's agent, from inside its fake Pi, as `axod mcp`
+//!   and the CLI do (RFD0073); a call from the test itself comes from no Session.
 //! - `subscribe` follows its events; `Events::wait_for` waits for the one a test needs.
 //! - `restart` stops it and starts it again on the same directory, as a crash, an upgrade or a
 //!   login would.
@@ -181,6 +183,7 @@ impl Axod {
             .env("AXO_PI_EXECUTABLE", pi)
             .env("AXO_FAKE_PI_LOG", self.directory.join("pi.log"))
             .env("AXO_FAKE_PI_STARTUP_MS", "50")
+            .env("AXO_FAKE_PI_AGENT_SOCKETS", self.agent_sockets())
             .arg("--socket")
             .arg(self.socket())
             .arg("--server-dir")
@@ -200,6 +203,7 @@ impl Axod {
         for (name, value) in &self.options.env {
             command.env(name, value);
         }
+        std::fs::create_dir_all(self.agent_sockets()).unwrap();
         self.child = Some(command.spawn().expect("start axod"));
         self.wait_for_socket();
     }
@@ -271,8 +275,36 @@ impl Axod {
             .is_some_and(|child| child.try_wait().ok().flatten().is_none())
     }
 
+    /// Where each fake Pi relays its Session's agent calls to axod.
+    fn agent_sockets(&self) -> PathBuf {
+        self.directory.join("agents")
+    }
+
+    /// The socket on which a call reaches axod from inside `session_id`'s fake Pi: as that
+    /// Session's agent. Waits for its Pi to serve it.
+    #[track_caller]
+    pub fn agent_socket(&self, session_id: &str) -> PathBuf {
+        let socket = self.agent_sockets().join(format!("{session_id}.sock"));
+        self.wait_for("the Session's Pi to take its agent's calls", || {
+            UnixStream::connect(&socket).is_ok().then_some(())
+        });
+        socket
+    }
+
+    /// Calls axod as `session_id`'s agent.
+    pub fn agent(&self, session_id: &Value) -> Agent<'_> {
+        Agent {
+            socket: self.agent_socket(session_id.as_str().expect("a Session ID")),
+            axod: self,
+        }
+    }
+
     pub fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        call(&self.socket(), method, params).unwrap_or_else(|error| {
+        self.call_on(&self.socket(), method, params)
+    }
+
+    fn call_on(&self, socket: &Path, method: &str, params: Value) -> Result<Value, RpcError> {
+        call(socket, method, params).unwrap_or_else(|error| {
             panic!(
                 "{method} did not answer: {error}\naxod log:\n{}",
                 self.log()
@@ -502,45 +534,93 @@ pub fn pane<'a>(session: &'a Value, role: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("the Session has no {role} pane: {session}"))
 }
 
-/// `axod mcp` for one Session, as Pi runs it: MCP over its stdin and stdout.
+/// Calls on axod as one Session's agent (`Axod::agent`).
+pub struct Agent<'a> {
+    axod: &'a Axod,
+    socket: PathBuf,
+}
+
+impl Agent<'_> {
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    pub fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+        self.axod.call_on(&self.socket, method, params)
+    }
+
+    #[track_caller]
+    pub fn ok(&self, method: &str, params: Value) -> Value {
+        match self.call(method, params.clone()) {
+            Ok(result) => result,
+            Err(error) => panic!(
+                "{method}({params}) failed as the agent: {error:?}\naxod log:\n{}",
+                self.axod.log()
+            ),
+        }
+    }
+
+    #[track_caller]
+    pub fn err(&self, method: &str, params: Value) -> RpcError {
+        match self.call(method, params.clone()) {
+            Ok(result) => panic!("{method}({params}) should have failed, but answered {result}"),
+            Err(error) => error,
+        }
+    }
+}
+
+/// `axod mcp` for one Session, as Pi runs it: started by the Session's fake Pi, MCP over its
+/// stdin and stdout, which the fake Pi wires to a socket.
 pub struct Mcp {
-    child: Child,
     /// `None` once closed.
-    input: Option<std::process::ChildStdin>,
+    input: Option<UnixStream>,
     responses: std::sync::mpsc::Receiver<Value>,
+    exited: std::sync::mpsc::Receiver<McpExit>,
     next_id: u64,
 }
 
+/// How `axod mcp` exited.
+#[derive(Clone, Copy, Debug)]
+pub struct McpExit(Option<i32>);
+
+impl McpExit {
+    pub fn code(self) -> Option<i32> {
+        self.0
+    }
+
+    pub fn success(self) -> bool {
+        self.0 == Some(0)
+    }
+}
+
 impl Mcp {
-    /// Starts `axod mcp` for `session_id` and initializes it.
+    /// Has `session_id`'s Pi start `axod mcp` for it, and initializes it.
     pub fn start(axod: &Axod, session_id: &str) -> Self {
-        let mut child = Command::new(axod_binary())
-            .arg("mcp")
-            .env("HOME", axod.home())
-            .env("AXO_SOCKET", axod.socket())
-            .env("AXO_SESSION_ID", session_id)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start axod mcp");
-        let input = child.stdin.take().unwrap();
-        let output = BufReader::new(child.stdout.take().unwrap());
+        axod.agent_socket(session_id);
+        let path = axod.agent_sockets().join(format!("{session_id}.mcp.sock"));
+        let input = UnixStream::connect(&path).expect("the fake Pi serves axod mcp");
+        let output = BufReader::new(input.try_clone().unwrap());
         let (sender, responses) = std::sync::mpsc::channel();
+        let (exit, exited) = std::sync::mpsc::channel();
         thread::spawn(move || {
             for line in output.lines() {
                 let Ok(line) = line else { return };
-                if let Ok(message) = serde_json::from_str::<Value>(&line) {
-                    if sender.send(message).is_err() {
-                        return;
-                    }
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if let Some(status) = message.get("fakePiMcpExit") {
+                    let _ = exit.send(McpExit(status.as_i64().map(|code| code as i32)));
+                    return;
+                }
+                if sender.send(message).is_err() {
+                    return;
                 }
             }
         });
         let mut mcp = Self {
-            child,
             input: Some(input),
             responses,
+            exited,
             next_id: 0,
         };
         let initialized = mcp.request(
@@ -649,30 +729,26 @@ impl Mcp {
             .to_owned()
     }
 
-    fn stdin(&mut self) -> &mut std::process::ChildStdin {
+    fn stdin(&mut self) -> &mut UnixStream {
         self.input.as_mut().expect("axod mcp's stdin is open")
     }
 
     /// Closes its stdin, as Pi does on exit, and waits for it to exit.
-    pub fn close(mut self) -> std::process::ExitStatus {
-        self.input = None;
-        let deadline = Instant::now() + READY_WAIT;
-        loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                return status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "axod mcp did not exit after its stdin closed"
-            );
-            thread::sleep(Duration::from_millis(20));
+    pub fn close(mut self) -> McpExit {
+        if let Some(input) = self.input.take() {
+            let _ = input.shutdown(std::net::Shutdown::Write);
         }
+        self.exited
+            .recv_timeout(READY_WAIT)
+            .expect("axod mcp did not exit after its stdin closed")
     }
 }
 
 impl Drop for Mcp {
+    /// Hangs up, so `axod mcp` ends.
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(input) = self.input.take() {
+            let _ = input.shutdown(std::net::Shutdown::Both);
+        }
     }
 }

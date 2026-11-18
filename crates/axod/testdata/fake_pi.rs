@@ -20,6 +20,12 @@
 //!
 //! - It exits when its lifeline (`AXO_LIFELINE_FD`) ends, as pi-axo does: axod has gone.
 //!
+//! - With `AXO_FAKE_PI_AGENT_SOCKETS` (a directory), it serves `<directory>/<AXO_SESSION_ID>.sock`
+//!   and copies each connection to and from axod's socket (`AXO_SOCKET`) on one of its own, as
+//!   its tools would call axod: a test reaches axod there as this Session's agent (RFD0073).
+//!   On `<directory>/<AXO_SESSION_ID>.mcp.sock` it starts `$AXOD mcp` for each connection, as
+//!   pi-axo does, wired to it; when it exits, the last line is `{"fakePiMcpExit": <status>}`.
+//!
 //! `AXO_FAKE_PI_FAIL=start` makes it exit at once with status 3, as a Pi that cannot start.
 //! `AXO_FAKE_PI_STUBBORN=1` makes it ignore SIGHUP and its lifeline, as a Pi from before the
 //! lifeline did: it outlives the axod that started it.
@@ -439,6 +445,86 @@ fn uuid(salt: u128) -> String {
     )
 }
 
+/// Relays `<AXO_FAKE_PI_AGENT_SOCKETS>/<AXO_SESSION_ID>.sock` to axod, so what a test sends there
+/// reaches axod from this Pi's process, as its tools' calls do; and serves `axod mcp`, started by
+/// this Pi, on `<AXO_SESSION_ID>.mcp.sock`.
+fn serve_as_agent() {
+    let (Some(directory), Some(session), Some(axod)) = (
+        env("AXO_FAKE_PI_AGENT_SOCKETS"),
+        env("AXO_SESSION_ID"),
+        env("AXO_SOCKET"),
+    ) else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    let listen = |name: String| {
+        let path = directory.join(name);
+        let _ = fs::remove_file(&path);
+        UnixListener::bind(&path).ok()
+    };
+    if let Some(listener) = listen(format!("{session}.sock")) {
+        thread::spawn(move || {
+            for client in listener.incoming() {
+                let (Ok(client), Ok(upstream)) = (client, UnixStream::connect(&axod)) else {
+                    continue;
+                };
+                if let (Ok(from_client), Ok(from_axod)) = (client.try_clone(), upstream.try_clone())
+                {
+                    copy_then_close(from_client, upstream);
+                    copy_then_close(from_axod, client);
+                }
+            }
+        });
+    }
+    if let (Some(listener), Some(executable)) = (listen(format!("{session}.mcp.sock")), env("AXOD"))
+    {
+        thread::spawn(move || {
+            for client in listener.incoming() {
+                let Ok(client) = client else { continue };
+                let executable = executable.clone();
+                thread::spawn(move || run_mcp(&executable, client));
+            }
+        });
+    }
+}
+
+fn copy_then_close(mut from: impl Read + Send + 'static, mut to: UnixStream) {
+    thread::spawn(move || {
+        let _ = std::io::copy(&mut from, &mut to);
+        let _ = to.shutdown(std::net::Shutdown::Write);
+    });
+}
+
+/// `axod mcp` as this Pi's child, on `client`: its stdin from it, its stdout to it, then how it
+/// exited.
+fn run_mcp(executable: &str, client: UnixStream) {
+    let Ok(mut child) = std::process::Command::new(executable)
+        .arg("mcp")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let (Some(mut input), Some(mut output), Ok(mut from_client), Ok(mut to_client)) = (
+        child.stdin.take(),
+        child.stdout.take(),
+        client.try_clone(),
+        client.try_clone(),
+    ) else {
+        let _ = child.kill();
+        return;
+    };
+    thread::spawn(move || {
+        let _ = std::io::copy(&mut from_client, &mut input);
+    });
+    let _ = std::io::copy(&mut output, &mut to_client);
+    let status = child.wait().ok().and_then(|status| status.code());
+    let _ = writeln!(to_client, "{}", json!({ "fakePiMcpExit": status }));
+    let _ = to_client.shutdown(std::net::Shutdown::Write);
+}
+
 fn main() {
     if env("AXO_FAKE_PI_FAIL").as_deref() == Some("start") {
         eprintln!("fake Pi: failing to start, as asked");
@@ -463,6 +549,7 @@ fn main() {
             std::process::exit(0);
         });
     }
+    serve_as_agent();
     let pi = Arc::new(Mutex::new(Pi::default()));
     let session = uuid(1);
     let events = uuid(2);
