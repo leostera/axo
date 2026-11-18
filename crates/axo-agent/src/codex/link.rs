@@ -285,8 +285,6 @@ fn refuse_waiting(requests: &mut LinkRequests) {
 
 /// What an answer from the server is for.
 enum Pending {
-    /// A request of the link's own, awaited inline during setup.
-    Setup(oneshot::Sender<Result<Value, rpc::RpcError>>),
     /// `turn/start` for a client's prompt, answered when the server answers.
     StartTurn(Option<oneshot::Sender<io::Result<CommandResult>>>),
     Steer(oneshot::Sender<io::Result<CommandResult>>),
@@ -301,6 +299,8 @@ struct Connection<'a> {
     stream_id: String,
     sequence: u64,
     context: &'a str,
+    /// Notifications that arrived during setup, in order.
+    early: Vec<Incoming>,
 }
 
 impl<'a> Connection<'a> {
@@ -312,6 +312,7 @@ impl<'a> Connection<'a> {
             stream_id,
             sequence: 0,
             context,
+            early: Vec::new(),
         }
     }
 
@@ -335,6 +336,11 @@ impl<'a> Connection<'a> {
         let snapshot = thread.snapshot();
         if !self.report_all(&thread_id, snapshot, report) {
             return Outcome::Ended;
+        }
+        for notification in std::mem::take(&mut self.early) {
+            if let Some(outcome) = self.receive(notification, &mut thread, report).await {
+                return outcome;
+            }
         }
         if self.send_request("model/list", json!({}), Pending::Models).await.is_err() {
             return Outcome::Closed;
@@ -408,30 +414,30 @@ impl<'a> Connection<'a> {
         Ok(thread)
     }
 
-    /// Sends one of the link's own requests and waits for its answer, following nothing else
-    /// meanwhile (nothing else is subscribed yet).
+    /// Sends one of the link's own requests and reads frames until its answer. Notifications
+    /// that arrive meanwhile are kept for [`Connection::follow`]; other frames are dropped
+    /// (nothing else is pending during setup).
     async fn setup(&mut self, method: &str, params: Value) -> Result<Value, Outcome> {
-        let (reply, answer) = oneshot::channel();
-        let id = self
-            .send_request(method, params, Pending::Setup(reply))
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write(rpc::request(id, method, params))
             .await
             .map_err(|_| Outcome::Closed)?;
+        let ours = RequestId::Number(id);
         let waited = tokio::time::timeout(SETUP_TIMEOUT, async {
-            let mut answer = answer;
             loop {
-                tokio::select! {
-                    answered = &mut answer => return answered.ok(),
-                    frame = self.socket.next() => match frame {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Ok(Incoming::Response { id, result }) = rpc::parse(&text) {
-                                self.answer(&id, Ok(result));
-                            } else if let Ok(Incoming::Failure { id, error }) = rpc::parse(&text) {
-                                self.answer(&id, Err(error));
-                            }
-                        }
-                        Some(Ok(_)) => {}
-                        _ => return None,
-                    },
+                let text = match self.socket.next().await {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(_)) => continue,
+                    _ => return None,
+                };
+                match rpc::parse(&text) {
+                    Ok(Incoming::Response { id, result }) if id == ours => return Some(Ok(result)),
+                    Ok(Incoming::Failure { id, error }) if id == ours => return Some(Err(error)),
+                    Ok(notification @ Incoming::Notification { .. }) => {
+                        self.early.push(notification)
+                    }
+                    _ => {}
                 }
             }
         })
@@ -449,18 +455,9 @@ impl<'a> Connection<'a> {
             }
             Ok(None) => Err(Outcome::Closed),
             Err(_) => {
-                self.pending.remove(&id);
                 log::warn!("event=codex.setup_timed_out {} method={method}", self.context);
                 Err(Outcome::Failed)
             }
-        }
-    }
-
-    /// Settles a setup request's answer; other answers are ignored during setup.
-    fn answer(&mut self, id: &RequestId, result: Result<Value, rpc::RpcError>) {
-        let RequestId::Number(number) = id else { return };
-        if let Some(Pending::Setup(reply)) = self.pending.remove(number) {
-            let _ = reply.send(result);
         }
     }
 
@@ -545,9 +542,6 @@ impl<'a> Connection<'a> {
         let Some(pending) = self.pending.remove(number) else { return };
         let accepted = || Ok(CommandResult::Accepted);
         match (pending, result) {
-            (Pending::Setup(reply), result) => {
-                let _ = reply.send(result);
-            }
             (Pending::StartTurn(reply), Ok(answer)) => {
                 if let Some(turn) = answer["turn"]["id"].as_str() {
                     thread.started(turn);

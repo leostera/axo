@@ -108,6 +108,14 @@ fn flock_exclusive(lock: &File) -> io::Result<()> {
     })
 }
 
+impl WriterLock {
+    /// The lock's open file, for a child that must hold the lock as its stdout, such as the
+    /// lifeline's guard shell. Shares the lock: it is held until every copy is closed.
+    pub fn shared_file(&self) -> io::Result<File> {
+        Ok(File::from(self.0.try_clone()?))
+    }
+}
+
 impl AsRawFd for WriterLock {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
